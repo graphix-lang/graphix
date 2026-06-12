@@ -116,7 +116,7 @@ const EXPLICIT_TYPE_VARS2: &str = r#"
 run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const EXPLICIT_TYPE_VARS3: &str = r#"
 {
@@ -155,7 +155,7 @@ run!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TYPED_ARRAYS1: &str = r#"
 {

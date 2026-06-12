@@ -1651,8 +1651,10 @@ async fn node_shape_external_scalar() -> Result<()> {
     let spec = NodeShape::fused(
         GirMatcher::new()
             .returns(prim_type(PrimType::I64))
-            .params(&["foo"])
-            .contains(GirOpTag::Bin),
+            .params(&["foo"]),
+        // F4 (#213): `.contains(GirOpTag::Bin)` pin removed at the F2
+        // flip — direct kernels carry no GIR body to tag-match;
+        // restore as an EmitTag assertion.
     );
     ctx.rt.match_shape(eid, spec).await?;
 

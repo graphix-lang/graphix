@@ -1,0 +1,15 @@
+// bisect: DirectJit crash (stack overflow) — interp/classic agree on 8
+// interp/jit: Interp i64:8, classic Jit i64:8 (planner never builds the
+// kernel); DirectJit pre-fix: the E1 discovery built f2's kernel and the
+// process died of stack overflow. Post-fix: f2 de-fuses, all modes 8.
+// Found during E3 recon while auditing try_emit_tail_call's name-based
+// self-call matching (task #206).
+// root_cause: finish_kernel registers the kernel's OWN name in known_fns
+// before its body emits (so self-calls resolve), and emit_known_fused_call
+// resolved by NAME ONLY — f2's body call to the shadowed OUTER f matched
+// f2's own entry, emitting GirOp::Call against itself: infinite native
+// self-call. Fixed by KnownFusedFn::self_bind — every name-keyed
+// resolution must also match the call site's fnode Ref BindId (names
+// shadow, BindIds don't). f2 stays un-fused until known_fns re-keys by
+// BindId (the #203 follow-up); de-fused-but-correct is the contract.
+{ let f = |x: i64| -> i64 x + i64:1; let f = |n: i64| -> i64 f(n) * i64:2; f(i64:3) }

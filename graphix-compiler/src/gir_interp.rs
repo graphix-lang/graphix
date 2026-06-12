@@ -70,6 +70,15 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// for non-builtin slots and for builtin slots whose defaults
     /// are pure literals with no external refs.
     default_external_refs: Vec<crate::BindId>,
+    /// `false` until the current inner Apply's FIRST dispatch has
+    /// run. A freshly-constructed Apply's first update IS its init
+    /// (the same contract `CallSite::bind` provides a fresh callee):
+    /// its compiled labeled-default Nodes are Constants/exprs that
+    /// only produce on `event.init` — but the OUTER cycle that first
+    /// dispatches the kernel may be long past init (an async-fed
+    /// region's first fire). `dispatch` forces `event.init = true`
+    /// for the first inner update, then restores it.
+    fired: bool,
     /// Lexical scope at the kernel's definition site. Re-passed to
     /// the inner Apply's `init` so it sees the right environment.
     scope: crate::Scope,
@@ -123,6 +132,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             current: None,
             pre_bound: false,
             default_external_refs: Vec::new(),
+            fired: false,
             scope,
             top_id,
         }
@@ -393,6 +403,8 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                 )
                 .ok()?;
                 self.current = Some((lambda_ptr, new_apply));
+                // A fresh Apply: its next update is its init.
+                self.fired = false;
             }
         }
         // Side-channel: stash each arg Value at its BindId so the
@@ -404,10 +416,22 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             event.variables.insert(id, v.clone());
             set.push(id);
         }
+        // First dispatch of a fresh inner Apply = its init cycle:
+        // labeled-default Nodes (Constants / default exprs) only
+        // produce on `event.init`, and the outer cycle may be long
+        // past init (an async-fed region's first fire). Force the
+        // init view for this one update, then restore.
+        let first = !self.fired;
+        self.fired = true;
+        let saved_init = event.init;
+        if first {
+            event.init = true;
+        }
         let result = {
             let apply = &mut self.current.as_mut().unwrap().1;
             apply.update(ctx, &mut self.arg_refs, event)
         };
+        event.init = saved_init;
         // Cleanup: remove the side-channel entries so a downstream
         // dispatcher (or the outer event loop) doesn't see them.
         for id in set.drain(..) {

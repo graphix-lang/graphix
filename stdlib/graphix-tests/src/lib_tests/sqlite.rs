@@ -11,7 +11,7 @@ run!(sqlite_open_memory, r#"{
     true
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // typed struct query: exec_batch creates schema, query reads back as structs
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -28,7 +28,7 @@ run!(sqlite_typed_query, r#"{
     (rows[0]$).name == "alice" && (rows[1]$).name == "bob" && (rows[0]$).id == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // raw map query: same data, but annotated as Map
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -50,7 +50,7 @@ run!(sqlite_raw_map_query, r#"{
     cast<string>(n0)? == "alice" && cast<string>(n1)? == "bob"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // exec with params, verify via typed query
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -64,7 +64,7 @@ run!(sqlite_exec_params, r#"{
     (rows[0]$).id == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // transaction commit
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -83,7 +83,7 @@ run!(sqlite_transaction, r#"{
     array::len(rows) == 2
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // rollback
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -102,7 +102,7 @@ run!(sqlite_rollback, r#"{
     array::len(rows) == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // nullable fields: [i64, null] for a column that may be NULL
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -123,7 +123,7 @@ run!(sqlite_nullable_field, r#"{
     a && b
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // empty result: typed query on empty table returns empty array
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -136,4 +136,4 @@ run!(sqlite_empty_result, r#"{
     array::len(rows) == 0
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

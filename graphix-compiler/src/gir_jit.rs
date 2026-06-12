@@ -507,18 +507,21 @@ pub fn compile_kernel_with_callees(
     kernel: &std::sync::Arc<GirKernel>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<GirKernel>>,
 ) -> Result<WrappedKernel> {
-    compile_kernel_with_callees_impl(jit, kernel, callees, None)
+    compile_kernel_with_callees_impl(jit, kernel, callees, &BTreeMap::new())
 }
 
-/// Stage-1 `CFlag::DirectNodeJit` entry: compile `kernel` but emit its
-/// BODY by walking the region-root `Node` via [`compile_node`] instead
-/// of lowering `kernel.body` (the `GirStmt` list). The kernel ABI
-/// (params / return / wrapper) still comes from the `GirKernel`; only
-/// the parent body codegen changes. Callees (if any) still use the GIR
-/// body path — Stage-1 scalar regions have no callees, so this doesn't
-/// matter yet. The `root` Node and `kernel` must describe the same
-/// region (same params + return shape); the caller guarantees this by
-/// passing the very Node the `GirKernel` was built from.
+/// `CFlag::DirectNodeJit` entry: compile `kernel` but emit BODIES by
+/// walking Nodes via `emit_clif` instead of lowering `GirStmt` lists.
+/// The kernel ABI (params / return / wrapper) still comes from each
+/// `GirKernel`; only body codegen changes. The parent emits from
+/// `root`; each callee with an entry in `callee_bodies` (keyed by
+/// `Arc::as_ptr` — non-recursive callees, recorded by
+/// `discover_lambda_calls`) emits from its body Node with EMPTY
+/// apply/lambda site maps (a callee body is a self-contained
+/// expression over its params: inner call sites are #203-unresolved,
+/// so no site of either kind can exist in one today). A fresh callee
+/// WITHOUT a recorded body (recursive until F0b; `sub_called`
+/// transitive kernels) falls back to its GIR body.
 pub fn compile_kernel_with_callees_direct<R: crate::Rt, E: crate::UserEvent>(
     jit: &mut Jit,
     kernel: &std::sync::Arc<GirKernel>,
@@ -532,28 +535,61 @@ pub fn compile_kernel_with_callees_direct<R: crate::Rt, E: crate::UserEvent>(
         crate::expr::ExprId,
         crate::fusion::LambdaCallInfo,
     >,
+    callee_bodies: &BTreeMap<usize, crate::fusion::CalleeBody<'_, R, E>>,
+    parent_self_call: Option<&(crate::BindId, crate::fusion::LambdaCallInfo)>,
+    type_env: &crate::env::Env,
 ) -> Result<WrappedKernel> {
-    let emitter = NodeBodyEmitter {
+    let empty_apply = nohash::IntMap::default();
+    let empty_lambda = nohash::IntMap::default();
+    let parent = NodeBodyEmitter {
         root,
         return_type: &kernel.return_type,
         apply_sites,
         lambda_sites,
+        // None for region parents (a region can't self-call); the
+        // per-slot HOF path's "parent" IS a lambda kernel and passes
+        // its own self info here.
+        self_call: parent_self_call,
+        type_env,
     };
-    compile_kernel_with_callees_impl(jit, kernel, callees, Some(&emitter))
+    let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>)> = callees
+        .values()
+        .filter_map(|k| {
+            let key = std::sync::Arc::as_ptr(k) as usize;
+            let cb = callee_bodies.get(&key)?;
+            Some((
+                key,
+                NodeBodyEmitter {
+                    root: cb.body,
+                    return_type: &k.return_type,
+                    apply_sites: &empty_apply,
+                    lambda_sites: &empty_lambda,
+                    self_call: cb.self_call.as_ref(),
+                    type_env,
+                },
+            ))
+        })
+        .collect();
+    let mut emitters: BTreeMap<usize, &dyn BodyEmitter> = callee_emitters
+        .iter()
+        .map(|(key, em)| (*key, em as &dyn BodyEmitter))
+        .collect();
+    emitters.insert(std::sync::Arc::as_ptr(kernel) as usize, &parent);
+    compile_kernel_with_callees_impl(jit, kernel, callees, &emitters)
 }
 
 fn compile_kernel_with_callees_impl(
     jit: &mut Jit,
     kernel: &std::sync::Arc<GirKernel>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<GirKernel>>,
-    parent_body: Option<&dyn BodyEmitter>,
+    emitters: &BTreeMap<usize, &dyn BodyEmitter>,
 ) -> Result<WrappedKernel> {
     let mut to_define: Vec<std::sync::Arc<GirKernel>> = Vec::new();
     let r = compile_kernel_with_callees_inner(
         jit,
         kernel,
         callees,
-        parent_body,
+        emitters,
         &mut to_define,
     );
     if r.is_err() {
@@ -575,7 +611,7 @@ fn compile_kernel_with_callees_inner(
     jit: &mut Jit,
     kernel: &std::sync::Arc<GirKernel>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<GirKernel>>,
-    parent_body: Option<&dyn BodyEmitter>,
+    emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     to_define: &mut Vec<std::sync::Arc<GirKernel>>,
 ) -> Result<WrappedKernel> {
     // Phase 1 — declare every kernel in the closure (parent + all
@@ -587,7 +623,6 @@ fn compile_kernel_with_callees_inner(
     // the same FuncId; that's how self-recursion via `GirOp::Call`
     // resolves to a CLIF call back to the parent.
     let kernel_name = kernel.fn_name.clone();
-    let parent_key = std::sync::Arc::as_ptr(kernel) as usize;
     let mut funcids: BTreeMap<ArcStr, (FuncId, Signature)> = BTreeMap::new();
     let parent_entry = ensure_declared(jit, kernel, to_define)?;
     funcids.insert(kernel_name.clone(), parent_entry.clone());
@@ -610,16 +645,20 @@ fn compile_kernel_with_callees_inner(
     // cache entry so it lives as long as the per-context module's
     // code.
     //
-    // The `DirectNodeJit` body emitter (`parent_body`) is used only for
-    // the PARENT kernel (identity match on the `Arc` pointer); callees
-    // always use their GIR body.
+    // `emitters` keys Node body emitters by kernel identity (the
+    // parent + every non-recursive direct-path callee); a kernel
+    // without an entry compiles from its GIR body. The trace makes
+    // which emitter ran VISIBLE — the silent-fallback class (a body
+    // quietly compiling from the path you didn't intend) has cost
+    // an investigation every time it appeared.
     for k in to_define.iter() {
         let key = std::sync::Arc::as_ptr(k) as usize;
-        let body: Option<&dyn BodyEmitter> = if key == parent_key {
-            parent_body
-        } else {
-            None
-        };
+        let body: Option<&dyn BodyEmitter> = emitters.get(&key).copied();
+        log::trace!(
+            "define kernel `{}`: {} body",
+            k.fn_name,
+            if body.is_some() { "Node-emitted" } else { "GIR" }
+        );
         let (strings, values) =
             define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
         if let Some(cached) = jit.by_kernel.get_mut(&key) {
@@ -722,20 +761,33 @@ fn define_kernel_body(
         // because both `declare_func_in_func` and `FunctionBuilder::new`
         // borrow `jit.func_ctx.func` mutably.
         //
-        // A Node-emitted parent's GirKernel body is EMPTY (its calls
+        // A Node-emitted kernel's GirKernel body is EMPTY (its calls
         // are CallSite nodes, not GirOp::Call), so collect_call_sites
-        // finds nothing — declare every funcids entry EXCEPT the
-        // parent itself instead (a region can't self-call; the
-        // discovery set is exactly the region's callee closure, so
-        // with no lambda call sites this is empty and the emitted
-        // function is byte-identical to the pre-Stage-E one).
+        // finds nothing — declare exactly the fn_names its discovered
+        // lambda call sites reference instead (for the parent that is
+        // the region's direct callee set; for a Node-emitted CALLEE
+        // the map is empty, matching the no-unused-FuncRefs shape its
+        // GIR-emitted body had). The kernel's own name is excluded —
+        // a region can't self-call (recursive callees keep their GIR
+        // body until F0b, where the self FuncRef threads explicitly).
         let needed: std::collections::BTreeSet<ArcStr> =
-            if body_emitter.is_some() {
-                funcids
-                    .keys()
-                    .filter(|n| n.as_str() != kernel.fn_name.as_str())
-                    .cloned()
-                    .collect()
+            if let Some(em) = body_emitter {
+                let mut s: std::collections::BTreeSet<ArcStr> = em
+                    .lambda_call_sites()
+                    .map(|m| {
+                        m.values()
+                            .map(|info| info.fn_name.clone())
+                            .filter(|n| n.as_str() != kernel.fn_name.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // A self-recursive body calls ITSELF — import the
+                // kernel's own FuncRef (funcids carries every callee
+                // by name, this kernel included).
+                if let Some((_, info)) = em.self_call() {
+                    s.insert(info.fn_name.clone());
+                }
+                s
             } else {
                 crate::gir::collect_call_sites(kernel)
             };
@@ -1186,6 +1238,8 @@ fn compile_into_function(
             .and_then(|em| em.builtin_apply_sites()),
         lambda_call_sites: body_emitter
             .and_then(|em| em.lambda_call_sites()),
+        self_call: body_emitter.and_then(|em| em.self_call()),
+        type_env: body_emitter.and_then(|em| em.type_env()),
     };
     // Body codegen: the `DirectNodeJit` path supplies a `NodeBodyEmitter`
     // that walks the region-root Node via `compile_node`; otherwise the
@@ -1751,6 +1805,41 @@ pub(crate) struct LowerCtx<'a> {
     lambda_call_sites: Option<
         &'a nohash::IntMap<crate::expr::ExprId, crate::fusion::LambdaCallInfo>,
     >,
+    /// `Some` when this kernel is a self-recursive lambda body being
+    /// Node-emitted: the self binding + the kernel's own call
+    /// descriptor. Tail-position self-calls rebind-and-jump
+    /// (`emit_body_tail`); value-position ones call the kernel's own
+    /// FuncRef (`CallSite::emit_clif`).
+    self_call: Option<&'a (crate::BindId, crate::fusion::LambdaCallInfo)>,
+    /// Type-resolution env snapshot for the direct path (`None` on the
+    /// GIR path — its lowering pre-resolved every baked type). See
+    /// [`BodyEmitter::type_env`] and [`resolve_node_typ`].
+    type_env: Option<&'a crate::env::Env>,
+}
+
+/// Resolve named/abstract type refs in a node-carried `Type` through
+/// the region's env snapshot (#218): node `typ` cells can hold
+/// `Type::Ref`s to abstract type names (e.g. an interface's
+/// `type Elem`) whose concrete rep `abi_kind`/freeze can't see —
+/// `resolve_abstract` expands them (env `lookup_ref` + the abstract
+/// registry). On the GIR path (`type_env: None`) the type returns
+/// unchanged — its lowering already resolved everything it baked.
+fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
+    match ctx.type_env {
+        Some(env) => crate::fusion::lowering::resolve_abstract(t, env, 0),
+        None => t.clone(),
+    }
+}
+
+/// [`gir::freeze_normalized`] with an abstract-Ref resolution RETRY
+/// (#218): on failure, resolve through the region's env snapshot and
+/// freeze again. The retry only runs when the plain freeze fails, so
+/// the common (concrete-typed) path pays nothing; a freeze that
+/// already succeeds can't be changed by resolution (it was fully
+/// concrete).
+fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
+    gir::freeze_normalized(t)
+        .or_else(|| gir::freeze_normalized(&resolve_node_typ(ctx, t)))
 }
 
 /// FuncRefs into the JIT module for each runtime helper, valid
@@ -2926,9 +3015,6 @@ fn compile_body(
                 return Ok(());
             }
             GirStmt::TailCall { args } => {
-                let head = ctx.loop_head.ok_or_else(|| {
-                    anyhow!("GIR malformed: TailCall in kernel without has_tail_loop")
-                })?;
                 // Evaluate every new arg into a CLIF SSA value first
                 // (so an arg that reads an old param sees the old
                 // value, not one we already overwrote).
@@ -2936,183 +3022,17 @@ fn compile_body(
                 for a in args {
                     new_vals.push(compile_scalar(b, a, env, ctx)?);
                 }
-                // Back-compat: hand-built test kernels leave
-                // `tail_call_slots` empty and assume all params are
-                // scalar in declaration order. Drive the rebind
-                // positionally in that case.
-                if ctx.tail_call_slots.is_none() {
-                    debug_assert_eq!(
-                        new_vals.len(),
-                        ctx.param_mark.locals
-                    );
-                    for (i, v) in new_vals.iter().enumerate() {
-                        let (var, _) = (env.locals[i].1, env.locals[i].2);
-                        b.def_var(var, *v);
-                    }
-                    env.truncate(ctx.param_mark);
-                    b.ins().jump(head, &[]);
-                    return Ok(());
-                }
-                let slots = ctx.tail_call_slots.unwrap();
-                debug_assert_eq!(args.len(), slots.len());
-                use crate::gir::TailCallSlotKind;
-                let drop_helper = ctx
-                    .helper_refs
-                    .get("graphix_valarray_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                let clone_helper = ctx
-                    .helper_refs
-                    .get("graphix_valarray_clone")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
                 // Detect each composite-rebind source so we know
                 // whether the SSA value already holds a fresh owned
                 // pointer (TupleNew / StructNew / etc.) or whether
                 // it's a Local read sharing the same pointer as the
                 // slot we're about to drop. The latter needs a
                 // refcount bump before rebind so the drop balances.
-                let composite_sources: Vec<CompositeSource> = args
+                let sources: Vec<CompositeSource> = args
                     .iter()
                     .map(|a| classify_composite_source(a))
                     .collect();
-                let mut new_vals: Vec<ClifValue> = new_vals;
-                for (i, slot) in slots.iter().enumerate() {
-                    if matches!(slot.kind, TailCallSlotKind::ValArray)
-                        && composite_sources[i] == CompositeSource::Borrowed
-                    {
-                        // Clone (refcount bump) so the next iteration
-                        // holds an owned reference, separate from any
-                        // other live alias.
-                        let call =
-                            b.ins().call(clone_helper, &[new_vals[i]]);
-                        new_vals[i] = b.inst_results(call)[0];
-                    }
-                }
-                for (slot, v) in slots.iter().zip(new_vals.iter()) {
-                    match slot.kind {
-                        TailCallSlotKind::Scalar(_) => {
-                            let (var, _, _) =
-                                env.lookup(&slot.name).ok_or_else(|| {
-                                    anyhow!(
-                                        "TailCall: scalar slot `{}` not in env",
-                                        slot.name
-                                    )
-                                })?;
-                            b.def_var(var, *v);
-                        }
-                        TailCallSlotKind::ValArray => {
-                            // Composite rebind: drop the previously-
-                            // owned pointer in the slot, then store
-                            // the new owned `*mut ValArray`. This
-                            // closes the leak we had in Phase 2.
-                            let var = env
-                                .lookup_composite(&slot.name)
-                                .ok_or_else(|| {
-                                    anyhow!(
-                                        "TailCall: composite slot `{}` not in env",
-                                        slot.name
-                                    )
-                                })?;
-                            let old = b.use_var(var);
-                            b.ins().call(drop_helper, &[old]);
-                            b.def_var(var, *v);
-                        }
-                        TailCallSlotKind::Variant => {
-                            return Err(anyhow!(
-                                "JIT: variant tail-call rebind not yet supported"
-                            ));
-                        }
-                        TailCallSlotKind::Nullable => {
-                            // Nullable kernels route to the
-                            // interpreter via `kernel_contains_null`,
-                            // so this branch should be unreachable in
-                            // practice. Returning an Err keeps the
-                            // codegen safe if the routing ever drifts.
-                            return Err(anyhow!(
-                                "JIT: nullable tail-call rebind — kernel \
-                                 should have been routed to interp via \
-                                 kernel_contains_null"
-                            ));
-                        }
-                        TailCallSlotKind::String | TailCallSlotKind::Value => {
-                            // A recursive lambda whose tail-call rebinds
-                            // a String / value-shape param. The JIT
-                            // doesn't lower the owned-ArcStr / two-word
-                            // Value rebind yet; bail so the kernel falls
-                            // back to the interpreter (which handles it).
-                            return Err(anyhow!(
-                                "JIT: string/value tail-call rebind not \
-                                 yet supported — falling back to interp"
-                            ));
-                        }
-                    }
-                }
-                // Drop any owned composite/variant/nullable/string
-                // locals introduced between `ctx.param_mark` and now
-                // that ISN'T in `tail_call_slots` (slot rebinds drop
-                // the old slot value above; non-slot lets above the
-                // tail-call would leak per iteration otherwise).
-                // Block / select-arm locals were already dropped at
-                // runtime by their scope-exit code (`GirOp::Block`,
-                // terminating statements), so iterating the env's
-                // tail catches only the non-Block top-level lets —
-                // i.e. `GirStmt::Let` between `param_mark` and this
-                // `TailCall` that didn't get a rebind slot.
-                let arr_drop = ctx
-                    .helper_refs
-                    .get("graphix_valarray_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-                let val_drop = ctx
-                    .helper_refs
-                    .get("graphix_value_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-                let str_drop = ctx
-                    .helper_refs
-                    .get("graphix_arcstr_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
-                // Composite slot rebinds already drop their old
-                // value (above); skip any entry whose name matches a
-                // `TailCallSlotKind::ValArray` slot. Same for
-                // future variant/nullable rebind slots once they're
-                // supported.
-                let slot_names: std::collections::HashSet<&str> = slots
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect();
-                for (name, var, _) in &env.composites[ctx.param_mark.composites..] {
-                    if slot_names.contains(name.as_str()) {
-                        continue;
-                    }
-                    let ptr = b.use_var(*var);
-                    b.ins().call(arr_drop, &[ptr]);
-                }
-                for (name, vv) in &env.variants[ctx.param_mark.variants..] {
-                    if slot_names.contains(name.as_str()) {
-                        continue;
-                    }
-                    let disc = b.use_var(vv.disc);
-                    let payload = b.use_var(vv.payload);
-                    b.ins().call(val_drop, &[disc, payload]);
-                }
-                for (name, vv) in &env.nullables[ctx.param_mark.nullables..] {
-                    if slot_names.contains(name.as_str()) {
-                        continue;
-                    }
-                    let disc = b.use_var(vv.disc);
-                    let payload = b.use_var(vv.payload);
-                    b.ins().call(val_drop, &[disc, payload]);
-                }
-                for (name, var) in &env.strings[ctx.param_mark.strings..] {
-                    if slot_names.contains(name.as_str()) {
-                        continue;
-                    }
-                    let ptr = b.use_var(*var);
-                    b.ins().call(str_drop, &[ptr]);
-                }
-                // Compile-time env-Vec hygiene: pop everything above
-                // the param mark so the next iteration starts with a
-                // clean lexical state.
-                env.truncate(ctx.param_mark);
-                b.ins().jump(head, &[]);
+                emit_tail_rebind_jump(b, env, ctx, new_vals, &sources)?;
                 return Ok(());
             }
             GirStmt::Select { scrut, arms } => {
@@ -3134,6 +3054,178 @@ fn compile_body(
     Err(anyhow!(
         "GIR malformed: body fell through with no return or tail call"
     ))
+}
+
+/// The rebind-and-jump core of a self tail-call, shared by the GIR
+/// `GirStmt::TailCall` arm and the Node path's tail emission (F0b).
+/// `new_vals` are the already-evaluated replacement values for the
+/// leading `new_vals.len()` tail-call slots — the FORMALS; trailing
+/// capture slots stay bound (loop-invariant within one invocation).
+/// `sources[i]` classifies each arg's composite provenance so a
+/// Borrowed pointer is refcount-bumped before the old slot value
+/// drops. Drops every owned non-slot local above the param mark
+/// (per-iteration lets would leak otherwise), truncates the
+/// compile-time env back to the params, and jumps to the loop head.
+fn emit_tail_rebind_jump(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+    new_vals: Vec<ClifValue>,
+    sources: &[CompositeSource],
+) -> Result<()> {
+    let head = ctx.loop_head.ok_or_else(|| {
+        anyhow!("GIR malformed: TailCall in kernel without has_tail_loop")
+    })?;
+    // Back-compat: hand-built test kernels leave `tail_call_slots`
+    // empty and assume all params are scalar in declaration order.
+    // Drive the rebind positionally in that case.
+    if ctx.tail_call_slots.is_none() {
+        debug_assert_eq!(new_vals.len(), ctx.param_mark.locals);
+        for (i, v) in new_vals.iter().enumerate() {
+            let (var, _) = (env.locals[i].1, env.locals[i].2);
+            b.def_var(var, *v);
+        }
+        env.truncate(ctx.param_mark);
+        b.ins().jump(head, &[]);
+        return Ok(());
+    }
+    let slots = ctx.tail_call_slots.unwrap();
+    // Slots cover EVERY kernel value param (they double as the
+    // runtime arg layout — `arg_layout`, gir_interp.rs); a tail call
+    // rebinds only the leading FORMALS.
+    debug_assert!(new_vals.len() <= slots.len());
+    use crate::gir::TailCallSlotKind;
+    let drop_helper = ctx
+        .helper_refs
+        .get("graphix_valarray_drop")
+        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+    let clone_helper = ctx
+        .helper_refs
+        .get("graphix_valarray_clone")
+        .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
+    let mut new_vals: Vec<ClifValue> = new_vals;
+    for (i, slot) in slots.iter().take(new_vals.len()).enumerate() {
+        if matches!(slot.kind, TailCallSlotKind::ValArray)
+            && sources[i] == CompositeSource::Borrowed
+        {
+            // Clone (refcount bump) so the next iteration holds an
+            // owned reference, separate from any other live alias.
+            let call = b.ins().call(clone_helper, &[new_vals[i]]);
+            new_vals[i] = b.inst_results(call)[0];
+        }
+    }
+    for (slot, v) in slots.iter().zip(new_vals.iter()) {
+        match slot.kind {
+            TailCallSlotKind::Scalar(_) => {
+                let (var, _, _) = env.lookup(&slot.name).ok_or_else(|| {
+                    anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
+                })?;
+                b.def_var(var, *v);
+            }
+            TailCallSlotKind::ValArray => {
+                // Composite rebind: drop the previously-owned pointer
+                // in the slot, then store the new owned
+                // `*mut ValArray`. This closes the leak we had in
+                // Phase 2.
+                let var =
+                    env.lookup_composite(&slot.name).ok_or_else(|| {
+                        anyhow!(
+                            "TailCall: composite slot `{}` not in env",
+                            slot.name
+                        )
+                    })?;
+                let old = b.use_var(var);
+                b.ins().call(drop_helper, &[old]);
+                b.def_var(var, *v);
+            }
+            TailCallSlotKind::Variant => {
+                return Err(anyhow!(
+                    "JIT: variant tail-call rebind not yet supported"
+                ));
+            }
+            TailCallSlotKind::Nullable => {
+                // Nullable kernels route to the interpreter via
+                // `kernel_contains_null`, so this branch should be
+                // unreachable in practice. Returning an Err keeps the
+                // codegen safe if the routing ever drifts.
+                return Err(anyhow!(
+                    "JIT: nullable tail-call rebind — kernel should \
+                     have been routed to interp via kernel_contains_null"
+                ));
+            }
+            TailCallSlotKind::String | TailCallSlotKind::Value => {
+                // A recursive lambda whose tail-call rebinds a String
+                // / value-shape param. The JIT doesn't lower the
+                // owned-ArcStr / two-word Value rebind yet; bail so
+                // the kernel falls back to the node-walk.
+                return Err(anyhow!(
+                    "JIT: string/value tail-call rebind not yet \
+                     supported — falling back to interp"
+                ));
+            }
+        }
+    }
+    // Drop any owned composite/variant/nullable/string locals
+    // introduced between `ctx.param_mark` and now that ISN'T in
+    // `tail_call_slots` (slot rebinds drop the old slot value above;
+    // non-slot lets above the tail-call would leak per iteration
+    // otherwise). Block / select-arm locals were already dropped at
+    // runtime by their scope-exit code (`GirOp::Block`, terminating
+    // statements), so iterating the env's tail catches only the
+    // non-Block top-level lets that didn't get a rebind slot.
+    let arr_drop = ctx
+        .helper_refs
+        .get("graphix_valarray_drop")
+        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
+    let val_drop = ctx
+        .helper_refs
+        .get("graphix_value_drop")
+        .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+    let str_drop = ctx
+        .helper_refs
+        .get("graphix_arcstr_drop")
+        .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
+    // Composite slot rebinds already drop their old value (above);
+    // skip any entry whose name matches a `TailCallSlotKind::ValArray`
+    // slot. Same for future variant/nullable rebind slots once
+    // they're supported.
+    let slot_names: std::collections::HashSet<&str> =
+        slots.iter().map(|s| s.name.as_str()).collect();
+    for (name, var, _) in &env.composites[ctx.param_mark.composites..] {
+        if slot_names.contains(name.as_str()) {
+            continue;
+        }
+        let ptr = b.use_var(*var);
+        b.ins().call(arr_drop, &[ptr]);
+    }
+    for (name, vv) in &env.variants[ctx.param_mark.variants..] {
+        if slot_names.contains(name.as_str()) {
+            continue;
+        }
+        let disc = b.use_var(vv.disc);
+        let payload = b.use_var(vv.payload);
+        b.ins().call(val_drop, &[disc, payload]);
+    }
+    for (name, vv) in &env.nullables[ctx.param_mark.nullables..] {
+        if slot_names.contains(name.as_str()) {
+            continue;
+        }
+        let disc = b.use_var(vv.disc);
+        let payload = b.use_var(vv.payload);
+        b.ins().call(val_drop, &[disc, payload]);
+    }
+    for (name, var) in &env.strings[ctx.param_mark.strings..] {
+        if slot_names.contains(name.as_str()) {
+            continue;
+        }
+        let ptr = b.use_var(*var);
+        b.ins().call(str_drop, &[ptr]);
+    }
+    // Compile-time env-Vec hygiene: pop everything above the param
+    // mark so the next iteration starts with a clean lexical state.
+    env.truncate(ctx.param_mark);
+    b.ins().jump(head, &[]);
+    Ok(())
 }
 
 /// Emit a value-bottom abort: when the I8 `valid` bit is 0, set the
@@ -3562,6 +3654,29 @@ trait BodyEmitter {
     > {
         None
     }
+
+    /// `Some` when the kernel being emitted is a self-recursive lambda
+    /// body: the binding its self-references carry + the kernel's own
+    /// call descriptor. Drives tail-position rebind-and-jump
+    /// (`emit_body_tail`), value-position self-calls
+    /// (`CallSite::emit_clif` → the kernel's own FuncRef), and the
+    /// self-FuncRef import in `define_kernel_body`.
+    fn self_call(
+        &self,
+    ) -> Option<&(crate::BindId, crate::fusion::LambdaCallInfo)> {
+        None
+    }
+
+    /// The environment snapshot for TYPE RESOLUTION ONLY (#218): node
+    /// `typ` cells can carry `Type::Ref`s to abstract type names whose
+    /// concrete rep needs `env.lookup_ref` + the abstract registry
+    /// (`resolve_abstract`) before `abi_kind`/freeze can classify
+    /// them. `None` on the GIR path — its lowering pre-resolved every
+    /// type it baked into the body. NOT for binding lookups; those
+    /// stay in the analysis phase, per the BodyCx design.
+    fn type_env(&self) -> Option<&crate::env::Env> {
+        None
+    }
 }
 
 /// The `DirectNodeJit` body emitter — walks the region-root `Node` via
@@ -3579,6 +3694,11 @@ struct NodeBodyEmitter<'a, R: crate::Rt, E: crate::UserEvent> {
         crate::expr::ExprId,
         crate::fusion::LambdaCallInfo,
     >,
+    /// `Some` for a self-recursive callee body — see
+    /// [`BodyEmitter::self_call`].
+    self_call: Option<&'a (crate::BindId, crate::fusion::LambdaCallInfo)>,
+    /// Type-resolution env snapshot — see [`BodyEmitter::type_env`].
+    type_env: &'a crate::env::Env,
 }
 
 impl<R: crate::Rt, E: crate::UserEvent> BodyEmitter
@@ -3591,9 +3711,19 @@ impl<R: crate::Rt, E: crate::UserEvent> BodyEmitter
         ctx: &LowerCtx,
     ) -> Result<()> {
         let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
-        let cv = self.root.emit_clif(&mut cx)?;
-        let src = node_composite_source(self.root);
-        emit_kernel_return(&mut cx, self.return_type, cv, src)
+        match self.self_call {
+            // Recursive body: tail-position walk — self tail-calls
+            // become the rebind-and-jump loop, every other path
+            // returns directly. (Non-recursive bodies keep the
+            // value-position emission below: per-arm returns would be
+            // equivalent codegen but churn every existing kernel.)
+            Some(_) => emit_body_tail(&mut cx, self.root, self.return_type),
+            None => {
+                let cv = self.root.emit_clif(&mut cx)?;
+                let src = node_composite_source(self.root);
+                emit_kernel_return(&mut cx, self.return_type, cv, src)
+            }
+        }
     }
 
     fn builtin_apply_sites(
@@ -3613,6 +3743,16 @@ impl<R: crate::Rt, E: crate::UserEvent> BodyEmitter
         &nohash::IntMap<crate::expr::ExprId, crate::fusion::LambdaCallInfo>,
     > {
         Some(self.lambda_sites)
+    }
+
+    fn self_call(
+        &self,
+    ) -> Option<&(crate::BindId, crate::fusion::LambdaCallInfo)> {
+        self.self_call
+    }
+
+    fn type_env(&self) -> Option<&crate::env::Env> {
+        Some(self.type_env)
     }
 }
 
@@ -3677,6 +3817,16 @@ impl BodyCx<'_, '_, '_> {
         id: crate::expr::ExprId,
     ) -> Option<&crate::fusion::LambdaCallInfo> {
         self.ctx.lambda_call_sites.and_then(|m| m.get(&id))
+    }
+
+    /// The kernel's own self-call descriptor when emitting a
+    /// self-recursive lambda body: `(the self binding, the kernel's
+    /// own LambdaCallInfo)`. A value-position call site whose fnode
+    /// Ref carries the binding calls the kernel's own FuncRef.
+    pub(crate) fn self_call_info(
+        &self,
+    ) -> Option<&(crate::BindId, crate::fusion::LambdaCallInfo)> {
+        self.ctx.self_call
     }
 
     /// Stable `*const Value` for a value-shape constant — see
@@ -3940,6 +4090,29 @@ pub(crate) fn emit_const_node(
     }
 }
 
+/// A `{k => v, ...}` map literal. Mirrors the classic path's
+/// `emit_map_new`: fuses ONLY when every key and value is a
+/// compile-time constant — the `CMap` is built at compile time
+/// (`insert_cow` in entry order, exactly as `Map::update` does at
+/// runtime) and emitted as an interned Value constant. A dynamic
+/// entry de-fuses; the runtime map producer isn't lowered on either
+/// path.
+pub(crate) fn emit_map_new_node<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    keys: &[crate::node::Cached<R, E>],
+    vals: &[crate::node::Cached<R, E>],
+    typ: &Type,
+) -> Result<CompiledExpr> {
+    let v = crate::fusion::lowering::const_map(keys, vals).ok_or_else(|| {
+        anyhow!(
+            "emit_clif: map literal with non-constant entries — \
+             subtree node-walks"
+        )
+    })?;
+    let typ = gir::freeze_concrete(typ).unwrap_or_else(gir::map_type);
+    emit_const_node(cx, &v, &typ)
+}
+
 /// A binding read. Resolve the Ref's source name to the kernel param
 /// / block-let slot in the env (same name the params were bound under
 /// — see `compile_into_function`'s entry binder). Surfaces a tainted
@@ -4082,8 +4255,9 @@ pub(crate) fn emit_arith_node<R: crate::Rt, E: crate::UserEvent>(
     let (r, _) = rcv.scalar_with_validity(cx.b)?;
     // Fallible prim derivation (not `prim_of`, which panics): an
     // operand's type may be typecheck's un-normalized union (a select
-    // result) — scalar after `freeze_normalized`, or Err → no fusion.
-    let prim = gir::freeze_normalized(lhs.typ())
+    // result) — scalar after `freeze_normalized` (with the abstract-
+    // Ref resolution retry, #218), or Err → no fusion.
+    let prim = freeze_node_typ(cx.ctx, lhs.typ())
         .as_ref()
         .and_then(gir::scalar_prim)
         .ok_or_else(|| {
@@ -4334,11 +4508,33 @@ pub(crate) fn emit_string_interpolate_node<R: crate::Rt, E: crate::UserEvent>(
 /// tail out if it borrows a local we're about to drop, emit the
 /// scope-exit drops for this block's owned locals, then pop the
 /// block-scoped env entries.
+/// Conservative effect-freedom for dead-statement elimination: TRUE
+/// only when no node in the subtree could carry an effect the
+/// node-walk would have performed. Connect/ConnectDeref write
+/// variables; a `?` with a catch handler writes the handler's
+/// variable; `$` logs; a CallSite may target an async/effectful
+/// builtin (we can't consult `builtin_effects` at emit time, so ALL
+/// call sites are conservatively effectful). Everything else the
+/// direct emitter can encounter is value-only.
+fn stmt_subtree_effect_free<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+) -> bool {
+    let mut ok = true;
+    crate::fusion::for_each_node(node, &mut |n| match n.view() {
+        crate::NodeView::Connect(_)
+        | crate::NodeView::ConnectDeref(_)
+        | crate::NodeView::CallSite(_)
+        | crate::NodeView::Qop(_)
+        | crate::NodeView::OrNever(_) => ok = false,
+        _ => {}
+    });
+    ok
+}
+
 pub(crate) fn emit_block_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     children: &[crate::Node<R, E>],
 ) -> Result<CompiledExpr> {
-    use crate::NodeView;
     if children.is_empty() {
         return Err(anyhow!("emit_clif: empty block"));
     }
@@ -4376,47 +4572,253 @@ pub(crate) fn emit_block_node<R: crate::Rt, E: crate::UserEvent>(
             cx.env.truncate(mark);
             return Ok(result);
         }
-        match child.view() {
-            NodeView::Bind(bind) => {
-                let bspec = match &bind.spec.kind {
-                    crate::expr::ExprKind::Bind(be) => be,
-                    _ => {
-                        return Err(anyhow!(
-                            "emit_clif: Bind node spec isn't ExprKind::Bind"
-                        ));
-                    }
-                };
-                if bspec.rec {
-                    return Err(anyhow!(
-                        "emit_clif: recursive let not supported"
-                    ));
+        // Dead-statement elimination — the classic prune pass's
+        // semantics at the emission seam. A non-tail statement whose
+        // value nobody reads AND whose subtree is provably effect-free
+        // contributes NOTHING canonical: its node-walk value (or
+        // bottom) flows to no consumer. Emitting it anyway is worse
+        // than useless — a dead bottom (div0 inside a discarded
+        // tuple, an unused let holding an aborting array literal)
+        // poisons the WHOLE kernel via the composite producers'
+        // bottom-abort, a value divergence vs the node-walk
+        // (findings/flip-jun2026). A Bind is dead iff no LATER
+        // sibling or the tail references a bound id; a bare
+        // expression statement's value is always unread.
+        //
+        // The effect-free gate is LOAD-BEARING: a statement whose
+        // subtree contains a Connect (`<-`), handler-ful `?`, `$`
+        // (logs), or ANY CallSite (a builtin may be async/effectful)
+        // must NOT be skipped — skipping converts "emission fails →
+        // region de-fuses → node-walk runs the effect" into silently
+        // DROPPING the effect (the env-accounting probe caught
+        // exactly that with a skipped `counter <- v`). Those emit
+        // normally and de-fuse via their emit Errs as before.
+        let dead = if matches!(child.view(), crate::NodeView::Bind(_)) {
+            let mut bound = crate::Refs::default();
+            child.refs(&mut bound);
+            let mut suffix = crate::Refs::default();
+            for later in &children[i + 1..] {
+                later.refs(&mut suffix);
+            }
+            let mut alive = false;
+            bound.with_bound(|id| {
+                if suffix.is_refed(id) {
+                    alive = true;
                 }
-                let name = bspec.pattern.single_bind().ok_or_else(|| {
-                    anyhow!(
-                        "emit_clif: non-single-bind let pattern not \
-                         supported"
-                    )
-                })?;
-                let bind_id = bind.single_bind_id();
-                emit_let_node(cx, name, bind_id, &bind.node)?;
-            }
-            // Compile-time-only declarations — skip (mirrors emit_do).
-            NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
-            // Expression statement — evaluate, discard the result.
-            // (Async machinery can't appear here: any async node
-            // fails its emit and the whole block falls back to the
-            // node-walk.) A discarded may-bottom scalar is fine — the
-            // bottom is never consumed. Owned non-scalar results are
-            // dropped: discarding is consuming. (The GIR Discard arm
-            // leaks these; doing better here can't diverge values.)
-            _ => {
-                let cv = child.emit_clif(cx)?;
-                emit_discard_result(cx, child, cv)?;
-            }
+            });
+            !alive
+        } else {
+            true
+        };
+        if dead && stmt_subtree_effect_free(child) {
+            continue;
         }
+        emit_block_stmt(cx, child)?;
     }
     // The loop always returns on the last child.
     unreachable!("emit_block_node: last child not handled")
+}
+
+/// Emit one non-last block child as a statement: a `let` binds into
+/// the env, compile-time-only declarations are skipped, anything else
+/// evaluates and discards. Shared by the value-position block emitter
+/// and the tail-position walk (`emit_body_tail`).
+fn emit_block_stmt<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    child: &crate::Node<R, E>,
+) -> Result<()> {
+    use crate::NodeView;
+    match child.view() {
+        NodeView::Bind(bind) => {
+            let bspec = match &bind.spec.kind {
+                crate::expr::ExprKind::Bind(be) => be,
+                _ => {
+                    return Err(anyhow!(
+                        "emit_clif: Bind node spec isn't ExprKind::Bind"
+                    ));
+                }
+            };
+            // A rec FN binding is just a function-valued let (the
+            // binding node-walks, call sites fuse as cross-kernel
+            // calls — recursion included); `emit_let_node`'s
+            // fallthrough produces that message. A rec NON-fn let
+            // (`let rec x = x + 1` — a reactive feedback loop) is
+            // genuinely unfusable: its value depends on its own
+            // previous cycle.
+            if bspec.rec && !matches!(bind.node.typ(), Type::Fn(_)) {
+                return Err(anyhow!(
+                    "emit_clif: recursive non-function let not supported"
+                ));
+            }
+            let name = bspec.pattern.single_bind().ok_or_else(|| {
+                anyhow!(
+                    "emit_clif: non-single-bind let pattern not supported"
+                )
+            })?;
+            let bind_id = bind.single_bind_id();
+            emit_let_node(cx, name, bind_id, &bind.node)?;
+        }
+        // Compile-time-only declarations — skip (mirrors emit_do).
+        NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
+        // Expression statement — evaluate, discard the result.
+        // (Async machinery can't appear here: any async node
+        // fails its emit and the whole block falls back to the
+        // node-walk.) A discarded may-bottom scalar is fine — the
+        // bottom is never consumed. Owned non-scalar results are
+        // dropped: discarding is consuming. (The GIR Discard arm
+        // leaks these; doing better here can't diverge values.)
+        _ => {
+            let cv = child.emit_clif(cx)?;
+            emit_discard_result(cx, child, cv)?;
+        }
+    }
+    Ok(())
+}
+
+/// Tail-position body emission for a self-recursive kernel — the Node
+/// twin of lowering's `emit_body_into`/`emit_tail`. Tail positions are
+/// the body root, a Block's LAST child, Select arm bodies, and
+/// ExplicitParens; a self-call in one becomes the rebind-and-jump loop
+/// (`emit_tail_rebind_jump`), every other expression returns directly
+/// (`emit_kernel_return`, which drops ALL owned locals at any depth —
+/// nested-scope returns can't leak). Every path through this function
+/// leaves the current block TERMINATED.
+fn emit_body_tail<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    node: &crate::Node<R, E>,
+    ret: &Type,
+) -> Result<()> {
+    use crate::NodeView;
+    // Self tail-call — checked BEFORE value emission, mirroring
+    // lowering's `emit_tail` → `try_emit_tail_call` order. Matching is
+    // by the self BindId (names shadow, ids don't — #206).
+    if let Some((sb, _)) = cx.ctx.self_call {
+        if let NodeView::CallSite(cs) = node.view() {
+            if matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == *sb) {
+                return emit_self_tail_call(cx, cs);
+            }
+        }
+    }
+    match node.view() {
+        NodeView::Block(blk) => {
+            let mark = cx.env.mark();
+            let (last, init) =
+                blk.children.split_last().ok_or_else(|| {
+                    anyhow!("emit_clif: empty block in tail position")
+                })?;
+            for child in init {
+                emit_block_stmt(cx, child)?;
+            }
+            emit_body_tail(cx, last, ret)?;
+            // Every path through the tail terminated — returns dropped
+            // all owned locals, tail-jumps dropped the non-slot locals
+            // (and already truncated to the param mark, making this a
+            // no-op). Pop the compile-time scope.
+            cx.env.truncate(mark);
+            Ok(())
+        }
+        NodeView::ExplicitParens(ep) => emit_body_tail(cx, &ep.n, ret),
+        NodeView::Select(s) => emit_select_node_tail(cx, s, ret),
+        _ => {
+            let cv = node.emit_clif(cx)?;
+            let src = node_composite_source(node);
+            emit_kernel_return(cx, ret, cv, src)
+        }
+    }
+}
+
+/// Tail-position select: the shared pattern chain with arms that
+/// TERMINATE (return or self tail-call jump) instead of widening to a
+/// merge block — the Node twin of the GIR `compile_select_stmt`.
+fn emit_select_node_tail<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    sel: &crate::node::select::Select<R, E>,
+    ret: &Type,
+) -> Result<()> {
+    if sel.arms.is_empty() {
+        return Err(anyhow!("emit_clif: select with no arms"));
+    }
+    let (scrut, scrut_kind, scrut_typ) = classify_select_scrutinee(cx, sel)?;
+    let scrut_valid = match scrut {
+        SelectScrut::Scalar { valid, .. } => valid,
+        SelectScrut::Value { .. } | SelectScrut::Opaque => None,
+    };
+    if scrut_valid.is_some() {
+        // Terminating arms have no merge validity phi to poison — a
+        // possibly-bottom scrutinee can't propagate its bottom through
+        // a `return`. De-fuse (the node-walk handles it).
+        return Err(anyhow!(
+            "emit_clif: possibly-bottom scrutinee in a tail-position \
+             select"
+        ));
+    }
+    emit_select_arms(
+        cx,
+        sel,
+        scrut,
+        scrut_kind,
+        &scrut_typ,
+        scrut_valid,
+        &mut |cx, body, mark| {
+            emit_body_tail(cx, &body.node, ret)?;
+            // The arm terminated; pop its binds for the next arm's
+            // compile-time scope. (Arm binds are scalars — no drops.)
+            cx.env.truncate(mark);
+            Ok(())
+        },
+    )
+}
+
+/// A self-call in tail position: evaluate the new formal values,
+/// rebind the leading tail-call slots, and jump to the loop head —
+/// `GirStmt::TailCall`'s Node twin, sharing `emit_tail_rebind_jump`.
+fn emit_self_tail_call<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    cs: &crate::node::callsite::CallSite<R, E>,
+) -> Result<()> {
+    let spec_apply = match &cs.spec().kind {
+        crate::expr::ExprKind::Apply(a) => a,
+        _ => {
+            return Err(anyhow!(
+                "emit_clif: self tail-call spec isn't an Apply"
+            ));
+        }
+    };
+    // Labeled args would need default materialization in source order;
+    // de-fuse (parity with the GIR path's no-labels rule).
+    if spec_apply.args.iter().any(|(label, _)| label.is_some()) {
+        return Err(anyhow!(
+            "emit_clif: labeled args on a self tail-call"
+        ));
+    }
+    let n = spec_apply.args.len();
+    let mut new_vals = Vec::with_capacity(n);
+    let mut sources = Vec::with_capacity(n);
+    for i in 0..n {
+        let arg = cs.arg_positional(i).ok_or_else(|| {
+            anyhow!("emit_clif: self tail-call arg {i} missing")
+        })?;
+        let cv = arg.emit_clif(cx)?;
+        let v = match cv {
+            CompiledExpr::Single(v) => v,
+            // A possibly-bottom arg: no value this cycle means no
+            // call — kernel-wide bottom (the node-walk's CallSite
+            // wouldn't fire). Same seam as every other eager consumer.
+            CompiledExpr::Scalar2 { value, valid } => {
+                emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+                value
+            }
+            CompiledExpr::Value { .. } => {
+                return Err(anyhow!(
+                    "emit_clif: value-shape self tail-call arg — the \
+                     rebind protocol covers scalar/composite slots only"
+                ));
+            }
+        };
+        new_vals.push(v);
+        sources.push(node_composite_source(arg));
+    }
+    emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, new_vals, &sources)
 }
 
 /// Bind one `let local = value` into the env by the value's runtime
@@ -4863,11 +5265,15 @@ pub(crate) fn emit_tuple_ref_node<R: crate::Rt, E: crate::UserEvent>(
     idx: usize,
     elem_typ: &Type,
 ) -> Result<CompiledExpr> {
+    // Node-carried elem types can be Refs to abstract type names
+    // (#218) — resolve before the read classifies by abi_kind.
+    let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let (arr_ptr, src) =
         emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
-    let result =
-        compile_element_read(cx.b, arr_ptr, idx_const, elem_typ, false, cx.ctx)?;
+    let result = compile_element_read(
+        cx.b, arr_ptr, idx_const, &elem_typ, false, cx.ctx,
+    )?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
     Ok(result)
 }
@@ -4882,11 +5288,14 @@ pub(crate) fn emit_struct_ref_node<R: crate::Rt, E: crate::UserEvent>(
     sorted_idx: usize,
     elem_typ: &Type,
 ) -> Result<CompiledExpr> {
+    // Same abstract-Ref resolution as the tuple read (#218).
+    let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let (arr_ptr, src) =
         emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
-    let result =
-        compile_element_read(cx.b, arr_ptr, idx_const, elem_typ, true, cx.ctx)?;
+    let result = compile_element_read(
+        cx.b, arr_ptr, idx_const, &elem_typ, true, cx.ctx,
+    )?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
     Ok(result)
 }
@@ -5324,9 +5733,13 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
         }
         Some(AbiKind::String) => {
             // String return: `raw0` is the ArcStr's raw thin-pointer
-            // bits (transferred ownership). The 0 sentinel from a
-            // pending dispatch is never decoded — the wrapper-level
-            // DYNCALL_PENDING check discards the kernel result first.
+            // bits (transferred ownership), or the null sentinel on
+            // pending. Null bits are NOT inert downstream the way a
+            // scalar 0 is — every String position assumes a valid
+            // owned ArcStr (`emit_return_pending_check` / scope-exit
+            // `drop_owned_strings` would null-drop it; #214) — so
+            // branch exactly like the composite arm.
+            emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
             Ok(CompiledExpr::Single(raw0))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -5336,58 +5749,14 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
             // every outer in-flight DynCall buf, then jump to
             // `pending_exit`. (`pending_take` READS without clearing,
             // so no re-set is needed.)
-            let pending_take = cx.helper("graphix_dyncall_pending_take")?;
-            let call = cx.b.ins().call(pending_take, &[]);
-            let pending = cx.b.inst_results(call)[0];
-            let pre_pending = cx.b.create_block();
-            let continue_block = cx.b.create_block();
-            let pending_exit = {
-                let mut slot = cx.ctx.pending_exit.borrow_mut();
-                match *slot {
-                    Some(blk) => blk,
-                    None => {
-                        let blk = cx.b.create_block();
-                        *slot = Some(blk);
-                        blk
-                    }
-                }
-            };
-            cx.b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
-            cx.b.switch_to_block(pre_pending);
-            cx.b.seal_block(pre_pending);
-            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().jump(pending_exit, &[]);
-            cx.b.switch_to_block(continue_block);
-            cx.b.seal_block(continue_block);
+            emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
             Ok(CompiledExpr::Single(raw0))
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             // Value-shape return: both register-words, same pending
             // branch as the composite arm (the boxed Value sentinel is
             // null on pending).
-            let pending_take = cx.helper("graphix_dyncall_pending_take")?;
-            let call = cx.b.ins().call(pending_take, &[]);
-            let pending = cx.b.inst_results(call)[0];
-            let pre_pending = cx.b.create_block();
-            let continue_block = cx.b.create_block();
-            let pending_exit = {
-                let mut slot = cx.ctx.pending_exit.borrow_mut();
-                match *slot {
-                    Some(blk) => blk,
-                    None => {
-                        let blk = cx.b.create_block();
-                        *slot = Some(blk);
-                        blk
-                    }
-                }
-            };
-            cx.b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
-            cx.b.switch_to_block(pre_pending);
-            cx.b.seal_block(pre_pending);
-            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().jump(pending_exit, &[]);
-            cx.b.switch_to_block(continue_block);
-            cx.b.seal_block(continue_block);
+            emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
             Ok(CompiledExpr::Value { disc: raw0, payload: raw1 })
         }
         Some(AbiKind::Null) | None => Err(anyhow!(
@@ -5404,6 +5773,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
 /// when something actually tainted). String/composite merges have no
 /// validity channel — a possibly-bottom scrutinee with one of those
 /// result shapes refuses to fuse instead.
+#[derive(Clone, Copy)]
 enum SelectMerge {
     Scalar(PrimType),
     Value,
@@ -5466,8 +5836,6 @@ pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     sel: &crate::node::select::Select<R, E>,
 ) -> Result<CompiledExpr> {
-    use crate::node::pattern::StructPatternNode;
-    use crate::NodeView;
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
     }
@@ -5492,6 +5860,88 @@ pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
             ));
         }
     };
+    let (scrut, scrut_kind, scrut_typ) = classify_select_scrutinee(cx, sel)?;
+    let scrut_valid = match scrut {
+        SelectScrut::Scalar { valid, .. } => valid,
+        SelectScrut::Value { .. } | SelectScrut::Opaque => None,
+    };
+    if scrut_valid.is_some() && !matches!(merge_shape, SelectMerge::Scalar(_))
+    {
+        // Only the scalar merge has a validity phi to poison; the
+        // node-walk's "bottom scrutinee → no select value" can't be
+        // expressed through the other merge shapes here.
+        return Err(anyhow!(
+            "emit_clif: possibly-bottom scrutinee with a non-scalar \
+             select result"
+        ));
+    }
+    let merge = cx.b.create_block();
+    match merge_shape {
+        SelectMerge::Scalar(p) => {
+            cx.b.append_block_param(merge, prim_to_clif(p));
+            cx.b.append_block_param(merge, types::I8); // validity
+        }
+        SelectMerge::Value => {
+            cx.b.append_block_param(merge, types::I64); // disc
+            cx.b.append_block_param(merge, types::I64); // payload
+        }
+        SelectMerge::Composite | SelectMerge::String => {
+            cx.b.append_block_param(merge, types::I64);
+        }
+    }
+    let mut any_taint = scrut_valid.is_some();
+    emit_select_arms(
+        cx,
+        sel,
+        scrut,
+        scrut_kind,
+        &scrut_typ,
+        scrut_valid,
+        &mut |cx, body, mark| {
+            emit_select_value_arm(
+                cx,
+                body,
+                mark,
+                merge_shape,
+                merge,
+                scrut_valid,
+                &mut any_taint,
+            )
+        },
+    )?;
+    cx.b.switch_to_block(merge);
+    cx.b.seal_block(merge);
+    match merge_shape {
+        SelectMerge::Scalar(_) => {
+            let params = cx.b.block_params(merge);
+            let (value, valid) = (params[0], params[1]);
+            Ok(if any_taint {
+                CompiledExpr::Scalar2 { value, valid }
+            } else {
+                // Nothing tainted: every arm passed `iconst 1` — the
+                // validity phi is dead and the result composes as a
+                // clean scalar (parity with the classic taint
+                // optimization).
+                CompiledExpr::Single(value)
+            })
+        }
+        SelectMerge::Value => {
+            let params = cx.b.block_params(merge);
+            Ok(CompiledExpr::Value { disc: params[0], payload: params[1] })
+        }
+        SelectMerge::Composite | SelectMerge::String => {
+            let params = cx.b.block_params(merge);
+            Ok(CompiledExpr::Single(params[0]))
+        }
+    }
+}
+
+/// Classify (and emit the read of) a select scrutinee: the shared
+/// prologue of the value-position and tail-position select emitters.
+fn classify_select_scrutinee<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    sel: &crate::node::select::Select<R, E>,
+) -> Result<(SelectScrut, AbiKind, Type)> {
     let scrut_typ =
         gir::freeze_normalized(sel.arg.node.typ()).ok_or_else(|| {
             anyhow!(
@@ -5555,35 +6005,31 @@ pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
             ));
         }
     };
-    let scrut_valid = match scrut {
-        SelectScrut::Scalar { valid, .. } => valid,
-        SelectScrut::Value { .. } | SelectScrut::Opaque => None,
-    };
-    if scrut_valid.is_some() && !matches!(merge_shape, SelectMerge::Scalar(_))
-    {
-        // Only the scalar merge has a validity phi to poison; the
-        // node-walk's "bottom scrutinee → no select value" can't be
-        // expressed through the other merge shapes here.
-        return Err(anyhow!(
-            "emit_clif: possibly-bottom scrutinee with a non-scalar \
-             select result"
-        ));
-    }
-    let merge = cx.b.create_block();
-    match merge_shape {
-        SelectMerge::Scalar(p) => {
-            cx.b.append_block_param(merge, prim_to_clif(p));
-            cx.b.append_block_param(merge, types::I8); // validity
-        }
-        SelectMerge::Value => {
-            cx.b.append_block_param(merge, types::I64); // disc
-            cx.b.append_block_param(merge, types::I64); // payload
-        }
-        SelectMerge::Composite | SelectMerge::String => {
-            cx.b.append_block_param(merge, types::I64);
-        }
-    }
-    let mut any_taint = scrut_valid.is_some();
+    Ok((scrut, scrut_kind, scrut_typ))
+}
+
+/// The shared select arm chain: pattern conditions (type predicate /
+/// structure / guard), per-arm binds, and the fail-block plumbing —
+/// identical between value position (arms widen and jump to a merge
+/// block) and tail position (arms terminate with a return or a self
+/// tail-call jump). `emit_arm` supplies the position-specific arm-body
+/// emission; it runs in the matched block with the arm's binds
+/// installed and MUST leave the block terminated (jump or return).
+/// `mark` is the env state to truncate back to after the body.
+fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    sel: &crate::node::select::Select<R, E>,
+    scrut: SelectScrut,
+    scrut_kind: AbiKind,
+    scrut_typ: &Type,
+    scrut_valid: Option<ClifValue>,
+    emit_arm: &mut dyn FnMut(
+        &mut BodyCx,
+        &crate::node::Cached<R, E>,
+        EnvMark,
+    ) -> Result<()>,
+) -> Result<()> {
+    use crate::node::pattern::StructPatternNode;
     let n = sel.arms.len();
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
         let is_last = i == n - 1;
@@ -5913,127 +6359,7 @@ pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
             cx.b.switch_to_block(body_blk);
             cx.b.seal_block(body_blk);
         }
-        let body_frozen =
-            gir::freeze_normalized(body.node.typ()).ok_or_else(|| {
-                anyhow!(
-                    "emit_clif: select arm type {:?} doesn't freeze \
-                     concrete",
-                    body.node.typ()
-                )
-            })?;
-        match merge_shape {
-            SelectMerge::Scalar(rp) => {
-                if gir::scalar_prim(&body_frozen) != Some(rp) {
-                    return Err(anyhow!(
-                        "emit_clif: select arm type {body_frozen:?} \
-                         doesn't match the scalar merge {rp:?}"
-                    ));
-                }
-                let cv = body.node.emit_clif(cx)?;
-                if matches!(cv, CompiledExpr::Scalar2 { .. }) {
-                    any_taint = true;
-                }
-                let (v, valid) = cv.scalar_with_validity(cx.b)?;
-                let valid = match scrut_valid {
-                    Some(sv) => cx.b.ins().band(valid, sv),
-                    None => valid,
-                };
-                cx.env.truncate(mark);
-                cx.b.ins().jump(
-                    merge,
-                    &[BlockArg::Value(v), BlockArg::Value(valid)],
-                );
-            }
-            SelectMerge::Value => {
-                // Node twin of `widen_arm_to_value`, keyed on the arm
-                // BODY's frozen type.
-                let (d, p) = match gir::abi_kind(&body_frozen) {
-                    Some(AbiKind::Null) => {
-                        // A bare-null arm body has nothing to emit (and
-                        // a Null-shaped node can't emit anyway); only
-                        // the literal constant form is recognized.
-                        match body.node.view() {
-                            NodeView::Constant(c)
-                                if matches!(c.value, Value::Null) => {}
-                            _ => {
-                                return Err(anyhow!(
-                                    "emit_clif: null-typed select arm \
-                                     isn't a null literal"
-                                ));
-                            }
-                        }
-                        let d =
-                            cx.b.ins().iconst(types::I64, value_disc::NULL);
-                        let p = cx.b.ins().iconst(types::I64, 0);
-                        (d, p)
-                    }
-                    Some(AbiKind::Scalar(p)) => {
-                        let v = body.node.emit_clif(cx)?.single()?;
-                        let d = cx
-                            .b
-                            .ins()
-                            .iconst(types::I64, prim_to_value_disc(p));
-                        (d, scalar_to_payload_i64(cx.b, p, v))
-                    }
-                    Some(
-                        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value,
-                    ) => {
-                        let (d, p) = body.node.emit_clif(cx)?.value()?;
-                        ensure_owned_value_src(
-                            cx,
-                            node_composite_source(&body.node),
-                            d,
-                            p,
-                        )?
-                    }
-                    other => {
-                        return Err(anyhow!(
-                            "emit_clif: select arm of shape {other:?} \
-                             can't widen to the Value merge"
-                        ));
-                    }
-                };
-                cx.env.truncate(mark);
-                cx.b.ins().jump(
-                    merge,
-                    &[BlockArg::Value(d), BlockArg::Value(p)],
-                );
-            }
-            SelectMerge::Composite => {
-                if !matches!(
-                    gir::abi_kind(&body_frozen),
-                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
-                ) {
-                    return Err(anyhow!(
-                        "emit_clif: select arm type {body_frozen:?} \
-                         doesn't match the composite merge"
-                    ));
-                }
-                let v = body.node.emit_clif(cx)?.single()?;
-                let v = ensure_owned_composite_src(
-                    cx,
-                    node_composite_source(&body.node),
-                    v,
-                )?;
-                cx.env.truncate(mark);
-                cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
-            }
-            SelectMerge::String => {
-                if !matches!(
-                    gir::abi_kind(&body_frozen),
-                    Some(AbiKind::String)
-                ) {
-                    return Err(anyhow!(
-                        "emit_clif: select arm type {body_frozen:?} \
-                         doesn't match the string merge"
-                    ));
-                }
-                // String reads/produces are owned at production.
-                let v = body.node.emit_clif(cx)?.single()?;
-                cx.env.truncate(mark);
-                cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
-            }
-        }
+        emit_arm(cx, body, mark)?;
         match fail {
             Some(f) => {
                 cx.b.switch_to_block(f);
@@ -6052,30 +6378,132 @@ pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
             None => break,
         }
     }
-    cx.b.switch_to_block(merge);
-    cx.b.seal_block(merge);
+    Ok(())
+}
+
+/// Value-position arm-body emission: widen the arm's result to the
+/// select's merge shape and jump to the merge block. Extracted
+/// verbatim from the pre-F0b `emit_select_node` arm loop.
+fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
+    cx: &mut BodyCx,
+    body: &crate::node::Cached<R, E>,
+    mark: EnvMark,
+    merge_shape: SelectMerge,
+    merge: Block,
+    scrut_valid: Option<ClifValue>,
+    any_taint: &mut bool,
+) -> Result<()> {
+    use crate::NodeView;
+    let body_frozen =
+        gir::freeze_normalized(body.node.typ()).ok_or_else(|| {
+            anyhow!(
+                "emit_clif: select arm type {:?} doesn't freeze concrete",
+                body.node.typ()
+            )
+        })?;
     match merge_shape {
-        SelectMerge::Scalar(_) => {
-            let params = cx.b.block_params(merge);
-            let (value, valid) = (params[0], params[1]);
-            Ok(if any_taint {
-                CompiledExpr::Scalar2 { value, valid }
-            } else {
-                // Nothing tainted: every arm passed `iconst 1` — the
-                // validity phi is dead and the result composes as a
-                // clean scalar (parity with the classic taint
-                // optimization).
-                CompiledExpr::Single(value)
-            })
+        SelectMerge::Scalar(rp) => {
+            if gir::scalar_prim(&body_frozen) != Some(rp) {
+                return Err(anyhow!(
+                    "emit_clif: select arm type {body_frozen:?} doesn't \
+                     match the scalar merge {rp:?}"
+                ));
+            }
+            let cv = body.node.emit_clif(cx)?;
+            if matches!(cv, CompiledExpr::Scalar2 { .. }) {
+                *any_taint = true;
+            }
+            let (v, valid) = cv.scalar_with_validity(cx.b)?;
+            let valid = match scrut_valid {
+                Some(sv) => cx.b.ins().band(valid, sv),
+                None => valid,
+            };
+            cx.env.truncate(mark);
+            cx.b.ins().jump(
+                merge,
+                &[BlockArg::Value(v), BlockArg::Value(valid)],
+            );
         }
         SelectMerge::Value => {
-            let params = cx.b.block_params(merge);
-            Ok(CompiledExpr::Value { disc: params[0], payload: params[1] })
+            // Node twin of `widen_arm_to_value`, keyed on the arm
+            // BODY's frozen type.
+            let (d, p) = match gir::abi_kind(&body_frozen) {
+                Some(AbiKind::Null) => {
+                    // A bare-null arm body has nothing to emit (and a
+                    // Null-shaped node can't emit anyway); only the
+                    // literal constant form is recognized.
+                    match body.node.view() {
+                        NodeView::Constant(c)
+                            if matches!(c.value, Value::Null) => {}
+                        _ => {
+                            return Err(anyhow!(
+                                "emit_clif: null-typed select arm isn't \
+                                 a null literal"
+                            ));
+                        }
+                    }
+                    let d = cx.b.ins().iconst(types::I64, value_disc::NULL);
+                    let p = cx.b.ins().iconst(types::I64, 0);
+                    (d, p)
+                }
+                Some(AbiKind::Scalar(p)) => {
+                    let v = body.node.emit_clif(cx)?.single()?;
+                    let d =
+                        cx.b.ins().iconst(types::I64, prim_to_value_disc(p));
+                    (d, scalar_to_payload_i64(cx.b, p, v))
+                }
+                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                    let (d, p) = body.node.emit_clif(cx)?.value()?;
+                    ensure_owned_value_src(
+                        cx,
+                        node_composite_source(&body.node),
+                        d,
+                        p,
+                    )?
+                }
+                other => {
+                    return Err(anyhow!(
+                        "emit_clif: select arm of shape {other:?} can't \
+                         widen to the Value merge"
+                    ));
+                }
+            };
+            cx.env.truncate(mark);
+            cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(p)]);
         }
-        SelectMerge::Composite | SelectMerge::String => {
-            Ok(CompiledExpr::Single(cx.b.block_params(merge)[0]))
+        SelectMerge::Composite => {
+            if !matches!(
+                gir::abi_kind(&body_frozen),
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
+            ) {
+                return Err(anyhow!(
+                    "emit_clif: select arm type {body_frozen:?} doesn't \
+                     match the composite merge"
+                ));
+            }
+            let v = body.node.emit_clif(cx)?.single()?;
+            let v = ensure_owned_composite_src(
+                cx,
+                node_composite_source(&body.node),
+                v,
+            )?;
+            cx.env.truncate(mark);
+            cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
+        }
+        SelectMerge::String => {
+            if !matches!(gir::abi_kind(&body_frozen), Some(AbiKind::String)) {
+                return Err(anyhow!(
+                    "emit_clif: select arm type {body_frozen:?} doesn't \
+                     match the string merge"
+                ));
+            }
+            // String reads/produces are owned at production.
+            let v = body.node.emit_clif(cx)?.single()?;
+            cx.env.truncate(mark);
+            cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
         }
     }
+    Ok(())
 }
 
 /// Node-graph analog of `gir::int_div_may_bottom` — true unless the
@@ -6717,37 +7145,7 @@ fn compile_value_expr(
             ctx.dyncall_buf_stack.borrow_mut().pop();
 
             // Pending check + cleanup branch.
-            let pending_take = ctx
-                .helper_refs
-                .get("graphix_dyncall_pending_take")
-                .ok_or_else(|| {
-                    anyhow!("missing graphix_dyncall_pending_take")
-                })?;
-            let call = b.ins().call(pending_take, &[]);
-            let pending = b.inst_results(call)[0];
-
-            let pre_pending = b.create_block();
-            let continue_block = b.create_block();
-            let pending_exit = {
-                let mut slot = ctx.pending_exit.borrow_mut();
-                match *slot {
-                    Some(blk) => blk,
-                    None => {
-                        let blk = b.create_block();
-                        *slot = Some(blk);
-                        blk
-                    }
-                }
-            };
-            b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
-
-            b.switch_to_block(pre_pending);
-            b.seal_block(pre_pending);
-            emit_pending_cleanup(b, env, ctx)?;
-            b.ins().jump(pending_exit, &[]);
-
-            b.switch_to_block(continue_block);
-            b.seal_block(continue_block);
+            emit_dyncall_pending_branch(b, env, ctx)?;
             Ok(CompiledExpr::Value {
                 disc: raw_disc,
                 payload: raw_payload,
@@ -7462,11 +7860,14 @@ fn compile_scalar_impl(
                 }
                 Some(AbiKind::String) => {
                     // String return: `raw_u64` is the ArcStr's raw
-                    // thin-pointer bits (transferred ownership). The
-                    // wrapper-level DYNCALL_PENDING check in
-                    // GirNode::update discards the kernel result on
-                    // pending; the 0 sentinel from a pending dispatch
-                    // is never decoded.
+                    // thin-pointer bits (transferred ownership), or
+                    // the null sentinel on pending. Null bits are NOT
+                    // inert downstream the way a scalar 0 is — every
+                    // String position assumes a valid owned ArcStr
+                    // (`emit_return_pending_check` / scope-exit
+                    // `drop_owned_strings` would null-drop it; #214) —
+                    // so branch exactly like the composite arm.
+                    emit_dyncall_pending_branch(b, env, ctx)?;
                     Ok(raw_u64)
                 }
                 Some(AbiKind::Null) | None => {
@@ -7493,43 +7894,7 @@ fn compile_scalar_impl(
                     // pending, drop every owned local + every outer
                     // in-flight DynCall buf, then jump to
                     // `pending_exit`.
-                    let pending_take = ctx
-                        .helper_refs
-                        .get("graphix_dyncall_pending_take")
-                        .ok_or_else(|| {
-                            anyhow!("missing graphix_dyncall_pending_take")
-                        })?;
-                    let call = b.ins().call(pending_take, &[]);
-                    let pending = b.inst_results(call)[0];
-
-                    let pre_pending = b.create_block();
-                    let continue_block = b.create_block();
-                    let pending_exit = {
-                        let mut slot = ctx.pending_exit.borrow_mut();
-                        match *slot {
-                            Some(blk) => blk,
-                            None => {
-                                let blk = b.create_block();
-                                *slot = Some(blk);
-                                blk
-                            }
-                        }
-                    };
-                    b.ins().brif(
-                        pending,
-                        pre_pending,
-                        &[],
-                        continue_block,
-                        &[],
-                    );
-
-                    b.switch_to_block(pre_pending);
-                    b.seal_block(pre_pending);
-                    emit_pending_cleanup(b, env, ctx)?;
-                    b.ins().jump(pending_exit, &[]);
-
-                    b.switch_to_block(continue_block);
-                    b.seal_block(continue_block);
+                    emit_dyncall_pending_branch(b, env, ctx)?;
                     Ok(raw_u64)
                 }
             }
@@ -8037,11 +8402,39 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
         .or_else(|| cs.ftype())
         .ok_or_else(|| anyhow!("lambda call `{fn_name}`: no resolved FnType"))?;
     // Formal args in FnType parameter order — the order
-    // `build_lambda_kernel` translated them into kernel inputs.
+    // `build_lambda_kernel` translated them into kernel inputs. Each
+    // slot is typed from the CALLEE's signature (`info.arg_types`,
+    // formals first, captures appended): those types were resolved
+    // (`resolve_abstract` — Refs to hidden-rep abstract type names
+    // expanded to the registered concrete rep) and frozen at build
+    // time. Freezing the caller-side node type here instead would
+    // re-reject exactly those abstract Refs (#218), and env isn't
+    // available at emit time to resolve them — the classic caller
+    // (`emit_lambda_call`) types args from the signature the same
+    // way. A node whose actual emission shape disagrees with the
+    // signature type Errs in the per-slot extractors below (build
+    // time, de-fuse).
+    let n_formal = info
+        .arg_types
+        .len()
+        .checked_sub(info.captures.len())
+        .ok_or_else(|| {
+            anyhow!(
+                "lambda call `{fn_name}`: signature has fewer inputs than \
+                 captures — discovery drift"
+            )
+        })?;
+    if ftype.args.len() != n_formal {
+        return Err(anyhow!(
+            "lambda call `{fn_name}`: call-site FnType has {} formals, \
+             kernel signature has {n_formal} — de-fuse",
+            ftype.args.len()
+        ));
+    }
     let mut slots: Vec<LambdaCallSlot<R, E>> =
         Vec::with_capacity(ftype.args.len() + info.captures.len());
     let mut pos = 0usize;
-    for fa in ftype.args.iter() {
+    for (i, fa) in ftype.args.iter().enumerate() {
         let node = match &fa.kind {
             crate::typ::FnArgKind::Positional { .. } => {
                 let n = cs.arg_positional(pos);
@@ -8053,12 +8446,7 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
         .ok_or_else(|| {
             anyhow!("lambda call `{fn_name}`: missing call-site arg node")
         })?;
-        let t = gir::freeze_normalized(node.typ()).ok_or_else(|| {
-            anyhow!(
-                "lambda call `{fn_name}`: arg type doesn't freeze concrete"
-            )
-        })?;
-        slots.push(LambdaCallSlot::Arg(node, t));
+        slots.push(LambdaCallSlot::Arg(node, info.arg_types[i].clone()));
     }
     for cap in &info.captures {
         slots.push(LambdaCallSlot::Cap(cap));
@@ -8525,8 +8913,8 @@ fn drop_owned_composites(
     // Variant params + locals are owned (params are refcount-cloned
     // on kernel entry via `graphix_value_clone`, locals come from
     // `VariantNew` or composite-return DynCall). Drop them via the
-    // two-register `graphix_value_drop(v: Value)` ABI — passes the
-    // `(disc, payload)` pair and the helper consumes (drops) it.
+    // two-register `graphix_value_drop(disc, payload)` ABI — passes
+    // the word pair and the helper consumes (drops) it.
     for (_, vv) in &env.variants {
         let disc = b.use_var(vv.disc);
         let payload = b.use_var(vv.payload);
@@ -8586,6 +8974,52 @@ fn emit_pending_cleanup(
     }
     // Owned composite + variant locals (and entry-cloned params).
     drop_owned_composites(b, env, ctx)
+}
+
+/// The site-level pending branch shared by every non-scalar DynCall
+/// result (composite / Value-shape / String): peek `DYNCALL_PENDING`;
+/// if the dispatch pended, the result word(s) hold the null sentinel —
+/// drop everything the kernel owns (`emit_pending_cleanup`) and jump
+/// to `pending_exit`, so the sentinel never flows into downstream
+/// code whose derefs and drops assume validity. Falls through on the
+/// non-pending path. (`pending_take` READS without clearing, so the
+/// wrapper-level check in `GirNode::update` still fires.)
+///
+/// Register-scalar results don't branch — their 0 sentinel is inert
+/// for downstream arithmetic and the wrapper discards the kernel
+/// result wholesale.
+fn emit_dyncall_pending_branch(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<()> {
+    let pending_take = ctx
+        .helper_refs
+        .get("graphix_dyncall_pending_take")
+        .ok_or_else(|| anyhow!("missing graphix_dyncall_pending_take"))?;
+    let call = b.ins().call(pending_take, &[]);
+    let pending = b.inst_results(call)[0];
+    let pre_pending = b.create_block();
+    let continue_block = b.create_block();
+    let pending_exit = {
+        let mut slot = ctx.pending_exit.borrow_mut();
+        match *slot {
+            Some(blk) => blk,
+            None => {
+                let blk = b.create_block();
+                *slot = Some(blk);
+                blk
+            }
+        }
+    };
+    b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
+    b.switch_to_block(pre_pending);
+    b.seal_block(pre_pending);
+    emit_pending_cleanup(b, env, ctx)?;
+    b.ins().jump(pending_exit, &[]);
+    b.switch_to_block(continue_block);
+    b.seal_block(continue_block);
+    Ok(())
 }
 
 /// Shape of the about-to-return result that

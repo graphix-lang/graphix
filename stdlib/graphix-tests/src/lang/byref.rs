@@ -18,7 +18,7 @@ const BYREF_DEREF: &str = r#"
 run!(byref_deref, BYREF_DEREF, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const BYREF_TUPLE: &str = r#"
 {
@@ -34,7 +34,7 @@ const BYREF_TUPLE: &str = r#"
 run!(byref_tuple, BYREF_TUPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const BYREF_PATTERN: &str = r#"
 {
@@ -71,7 +71,7 @@ run!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CONNECT_DEREF1: &str = r#"
 {
@@ -91,4 +91,4 @@ run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

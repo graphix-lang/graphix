@@ -1867,7 +1867,15 @@ struct Once {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
     const NEEDS_CALLSITE: bool = false;
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1914,7 +1922,15 @@ struct Take {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "core_take";
     const NEEDS_CALLSITE: bool = false;
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1966,7 +1982,15 @@ struct Skip {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "core_skip";
     const NEEDS_CALLSITE: bool = false;
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2772,7 +2796,15 @@ struct Count {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "core_count";
     const NEEDS_CALLSITE: bool = false;
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2848,7 +2880,15 @@ struct Uniq(Option<Value>);
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "core_uniq";
     const NEEDS_CALLSITE: bool = false;
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2890,7 +2930,17 @@ struct Never;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "core_never";
     const NEEDS_CALLSITE: bool = false;
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Async, deliberately: `Async` means "output may appear on a later
+    // cycle, autonomously, or never" — never() is the limiting case of
+    // that contract. Marking it Sync let it fuse as a DynCall that
+    // pended on EVERY kernel run: wasted work in used positions, and
+    // in dead positions the whole-kernel pending bottomed results the
+    // node-walk still produces (the dead-pend divergence). As a fusion
+    // boundary the node-walk handles it — zero work, exact semantics.
+    // This is also what exempts `never()` from the dead-variadic-call
+    // compile error (callsite.rs `reject_dead_variadic_call`): never()
+    // is the sanctioned way to write a value that never arrives.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

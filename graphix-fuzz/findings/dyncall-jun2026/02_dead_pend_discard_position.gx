@@ -1,0 +1,12 @@
+// The dead-pend divergence in DISCARD position — found by the first
+// isolation-enabled mutation soak (3000@777) and minimized by the
+// isolated minimizer (`minimize-one`). interp = 0 (the node-walk never
+// evaluates the dead call; the block tail fires), jit = Timeout (the
+// eager fused DynCall pended and bottomed the whole kernel). Same root
+// cause as 01_ (the #216 dead-pend class), different syntactic
+// position: a Discard statement rather than a let binding.
+//
+// RESOLVED by the #216 compile error (`reject_dead_variadic_call`):
+// this program no longer compiles in any mode — CompileErr agreement.
+// Regression guard for relaxing the error, same as 01_.
+{str::concat(); i64:0}

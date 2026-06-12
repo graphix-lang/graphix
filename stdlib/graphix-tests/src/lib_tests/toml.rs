@@ -11,7 +11,7 @@ run!(toml_i64, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -22,7 +22,7 @@ run!(toml_f64, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -33,7 +33,7 @@ run!(toml_bool, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — blocked on: serialization round-trip (write_str + read) not lowered
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -45,7 +45,7 @@ run!(toml_string, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -58,7 +58,7 @@ run!(toml_struct, r#"{
     p2.x + p2.y
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -73,7 +73,7 @@ run!(toml_nested_struct, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -85,7 +85,7 @@ run!(toml_array, r#"{
     arr[0]$ + arr[1]$ + arr[2]$
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(6)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -102,7 +102,7 @@ run!(toml_stream_tcp, r#"{
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -112,7 +112,7 @@ run!(toml_invalid, r#"{
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -122,4 +122,4 @@ run!(toml_null_err, r#"{
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(Bool(true))
+// jit:    Timeout
+// mutant: { let v0 = u8:2; let v1 = [((u8:255 + u8:100), (v0 + u8:0)), ((v0 / u8:0), (v0 + u8:255)), (u8:255, u8:1)]; (true && true) }
+// minimized:
+{let v0 = u8:2; (v0 / u8:0, (v0 + u8:255)); (true && true)}

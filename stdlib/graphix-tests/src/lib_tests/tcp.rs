@@ -24,7 +24,7 @@ const TCP_CONNECT_ACCEPT: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Connect to unbound port fails. We can't easily pick a guaranteed-
 // unbound ephemeral port, so use port 1 (universally reserved

@@ -25,7 +25,7 @@ const CHECKED0: &str = r#"
 run!(checked0, CHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // checked div by zero returns an error value that can be caught
 const CHECKED_DIV0: &str = r#"
@@ -89,7 +89,7 @@ run!(catch4, CATCH4, |v: Result<&Value>| match v
 {
     Ok([Value::Error(_), Value::Error(_)]) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // checked arithmetic with $ (swallow error)
 const CHECKED_DOLLAR: &str = r#"
@@ -105,7 +105,7 @@ const CHECKED_DOLLAR: &str = r#"
 run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // composite-success `$` (#199): the fused unwrap must re-box the
 // Value's inline ValArray bits into the composite ABI's

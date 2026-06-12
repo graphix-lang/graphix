@@ -76,7 +76,7 @@ const MAP_CHANGE_PRESENT: &str = r#"
 run!(map_change_present, MAP_CHANGE_PRESENT, |v: Result<&Value>| match v {
     Ok(Value::I64(12)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_CHANGE_ABSENT: &str = r#"
 {
@@ -91,7 +91,7 @@ const MAP_CHANGE_ABSENT: &str = r#"
 run!(map_change_absent, MAP_CHANGE_ABSENT, |v: Result<&Value>| match v {
     Ok(Value::I64(110)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_CHANGE_PRESERVES_OTHERS: &str = r#"
 {
@@ -107,7 +107,7 @@ const MAP_CHANGE_PRESERVES_OTHERS: &str = r#"
 run!(map_change_preserves_others, MAP_CHANGE_PRESERVES_OTHERS, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_CHANGE_CHAINED: &str = r#"
 {
@@ -125,7 +125,7 @@ const MAP_CHANGE_CHAINED: &str = r#"
 run!(map_change_chained, MAP_CHANGE_CHAINED, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_MAP: &str = r#"
 {
@@ -142,7 +142,7 @@ run!(map_map, MAP_MAP, |v: Result<&Value>| match v {
             && m[&Value::String(literal!("b"))] == Value::I64(4)
             && m[&Value::String(literal!("c"))] == Value::I64(6),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_FILTER: &str = r#"
 {
@@ -158,7 +158,7 @@ run!(map_filter, MAP_FILTER, |v: Result<&Value>| match v {
             && m[&Value::String(literal!("c"))] == Value::I64(3)
             && m[&Value::String(literal!("d"))] == Value::I64(4),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_FILTER_MAP: &str = r#"
 {
@@ -174,7 +174,7 @@ run!(map_filter_map, MAP_FILTER_MAP, |v: Result<&Value>| match v {
             && m[&Value::String(literal!("c"))] == Value::I64(30)
             && m[&Value::String(literal!("d"))] == Value::I64(40),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_FOLD: &str = r#"
 {
@@ -189,7 +189,7 @@ const MAP_FOLD: &str = r#"
 run!(map_fold, MAP_FOLD, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_ITER: &str = r#"
 {
@@ -208,7 +208,7 @@ run!(map_iter, MAP_ITER, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_ITERQ: &str = r#"
 {
@@ -233,7 +233,7 @@ run!(map_iterq, MAP_ITERQ, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_INSERT: &str = r#"
 {

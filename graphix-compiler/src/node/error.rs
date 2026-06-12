@@ -321,6 +321,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         &self,
         cx: &mut crate::gir_jit::BodyCx,
     ) -> Result<crate::gir_jit::CompiledExpr> {
+        // A `?` with an enclosing catch handler delivers its error by
+        // WRITING the handler's variable (`update` above: set_var /
+        // event.variables on `self.id`) — an effect a fused kernel
+        // cannot perform; fusing it would swallow the error (the
+        // kernel pends) and the catch would never fire. Refuse —
+        // the subtree node-walks. A handler-LESS `?` (id: None,
+        // unhandled-error warn + drop) fuses: its error path is the
+        // same bottom the kernel's pending machinery produces.
+        if self.id.is_some() {
+            anyhow::bail!(
+                "emit_clif: `?` under an enclosing catch — error \
+                 delivery is a variable write; subtree node-walks"
+            );
+        }
         crate::gir_jit::emit_qop_node(cx, &self.n)
     }
 

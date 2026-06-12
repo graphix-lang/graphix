@@ -443,3 +443,33 @@ reactive trace oracle, process isolation, skeleton bucketing.**
   starting horizon for stateful-kernel bugs? — open.
 - **Crash-corpus persistence:** git-track `fuzz/crashes/` to start; revisit if it
   grows large. — default, revisit.
+
+## 11. Subprocess crash isolation (added 2026-06-12)
+
+Two F1 soaks died mid-campaign on process-killing mutants — first #214
+(SIGSEGV in a JIT'd kernel, no stderr), then a runaway-recursion mutant
+(node-walk stack overflow → SIGABRT). An in-process campaign cannot
+converge: every such mutant kills the whole run and loses any finding
+still being minimized. Campaign checks therefore run in CHILD processes:
+
+- `check-one` (hidden subcommand): program on stdin, one
+  `VERDICT\t<AGREE|DIVERGE>` line on stdout, `TOKIO_WORKER_THREADS=2`,
+  `kill_on_drop`, an outer deadline for wedged children. Signal-death →
+  the parent records `crash_NNNNNN.gx` (wait status + a 2-line stderr
+  tail — the triage signal separating "node-walk overflow, known class"
+  from "silent SIGSEGV in JIT frames, real codegen bug"); dedup by
+  program text. Crash findings must NOT be promoted to `findings/`
+  until fixed — the embedded regression corpus runs in-process.
+- DIVERGE → the parent re-checks the SAME (proven non-crashing) program
+  in-process to obtain the full `Divergence` for the record pipeline.
+- Minimization is ALSO isolated (`minimize-one`): a REDUCTION of a
+  benign divergence can itself be a crasher (e.g. dropping a recursive
+  function's base case); minimizer child death → the unminimized mutant
+  records instead, so a finding is never lost to the minimizer.
+- `GRAPHIX_FUZZ_INPROC=1` opts campaigns back in-process (debugging);
+  `check`/`run`/`regress`/`minimize` CLI remain in-process by design.
+
+Throughput cost is negligible (100 mutants/5s wall — per-program
+resolver spin-up dominates, not process spawn). First isolated soak
+(3000@777) completed with both known process-killers converted to
+recorded findings and zero unexplained results.

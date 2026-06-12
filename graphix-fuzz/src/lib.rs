@@ -72,14 +72,15 @@ pub enum Mode {
     /// Node-walk interpreter (`CFlag::FusionDisabled`) — the reference.
     Interp,
     /// Fusion + cranelift JIT (no flags) — the system under test.
+    /// Since the F2 flip (2026-06-13, `design/distributed_jit.md`)
+    /// this IS the direct node-emission path; the classic GIR body
+    /// path is gone.
     Jit,
-    /// Fusion + cranelift JIT, but the fused region body is emitted by
-    /// walking the region-root Node directly (`CFlag::DirectNodeJit` —
-    /// Stage 1 of `design/delete_gir_ir.md`'s `compile_node`). Same
-    /// observable semantics as `Jit`; only the body codegen path
-    /// differs. A region whose shape `compile_node` doesn't cover yet
-    /// simply doesn't fuse and node-walks (so `DirectJit` never produces
-    /// a *worse* value than `Interp`).
+    /// Alias of [`Mode::Jit`] since the F2 flip — the direct path is
+    /// the only path, so the flags are identical. Kept so the
+    /// parallel-period probe suite (which pinned direct-vs-classic
+    /// drift) keeps compiling; the redundant third runs prune with
+    /// the F3 delete.
     DirectJit,
 }
 
@@ -87,8 +88,7 @@ impl Mode {
     pub fn flags(self) -> BitFlags<CFlag> {
         match self {
             Mode::Interp => CFlag::FusionDisabled.into(),
-            Mode::Jit => BitFlags::empty(),
-            Mode::DirectJit => CFlag::DirectNodeJit.into(),
+            Mode::Jit | Mode::DirectJit => BitFlags::empty(),
         }
     }
 }
@@ -399,6 +399,9 @@ pub struct FuzzStats {
     pub run: usize,
     /// Confirmed divergences (including duplicates of already-saved bugs).
     pub divergences: usize,
+    /// Mutants that KILLED their (isolated) evaluator process — signal
+    /// death, abort, or a wedged child (including duplicates).
+    pub crashes: usize,
 }
 
 /// A persistent, deduplicated divergence corpus on disk. Loaded once at
@@ -429,12 +432,20 @@ impl Corpus {
                 if let Ok(body) = std::fs::read_to_string(&path) {
                     if let Some(m) = extract_minimized(&body) {
                         seen.insert(m);
+                    } else if let Some((_, p)) = body.split_once("// mutant:\n")
+                    {
+                        // Crash finding (no minimized form) — dedup by
+                        // the program text, same key `record_crash` uses.
+                        seen.insert(format!("CRASH:{}", p.trim()));
                     }
                 }
                 if let Some(n) = path
                     .file_stem()
                     .and_then(|s| s.to_str())
-                    .and_then(|s| s.strip_prefix("divergence_"))
+                    .and_then(|s| {
+                        s.strip_prefix("divergence_")
+                            .or_else(|| s.strip_prefix("crash_"))
+                    })
                     .and_then(|s| s.parse::<usize>().ok())
                 {
                     max_idx = max_idx.max(n + 1);
@@ -483,6 +494,34 @@ impl Corpus {
             minimized,
         );
         let _ = std::fs::write(self.dir.join(format!("divergence_{n:06}.gx")), body);
+        true
+    }
+
+    /// Record a process-KILLING program (signal death / abort / hang of
+    /// the isolated child). No minimized form — minimizing a crasher
+    /// would crash the minimizer's in-process oracle — so the dedup key
+    /// is the raw program text. Returns `true` when newly written.
+    ///
+    /// NOTE: crash findings must NOT be promoted to `findings/` (the
+    /// embedded regression corpus runs IN-process — an unfixed crasher
+    /// there kills the regress gate) until the underlying bug is fixed.
+    pub fn record_crash(&self, prog: &str, status: &str) -> bool {
+        let key = format!("CRASH:{}", prog.trim());
+        {
+            let mut seen = self.seen.lock().unwrap();
+            if !seen.insert(key) {
+                return false;
+            }
+        }
+        let n = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let body = format!(
+            "// CRASH: child {status}\n\
+             // do not promote to findings/ until fixed (regress runs in-process)\n\
+             // mutant:\n{prog}\n",
+        );
+        let _ = std::fs::write(self.dir.join(format!("crash_{n:06}.gx")), body);
         true
     }
 }
@@ -550,14 +589,139 @@ pub async fn generate_campaign(
     run_pool(corpus, iters, timeout, || generate::gen_program(&mut rng)).await
 }
 
+/// What one pool slot concluded about a program.
+enum PoolResult {
+    Agree,
+    Diverge(Divergence),
+    /// The isolated child died (signal / abort / hang) — the program
+    /// kills the evaluator itself. String = wait status + stderr tail.
+    Crash(String),
+}
+
+/// Run one oracle check in a CHILD process (`graphix-fuzz check-one`:
+/// program on stdin, one `VERDICT\t<AGREE|DIVERGE>` line on stdout). A
+/// mutant that kills the evaluator — SIGSEGV in a JIT'd kernel, the
+/// node-walk's stack-overflow abort on runaway recursion, a drop-helper
+/// null panic — kills only the child; the campaign records a crash
+/// finding and keeps running. (Pre-isolation, one such mutant killed the
+/// whole campaign with no finding saved — twice: #214, then the runaway-
+/// recursion compile-time overflow.)
+async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
+    use tokio::io::AsyncWriteExt;
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return PoolResult::Crash(format!("current_exe: {e}")),
+    };
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.arg("check-one")
+        // The pool already provides the concurrency; small children keep
+        // total thread count sane at parallelism() in-flight processes.
+        .env("TOKIO_WORKER_THREADS", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return PoolResult::Crash(format!("spawn: {e}")),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        // A write error means the child died instantly — fall through,
+        // wait_with_output captures the status.
+        let _ = stdin.write_all(prog.as_bytes()).await;
+    }
+    // The child runs interp+jit with its own internal per-mode `timeout`
+    // (Timeout is a NORMAL outcome there) — the outer deadline only
+    // catches a wedged child (a compile-time hang, a runaway that dodges
+    // the guard page), with margin for pool contention.
+    let deadline = timeout * 4 + Duration::from_secs(30);
+    let out =
+        match tokio::time::timeout(deadline, child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => return PoolResult::Crash(format!("wait: {e}")),
+            // Future dropped → kill_on_drop reaps the child.
+            Err(_) => return PoolResult::Crash("HANG (outer deadline)".into()),
+        };
+    if !out.status.success() {
+        // Include the child's last stderr lines — the std stack-overflow
+        // handler / panic hook message is the triage signal that
+        // distinguishes "node-walk overflow (known class)" from "SIGSEGV
+        // in JIT'd frames (real codegen bug, prints nothing)".
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = stderr.lines().rev().take(2).collect();
+        let mut status = out.status.to_string();
+        for l in tail.into_iter().rev() {
+            status.push_str(" | ");
+            status.push_str(l);
+        }
+        return PoolResult::Crash(status);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    match stdout.lines().rev().find_map(|l| l.strip_prefix("VERDICT\t")) {
+        Some("AGREE") => PoolResult::Agree,
+        // The child proved the program diverges WITHOUT dying, so an
+        // in-process re-check of the SAME program is safe — re-run it
+        // here to get the full Divergence for the record pipeline.
+        Some("DIVERGE") => match check(prog, timeout).await {
+            Some(d) => PoolResult::Diverge(d),
+            // Flaky (borderline timeout) — drop it rather than record
+            // an unreproducible finding.
+            None => PoolResult::Agree,
+        },
+        _ => PoolResult::Crash(format!("no VERDICT line ({})", out.status)),
+    }
+}
+
+/// Minimize a diverging program in a CHILD process (`graphix-fuzz
+/// minimize-one`: program on stdin, the reduced program after a
+/// `MINIMIZED` marker line on stdout). Minimization is the one place a
+/// proven-non-crashing divergence can still kill the evaluator: a
+/// REDUCTION may itself be a crasher (e.g. dropping a recursive
+/// function's base case → runaway), and the minimizer checks candidates
+/// in-process. `None` = the child died or wedged — the caller records
+/// the unminimized mutant instead (a finding is never lost to the
+/// minimizer).
+async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
+    use tokio::io::AsyncWriteExt;
+    let exe = std::env::current_exe().ok()?;
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.arg("minimize-one")
+        .env("TOKIO_WORKER_THREADS", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prog.as_bytes()).await;
+    }
+    // Worst case the 80-check budget is all bottom programs sleeping the
+    // per-mode timeout — bound it generously, the minims pool is
+    // concurrent and a kill falls back to the unminimized mutant.
+    let deadline = timeout * 2 * 80 + Duration::from_secs(60);
+    let out =
+        match tokio::time::timeout(deadline, child.wait_with_output()).await {
+            Ok(Ok(out)) if out.status.success() => out,
+            _ => return None,
+        };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (_, min) = stdout.split_once("MINIMIZED\n")?;
+    let min = min.trim();
+    if min.is_empty() { None } else { Some(min.to_string()) }
+}
+
 /// Worker pool. Keeps `parallelism()` oracle checks in flight over fresh
-/// programs from `next_prog`. On a divergence it fires a bounded-parallel
-/// task that minimizes, dedups against `corpus`, and — if the minimized
-/// form is new — writes the `.gx` and prints it immediately, all WITHOUT
-/// stalling the check pool (minimization is ≈80 serial checks; running it
-/// inline drained the cores). `iters = None` runs forever (until killed),
-/// surfacing new divergences live; `Some(n)` stops after `n` programs.
-/// `next_prog` runs on the driver task (sequential, deterministic, cheap).
+/// programs from `next_prog`. Checks run in ISOLATED child processes by
+/// default (see [`check_isolated`]; `GRAPHIX_FUZZ_INPROC=1` opts back
+/// into in-process for debugging). On a divergence it fires a
+/// bounded-parallel task that minimizes, dedups against `corpus`, and —
+/// if the minimized form is new — writes the `.gx` and prints it
+/// immediately, all WITHOUT stalling the check pool (minimization is ≈80
+/// serial checks; running it inline drained the cores). A crash records
+/// immediately (no minimization — the repro must stay out-of-process).
+/// `iters = None` runs forever (until killed), surfacing new divergences
+/// live; `Some(n)` stops after `n` programs. `next_prog` runs on the
+/// driver task (sequential, deterministic, cheap).
 async fn run_pool(
     corpus: &std::sync::Arc<Corpus>,
     iters: Option<usize>,
@@ -566,15 +730,30 @@ async fn run_pool(
 ) -> FuzzStats {
     use tokio::task::JoinSet;
     let par = parallelism();
+    let isolate = std::env::var_os("GRAPHIX_FUZZ_INPROC").is_none();
     let mut stats = FuzzStats::default();
-    let mut checks: JoinSet<(String, Option<Divergence>)> = JoinSet::new();
+    let mut checks: JoinSet<(String, PoolResult)> = JoinSet::new();
     let mut minims: JoinSet<()> = JoinSet::new();
     let mut launched = 0usize;
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
     let spawn_check = |checks: &mut JoinSet<_>, prog: String| {
+        // Crash forensics: with GRAPHIX_FUZZ_ECHO set, print each
+        // program as it dispatches. Mostly superseded by isolation
+        // (a crasher now records itself), but kept for debugging the
+        // DRIVER process itself.
+        if std::env::var_os("GRAPHIX_FUZZ_ECHO").is_some() {
+            eprintln!("FUZZPROG\t{}", prog.replace('\n', "\\n"));
+        }
         checks.spawn(async move {
-            let d = check(&prog, timeout).await;
-            (prog, d)
+            let res = if isolate {
+                check_isolated(&prog, timeout).await
+            } else {
+                match check(&prog, timeout).await {
+                    Some(d) => PoolResult::Diverge(d),
+                    None => PoolResult::Agree,
+                }
+            };
+            (prog, res)
         });
     };
     while want(launched) && checks.len() < par {
@@ -585,33 +764,57 @@ async fn run_pool(
         tokio::select! {
             biased;
             Some(res) = checks.join_next() => {
-                if let Ok((prog, div)) = res {
+                if let Ok((prog, res)) = res {
                     stats.run += 1;
                     if stats.run % 1000 == 0 {
                         eprintln!(
-                            "  …{} run, {} divergences, {} in corpus",
-                            stats.run, stats.divergences, corpus.len()
+                            "  …{} run, {} divergences, {} crashes, {} in corpus",
+                            stats.run, stats.divergences, stats.crashes,
+                            corpus.len()
                         );
                     }
-                    if let Some(d) = div {
-                        stats.divergences += 1;
-                        // Bound concurrent minimizations so a regressed
-                        // (everything-diverges) run can't pile up unboundedly.
-                        if minims.len() >= par {
-                            let _ = minims.join_next().await;
-                        }
-                        let corpus = corpus.clone();
-                        minims.spawn(async move {
-                            let (min, _) = minimize(&prog, timeout, 80).await;
-                            if corpus.record(&d, &prog, &min) {
-                                println!("DIVERGENCE — {}", d.bisect());
-                                println!("    minimized: {min}");
+                    match res {
+                        PoolResult::Agree => {}
+                        PoolResult::Crash(status) => {
+                            stats.crashes += 1;
+                            if corpus.record_crash(&prog, &status) {
+                                println!("CRASH — child {status}");
                                 println!(
-                                    "    interp={:?} jit={:?}",
-                                    d.interp, d.jit
+                                    "    program: {}",
+                                    prog.replace('\n', "\\n")
                                 );
                             }
-                        });
+                        }
+                        PoolResult::Diverge(d) => {
+                            stats.divergences += 1;
+                            // Bound concurrent minimizations so a regressed
+                            // (everything-diverges) run can't pile up
+                            // unboundedly.
+                            if minims.len() >= par {
+                                let _ = minims.join_next().await;
+                            }
+                            let corpus = corpus.clone();
+                            minims.spawn(async move {
+                                // Isolated: a REDUCTION of a benign
+                                // divergence can itself be a crasher.
+                                // Child death → record unminimized.
+                                let min = if isolate {
+                                    minimize_isolated(&prog, timeout)
+                                        .await
+                                        .unwrap_or_else(|| prog.clone())
+                                } else {
+                                    minimize(&prog, timeout, 80).await.0
+                                };
+                                if corpus.record(&d, &prog, &min) {
+                                    println!("DIVERGENCE — {}", d.bisect());
+                                    println!("    minimized: {min}");
+                                    println!(
+                                        "    interp={:?} jit={:?}",
+                                        d.interp, d.jit
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
                 if want(launched) {
@@ -1403,30 +1606,60 @@ mod tests {
              f(i64:5) }",
         )
         .await;
-        // self-recursion — E3 pending: `build_lambda_kernel` routes
-        // through `build_kir_kernel_from_region`, which hardcodes
-        // `self_info: None` ("Regions have no self-recursion") — the
-        // body's self call site can't lower, so recursive lambdas
-        // have NEVER built (classic included; its per-slot HOF
-        // consumers are non-recursive callbacks). E3 constructs
-        // `SelfInfo` in `build_lambda_kernel` and threads it through
-        // `build_kernel`. Flip to all_three_agree_fused_clean then.
-        all_three_agree(
+        // self-recursion (E3): the body's self-reference is excluded
+        // from the captures scan (a rec binding's env type is a
+        // TVar-wrapped Fn the scan can't freeze — recursive lambdas
+        // never built because of it), and the non-tail self call
+        // lowers to a `GirOp::Call` against the kernel's own FuncId —
+        // real native recursion.
+        all_three_agree_fused_clean(
             "{ let rec f = |n: i64| -> i64 \
                select n { i64:0 => i64:0, _ => n + f(n - i64:1) }; \
              f(i64:10) }",
         )
         .await;
-        // tail recursion — same E3 dependency; once SelfInfo threads
-        // through, the existing tail rebind-and-jump machinery
-        // (`try_emit_tail_call`/`tail_call_slots`) makes this a native
-        // loop. Depth kept stack-safe for the NODE-WALK (each
-        // recursive call nests native update frames — 50k overflows
-        // the interp); E3 adds a fused-only deep-depth probe.
-        all_three_agree(
+        // double recursion (two self-calls per arm, operand position)
+        all_three_agree_fused_clean(
+            "{ let rec fib = |n: i64| -> i64 \
+               select n { i64:0 => i64:0, i64:1 => i64:1, \
+               _ => fib(n - i64:1) + fib(n - i64:2) }; \
+             fib(i64:15) }",
+        )
+        .await;
+        // tail recursion (E3): `body_has_self_tail_call` detects the
+        // tail-position self call (BindId-matched), the kernel gets
+        // `has_tail_loop`, and `GirStmt::TailCall` compiles to a
+        // rebind-and-jump — a native loop, constant stack. Depth kept
+        // stack-safe for the NODE-WALK (each recursive call nests
+        // native update frames — 50k overflows the interp); the
+        // fused-only deep probe below runs the same loop at 5M.
+        all_three_agree_fused_clean(
             "{ let rec lp = |n: i64, acc: i64| -> i64 \
                select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; \
              lp(i64:500, i64:0) }",
+        )
+        .await;
+        // tail recursion with a CAPTURE: `tail_call_slots` covers
+        // every kernel param (it doubles as the runtime arg layout)
+        // but the TailCall rebinds only the leading formals — the
+        // capture slot stays bound, loop-invariant.
+        all_three_agree_fused_clean(
+            "{ let k = i64:3; let rec f = |n: i64| -> i64 \
+               select n { i64:0 => k, _ => f(n - i64:1) }; \
+             f(i64:4) }",
+        )
+        .await;
+        // shadowed lambda name (#206): f2's body calls the OUTER f.
+        // `finish_kernel` registers f2's own name in known_fns before
+        // the body emits, and name-only resolution matched the entry —
+        // the kernel called ITSELF (infinite native self-call, stack
+        // overflow). `KnownFusedFn::self_bind` now refuses the
+        // mismatched binding: f2 de-fuses, the call node-walks, every
+        // mode agrees on 8. Stays un-fused until known_fns re-keys by
+        // BindId (the #203 follow-up).
+        all_three_agree(
+            "{ let f = |x: i64| -> i64 x + i64:1; \
+             let f = |n: i64| -> i64 f(n) * i64:2; f(i64:3) }",
         )
         .await;
         // lambda call INSIDE a HOF callback body: the callback's body
@@ -1439,6 +1672,40 @@ mod tests {
              array::map(a, |x| f(x)) }",
         )
         .await;
+    }
+
+    /// E3's depth dividend, fused-only: a 5M-deep tail recursion is
+    /// ONLY runnable as the compiled rebind-and-jump loop — the
+    /// node-walk nests a native update frame per call and overflows
+    /// its stack around ~50k, so the interp mode (and the classic Jit
+    /// mode, whose planner never carves this region and would
+    /// node-walk it) is deliberately absent. The value is asserted
+    /// against the closed form, and `fused > 0` pins that the loop
+    /// actually compiled — a de-fuse here would BE the stack
+    /// overflow, not a silent fallback.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_node_jit_deep_tail_probe() {
+        let code = "{ let rec lp = |n: i64, acc: i64| -> i64 \
+                     select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; \
+                     lp(i64:5000000, i64:0) }";
+        let (out, stats) = run_program_with_stats(
+            code,
+            Mode::DirectJit,
+            Duration::from_secs(30),
+        )
+        .await;
+        assert!(
+            stats.fused > 0,
+            "deep tail probe did not fuse (attempted={}): {:?}",
+            stats.attempted,
+            stats.failed,
+        );
+        // sum 1..=5_000_000
+        let expected = Outcome::Value(Value::I64(12_500_002_500_000));
+        assert!(
+            out.agrees_with(&expected),
+            "deep tail loop produced {out:?}, expected {expected:?}"
+        );
     }
 
     /// D3 probes: destructured `|(k, v)|` callbacks — per-leaf

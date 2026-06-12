@@ -143,6 +143,13 @@ pub struct CachedKernel {
     /// lambdas. The caller (`emit_lambda_call`) forwards each
     /// capture's current value as an extra `GirOp::Call` arg.
     pub captures: Vec<CaptureSlot>,
+    /// The body references its own binding (self-recursion — tail or
+    /// not).
+    pub is_rec: bool,
+    /// The binding the kernel was built FROM (the call site's fnode
+    /// Ref id), when there was one. For a recursive callee the direct
+    /// path's Node body emission recognises self-calls by this id.
+    pub self_bind: Option<crate::BindId>,
 }
 
 /// One captured outer-scope binding lifted into a lambda kernel's
@@ -1543,6 +1550,18 @@ fn emit_known_fused_call<R: crate::Rt, E: crate::UserEvent>(
             return None;
         }
     };
+    // BindId soundness (#206): when the entry records the binding its
+    // kernel was built from, the call site must reference that SAME
+    // binding. Name-only matching let a body's call to a shadowed
+    // outer `f` resolve against the kernel ITSELF (`finish_kernel`
+    // registers the kernel's own name before its body emits) — an
+    // infinite native self-call.
+    if let Some(expected) = fn_info.self_bind {
+        match cs.fnode().view() {
+            crate::NodeView::Ref(r) if r.id == expected => {}
+            _ => return None,
+        }
+    }
     if spec_apply.args.len() != fn_info.arg_types.len() {
         return None;
     }
@@ -1754,7 +1773,9 @@ fn const_valarray<R: crate::Rt, E: crate::UserEvent>(
 /// Fold parallel key/value `Cached` node slices into a constant
 /// `Value::Map`, or `None` if any entry isn't constant. Shared by
 /// `node_const_value`'s `Map` arm and `emit_map_new`.
-fn const_map<R: crate::Rt, E: crate::UserEvent>(
+/// (`pub(crate)`: also the direct path's `emit_map_new_node` —
+/// gir_jit.rs — const-folds through it.)
+pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
     keys: &[crate::node::Cached<R, E>],
     vals: &[crate::node::Cached<R, E>],
 ) -> Option<Value> {
@@ -2287,19 +2308,48 @@ fn emit_lambda_call<R: crate::Rt, E: crate::UserEvent>(
 /// types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate by
 /// returning the type as-is — `from_type` then yields `None` and the
 /// kernel simply doesn't fuse, which is correct.
-fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) -> Type {
+pub(crate) fn resolve_abstract(
+    typ: &Type,
+    env: &crate::env::Env,
+    depth: usize,
+) -> Type {
     use triomphe::Arc;
     if depth > 16 {
         return typ.clone();
     }
     let r = |t: &Type| resolve_abstract(t, env, depth + 1);
     match typ {
+        // Deref bound TVars and resolve through them — an INFERRED
+        // binding type (e.g. a region input's `let` binding, #218) is
+        // TVar-wrapped, unlike the declared signature types the
+        // classic kernel-build callers pass. An unbound TVar returns
+        // unchanged (freeze rejects it downstream, correctly).
+        //
+        // Clone the inner type OUT of `with_deref` and recurse with
+        // the TVar's read guard DROPPED: recursing inside the closure
+        // held the guard across `lookup_ref` / `ABSTRACT_REGISTRY`
+        // acquisitions, and with parking_lot's fair (non-reentrant)
+        // locks that cross-holding deadlocked concurrent compiles in
+        // one process (caught as the post-flip parallel test wedge —
+        // every worker parked on `check_sig`'s registry write).
+        Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
+            Some(t) => r(&t),
+            None => typ.clone(),
+        },
         Type::Ref(_) => match typ.lookup_ref(env) {
             Ok(resolved) if !matches!(&resolved, Type::Ref(_)) => r(&resolved),
             _ => typ.clone(),
         },
         Type::Abstract { id, params } if params.is_empty() => {
-            match gir::ABSTRACT_REGISTRY.read().get(id).cloned() {
+            // Bind the clone FIRST: matching directly on
+            // `REGISTRY.read().get(..).cloned()` keeps the read guard
+            // alive as a match temporary through `r(&concrete)` — the
+            // recursion then re-reads the registry while holding it,
+            // which deadlocks under parking_lot's fair lock the moment
+            // any writer (`check_sig`) queues between the two reads
+            // (the post-F2-flip parallel test wedge's second edge).
+            let concrete = gir::ABSTRACT_REGISTRY.read().get(id).cloned();
+            match concrete {
                 Some(concrete) => r(&concrete),
                 None => typ.clone(),
             }
@@ -2326,6 +2376,7 @@ fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) -> Type {
 fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     g: &crate::node::lambda::GXLambda<R, E>,
     source_name: &ArcStr,
+    call_bind: Option<crate::BindId>,
     ctx: &mut FusionCtx,
     ec: &mut crate::ExecCtx<R, E>,
 ) -> Option<()> {
@@ -2336,20 +2387,24 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // `GirOp::Call` against itself rather than rebuilding.
     //
     // SAFETY INVARIANT (function-name shadowing): this keys on
-    // `source_name`, not `g.id()`. That is sound ONLY because two
-    // distinct lambdas can never share a source name within a single
-    // fused body: a `let f = <lambda>` binding inside a body bails
-    // the whole kernel build (`emit_do` / `emit_do_as_expr` can't
-    // emit a lambda value), so a shadowing rebinding of `f` prevents
-    // its enclosing body from fusing at all. If a future change makes
-    // lambda-binds-in-bodies fusable (nested-closure support), this
-    // name-keying becomes unsound — two shadowed `f`s would collide
-    // on this entry AND on the `GirOp::Call`/`KernelRegistry` key.
-    // That work must switch to a unique per-(LambdaId) kernel name.
+    // `source_name`, not `g.id()`. Two shadowed same-name lambdas in
+    // sibling lets WERE reachable here through an unresolved body
+    // call (#206 — name-resolved against the kernel's own self entry,
+    // an infinite native self-call); `KnownFusedFn::self_bind` now
+    // guards every name-keyed resolution, so a mismatched binding
+    // de-fuses instead. The residual limits of name-keying: a body
+    // whose call targets a shadowed same-name OUTER lambda can never
+    // fuse that call (the self entry occupies the name), and when
+    // #203 lands (static resolution descending lambda bodies) a
+    // resolved outer `f` would early-return on the self entry's
+    // `contains_key` below — that work must re-key `known_fns` (and
+    // the `GirOp::Call`/`KernelRegistry` key) by BindId or a unique
+    // per-(LambdaId) kernel name.
     if ctx.known_fns.contains_key(source_name) {
         return Some(());
     }
-    let (cached, sub_called) = build_lambda_kernel(g, source_name, ec)?;
+    let (cached, sub_called) =
+        build_lambda_kernel(g, source_name, call_bind, ec)?;
     ctx.known_fns.insert(source_name.clone(), cached.signature.clone());
     ctx.called_kernels.insert(source_name.clone(), cached);
     // Propagate transitively-called sub-kernels (the inner build's
@@ -2382,9 +2437,18 @@ fn ensure_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
 /// `GirOp::Call` keyed on the name in the per-slot path, so a
 /// first-builder-wins `fn_name` is benign there, but uniqueness keeps
 /// the two paths from cross-contaminating a shared cache entry's name).
+///
+/// `self_bind` is the binding the call site's fnode references (its
+/// `Ref` node's BindId), when there is one. It identifies the lambda's
+/// OWN binding so that (a) the body's self-reference isn't mistaken
+/// for a capture (a rec binding's env type is a TVar-wrapped `Fn`,
+/// which the capture scan can't freeze), (b) self tail-calls lower to
+/// `TailCall` (the rebind-and-jump loop), and (c) `emit_known_fused_call`
+/// can verify a name-resolved call really targets this binding (#206).
 pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     g: &crate::node::lambda::GXLambda<R, E>,
     kernel_name: &ArcStr,
+    self_bind: Option<crate::BindId>,
     ec: &mut crate::ExecCtx<R, E>,
 ) -> Option<(CachedKernel, std::collections::BTreeMap<ArcStr, CachedKernel>)> {
     // Cache key: (LambdaId, resolved FnType). `resolve_tvars` deep-
@@ -2424,6 +2488,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // kernel input slot name so the body's `Ref` lookups resolve.
     let typ = g.typ();
     let mut inputs = Vec::with_capacity(typ.args.len());
+    let mut source_args: Vec<SelfArg> = Vec::with_capacity(typ.args.len());
     for fa in typ.args.iter() {
         let name = match &fa.kind {
             crate::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
@@ -2432,7 +2497,8 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         };
         let arg_typ = resolve_abstract(&fa.typ, &ec.env, 0);
         let kt = gir::freeze_concrete(&arg_typ)?;
-        let kind = type_to_region_input_kind(kt)?;
+        let kind = type_to_region_input_kind(kt.clone())?;
+        source_args.push(SelfArg { name: name.clone(), typ: kt });
         inputs.push(RegionInput {
             expr_id: crate::expr::ExprId::new(),
             name,
@@ -2472,7 +2538,17 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // `(LambdaId, FnType)` cache entry) is stable across builds.
     external.sort_by_key(|id| id.inner());
     let mut captures: Vec<CaptureSlot> = Vec::new();
-    for bind_id in external {
+    for bind_id in external.iter().copied() {
+        // The lambda's own binding is not a capture — a recursive
+        // body's self-reference lowers as a call (`TailCall` in tail
+        // position, `GirOp::Call` elsewhere), never as a value. It
+        // can't be scanned as one anyway: a rec binding's env type is
+        // a TVar-wrapped `Fn` that the shallow `Type::Fn` skip below
+        // misses and `freeze_concrete` then rejects, killing the
+        // whole build (recursive lambdas never fused because of it).
+        if Some(bind_id) == self_bind {
+            continue;
+        }
         let b = ec.env.by_id.get(&bind_id)?;
         let cap_typ = b.typ.clone();
         // Function-typed captures: a statically-resolvable callee is
@@ -2531,12 +2607,43 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     ) {
         return None;
     }
-    let (kernel, sig, sub_called) = build_kir_kernel_from_region::<R, E>(
+    // Self-recursion: the body references its own binding. With a
+    // self tail-call present, the kernel compiles to a rebind-and-jump
+    // loop (`has_tail_loop` + `GirStmt::TailCall`) instead of a native
+    // recursive call — constant stack at any depth. The JIT's TailCall
+    // arm rebinds Scalar and ValArray slots only, and only the formal
+    // params are rebound (captures are loop-invariant within one
+    // kernel invocation), so the loop is gated on every FORMAL being
+    // one of those kinds; otherwise self-calls stay plain `GirOp::Call`
+    // recursion (correct, native stack depth).
+    let is_rec =
+        self_bind.is_some_and(|sb| external.iter().any(|id| *id == sb));
+    let n_formal = typ.args.len();
+    let has_tail = is_rec
+        && inputs[..n_formal].iter().all(|i| {
+            matches!(
+                i.kind,
+                RegionInputKind::Prim(_)
+                    | RegionInputKind::Array(_)
+                    | RegionInputKind::Tuple(_)
+                    | RegionInputKind::Struct(_)
+            )
+        })
+        && body_has_self_tail_call(g.body(), self_bind.unwrap());
+    let self_info = has_tail.then(|| SelfInfo {
+        name: kernel_name.clone(),
+        bind_id: self_bind.unwrap(),
+        source_args,
+    });
+    let (kernel, sig, sub_called) = build_kernel::<R, E>(
         kernel_name.as_str(),
         g.body(),
         &inputs,
         &[],
         Some(return_typ),
+        has_tail,
+        self_info.as_ref(),
+        self_bind,
         &std::collections::BTreeMap::new(),
         &std::collections::BTreeMap::new(),
         nohash::IntMap::default(),
@@ -2547,6 +2654,8 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         kernel: std::sync::Arc::new(kernel),
         signature: sig,
         captures,
+        is_rec,
+        self_bind,
     };
     ec.fusion_kernels.lock().insert(key, cached.clone());
     Some((cached, sub_called))
@@ -2643,16 +2752,48 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
         compact_str::format_compact!("__hof_{}", g.id().inner())
             .as_str()
             .into();
+    // A NAMED callback (`array::map(a, f)`) still has a Ref fnode —
+    // thread its BindId so a recursive callback's self-reference is
+    // recognised (tail self-calls fuse via the BindId-matched
+    // `TailCall`; non-tail self-calls de-fuse on the `__hof_*` /
+    // source-name mismatch in `known_fns` — sound, just unfused).
+    let self_bind = match cs.fnode().view() {
+        crate::NodeView::Ref(r) => Some(r.id),
+        _ => None,
+    };
     let n_formal = g.typ().args.len();
     let spec = g.body().spec().clone();
     let typ = g.body().typ().clone();
     // Phase 1: try fusing the WHOLE body into one kernel (wholly-sync
     // callback). Phase 2: if the body has async ops, fuse its sync
     // sub-regions instead (`build_body_split`).
-    match build_lambda_kernel(g, &kernel_name, ec) {
+    match build_lambda_kernel(g, &kernel_name, self_bind, ec) {
         Some((cached, sub_called)) => {
-            let wrapped =
-                jit_compile_split_kernel(ec, &cached.kernel, &sub_called);
+            // Self-call info for a recursive callback (the direct
+            // mode's Node emission needs it; mirrors
+            // `discover_lambda_calls`).
+            let self_call = cached.is_rec.then(|| {
+                (
+                    cached.self_bind.expect(
+                        "is_rec without self_bind — build_lambda_kernel \
+                         derives is_rec FROM self_bind",
+                    ),
+                    crate::fusion::LambdaCallInfo {
+                        fn_name: cached.fn_name.clone(),
+                        kernel: cached.kernel.clone(),
+                        arg_types: cached.signature.arg_types.clone(),
+                        captures: cached.captures.clone(),
+                    },
+                )
+            });
+            let wrapped = jit_compile_split_kernel(
+                ec,
+                &cached.kernel,
+                &sub_called,
+                g.body(),
+                self_call.as_ref(),
+                &nohash::IntMap::default(),
+            );
             Some(FusedCallback {
                 kernel: Some(cached.kernel),
                 wrapped,
@@ -2683,10 +2824,21 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
 
 /// JIT-compile a kernel + its callees when `ec.jit_enabled`, else `None`
 /// (interp fallback). Shared by the whole-body and split paths.
+///
+/// `body` is the kernel's body Node and `self_call` its self-recursion
+/// info: on the direct mode (`ec.direct_node_jit`) the kernel emits by
+/// walking the Node (F0c — same emitter as every other direct-path
+/// kernel); on classic it compiles from its GIR body. `apply_sites` is
+/// the body's builtin-call discovery (the split path has one; the
+/// whole-body path is empty — per-lambda builds discover no DynCall
+/// sites, parity with the GIR body).
 fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
     ec: &mut crate::ExecCtx<R, E>,
     kernel: &std::sync::Arc<crate::gir::GirKernel>,
     called_kernels: &std::collections::BTreeMap<ArcStr, CachedKernel>,
+    body: &crate::Node<R, E>,
+    self_call: Option<&(crate::BindId, crate::fusion::LambdaCallInfo)>,
+    apply_sites: &nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
 ) -> Option<std::sync::Arc<crate::gir_jit::WrappedKernel>> {
     if !ec.jit_enabled {
         return None;
@@ -2698,13 +2850,37 @@ fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
         .iter()
         .map(|(n, c)| (n.clone(), c.kernel.clone()))
         .collect();
-    crate::gir_jit::compile_kernel_with_callees(
-        &mut ec.jit.lock(),
-        kernel,
-        &callees,
-    )
-    .ok()
-    .map(std::sync::Arc::new)
+    let r = if ec.direct_node_jit {
+        crate::gir_jit::compile_kernel_with_callees_direct(
+            &mut ec.jit.lock(),
+            kernel,
+            &callees,
+            body,
+            apply_sites,
+            &nohash::IntMap::default(),
+            &std::collections::BTreeMap::new(),
+            self_call,
+            &ec.env,
+        )
+    } else {
+        crate::gir_jit::compile_kernel_with_callees(
+            &mut ec.jit.lock(),
+            kernel,
+            &callees,
+        )
+    };
+    match r {
+        Ok(w) => Some(std::sync::Arc::new(w)),
+        Err(e) => {
+            // A failed per-slot compile is a quiet de-fuse (the slot
+            // node-walks) — but never a SILENT one.
+            log::trace!(
+                "per-slot kernel `{}` failed to compile: {e:#}",
+                kernel.fn_name
+            );
+            None
+        }
+    }
 }
 
 /// Phase-2 partial-body split. The whole callback body couldn't fuse
@@ -2754,6 +2930,11 @@ fn build_body_split<R: crate::Rt, E: crate::UserEvent>(
             &crate::expr::ModPath::root(),
             &mut discovery,
         );
+        // The direct mode's Node emission needs the discovered
+        // builtin sites at COMPILE time (`CallSite::emit_clif` →
+        // DynCall); `build_region` consumes `discovery` for the GIR
+        // body + runtime slot setup, so keep a copy.
+        let apply_sites = discovery.apply_sites.clone();
         let fn_name = compact_str::format_compact!("__split_{:?}", value_id);
         // `build_region` succeeds iff the value lowers to a kernel
         // (it bails on async ops / unrepresentable types) — so a
@@ -2770,8 +2951,14 @@ fn build_body_split<R: crate::Rt, E: crate::UserEvent>(
             Ok(b) => b,
             Err(_) => continue,
         };
-        let wrapped =
-            jit_compile_split_kernel(ec, &built.kernel, &built.called_kernels);
+        let wrapped = jit_compile_split_kernel(
+            ec,
+            &built.kernel,
+            &built.called_kernels,
+            value_node,
+            None,
+            &apply_sites,
+        );
         out.push(SplitKernel {
             value_id,
             kernel: built.kernel,
@@ -3092,6 +3279,14 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
         NodeView::Not(n) => gir::not(emit_node(&n.n, ctx, ec)?),
         NodeView::ExplicitParens(ep) => emit_node(&ep.n, ctx, ec),
         NodeView::Qop(q) => {
+            // Same gate as `Qop::emit_clif`: a handler-ful `?` delivers
+            // its error by writing the catch's variable — an effect a
+            // fused kernel can't perform; lowering it would swallow
+            // the error. (Reachable through the parallel-period GIR
+            // body builds — per-slot HOF callbacks / lambda kernels.)
+            if q.id.is_some() {
+                return None;
+            }
             let lowered = emit_node(&q.n, ctx, ec)?;
             wrap_qop(lowered)
         }
@@ -3135,7 +3330,11 @@ pub fn emit_node<R: crate::Rt, E: crate::UserEvent>(
                             ArcStr::from(s)
                         }
                     };
-                    if ensure_lambda_kernel(g, &source_name, ctx, ec)
+                    let call_bind = match cs.fnode().view() {
+                        NodeView::Ref(r) => Some(r.id),
+                        _ => None,
+                    };
+                    if ensure_lambda_kernel(g, &source_name, call_bind, ctx, ec)
                         .is_some()
                     {
                         if let Some(cached) =
@@ -3339,15 +3538,17 @@ fn wrap_qop(lowered: GirExpr) -> Option<GirExpr> {
 /// continues. When it is `None`, tail positions emit a [`GirStmt::Return`].
 #[derive(Debug, Clone)]
 pub struct SelfInfo {
-    /// The graphix name being bound to the lambda (e.g. "iterate").
+    /// The kernel name registered in `known_fns` (the call-site
+    /// source name on the region paths; a unique `__hof_*` name on
+    /// the per-slot HOF path).
     pub name: ArcStr,
-    /// Scalar params in source order. Subset of the kernel's full
-    /// argspec — composite params (array/tuple/struct) appear in
-    /// the sibling lists below.
-    pub params: Vec<Input>,
+    /// The lambda's own `let` binding. A body call site is a
+    /// self-call iff its fnode `Ref` carries this id — names shadow
+    /// (#206), BindIds don't.
+    pub bind_id: crate::BindId,
     /// Source-order full argspec for tail-call validation: one
-    /// entry per lambda arg, recording the param's `GirType` so the
-    /// validator can typecheck the new value.
+    /// entry per lambda arg, recording the param's frozen `Type` so
+    /// the validator can typecheck the new value.
     pub source_args: Vec<SelfArg>,
 }
 
@@ -4308,6 +4509,41 @@ fn emit_tail<R: crate::Rt, E: crate::UserEvent>(
     Some(())
 }
 
+/// Pure tail-position pre-scan: does this body contain a self tail
+/// call (a `CallSite` in tail position whose fnode `Ref` carries
+/// `self_bind`)? Mirrors `emit_body_into` / `emit_do` / `emit_tail`'s
+/// tail positions exactly: the root, a Block's LAST child, Select arm
+/// bodies, and ExplicitParens. Decides `has_tail_loop` BEFORE
+/// emission: `emit_tail` only lowers a `TailCall` when `self_info` is
+/// `Some`, and the caller only passes `Some` when this returned true,
+/// so a kernel can't emit a `TailCall` without its loop head. (The
+/// converse over-approximation is harmless: a detected-but-rejected
+/// tail call — e.g. an arg type mismatch at emit time — leaves a
+/// vestigial loop head the body jumps into once.)
+fn body_has_self_tail_call<R: crate::Rt, E: crate::UserEvent>(
+    node: &crate::Node<R, E>,
+    self_bind: crate::BindId,
+) -> bool {
+    use crate::NodeView;
+    match node.view() {
+        NodeView::Block(b) => b
+            .children
+            .last()
+            .is_some_and(|c| body_has_self_tail_call(c, self_bind)),
+        NodeView::ExplicitParens(ep) => {
+            body_has_self_tail_call(&ep.n, self_bind)
+        }
+        NodeView::Select(s) => s
+            .arms
+            .iter()
+            .any(|(_, body)| body_has_self_tail_call(&body.node, self_bind)),
+        NodeView::CallSite(cs) => {
+            matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind)
+        }
+        _ => false,
+    }
+}
+
 fn try_emit_tail_call<R: crate::Rt, E: crate::UserEvent>(
     out: &mut Vec<GirStmt>,
     node: &crate::Node<R, E>,
@@ -4320,19 +4556,17 @@ fn try_emit_tail_call<R: crate::Rt, E: crate::UserEvent>(
         NodeView::CallSite(cs) => cs,
         _ => return None,
     };
-    // Source-level Apply for ident extraction.
+    // A self-call iff the fnode references the lambda's OWN binding —
+    // names shadow (#206), BindIds don't.
+    match cs.fnode().view() {
+        NodeView::Ref(r) if r.id == self_info.bind_id => {}
+        _ => return None,
+    }
+    // Source-level Apply for the arg list.
     let spec_apply = match &cs.spec().kind {
         ExprKind::Apply(a) => a,
         _ => return None,
     };
-    let fn_ref = match &spec_apply.function.kind {
-        ExprKind::Ref { name } => name,
-        _ => return None,
-    };
-    let fn_ident = ident_of(fn_ref)?;
-    if fn_ident != self_info.name.as_str() {
-        return None;
-    }
     if spec_apply.args.len() != self_info.source_args.len() {
         return None;
     }
@@ -4884,6 +5118,7 @@ fn build_kernel<R: crate::Rt, E: crate::UserEvent>(
     return_type: Option<Type>,
     has_tail: bool,
     self_info: Option<&SelfInfo>,
+    self_bind: Option<crate::BindId>,
     known: &std::collections::BTreeMap<ArcStr, KnownFusedFn>,
     consts: &std::collections::BTreeMap<ArcStr, KnownConst>,
     builtin_apply_sites: nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
@@ -4928,6 +5163,7 @@ fn build_kernel<R: crate::Rt, E: crate::UserEvent>(
         &mut ctx,
         ec,
         self_info,
+        self_bind,
     )
 }
 
@@ -4953,6 +5189,7 @@ fn finish_kernel<R: crate::Rt, E: crate::UserEvent>(
     ctx: &mut FusionCtx,
     ec: &mut crate::ExecCtx<R, E>,
     self_info: Option<&SelfInfo>,
+    self_bind: Option<crate::BindId>,
 ) -> Option<(
     GirKernel,
     KnownFusedFn,
@@ -4962,6 +5199,7 @@ fn finish_kernel<R: crate::Rt, E: crate::UserEvent>(
         body_fn_name: format!("fused_{fn_name}_body"),
         arg_types: params.arg_types,
         return_type: return_type.clone(),
+        self_bind,
     };
     ctx.known_fns.insert(ArcStr::from(fn_name), signature.clone());
     let body_stmts = emit_body(body, ctx, ec, self_info)?;
@@ -5025,6 +5263,7 @@ pub fn build_kir_kernel_from_region<R: crate::Rt, E: crate::UserEvent>(
         extra_fn_inputs,
         return_type,
         false,
+        None,
         None,
         known,
         consts,

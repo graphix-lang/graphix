@@ -149,7 +149,7 @@ run!(
         type First = i64;
         let make_pair = |a: i64, b: string| -> Pair { first: a, second: b };
         let get_first = |p: Pair| -> i64 p.first
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types in Compound Types

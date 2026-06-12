@@ -20,7 +20,7 @@ run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::TupleNew)));
+   shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
 
 // A composite literal with a value-shape (Duration) field. The
 // `compile_and_push_field` helper-selection already routed all six
@@ -54,7 +54,7 @@ const TUPLES1: &str = r#"
 run!(tuples1, TUPLES1, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TUPLES2: &str = r#"
 {
@@ -70,7 +70,7 @@ const TUPLES2: &str = r#"
 run!(tuples2, TUPLES2, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TUPLEACCESSOR: &str = r#"
 {
@@ -83,7 +83,7 @@ run!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::TupleGet)));
+   shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
 
 const STRUCTS0: &str = r#"
 {
@@ -115,7 +115,7 @@ run!(structs0, STRUCTS0, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::StructNew)));
+   shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
 
 const BINDSTRUCT: &str = r#"
 {
@@ -129,7 +129,7 @@ const BINDSTRUCT: &str = r#"
 run!(bindstruct, BINDSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STRUCTACCESSOR: &str = r#"
 {
@@ -171,7 +171,7 @@ const STRUCTWITH1: &str = r#"
 run!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
     Ok(Value::F64(85.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STRUCTWITH2: &str = r#"
 {
@@ -254,7 +254,7 @@ run!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STRUCTWITH5: &str = r#"
 {
@@ -279,7 +279,7 @@ run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ─── Composite / value-shape cross-kernel calls (#131) ───────────
 //
@@ -353,7 +353,7 @@ const CALL_NULLABLE_RETURN: &str = r#"
 run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
     Ok(Value::I64(5)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Value-shape `==` / `!=` (GirOp::ValueEq) ──────────────────────
 

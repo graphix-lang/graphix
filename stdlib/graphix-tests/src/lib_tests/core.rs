@@ -19,7 +19,7 @@ const IS_ERR: &str = r#"
 run!(is_err, IS_ERR, |v: Result<&Value>| match v {
     Ok(Value::Bool(b)) => *b,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER_ERR: &str = r#"
 {
@@ -32,7 +32,7 @@ const FILTER_ERR: &str = r#"
 run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ERROR: &str = r#"
   error("foo")
@@ -59,7 +59,7 @@ const ONCE: &str = r#"
 run!(once, ONCE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP: &str = r#"
 {
@@ -79,7 +79,7 @@ run!(skip, SKIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP_ZERO: &str = r#"
 {
@@ -99,7 +99,7 @@ run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP_ALL: &str = r#"
 {
@@ -134,7 +134,7 @@ run!(take, TAKE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TAKE_ZERO: &str = r#"
 {
@@ -169,7 +169,7 @@ run!(take_more, TAKE_MORE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ALL: &str = r#"
 {
@@ -186,7 +186,7 @@ const ALL: &str = r#"
 run!(all, ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SUM: &str = r#"
 {
@@ -205,7 +205,7 @@ const SUM: &str = r#"
 run!(sum, SUM, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const PRODUCT: &str = r#"
 {
@@ -235,7 +235,7 @@ const DIVIDE: &str = r#"
 run!(divide, DIVIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
@@ -310,7 +310,7 @@ run!(slice, SLICE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER0: &str = r#"
 {
@@ -327,7 +327,7 @@ run!(filter0, FILTER0, |v: Result<&Value>| {
         Ok(Value::I64(8)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER1: &str = r#"
 {
@@ -366,7 +366,7 @@ run!(queue, QUEUE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const QUEUEFN_IMMEDIATE: &str = r#"
 {
@@ -455,7 +455,7 @@ run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify #count writes when the queue grows. The wrapper writes count
 // every time it pushes (pops happen via the queuefn node when triggered).
@@ -483,7 +483,7 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify the wrapped fn is called when the wrapper output is fed back to
 // the trigger. Each pop allows the next to fire, so all queued
@@ -656,7 +656,7 @@ run!(
             Ok(Value::I64(2)) => true,
             _ => false,
         }
-    }; graphix_package_core::testing::FuseExpect::None);
+    }; graphix_package_core::testing::FuseExpect::Jit);
 
 const COUNT: &str = r#"
 {
@@ -676,7 +676,7 @@ run!(count, COUNT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SAMPLE: &str = r#"
 {
@@ -699,7 +699,7 @@ run!(sample, SAMPLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const UNIQ: &str = r#"
 {
@@ -716,7 +716,7 @@ run!(uniq, UNIQ, |v: Result<&Value>| {
         Ok(Value::I64(1)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SEQ: &str = r#"
   array::group(seq(0, 4), |n, _| n == 4)
@@ -754,7 +754,7 @@ run!(throttle, THROTTLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NEVER: &str = r#"
 {
@@ -853,7 +853,7 @@ const HOLD_MULTIPLE: &str = r#"
 run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_NO_TRIGGER: &str = r#"
 {
@@ -869,7 +869,7 @@ const HOLD_NO_TRIGGER: &str = r#"
 run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
 {
@@ -886,7 +886,7 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     Ok(Value::I64(300)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NOW: &str = r#"sys::time::now(null)"#;
 

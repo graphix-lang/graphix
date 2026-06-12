@@ -148,7 +148,7 @@ run!(encode_fixed_sizes, ENCODE_FIXED_SIZES, |v: Result<&Value>| match v {
         [Value::U64(2), Value::U64(4), Value::U64(8), Value::U64(16), Value::U64(12)]
     ),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // encode bytes and pad
 const ENCODE_BYTES_PAD: &str = r#"{
@@ -161,7 +161,7 @@ const ENCODE_BYTES_PAD: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(encode_bytes_pad, ENCODE_BYTES_PAD, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // pad writes zero bytes
 const ENCODE_PAD_ZEROS: &str = r#"{
@@ -176,7 +176,7 @@ run!(encode_pad_zeros, ENCODE_PAD_ZEROS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) =>
         matches!(&a[..], [Value::U8(0), Value::U8(0), Value::U8(0), Value::U8(0)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // mixed endianness: encode u32 LE and BE and check byte order
 const ENCODE_ENDIANNESS: &str = r#"{
@@ -203,7 +203,7 @@ run!(encode_endianness, ENCODE_ENDIANNESS, |v: Result<&Value>| match v {
             && matches!(&be[..], [Value::U8(0), Value::U8(0), Value::U8(0), Value::U8(1)])
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── decode tests ──────────────────────────────────────────────────
 
@@ -220,7 +220,7 @@ const DECODE_I64_ROUND_TRIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_i64_round_trip, DECODE_I64_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // encode + decode round-trip for u32
 const DECODE_U32_ROUND_TRIP: &str = r#"{
@@ -235,7 +235,7 @@ const DECODE_U32_ROUND_TRIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_u32_round_trip, DECODE_U32_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U32(12345)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // length-prefixed protocol: U64 length then UTF8
 const DECODE_LENGTH_PREFIXED: &str = r#"{
@@ -257,7 +257,7 @@ const DECODE_LENGTH_PREFIXED: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_length_prefixed, DECODE_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello world")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // decode raw bytes round-trip
 const DECODE_BYTES_ROUND_TRIP: &str = r#"{
@@ -278,7 +278,7 @@ const DECODE_BYTES_ROUND_TRIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_bytes_round_trip, DECODE_BYTES_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "abc")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // decode error: insufficient bytes
 const DECODE_INSUFFICIENT: &str = r#"{
@@ -292,7 +292,7 @@ const DECODE_INSUFFICIENT: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_insufficient, DECODE_INSUFFICIENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // decode error: invalid UTF-8
 const DECODE_INVALID_UTF8: &str = r#"{
@@ -308,7 +308,7 @@ const DECODE_INVALID_UTF8: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_invalid_utf8, DECODE_INVALID_UTF8, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // skip: verify skip advances cursor
 const DECODE_SKIP: &str = r#"{
@@ -324,7 +324,7 @@ const DECODE_SKIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_skip, DECODE_SKIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // decode returns remaining bytes
 const DECODE_REMAINING: &str = r#"{
@@ -339,7 +339,7 @@ const DECODE_REMAINING: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_remaining, DECODE_REMAINING, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── varint / zigzag tests ─────────────────────────────────────────
 
@@ -356,7 +356,7 @@ const VARINT_ROUND_TRIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_round_trip, VARINT_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(300)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // varint small value is 1 byte
 const VARINT_SMALL: &str = r#"{
@@ -369,7 +369,7 @@ const VARINT_SMALL: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_small, VARINT_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // varint large value uses more bytes
 const VARINT_LARGE: &str = r#"{
@@ -382,7 +382,7 @@ const VARINT_LARGE: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_large, VARINT_LARGE, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // zigzag round-trip with negative value
 const ZIGZAG_NEGATIVE: &str = r#"{
@@ -397,7 +397,7 @@ const ZIGZAG_NEGATIVE: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_negative, ZIGZAG_NEGATIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // zigzag round-trip with positive value
 const ZIGZAG_POSITIVE: &str = r#"{
@@ -412,7 +412,7 @@ const ZIGZAG_POSITIVE: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_positive, ZIGZAG_POSITIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // zigzag of -1 encodes to 1 byte (zigzag maps -1 → 1)
 const ZIGZAG_SMALL: &str = r#"{
@@ -425,7 +425,7 @@ const ZIGZAG_SMALL: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_small, ZIGZAG_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // varint-prefixed length then bytes decode
 const VARINT_LENGTH_PREFIXED: &str = r#"{
@@ -443,7 +443,7 @@ const VARINT_LENGTH_PREFIXED: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_length_prefixed, VARINT_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ref to a literal in decode spec returns a runtime decode error
 const DECODE_REF_TO_LITERAL: &str = r#"{
@@ -456,7 +456,7 @@ const DECODE_REF_TO_LITERAL: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_ref_to_literal, DECODE_REF_TO_LITERAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // discard a decoded field by writing to an unused let binding
 const DECODE_SKIP_UNRESOLVED: &str = r#"{
@@ -472,4 +472,4 @@ const DECODE_SKIP_UNRESOLVED: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

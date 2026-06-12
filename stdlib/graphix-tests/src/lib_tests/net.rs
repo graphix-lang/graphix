@@ -42,7 +42,7 @@ run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_WRITE1: &str = r#"
 {
@@ -68,7 +68,7 @@ run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_LIST: &str = r#"
 {
@@ -115,7 +115,7 @@ run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
         Ok(Value::Bool(true)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_RPC0: &str = r#"
 {
@@ -149,4 +149,4 @@ run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

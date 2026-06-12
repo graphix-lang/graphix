@@ -114,6 +114,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         crate::NodeView::Map(self)
     }
 
+    fn emit_clif(
+        &self,
+        cx: &mut crate::gir_jit::BodyCx,
+    ) -> Result<crate::gir_jit::CompiledExpr> {
+        crate::gir_jit::emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),

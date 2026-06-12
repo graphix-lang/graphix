@@ -16,7 +16,7 @@ const ARRAY_INDEXING0: &str = r#"
 run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; shape: NodeShape::contains_fused(GirMatcher::new().contains(GirOpTag::ArrayGet)));
+}; shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
 
 // ── array[i] bounds-check seam (node-walk / gir-interp / JIT) ──
 // `array[i]` is `[elem, Error<…>]`: out-of-bounds (or negative
@@ -180,7 +180,7 @@ run!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
             ] =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_SLICE_NON_ARRAY: &str = r#"
   ("foo")[..]
@@ -216,7 +216,7 @@ const ARRAY_MATCH0: &str = r#"
 run!(array_match0, ARRAY_MATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_MATCH1: &str = r#"
 {
@@ -252,7 +252,7 @@ run!(array_match1, ARRAY_MATCH1, |v: Result<&Value>| match v {
         }
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_MATCH2: &str = r#"
 {
@@ -275,4 +275,4 @@ run!(array_match2, ARRAY_MATCH2, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -24,7 +24,7 @@ const SELECT0: &str = r#"
 run!(select0, SELECT0, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "first 1",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LOOPING_SELECT: &str = r#"
 {
@@ -41,7 +41,7 @@ const LOOPING_SELECT: &str = r#"
 run!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SELECTSTRUCT: &str = r#"
 {
@@ -58,7 +58,7 @@ const SELECTSTRUCT: &str = r#"
 run!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MATCH_EXHAUST0: &str = r#"
 select 42 {
@@ -100,7 +100,7 @@ const NESTEDMATCH0: &str = r#"
 run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NESTEDMATCH1: &str = r#"
 {
@@ -116,7 +116,7 @@ const NESTEDMATCH1: &str = r#"
 run!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NESTEDMATCH2: &str = r#"
 {
@@ -149,4 +149,4 @@ const NESTEDMATCH3: &str = r#"
 run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

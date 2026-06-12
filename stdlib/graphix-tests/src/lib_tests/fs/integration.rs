@@ -75,7 +75,7 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_then_watch_modify, WRITE_THEN_WATCH_MODIFY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Test that writes binary data and then reads it back using Graphix
 const WRITE_BIN_THEN_READ_BIN: &str = r#"{

@@ -1,0 +1,4 @@
+// CRASH: child HANG (outer deadline)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{ let v0 = (((u8:0 - u8:255) % (u8:2 - u8:255)) - (u8:1 / (u8:0 * u8:100))); let v1 = select i64:1 { 0 => (f64:2.5 * f64:2.5), _ => f64:3.14 }; let v2 = (f64:1.0 + (f64:-1.0 - (f64:-1.0 * f64:3.14))); select ((i64:100 % i64:100) * i64:-100) { 42 => (i64:0 - (i64:7 - i64:7)), _ => i64:42 } }

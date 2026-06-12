@@ -643,6 +643,74 @@ flip).
   `cast<T>(x)` is a TypeCast NODE whose emit_clif relay exists — the
   gap is `emit_cast_node` refusing the union `[T, Error]` result
   shape; an independent graphix-compiler item.)
+
+  **E3 LANDED** (2026-06-11) — recursive lambdas fuse for the first
+  time on any path, and the recon found a LIVE WRONG-CODE CRASH
+  before writing a line of the feature. The actual build-killer was
+  NOT the `self_info: None` hardcode (a recursive body would still
+  have lowered as plain `GirOp::Call` native recursion): it was the
+  CAPTURES SCAN — a rec binding's env type is a TVar-wrapped `Fn`
+  that the shallow `Type::Fn` skip misses, so `freeze_concrete`
+  rejected the "capture" and silently killed every recursive build.
+  The instrumented bisect (entry/exit eprintlns + the
+  rec-without-self-call control probe, which DID fuse) found it in
+  two runs. E3's pieces:
+  - **Self-reference is not a capture**: `build_lambda_kernel` gains
+    `self_bind: Option<BindId>` (the call site's fnode Ref id,
+    threaded from discovery / `ensure_lambda_kernel` / the per-slot
+    path) and skips it in the scan. Recursion detection =
+    `external.contains(self_bind)`.
+  - **#206, found by auditing the name-matched tail-call plan**:
+    `{ let f = |x| x+1; let f = |n| f(n)*2; f(3) }` — f2's body call
+    to the shadowed OUTER f name-resolved against f2's own
+    `known_fns` self entry (registered by `finish_kernel` pre-body)
+    → `GirOp::Call` on ITSELF → stack overflow. Live under
+    DirectJit (E1 discovery builds what classic's planner never
+    did); the SAFETY INVARIANT comment only covered
+    lambda-binds-in-bodies. Fix: `KnownFusedFn::self_bind` — every
+    name-keyed `find_fn` resolution must match the call site's
+    fnode Ref BindId when the entry carries one. Repro in
+    findings/lambda-jun2026. NOTE for #203: when inner-body sites
+    resolve statically, `known_fns` itself must re-key by BindId
+    (the resolved outer `f` would early-return on the self entry's
+    `contains_key`).
+  - **`SelfInfo` = `{ name, bind_id, source_args }`** (the `params`
+    field had ZERO consumers — deleted). `try_emit_tail_call`
+    matches self-calls by fnode-Ref BindId, not ident.
+    `body_has_self_tail_call` (pure pre-scan mirroring `emit_tail`'s
+    positions: root / Block last / Select arms / ExplicitParens)
+    decides `has_tail_loop` BEFORE emission; over-approximation is
+    a vestigial loop head, under-approximation can't happen by
+    construction (self_info is only Some when it returned true).
+  - **Captures + tail loops compose**: `tail_call_slots` could NOT
+    be truncated to formals — it doubles as the runtime arg layout
+    (`arg_layout`, gir_interp.rs). Instead the JIT TailCall arm
+    rebinds only the leading `args.len()` slots (assert relaxed to
+    `<=`; the clone-bump loop took `.take(args.len())` — it indexed
+    `composite_sources[i]` across ALL slots, an OOB panic with
+    captures). Trailing capture slots stay bound: loop-invariant
+    within one kernel invocation.
+  - **Tail-loop gate**: formals must all be Prim/Array/Tuple/Struct
+    (the JIT rebinds Scalar+ValArray only); otherwise `has_tail`
+    stays false and self-calls remain plain native recursion —
+    correct, just stack-bound. Per-slot HOF path threads the
+    callback's Ref BindId too: a recursive NAMED callback's tail
+    self-call fuses (BindId-matched), its non-tail self-call
+    de-fuses on the `__hof_*`/source-name miss (sound asymmetry).
+  - **Direct-path Bind arm**: rec FN-valued lets now get the
+    "function-valued let" treatment (binding node-walks, call sites
+    fuse — Clean-compatible); rec non-fn lets (reactive feedback)
+    keep a distinct refusal.
+  - **Kernel-verified**: the tail probe compiles to a textbook loop —
+    `block1(n, acc)` head, `icmp`+`isub`+`iadd`+`jump block1`, no
+    call instruction; cranelift's SSA builder turned the rebinds
+    into block params. fib(15) (double recursion) and
+    capture-under-tail-loop probes Clean. The fused-only deep probe
+    runs the SAME loop at 5M depth (node-walk overflows ~50k —
+    DirectJit-only by design, value asserted against the closed
+    form). Probe ladder: both pinned probes flipped to Clean + fib +
+    capture + #206 shadow probe; 5 recursion seeds added to the
+    fuzz corpus (recursion-weighted mutation).
 - **E — cross-kernel calls + tail loops**: callee discovery prepass
   (CachedKernel build minus emit_body — already pure analysis), lambda-
   CallSite emit + captures as trailing args (BindId-keyed env lookup),
@@ -653,6 +721,107 @@ flip).
   `GirEmitter`/`ApplyView::FusedBuiltin`, `BodyEmitter`, the central
   fuse()/FusePlan walk, and node_shape's GirOp half (re-expressed as
   `KernelMatcher` over `EmitTag`s recorded during emission). Also dies
+
+  **Stage F sequencing** (the E-period shortcut must be repaid before
+  anything deletes — GIR bodies are load-bearing in three places):
+  F0a callee bodies via Node (landed, below) → F0b self-calls + tail
+  loops on the Node path → F0c per-slot HOF (`fuse_callsite`) + split
+  (`build_body_split`) kernels via Node → F1 soak + FuseExpect audit →
+  F2 flip → F3 delete → F4 node_shape EmitTags. Scope fact pinned by
+  probe: lambda-calls-OTHER-lambda inside a callee body has NEVER
+  fused on any path (inner sites are #203-unresolved; per-callee
+  `known_fns` starts empty, so `find_fn` misses and the callee build
+  fails) — the `sub_called` transitive-closure plumbing serves a
+  currently-unreachable case. A callee body's only cross-kernel
+  reference is SELF.
+
+  **F0a LANDED** (2026-06-12): non-recursive callee lambda bodies emit
+  via the Node path. `discover_lambda_calls` returns a third map —
+  callee-kernel identity (`Arc::as_ptr`, the define loop's cache key)
+  → body Node, reached live through this site's resolved `GXLambda`
+  (recursive callees excluded via the new
+  `lowering::CachedKernel::is_rec`; they keep GIR bodies until F0b).
+  `compile_kernel_with_callees_direct` builds per-callee
+  `NodeBodyEmitter`s (empty apply/lambda site maps — see the scope
+  fact) and the impl's define loop routes by identity
+  (`BTreeMap<usize, &dyn BodyEmitter>` replacing the parent-only
+  `Option`). The `needed` FuncRef set became per-emitter
+  (`lambda_call_sites` fn_names minus self): for the parent this
+  equals the old funcids-minus-self; for a Node-emitted callee it's
+  EMPTY, matching the no-unused-FuncRefs shape of its GIR body
+  (differential-proven). NEW DIAGNOSTIC for the silent-fallback
+  class: the define loop `log::trace!`s "Node-emitted body" vs "GIR
+  body" per kernel — routing verified live in both directions
+  (callee `f` Node-emitted; recursive `lp` GIR). Gates: compiler
+  115/115, fixtures 1423/1423, fuzz 18/18, regress 17/17, generate
+  200→0, CLIF differential 45/45 byte-identical.
+
+  **F0b LANDED** (2026-06-12): recursive callee bodies emit via the
+  Node path — NO lambda callee uses its GIR body on the direct mode
+  any more. Two pure refactors first, each gated byte-identical
+  (45/45): (1) the GIR `TailCall` arm's env-driven core extracted as
+  `emit_tail_rebind_jump(b, env, ctx, new_vals, sources)` (everything
+  after arg evaluation was already GIR-free); (2) `emit_select_node`
+  split into `classify_select_scrutinee` + `emit_select_arms` (the
+  pattern chain — tcond/scond/guard/binds/fail-trap — takes an
+  arm-body closure) + `emit_select_value_arm` (the merge-widening arm
+  emission, verbatim). New tail machinery, mirroring lowering's
+  shapes 1:1: `emit_body_tail` (the `emit_tail` twin — root / Block
+  last / Select arms / ExplicitParens; **no `in_tail` flag exists
+  anywhere**: tail self-calls are intercepted structurally BEFORE
+  value emission, so `CallSite::emit_clif` only ever sees self-calls
+  in value position), `emit_select_node_tail` (arms TERMINATE — the
+  `compile_select_stmt` twin; refuses possibly-bottom scrutinees, no
+  merge validity channel to poison), `emit_self_tail_call` (eval args
+  → `emit_tail_rebind_jump`), and `emit_block_stmt` (extracted from
+  `emit_block_node`, shared with the tail block walk). Return-path
+  leak-safety is structural: `emit_kernel_return` drops ALL owned
+  locals at any depth, so nested-scope returns through tail contexts
+  can't leak. Self info threads as `CalleeBody { body, self_call:
+  Option<(BindId, LambdaCallInfo)> }` from discovery →
+  `BodyEmitter::self_call()` → `LowerCtx.self_call`; the
+  `needed`-FuncRef set imports the kernel's OWN FuncRef for recursive
+  kernels only (no renumbering of existing kernels). VALUE-position
+  self-calls reuse `emit_lambda_call_node` against the own FuncRef —
+  captures forward from the kernel's own params for free. TRAP
+  (found by probe, cost one cycle): the inner self-callsite is
+  #203-UNRESOLVED, so `self.function` is None — the self check must
+  live OUTSIDE the resolved-Apply block in `CallSite::emit_clif`
+  (tail calls worked immediately because the walker doesn't consult
+  `self.function`; value-position rec/fib silently lost fusion until
+  the check moved). The Node-emitted `lp` loop came out TIGHTER than
+  the GIR one (fewer dead validity consts). Non-recursive bodies
+  keep the value-position emission deliberately — per-arm returns
+  would be equivalent codegen but churn every existing kernel's
+  CLIF. Gates: compiler 115/115, fixtures 1423/1423, fuzz 18/18 (the
+  5M deep-tail probe now exercises the NODE-emitted loop), regress
+  17/17, generate 200→0, CLIF differential 45/45 byte-identical.
+  Remaining GIR-body consumers on the direct mode (F0c): per-slot
+  HOF template kernels (`fuse_callsite` → `jit_compile_split_kernel`)
+  and body-split sub-kernels (`build_body_split`).
+
+  **F0c LANDED** (2026-06-12): per-slot kernels route by mode —
+  `ExecCtx::direct_node_jit` (the `jit_enabled` pattern: set by
+  `compile()` from the flag, read by the outside-`fuse()` JIT sites)
+  selects `compile_kernel_with_callees_direct` (body Node + self-call
+  info + the split region's cloned `apply_sites`) vs the classic GIR
+  entry. `compile_kernel_with_callees_direct` gained
+  `parent_self_call` (the per-slot "parent" IS a lambda kernel;
+  regions pass None). The `.ok()` that swallowed per-slot compile
+  errors now logs — the silent-fallback rule. VERIFICATION
+  ASYMMETRY, noted honestly: the split branch is proven live
+  (`__split_*` under DirectJit traces "Node-emitted body"; classic
+  stays GIR), but the WHOLE-BODY template branch has no live direct
+  probe — D2's MapQ inlining subsumes nearly its entire trigger
+  space (pure-but-uninlineable callbacks: select bodies, composite
+  elems, qop bodies all INLINE on direct; impure bodies take the
+  split). The branch is code-uniform with the proven split branch
+  (same fn, same routing, different args) and the failure-trace
+  line is the watchdog. With F0a+b+c, NO kernel on the direct mode
+  compiles from a GIR body — the GIR body build itself
+  (`emit_body`, classic) becomes sig-only dead weight at the flip.
+  Gates: fuzz 18/18, fixtures 1423/1423, compiler 115/115, CLIF
+  differential 45/45, regress 17/17, generate 200→0. Also dies
   at F (Eric, 2026-06-10): `Update::splice_child` + `fusion::splice_into`
   (the parent-swap protocol never searches by ExprId; the impure-HOF
   split splice is re-expressed as `template.jit()` in Stage D), and the
@@ -665,6 +834,118 @@ flip).
   slot's async residue, shared kernel Arcs), not fusion plumbing — the
   distributed design leans on it harder (template.jit() once, then
   clone_rebind per slot preserving spliced FusedKernels).
+
+  **F1 (in progress, 2026-06-12)**: generate-5000 soak CLEAN. The
+  mutation soak SIGSEGV'd the whole fuzzer (no stderr — native-frame
+  crash); `GRAPHIX_FUZZ_ECHO` per-mutant forensics isolated
+  `{ let v = str::concat(); i64:0 }` → **#214, pre-existing at HEAD**:
+  String DynCall results rode the SCALAR convention (no site-level
+  pre_pending branch), so a pending dispatch's sentinel-zero flowed
+  into owned-ArcStr drops (`graphix_arcstr_drop(0)` → SIGSEGV; the
+  untested String-`let` + scope-exit drop shared the seam, both
+  paths). FIXED: String results branch at the site like
+  composite/Value via the new shared `emit_dyncall_pending_branch`
+  (one helper, six arms across both paths — was 4 duplicated copies
+  + 2 missing). Defense-in-depth: all five JIT drop helpers
+  (`valarray`/`value`/`arcstr`/`value_buf`/`string_buf`) null-check
+  and PANIC (panic at an `extern "C"` boundary aborts with the
+  message printed — a loud deterministic failure instead of UB).
+  The two niche-carrying helpers (`graphix_value_drop`,
+  `graphix_arcstr_drop`) retyped to raw words (bit-identical ABI) so
+  the check runs BEFORE an invalid `Value`/`ArcStr` materializes;
+  `Value` disc 0 is unambiguous (discriminants are bitmasks from
+  0x1). EXPOSED by the fix (the crash was masking it): a pending
+  DynCall in DEAD position bottoms the whole fused kernel (interp =
+  0, jit = Timeout) — whole-kernel pending is coarser than the
+  canonical per-node bottom. Membership: variadic calls with zero
+  varargs (`str::concat()`, `str::join(#sep:)`) — zero-input nodes
+  that never fire canonically; used-position agrees
+  (Timeout==Timeout). Decision pending (de-fuse degenerate dyncalls /
+  liveness / per-value pending taint — related: "dead-elim dropped
+  in V1" in the decisions log). Repro stored as
+  `findings/dyncall-jun2026/*.gx.pending` (excluded from regress
+  until the divergence resolves).
+
+  **F1 COMPLETE (2026-06-12)** modulo two pending decisions. The
+  post-fix soak then died at iter ~1000 on the OTHER process-killer
+  (runaway-recursion mutant → node-walk stack overflow → SIGABRT),
+  proving in-process campaigns can't converge → built **fuzzer
+  subprocess crash isolation**: campaign checks run via the hidden
+  `check-one` worker (program on stdin, VERDICT line on stdout);
+  child signal-death → `crash_NNNNNN.gx` finding with wait status +
+  stderr tail (the overflow-vs-silent-SIGSEGV triage signal);
+  DIVERGE → in-process re-check of the proven-non-crashing program
+  feeds the existing record pipeline; minimization ALSO isolated
+  (`minimize-one` — a REDUCTION of a benign divergence can itself
+  be a crasher, e.g. a dropped base case), child death → record
+  unminimized. `GRAPHIX_FUZZ_INPROC=1` opts back in-process.
+  Throughput: 100 mutants/5s wall (resolver spin-up dominates).
+  The 3000@777 mutation soak then COMPLETED (first time ever): 1
+  divergence (the dead-pend class, isolated-minimized to
+  `{str::concat(); i64:0}`) + 1 crash (runaway recursion —
+  accepted: infinite recursion can't produce a value; the
+  overflow-abort is the node-walk's artifact). ZERO unexplained
+  findings. FuseExpect audit (`GRAPHIX_FUSE_AUDIT=1 cargo test -p
+  graphix-tests -- jit --nocapture`): 612 fixtures → 450 OK,
+  **155 GAINS** (None→Jit — the recurse-on-failure + D2-inlining
+  dividend), **6 LOSSES** in two closable clusters: map literals
+  (no direct emit_clif — #143 unported) and abstract types in
+  composites (resolve_abstract not applied on the direct freeze —
+  #145 unported); values agree everywhere (losses node-walk).
+  Before F2: the dead-pend decision, close-vs-accept on the two
+  loss clusters (recommend close), and the one-time FuseExpect
+  re-annotation of the gains.
+
+  **Dead-pend RESOLVED (Eric, 2026-06-12)** — at the language level,
+  upstream of fusion: a sync variadic builtin called with no
+  positional arguments has no data inputs and can never fire, so it
+  is now a COMPILE ERROR (`reject_dead_variadic_call` in
+  callsite.rs; labeled args are config, not data — `join(#sep:)` is
+  caught; positional-formal builtins keep their arity errors;
+  first-class-value calls escape to the safe runtime bottom).
+  `never()` is the sanctioned intentional bottom and was
+  reclassified `EffectKind::Async` (the "later, autonomously, or
+  never" contract's limiting case) — exempting it from the error
+  and making it a fusion boundary instead of an always-pending
+  fused dyncall (zero FuseExpect fallout). Both dyncall-jun2026
+  findings promoted to the regress corpus as CompileErr-agreement
+  guards. Gates: 115/115, 1429/1429 (3 new fixtures), regress
+  19/19, generate 300 clean, fuzz 500@42 completed (one new
+  accepted-class recursion crash recorded by isolation). F1's
+  remaining pre-F2 items: close the two audit loss clusters
+  (approved) + the one-time FuseExpect re-annotation.
+
+  **Audit loss clusters CLOSED (2026-06-13)** — the full audit now
+  shows ZERO Jit→None losses (242 Jit→Jit, 207 None→None, 165
+  None→Jit gains awaiting the flip's re-annotation). Maps (#217):
+  `Map::emit_clif` → `emit_map_new_node` const-folds through the
+  shared `const_map` into `emit_const_node`'s Value-constant arm —
+  classic's exact contract (all-constant entries or de-fuse).
+  Abstract types (#218), four seams found via the new
+  FUSEAUDIT-BLOCKER diagnostics: (1) `resolve_abstract` gained a
+  TVar-deref arm — INFERRED binding types are TVar-wrapped, unlike
+  the declared signature types classic resolves; (2)
+  `collect_region_inputs` resolves before freezing (region inputs
+  crossing module-level binds were silently skipped — slot kinds
+  from the resolved type, feeder Refs keep the type-system view);
+  (3) try_fuse's return-type gate retries freeze through
+  resolve_abstract (an abstract-returning region silently logged NO
+  attempt); (4) emit-time resolution: `BodyEmitter::type_env()` →
+  NodeBodyEmitter carries `&Env` → `LowerCtx.type_env` →
+  `resolve_node_typ`/`freeze_node_typ` (retry-on-failure — the
+  common path pays nothing), applied at tuple/struct elem reads +
+  arith prim derivation. `emit_lambda_call_node` now types arg
+  slots from the CALLEE's signature (`LambdaCallInfo.arg_types`) —
+  classic's discipline; caller-side node types never freeze.
+  Classic ALSO gained: abstract_type_in_typedef now fuses on
+  classic (annotation upgraded per the bidirectional check).
+  Permanent diagnostics: trait-default emit error includes spec
+  text; audit dumps per-region blockers. Gates: 115/115, 1429/1429,
+  regress 19/19, generate clean, fuzz 800@99 complete (3
+  accepted-class crashes: 2 runaway recursion + 1
+  `array::init(i64::MAX)` HANG — the isolation's outer deadline
+  caught what would have WEDGED the in-process harness, a native
+  loop that can't yield). NEXT: F2 flip.
 
 Final layout: `kernel_abi.rs`; `jit/{mod,scaffold,helpers,intern}.rs`;
 `fused_node.rs` (GirNode → FusedNode); `fusion/{mod,analysis,builder}.rs`;
@@ -704,3 +985,71 @@ an accepted, intended divergence — see `final_jit_architecture.md` Part 2.
   after the flip (pure perf for the non-fused tier).
 - Sink/dead-elim passes dropped in V1; only inline scrutinee
   stabilization kept (oracle-gated by the `sink_*` fixtures).
+
+## F2 — the flip (2026-06-13)
+
+`CFlag::DirectNodeJit` is GONE: `ExecCtx::direct_node_jit` is always
+true (field dies in F3), `fuse()` is `jit_node` recursion
+unconditionally (the classic planner body deleted; its helpers are
+F3's worklist), `Mode::DirectJit` is an alias of `Mode::Jit` (probe
+suite prunes in F3), the audit harness runs default flags. 168
+FuseExpect upgrades landed (scripted from the suite's own
+bidirectional-check messages); 5 GirOp-tag NodeShape pins neutralized
+with F4 markers (#213 — direct kernels carry no GIR body to
+tag-match).
+
+The flip surfaced SIX live defects, all root-caused and fixed — each
+was invisible pre-flip because classic never fused the triggering
+shape:
+
+1. **Handler-ful `?` fused** (catch4/is_err timeouts): error delivery
+   is a VARIABLE WRITE to the catch's BindId — an effect a kernel
+   can't perform; fusing swallowed the error. Gated in
+   `Qop::emit_clif` AND classic's `NodeView::Qop` lowering (per-slot
+   GIR builds still use it).
+2. **Feeder `ref_var` keyed by region id** (connect-fed regions saw
+   one update then nothing): `Rt::ref_var/unref_var` are keyed
+   `(BindId, top_id)`; feeders registered under the region's interior
+   ExprId stranded the real top expression at count zero once the
+   spliced original's Refs unref'd. `ExecCtx::fuse_top_id` (set per
+   `compile()`) now keys feeders. Latent in classic's planner too.
+3. **First dispatch ≠ init** (net_list_table): a DynCallSlot's
+   freshly-constructed inner Apply saw the outer cycle's
+   `init=false`, so labeled-default Nodes (Constants) never fired —
+   `sort(#dir, #numeric, a)` pended forever when the kernel's first
+   fire was post-init (async-fed). `dispatch` now forces the init
+   view for each fresh Apply's first update (the `CallSite::bind`
+   contract).
+4. **Update-history-sensitive builtins fused** (fs watch): the
+   dispatch protocol re-delivers EVERY arg as a fresh update each
+   dispatch — `skip(#n:1, e)` saw `n` "update" every cycle and never
+   passed an event. Once/Take/Skip/Count/Uniq reclassified
+   `EffectKind::Async` (same honesty as Never): "Sync" for dispatch
+   means per-cycle REPLAYABLE, which stateful counters aren't.
+5. **Lock-discipline deadlocks** (the parallel-suite wedge — two
+   edges): (a) recursion inside `with_deref` closures held TVar read
+   guards across `ABSTRACT_REGISTRY` reads and further TVar
+   acquisitions (`resolve_abstract`'s TVar arm, `abi_kind`,
+   `freeze_concrete_d`, `nullable_inner`) — all now CLONE the
+   deref'd type out and run guard-free; (b) `match
+   REGISTRY.read().get(..).cloned() { .. r(&c) .. }` kept the read
+   guard alive as a MATCH TEMPORARY through the recursion — fatal
+   under parking_lot's fair lock the moment a writer (`check_sig`)
+   queued between two reads. Suite went from 2/3-wedging to 4/4 ×
+   1429 green.
+6. **Dead bottoms poison kernels** (post-flip generate findings,
+   `findings/flip-jun2026`): classic's prune pass removed dead
+   statements; the direct path emitted them, and a dead div0 inside
+   a discarded composite aborted the whole kernel. Dead-statement
+   elimination now runs at the `emit_block_node` seam — a Bind is
+   dead iff no later sibling/tail references its bound ids; a bare
+   expression statement's value is always unread — gated on a
+   conservative `stmt_subtree_effect_free` walk (no Connect /
+   ConnectDeref / CallSite / Qop / OrNever anywhere): skipping an
+   effectful statement would convert "de-fuse and node-walk the
+   effect" into silently DROPPING it (the #164 env-accounting probe
+   caught exactly that with a skipped `counter <- v`).
+
+The flip's defect profile vindicates the staging: every bug was in
+the NEWLY-REACHABLE fusion surface, none in the ported emission
+itself, and the canonical node-walk caught all of them differentially.

@@ -17,6 +17,52 @@ use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, mem};
 use triomphe::Arc as TArc;
 
+/// Reject a direct call to a same-cycle (`EffectKind::Sync`) variadic
+/// builtin that supplies NO positional arguments, when the builtin's
+/// signature has no positional formals — e.g. `str::concat()`,
+/// `str::join(#sep: ",")`, `sum()`. Such a call has no data inputs:
+/// the node can never fire, so the program just contains a silent
+/// bottom the user has to debug ("where did my value go?"). If a
+/// value that never arrives is what's wanted, `never()` says so
+/// explicitly (and is exempt here — it's declared `Async`, whose
+/// contract is "later, autonomously, or never"). Only a direct `Ref`
+/// to the builtin binding is statically checkable; a builtin passed
+/// around as a first-class value degrades to the (safe) runtime
+/// bottom instead.
+fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    scope: &Scope,
+    f: &Expr,
+    args: &TArc<[(Option<ArcStr>, Expr)]>,
+) -> Result<()> {
+    let path = match &f.kind {
+        crate::expr::ExprKind::Ref { name } => name,
+        _ => return Ok(()),
+    };
+    if args.iter().any(|(label, _)| label.is_none()) {
+        return Ok(());
+    }
+    let Some((_, bind)) = ctx.env.lookup_bind(&scope.lexical, path) else {
+        return Ok(());
+    };
+    let key = (bind.scope.clone(), bind.name.clone());
+    let Some(info) = ctx.builtin_bindings.get(&key) else {
+        return Ok(());
+    };
+    if info.typ.vargs.is_none()
+        || info.typ.args.iter().any(|a| a.is_positional())
+        || !ctx.builtin_effect(info.name.as_str()).is_sync()
+    {
+        return Ok(());
+    }
+    bail!(
+        "calling `{path}` with no positional arguments can never produce \
+         a value: a sync variadic builtin with no data inputs never fires. \
+         Pass it at least one argument, or use never() to express a value \
+         that never arrives"
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ArgKey {
     Positional(usize),
@@ -213,6 +259,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         args: &TArc<[(Option<ArcStr>, Expr)]>,
         f: &TArc<Expr>,
     ) -> Result<Node<R, E>> {
+        reject_dead_variadic_call(ctx, scope, f, args)?;
         let fnode = compile(ctx, flags, (**f).clone(), scope, top_id)?;
         let spec = TArc::new(spec);
         let args = compile_apply_args(ctx, flags, scope, top_id, args)?;
@@ -911,8 +958,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     );
                 }
                 bail!(
-                    "emit_clif: lambda call site not discovered — \
-                     subtree node-walks"
+                    "emit_clif: lambda call site `{}` not discovered — \
+                     subtree node-walks",
+                    self.spec
                 );
             }
             // Builtin-owned emission hook ([`Apply::emit_clif`]).
@@ -920,6 +968,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // the DynCall path below.
             if let Some(cv) = f.emit_clif(self, cx)? {
                 return Ok(cv);
+            }
+        }
+        // A VALUE-position self-call inside a recursive callee body
+        // (tail-position self-calls were intercepted by
+        // `emit_body_tail`): call the kernel's own FuncRef. The inner
+        // site is #203-UNRESOLVED — `self.function` is None — so this
+        // check lives OUTSIDE the resolved-Apply block. Matched by the
+        // self BindId (names shadow, #206; ids don't); captures
+        // forward from this kernel's own params (bound with their
+        // BindIds).
+        if let Some((sb, info)) = cx.self_call_info() {
+            let is_self = matches!(
+                self.fnode.view(),
+                crate::NodeView::Ref(r) if r.id == *sb
+            );
+            if is_self {
+                let info = info.clone();
+                return crate::gir_jit::emit_lambda_call_node(
+                    cx, self, &info,
+                );
             }
         }
         // Builtin DynCall. `marshal_arg_indices[i]` is a position in

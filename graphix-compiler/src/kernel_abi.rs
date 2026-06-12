@@ -257,8 +257,16 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 /// `Type::Fn`, multi-member non-option/non-variant `Set`,
 /// parameterized abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
-    t.with_deref(|resolved| {
-        let resolved = resolved?;
+    // Clone the deref'd type OUT of `with_deref` so the TVar's read
+    // guard is DROPPED before the body runs: the Abstract arm takes
+    // `ABSTRACT_REGISTRY.read()` and the Set/Abstract arms recurse
+    // (more TVar guards). With parking_lot's fair, non-reentrant locks
+    // that cross-holding deadlocked concurrent compiles in one process
+    // (the post-F2-flip parallel test wedge). Same discipline as
+    // `resolve_abstract`'s TVar arm and `freeze_concrete_d`.
+    let resolved = t.with_deref(|r| r.cloned());
+    {
+        let resolved = resolved.as_ref()?;
         // Order matches `from_type`: Bottom, then the single-bit
         // primitive special cases, then the value-shape composites,
         // then the collapsed-option primitive, then the structural
@@ -328,7 +336,7 @@ pub fn abi_kind(t: &Type) -> Option<AbiKind> {
             return None;
         }
         None
-    })
+    }
 }
 
 /// If `members` (a `Type::Set`'s members) is the option/result shape —
@@ -387,8 +395,11 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
     if depth > 16 {
         return None;
     }
-    t.with_deref(|resolved| {
-        let resolved = resolved?;
+    // Deref-clone hoisted out of the guard — see `abi_kind`'s note
+    // (the Abstract arm takes the registry lock and most arms recurse).
+    let resolved = t.with_deref(|r| r.cloned());
+    {
+        let resolved = resolved.as_ref()?;
         match resolved {
             // Leaves that `from_type` accepts as-is.
             Type::Bottom => Some(Type::Bottom),
@@ -480,7 +491,10 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
                 let frozen: Option<Vec<Type>> = members
                     .iter()
                     .map(|m| {
-                        m.with_deref(|r| match r {
+                        // Clone out, then recurse guard-free (see
+                        // `abi_kind`'s lock-discipline note).
+                        let m = m.with_deref(|r| r.cloned());
+                        match m {
                             Some(Type::Variant(tag, payloads)) => {
                                 let fp: Option<Vec<Type>> = payloads
                                     .iter()
@@ -492,7 +506,7 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
                                 ))
                             }
                             _ => None,
-                        })
+                        }
                     })
                     .collect();
                 Some(Type::Set(Arc::from_iter(frozen?)))
@@ -506,7 +520,7 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
             // (handled above), unbound TVar (None via with_deref).
             _ => None,
         }
-    })
+    }
 }
 
 // ─── Structure accessors over a (frozen) `Type` ──────────────────────
@@ -580,8 +594,11 @@ pub fn freeze_normalized(t: &Type) -> Option<Type> {
 /// Returns `None` for any non-option shape. The returned `T` is frozen
 /// (run through [`freeze_concrete`]) so callers get a concrete inner.
 pub fn nullable_inner(t: &Type) -> Option<Type> {
-    t.with_deref(|resolved| {
-        let resolved = resolved?;
+    // Deref-clone hoisted out of the guard — see `abi_kind`'s note
+    // (the Set arm freezes the success member, which recurses).
+    let resolved = t.with_deref(|r| r.cloned());
+    {
+        let resolved = resolved.as_ref()?;
         match resolved {
             // Collapsed `T | null` primitive.
             Type::Primitive(p)
@@ -603,7 +620,7 @@ pub fn nullable_inner(t: &Type) -> Option<Type> {
             }
             _ => None,
         }
-    })
+    }
 }
 
 /// The scalar [`PrimType`] of a `Type` whose top-level shape is a plain

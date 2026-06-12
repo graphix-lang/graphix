@@ -32,7 +32,7 @@ const DYNAMIC_MODULE0: &str = r#"
 run!(dynamic_module0, DYNAMIC_MODULE0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE1: &str = r#"
 {
@@ -62,7 +62,7 @@ const DYNAMIC_MODULE1: &str = r#"
 run!(dynamic_module1, DYNAMIC_MODULE1, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE2: &str = r#"
 {
@@ -85,7 +85,7 @@ const DYNAMIC_MODULE2: &str = r#"
 run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE3: &str = r#"
 {
@@ -116,7 +116,7 @@ const DYNAMIC_MODULE3: &str = r#"
 run!(dynamic_module3, DYNAMIC_MODULE3, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE4: &str = r#"
 {
@@ -148,7 +148,7 @@ const DYNAMIC_MODULE4: &str = r#"
 run!(dynamic_module4, DYNAMIC_MODULE4, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE5: &str = r#"
 {
@@ -180,7 +180,7 @@ const DYNAMIC_MODULE5: &str = r#"
 run!(dynamic_module5, DYNAMIC_MODULE5, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE6: &str = r#"
 {
@@ -211,7 +211,7 @@ const DYNAMIC_MODULE6: &str = r#"
 run!(dynamic_module6, DYNAMIC_MODULE6, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE7: &str = r#"
 {
@@ -243,7 +243,7 @@ const DYNAMIC_MODULE7: &str = r#"
 run!(dynamic_module7, DYNAMIC_MODULE7, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DYNAMIC_MODULE8: &str = r#"
 {
@@ -275,4 +275,4 @@ const DYNAMIC_MODULE8: &str = r#"
 run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -83,6 +83,16 @@ pub struct KnownFusedFn {
     pub arg_types: Vec<Type>,
     /// Return type — scalar or array.
     pub return_type: Type,
+    /// The `let` binding this kernel was built from, when known.
+    /// `emit_known_fused_call` requires an unresolved call site's
+    /// fnode `Ref` to carry this id before resolving by name — names
+    /// shadow, ids don't. Without the check, a body call to a
+    /// shadowed same-name outer lambda (`let f = …; let f = |n|
+    /// f(n) * 2`) resolves against the kernel ITSELF (#206: infinite
+    /// native self-call, stack overflow). `None` (region/module
+    /// kernels — not name-callable from bodies anyway) keeps
+    /// name-only resolution.
+    pub self_bind: Option<crate::BindId>,
 }
 
 /// A compile-time-known primitive expression bound to a Graphix-level

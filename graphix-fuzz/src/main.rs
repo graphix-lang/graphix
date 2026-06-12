@@ -68,6 +68,15 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
+/// Read a whole program from stdin (the `check-one` / `minimize-one`
+/// isolated-worker input channel).
+fn read_stdin() -> Result<String> {
+    use std::io::Read;
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    Ok(buf)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -87,6 +96,28 @@ async fn main() -> Result<()> {
             if n > 0 {
                 std::process::exit(1);
             }
+        }
+        // Hidden: the isolated-check worker the campaign pool spawns
+        // (program on stdin, one VERDICT line on stdout). A program that
+        // kills the evaluator kills only this process — the parent
+        // records a crash finding. See lib.rs `check_isolated`.
+        Some("check-one") => {
+            let code = read_stdin()?;
+            let verdict = match check(code.trim(), CAMPAIGN_TIMEOUT).await {
+                None => "AGREE",
+                Some(_) => "DIVERGE",
+            };
+            println!("VERDICT\t{verdict}");
+        }
+        // Hidden: the isolated minimizer (program on stdin, the reduced
+        // program after a MINIMIZED marker on stdout). A reduction that
+        // crashes kills only this process — the parent falls back to
+        // recording the unminimized mutant.
+        Some("minimize-one") => {
+            let code = read_stdin()?;
+            let (min, _) = minimize(code.trim(), CAMPAIGN_TIMEOUT, 80).await;
+            println!("MINIMIZED");
+            println!("{min}");
         }
         Some(cmd @ ("generate" | "fuzz")) => {
             // `iters` may be `forever`/`0` to run until killed, surfacing new
@@ -118,9 +149,11 @@ async fn main() -> Result<()> {
             // (Only reached in finite mode; `forever` runs until killed.)
             let new = corpus.len() - before;
             println!(
-                "done: {} programs, {} divergences ({new} new, {} total in corpus)",
+                "done: {} programs, {} divergences, {} crashes \
+                 ({new} new, {} total in corpus)",
                 stats.run,
                 stats.divergences,
+                stats.crashes,
                 corpus.len()
             );
             if new > 0 || regressions > 0 {

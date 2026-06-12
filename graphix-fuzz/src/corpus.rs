@@ -79,4 +79,13 @@ pub const SEEDS: &[&str] = &[
     "{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }",
     "{ let a = [i64:1, i64:2, i64:3]; let x = a[1..]; x$ }",
     "{ let t = [(i64:1, i64:2)]; t[0]$ }",
+    // recursion (E3): non-tail, tail loop, double recursion, capture,
+    // shadowed name (#206). A mutated-away base case yields
+    // Timeout==Timeout (or the whitelisted interp-value/jit-Timeout
+    // infinite pure tail recursion) — both handled by the oracle.
+    "{ let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) }; f(i64:10) }",
+    "{ let rec lp = |n: i64, acc: i64| -> i64 select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; lp(i64:100, i64:0) }",
+    "{ let rec fib = |n: i64| -> i64 select n { i64:0 => i64:0, i64:1 => i64:1, _ => fib(n - i64:1) + fib(n - i64:2) }; fib(i64:12) }",
+    "{ let k = i64:3; let rec f = |n: i64| -> i64 select n { i64:0 => k, _ => f(n - i64:1) }; f(i64:5) }",
+    "{ let f = |x: i64| -> i64 x + i64:1; let f = |n: i64| -> i64 f(n) * i64:2; f(i64:3) }",
 ];

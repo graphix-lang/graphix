@@ -236,4 +236,4 @@ const DATETIME_ARITH18: &str = r#"
 run!(datetime_arith18, DATETIME_ARITH18, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

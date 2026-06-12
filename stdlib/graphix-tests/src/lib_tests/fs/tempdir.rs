@@ -166,4 +166,4 @@ const TEMPDIR_WRITE_READ_CYCLE: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_tempdir_write_read_cycle, TEMPDIR_WRITE_READ_CYCLE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Hello from tempdir!")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

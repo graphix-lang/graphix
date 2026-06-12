@@ -82,7 +82,7 @@ run!(pack_bytes, r#"{
     buffer::to_string(decoded)$
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "abc")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -99,7 +99,7 @@ run!(pack_stream_tcp, r#"{
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -109,4 +109,4 @@ run!(pack_invalid, r#"{
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

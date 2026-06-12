@@ -19,7 +19,7 @@ const LAMBDA: &str = r#"
 run!(lambda, LAMBDA, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FIRST_CLASS_LAMBDAS: &str = r#"
 {
@@ -109,7 +109,7 @@ const ARG_NAME_SHORT: &str = r#"
 run!(arg_name_short, ARG_NAME_SHORT, |v: Result<&Value>| match v {
     Ok(Value::I64(45)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LATE_BINDING0: &str = r#"
 {
@@ -242,7 +242,7 @@ const KIR_FUSED_ARITH: &str = r#"
 run!(gir_fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
     Ok(Value::I64(25)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Fusion smoke test: tail-recursive countdown with full annotations
 // and the binding-name hint. Self-call in tail position lowers to
@@ -265,7 +265,7 @@ run!(gir_fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Fusion smoke test: a mandelbrot-shape kernel. Same iterate as the
 // unit tests, exercised through the runtime's Apply path.
@@ -288,7 +288,7 @@ run!(gir_fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
     // c=1+0i: trace 0 → 1 → 2 → 5 → escape; |5|² = 25 > 4 at i=7.
     Ok(Value::I64(7)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Deferred fusion: an unannotated callback `|x| x * 2` passed to a
 // HOF. Eager fusion fails (no type on `x`); the deferred path
@@ -335,7 +335,7 @@ run!(gir_lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Three-level recursive fusion with NO annotations. Tests that
 // lazy fusion threads through arbitrarily nested call chains using
@@ -430,7 +430,7 @@ const LAMBDAMATCH0: &str = r#"
 run!(lambdamatch0, LAMBDAMATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LAMBDAMATCH1: &str = r#"
 {
@@ -458,7 +458,7 @@ const LAMBDAMATCH2: &str = r#"
 run!(lambdamatch2, LAMBDAMATCH2, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LAMBDAMATCH3: &str = r#"
 {
@@ -517,7 +517,7 @@ const NESTED_OPTIONAL0: &str = r#"
 run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Regression test: callsite args must be updated every cycle, not just
 // when the function is bound. array::iter produces 10, 20, 30 across
@@ -548,7 +548,7 @@ const ARG_UPDATE_BEFORE_BIND: &str = r#"
 run!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, |v: Result<&Value>| match v {
     Ok(Value::I64(31)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify that arg changes propagate through the ArgRef proxy after the
 // function is already bound (steady-state !bound path).
@@ -573,7 +573,7 @@ run!(arg_update_after_bind, ARG_UPDATE_AFTER_BIND, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Variadic args: extra positional args beyond the fixed signature
 const VARGS0: &str = r#"

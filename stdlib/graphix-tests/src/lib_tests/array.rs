@@ -44,7 +44,7 @@ run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
         },
         Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Composite-output `array::map`: the body produces a tuple per element,
 // so the output is `Array<(i64, i64)>`. Exercises `GirOp::ArrayMap`'s
@@ -398,7 +398,7 @@ run!(array_iterq, ARRAY_ITERQ, |v: Result<&Value>| {
         Ok(Value::I64(8)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FOLD0: &str = r#"
 {

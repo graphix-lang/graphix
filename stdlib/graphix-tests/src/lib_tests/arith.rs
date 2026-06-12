@@ -121,40 +121,40 @@ run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {
 const CHECKED_ADD_OVERFLOW: &str = "is_err(i64:9223372036854775807 +? i64:1)";
 run!(checked_add_overflow_errs, CHECKED_ADD_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CHECKED_SUB_UNDERFLOW: &str = "is_err(i64:-9223372036854775808 -? i64:1)";
 run!(checked_sub_underflow_errs, CHECKED_SUB_UNDERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CHECKED_MUL_OVERFLOW: &str = "is_err(i64:9223372036854775807 *? i64:2)";
 run!(checked_mul_overflow_errs, CHECKED_MUL_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CHECKED_U8_OVERFLOW: &str = "is_err(u8:200 +? u8:100)";
 run!(checked_u8_overflow_errs, CHECKED_U8_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CHECKED_U8_UNDERFLOW: &str = "is_err(u8:0 -? u8:1)";
 run!(checked_u8_underflow_errs, CHECKED_U8_UNDERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Checked div-by-zero already worked before the fix — guard against
 // regression.
 const CHECKED_DIV_ZERO: &str = "is_err(i64:10 /? i64:0)";
 run!(checked_div_zero_errs, CHECKED_DIV_ZERO, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // No overflow: the checked op returns the bare value, not an error.
 const CHECKED_NO_OVERFLOW: &str = "i64:5 +? i64:3";
 run!(checked_no_overflow_ok, CHECKED_NO_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(8)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Unchecked overflow deliberately wraps (the fast path); pin that so a
 // future change to unchecked semantics is a conscious decision. This one
@@ -199,7 +199,7 @@ run!(err_as_dyncall_arg, ERR_DYNCALL_ARG, |v: Result<&Value>| {
 const INTERP_NONSCALAR: &str = "{ let words = [\"alpha\", \"beta\"]; \"first=[words[0]]\" }";
 run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "first=alpha")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Dead-statement elimination (fuzzer-found, block bottom-poison) ──
 //

@@ -399,6 +399,30 @@ macro_rules! run {
                 if fusion_check {
                     $crate::testing::check_fuse_expectation($fexpect);
                 }
+                // Audit diagnostics: under GRAPHIX_FUSE_AUDIT, dump
+                // the per-region blocker list — the "why didn't it
+                // fuse" companion to the FUSEAUDIT verdict line.
+                // Includes stdlib-root noise (the stats are
+                // per-ExecCtx, no baseline subtraction here) — filter
+                // by eye. Gate on fusion actually having run (not the
+                // interp mode's FusionDisabled).
+                if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
+                    && !flags
+                        .contains(::graphix_compiler::CFlag::FusionDisabled)
+                {
+                    if let ::std::result::Result::Ok(stats) =
+                        ctx.fusion_stats().await
+                    {
+                        for (id, why) in stats.failed.iter() {
+                            eprintln!(
+                                "FUSEAUDIT-BLOCKER\t{}\t{:?}\t{}",
+                                module_path!(),
+                                id,
+                                why
+                            );
+                        }
+                    }
+                }
                 ctx.shutdown().await;
                 Ok(())
             }
@@ -459,6 +483,40 @@ macro_rules! run {
                         "FUSEMAPJ\t{}\t{}",
                         module_path!(),
                         if jit > 0 { "Jit" } else { "NoJit" },
+                    );
+                    return Ok(());
+                }
+                // Coverage-audit mode: when GRAPHIX_FUSE_AUDIT is
+                // set, run the fixture normally but REPORT the
+                // observed fusion level against the `FuseExpect`
+                // annotation instead of asserting it. Harvest:
+                // `GRAPHIX_FUSE_AUDIT=1 cargo test -p graphix-tests
+                // -- jit --nocapture 2>&1 | grep FUSEAUDIT` — the
+                // MISMATCH lines are the coverage delta to review
+                // (and FUSEAUDIT-BLOCKER lines say why a region
+                // didn't fuse). Built for the F1→F2 flip audit; kept
+                // as the standing no-assert coverage observer.
+                if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
+                    run_with_flags(
+                        ::graphix_compiler::BitFlags::empty(),
+                        true,
+                        false,
+                        false,
+                    ).await?;
+                    let fusion =
+                        ::graphix_compiler::gir_jit_helpers::fusion_invocations();
+                    let expected = $fexpect;
+                    let observed = if fusion > 0 {
+                        $crate::testing::FuseExpect::Jit
+                    } else {
+                        $crate::testing::FuseExpect::None
+                    };
+                    eprintln!(
+                        "FUSEAUDIT\t{}\t{:?}\t{:?}\t{}",
+                        module_path!(),
+                        expected,
+                        observed,
+                        if expected == observed { "OK" } else { "MISMATCH" },
                     );
                     return Ok(());
                 }

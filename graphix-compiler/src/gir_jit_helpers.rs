@@ -264,9 +264,11 @@ pub extern "C" fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, v:
 /// Drop a partially-built (still-`Box`'d) `LPooled<Vec<Value>>`.
 /// Used by the JIT cleanup_stack on pending paths: a producer op
 /// that allocated a buf but never reached `finalize` needs to free
-/// it explicitly.
+/// it explicitly. Null is always a codegen bug (a pending sentinel
+/// leaked into a drop) — panic loudly instead of UB.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
+    assert!(!buf.is_null(), "graphix_value_buf_drop: null buf — JIT codegen bug");
     unsafe { drop(Box::from_raw(buf)) }
 }
 
@@ -352,9 +354,12 @@ pub unsafe extern "C" fn graphix_valarray_clone(arr: *const ValArray) -> *mut Va
 }
 
 /// Drop an owned ValArray pointer. Use when a local goes out of
-/// scope or is overwritten by a tail-call rebind.
+/// scope or is overwritten by a tail-call rebind. Null is always a
+/// codegen bug (a pending sentinel leaked into a drop) — panic
+/// loudly instead of UB.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_valarray_drop(arr: *mut ValArray) {
+    assert!(!arr.is_null(), "graphix_valarray_drop: null ValArray — JIT codegen bug");
     unsafe { drop(Box::from_raw(arr)) }
 }
 
@@ -426,9 +431,28 @@ pub unsafe extern "C" fn graphix_value_into_array_borrowed(
 /// Consume a Value and decrement the inner refcount (for
 /// String/Array/Variant/etc. — a no-op for scalar variants like
 /// I64/Bool/Null).  Use at scope exit for owned Value locals.
+///
+/// Takes the two raw register words rather than `Value` itself
+/// (bit-identical ABI — the 16-byte aggregate passes as the same two
+/// integer registers) so the all-zero pending sentinel can be
+/// REJECTED before an invalid `Value` materializes: `Value`'s
+/// discriminants are bitmasks starting at 0x1, so disc 0 is never a
+/// real value, and a typed `v: Value` parameter holding it would be
+/// UB at the boundary. A zero disc here is always a codegen bug (a
+/// pending sentinel leaked into a drop); the panic aborts at the
+/// `extern "C"` boundary with the message printed, instead of UB.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_value_drop(v: Value) {
-    drop(v)
+pub extern "C" fn graphix_value_drop(disc: u64, payload: u64) {
+    assert!(
+        disc != 0,
+        "graphix_value_drop: zero discriminant — JIT codegen bug \
+         (a pending sentinel leaked into a drop)"
+    );
+    // SAFETY: disc is nonzero and JIT'd code only ever passes word
+    // pairs it received from a Value-producing helper, so the bits
+    // are a valid `Value` (same decode as `GirNode::update`'s
+    // value-shape return path).
+    drop(unsafe { std::mem::transmute::<[u64; 2], Value>([disc, payload]) })
 }
 
 /// "Borrowed clone": bump the inner refcount and return a fresh
@@ -566,9 +590,27 @@ pub unsafe extern "C" fn graphix_arcstr_clone_from_static(
 
 /// Drop an owned ArcStr. Refcount decrement; frees the underlying
 /// buffer when the last clone goes away.
+///
+/// Takes the raw pointer bits rather than `ArcStr` itself
+/// (bit-identical ABI — `repr(transparent)` over a pointer) so the
+/// zero pending sentinel can be REJECTED before an invalid `ArcStr`
+/// materializes (zero violates its `NonNull` niche — a typed
+/// parameter holding it would be UB at the boundary). Zero here is
+/// always a codegen bug (a pending sentinel leaked into a drop);
+/// the panic aborts at the `extern "C"` boundary with the message
+/// printed, instead of UB. This was #214's crash site —
+/// `drop_in_place(NULL)` SIGSEGV.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_arcstr_drop(s: arcstr::ArcStr) {
-    drop(s)
+pub extern "C" fn graphix_arcstr_drop(s: u64) {
+    assert!(
+        s != 0,
+        "graphix_arcstr_drop: null ArcStr — JIT codegen bug \
+         (a pending sentinel leaked into a drop)"
+    );
+    // SAFETY: nonzero, and JIT'd code only ever passes bits it
+    // received from an ArcStr-producing helper (same decode as
+    // `GirNode::update`'s String return path).
+    drop(unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(s) })
 }
 
 /// Borrowed-clone an ArcStr by value: bump the refcount, return the
@@ -602,9 +644,12 @@ pub extern "C" fn graphix_string_buf_new() -> *mut String {
 }
 
 /// Drop a string buf without finalizing — used on pending paths
-/// when a DynCall short-circuits an in-flight Concat.
+/// when a DynCall short-circuits an in-flight Concat. Null is
+/// always a codegen bug (a pending sentinel leaked into a drop) —
+/// panic loudly instead of UB.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_string_buf_drop(buf: *mut String) {
+    assert!(!buf.is_null(), "graphix_string_buf_drop: null buf — JIT codegen bug");
     drop(unsafe { Box::from_raw(buf) })
 }
 

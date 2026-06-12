@@ -190,7 +190,7 @@ run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_WITH_ARRAYS: &str = r#"
 {
@@ -211,4 +211,4 @@ run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
             && arr.get(2).map(|v| *v == Value::I64(3)).unwrap_or(false)
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

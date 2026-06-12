@@ -99,18 +99,6 @@ pub enum CFlag {
     /// `FusionDisabled`; it remains as the "build kernels but don't
     /// JIT" knob.
     JitDisabled,
-    /// Stage 1 of `design/delete_gir_ir.md`. When set, the fusion
-    /// JIT-compile path emits the fused region's body by walking the
-    /// region-root [`Node`] graph directly (via `NodeView`), through
-    /// the new `gir_jit::compile_node`, instead of lowering the body
-    /// to a `GirKernel`'s `GirStmt` op-list and running `compile_expr`
-    /// over it. The kernel ABI (params / return / wrapper) still comes
-    /// from the `GirKernel`; only the body codegen changes. Off by
-    /// default — the GIR body path is the production path. `compile_node`
-    /// covers a scalar-only slice today; any unsupported `NodeView`
-    /// makes the kernel build fail, so the region simply doesn't fuse
-    /// and node-walks (the universal fallback).
-    DirectNodeJit,
 }
 
 #[allow(dead_code)]
@@ -497,6 +485,21 @@ impl Refs {
     /// orphaned kernel feeder that nothing ever feeds).
     pub fn mark_bound(&mut self, id: BindId) {
         self.bound.insert(id);
+    }
+
+    /// Visit every id BOUND within the walked subtree. Used by the
+    /// direct emission's dead-statement elimination to learn which
+    /// ids a `Bind` introduces.
+    pub fn with_bound(&self, mut f: impl FnMut(BindId)) {
+        for id in &*self.bound {
+            f(*id);
+        }
+    }
+
+    /// True if `id` is referenced anywhere in the walked subtree
+    /// (whether or not it is also bound there).
+    pub fn is_refed(&self, id: BindId) -> bool {
+        self.refed.contains(&id)
     }
 }
 
@@ -972,8 +975,10 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
         _cx: &mut crate::gir_jit::BodyCx,
     ) -> Result<crate::gir_jit::CompiledExpr> {
         anyhow::bail!(
-            "node does not emit CLIF (spec id {:?}) — subtree node-walks",
-            self.spec().id
+            "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
+             node-walks",
+            self.spec().id,
+            self.spec()
         )
     }
 
@@ -1470,9 +1475,26 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// runs from a builtin's `static_resolve_fn_args` hook that doesn't
     /// receive the compile flags. Defaults `true`.
     pub jit_enabled: bool,
+    /// Whether the current compile runs the distributed direct-node
+    /// path. ALWAYS true since the F2 flip (2026-06-13,
+    /// `design/distributed_jit.md`) — direct Node emission is the
+    /// only fusion path; the classic GIR reader branches it gates are
+    /// dead and go away with the F3 mass delete (along with this
+    /// field).
+    pub direct_node_jit: bool,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub fusion_stats: FusionStats,
+    /// The TOP expression id of the compile currently running — set by
+    /// [`compile`] before the fusion phase. `try_fuse` builds its
+    /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
+    /// `(BindId, top_id)`, and the runtime wakes a top expression on
+    /// `set_var` only while its ref count is nonzero. A feeder
+    /// registered under the REGION's interior ExprId would strand the
+    /// real top expression at count zero once the spliced original's
+    /// Refs unref — a fused region fed by a `<-`-written variable
+    /// would then never see updates past the first cycle.
+    pub(crate) fuse_top_id: Option<crate::expr::ExprId>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1514,7 +1536,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 nohash::IntSet::default(),
             )),
             jit_enabled: true,
+            direct_node_jit: true,
             fusion_stats: FusionStats::default(),
+            fuse_top_id: None,
         })
     }
 
@@ -1625,6 +1649,7 @@ pub fn compile<R: Rt, E: UserEvent>(
 ) -> Result<Node<R, E>> {
     ctx.jit_enabled = !flags.contains(CFlag::JitDisabled);
     let top_id = spec.id;
+    ctx.fuse_top_id = Some(top_id);
     let env = ctx.env.clone();
     let st = Instant::now();
     let mut node = match compiler::compile(ctx, flags, spec, scope, top_id) {

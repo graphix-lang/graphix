@@ -26,7 +26,7 @@ run!(http_round_trip, r#"{
     resp.body
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -53,4 +53,4 @@ run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
     resp.body
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

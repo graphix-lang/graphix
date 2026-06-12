@@ -38,7 +38,7 @@ run!(
     let v: P = json::read(json::write_str({x: 1, y: "a"})$)?;
     v.x
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // ============================================================================
 // Late binding: deserializers passed through higher-order functions
@@ -82,7 +82,7 @@ run!(
     let b: i64 = apply(json::read, json::write_str(42)$)?;
     a + b
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // Late binding: json + pack through same typed call site using bytes input
 // (both accept bytes; error types unify to the superset)
@@ -97,7 +97,7 @@ run!(
     let b: i64 = apply(pack::read, pack::write_bytes(42)$)?;
     a + b
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // Late binding with struct types through typed wrapper
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -111,7 +111,7 @@ run!(
     let p: Point = decode(json::write_str({x: 10, y: 20})$)?;
     p.x + p.y
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(30))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(30))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // ============================================================================
 // Higher-order function type propagation
@@ -137,7 +137,7 @@ run!(
         // Bug present: json::read has no cast_typ, returns Error, is_err => true
         matches!(v, Ok(Value::I64(42)))
     }
-; graphix_package_core::testing::FuseExpect::None);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 run!(
     hof_map_json_untyped,
@@ -163,7 +163,7 @@ run!(
         ];
         array::fold(data, 0, |acc, s| acc + json::read(s)$)
     }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // array::init — Init: json::read in unannotated init closure,
 // type must propagate through Init's resolved mftyp
@@ -180,7 +180,7 @@ run!(
         array::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     results[0]
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // list::init — ListInit: json::read in unannotated init closure,
 // type must propagate through ListInit's resolved mftyp
@@ -196,7 +196,7 @@ run!(
         list::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     list::head(results)
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // nested array::map — json::read passed directly to inner map.
 // The inner callsite typechecks before the outer deferred check runs,
@@ -228,7 +228,7 @@ run!(
     let v: i64 = filter(json::read(s)$, |x| x > 0);
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // ============================================================================
 // Subscribe type-aware casting
@@ -316,7 +316,7 @@ run!(
         } else {
             false
         }
-    }; graphix_package_core::testing::FuseExpect::None);
+    }; graphix_package_core::testing::FuseExpect::Jit);
 
 // ============================================================================
 // RPC with typed spec and callback

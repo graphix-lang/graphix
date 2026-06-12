@@ -321,7 +321,7 @@ run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLITN_ESCAPED: &str = r#"
 {
@@ -343,7 +343,7 @@ run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLIT_ONCE: &str = r#"
   str::split_once(#pat:", ", "foo, bar, baz")

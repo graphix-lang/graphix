@@ -81,7 +81,7 @@ run!(json_read_bytes, r#"{
     v
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 run!(json_pretty, r#"{
     let compact = json::write_str({a: 1, b: 2})$;
@@ -99,7 +99,7 @@ run!(json_invalid, r#"{
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
@@ -128,7 +128,7 @@ run!(json_stream_tcp, r#"{
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // write json to a tcp stream, read back and cast to nested struct
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -149,7 +149,7 @@ run!(json_stream_nested, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // struct round-trip: write as json string, read back with typed read
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -163,7 +163,7 @@ run!(json_struct_cast, r#"{
     p2.x + p2.y
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // nested struct round-trip through json string
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -179,7 +179,7 @@ run!(json_nested_struct_cast, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // json::read without a concrete return type should be a compile-time error
 run!(json_no_concrete_type, r#"json::read("42")"#, |v: Result<&Value>| {

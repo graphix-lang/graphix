@@ -51,7 +51,7 @@ const STDOUT_WRITE: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdout_write, STDOUT_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // stderr: write and flush succeed
 const STDERR_WRITE: &str = r#"
@@ -68,7 +68,7 @@ const STDERR_WRITE: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(stderr_write, STDERR_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // stdin: can be created (we can't feed data in a test, but verify it's a valid stream)
 const STDIN_CREATE: &str = r#"
