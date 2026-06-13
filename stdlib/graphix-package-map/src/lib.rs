@@ -104,7 +104,6 @@ struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "map_len";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -122,7 +121,6 @@ struct GetEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
     const NAME: &str = "map_get";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -142,7 +140,6 @@ struct GetOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
     const NAME: &str = "map_get_or";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -162,7 +159,6 @@ struct InsertEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
     const NAME: &str = "map_insert";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -182,7 +178,6 @@ struct RemoveEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
     const NAME: &str = "map_remove";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -203,7 +198,6 @@ struct Iter {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "map_iter";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -258,7 +252,6 @@ struct IterQ {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "map_iterq";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -333,7 +326,6 @@ struct Change<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Change<R, E> {
     const NAME: &str = "map_change";
-    const NEEDS_CALLSITE: bool = false;
     // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: EffectKind = EffectKind::Sync;
 

@@ -26,7 +26,6 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub argspec: Arc<[Arg]>,
     pub typ: Arc<FnType>,
     pub init: InitFn<R, E>,
-    pub needs_callsite: bool,
     pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
     /// Intrinsic sync/async effect — see `effects::EffectKind` and
     /// `design/whole_graph_fusion.md`. Computed by the M6 effect
@@ -496,11 +495,8 @@ impl Lambda {
         let _scope = scope.clone();
         let env = ctx.env.clone();
         let _env = ctx.env.clone();
-        let mut needs_callsite = false;
         if let Either::Right(builtin) = &l.body {
-            if let Some((_, nc)) = ctx.builtins.get(builtin.as_str()) {
-                needs_callsite = *nc;
-            } else {
+            if ctx.builtins.get(builtin.as_str()).is_none() {
                 bail!("unknown builtin function {builtin}")
             }
             if !ctx.builtins_allowed {
@@ -586,7 +582,7 @@ impl Lambda {
                 }
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
-                    Some((init, _)) => init(ctx, &_typ, resolved, &_scope, args, tid)
+                    Some(init) => init(ctx, &_typ, resolved, &_scope, args, tid)
                         .map(|apply| {
                             let f: Box<dyn Apply<R, E>> =
                                 Box::new(BuiltInLambda { typ: _typ.clone(), apply });
@@ -602,7 +598,6 @@ impl Lambda {
             argspec,
             init,
             scope: original_scope,
-            needs_callsite,
             check: Mutex::new(None),
             intrinsic_effect: Mutex::new(EffectKind::Sync),
         });
@@ -693,7 +688,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .def
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
-        let needs_callsite = def.needs_callsite;
         let mut faux_args: LPooled<Vec<Node<R, E>>> = def
             .argspec
             .iter()
@@ -730,7 +724,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             let res = f
                 .typecheck0(ctx, &mut faux_args)
                 .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
-            if !needs_callsite {
+            // Retain a check `Apply` for every BUILTIN lambda so
+            // `CallSite::typecheck1` can run its resolved-`typecheck1`
+            // (validation / type extraction). A user `GXLambda`
+            // (`ApplyView::Lambda`) is discarded — its body is not
+            // re-checked per call site. Structural test replacing the
+            // old `needs_callsite` flag.
+            if matches!(f.view(), crate::ApplyView::Lambda(_)) {
                 f.delete(ctx)
             } else {
                 let def = self

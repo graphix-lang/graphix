@@ -126,7 +126,6 @@ pub(crate) struct DbSubscribe {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
     const NAME: &str = "db_subscription_new";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -251,7 +250,6 @@ macro_rules! db_event_accessor {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin_name;
-            const NEEDS_CALLSITE: bool = false;
             const EFFECT: EffectKind = EffectKind::Async;
 
             fn init<'a, 'b, 'c, 'd>(

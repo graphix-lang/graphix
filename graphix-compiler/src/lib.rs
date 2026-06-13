@@ -1019,7 +1019,6 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// - type requirements not expressable in the grammar. For example this
     ///   argument must be some kind of struct, and the fields and types must
     ///   correspond to some other struct (e.g. publish rpc)
-    const NEEDS_CALLSITE: bool;
     /// Sync/async classification for fusion. Conservative default is
     /// `Async`; override to `Sync` when the builtin produces all of its
     /// output on the same cycle as the input that triggered it (it may
@@ -1340,7 +1339,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     // all registered built-in functions
-    builtins: AHashMap<&'static str, (BuiltInInitFn<R, E>, bool)>,
+    builtins: AHashMap<&'static str, BuiltInInitFn<R, E>>,
     /// Sync/async effect of each registered builtin, keyed by name.
     /// Populated by `register_builtin` from `T::EFFECT`. Read by
     /// fusion's effect inference (M6) to decide whether a builtin
@@ -1361,11 +1360,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub cached: IntMap<BindId, Value>,
     /// the runtime
     pub rt: R,
-    /// LambdaDefs indexed by LambdaId, for deferred type checking
+    /// LambdaDefs indexed by LambdaId, used by `CallSite::typecheck1` to
+    /// reach each callee/callback's retained check `Apply` (`def.check`).
     pub lambda_defs: IntMap<LambdaId, Value>,
-    /// deferred type check closures, evaluated after all primary type checking
-    pub deferred_checks:
-        Vec<Box<dyn FnOnce(&mut ExecCtx<R, E>) -> Result<()> + Send + Sync>>,
     /// Reference sites accumulated during compilation. Each is a
     /// textual occurrence of a name and the `BindId` it resolved to.
     /// At compile boundaries, swap with a fresh `REFERENCE_SITE_POOL`
@@ -1503,7 +1500,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             cached: IntMap::default(),
             rt: user,
             lambda_defs: IntMap::default(),
-            deferred_checks: Vec::new(),
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
@@ -1523,7 +1519,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert((T::init, T::NEEDS_CALLSITE));
+                e.insert(T::init);
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
@@ -1643,12 +1639,13 @@ pub fn compile<R: Rt, E: UserEvent>(
         ctx.env = env;
         return Err(e);
     }
-    // run deferred builtin type checks after all primary type checking completes
-    while let Some(check) = ctx.deferred_checks.pop() {
-        if let Err(e) = check(ctx) {
-            ctx.env = env;
-            return Err(e);
-        }
+    // Second typecheck pass: pass 0 has now built the whole tree, so every
+    // `lambda_ids` closure is final. `typecheck1` finalizes call-site-
+    // dependent type info (the former deferred check), with `&mut self` at
+    // each CallSite.
+    if let Err(e) = node.typecheck1(ctx) {
+        ctx.env = env;
+        return Err(e);
     }
     info!("typecheck time {:?}", st.elapsed());
     // Static call resolution: pre-bind every CallSite whose function

@@ -186,7 +186,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                 val.downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
                     .map(|d| (d.env.clone(), d.scope.lexical.clone()))
             });
-        let (init, _needs_callsite) =
+        let init =
             ctx.builtins.get(builtin_name).copied().ok_or_else(|| {
                 anyhow!(
                     "DynCallSlot::pre_bind_builtin: unknown builtin `{}`",

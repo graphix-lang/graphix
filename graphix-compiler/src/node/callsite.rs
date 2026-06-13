@@ -12,7 +12,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::subscriber::Value;
-use nohash::IntMap;
 use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, mem};
 use triomphe::Arc as TArc;
@@ -76,31 +75,44 @@ pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub is_default: bool,
 }
 
-/// Find the FnType inside `t` that the lambda with id `id` was unified
-/// with at typecheck time. The formal arg may be a bare `Type::Fn`, but
-/// can also be a union like `[fn(...), null]` (the typical
-/// optional-callback shape) or wrapped in a Set of fn types — in those
-/// cases we walk the arms to find the unique matching Fn. Returns
-/// `None` if no Fn arm is found.
-fn find_fn_in_arg_type(t: &Type, id: LambdaId) -> Option<&TArc<FnType>> {
+/// Collect every `Type::Fn` arm reachable in `t` into `out` — a bare
+/// `Fn`, or the `Fn` arms of a `[fn(...), null]` / Set union (the typical
+/// optional-callback shape). Used by `CallSite::typecheck1` to find the
+/// callbacks passed in a fn-typed argument.
+fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     match t {
-        Type::Fn(ft) => Some(ft),
+        Type::Fn(ft) => out.push(ft.clone()),
         Type::Set(ts) => {
-            // Prefer an arm whose lambda_ids include the lambda we're
-            // checking; fall back to the first Fn arm if none claim it.
-            let mut fallback: Option<&TArc<FnType>> = None;
             for arm in ts.iter() {
-                if let Some(ft) = find_fn_in_arg_type(arm, id) {
-                    if ft.lambda_ids.ids().contains(&id) {
-                        return Some(ft);
-                    }
-                    fallback.get_or_insert(ft);
-                }
+                collect_fn_arms(arm, out)
             }
-            fallback
         }
-        _ => None,
+        _ => (),
     }
+}
+
+/// Drive the resolved-`typecheck1` ("CallSite phase") of the lambda `id`
+/// against `resolved`. Looks the lambda up in `ctx.lambda_defs` and, if it
+/// retained a check `Apply` (`def.check`), runs that apply's `typecheck1`.
+/// This is the body of the former deferred check, called directly from
+/// `CallSite::typecheck1`.
+fn finalize_lambda<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    id: LambdaId,
+    resolved: &FnType,
+    spec: &TArc<Expr>,
+) -> Result<()> {
+    if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
+        let ldef = val
+            .downcast_ref::<LambdaDef<R, E>>()
+            .expect("failed to unwrap lambda for typecheck1");
+        if let Some(apply) = &mut *ldef.check.lock() {
+            apply
+                .typecheck1(ctx, &mut [], resolved)
+                .with_context(|| ErrorContext((**spec).clone()))?;
+        }
+    }
+    Ok(())
 }
 
 fn compile_apply_args<R: Rt, E: UserEvent>(
@@ -720,7 +732,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 ftype
             }
         };
-        let mut hof_idmap: LPooled<IntMap<LambdaId, usize>> = LPooled::take();
         // Typecheck positional args in order
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
@@ -742,62 +753,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     farg.typ.contains(&ctx.env, n.typ())?;
                     wrap!(n, n.typecheck0(ctx))?;
                     wrap!(n, farg.typ.check_contains(&ctx.env, n.typ()))?;
-                    match deref_typ!("arg", ctx, n.typ(), Some(t) => Ok(Some(t.clone())), None => Ok(None))
-                    {
-                        Ok(Some(Type::Fn(ft))) => {
-                            // Record callback-lambda → arg-index so the
-                            // deferred check below can finalize each
-                            // callback against its arg's resolved fn type.
-                            // We do NOT `link` the callback into this
-                            // callee's `lambda_ids`: that is bidirectional,
-                            // so it would pollute the callback's (and any
-                            // value derived from it) closure with this
-                            // callee's id. (Phase 2 drives callbacks off
-                            // `resolved.args` directly and drops `hof_idmap`.)
-                            for id in ft.lambda_ids.ids().iter().copied() {
-                                hof_idmap.insert(id, i);
-                            }
-                        }
-                        Ok(None | Some(_)) | Err(_) => (),
-                    }
-                }
-            }
-        }
-        // CR estokes: I don't think the lambda_ids set is fully known until
-        // after typecheck has completed an entire cycle over the node tree
-        let lambda_ids_for_defaults: LPooled<Vec<LambdaId>> = ftype
-            .lambda_ids
-            .ids()
-            .iter()
-            .copied()
-            .chain(hof_idmap.keys().copied())
-            .collect();
-        if lambda_ids_for_defaults.len() == 1 {
-            let id = lambda_ids_for_defaults[0];
-            if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
-                if let Some(ldef) = val.downcast_ref::<LambdaDef<R, E>>() {
-                    for farg in ftype.args.iter() {
-                        let name = match &farg.kind {
-                            FnArgKind::Labeled { name, has_default: true } => name,
-                            _ => continue,
-                        };
-                        let arg = match self.args.get(&ArgKey::Named(name.clone())) {
-                            Some(a) if a.is_default => a,
-                            _ => continue,
-                        };
-                        let _ = arg;
-                        let def_typ = ldef.argspec.iter().find_map(|src| {
-                            let n = src.pattern.single_bind()?;
-                            if n.as_str() != name.as_str() {
-                                return None;
-                            }
-                            let d = src.labeled.as_ref()?.as_ref()?;
-                            d.typ.get().cloned()
-                        });
-                        if let Some(dt) = def_typ {
-                            wrap!(self.fnode, farg.typ.check_contains(&ctx.env, &dt))?;
-                        }
-                    }
                 }
             }
         }
@@ -856,56 +811,79 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
-        if !ftype.lambda_ids.ids().is_empty() || !hof_idmap.is_empty() {
-            let ftype = ftype.clone();
-            let spec = self.spec.clone();
-            ctx.deferred_checks.push(Box::new(move |ctx| {
-                let resolved = ftype.resolve_tvars();
-                let mut ids: LPooled<Vec<_>> = ftype
-                    .lambda_ids
-                    .ids()
-                    .iter()
-                    .copied()
-                    .chain(hof_idmap.keys().copied())
-                    .collect();
-                for id in ids.drain(..) {
-                    let resolved = match hof_idmap.get(&id) {
-                        None => &resolved,
-                        Some(i) => {
-                            match find_fn_in_arg_type(&resolved.args[*i].typ, id) {
-                                Some(ft) => ft,
-                                None => bail!(
-                                    "unexpected resolved arg type {}",
-                                    &resolved.args[*i].typ
-                                ),
-                            }
-                        }
-                    };
-                    if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
-                        let ldef = val
-                            .downcast_ref::<LambdaDef<R, E>>()
-                            .expect("failed to unwrap lambda for deferred check");
-                        if let Some(apply) = &mut *ldef.check.lock() {
-                            apply
-                                .typecheck1(ctx, &mut [], resolved)
-                                .with_context(|| ErrorContext((*spec).clone()))?;
-                        }
-                    }
-                }
-                Ok(())
-            }));
-        }
         Ok(())
     }
 
-    /// Pass-1 child recursion. (Phase 2 will also fold the deferred
-    /// check above into this method, with `&mut self` and the complete
-    /// `lambda_ids` closure.)
+    /// Second typecheck pass. After recursing into the call's own
+    /// subtrees, finalize call-site-dependent type info: by now every
+    /// `lambda_ids` closure is complete, so we read the resolved fn type
+    /// and drive `Apply::typecheck1` for every lambda that can be
+    /// dispatched here — the callee, plus any callback passed as a
+    /// fn-typed argument (each against that arg's resolved fn type). This
+    /// is the former deferred check, now run with `&mut self` in a real
+    /// second tree pass.
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.fnode, self.fnode.typecheck1(ctx))?;
         for arg in self.args.values_mut() {
             if let Some(n) = arg.node.as_mut() {
                 wrap!(n, n.typecheck1(ctx))?;
+            }
+        }
+        let ftype = match self.ftype.as_ref() {
+            Some(ftype) => ftype.clone(),
+            None => return Ok(()),
+        };
+        let resolved = ftype.resolve_tvars();
+        let spec = self.spec.clone();
+        // The callee's own identities, against the whole resolved type.
+        for id in ftype.lambda_ids.ids().iter().copied() {
+            finalize_lambda::<R, E>(ctx, id, &resolved, &spec)?;
+        }
+        // Callbacks: every lambda reachable through a fn-typed argument,
+        // against that arg's resolved fn type. (Replaces the old
+        // `hof_idmap`, which only saw bare `Type::Fn` args and merged
+        // callback ids into the callee — polluting derived closures.)
+        let mut fts: LPooled<Vec<TArc<FnType>>> = LPooled::take();
+        for arg in resolved.args.iter() {
+            fts.clear();
+            collect_fn_arms(&arg.typ, &mut fts);
+            for ft in fts.iter() {
+                for id in ft.lambda_ids.ids().iter().copied() {
+                    finalize_lambda::<R, E>(ctx, id, ft, &spec)?;
+                }
+            }
+        }
+        // Labeled-default type check — now sound: in this second pass the
+        // closure is complete, so `len() == 1` truly means "exactly one
+        // possible callee."
+        let single: LPooled<Vec<LambdaId>> =
+            ftype.lambda_ids.ids().iter().copied().collect();
+        if single.len() == 1 {
+            let id = single[0];
+            if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
+                if let Some(ldef) = val.downcast_ref::<LambdaDef<R, E>>() {
+                    for farg in ftype.args.iter() {
+                        let name = match &farg.kind {
+                            FnArgKind::Labeled { name, has_default: true } => name,
+                            _ => continue,
+                        };
+                        match self.args.get(&ArgKey::Named(name.clone())) {
+                            Some(a) if a.is_default => (),
+                            _ => continue,
+                        };
+                        let def_typ = ldef.argspec.iter().find_map(|src| {
+                            let n = src.pattern.single_bind()?;
+                            if n.as_str() != name.as_str() {
+                                return None;
+                            }
+                            let d = src.labeled.as_ref()?.as_ref()?;
+                            d.typ.get().cloned()
+                        });
+                        if let Some(dt) = def_typ {
+                            wrap!(self.fnode, farg.typ.check_contains(&ctx.env, &dt))?;
+                        }
+                    }
+                }
             }
         }
         Ok(())

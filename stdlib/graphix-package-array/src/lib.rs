@@ -746,7 +746,6 @@ struct ConcatEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const NAME: &str = "array_concat";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -779,7 +778,6 @@ struct PushBackEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
     const NAME: &str = "array_push_back";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -813,7 +811,6 @@ struct PushFrontEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
     const NAME: &str = "array_push_front";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -847,7 +844,6 @@ struct WindowEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const NAME: &str = "array_window";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -902,7 +898,6 @@ struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "array_len";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -925,7 +920,6 @@ struct FlattenEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const NAME: &str = "array_flatten";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -952,7 +946,6 @@ struct SortEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const NAME: &str = "array_sort";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -995,7 +988,6 @@ struct DedupEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
     const NAME: &str = "array_dedup";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1022,7 +1014,6 @@ struct EnumerateEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const NAME: &str = "array_enumerate";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1043,7 +1034,6 @@ struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const NAME: &str = "array_zip";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1068,7 +1058,6 @@ struct UnzipEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const NAME: &str = "array_unzip";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1109,7 +1098,6 @@ struct Group<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     const NAME: &str = "array_group";
-    const NEEDS_CALLSITE: bool = false;
     // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: EffectKind = EffectKind::Sync;
 
@@ -1233,7 +1221,6 @@ struct Iter(BindId, ExprId);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "array_iter";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1285,7 +1272,6 @@ struct IterQ {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "array_iterq";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1359,7 +1345,6 @@ struct Init<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
     const NAME: &str = "array_init";
-    const NEEDS_CALLSITE: bool = false;
     // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: EffectKind = EffectKind::Sync;
 

@@ -17,7 +17,6 @@ struct MandelbrotIterate {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MandelbrotIterate {
     const NAME: &str = "bench_mandelbrot_iterate";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(

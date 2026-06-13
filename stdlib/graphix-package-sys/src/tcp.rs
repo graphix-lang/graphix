@@ -76,7 +76,6 @@ pub(crate) struct TcpConnectEv;
 
 impl EvalCachedAsync for TcpConnectEv {
     const NAME: &str = "sys_tcp_connect";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -102,7 +101,6 @@ pub(crate) struct TcpListenEv;
 
 impl EvalCachedAsync for TcpListenEv {
     const NAME: &str = "sys_tcp_listen";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -129,7 +127,6 @@ pub(crate) struct TcpAcceptEv;
 
 impl EvalCachedAsync for TcpAcceptEv {
     const NAME: &str = "sys_tcp_accept";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TcpListener>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -156,7 +153,6 @@ pub(crate) struct TcpShutdownEv;
 
 impl EvalCachedAsync for TcpShutdownEv {
     const NAME: &str = "sys_tcp_shutdown";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -188,7 +184,6 @@ pub(crate) struct TcpPeerAddrEv;
 
 impl EvalCachedAsync for TcpPeerAddrEv {
     const NAME: &str = "sys_tcp_peer_addr";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -222,7 +217,6 @@ pub(crate) struct TcpLocalAddrEv;
 
 impl EvalCachedAsync for TcpLocalAddrEv {
     const NAME: &str = "sys_tcp_local_addr";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -256,7 +250,6 @@ pub(crate) struct TcpListenerAddrEv;
 
 impl EvalCachedAsync for TcpListenerAddrEv {
     const NAME: &str = "sys_tcp_listener_addr";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TcpListener>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

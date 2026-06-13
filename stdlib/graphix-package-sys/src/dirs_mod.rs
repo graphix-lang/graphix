@@ -13,7 +13,6 @@ macro_rules! dirs_builtin {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
             const NAME: &str = $builtin;
-            const NEEDS_CALLSITE: bool = false;
             const EFFECT: EffectKind = EffectKind::Sync;
 
             fn init<'a, 'b, 'c, 'd>(

@@ -254,7 +254,6 @@ pub(crate) struct CreateWatcher {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     const NAME: &str = "sys_watch_create";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -339,7 +338,6 @@ pub(crate) struct WatchApply {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     const NAME: &str = "sys_watch_watch";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -486,7 +484,6 @@ pub(crate) struct WatchPath {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
     const NAME: &str = "sys_watch_path";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -553,7 +550,6 @@ pub(crate) struct WatchEvents {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
     const NAME: &str = "sys_watch_events";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(

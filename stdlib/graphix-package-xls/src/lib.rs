@@ -86,7 +86,6 @@ struct XlsSheetsEv;
 
 impl EvalCachedAsync for XlsSheetsEv {
     const NAME: &str = "xls_sheets";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ReadInput;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -131,7 +130,6 @@ struct XlsReadEv;
 
 impl EvalCachedAsync for XlsReadEv {
     const NAME: &str = "xls_read";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (ReadInput, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

@@ -165,7 +165,6 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
     const NAME: &str = "core_queuefn";
-    const NEEDS_CALLSITE: bool = true;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -247,7 +246,6 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             argspec,
             typ: ftyp,
             init,
-            needs_callsite: false,
             check: Mutex::new(None),
             // queuefn wraps a function in queue-based dispatch — each
             // call queues the predicate and dispatches across cycles.

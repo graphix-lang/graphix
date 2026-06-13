@@ -18,7 +18,6 @@ pub(crate) struct IoReadEv;
 
 impl EvalCachedAsync for IoReadEv {
     const NAME: &str = "sys_io_read";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -53,7 +52,6 @@ pub(crate) struct IoReadExactEv;
 
 impl EvalCachedAsync for IoReadExactEv {
     const NAME: &str = "sys_io_read_exact";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -91,7 +89,6 @@ pub(crate) struct IoWriteEv;
 
 impl EvalCachedAsync for IoWriteEv {
     const NAME: &str = "sys_io_write";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -122,7 +119,6 @@ pub(crate) struct IoWriteExactEv;
 
 impl EvalCachedAsync for IoWriteExactEv {
     const NAME: &str = "sys_io_write_exact";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -153,7 +149,6 @@ pub(crate) struct IoFlushEv;
 
 impl EvalCachedAsync for IoFlushEv {
     const NAME: &str = "sys_io_flush";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -188,7 +183,6 @@ pub(crate) struct IoStdinEv;
 
 impl EvalCachedAsync for IoStdinEv {
     const NAME: &str = "sys_io_stdin";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ();
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -208,7 +202,6 @@ pub(crate) struct IoStdoutEv;
 
 impl EvalCachedAsync for IoStdoutEv {
     const NAME: &str = "sys_io_stdout";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ();
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -228,7 +221,6 @@ pub(crate) struct IoStderrEv;
 
 impl EvalCachedAsync for IoStderrEv {
     const NAME: &str = "sys_io_stderr";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ();
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

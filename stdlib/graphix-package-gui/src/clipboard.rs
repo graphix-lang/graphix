@@ -24,7 +24,6 @@ pub(crate) struct ClipboardBuiltin<Op: ClipboardOp>(PhantomData<Op>);
 
 impl<Op: ClipboardOp> EvalCachedAsync for ClipboardBuiltin<Op> {
     const NAME: &str = Op::NAME;
-    const NEEDS_CALLSITE: bool = false;
     type Args = Op::Args;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Op::Args> {

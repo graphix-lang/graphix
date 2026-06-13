@@ -44,7 +44,6 @@ pub(crate) struct ReadDirEv;
 
 impl EvalCachedAsync for ReadDirEv {
     const NAME: &str = "sys_fs_readdir";
-    const NEEDS_CALLSITE: bool = false;
     type Args = result::Result<ReadDirArgs, ArcStr>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -110,7 +109,6 @@ pub(crate) struct CreateDirOp;
 
 impl EvalCachedAsync for CreateDirOp {
     const NAME: &str = "sys_fs_create_dir";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -139,7 +137,6 @@ pub(crate) struct RemoveDirOp;
 
 impl EvalCachedAsync for RemoveDirOp {
     const NAME: &str = "sys_fs_remove_dir";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

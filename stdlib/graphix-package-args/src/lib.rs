@@ -213,7 +213,6 @@ struct Parse {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     const NAME: &str = "args_parse";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(

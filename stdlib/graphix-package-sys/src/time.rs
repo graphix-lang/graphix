@@ -18,7 +18,6 @@ pub(crate) struct AfterIdle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     const NAME: &str = "sys_time_after_idle";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -138,7 +137,6 @@ pub(crate) struct Timer {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
     const NAME: &str = "sys_time_timer";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -257,7 +255,6 @@ pub(crate) struct Now;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     const NAME: &str = "sys_time_now";
-    const NEEDS_CALLSITE: bool = false;
     // When trigger fires, samples the current time and emits same-cycle.
     const EFFECT: EffectKind = EffectKind::Sync;
 

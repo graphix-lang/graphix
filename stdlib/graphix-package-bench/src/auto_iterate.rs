@@ -44,7 +44,6 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     ::graphix_compiler::BuiltIn<R, E> for FusedIterateAuto
 {
     const NAME: &'static str = "bench_iterate_auto";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ::graphix_compiler::ExecCtx<R, E>,

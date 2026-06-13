@@ -130,7 +130,6 @@ struct TomlReadEv {
 
 impl EvalCachedAsync for TomlReadEv {
     const NAME: &str = "toml_read";
-    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
 
     fn init<R: Rt, E: UserEvent>(
@@ -236,7 +235,6 @@ struct TomlWriteStrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
     const NAME: &str = "toml_write_str";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -267,7 +265,6 @@ struct TomlWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
     const NAME: &str = "toml_write_bytes";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -298,7 +295,6 @@ struct TomlWriteStreamEv;
 
 impl EvalCachedAsync for TomlWriteStreamEv {
     const NAME: &str = "toml_write_stream";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, toml::Value);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

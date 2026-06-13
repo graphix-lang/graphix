@@ -431,7 +431,6 @@ pub(crate) struct DbTxnBeginEv;
 
 impl EvalCachedAsync for DbTxnBeginEv {
     const NAME: &str = "db_txn_begin";
-    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -472,7 +471,6 @@ pub(crate) struct DbTxnTreeEv {
 
 impl EvalCachedAsync for DbTxnTreeEv {
     const NAME: &str = "db_txn_tree";
-    const NEEDS_CALLSITE: bool = true;
     type Args = DbTxnTreeArgs;
 
     fn init<R: Rt, E: UserEvent>(
@@ -559,7 +557,6 @@ pub(crate) struct DbTxnGetEv;
 
 impl EvalCachedAsync for DbTxnGetEv {
     const NAME: &str = "db_txn_get";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -586,7 +583,6 @@ pub(crate) struct DbTxnInsertEv;
 
 impl EvalCachedAsync for DbTxnInsertEv {
     const NAME: &str = "db_txn_insert";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -618,7 +614,6 @@ pub(crate) struct DbTxnRemoveEv;
 
 impl EvalCachedAsync for DbTxnRemoveEv {
     const NAME: &str = "db_txn_remove";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -645,7 +640,6 @@ pub(crate) struct DbTxnCommitEv;
 
 impl EvalCachedAsync for DbTxnCommitEv {
     const NAME: &str = "db_txn_commit";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TxnInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -666,7 +660,6 @@ pub(crate) struct DbTxnRollbackEv;
 
 impl EvalCachedAsync for DbTxnRollbackEv {
     const NAME: &str = "db_txn_rollback";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TxnInner>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -687,7 +680,6 @@ pub(crate) struct DbTxnBatchEv;
 
 impl EvalCachedAsync for DbTxnBatchEv {
     const NAME: &str = "db_txn_batch";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, sled::Batch);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

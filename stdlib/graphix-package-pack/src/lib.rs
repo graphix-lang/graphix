@@ -37,7 +37,6 @@ struct PackReadEv {
 
 impl EvalCachedAsync for PackReadEv {
     const NAME: &str = "pack_read";
-    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
 
     fn init<R: Rt, E: UserEvent>(
@@ -129,7 +128,6 @@ struct PackWriteBytesEv;
 // pack::write_bytes is a pure Value→bytes conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
     const NAME: &str = "pack_write_bytes";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -152,7 +150,6 @@ struct PackWriteStreamEv;
 
 impl EvalCachedAsync for PackWriteStreamEv {
     const NAME: &str = "pack_write_stream";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, Vec<u8>);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

@@ -231,7 +231,6 @@ pub(crate) struct HttpClientEv;
 // The actual requests go through HttpRequestEv (async). Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
     const NAME: &str = "http_client";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -273,7 +272,6 @@ pub(crate) struct HttpDefaultClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
     const NAME: &str = "http_default_client";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -291,7 +289,6 @@ pub(crate) struct HttpServerAddrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
     const NAME: &str = "http_server_addr";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -358,7 +355,6 @@ pub(crate) struct HttpRequestEv;
 
 impl EvalCachedAsync for HttpRequestEv {
     const NAME: &str = "http_request";
-    const NEEDS_CALLSITE: bool = false;
     type Args = RequestArgs<ArcStr>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -400,7 +396,6 @@ pub(crate) struct HttpRequestBinEv;
 
 impl EvalCachedAsync for HttpRequestBinEv {
     const NAME: &str = "http_request_bin";
-    const NEEDS_CALLSITE: bool = false;
     type Args = RequestArgs<Bytes>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -698,7 +693,6 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     const NAME: &str = "http_serve";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,

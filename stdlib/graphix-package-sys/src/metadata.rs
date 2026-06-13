@@ -11,7 +11,6 @@ pub(crate) struct IsFileEv;
 
 impl EvalCachedAsync for IsFileEv {
     const NAME: &str = "sys_fs_is_file";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -36,7 +35,6 @@ pub(crate) struct IsDirEv;
 
 impl EvalCachedAsync for IsDirEv {
     const NAME: &str = "sys_fs_is_dir";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -128,7 +126,6 @@ pub(crate) struct MetadataEv;
 
 impl EvalCachedAsync for MetadataEv {
     const NAME: &str = "sys_fs_metadata";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

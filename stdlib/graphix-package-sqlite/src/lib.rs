@@ -99,7 +99,6 @@ struct SqliteOpenEv;
 
 impl EvalCachedAsync for SqliteOpenEv {
     const NAME: &str = "sqlite_open";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -129,7 +128,6 @@ struct SqliteExecEv;
 
 impl EvalCachedAsync for SqliteExecEv {
     const NAME: &str = "sqlite_exec";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -167,7 +165,6 @@ struct SqliteExecBatchEv;
 
 impl EvalCachedAsync for SqliteExecBatchEv {
     const NAME: &str = "sqlite_exec_batch";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -198,7 +195,6 @@ struct SqliteQueryEv {
 
 impl EvalCachedAsync for SqliteQueryEv {
     const NAME: &str = "sqlite_query";
-    const NEEDS_CALLSITE: bool = true;
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
 
     fn init<R: Rt, E: UserEvent>(
@@ -322,7 +318,6 @@ macro_rules! simple_sql_builtin {
 
         impl EvalCachedAsync for $ev_name {
             const NAME: &str = $builtin_name;
-            const NEEDS_CALLSITE: bool = false;
             type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
 
             fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -355,7 +350,6 @@ struct SqliteCloseEv;
 
 impl EvalCachedAsync for SqliteCloseEv {
     const NAME: &str = "sqlite_close";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

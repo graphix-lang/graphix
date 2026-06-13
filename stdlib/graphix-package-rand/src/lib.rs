@@ -20,7 +20,6 @@ struct Rand {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
     const NAME: &str = "rand";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -77,7 +76,6 @@ struct Pick;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
     const NAME: &str = "rand_pick";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -115,7 +113,6 @@ struct Shuffle(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
     const NAME: &str = "rand_shuffle";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(

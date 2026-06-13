@@ -263,7 +263,6 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     Debug + Default + Send + Sync + 'static
 {
     const NAME: &str;
-    const NEEDS_CALLSITE: bool;
     /// Sync/async classification for fusion. Same semantics as
     /// `BuiltIn::EFFECT`: defaults to `Async` (conservative); override
     /// to `Sync` when the cached operation produces all of its output
@@ -311,7 +310,6 @@ pub struct CachedArgs<T> {
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = T::NEEDS_CALLSITE;
     const EFFECT: EffectKind = T::EFFECT;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -368,7 +366,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
-    const NEEDS_CALLSITE: bool;
 
     type Args: Debug + Any + Send + Sync;
 
@@ -425,7 +422,6 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<T> {
     const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = T::NEEDS_CALLSITE;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -695,7 +691,6 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
     const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = false;
     // Intrinsically sync: the body iterates and dispatches per-element
     // predicate calls. Slot/cached plumbing is sync scaffolding, not
     // an async-effect operation. The call-site effect joins MapQ's
@@ -1188,7 +1183,6 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
     const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = false;
     // Intrinsically sync. See MapQ above for the rationale.
     const EFFECT: EffectKind = EffectKind::Sync;
 
@@ -1545,7 +1539,6 @@ struct IsErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const NAME: &str = "core_is_err";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1581,7 +1574,6 @@ struct FilterErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const NAME: &str = "core_filter_err";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1617,7 +1609,6 @@ struct ToError;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const NAME: &str = "core_error";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1652,7 +1643,6 @@ struct Once {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
-    const NEEDS_CALLSITE: bool = false;
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -1707,7 +1697,6 @@ struct Take {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "core_take";
-    const NEEDS_CALLSITE: bool = false;
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -1767,7 +1756,6 @@ struct Skip {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "core_skip";
-    const NEEDS_CALLSITE: bool = false;
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -1825,7 +1813,6 @@ struct AllEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const NAME: &str = "core_all";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1860,7 +1847,6 @@ struct SumEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const NAME: &str = "core_sum";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1886,7 +1872,6 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
     const NAME: &str = "core_product";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1912,7 +1897,6 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const NAME: &str = "core_divide";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1930,7 +1914,6 @@ struct MinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const NAME: &str = "core_min";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1957,7 +1940,6 @@ struct MaxEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const NAME: &str = "core_max";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1984,7 +1966,6 @@ struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const NAME: &str = "core_and";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2009,7 +1990,6 @@ struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const NAME: &str = "core_or";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2100,7 +2080,6 @@ struct BitAndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const NAME: &str = "core_bit_and";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2115,7 +2094,6 @@ struct BitOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const NAME: &str = "core_bit_or";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2130,7 +2108,6 @@ struct BitXorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const NAME: &str = "core_bit_xor";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2145,7 +2122,6 @@ struct BitNotEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const NAME: &str = "core_bit_not";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2174,7 +2150,6 @@ struct ShlEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const NAME: &str = "core_shl";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2189,7 +2164,6 @@ struct ShrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const NAME: &str = "core_shr";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2214,7 +2188,6 @@ struct Filter<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "core_filter";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2302,7 +2275,6 @@ struct Queue {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "core_queue";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -2364,7 +2336,6 @@ struct Hold {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "core_hold";
-    const NEEDS_CALLSITE: bool = false;
     // Hold takes (trigger, value); it caches state across cycles
     // (triggered count, latest value) but each emission lands on the
     // same cycle as the most recent input that completed the
@@ -2427,7 +2398,6 @@ struct Seq {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "core_seq";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -2489,7 +2459,6 @@ struct Throttle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "core_throttle";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2580,7 +2549,6 @@ struct Count {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "core_count";
-    const NEEDS_CALLSITE: bool = false;
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -2628,7 +2596,6 @@ struct MeanEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
     const NAME: &str = "core_mean";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2664,7 +2631,6 @@ struct Uniq(Option<Value>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "core_uniq";
-    const NEEDS_CALLSITE: bool = false;
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -2714,7 +2680,6 @@ struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     const NAME: &str = "core_never";
-    const NEEDS_CALLSITE: bool = false;
     // Async, deliberately: `Async` means "output may appear on a later
     // cycle, autonomously, or never" — never() is the limiting case of
     // that contract. Marking it Sync let it fuse as a DynCall that
@@ -2803,7 +2768,6 @@ struct Dbg {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "core_dbg";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2885,7 +2849,6 @@ struct Log {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "core_log";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2942,7 +2905,6 @@ macro_rules! printfn {
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
             const NAME: &str = $name;
-            const NEEDS_CALLSITE: bool = false;
             const EFFECT: EffectKind = EffectKind::Sync;
 
             fn init<'a, 'b, 'c, 'd>(

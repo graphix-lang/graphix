@@ -143,7 +143,6 @@ struct JsonReadEv {
 
 impl EvalCachedAsync for JsonReadEv {
     const NAME: &str = "json_read";
-    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
 
     fn init<R: Rt, E: UserEvent>(
@@ -244,7 +243,6 @@ struct JsonWriteStrEv;
 // json::write_str is a pure Value→string conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const NAME: &str = "json_write_str";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -280,7 +278,6 @@ struct JsonWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
     const NAME: &str = "json_write_bytes";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -312,7 +309,6 @@ struct JsonWriteStreamEv;
 
 impl EvalCachedAsync for JsonWriteStreamEv {
     const NAME: &str = "json_write_stream";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, serde_json::Value);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

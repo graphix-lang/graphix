@@ -15,7 +15,6 @@ pub(crate) struct FileOpenEv;
 
 impl EvalCachedAsync for FileOpenEv {
     const NAME: &str = "sys_fs_open";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (ArcStr, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -63,7 +62,6 @@ pub(crate) struct FileSeekEv;
 
 impl EvalCachedAsync for FileSeekEv {
     const NAME: &str = "sys_fs_seek";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, SeekFrom);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -107,7 +105,6 @@ pub(crate) struct FileFstatEv;
 
 impl EvalCachedAsync for FileFstatEv {
     const NAME: &str = "sys_fs_fstat";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -138,7 +135,6 @@ pub(crate) struct FileTruncateEv;
 
 impl EvalCachedAsync for FileTruncateEv {
     const NAME: &str = "sys_fs_truncate";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -171,7 +167,6 @@ pub(crate) struct ReadAllOp;
 
 impl EvalCachedAsync for ReadAllOp {
     const NAME: &str = "sys_fs_read_all";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -195,7 +190,6 @@ pub(crate) struct ReadAllBinOp;
 
 impl EvalCachedAsync for ReadAllBinOp {
     const NAME: &str = "sys_fs_read_all_bin";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -219,7 +213,6 @@ pub(crate) struct WriteAllOp;
 
 impl EvalCachedAsync for WriteAllOp {
     const NAME: &str = "sys_fs_write_all";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (ArcStr, ArcStr);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -243,7 +236,6 @@ pub(crate) struct WriteAllBinOp;
 
 impl EvalCachedAsync for WriteAllBinOp {
     const NAME: &str = "sys_fs_write_all_bin";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (ArcStr, Bytes);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -267,7 +259,6 @@ pub(crate) struct RemoveFileOp;
 
 impl EvalCachedAsync for RemoveFileOp {
     const NAME: &str = "sys_fs_remove_file";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

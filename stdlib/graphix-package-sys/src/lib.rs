@@ -276,7 +276,6 @@ pub(crate) struct GxTempDirEv;
 
 impl EvalCachedAsync for GxTempDirEv {
     const NAME: &str = "sys_tempdir";
-    const NEEDS_CALLSITE: bool = false;
     type Args = TempDirArgs;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -336,7 +335,6 @@ pub(crate) struct TempDirPathEv;
 // transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const NAME: &str = "sys_tempdir_path";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -370,7 +368,6 @@ pub(crate) struct JoinPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const NAME: &str = "sys_join_path";
-    const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -414,7 +411,6 @@ pub(crate) struct Args {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
     const NAME: &str = "sys_args";
-    const NEEDS_CALLSITE: bool = false;
     // Fires once on init with the cmd-line args. Same-cycle output.
     const EFFECT: EffectKind = EffectKind::Sync;
 
@@ -462,7 +458,6 @@ pub(crate) struct Exit;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     const NAME: &str = "sys_exit";
-    const NEEDS_CALLSITE: bool = false;
     // exit consumes its arg and terminates the process; no future-cycle
     // output. Sync.
     const EFFECT: EffectKind = EffectKind::Sync;

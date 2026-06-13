@@ -13,7 +13,6 @@ struct ExampleBuiltin;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const NAME: &str = "{{name}}_example";
-    const NEEDS_CALLSITE: bool = false;
     // Async is the conservative default — override to `Sync` only if
     // every output appears on the same cycle as the input that
     // triggered it. See graphix_compiler::effects::EffectKind.
@@ -52,7 +51,6 @@ struct ExampleCachedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ExampleCachedEv {
     const NAME: &str = "{{name}}_example_cached";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
