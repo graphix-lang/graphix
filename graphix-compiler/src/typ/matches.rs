@@ -206,7 +206,7 @@ impl Type {
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
                 f0.sig_matches_int(env, f1, tvar_map, hist, adts)?;
-                f0.merge_lambda_ids(f1);
+                f0.lambda_ids.link(&f1.lambda_ids);
                 Ok(())
             }
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {

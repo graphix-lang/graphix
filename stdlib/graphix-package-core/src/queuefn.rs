@@ -8,7 +8,7 @@ use graphix_compiler::{
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, UserEvent,
+    UserEvent,
 };
 use netidx::subscriber::Value;
 use parking_lot::Mutex;
@@ -116,13 +116,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         self.pred.update(ctx, event)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.pred.typecheck(ctx)
+        self.pred.typecheck0(ctx)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -343,18 +342,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck1(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
+        resolved: &FnType,
     ) -> Result<()> {
-        if let TypecheckPhase::CallSite(resolved) = phase {
-            if let Some(ft) = extract_fn_arg_type(resolved, 2) {
-                self.ftyp = Some(ft);
-            } else {
-                bail!("queuefn: third argument must be a function")
-            }
+        if let Some(ft) = extract_fn_arg_type(resolved, 2) {
+            self.ftyp = Some(ft);
+        } else {
+            bail!("queuefn: third argument must be a function")
         }
         Ok(())
     }

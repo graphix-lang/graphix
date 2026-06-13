@@ -19,6 +19,8 @@ use smallvec::{smallvec, SmallVec};
 use std::{
     cmp::{Eq, Ordering, PartialEq},
     fmt::{self, Debug, Write},
+    hash::{Hash, Hasher},
+    sync::{Arc as SArc, Weak},
 };
 use triomphe::Arc;
 
@@ -176,6 +178,90 @@ impl std::hash::Hash for FnArgType {
     }
 }
 
+#[derive(Debug)]
+struct Link(Weak<RwLock<LambdaIdsInner>>);
+
+impl Hash for Link {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (Weak::as_ptr(&self.0) as usize).hash(state)
+    }
+}
+
+impl nohash::IsEnabled for Link {}
+
+impl PartialEq for Link {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Link {}
+
+impl Link {
+    fn upgrade(&self) -> Option<LambdaIds> {
+        Weak::upgrade(&self.0).map(LambdaIds)
+    }
+
+    fn addr(&self) -> usize {
+        Weak::as_ptr(&self.0) as usize
+    }
+}
+
+#[derive(Debug, Default)]
+struct LambdaIdsInner {
+    own: Option<LambdaId>,
+    links: IntSet<Link>,
+}
+
+impl LambdaIdsInner {
+    fn walk<F: FnMut(LambdaId)>(&self, visited: &mut IntSet<usize>, f: &mut F) {
+        if let Some(id) = self.own {
+            f(id)
+        }
+        for link in &self.links {
+            if visited.insert(link.addr())
+                && let Some(link) = link.upgrade()
+            {
+                link.0.read().walk(visited, f)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LambdaIds(SArc<RwLock<LambdaIdsInner>>);
+
+impl Default for LambdaIds {
+    fn default() -> Self {
+        Self(SArc::new(RwLock::new(LambdaIdsInner::default())))
+    }
+}
+
+impl LambdaIds {
+    pub fn set_id(&self, id: LambdaId) {
+        self.0.write().own = Some(id)
+    }
+
+    pub fn ids(&self) -> LPooled<IntSet<LambdaId>> {
+        let mut visited: LPooled<IntSet<usize>> = LPooled::take();
+        let mut ids: LPooled<IntSet<LambdaId>> = LPooled::take();
+        visited.insert(SArc::as_ptr(&self.0) as usize);
+        self.0.read().walk(&mut visited, &mut |id| {
+            ids.insert(id);
+        });
+        ids
+    }
+
+    pub fn link(&self, other: &LambdaIds) {
+        self.0.write().links.insert(other.as_link());
+        other.0.write().links.insert(self.as_link());
+    }
+
+    fn as_link(&self) -> Link {
+        Link(SArc::downgrade(&self.0))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FnType {
     pub args: Arc<[FnArgType]>,
@@ -184,8 +270,8 @@ pub struct FnType {
     pub constraints: Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>,
     pub throws: Type,
     pub explicit_throws: bool,
-    /// accumulated set of all LambdaIds this type might represent (for late binding)
-    pub lambda_ids: Arc<RwLock<IntSet<LambdaId>>>,
+    /// accumulated set of all LambdaIds this type might represent
+    pub lambda_ids: LambdaIds,
 }
 
 impl PartialEq for FnType {
@@ -298,7 +384,7 @@ impl Default for FnType {
             constraints: Arc::new(RwLock::new(LPooled::take())),
             throws: Default::default(),
             explicit_throws: false,
-            lambda_ids: Arc::new(RwLock::new(IntSet::default())),
+            lambda_ids: LambdaIds::default(),
         }
     }
 }
@@ -704,18 +790,6 @@ impl FnType {
                 .collect::<Result<AndAc>>()?
                 .0
             && self.throws.contains_int(flags, env, hist, &t.throws)?)
-    }
-
-    /// Merge lambda_ids between two FnTypes during unification.
-    /// Called after contains_int succeeds to track late-bound function identities.
-    pub fn merge_lambda_ids(&self, other: &Self) {
-        if Arc::ptr_eq(&self.lambda_ids, &other.lambda_ids) {
-            return;
-        }
-        let mut self_ids = self.lambda_ids.write();
-        let mut other_ids = other.lambda_ids.write();
-        self_ids.extend(other_ids.iter().copied());
-        other_ids.extend(self_ids.iter().copied());
     }
 
     pub fn check_contains(&self, env: &Env, other: &Self) -> Result<()> {

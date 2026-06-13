@@ -10,7 +10,7 @@ use graphix_compiler::{
     err, errf,
     expr::ExprId,
     typ::{FnType, Type},
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{extract_cast_type, CachedArgs, CachedVals, EvalCached};
 use netidx::{path::Path, subscriber::Value};
@@ -849,22 +849,25 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
         Self { cast_typ: extract_cast_type(resolved) }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("str::parse requires a concrete return type")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("str::parse requires a concrete return type")
         }
+        Ok(())
     }
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

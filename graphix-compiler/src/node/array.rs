@@ -163,9 +163,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         }
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source.node, self.source.node.typecheck(ctx))?;
-        wrap!(self.i.node, self.i.node.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source.node, self.source.node.typecheck0(ctx))?;
+        wrap!(self.i.node, self.i.node.typecheck0(ctx))?;
         let int = Type::Primitive(Typ::integer());
         let bytes_typ = Type::Primitive(Typ::Bytes.into());
         let source_typ = self.source.node.typ();
@@ -178,6 +178,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
         wrap!(self.i.node, int.check_contains(&ctx.env, self.i.node.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source.node, self.source.node.typecheck1(ctx))?;
+        wrap!(self.i.node, self.i.node.typecheck1(ctx))?;
+        Ok(())
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -296,8 +302,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source.node, self.source.node.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source.node, self.source.node.typecheck0(ctx))?;
         let it = Type::Primitive(Typ::integer());
         let bytes_typ = Type::Primitive(Typ::Bytes.into());
         let source_typ = self.source.node.typ();
@@ -307,12 +313,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
         if let Some(start) = self.start.as_mut() {
-            wrap!(start.node, start.node.typecheck(ctx))?;
+            wrap!(start.node, start.node.typecheck0(ctx))?;
             wrap!(start.node, it.check_contains(&ctx.env, &start.node.typ()))?;
         }
         if let Some(end) = self.end.as_mut() {
-            wrap!(end.node, end.node.typecheck(ctx))?;
+            wrap!(end.node, end.node.typecheck0(ctx))?;
             wrap!(end.node, it.check_contains(&ctx.env, &end.node.typ()))?;
+        }
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source.node, self.source.node.typecheck1(ctx))?;
+        if let Some(start) = self.start.as_mut() {
+            wrap!(start.node, start.node.typecheck1(ctx))?;
+        }
+        if let Some(end) = self.end.as_mut() {
+            wrap!(end.node, end.node.typecheck1(ctx))?;
         }
         Ok(())
     }
@@ -447,9 +464,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in &mut self.n {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         let rtype = Type::Bottom;
         let rtype = wrap!(
@@ -463,6 +480,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
             t => Type::Array(Arc::new(t)),
         };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in &mut self.n {
+            wrap!(n.node, n.node.typecheck1(ctx))?
+        }
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {

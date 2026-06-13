@@ -4,7 +4,7 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TypecheckPhase,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope,
     UserEvent,
 };
 use netidx_value::{ValArray, Value};
@@ -351,8 +351,8 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.inner.refs(refs);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.inner.typecheck(ctx)
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.inner.typecheck0(ctx)
     }
 }
 
@@ -394,13 +394,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Null)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -454,13 +453,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Null)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -537,13 +535,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         direct.or(inner_out)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -598,13 +595,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Bool(false))
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -658,13 +654,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Bool(true))
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -757,8 +752,8 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         self.inner.refs(refs);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.inner.typecheck(ctx)
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.inner.typecheck0(ctx)
     }
 }
 
@@ -814,13 +809,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -885,13 +879,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {

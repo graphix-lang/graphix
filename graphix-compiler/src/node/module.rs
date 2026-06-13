@@ -367,7 +367,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 .map(|e| compile(ctx, self.flags, e.clone(), &self.scope, self.top_id))
                 .collect::<Result<Vec<_>>>()?;
             for n in &mut nodes {
-                n.typecheck(ctx)?
+                n.typecheck0(ctx)?
             }
             Ok(nodes)
         });
@@ -499,10 +499,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck0(ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {

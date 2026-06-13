@@ -6,7 +6,7 @@ use anyhow::bail;
 use arcstr::ArcStr;
 use graphix_compiler::errf;
 use graphix_compiler::typ::{FnType, Type};
-use graphix_compiler::{ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent};
+use graphix_compiler::{ExecCtx, Node, Rt, Scope, UserEvent};
 use graphix_package_core::{
     extract_cast_type, CachedArgsAsync, CachedVals, EvalCachedAsync,
 };
@@ -212,22 +212,25 @@ impl EvalCachedAsync for SqliteQueryEv {
         Self { cast_typ: extract_cast_type(resolved) }
     }
 
-    fn typecheck<R: Rt, E: UserEvent>(
+    fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("sqlite::query requires a concrete return type annotation")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> anyhow::Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("sqlite::query requires a concrete return type annotation")
         }
+        Ok(())
     }
 
     fn map_value<R: Rt, E: UserEvent>(

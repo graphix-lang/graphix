@@ -871,13 +871,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         server_result
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: graphix_compiler::TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.handler.typecheck(ctx)?;
+        self.handler.typecheck0(ctx)?;
         Ok(())
     }
 

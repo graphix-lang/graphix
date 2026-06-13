@@ -7,7 +7,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
     effects::EffectKind, errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope,
-    TypecheckPhase, UserEvent,
+    UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -51,22 +51,25 @@ impl EvalCachedAsync for PackReadEv {
         Self { cast_typ: extract_cast_type(resolved) }
     }
 
-    fn typecheck<R: Rt, E: UserEvent>(
+    fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("pack::read requires a concrete return type")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("pack::read requires a concrete return type")
         }
+        Ok(())
     }
 
     fn map_value<R: Rt, E: UserEvent>(

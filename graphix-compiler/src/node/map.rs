@@ -92,9 +92,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.vals.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         let ktype = self
             .keys
@@ -108,6 +108,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let vtype = wrap!(self, vtype)?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
+            wrap!(n.node, n.node.typecheck1(ctx))?
+        }
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
@@ -200,14 +207,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         }
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source.node, self.source.node.typecheck(ctx))?;
-        wrap!(self.key.node, self.key.node.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source.node, self.source.node.typecheck0(ctx))?;
+        wrap!(self.key.node, self.key.node.typecheck0(ctx))?;
         let mt = Type::Map {
             key: Arc::new(self.key.node.typ().clone()),
             value: Arc::new(self.vtyp.clone()),
         };
         wrap!(self, mt.check_contains(&ctx.env, self.source.node.typ()))?;
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source.node, self.source.node.typecheck1(ctx))?;
+        wrap!(self.key.node, self.key.node.typecheck1(ctx))?;
         Ok(())
     }
 

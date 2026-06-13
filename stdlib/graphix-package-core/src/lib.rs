@@ -12,7 +12,7 @@ use graphix_compiler::{
     node::{callsite::CallSite, genn},
     typ::{FnType, TVal, Type, TypeRef},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    StaticFnArg, TypecheckPhase, UserEvent,
+    StaticFnArg, UserEvent,
 };
 use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
@@ -285,11 +285,19 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
     ) -> Result<()> {
         Ok(())
     }
@@ -336,13 +344,21 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.t.typecheck(ctx, from, phase)
+        self.t.typecheck0(ctx, from)
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.t.typecheck1(ctx, from, resolved)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -376,11 +392,19 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
         Some(v)
     }
 
-    fn typecheck<R: Rt, E: UserEvent>(
+    fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
     ) -> Result<()> {
         Ok(())
     }
@@ -451,13 +475,21 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         res
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.t.typecheck(ctx, from, phase)
+        self.t.typecheck0(ctx, from)
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.t.typecheck1(ctx, from, resolved)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -947,11 +979,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
         let mftyp = match &from[1].typ() {
             Type::Fn(ft) => ft.clone(),
@@ -963,7 +994,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         let ft = mftyp.clone();
         let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
         let mut node = genn::apply(fnode, self.scope.clone(), fargs, &ft, self.top_id);
-        node.typecheck(ctx)?;
+        node.typecheck0(ctx)?;
         node.delete(ctx);
         Ok(())
     }
@@ -1370,18 +1401,17 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         self.inits.last().and_then(|v| v.clone())
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
         let mut n = genn::reference(ctx, self.initid, self.ityp.clone(), self.top_id);
         let x = genn::reference(ctx, BindId::new(), self.etyp.clone(), self.top_id);
         let fnode =
             genn::reference(ctx, self.fid, Type::Fn(self.mftype.clone()), self.top_id);
         n = genn::apply(fnode, self.scope.clone(), vec![n, x], &self.mftype, self.top_id);
-        n.typecheck(ctx)?;
+        n.typecheck0(ctx)?;
         n.delete(ctx);
         Ok(())
     }
@@ -2236,13 +2266,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         })
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
-        self.pred.typecheck(ctx)?;
+        self.pred.typecheck0(ctx)?;
         Ok(())
     }
 
@@ -2838,11 +2867,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
         self.typ = from[1].typ().clone();
         Ok(())

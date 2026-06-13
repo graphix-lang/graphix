@@ -312,7 +312,7 @@ impl Type {
                 let same = Arc::ptr_eq(f0, f1);
                 let r = same || f0.contains_int(flags, env, hist, f1)?;
                 if r && !same && flags.contains(ContainsFlags::InitTVars) {
-                    f0.merge_lambda_ids(f1);
+                    f0.lambda_ids.link(&f1.lambda_ids);
                 }
                 Ok(r)
             }

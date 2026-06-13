@@ -200,8 +200,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.arg.node.typecheck(ctx)?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.arg.node.typecheck0(ctx)?;
         let mut rtype = Type::Primitive(BitFlags::empty());
         let mut mtype = Type::Primitive(BitFlags::empty());
         let mut itype = Type::Primitive(BitFlags::empty());
@@ -209,7 +209,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let mut saw_false = false;
         for (pat, n) in self.arms.iter_mut() {
             match &mut pat.guard {
-                Some(guard) => guard.node.typecheck(ctx)?,
+                Some(guard) => guard.node.typecheck0(ctx)?,
                 None => {
                     if !pat.structure_predicate.is_refutable() {
                         mtype = mtype.union(&ctx.env, &pat.type_predicate)?
@@ -241,7 +241,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         for (pat, n) in self.arms.iter_mut() {
             // make sure tvars are aliased properly even if itype was Any
             self.arg.node.typ().contains(&ctx.env, &pat.type_predicate)?;
-            wrap!(n.node, n.node.typecheck(ctx))?;
+            wrap!(n.node, n.node.typecheck0(ctx))?;
         }
         let mut atype = self.arg.node.typ().clone().normalize();
         for (pat, _) in self.arms.iter() {
@@ -259,6 +259,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
         }
         self.typ = rtype;
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.arg.node.typecheck1(ctx)?;
+        for (pat, n) in self.arms.iter_mut() {
+            if let Some(guard) = &mut pat.guard {
+                guard.node.typecheck1(ctx)?;
+            }
+            wrap!(n.node, n.node.typecheck1(ctx))?;
+        }
         Ok(())
     }
 

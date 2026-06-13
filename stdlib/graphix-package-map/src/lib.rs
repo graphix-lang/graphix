@@ -8,8 +8,7 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TypecheckPhase,
-    UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
@@ -423,13 +422,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
         None
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.inner.typecheck(ctx)
+        self.inner.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {

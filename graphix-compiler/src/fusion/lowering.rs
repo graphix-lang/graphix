@@ -6,10 +6,11 @@
 //! analysis those emitters consume.
 
 use crate::{
-    expr::{Expr, ModPath},
-    gir,
+    expr::{Expr, ExprKind, ModPath},
+    fusion, gir,
+    node::callsite::CallSite,
     typ::Type,
-    Update,
+    ExecCtx, Rt, Update, UserEvent,
 };
 use arcstr::ArcStr;
 use netidx_value::Value;
@@ -99,8 +100,7 @@ pub struct BuiltinCallDiscovery {
     /// `Apply.spec.id → BuiltinCallSiteInfo` lookup so
     /// `CallSite::emit_clif` can recognise the call site at emit
     /// time and lower it to a DynCall.
-    pub apply_sites:
-        nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
+    pub apply_sites: nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
 }
 
 /// Walk a Node subtree to discover builtin Apply sites: every
@@ -125,7 +125,7 @@ pub fn walk_node_for_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
     scope: &crate::expr::ModPath,
     out: &mut BuiltinCallDiscovery,
 ) {
-    crate::fusion::for_each_node(node, &mut |n| {
+    fusion::for_each_node(node, &mut |n| {
         if let crate::NodeView::CallSite(cs) = n.view() {
             try_register_builtin_call_from_callsite(cs, ctx, scope, out);
         }
@@ -138,10 +138,10 @@ pub fn walk_node_for_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
 /// instantiation — never the function expression's typed-AST cell
 /// (which for generic builtins like `str::parse` with a polymorphic
 /// `'b: Cast` return still holds the unresolved FnType).
-fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
-    cs: &crate::node::callsite::CallSite<R, E>,
-    ctx: &crate::ExecCtx<R, E>,
-    scope: &crate::expr::ModPath,
+fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ctx: &ExecCtx<R, E>,
+    scope: &ModPath,
     out: &mut BuiltinCallDiscovery,
 ) {
     // Need the source Apply Expr (for ExprKind::Ref-vs-other check
@@ -149,13 +149,13 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
     // CallSite's spec is always `ExprKind::Apply`.
     let apply_expr = cs.spec();
     let a = match &apply_expr.kind {
-        crate::expr::ExprKind::Apply(a) => a,
+        ExprKind::Apply(a) => a,
         _ => return,
     };
     // Same call-flow as the Expr-based path: the function must be a
     // direct binding Ref.
     let path = match &a.function.kind {
-        crate::expr::ExprKind::Ref { name } => name,
+        ExprKind::Ref { name } => name,
         _ => return,
     };
     let (_, bind) = match ctx.env.lookup_bind(scope, path) {
@@ -229,9 +229,8 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
                 // type. Prefer the call-site Expr's typ cell if
                 // present (cheaper than re-dereffing) — both
                 // should agree post-resolve_tvars.
-                let arg_typ = arg_expr.typ.get().cloned().unwrap_or_else(|| {
-                    fa.typ.clone()
-                });
+                let arg_typ =
+                    arg_expr.typ.get().cloned().unwrap_or_else(|| fa.typ.clone());
                 let kt = match gir::freeze_concrete(&arg_typ) {
                     Some(t) => t,
                     None => return,
@@ -242,20 +241,15 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
                 marshal_arg_indices.push(*call_idx);
             }
             FnArgKind::Labeled { name, has_default } => {
-                if let Some((call_idx, arg_expr)) =
-                    call_labeled.remove(name.as_str())
-                {
-                    let arg_typ = arg_expr.typ.get().cloned().unwrap_or_else(|| {
-                        fa.typ.clone()
-                    });
+                if let Some((call_idx, arg_expr)) = call_labeled.remove(name.as_str()) {
+                    let arg_typ =
+                        arg_expr.typ.get().cloned().unwrap_or_else(|| fa.typ.clone());
                     let kt = match gir::freeze_concrete(&arg_typ) {
                         Some(t) => t,
                         None => return,
                     };
                     let slot_idx = arg_types.len();
-                    layout.push(
-                        crate::gir::BuiltinSlot::Positional(slot_idx),
-                    );
+                    layout.push(crate::gir::BuiltinSlot::Positional(slot_idx));
                     arg_types.push(kt);
                     marshal_arg_indices.push(call_idx);
                 } else if *has_default {
@@ -274,9 +268,7 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
                         Some(d) => d,
                         None => return,
                     };
-                    layout.push(
-                        crate::gir::BuiltinSlot::LabeledDefault(default),
-                    );
+                    layout.push(crate::gir::BuiltinSlot::LabeledDefault(default));
                 } else {
                     return;
                 }
@@ -290,16 +282,10 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
         }
         let from_call_idx = arg_types.len();
         let count = remaining.len();
-        layout.push(crate::gir::BuiltinSlot::Variadic {
-            from_call_idx,
-            count,
-        });
+        layout.push(crate::gir::BuiltinSlot::Variadic { from_call_idx, count });
         for (call_idx, arg_expr) in remaining {
             let arg_typ = arg_expr.typ.get().cloned().or_else(|| {
-                fn_type
-                    .vargs
-                    .as_ref()
-                    .and_then(|t| t.with_deref(|t| t.cloned()))
+                fn_type.vargs.as_ref().and_then(|t| t.with_deref(|t| t.cloned()))
             });
             let arg_typ = match arg_typ {
                 Some(t) => t,
@@ -319,9 +305,7 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
     // Return type — resolved on the call-site FnType already, so
     // we can use it directly. The Apply Expr's typ cell would
     // agree if populated.
-    let ret_typ = apply_expr.typ.get().cloned().unwrap_or_else(|| {
-        fn_type.rtype.clone()
-    });
+    let ret_typ = apply_expr.typ.get().cloned().unwrap_or_else(|| fn_type.rtype.clone());
     let return_type = match gir::freeze_concrete(&ret_typ) {
         Some(t) => t,
         None => return,
@@ -346,12 +330,7 @@ fn try_register_builtin_call_from_callsite<R: crate::Rt, E: crate::UserEvent>(
     });
     out.apply_sites.insert(
         apply_id,
-        BuiltinCallSiteInfo {
-            fn_index,
-            marshal_arg_indices,
-            arg_types,
-            return_type,
-        },
+        BuiltinCallSiteInfo { fn_index, marshal_arg_indices, arg_types, return_type },
     );
 }
 
@@ -439,11 +418,7 @@ pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
 /// types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate by
 /// returning the type as-is — `from_type` then yields `None` and the
 /// kernel simply doesn't fuse, which is correct.
-pub(crate) fn resolve_abstract(
-    typ: &Type,
-    env: &crate::env::Env,
-    depth: usize,
-) -> Type {
+pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) -> Type {
     use triomphe::Arc;
     if depth > 16 {
         return typ.clone();
@@ -547,10 +522,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // call site doesn't lower, the enclosing body emission fails, and
     // the whole chain de-fuses to the node-walk. Mutually-recursive
     // lambdas are a fusion gap, not a compiler hang.
-    struct BuildingGuard(
-        triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
-        u64,
-    );
+    struct BuildingGuard(triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>, u64);
     impl Drop for BuildingGuard {
         fn drop(&mut self) {
             self.0.lock().remove(&self.1);
@@ -593,8 +565,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // the body's `Ref(x)` to a formal arg `x` surfaces as "external"
     // here. Exclude the formal-arg ids explicitly so they aren't
     // mistaken for captures.
-    let mut arg_ids: nohash::IntSet<crate::BindId> =
-        nohash::IntSet::default();
+    let mut arg_ids: nohash::IntSet<crate::BindId> = nohash::IntSet::default();
     for pat in g.args() {
         pat.ids(&mut |id| {
             arg_ids.insert(id);
@@ -676,8 +647,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // invocation), so the loop is gated on every FORMAL being one of
     // those kinds; otherwise self-calls stay plain native recursion
     // (correct, native stack depth).
-    let is_rec =
-        self_bind.is_some_and(|sb| external.iter().any(|id| *id == sb));
+    let is_rec = self_bind.is_some_and(|sb| external.iter().any(|id| *id == sb));
     let has_tail = is_rec
         && inputs[..n_formal].iter().all(|(_, kind, _)| {
             matches!(
@@ -696,14 +666,11 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // node-walks.
     let (mut sig, arg_types) = crate::fusion::sig_from_inputs(
         kernel_name.clone(),
-        inputs.iter().map(|(name, kind, bind_id)| {
-            (name.clone(), kind, *bind_id)
-        }),
+        inputs.iter().map(|(name, kind, bind_id)| (name.clone(), kind, *bind_id)),
         return_typ.clone(),
     );
     sig.has_tail_loop = has_tail;
-    let signature =
-        KnownFusedFn { arg_types, return_type: return_typ, self_bind };
+    let signature = KnownFusedFn { arg_types, return_type: return_typ, self_bind };
     let cached = CachedKernel {
         fn_name: kernel_name.clone(),
         kernel: std::sync::Arc::new(sig),
@@ -804,9 +771,7 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     // no name-keyed call resolution anyway, so uniqueness is both
     // required and sufficient.
     let kernel_name: ArcStr =
-        compact_str::format_compact!("__hof_{}", g.id().inner())
-            .as_str()
-            .into();
+        compact_str::format_compact!("__hof_{}", g.id().inner()).as_str().into();
     // A NAMED callback (`array::map(a, f)`) still has a Ref fnode —
     // thread its BindId so a recursive callback's self-reference is
     // recognised (tail self-calls fuse via the BindId-matched
@@ -825,8 +790,7 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     // emit (async ops, unsupported shapes) fails the JIT compile and
     // falls through to Phase 2: fuse the body's sync sub-regions
     // instead (`build_body_split`).
-    if let Some(cached) = build_lambda_kernel(g, &kernel_name, self_bind, ec)
-    {
+    if let Some(cached) = build_lambda_kernel(g, &kernel_name, self_bind, ec) {
         // Self-call info for a recursive callback (Node emission
         // needs it; mirrors `discover_lambda_calls`).
         let self_call = cached.is_rec.then(|| {
@@ -911,10 +875,7 @@ fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
         Err(e) => {
             // A failed per-slot compile is a quiet de-fuse (the slot
             // node-walks) — but never a SILENT one.
-            log::trace!(
-                "per-slot kernel `{}` failed to compile: {e:#}",
-                kernel.fn_name
-            );
+            log::trace!("per-slot kernel `{}` failed to compile: {e:#}", kernel.fn_name);
             None
         }
     }
@@ -953,8 +914,7 @@ fn build_body_split<R: crate::Rt, E: crate::UserEvent>(
         else {
             continue;
         };
-        let inputs =
-            crate::fusion::collect_region_inputs::<R, E>(&**value_node, ec);
+        let inputs = crate::fusion::collect_region_inputs::<R, E>(&**value_node, ec);
         // Non-scalar slots are still name-keyed — two same-basename
         // inputs would silently alias one slot (same gate as
         // `try_fuse`).
@@ -971,9 +931,7 @@ fn build_body_split<R: crate::Rt, E: crate::UserEvent>(
         let fn_name = compact_str::format_compact!("__split_{:?}", value_id);
         let (mut sig, _arg_types) = crate::fusion::sig_from_inputs(
             ArcStr::from(fn_name.as_str()),
-            inputs
-                .iter()
-                .map(|fv| (fv.name.clone(), &fv.kind, Some(fv.bind_id))),
+            inputs.iter().map(|fv| (fv.name.clone(), &fv.kind, Some(fv.bind_id))),
             return_type,
         );
         sig.fn_params = discovery.fn_params;
@@ -1044,12 +1002,7 @@ impl FusedCallback {
                 .get(&cap.bind_id)
                 .map(|b| b.typ.clone())
                 .unwrap_or(crate::typ::Type::Bottom);
-            feeders.push(crate::node::genn::reference(
-                ctx,
-                cap.bind_id,
-                typ,
-                top_id,
-            ));
+            feeders.push(crate::node::genn::reference(ctx, cap.bind_id, typ, top_id));
         }
         crate::fusion::builder::FusedKernel::<R, E>::new(
             ctx,
@@ -1092,11 +1045,10 @@ impl FusedCallback {
             // Locate the sync sub-region in this per-slot body and collect
             // its free-var bindings (fresh BindIds this slot).
             let per_slot: Vec<(ArcStr, crate::BindId, crate::typ::Type)> = {
-                let subtree =
-                    match crate::fusion::find_node_by_id(body, sk.value_id) {
-                        Some(n) => n,
-                        None => continue,
-                    };
+                let subtree = match crate::fusion::find_node_by_id(body, sk.value_id) {
+                    Some(n) => n,
+                    None => continue,
+                };
                 crate::fusion::collect_region_inputs::<R, E>(&**subtree, ctx)
                     .into_iter()
                     .map(|fv| (fv.name, fv.bind_id, fv.typ))
@@ -1104,20 +1056,17 @@ impl FusedCallback {
             };
             // Feeders in the kernel's input order (`sk.inputs`), matched
             // by name to this slot's free-var bindings.
-            let mut feeders: Vec<crate::Node<R, E>> =
-                Vec::with_capacity(sk.inputs.len());
+            let mut feeders: Vec<crate::Node<R, E>> = Vec::with_capacity(sk.inputs.len());
             for ki in &sk.inputs {
-                let (bind_id, typ) =
-                    match per_slot.iter().find(|(n, _, _)| *n == ki.name) {
-                        Some((_, id, t)) => (*id, t.clone()),
-                        None => anyhow::bail!(
-                            "split feeder `{}` not found in per-slot body",
-                            ki.name
-                        ),
-                    };
-                feeders.push(crate::node::genn::reference(
-                    ctx, bind_id, typ, top_id,
-                ));
+                let (bind_id, typ) = match per_slot.iter().find(|(n, _, _)| *n == ki.name)
+                {
+                    Some((_, id, t)) => (*id, t.clone()),
+                    None => anyhow::bail!(
+                        "split feeder `{}` not found in per-slot body",
+                        ki.name
+                    ),
+                };
+                feeders.push(crate::node::genn::reference(ctx, bind_id, typ, top_id));
             }
             let fk = crate::fusion::builder::FusedKernel::<R, E>::new(
                 ctx,
@@ -1129,9 +1078,7 @@ impl FusedCallback {
                 scope.clone(),
                 top_id,
             )?;
-            if let Ok(mut old) =
-                crate::fusion::splice_into(body, sk.value_id, fk)
-            {
+            if let Ok(mut old) = crate::fusion::splice_into(body, sk.value_id, fk) {
                 old.delete(ctx);
             }
         }
@@ -1156,17 +1103,13 @@ fn body_has_self_tail_call<R: crate::Rt, E: crate::UserEvent>(
 ) -> bool {
     use crate::NodeView;
     match node.view() {
-        NodeView::Block(b) => b
-            .children
-            .last()
-            .is_some_and(|c| body_has_self_tail_call(c, self_bind)),
-        NodeView::ExplicitParens(ep) => {
-            body_has_self_tail_call(&ep.n, self_bind)
+        NodeView::Block(b) => {
+            b.children.last().is_some_and(|c| body_has_self_tail_call(c, self_bind))
         }
-        NodeView::Select(s) => s
-            .arms
-            .iter()
-            .any(|(_, body)| body_has_self_tail_call(&body.node, self_bind)),
+        NodeView::ExplicitParens(ep) => body_has_self_tail_call(&ep.n, self_bind),
+        NodeView::Select(s) => {
+            s.arms.iter().any(|(_, body)| body_has_self_tail_call(&body.node, self_bind))
+        }
         NodeView::CallSite(cs) => {
             matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind)
         }
@@ -1315,20 +1258,3 @@ fn is_dyncall_return_supported(t: &Type) -> bool {
         Some(AbiKind::Null) | None => false,
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -5,7 +5,7 @@ use crate::{
     node::lambda::LambdaDef,
     typ::{FnArgKind, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
-    Scope, TypecheckPhase, Update, UserEvent,
+    Scope, Update, UserEvent,
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, Context, Result};
@@ -91,7 +91,7 @@ fn find_fn_in_arg_type(t: &Type, id: LambdaId) -> Option<&TArc<FnType>> {
             let mut fallback: Option<&TArc<FnType>> = None;
             for arm in ts.iter() {
                 if let Some(ft) = find_fn_in_arg_type(arm, id) {
-                    if ft.lambda_ids.read().contains(&id) {
+                    if ft.lambda_ids.ids().contains(&id) {
                         return Some(ft);
                     }
                     fallback.get_or_insert(ft);
@@ -166,7 +166,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// The resolved function type at this call site. Populated by
-    /// `typecheck_inner` during the typechecker's call-site unification
+    /// `typecheck0_inner` during the typechecker's call-site unification
     /// pass — after typecheck, every reachable CallSite has this set
     /// to the lambda's FnType with the call-site's TVars unified in.
     ///
@@ -353,31 +353,30 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                     None if *default => {
                         let id = BindId::new();
-                        let default_node =
-                            match &f.argspec[i].labeled {
-                                None | Some(None) => {
-                                    bail!("expected default value")
-                                }
-                                Some(Some(expr)) => {
-                                    ctx.with_restored(f.env.clone(), |ctx| {
-                                        let local_scope = Scope {
-                                            dynamic: scope.dynamic.clone(),
-                                            lexical: f.scope.lexical.clone(),
-                                        };
-                                        let n = compile(
-                                            ctx,
-                                            flags,
-                                            expr.clone(),
-                                            &local_scope,
-                                            self.top_id,
-                                        )?;
-                                        let mut refs = Refs::default();
-                                        n.refs(&mut refs);
-                                        prime_default_refs(ctx, &refs);
-                                        Ok::<_, anyhow::Error>(n)
-                                    })?
-                                }
-                            };
+                        let default_node = match &f.argspec[i].labeled {
+                            None | Some(None) => {
+                                bail!("expected default value")
+                            }
+                            Some(Some(expr)) => {
+                                ctx.with_restored(f.env.clone(), |ctx| {
+                                    let local_scope = Scope {
+                                        dynamic: scope.dynamic.clone(),
+                                        lexical: f.scope.lexical.clone(),
+                                    };
+                                    let n = compile(
+                                        ctx,
+                                        flags,
+                                        expr.clone(),
+                                        &local_scope,
+                                        self.top_id,
+                                    )?;
+                                    let mut refs = Refs::default();
+                                    n.refs(&mut refs);
+                                    prime_default_refs(ctx, &refs);
+                                    Ok::<_, anyhow::Error>(n)
+                                })?
+                            }
+                        };
                         let typ = default_node.typ().clone();
                         let spec = TArc::new(default_node.spec().clone());
                         self.args.insert(
@@ -444,7 +443,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.resolved_ftype.as_ref(),
             self.top_id,
         )?;
-        let _ = rf.typecheck(ctx, &mut self.arg_refs, TypecheckPhase::Lambda);
+        let _ = rf.typecheck0(ctx, &mut self.arg_refs);
         self.function = Some((fv, rf));
         Ok(())
     }
@@ -650,8 +649,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         &self.spec
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.fnode, self.fnode.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
             None => {
@@ -739,22 +738,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 key
             };
             if let Some(arg) = self.args.get_mut(&key) {
-                if let Some(ref mut n) = arg.node {
+                if let Some(n) = arg.node.as_mut() {
                     farg.typ.contains(&ctx.env, n.typ())?;
-                    wrap!(n, n.typecheck(ctx))?;
+                    wrap!(n, n.typecheck0(ctx))?;
                     wrap!(n, farg.typ.check_contains(&ctx.env, n.typ()))?;
                     match deref_typ!("arg", ctx, n.typ(), Some(t) => Ok(Some(t.clone())), None => Ok(None))
                     {
                         Ok(Some(Type::Fn(ft))) => {
-                            if !TArc::ptr_eq(&ftype.lambda_ids, &ft.lambda_ids) {
-                                let ids = ft.lambda_ids.read();
-                                if ids.len() > 0 {
-                                    let mut wids = ftype.lambda_ids.write();
-                                    for id in ids.iter().copied() {
-                                        hof_idmap.insert(id, i);
-                                        wids.insert(id);
-                                    }
-                                }
+                            // Record callback-lambda → arg-index so the
+                            // deferred check below can finalize each
+                            // callback against its arg's resolved fn type.
+                            // We do NOT `link` the callback into this
+                            // callee's `lambda_ids`: that is bidirectional,
+                            // so it would pollute the callback's (and any
+                            // value derived from it) closure with this
+                            // callee's id. (Phase 2 drives callbacks off
+                            // `resolved.args` directly and drops `hof_idmap`.)
+                            for id in ft.lambda_ids.ids().iter().copied() {
+                                hof_idmap.insert(id, i);
                             }
                         }
                         Ok(None | Some(_)) | Err(_) => (),
@@ -762,34 +763,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        // Propagate concrete types from labeled-default expressions
-        // into formal-arg TVars that the explicit args didn't refine.
-        //
-        // Why this matters: a polymorphic lambda like
-        // `'a: [Int, Float] |#x: 'a = 0.0, …|` invoked without any
-        // call-site arg that touches 'a would otherwise leave 'a
-        // unresolved at this call site — the runtime later evaluates
-        // the default and picks a concrete type, but compile-time
-        // inference never sees that. The resulting Apply's return
-        // type stays as a constraint-set TVar, which downstream
-        // consumers (fusion, type-directed dispatch) can't lower.
-        //
-        // We run AFTER the args loop above so any explicit positional
-        // or labeled-with-value arg has already refined 'a — `value:
-        // &"option_a"` setting 'a=string takes precedence over a
-        // sibling `#selected: &'a = &null` default. If both refine
-        // and disagree, the unification here surfaces a real type
-        // error rather than masking it.
-        //
-        // For a callee backed by a single LambdaDef (the common case
-        // for stdlib direct calls), `ftype.lambda_ids` has one entry;
-        // multi-lambda call sites (control flow yielding different
-        // lambdas) are skipped — too ambiguous to refine soundly.
-        let lambda_ids_for_defaults: Vec<LambdaId> = ftype
+        // CR estokes: I don't think the lambda_ids set is fully known until
+        // after typecheck has completed an entire cycle over the node tree
+        let lambda_ids_for_defaults: LPooled<Vec<LambdaId>> = ftype
             .lambda_ids
-            .read()
+            .ids()
             .iter()
             .copied()
+            .chain(hof_idmap.keys().copied())
             .collect();
         if lambda_ids_for_defaults.len() == 1 {
             let id = lambda_ids_for_defaults[0];
@@ -797,9 +778,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if let Some(ldef) = val.downcast_ref::<LambdaDef<R, E>>() {
                     for farg in ftype.args.iter() {
                         let name = match &farg.kind {
-                            FnArgKind::Labeled { name, has_default: true } => {
-                                name
-                            }
+                            FnArgKind::Labeled { name, has_default: true } => name,
                             _ => continue,
                         };
                         let arg = match self.args.get(&ArgKey::Named(name.clone())) {
@@ -831,7 +810,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     Some(arg) => {
                         if let Some(ref mut n) = arg.node {
                             typ.contains(&ctx.env, n.typ())?;
-                            wrap!(n, n.typecheck(ctx))?;
+                            wrap!(n, n.typecheck0(ctx))?;
                             wrap!(n, typ.check_contains(&ctx.env, n.typ()))?;
                         }
                     }
@@ -877,13 +856,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
-        if !ftype.lambda_ids.read().is_empty() {
+        if !ftype.lambda_ids.ids().is_empty() || !hof_idmap.is_empty() {
             let ftype = ftype.clone();
             let spec = self.spec.clone();
             ctx.deferred_checks.push(Box::new(move |ctx| {
                 let resolved = ftype.resolve_tvars();
-                let mut ids: LPooled<Vec<_>> =
-                    ftype.lambda_ids.read().iter().copied().collect();
+                let mut ids: LPooled<Vec<_>> = ftype
+                    .lambda_ids
+                    .ids()
+                    .iter()
+                    .copied()
+                    .chain(hof_idmap.keys().copied())
+                    .collect();
                 for id in ids.drain(..) {
                     let resolved = match hof_idmap.get(&id) {
                         None => &resolved,
@@ -903,17 +887,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                             .expect("failed to unwrap lambda for deferred check");
                         if let Some(apply) = &mut *ldef.check.lock() {
                             apply
-                                .typecheck(
-                                    ctx,
-                                    &mut [],
-                                    TypecheckPhase::CallSite(resolved),
-                                )
+                                .typecheck1(ctx, &mut [], resolved)
                                 .with_context(|| ErrorContext((*spec).clone()))?;
                         }
                     }
                 }
                 Ok(())
             }));
+        }
+        Ok(())
+    }
+
+    /// Pass-1 child recursion. (Phase 2 will also fold the deferred
+    /// check above into this method, with `&mut self` and the complete
+    /// `lambda_ids` closure.)
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.fnode, self.fnode.typecheck1(ctx))?;
+        for arg in self.args.values_mut() {
+            if let Some(n) = arg.node.as_mut() {
+                wrap!(n, n.typecheck1(ctx))?;
+            }
         }
         Ok(())
     }
@@ -951,9 +944,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // lower) de-fuses and the subtree node-walks.
             if matches!(f.view(), crate::ApplyView::Lambda(_)) {
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
-                    return crate::gir_jit::emit_lambda_call_node(
-                        cx, self, &info,
-                    );
+                    return crate::gir_jit::emit_lambda_call_node(cx, self, &info);
                 }
                 bail!(
                     "emit_clif: lambda call site `{}` not discovered — \
@@ -983,9 +974,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             );
             if is_self {
                 let info = info.clone();
-                return crate::gir_jit::emit_lambda_call_node(
-                    cx, self, &info,
-                );
+                return crate::gir_jit::emit_lambda_call_node(cx, self, &info);
             }
         }
         // Builtin DynCall. `marshal_arg_indices[i]` is a position in
@@ -996,9 +985,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // positional count (not source position).
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
-            None => bail!(
-                "emit_clif: builtin call site not discovered — doesn't fuse"
-            ),
+            None => bail!("emit_clif: builtin call site not discovered — doesn't fuse"),
         };
         let spec_apply = match &self.spec.kind {
             crate::expr::ExprKind::Apply(a) => a,
@@ -1026,20 +1013,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             .iter()
             .map(|&call_idx| {
                 source_nodes.get(call_idx).copied().ok_or_else(|| {
-                    anyhow!(
-                        "emit_clif: marshal arg index {call_idx} out of range"
-                    )
+                    anyhow!("emit_clif: marshal arg index {call_idx} out of range")
                 })
             })
             .collect::<Result<Vec<_>>>()?;
         crate::gir_jit::emit_dyncall_node(cx, &info, &arg_nodes)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-    ) -> Node<R, E> {
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // Bind-shaped: re-mint the arg-slot ids (genn-minted, NOT env-named,
         // so they need a local old→new map), clone each arg value node (the
         // element ref re-resolves its name to MapQ's fresh element), rebuild
@@ -1086,14 +1067,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // be re-bound that way: re-init would recompile its body from spec,
         // discarding the spliced FusedKernels.)
         let (function, statically_resolved) = match &self.function {
-            Some((v, apply))
-                if matches!(apply.view(), crate::ApplyView::Lambda(_)) =>
-            {
-                (
-                    Some((v.clone(), apply.clone_rebind(ctx, scope))),
-                    self.statically_resolved,
-                )
-            }
+            Some((v, apply)) if matches!(apply.view(), crate::ApplyView::Lambda(_)) => (
+                Some((v.clone(), apply.clone_rebind(ctx, scope))),
+                self.statically_resolved,
+            ),
             _ => (None, false),
         };
         Box::new(Self {

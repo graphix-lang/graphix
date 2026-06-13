@@ -4,9 +4,9 @@ use crate::{
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     node::pattern::StructPatternNode,
-    typ::{FnArgKind, FnArgType, FnType, Type},
+    typ::{fntyp::LambdaIds, FnArgKind, FnArgType, FnType, Type},
     wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, Update, UserEvent,
+    Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
@@ -14,7 +14,6 @@ use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx::{pack::Pack, subscriber::Value, utils::Either};
-use nohash::IntSet;
 use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
 use std::{fmt, hash::Hash, sync::Arc as SArc};
@@ -173,22 +172,34 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         self.body.update(ctx, event)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         args: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
         for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
-            wrap!(arg, arg.typecheck(ctx))?;
+            wrap!(arg, arg.typecheck0(ctx))?;
             wrap!(arg, typ.check_contains(&ctx.env, &arg.typ()))?;
         }
-        wrap!(self.body, self.body.typecheck(ctx))?;
+        wrap!(self.body, self.body.typecheck0(ctx))?;
         wrap!(self.body, self.typ.rtype.check_contains(&ctx.env, &self.body.typ()))?;
         for (tv, tc) in self.typ.constraints.read().iter() {
             tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
         }
         Ok(())
+    }
+
+    /// CallSite phase: drive the body's `typecheck1` so nested call
+    /// sites in the body finalize against their resolved types (the
+    /// cascade). The caller's args are walked by the driving
+    /// `CallSite::typecheck1`, so we don't re-walk them here.
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
+    ) -> Result<()> {
+        wrap!(self.body, self.body.typecheck1(ctx))
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -319,41 +330,44 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.update(ctx, from, event)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         args: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match &phase {
-            TypecheckPhase::CallSite(_) => (),
-            TypecheckPhase::Lambda => {
-                if args.len() < self.typ.args.len()
-                    || (args.len() > self.typ.args.len() && self.typ.vargs.is_none())
-                {
-                    let vargs = if self.typ.vargs.is_some() { "at least " } else { "" };
-                    bail!(
-                        "expected {}{} arguments got {}",
-                        vargs,
-                        self.typ.args.len(),
-                        args.len()
-                    )
-                }
-                for i in 0..args.len() {
-                    wrap!(args[i], args[i].typecheck(ctx))?;
-                    let atyp = if i < self.typ.args.len() {
-                        &self.typ.args[i].typ
-                    } else {
-                        self.typ.vargs.as_ref().unwrap()
-                    };
-                    wrap!(args[i], atyp.check_contains(&ctx.env, &args[i].typ()))?
-                }
-                for (tv, tc) in self.typ.constraints.read().iter() {
-                    tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
-                }
-            }
+        if args.len() < self.typ.args.len()
+            || (args.len() > self.typ.args.len() && self.typ.vargs.is_none())
+        {
+            let vargs = if self.typ.vargs.is_some() { "at least " } else { "" };
+            bail!(
+                "expected {}{} arguments got {}",
+                vargs,
+                self.typ.args.len(),
+                args.len()
+            )
         }
-        self.apply.typecheck(ctx, args, phase)
+        for i in 0..args.len() {
+            wrap!(args[i], args[i].typecheck0(ctx))?;
+            let atyp = if i < self.typ.args.len() {
+                &self.typ.args[i].typ
+            } else {
+                self.typ.vargs.as_ref().unwrap()
+            };
+            wrap!(args[i], atyp.check_contains(&ctx.env, &args[i].typ()))?
+        }
+        for (tv, tc) in self.typ.constraints.read().iter() {
+            tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
+        }
+        self.apply.typecheck0(ctx, args)
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        args: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.apply.typecheck1(ctx, args, resolved)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -532,11 +546,11 @@ impl Lambda {
                 rtype,
                 throws,
                 explicit_throws,
-                lambda_ids: Arc::new(RwLock::new(IntSet::default())),
+                lambda_ids: LambdaIds::default(),
             })
         };
         typ.alias_tvars(&mut LPooled::take());
-        typ.lambda_ids.write().insert(id);
+        typ.lambda_ids.set_id(id);
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();
@@ -654,10 +668,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                     if ctx.env.lookup_bind(&scope.lexical, &mp).is_some() {
                         continue;
                     }
-                    let cap_id = def
-                        .env
-                        .lookup_bind(&def.scope.lexical, &mp)
-                        .map(|(_, b)| b.id);
+                    let cap_id =
+                        def.env.lookup_bind(&def.scope.lexical, &mp).map(|(_, b)| b.id);
                     if let Some(id) = cap_id {
                         ctx.env.alias_variable(&scope.lexical, base.as_str(), id);
                     }
@@ -676,7 +688,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         let def = self
             .def
             .downcast_ref::<LambdaDef<R, E>>()
@@ -716,7 +728,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             let res = f
-                .typecheck(ctx, &mut faux_args, TypecheckPhase::Lambda)
+                .typecheck0(ctx, &mut faux_args)
                 .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
             if !needs_callsite {
                 f.delete(ctx)
@@ -747,6 +759,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         };
         self.typ.unbind_tvars();
         res
+    }
+
+    /// A lambda *definition* node has no children in the main node tree —
+    /// its body is reached and `typecheck1`'d per call site through
+    /// `GXLambda::Apply::typecheck1`. Nothing to do here.
+    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {

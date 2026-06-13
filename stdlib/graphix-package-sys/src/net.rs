@@ -7,7 +7,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
-    TypecheckPhase, UserEvent,
+    UserEvent,
 };
 use graphix_package_core::{arity1, arity2, extract_cast_type, CachedVals};
 use netidx::{
@@ -238,22 +238,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         })
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("sys::net::subscribe requires a concrete return type")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("sys::net::subscribe requires a concrete return type")
         }
+        Ok(())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -349,33 +352,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         })
     }
 
-    fn typecheck(
+    fn typecheck0(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
+        resolved: &FnType,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("sys::net::call requires a concrete return type")
-                }
-                // validate args type: must be a struct or null
-                if let Some(args_arg) = resolved.args.get(1) {
-                    deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
-                        Some(Type::Struct(_)) => Ok(()),
-                        Some(Type::Any) => Ok(()),
-                        Some(t @ Type::Primitive(_)) => {
-                            if is_null_type(t) { Ok(()) }
-                            else { bail!("sys::net::call args must be a struct or null") }
-                        }
-                    )?;
-                }
-                Ok(())
-            }
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("sys::net::call requires a concrete return type")
         }
+        // validate args type: must be a struct or null
+        if let Some(args_arg) = resolved.args.get(1) {
+            deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
+                Some(Type::Struct(_)) => Ok(()),
+                Some(Type::Any) => Ok(()),
+                Some(t @ Type::Primitive(_)) => {
+                    if is_null_type(t) { Ok(()) }
+                    else { bail!("sys::net::call args must be a struct or null") }
+                }
+            )?;
+        }
+        Ok(())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -627,22 +633,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         None
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => {
-                self.on_write.typecheck(ctx)?;
-                Ok(())
-            }
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_publish_cast_type(Some(resolved));
-                Ok(())
-            }
-        }
+        self.on_write.typecheck0(ctx)?;
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_publish_cast_type(Some(resolved));
+        Ok(())
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {
@@ -958,22 +965,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => {
-                self.f.typecheck(ctx)?;
-                Ok(())
-            }
-            TypecheckPhase::CallSite(resolved) => {
-                self.validate_spec(ctx, resolved)?;
-                Ok(())
-            }
-        }
+        self.f.typecheck0(ctx)?;
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.validate_spec(ctx, resolved)?;
+        Ok(())
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {

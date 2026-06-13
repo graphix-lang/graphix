@@ -237,9 +237,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         &self.spec
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.node, self.node.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.node, self.node.typecheck0(ctx))?;
         wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.node, self.node.typecheck1(ctx))?;
         Ok(())
     }
 
@@ -385,7 +390,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &self.typ
     }
 
-    fn typecheck_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -512,10 +521,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.child.refs(refs)
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck0(ctx))?;
         let t = Type::ByRef(Arc::new(self.child.typ().clone()));
         wrap!(self, self.typ.check_contains(&ctx.env, &t))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck1(ctx))?;
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
@@ -602,13 +616,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck0(ctx))?;
         let typ = match self.child.typ() {
             Type::ByRef(t) => (**t).clone(),
             _ => bail!("expected reference"),
         };
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck1(ctx))?;
         Ok(())
     }
 

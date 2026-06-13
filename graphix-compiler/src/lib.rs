@@ -35,7 +35,11 @@ use crate::{
     effects::EffectKind,
     env::Env,
     expr::{ExprId, ModPath},
-    node::lambda::LambdaDef,
+    gir_jit::{BodyCx, CompiledExpr},
+    node::{
+        callsite::CallSite,
+        lambda::{GXLambda, LambdaDef},
+    },
     typ::{FnType, Type},
 };
 use ahash::{AHashMap, AHashSet};
@@ -505,15 +509,6 @@ impl Refs {
 
 pub type Node<R, E> = Box<dyn Update<R, E>>;
 
-/// Phase indicator for Apply::typecheck
-#[derive(Debug)]
-pub enum TypecheckPhase<'a> {
-    /// During Lambda::typecheck — faux args, building FnType
-    Lambda,
-    /// During deferred check or bind — resolved FnType available
-    CallSite(&'a FnType),
-}
-
 pub type InitFn<R, E> = sync::Arc<
     dyn for<'a, 'b, 'c, 'd> Fn(
             &'a Scope,
@@ -566,19 +561,32 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         ()
     }
 
-    /// apply custom typechecking. Phase indicates context:
-    /// - Lambda: during lambda body checking (faux args). Return NeedsCallSite
-    ///   to opt in to deferred call-site type checking.
-    /// - CallSite: during deferred check or bind (resolved FnType available)
-    fn typecheck(
+    /// First typecheck pass ("Lambda phase"): typecheck the call's
+    /// argument nodes against the lambda's own FnType while it is built.
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
         Ok(())
     }
 
+    /// Second typecheck pass ("CallSite phase"): always called from
+    /// `CallSite::typecheck1` with the resolved call-site FnType. A
+    /// builtin extracts call-site-directed types here (e.g. `str::parse`
+    /// reads its target type from `resolved`); a HOF builtin
+    /// pre-materializes its callback; a `GXLambda` recurses its body.
+    /// Default no-op — a builtin with no call-site work ignores it.
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    // CR estokes: Why is this not simply another typecheck phase?
     /// Compile-time hook for HOF builtins. Called by
     /// [`crate::static_resolve::resolve_static_calls`] after this
     /// builtin has been constructed by its `BuiltIn::init`, with
@@ -645,6 +653,8 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     fn clone_rebind(
         &self,
         _ctx: &mut ExecCtx<R, E>,
+        // CR estokes: Why are we passing this scope? We shouldn't be
+        // reconstructing scope multiple times
         _scope: &Scope,
     ) -> Box<dyn Apply<R, E>> {
         panic!("clone_rebind not implemented for Apply {self:?}")
@@ -664,9 +674,9 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     ///   function is discarded.
     fn emit_clif(
         &self,
-        _callsite: &crate::node::callsite::CallSite<R, E>,
-        _cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<Option<crate::gir_jit::CompiledExpr>> {
+        _callsite: &CallSite<R, E>,
+        _cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
         Ok(None)
     }
 }
@@ -684,7 +694,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 ///   methods. The default `view()` returns this — every Apply impl
 ///   inherits opaque-builtin semantics unless it overrides.
 pub enum ApplyView<'a, R: Rt, E: UserEvent> {
-    Lambda(&'a crate::node::lambda::GXLambda<R, E>),
+    Lambda(&'a GXLambda<R, E>),
     BuiltIn,
 }
 
@@ -692,7 +702,7 @@ pub enum ApplyView<'a, R: Rt, E: UserEvent> {
 /// sub-kernels into Nodes reachable through an Apply (the body Node
 /// of a [`Lambda`](ApplyViewMut::Lambda)).
 pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
-    Lambda(&'a mut crate::node::lambda::GXLambda<R, E>),
+    Lambda(&'a mut GXLambda<R, E>),
     BuiltIn,
 }
 
@@ -708,7 +718,7 @@ pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
 /// `lambda.id`) and not store the reference.
 pub struct StaticFnArg<'a, R: Rt, E: UserEvent> {
     pub arg_idx: usize,
-    pub lambda: &'a crate::node::lambda::LambdaDef<R, E>,
+    pub lambda: &'a LambdaDef<R, E>,
 }
 
 /// Exhaustive typed view of the compiled node graph.
@@ -808,21 +818,30 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
 
     /// type check the node and it's children. The default impl runs
-    /// the node-specific `typecheck_inner` and, on success, propagates
+    /// the node-specific `typecheck0_inner` and, on success, propagates
     /// the resolved `typ()` into the source `Expr`'s `typ` cell — so
     /// after a successful typecheck pass every Expr in the program
     /// reports its resolved Type via `Expr::typ.get()`. Don't override
     /// unless you're sure you want to skip propagation (which is
     /// almost certainly wrong — fusion and other AST consumers depend
     /// on this).
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.typecheck_inner(ctx)?;
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.typecheck0_inner(ctx)?;
         let _ = self.spec().typ.set(self.typ().clone());
         Ok(())
     }
 
-    /// node-specific typecheck logic — see [`Self::typecheck`].
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
+    /// node-specific typecheck logic — see [`Self::typecheck0`].
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
+
+    /// Second typecheck pass, run over the whole tree AFTER `typecheck0`
+    /// completes. By now every `FnType::lambda_ids` closure is final, so
+    /// a `CallSite` can read it to decide static dispatch and drive the
+    /// resolved-type-dependent finalization that used to be the deferred
+    /// check. NO default impl: every `Update` node must recurse into its
+    /// children's `typecheck1` (mirroring `typecheck0_inner`'s child
+    /// walk), so a new node type is a compile error until it participates.
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
 
     /// return the node type
     fn typ(&self) -> &Type;
@@ -973,10 +992,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// is spliced and nothing below it is attempted). The default is
     /// `Ok(None)` with no recursion — correct for leaves; container
     /// nodes override.
-    fn jit(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    fn jit(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         Ok(None)
     }
 }
@@ -1423,11 +1439,12 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// definition, monomorphization). The cached `Arc<KernelSig>` IS
     /// the compiled-callable handle — the JIT's `by_kernel` cache
     /// keys on its pointer identity.
-    pub fusion_kernels:
-        parking_lot::Mutex<std::collections::BTreeMap<
+    pub fusion_kernels: parking_lot::Mutex<
+        std::collections::BTreeMap<
             (LambdaId, std::sync::Arc<typ::FnType>),
             fusion::lowering::CachedKernel,
-        >>,
+        >,
+    >,
     /// Lambdas whose kernel build is CURRENTLY on the stack —
     /// `build_lambda_kernel`'s re-entrancy guard. Mutual recursion
     /// (f's body builds g, whose body re-enters f before f's cache
@@ -1435,8 +1452,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// guard refuses the inner build so the call chain de-fuses to
     /// the node-walk instead of hanging the compiler. `Arc` so a
     /// drop-guard can hold the set without borrowing the `ExecCtx`.
-    pub(crate) fusion_building:
-        triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
+    pub(crate) fusion_building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
     /// Whether JIT compilation is enabled for the current compile.
     /// Set by [`compile`] from `!flags.contains(CFlag::JitDisabled)`.
     /// Read by code paths that JIT-compile outside `fuse()`'s
@@ -1493,7 +1509,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
-            jit: parking_lot::Mutex::new(gir_jit::Jit::new()?,),
+            jit: parking_lot::Mutex::new(gir_jit::Jit::new()?),
             fusion_kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             fusion_building: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
@@ -1623,7 +1639,7 @@ pub fn compile<R: Rt, E: UserEvent>(
     };
     info!("compile time {:?}", st.elapsed());
     let st = Instant::now();
-    if let Err(e) = node.typecheck(ctx) {
+    if let Err(e) = node.typecheck0(ctx) {
         ctx.env = env;
         return Err(e);
     }

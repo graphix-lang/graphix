@@ -11,7 +11,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, UserEvent,
+    UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapCollection, MapFn, MapQ, Slot,
@@ -1010,11 +1010,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase,
     ) -> anyhow::Result<()> {
         let i_typ = Type::Primitive(Typ::I64.into());
         let (_, node) = genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
@@ -1022,7 +1021,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         let fnode = genn::reference(ctx, self.fid, Type::Fn(ft.clone()), self.top_id);
         let mut node =
             genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
-        let r = node.typecheck(ctx);
+        let r = node.typecheck0(ctx);
         node.delete(ctx);
         r?;
         Ok(())

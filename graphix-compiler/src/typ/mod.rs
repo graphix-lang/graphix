@@ -21,7 +21,7 @@ use triomphe::Arc;
 
 mod cast;
 mod contains;
-mod fntyp;
+pub mod fntyp;
 mod matches;
 mod normalize;
 mod print;

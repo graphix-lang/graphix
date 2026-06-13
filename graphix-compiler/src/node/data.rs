@@ -81,9 +81,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         match &self.typ {
             Type::Struct(typs) => {
@@ -99,6 +99,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
                 }
             }
             _ => bail!("BUG: expected a struct rtype"),
+        }
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n.node, n.node.typecheck1(ctx))?
         }
         Ok(())
     }
@@ -247,8 +254,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter().for_each(|r| r.n.node.refs(refs))
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck0(ctx))?;
         let fields = match &self.spec.kind {
             ExprKind::StructWith(StructWithExpr { source: _, replace }) => {
                 replace.iter().map(|(n, _)| n.clone()).collect::<SmallVec<[ArcStr; 8]>>()
@@ -270,7 +277,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                         match r {
                             None => bail!("struct has no field named {n}"),
                             Some((i, typ)) => {
-                                wrap!(rep.n.node, rep.n.node.typecheck(ctx))?;
+                                wrap!(rep.n.node, rep.n.node.typecheck0(ctx))?;
                                 wrap!(
                                     rep.n.node,
                                     typ.check_contains(&ctx.env, &rep.n.node.typ())
@@ -286,6 +293,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             })
         )?;
         wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        for rep in self.replace.iter_mut() {
+            wrap!(rep.n.node, rep.n.node.typecheck1(ctx))?
+        }
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
@@ -402,8 +417,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         &self.spec
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("struct", ctx, self.source.typ(),
             Some(Type::Struct(flds)) => {
                 let typ = flds.iter().enumerate().find_map(|(i, (n, t))| {
@@ -421,6 +436,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         let (idx, typ) = wrap!(self, etyp)?;
         self.field = Some(idx);
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
@@ -510,9 +530,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         match &self.typ {
             Type::Tuple(typs) => {
@@ -524,6 +544,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
                 }
             }
             _ => bail!("BUG: unexpected tuple rtype"),
+        }
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n.node, n.node.typecheck1(ctx))?
         }
         Ok(())
     }
@@ -621,9 +648,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         match &self.typ {
             Type::Variant(ttag, typs) => {
@@ -638,6 +665,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
                 }
             }
             _ => bail!("BUG: unexpected variant rtype"),
+        }
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n.node, n.node.typecheck1(ctx))?
         }
         Ok(())
     }
@@ -727,8 +761,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.source.sleep(ctx);
     }
 
-    fn typecheck_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("tuple", ctx, self.source.typ(),
             Some(Type::Tuple(flds)) => Ok(flds[self.field].clone()),
             Some(Type::Error(t)) => {
@@ -740,6 +774,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         );
         let etyp = wrap!(self, etyp)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        Ok(())
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {
