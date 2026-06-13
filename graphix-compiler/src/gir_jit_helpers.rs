@@ -205,7 +205,7 @@ pub unsafe extern "C" fn graphix_value_buf_push_array(
 }
 
 /// Flatten an owned `*mut ValArray` into `buf`: clone each element into
-/// the buf, then drop the array box. Used by `GirOp::ArrayFlatMap`'s
+/// the buf, then drop the array box. Used by the flat_map loop's
 /// JIT codegen — the body produces an owned array per element whose
 /// contents are concatenated into the output. (`ValArray` is an
 /// immutable `Arc<[Value]>`, so elements are cloned, not moved.)
@@ -276,7 +276,7 @@ pub unsafe extern "C" fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
 /// JIT-emitted code calls this:
 ///   * after every `graphix_dyncall` to branch into `pre_pending_<n>`
 ///     (cleanup + jump to `pending_exit`),
-///   * at every `GirStmt::Return` to drop the about-to-return result
+///   * at every kernel return to drop the about-to-return result
 ///     and jump to `pending_exit` instead of returning a leaked
 ///     allocation (when an earlier scalar DynCall pended silently
 ///     and the kernel's return path produced an owned heap value).
@@ -293,7 +293,7 @@ pub extern "C" fn graphix_dyncall_pending_take() -> u8 {
 }
 
 /// Set `DYNCALL_PENDING` to true. Called by the JIT-emitted code
-/// at `GirOp::QopUnwrap`'s error branch — same pending signal as
+/// at the qop-unwrap error branch — same pending signal as
 /// the dispatcher uses, just driven by a kernel-internal check
 /// instead of a `dispatch` return.
 #[unsafe(no_mangle)]
@@ -468,7 +468,7 @@ pub extern "C" fn graphix_value_clone(v: Value) -> Value {
 }
 
 /// Clone a `Value` from a stable `*const Value` static — a kernel's
-/// value-constants table slot (a value-shape `GirOp::Const`:
+/// value-constants table slot (a value-shape constant:
 /// datetime/duration/bytes/map). Bumps any inner `Arc`. Returns the
 /// clone by value (two registers).
 ///
@@ -523,7 +523,7 @@ value_checked_arith_helper!(graphix_value_checked_mul, checked_mul);
 value_checked_arith_helper!(graphix_value_checked_div, checked_div);
 value_checked_arith_helper!(graphix_value_checked_rem, checked_rem);
 
-/// Value equality (`GirOp::ValueEq`). Compares via netidx's
+/// Value equality (`ValueEq`). Compares via netidx's
 /// `impl PartialEq for Value` — byte-identical to the non-fused `==`
 /// node. CONSUMES both args (they're dropped at function end), matching
 /// the owned-operand contract `compile_owned_value_operand` produces.
@@ -531,7 +531,7 @@ pub extern "C" fn graphix_value_eq(l: Value, r: Value) -> u8 {
     (l == r) as u8
 }
 
-/// `bytes[i]` (`GirOp::BytesIndex`). Extracts the `PBytes` from a
+/// `bytes[i]` indexing. Extracts the `PBytes` from a
 /// `Value::Bytes`, indexes via the shared `node::array::bytes_index`
 /// (bounds-checked, negative-from-end), and returns `Nullable<u8>`'s
 /// `Value` (the `u8` or the out-of-bounds error). CONSUMES the bytes
@@ -543,7 +543,7 @@ pub extern "C" fn graphix_bytes_index(v: Value, i: i64) -> Value {
     }
 }
 
-/// Map access `m{key}` (`GirOp::MapRef`). Looks up `key` in the
+/// Map access `m{key}`. Looks up `key` in the
 /// `Value::Map` via the shared `node::map::map_get`, returning the
 /// value or the `map key not found` error (`Nullable<V>`'s `Value`).
 /// CONSUMES both operands (passed owned by
@@ -552,7 +552,7 @@ pub extern "C" fn graphix_map_ref(map: Value, key: Value) -> Value {
     crate::node::map::map_get(&map, &key)
 }
 
-/// Array/bytes slice `a[i..j]` (`GirOp::ArraySlice`). `flags` bit0 =
+/// Array/bytes slice `a[i..j]`. `flags` bit0 =
 /// `start` present, bit1 = `end` present (absent bounds pass 0). Routes
 /// to the shared `node::array::array_slice_i64`, returning the
 /// sub-array/sub-bytes or an error (`Nullable<source>`'s `Value`).
@@ -580,7 +580,7 @@ pub extern "C" fn graphix_array_slice(src: Value, start: i64, end: i64, flags: i
 /// Clone an interned static `ArcStr` — refcount bump on the slot at
 /// `p`, returning a fresh owned ArcStr. Caller has ownership; drops
 /// when no longer needed via `graphix_arcstr_drop`. Used by
-/// `GirOp::ConstStr` lowering.
+/// string-constant lowering.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_arcstr_clone_from_static(
     p: *const arcstr::ArcStr,
@@ -617,7 +617,7 @@ pub extern "C" fn graphix_arcstr_drop(s: u64) {
 /// fresh clone. The caller's bits stay valid (we `mem::forget` so
 /// the input's ref isn't decremented). Net effect: caller now has
 /// two valid refs (original + returned clone). Used by
-/// `GirOp::Local` reads of String slots and by anywhere else we
+/// local reads of String slots and by anywhere else we
 /// need to take an additional ref to an in-register ArcStr.
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
@@ -634,7 +634,7 @@ pub extern "C" fn graphix_value_new_string(s: arcstr::ArcStr) -> Value {
     Value::String(s)
 }
 
-/// Start a fresh string-buffer for `GirOp::Concat`. Returns a heap-
+/// Start a fresh string-buffer for interpolation/concat. Returns a heap-
 /// owned `*mut String`; caller eventually pairs with
 /// `graphix_string_buf_finalize` (success) or `graphix_string_buf_drop`
 /// (pending path).
@@ -706,7 +706,7 @@ pub unsafe extern "C" fn graphix_string_buf_push_bool(buf: *mut String, v: u8) {
 /// Test whether a `Value` is `Value::Null`. Borrowed read — caller
 /// retains ownership.
 ///
-/// Today `GirOp::IsNull` lowering inlines this test as `icmp_imm
+/// Today is-null lowering inlines this test as `icmp_imm
 /// (disc, NULL_DISC)` rather than calling the helper; the helper
 /// remains registered so out-of-tree code and direct interp tests
 /// keep working.
@@ -1030,7 +1030,7 @@ pub unsafe extern "C" fn graphix_dyncall(
 }
 
 /// Read element `idx` of `arr` as an `i64`. JIT-side counterpart of
-/// `GirOp::ArrayGet` / `GirOp::TupleGet` for scalar i64 elements.
+/// array/tuple element reads for scalar i64 elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_valarray_get_i64(p: *const ValArray, idx: usize) -> i64 {
     unsafe { arr(p).get_unchecked::<i64>(idx) }
@@ -1093,7 +1093,7 @@ pub unsafe extern "C" fn graphix_valarray_len(p: *const ValArray) -> usize {
 
 /// Two-level struct field read: `arr[sorted_idx]` is itself a
 /// `Value::Array([name, value])` kv-pair; we read slot 1 (the value)
-/// as the named primitive. Mirrors the interp's `GirOp::StructGet`.
+/// as the named primitive. Struct field read by sorted index.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_struct_get_i64(
     p: *const ValArray,

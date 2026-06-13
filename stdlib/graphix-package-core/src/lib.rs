@@ -285,28 +285,6 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
 
-    /// Opt-in fusion. When `true`, `CachedArgs<Self>` reports itself as
-    /// a `FusedBuiltin` (via `Apply::view`) and routes the call site's
-    /// GIR emission through [`Self::emit_gir`]. Default `false` — the
-    /// builtin fuses (if at all) via the generic `DynCall` path, like
-    /// any opaque builtin.
-    const FUSABLE: bool = false;
-
-    /// Lower a call site of this builtin to GIR. Only consulted when
-    /// `FUSABLE`. Returns `None` to fall back to `DynCall` (e.g. an arg
-    /// shape this emitter can't lower). Same contract as
-    /// [`graphix_compiler::GirEmitter::emit_gir`].
-    fn emit_gir(
-        &self,
-        _callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
-        _args: &[(Option<ArcStr>, &Node<R, E>)],
-        _arg_refs: &[Node<R, E>],
-        _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        _ec: &mut ExecCtx<R, E>,
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        None
-    }
-
     fn typecheck(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -369,37 +347,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.cached.clear()
-    }
-
-    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
-        if T::FUSABLE {
-            graphix_compiler::ApplyView::FusedBuiltin(self)
-        } else {
-            graphix_compiler::ApplyView::BuiltIn
-        }
-    }
-
-    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
-        if T::FUSABLE {
-            graphix_compiler::ApplyViewMut::FusedBuiltin(self)
-        } else {
-            graphix_compiler::ApplyViewMut::BuiltIn
-        }
-    }
-}
-
-impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> graphix_compiler::GirEmitter<R, E>
-    for CachedArgs<T>
-{
-    fn emit_gir(
-        &self,
-        callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
-        args: &[(Option<ArcStr>, &Node<R, E>)],
-        arg_refs: &[Node<R, E>],
-        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        self.t.emit_gir(callsite, args, arg_refs, ctx, ec)
     }
 }
 
@@ -618,60 +565,36 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// guaranteed to be Some.
     fn finish(&mut self, slots: &[Slot<R, E>], a: &Self::Collection) -> Option<Value>;
 
-    /// Compile-time codegen hook. Implementations return a [`GirExpr`]
-    /// that lowers a per-element HOF call site into a single fused
-    /// kernel op (e.g. `GirOp::ArrayMap`, `GirOp::ArrayFilter`).
-    /// Returning `None` (the default) falls back to today's runtime
-    /// HOF dispatch (per-element [`Apply`] Nodes via [`Self::finish`]).
+    /// Codegen hook for the node-graph JIT. Implementations emit the
+    /// HOF loop into the open kernel via the `gir_jit::scaffold` fns,
+    /// compiling the callback body with `body.emit_clif(cx)`.
+    /// Returning `Ok(None)` (the default) falls back to the runtime
+    /// HOF dispatch (per-element [`Apply`] Nodes via
+    /// [`Self::finish`]).
     ///
     /// Implementors receive:
-    /// - `ctx`: the [`FusionCtx`] for emitting child Nodes and
-    ///   looking up kernel inputs.
     /// - `array_arg`: the outer HOF call site's input array argument
-    ///   Node. Typically a `Ref` to an array kernel param; the
-    ///   implementor uses `FusionCtx::resolve_array_input` to confirm.
-    /// - `body`: the callback lambda's body Node, ready to walk via
-    ///   [`crate::FusionCtx::emit`] (or `emit_expr_node` during the
-    ///   migration). Provided by `MapQ`'s analysis-time setup —
-    ///   `None` if the callback isn't statically resolvable, in
-    ///   which case `MapQ`'s `GirEmitter::emit_gir` short-circuits
-    ///   before reaching this method.
-    /// - `elem_name`: the callback's parameter name (`x` in
-    ///   `|x| body`), used as the [`Input`] name when scoping the
-    ///   body emit so its body's `Ref` lookups find the kernel slot.
-    /// - `in_elem`: the array's element type as a [`Type`] (a
-    ///   `Prim` for scalar elements, or a composite for
-    ///   `Array<(k, v)>`-style elements). Implementors that only
-    ///   handle scalar elements call `in_elem.as_prim()?`.
+    ///   Node.
+    /// - `body`: the callback lambda's body Node, provided by `MapQ`'s
+    ///   analysis-time setup (the callback must be statically
+    ///   resolvable — MapQ's `Apply::emit_clif` orchestration
+    ///   short-circuits otherwise).
+    /// - `elem_name` / `elem_id`: the callback's parameter name and
+    ///   BindId (`x` in `|x| body`) — the element binding the body's
+    ///   `Ref`s resolve against.
+    /// - `in_elem`: the array's element type.
+    /// - `elem_binds`: tuple-destructure callback leaves
+    ///   `(BindId, position)` when the arg is `|(k, v)|`; empty for a
+    ///   single-name `|x|` callback.
     ///
-    /// Implementations live with each `MapFn` impl (i.e. in the
-    /// package that defines the runtime semantics), not in
-    /// `fusion::lowering` — the compiler stops knowing builtin
-    /// names.
-    fn emit_gir(
-        _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        _ec: &mut ExecCtx<R, E>,
-        _array_arg: &Node<R, E>,
-        _body: &Node<R, E>,
-        _elem_name: &ArcStr,
-        _in_elem: graphix_compiler::typ::Type,
-        // Tuple-destructure callback leaves `(BindId, position)` when the
-        // arg is `|(k, v)|`; empty for a single-name `|x|` callback.
-        _elem_binds: &[(graphix_compiler::BindId, usize)],
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        None
-    }
-
-    /// Direct-path codegen hook (Stage D2) — the [`Self::emit_gir`]
-    /// twin for the node-graph JIT. Implementations emit the HOF loop
-    /// into the open kernel via the `gir_jit::scaffold` fns, compiling
-    /// the callback body with `body.emit_clif(cx)`. Same contract as
-    /// [`graphix_compiler::Apply::emit_clif`]: `Ok(None)` = shape not
-    /// handled, and it MUST be decided BEFORE the first instruction is
-    /// emitted (run every gate up front); `Err` aborts the kernel
-    /// build (partial emission fine — the function is discarded). No
-    /// `ExecCtx`: emission runs under the jit lock (see
-    /// design/distributed_jit.md §1).
+    /// Same contract as [`graphix_compiler::Apply::emit_clif`]:
+    /// `Ok(None)` = shape not handled, and it MUST be decided BEFORE
+    /// the first instruction is emitted (run every gate up front);
+    /// `Err` aborts the kernel build (partial emission fine — the
+    /// function is discarded). No `ExecCtx`: emission runs under the
+    /// jit lock (see design/distributed_jit.md §1). Implementations
+    /// live with each `MapFn` impl (the package that defines the
+    /// runtime semantics) — the compiler doesn't know builtin names.
     fn emit_clif(
         _cx: &mut graphix_compiler::gir_jit::BodyCx,
         _array_arg: &Node<R, E>,
@@ -723,14 +646,14 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     /// to DynCall for those cases.
     ///
     /// The bound (resolved) representative callback CallSite — the
-    /// PRISTINE prototype. `emit_gir` reads this body at compile time to
+    /// PRISTINE prototype. `emit_clif` reads this body at compile time to
     /// inline the callback into a surrounding region (full fusion); it is
     /// never mutated. See `design/impure_hof_fusion.md` (superseding).
     pub analysis_pred: Option<Slot<R, E>>,
     /// The per-slot template: a `clone_rebind`'d COPY of `analysis_pred`
     /// with its sync sub-regions fused. Built lazily once on the first
     /// slot-growing `update()` — a SEPARATE copy, so the pristine
-    /// `analysis_pred` (which `emit_gir` reads) is never mutated. `update`
+    /// `analysis_pred` (which `emit_clif` reads) is never mutated. `update`
     /// `clone_rebind`s THIS per slot; each clone shares the template's
     /// compiled kernel `Arc`s with freshly re-bound async residue (fresh
     /// BindIds → independent per-slot state). `None` until first built, or
@@ -781,14 +704,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
-    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
-        graphix_compiler::ApplyView::FusedBuiltin(self)
-    }
-
-    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
-        graphix_compiler::ApplyViewMut::FusedBuiltin(self)
-    }
-
     fn static_resolve_fn_args(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -844,12 +759,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         cs.resolve_static(ctx, cb.lambda, fv)?;
         // The analysis_pred is resolved (bound) but NOT fused here. The
         // fuse + splice is deferred to the first `update()` (the lazy-fuse
-        // block in `update`) — because `emit_gir` (the array-HOF region
+        // block in `update`) — because `emit_clif` (the array-HOF region
         // inliner) reads THIS SAME `analysis_pred` body at compile time to
         // inline the callback into the surrounding region. Mutating it
-        // here (splicing in FusedKernels) corrupts what `emit_gir` reads,
+        // here (splicing in FusedKernels) corrupts what `emit_clif` reads,
         // so the HOF can't region-fuse and falls back to MapQ. Deferring
-        // to runtime orders the mutation strictly after `emit_gir` has
+        // to runtime orders the mutation strictly after `emit_clif` has
         // read the pristine prototype. See design/impure_hof_fusion.md.
         self.analysis_pred = Some(Slot { id, pred, cur: None });
         Ok(())
@@ -881,7 +796,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                     // Build the per-slot template ONCE, lazily at first use:
                     // a `clone_rebind`'d COPY of the pristine `analysis_pred`
                     // with its sync sub-regions fused. We fuse the CLONE so
-                    // the prototype `emit_gir` reads stays untouched — the
+                    // the prototype `emit_clif` reads stays untouched — the
                     // two readers never share a mutable object. Lazy keeps a
                     // HOF that region-fuses from building this unused
                     // template. Split (impure): splice each sync sub-region;
@@ -1095,7 +1010,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
     }
 
     /// Direct-path codegen (Stage D2) — the [`Apply::emit_clif`] twin
-    /// of the `GirEmitter::emit_gir` orchestration below: locate the
+    /// of the `Apply::emit_clif` orchestration below: locate the
     /// callback body through the analysis_pred's resolved CallSite,
     /// extract the element name / BindId / destructure leaves, then
     /// delegate to the per-`MapFn` [`MapFn::emit_clif`]. Every miss is
@@ -1166,101 +1081,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
     }
 }
 
-/// Fusion-time codegen for `MapQ`-built HOFs. Delegates to
-/// `T::emit_gir` (defined per `MapFn` impl) — `MapQ` itself only
-/// orchestrates the shared work: locate the array kernel param,
-/// extract the callback body via the analysis_pred's resolved
-/// CallSite, then hand the pieces to the per-`MapFn` codegen.
-impl<R: Rt, E: UserEvent, T: MapFn<R, E>> graphix_compiler::GirEmitter<R, E>
-    for MapQ<R, E, T>
-{
-    fn emit_gir(
-        &self,
-        callsite: &CallSite<R, E>,
-        _args: &[(Option<ArcStr>, &Node<R, E>)],
-        _arg_refs: &[Node<R, E>],
-        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        // No analysis_pred → callback wasn't statically resolvable
-        // → fall back to DynCall (`None` here = fusion bails).
-        let slot = self.analysis_pred.as_ref()?;
-        // Outer call site's positional args: array, callback.
-        let array_arg = callsite.arg_positional(0)?;
-        // Locate the callback's body Node through the synthesized
-        // inner CallSite's resolved Apply.
-        let pred_view = slot.pred.view();
-        let inner_cs = match pred_view {
-            graphix_compiler::NodeView::CallSite(cs) => cs,
-            _ => return None,
-        };
-        let inner_apply = inner_cs.resolved_apply()?;
-        let g = match inner_apply {
-            graphix_compiler::ApplyView::Lambda(g) => g,
-            _ => return None,
-        };
-        let body = g.body();
-        // Resolve the array kernel param name and its element type
-        // up-front — saves every `MapFn::emit_gir` impl from
-        // duplicating these lookups.
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        let ai = ctx.find_array(&array_name)?;
-        let in_elem = ai.elem.clone();
-        // A `|(k, v)|` tuple-destructure arg has no single name —
-        // synthesize an element name and hand the per-leaf
-        // `(BindId, position)` list to the impl. A single-name `|x|`
-        // arg pulls its name from the callback `FnType.args[0].kind`
-        // (the body's `Ref`s carry that source name) and passes no
-        // leaves.
-        let (elem_name, elem_binds) = match g.args().first().and_then(|p| p.tuple_leaves())
-        {
-            Some(binds) => (arcstr::literal!("__elem"), binds),
-            None => {
-                let n = match &g.typ().args.first()?.kind {
-                    graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => {
-                        n.clone()
-                    }
-                    graphix_compiler::typ::FnArgKind::Labeled { name, .. } => {
-                        name.clone()
-                    }
-                    _ => return None,
-                };
-                (n, Vec::new())
-            }
-        };
-        // Delegate to the per-MapFn codegen.
-        T::emit_gir(ctx, ec, array_arg, body, &elem_name, in_elem, &elem_binds)
-    }
-}
-
 pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
     type Collection: MapCollection;
 
     const NAME: &str;
-
-    /// Compile-time codegen hook. Returns a [`GirExpr`] lowering the
-    /// HOF call to a fused kernel op (e.g. `GirOp::ArrayFold`). See
-    /// [`MapFn::emit_gir`] for the design rationale.
-    ///
-    /// FoldFn's callback takes `(acc, elem)`. `acc_name` / `elem_name`
-    /// are the lambda parameter names — used to register kernel
-    /// inputs so the body's `Ref`s resolve. `init_arg` is the call
-    /// site's initial-accumulator value Node (positional arg 1).
-    fn emit_gir(
-        _ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        _ec: &mut ExecCtx<R, E>,
-        _array_arg: &Node<R, E>,
-        _init_arg: &Node<R, E>,
-        _body: &Node<R, E>,
-        _acc_name: &ArcStr,
-        _elem_name: &ArcStr,
-        _in_elem: graphix_compiler::typ::Type,
-        // Tuple-destructure leaves for an `|acc, (k, v)|` callback;
-        // empty for `|acc, x|`.
-        _elem_binds: &[(graphix_compiler::BindId, usize)],
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        None
-    }
 
     /// Direct-path codegen hook (Stage D2) — the [`MapFn::emit_clif`]
     /// analog for the 2-arg `(acc, elem)` callback. `Ok(None)` gates
@@ -1374,14 +1198,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
-    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
-        graphix_compiler::ApplyView::FusedBuiltin(self)
-    }
-
-    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
-        graphix_compiler::ApplyViewMut::FusedBuiltin(self)
-    }
-
     fn static_resolve_fn_args(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1614,7 +1430,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
     }
 
     /// Direct-path codegen (Stage D2) — the [`Apply::emit_clif`] twin
-    /// of the `GirEmitter::emit_gir` orchestration below, adapted to
+    /// of the `Apply::emit_clif` orchestration below, adapted to
     /// the 2-arg `(acc, elem)` callback. See `MapQ::emit_clif` for the
     /// shared structure; every miss is `Ok(None)` (nothing emitted
     /// yet — the call site falls back to DynCall or no fusion).
@@ -1687,66 +1503,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             &elem_name,
             elem_id,
             &self.etyp,
-            &elem_binds,
-        )
-    }
-}
-
-/// Fusion-time codegen for `FoldQ`-built HOFs. Delegates to
-/// `T::emit_gir`. See `impl GirEmitter for MapQ` for the analogous
-/// MapFn version.
-impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> graphix_compiler::GirEmitter<R, E>
-    for FoldQ<R, E, T>
-{
-    fn emit_gir(
-        &self,
-        callsite: &CallSite<R, E>,
-        _args: &[(Option<ArcStr>, &Node<R, E>)],
-        _arg_refs: &[Node<R, E>],
-        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        let pred = self.analysis_pred.as_ref()?;
-        let array_arg = callsite.arg_positional(0)?;
-        let init_arg = callsite.arg_positional(1)?;
-        let pred_view = pred.pred.view();
-        let inner_cs = match pred_view {
-            graphix_compiler::NodeView::CallSite(cs) => cs,
-            _ => return None,
-        };
-        let g = match inner_cs.resolved_apply()? {
-            graphix_compiler::ApplyView::Lambda(g) => g,
-            _ => return None,
-        };
-        let body = g.body();
-        let mut params = g.typ().args.iter();
-        let acc_name = match &params.next()?.kind {
-            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
-            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
-            _ => return None,
-        };
-        // The element (2nd) param may be a `|acc, (k, v)|` destructure.
-        let (elem_name, elem_binds) =
-            match g.args().get(1).and_then(|p| p.tuple_leaves()) {
-                Some(binds) => (arcstr::literal!("__elem"), binds),
-                None => {
-                    let n = match &params.next()?.kind {
-                        graphix_compiler::typ::FnArgKind::Positional {
-                            name: Some(n),
-                        } => n.clone(),
-                        graphix_compiler::typ::FnArgKind::Labeled { name, .. } => {
-                            name.clone()
-                        }
-                        _ => return None,
-                    };
-                    (n, Vec::new())
-                }
-            };
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        let ai = ctx.find_array(&array_name)?;
-        let in_elem = ai.elem.clone();
-        T::emit_gir(
-            ctx, ec, array_arg, init_arg, body, &acc_name, &elem_name, in_elem,
             &elem_binds,
         )
     }

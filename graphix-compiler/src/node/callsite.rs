@@ -217,10 +217,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// post-typecheck `static_resolve` pass has populated
     /// `self.function`.
     ///
-    /// Used by fusion's walker to descend through a resolved call
-    /// site into a user lambda's body or into a fusible builtin's
-    /// own [`crate::GirEmitter::emit_gir`] hook. See
-    /// [`crate::ApplyView`] for the variants.
+    /// Used by fusion to descend through a resolved call site into a
+    /// user lambda's body. See [`crate::ApplyView`] for the variants.
     pub fn resolved_apply(&self) -> Option<crate::ApplyView<'_, R, E>> {
         self.function.as_ref().map(|(_, a)| a.view())
     }
@@ -240,8 +238,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ///
     /// Together with [`Self::arg_positional`] / [`Self::arg_named`]
     /// (which expose the original source-order call-site Nodes),
-    /// this gives [`crate::GirEmitter::emit_gir`] both views of the
-    /// arg list.
+    /// this gives [`crate::Apply::emit_clif`] impls both views of
+    /// the arg list.
     pub fn arg_refs(&self) -> Option<&[Node<R, E>]> {
         if self.function.is_some() {
             Some(&self.arg_refs)

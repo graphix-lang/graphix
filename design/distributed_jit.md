@@ -1053,3 +1053,177 @@ shape:
 The flip's defect profile vindicates the staging: every bug was in
 the NEWLY-REACHABLE fusion surface, none in the ported emission
 itself, and the canonical node-walk caught all of them differentially.
+
+## Semantic contracts for emit work (consolidated from the F2 defects)
+
+Every future `emit_clif` impl, and the F3/F4 work, must preserve these.
+They are the distilled form of the six flip defects — each was obvious
+in hindsight and invisible in advance.
+
+1. **Three different things masquerade as "pure":** *Sync* (output on
+   the trigger's cycle — the EffectKind contract), *effect-free* (no
+   variable writes / logging / IO), and *replayable* (a pure function
+   of currently-cached args). The DISPATCH protocol requires
+   replayability: it re-delivers EVERY arg as a fresh update on every
+   dispatch, so any builtin whose semantics depend on WHICH arg
+   updated WHEN (once/take/skip/count/uniq) must be `Async` even
+   though it is Sync by the letter. When auditing a builtin for
+   fusability ask: "is its update a pure function of its cached
+   args?" — not "does it produce on the same cycle?".
+
+2. **Effects fuse never.** The known effect carriers in stmt position:
+   `Connect`/`ConnectDeref` (variable writes), handler-ful `?` (writes
+   the catch's variable — gated in `Qop::emit_clif`), `$` (logs), any
+   CallSite to an effectful builtin. The SAFE failure mode is a
+   build-time `Err` (de-fuse → the node-walk performs the effect);
+   the FATAL failure mode is skipping/eliding the node (the effect is
+   silently dropped). Dead-statement elimination is therefore gated
+   on `stmt_subtree_effect_free` — conservative by construction (ALL
+   CallSites count as effectful; we cannot consult `builtin_effects`
+   at emit time). If you widen the eliminable set, the
+   env-accounting probe (#164) and the connect fixtures are the
+   tripwires.
+
+3. **First dispatch IS init.** A `DynCallSlot`'s freshly-constructed
+   inner Apply must see `event.init = true` on its first update
+   (labeled-default Nodes are init-firing Constants). Any new
+   dispatch-like seam (F4's EmitTags work, future eager paths) must
+   preserve this — the symptom of forgetting is a kernel that works
+   when first fired at startup and pends forever when first fired by
+   an async input.
+
+4. **Runtime wake-ups are keyed `(BindId, top_id)`.** Anything that
+   creates Refs at fusion time (feeders today; anything F3 touches)
+   must register under the REAL top expression id
+   (`ExecCtx::fuse_top_id`), never an interior ExprId. The symptom:
+   exactly one update delivered, then silence.
+
+5. **Lock discipline for `Type` and the registry:** never recurse or
+   take another lock inside a `with_deref` closure — clone the
+   deref'd type out first (`t.with_deref(|r| r.cloned())`); never
+   hold `ABSTRACT_REGISTRY.read()` as a match/expr temporary across a
+   recursion (`let c = REG.read().get(..).cloned(); match c {..}`).
+   parking_lot's locks are fair and non-reentrant: a queued writer
+   blocks new readers, so guard-across-recursion deadlocks the whole
+   process the moment compiles run concurrently. Registry VALUES
+   carry live TVar cells shared across every ExecCtx in the process —
+   treat them as cross-thread state.
+
+6. **Dead bottoms must not poison kernels.** Canonically a value (or
+   bottom) flows only to its consumers; the kernel's composite
+   producers abort on bottom elements (no validity channel in
+   arrays), so dead statements must be eliminated before emission
+   (emit_block_node) — that is classic's prune semantics re-homed.
+   The remaining documented gap is #219: a kernel INPUT that never
+   fires bottoms the kernel even where the canonical output doesn't
+   consume it (the JIT aborts on missing inputs). Full fix = fire
+   kernels at init + per-param validity at the JIT entry.
+
+## F3 execution notes (the delete, in dependency order)
+
+- **`build_lambda_kernel` still LOWERS GIR bodies** (the parallel-
+  period `CachedKernel` carries sig + body; nothing READS the body on
+  the direct mode, but the build can still FAIL on body lowering —
+  de-fusing things the direct emitters could handle, e.g. the
+  fold-over-abstract-elem callee). F3 step one: make the kernel build
+  sig-only (drop `emit_body`), THEN delete the emit_* family. Expect
+  a small coverage GAIN when body-lowering failures stop gating
+  discovery.
+- Dead now, delete freely: the classic `fuse()` helpers (walk /
+  CandidateKind / RegionPlan / build_region), `jit_compile_split_
+  kernel`'s `compile_kernel_with_callees` else-branch + the
+  `ec.direct_node_jit` field and its gates, `Mode::DirectJit` + the
+  redundant third probe runs in graphix-fuzz, `GirEmitter` +
+  `ApplyView::FusedBuiltin` + every package `emit_gir` impl +
+  `EvalCached::FUSABLE`/`emit_gir`.
+- `GirKernel.body` empties → `GirStmt`/`GirExpr`/`GirOp` delete →
+  `compile_body`/`compile_expr`/`compile_scalar` family in gir_jit.rs
+  falls out; the scaffolds' GIR-arm callers go with it (the emit_*
+  loop arms — scaffolds themselves STAY, they serve Apply::emit_clif).
+- `KnownFusedFn.body_fn_name` and friends: re-examine after the
+  body delete; when #203 lands, `known_fns` must re-key by BindId.
+- The five GirOp-tag NodeShape pins are parked in fixtures with
+  literal `F4 (#213)` markers — grep `F4 (#213)` to restore them as
+  EmitTag assertions.
+- The fixture corpus now encodes the POST-flip coverage map (168
+  upgrades). Any F3-induced FuseExpect regression is a real coverage
+  loss — the bidirectional check will name it.
+
+## F3 — the delete (landed 2026-06-12)
+
+The GIR IR is gone. ~12,500 lines removed across three gated chunks
+(every chunk: full suite + compiler tests + fuzz probes green; zero
+FuseExpect drift end to end — the delete was behavior-preserving by
+construction and by measurement). Final gates: 1429/1429 ×2, 92/92
+compiler (the ~23 hand-built-GIR-kernel tests died with the IR; their
+scenarios live on as graphix-source fixtures from Stage E), 18/18
+probes, regress 22/22, generate 600 → 0 divergences 0 crashes,
+mutation 1500 → see ledger.
+
+**Chunk 1 — sig-only kernel builds.** `build_lambda_kernel` no longer
+lowers a body: it derives the `KernelSig` (+ `KnownFusedFn`) from the
+resolved FnType and capture scan, exactly the gates that used to
+precede `emit_body`. The body is validated by the compile attempt
+itself ("is it fusable IS the compile attempt"). `sig_from_inputs`
+(fusion/mod.rs) became the single sig builder for all three paths —
+try_fuse regions, lambda callees (formals carry `bind_id: None`),
+and body-split sub-regions — returning `arg_types` for the
+cross-kernel marshalling authority. Two behavioral seams to know:
+
+- **`fuse_callsite` falls through to the split path on a FAILED
+  whole-body JIT compile**, not just on a failed build. Pre-F3 an
+  async callback body failed GIR lowering → split path; sig-only
+  builds always succeed on shape, so the async-ness now surfaces at
+  the compile attempt — without the fall-through, impure HOF
+  callbacks would have silently lost split fusion.
+- **`build_body_split` gained try_fuse's gates** (freeze_region_return
+  + the non-scalar duplicate-basename refusal) since it no longer
+  inherits them from the GIR build.
+
+**Chunk 2 — the dead families.** lowering.rs 5278→1316 lines (the
+whole emit_* node→GIR family, FusionCtx, prune/sink/stabilize,
+infer_body_rtype, ensure_lambda_kernel, RegionInput/Source,
+KernelParams/populate_kernel_inputs/build_kernel/finish_kernel);
+walker.rs deleted; builder.rs is just the FusedKernel carrier;
+`GirEmitter` + `ApplyView::FusedBuiltin` + `EvalCached::FUSABLE` +
+every package `emit_gir` deleted (MapFn/FoldFn keep only
+`emit_clif`); `ec.direct_node_jit` and `Mode::DirectJit` gone
+(fuzz probes are two-mode: `agree`/`agree_fused`/`agree_fused_clean`,
+test fns renamed `jit_*`). One REAL replacement hid in the deletes:
+`walk_node_for_builtin_calls`'s catch-all arm fell back to an
+EXPR-based walker (`walk_for_builtin_calls`) that still read the
+typed-AST cell. It now rides `for_each_node` — the canonical
+full-coverage walker — so every discovered site registers through
+the CallSite's RESOLVED FnType (the Expr fallback was the half that
+still carried the latent unresolved-FnType class).
+
+**Chunk 3 — the IR and the wrapper.** gir.rs 1415→~70 lines (the
+kernel_abi re-export, BinOp/CmpOp/BoolOp, KnownFusedFn — which lost
+its reader-less `body_fn_name`); gir_jit.rs 11645→~6500 (the whole
+compile_expr/compile_body GIR→CLIF family, the GIR loop arms, the
+GirExpr marshal/classify twins, collect_strings/values prewalks —
+lazy interning is the only constant-table source now — and the
+~1700-line hand-built-IR test module); node_shape.rs lost
+GirOpTag/visit_ops (GirMatcher matches sig facts only — returns +
+params — until F4's EmitTags). **`GirKernel` dissolved**: the
+`{ sig, body }` wrapper became `Arc<KernelSig>` everywhere — the
+Arc IS the compiled-callable handle, and `Jit::by_kernel` keys its
+pointer identity. `BodyEmitter` is mandatory in the define loop
+(a kernel without a recorded body emitter is a hard error, not a
+silent fallback — the invariant the F0a trace used to watch).
+
+**What stayed, deliberately:** the scaffolds (gir_jit_scaffold.rs —
+they serve `Apply::emit_clif`), `emit_tail_rebind_jump`,
+`CompositeSource` + `node_composite_source`, the pending/taint
+machinery, gir_jit_helpers.rs, gir_interp.rs's `GirNode` (the runtime
+Apply wrapper — JIT dispatch, arg packing, DynCall slots; nothing in
+it ever read a body). File RENAMES (gir_jit → jit/, gir_interp →
+fused_node.rs, GirNode → FusedNode per the plan's final layout) were
+deferred — pure churn, better as their own commit if wanted.
+
+**Follow-ups parked here:** the split path passes empty lambda-site
+maps (a lambda call inside a split sub-region de-fuses — pre-existing,
+now visible in one place: `jit_compile_split_kernel`); known_fns
+re-keys by BindId when #203 lands; `static_resolve::
+collect_lambda_binds` could migrate onto `for_each_node` (one
+exhaustive NodeView match instead of two).

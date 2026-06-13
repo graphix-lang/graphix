@@ -73,22 +73,16 @@ pub enum Mode {
     Interp,
     /// Fusion + cranelift JIT (no flags) — the system under test.
     /// Since the F2 flip (2026-06-13, `design/distributed_jit.md`)
-    /// this IS the direct node-emission path; the classic GIR body
-    /// path is gone.
+    /// this is the direct node-emission path (`Update::emit_clif`
+    /// recursion); the classic GIR body path is gone.
     Jit,
-    /// Alias of [`Mode::Jit`] since the F2 flip — the direct path is
-    /// the only path, so the flags are identical. Kept so the
-    /// parallel-period probe suite (which pinned direct-vs-classic
-    /// drift) keeps compiling; the redundant third runs prune with
-    /// the F3 delete.
-    DirectJit,
 }
 
 impl Mode {
     pub fn flags(self) -> BitFlags<CFlag> {
         match self {
             Mode::Interp => CFlag::FusionDisabled.into(),
-            Mode::Jit | Mode::DirectJit => BitFlags::empty(),
+            Mode::Jit => BitFlags::empty(),
         }
     }
 }
@@ -834,19 +828,18 @@ async fn run_pool(
 mod tests {
     use super::*;
 
-    /// Stage 1 of `design/delete_gir_ir.md`. These probes pin the new
-    /// `CFlag::DirectNodeJit` body-codegen path (`gir_jit::compile_node`)
-    /// against both the node-walk reference (`Interp`) and the production
-    /// GIR JIT (`Jit`). All three must agree on every program; a program
-    /// the direct path can't compile must still produce the right value
-    /// under `DirectJit` by not fusing → node-walking. When `must_fuse`
-    /// is set, additionally assert (via the per-program [`FusionStats`])
-    /// that at least one region actually compiled + spliced under
-    /// `DirectJit` — value agreement alone can't distinguish "fused
-    /// correctly" from "silently never fused" (the C5 freeze gap: no
-    /// select-rooted region was ever attempted and every value test
-    /// passed).
-    /// How much fusion a probe demands under `DirectJit`, beyond
+    /// Per-shape JIT probes (grown stage-by-stage during the GIR-IR
+    /// removal, `design/distributed_jit.md`). Each pins the JIT
+    /// (`Mode::Jit`, `Update::emit_clif` emission) against the
+    /// node-walk reference (`Interp`); a program the JIT can't compile
+    /// must still produce the right value by not fusing → node-walking.
+    /// The `Fuse` ladder additionally asserts (via the per-program
+    /// [`FusionStats`]) that fusion actually happened — value agreement
+    /// alone can't distinguish "fused correctly" from "silently never
+    /// fused" (the class that has cost an investigation every time it
+    /// appeared: the C5 freeze gap, the missing `BuiltInLambda`
+    /// delegation).
+    /// How much fusion a probe demands under the JIT, beyond
     /// value agreement.
     #[derive(Clone, Copy, PartialEq)]
     enum Fuse {
@@ -867,21 +860,15 @@ mod tests {
         Clean,
     }
 
-    async fn check_three(code: &str, fuse: Fuse) {
+    async fn check_jit(code: &str, fuse: Fuse) {
         let t = Duration::from_secs(10);
-        let (interp, jit, (direct, stats)) = tokio::join!(
+        let (interp, (jit, stats)) = tokio::join!(
             run_program(code, Mode::Interp, t),
-            run_program(code, Mode::Jit, t),
-            run_program_with_stats(code, Mode::DirectJit, t),
+            run_program_with_stats(code, Mode::Jit, t),
         );
         assert!(
             interp.agrees_with(&jit),
             "Interp vs Jit disagree for `{code}`: {interp:?} vs {jit:?}"
-        );
-        assert!(
-            interp.agrees_with(&direct),
-            "Interp vs DirectJit disagree for `{code}`: \
-             {interp:?} vs {direct:?}"
         );
         if fuse != Fuse::No {
             let why: String = stats
@@ -891,7 +878,7 @@ mod tests {
                 .collect();
             assert!(
                 stats.fused > 0,
-                "expected `{code}` to fuse under DirectJit but no region \
+                "expected `{code}` to fuse under the JIT but no region \
                  compiled (attempted={}); failures:{why}",
                 stats.attempted,
             );
@@ -906,51 +893,51 @@ mod tests {
                 assert!(
                     reason.contains("node does not emit CLIF")
                         || reason.contains("function-valued let"),
-                    "expected `{code}` to fuse cleanly under DirectJit \
+                    "expected `{code}` to fuse cleanly under the JIT \
                      but {id:?} hit a real blocker: {reason}"
                 );
             }
         }
     }
 
-    async fn all_three_agree(code: &str) {
-        check_three(code, Fuse::No).await
+    async fn agree(code: &str) {
+        check_jit(code, Fuse::No).await
     }
 
-    /// [`all_three_agree`] + "it really fused": the probe is KNOWN to
+    /// [`agree`] + "it really fused": the probe is KNOWN to
     /// compile under the direct path, so a `fused == 0` run is a
     /// coverage regression even though every value still agrees.
-    async fn all_three_agree_fused(code: &str) {
-        check_three(code, Fuse::Some).await
+    async fn agree_fused(code: &str) {
+        check_jit(code, Fuse::Some).await
     }
 
-    /// [`all_three_agree_fused`] + "and NOTHING legitimately refused":
+    /// [`agree_fused`] + "and NOTHING legitimately refused":
     /// the whole program is expected to compile into kernels, so any
     /// non-ancestor-noise blocker is a regression. Prefer this for new
     /// probes; audit a probe's full blocker profile before using it
     /// (e.g. a bare-Null `let` legitimately refuses → use `_fused`).
-    async fn all_three_agree_fused_clean(code: &str) {
-        check_three(code, Fuse::Clean).await
+    async fn agree_fused_clean(code: &str) {
+        check_jit(code, Fuse::Clean).await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_scalar_probes() {
+    async fn jit_scalar_probes() {
         // const + bin region
-        all_three_agree_fused("{ let x = i64:5; x * i64:3 }").await;
+        agree_fused("{ let x = i64:5; x * i64:3 }").await;
         // multiple scalar lets + nested arithmetic with a Ref read twice
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:5; let y = i64:2; (x + y) * (x - y) }",
         )
         .await;
         // div-by-zero → value-bottom (Timeout in all three via the
         // taint/guard → boundary pending → no result emitted). Fuses —
         // the bottom is a RUNTIME outcome of the compiled kernel.
-        all_three_agree_fused("i64:10 / i64:0").await;
+        agree_fused("i64:10 / i64:0").await;
         // comparison + strict bool — `a > 3 && a < 10`
-        all_three_agree_fused("{ let a = i64:7; a > i64:3 && a < i64:10 }")
+        agree_fused("{ let a = i64:7; a > i64:3 && a < i64:10 }")
             .await;
         // float arithmetic
-        all_three_agree_fused("f64:3.0 + f64:1.0").await;
+        agree_fused("f64:3.0 + f64:1.0").await;
         // cast then float add. The original probe (`cast<f64>(7) +
         // 1.0`, no `$`) never compiled at all — `cast` returns
         // `[f64, Error]`, so it was a typecheck error in EVERY mode and
@@ -959,19 +946,19 @@ mod tests {
         // Repaired with `$`; it still doesn't fuse — the `cast`
         // CallSite doesn't emit CLIF on the direct path yet ("node
         // does not emit CLIF"), so it node-walks: deliberate fallback.
-        all_three_agree("cast<f64>(i64:7)$ + f64:1.0").await;
+        agree("cast<f64>(i64:7)$ + f64:1.0").await;
         // Nested block: the INNER block references `outer`, which is
-        // external to the inner region — so under DirectJit `outer`
+        // external to the inner region — so under the JIT `outer`
         // becomes a scalar KERNEL PARAM (exercising `compile_node`'s Ref
         // arm against `env`-bound params, not just block-lets). The
         // original probe's inner block had ONE expression — a parse
-        // error in every mode that `all_three_agree` accepted silently
+        // error in every mode that `agree` accepted silently
         // (same hollow-CompileErr class as the cast probe above).
-        all_three_agree_fused(
+        agree_fused(
             "{ let outer = i64:100; { let t = outer - i64:1; t * i64:2 } }",
         )
         .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let a = i64:9; { let b = a * i64:2; b + a } }",
         )
         .await;
@@ -983,40 +970,40 @@ mod tests {
     /// so without explicit probes a C4 regression would be invisible
     /// to the gates.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_qop_dyncall_probes() {
+    async fn jit_qop_dyncall_probes() {
         // Scalar-success `$` — branchless Scalar2 unwrap of the
         // bounds-checked ArrayRef's Nullable<i64>.
-        all_three_agree_fused(
+        agree_fused(
             "{ let a = [i64:1, i64:2, i64:3]; a[0]$ + a[1]$ }",
         )
         .await;
         // Out-of-bounds → error → bottom in every mode (the unwrap's
         // pending path). Fuses — the bottom is a runtime outcome.
-        all_three_agree_fused("{ let a = [i64:1]; a[5]$ }").await;
+        agree_fused("{ let a = [i64:1]; a[5]$ }").await;
         // MapRef result through `$` — map access + scalar unwrap.
-        all_three_agree_fused(r#"{ let m = {"a" => i64:7}; m{"a"}$ + i64:1 }"#)
+        agree_fused(r#"{ let m = {"a" => i64:7}; m{"a"}$ + i64:1 }"#)
             .await;
         // Value-shape success `$` (duration element) — the Value
         // unwrap arm + a Value-shape kernel return.
-        all_three_agree_fused("{ let a = [duration:1.s]; a[0]$ }").await;
+        agree_fused("{ let a = [duration:1.s]; a[0]$ }").await;
         // Builtin DynCall, scalar return, string arg.
-        all_three_agree_fused(r#"{ let s = "hello"; str::len(s) }"#).await;
+        agree_fused(r#"{ let s = "hello"; str::len(s) }"#).await;
         // Builtin DynCall inside arithmetic (scalar return feeds Bin).
-        all_three_agree_fused(r#"{ let s = "hello"; str::len(s) + i64:1 }"#)
+        agree_fused(r#"{ let s = "hello"; str::len(s) + i64:1 }"#)
             .await;
         // Builtin DynCall with String return (ret_kind 4) + owned
         // string-return kernel boundary.
-        all_three_agree_fused(r#"{ let s = "abc"; str::to_upper(s) }"#).await;
+        agree_fused(r#"{ let s = "abc"; str::to_upper(s) }"#).await;
         // Composite-success `$` (#199): the unwrap must re-box the
         // Value's inline ValArray bits into the composite ABI's
         // `*mut ValArray` — owned-producer and borrowed-Local inners.
-        all_three_agree_fused("{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }")
+        agree_fused("{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }")
             .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let a = [i64:1, i64:2, i64:3]; let x = a[1..]; x$ }",
         )
         .await;
-        all_three_agree_fused("{ let t = [(i64:1, i64:2)]; t[0]$ }").await;
+        agree_fused("{ let t = [(i64:1, i64:2)]; t[0]$ }").await;
     }
 
     /// Stage C5 probes: `select` (expression form) emission on the
@@ -1028,106 +1015,106 @@ mod tests {
     /// variant tag + payload binds, a computed scrutinee (evaluated
     /// once), and a nested select.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_select_probes() {
+    async fn jit_select_probes() {
         // Literal arms + wildcard.
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:7; select x { i64:0 => i64:100, \
              i64:7 => i64:200, _ => i64:1 } }",
         )
         .await;
         // Arm bind with body arithmetic.
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:5; select x { i64:0 => i64:100, n => n * i64:2 } }",
         )
         .await;
         // Guard that fails at runtime, then one that passes.
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:3; select x { n if n > i64:10 => n, \
              n => n + i64:1 } }",
         )
         .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:42; select x { n if n > i64:10 => n * i64:2, \
              n => n } }",
         )
         .await;
         // A guard that BOTTOMS at runtime (div-by-zero) — the arm does
         // not match; the next arm wins.
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:9; select x { n if n / i64:0 == i64:1 => i64:1, \
              m => m } }",
         )
         .await;
         // Nullable scrutinee, both arm orders, both runtime values —
         // the trivially-true-first-arm order trap.
-        all_three_agree_fused(
+        agree_fused(
             "{ let v: [i64, null] = null; select v { i64 as _ => i64:1, \
              null as _ => i64:0 } }",
         )
         .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let v: [i64, null] = null; select v { null as _ => i64:0, \
              i64 as _ => i64:1 } }",
         )
         .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let v: [i64, null] = i64:42; select v { i64 as _ => i64:1, \
              null as _ => i64:0 } }",
         )
         .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let v: [i64, null] = i64:42; select v { null as _ => i64:0, \
              i64 as _ => i64:1 } }",
         )
         .await;
         // Nullable RESULT (Value merge): scalar arm widens, null arm
         // packs (NULL, 0).
-        all_three_agree_fused(
+        agree_fused(
             "{ let v: [i64, null] = i64:42; select v { i64 as _ => i64:1, \
              null as _ => null } }",
         )
         .await;
         // Variant tag-eq + scalar payload bind.
-        all_three_agree_fused(
+        agree_fused(
             "{ let v: [`Add(i64), `Neg] = `Add(i64:3); \
              select v { `Add(n) => n + i64:1, `Neg => i64:0 } }",
         )
         .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let v: [`Add(i64), `Neg] = `Neg; \
              select v { `Add(n) => n + i64:1, `Neg => i64:0 } }",
         )
         .await;
         // Computed scrutinee — must be evaluated exactly once and
         // reused by every arm condition.
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:5; select (x * i64:2) { i64:10 => i64:1, \
              _ => i64:0 } }",
         )
         .await;
         // Bottom scrutinee with an irrefutable final arm — no value in
         // any mode.
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:0; select (i64:10 / x) { n => n + i64:1 } }",
         )
         .await;
         // Bool-literal pair (the only typecheckable conditional final
         // arm) — exercises the unreachable miss trap.
-        all_three_agree_fused(
+        agree_fused(
             "{ let b = true; select b { true => i64:1, false => i64:0 } }",
         )
         .await;
-        all_three_agree_fused(
+        agree_fused(
             "{ let b = false; select b { true => i64:1, false => i64:0 } }",
         )
         .await;
         // String result merge.
-        all_three_agree_fused(
+        agree_fused(
             r#"{ let x = i64:1; select x { i64:0 => "zero", _ => "other" } }"#,
         )
         .await;
         // Nested select.
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:5; select (select x { i64:0 => i64:1, \
              n => n + i64:1 }) { i64:6 => i64:100, m => m } }",
         )
@@ -1143,48 +1130,48 @@ mod tests {
     /// catchable error VALUE (flows through `is_err` / `$`), never
     /// bottom — the node-walk's `wrap_arith_error` core.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_string_checked_probes() {
+    async fn jit_string_checked_probes() {
         // Interpolation: scalar part rendered via Display.
-        all_three_agree_fused(r#"{ let x = i64:7; "x is [x]" }"#).await;
+        agree_fused(r#"{ let x = i64:7; "x is [x]" }"#).await;
         // Mixed string + scalar parts.
-        all_three_agree_fused(r#"{ let a = "foo"; let b = i64:2; "[a]-[b]!" }"#)
+        agree_fused(r#"{ let a = "foo"; let b = i64:2; "[a]-[b]!" }"#)
             .await;
         // Pure string concat through interpolation.
-        all_three_agree_fused(r#"{ let a = "foo"; let b = "bar"; "[a][b]" }"#)
+        agree_fused(r#"{ let a = "foo"; let b = "bar"; "[a][b]" }"#)
             .await;
         // Float / bool parts (per-prim push helpers).
-        all_three_agree_fused(
+        agree_fused(
             r#"{ let f = f64:1.5; let b = true; "f=[f] b=[b]" }"#,
         )
         .await;
         // Interpolated literal scalar (const part).
-        all_three_agree_fused(r#""n=[i64:42]""#).await;
+        agree_fused(r#""n=[i64:42]""#).await;
         // A non-scalar part (Nullable from a[i]) — the restriction: the
         // INTERPOLATION doesn't fuse, node-walks to the right value in
         // every mode. Deliberate fallback, so no fused>0 assertion —
         // a SUB-region (the `a[0]` access) still fuses via the
         // attempt-then-recurse protocol, so fused>0 here would pass
         // without testing what this probe is about.
-        all_three_agree(r#"{ let a = [i64:1, i64:2]; "e=[a[0]]" }"#).await;
+        agree(r#"{ let a = [i64:1, i64:2]; "e=[a[0]]" }"#).await;
         // Checked add/sub/mul/mod, no overflow — success unwrapped by `$`.
-        all_three_agree_fused("{ let x = i64:5; (x +? i64:3)$ }").await;
-        all_three_agree_fused(
+        agree_fused("{ let x = i64:5; (x +? i64:3)$ }").await;
+        agree_fused(
             "{ let x = i64:10; (x -? i64:3)$ * (i64:2 *? i64:3)$ }",
         )
         .await;
-        all_three_agree_fused("{ let x = i64:10; (x %? i64:3)$ }").await;
+        agree_fused("{ let x = i64:10; (x %? i64:3)$ }").await;
         // Overflow → the ArithError error VALUE (catchable, not bottom).
-        all_three_agree_fused("i64:9223372036854775807 +? i64:1").await;
-        all_three_agree_fused("is_err(i64:9223372036854775807 +? i64:1)")
+        agree_fused("i64:9223372036854775807 +? i64:1").await;
+        agree_fused("is_err(i64:9223372036854775807 +? i64:1)")
             .await;
         // `0 /? 0` → error value through is_err — node-walk semantics:
         // checked div0 FLOWS (unlike unchecked div0, which is bottom).
-        all_three_agree_fused("is_err(i64:0 /? i64:0)").await;
+        agree_fused("is_err(i64:0 /? i64:0)").await;
         // Overflow through `$` — the error drops, bottom in every mode.
-        all_three_agree_fused("(i64:9223372036854775807 +? i64:1)$").await;
+        agree_fused("(i64:9223372036854775807 +? i64:1)$").await;
         // Checked arith inside a larger expression (select consumes the
         // [T, Error] union).
-        all_three_agree_fused(
+        agree_fused(
             "{ let x = i64:6; select (x +? i64:1) { i64 as n => n * i64:2, \
              _ => i64:0 } }",
         )
@@ -1195,7 +1182,7 @@ mod tests {
         // INTERPOLATION doesn't fuse, node-walks to the right value in
         // every mode. Deliberate fallback (same sub-region caveat as
         // the Nullable-part probe above).
-        all_three_agree(r#"{ let x = i64:5; "v=[(x +? i64:1)$]" }"#).await;
+        agree(r#"{ let x = i64:5; "v=[(x +? i64:1)$]" }"#).await;
     }
 
     /// Originally (Stage 1) these pinned the non-scalar FALLBACK —
@@ -1207,11 +1194,11 @@ mod tests {
     /// assertion flipped from "falls back" to "fuses"; the probes now
     /// pin composite-let + accessor coverage instead.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_composite_probes() {
+    async fn jit_composite_probes() {
         // A tuple-let + tuple accessors.
-        all_three_agree_fused("{ let t = (i64:1, i64:2); t.0 + t.1 }").await;
+        agree_fused("{ let t = (i64:1, i64:2); t.0 + t.1 }").await;
         // A struct-let + field accessors.
-        all_three_agree_fused("{ let s = { a: i64:4, b: i64:5 }; s.a + s.b }")
+        agree_fused("{ let s = { a: i64:4, b: i64:5 }; s.a + s.b }")
             .await;
     }
 
@@ -1221,35 +1208,35 @@ mod tests {
     /// BORROWED input arrays + single-name callbacks; the last two
     /// probes pin the deliberate V1 fallbacks (owned input array,
     /// destructured callback) as value-agreeing node-walks — flip them
-    /// to `all_three_agree_fused` when the owned-arg stage / D3 land.
+    /// to `agree_fused` when the owned-arg stage / D3 land.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_map_probes() {
+    async fn jit_map_probes() {
         // scalar → scalar
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; array::map(a, |x| x * i64:2) }",
         )
         .await;
         // scalar → tuple (composite out, owned push)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; array::map(a, |x| (x, x * i64:2)) }",
         )
         .await;
         // composite (tuple) element + accessors in the body
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
              array::map(a, |p| p.0 + p.1) }",
         )
         .await;
         // scalar → Nullable out (select body, Value-shape push)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; \
              array::map(a, |x| select x { i64:1 => i64:10, _ => null }) }",
         )
         .await;
         // capture: the body reads an outer scalar (a kernel param
-        // under DirectJit — BindId-first resolution next to the
+        // under the JIT — BindId-first resolution next to the
         // BindId-bound loop element)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:10; let a = [i64:1, i64:2]; \
              array::map(a, |x| x * k) }",
         )
@@ -1261,34 +1248,34 @@ mod tests {
         // emission time. Classic has the identical gap (its emit_gir
         // path hits the same unresolved inner site); the runtime
         // per-slot machinery carries correctness. Flip to
-        // `all_three_agree_fused` when static resolution descends
+        // `agree_fused` when static resolution descends
         // into lambda bodies (Stage E callee-prepass territory).
-        all_three_agree(
+        agree(
             "{ let a = [[i64:1, i64:2], [i64:3]]; \
              array::map(a, |row| array::map(row, |x| x + i64:1)) }",
         )
         .await;
         // string out (push_string)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             r#"{ let a = [i64:1, i64:2]; array::map(a, |x| "v[x]") }"#,
         )
         .await;
         // qop in the body — a may-bottom (Scalar2) field, push_field's
         // RUNTIME bottom-abort seam (no overflow here, so values flow)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; array::map(a, |x| (x +? i64:1)$) }",
         )
         .await;
         // OWNED input array (a fresh slice producer) — the scaffold
         // adopts it (owned_input_stack registration: pending exits
         // free it, the normal path drops it after the loop).
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; array::map((a[1..])$, |x| x) }",
         )
         .await;
         // Destructured `|(k, v)|` callback — D3: per-leaf BindId-bound
         // reads off the composite element.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }",
         )
         .await;
@@ -1303,15 +1290,15 @@ mod tests {
     /// bottom predicate, so runtime-abort would diverge from the
     /// canonical node-walk.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_filter_probes() {
+    async fn jit_filter_probes() {
         // scalar element, comparison predicate
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
              array::filter(a, |x| x > i64:2) }",
         )
         .await;
         // bool element, bare-ref predicate
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [true, false, true]; array::filter(a, |x| x) }",
         )
         .await;
@@ -1319,19 +1306,19 @@ mod tests {
         // EXCEEDS classic: emit_gir requires a register-scalar element
         // for single-name callbacks, the direct path binds composites
         // (keep MOVES the element, not-keep takes the drop_block)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
              array::filter(a, |p| p.0 > p.1) }",
         )
         .await;
         // capture: the predicate reads an outer scalar
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
              array::filter(a, |x| x > k) }",
         )
         .await;
         // select in the predicate
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter(a, |x| select x { i64:2 => false, _ => true }) }",
         )
@@ -1342,7 +1329,7 @@ mod tests {
         // a REAL value all modes agree on. No zero in the array — a
         // value-blind Timeout==Timeout agreement (the bottom case,
         // next probe) can't catch a wrong de-fuse, this can.
-        all_three_agree(
+        agree(
             "{ let a = [i64:1, i64:5, i64:20]; \
              array::filter(a, |x| i64:10 / x > i64:1) }",
         )
@@ -1352,27 +1339,27 @@ mod tests {
         // out. Pins the canonical blocking semantics (a runtime
         // keep-vs-drop guess in a fused kernel would produce a value
         // here and diverge).
-        all_three_agree(
+        agree(
             "{ let a = [i64:0, i64:1, i64:5]; \
              array::filter(a, |x| i64:10 / x > i64:1) }",
         )
         .await;
         // string element — outside bind_elem's V1 shapes (#150) →
         // Ok(None) → node-walk. Flip when string HOF elements land.
-        all_three_agree(
+        agree(
             r#"{ let a = ["aa", "b"]; array::filter(a, |s| s == "aa") }"#,
         )
         .await;
         // OWNED input array (fresh slice producer) — adopted by the
         // scaffold, same as the map probe.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter((a[1..])$, |x| x > i64:1) }",
         )
         .await;
         // Destructured `|(k, v)|` predicate — D3 (the kept element is
         // still the whole tuple)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; array::filter(a, |(k, v)| k < v) }",
         )
         .await;
@@ -1388,15 +1375,15 @@ mod tests {
     /// explicit parity fixture ("a may-bottom fold body must de-fuse,
     /// not runtime-abort").
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_fold_probes() {
+    async fn jit_fold_probes() {
         // scalar sum
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
              array::fold(a, i64:0, |acc, x| acc + x) }",
         )
         .await;
         // computed init + capture in the body
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
              array::fold(a, k * i64:10, |acc, x| acc + x * k) }",
         )
@@ -1404,13 +1391,13 @@ mod tests {
         // composite (tuple) element + accessors — EXCEEDS classic
         // (emit_gir requires a register-scalar element for single-name
         // callbacks)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
              array::fold(a, i64:0, |acc, p| acc + p.0 * p.1) }",
         )
         .await;
         // select in the body (acc threading through arms)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::fold(a, i64:0, |acc, x| \
                select x { i64:2 => acc, _ => acc + x }) }",
@@ -1421,7 +1408,7 @@ mod tests {
         // read while the loop's acc bind (lambda BindId) shadows it
         // for the body's reads; BindId-first resolution keeps them
         // straight
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let acc = i64:100; let a = [i64:1, i64:2]; \
              array::fold(a, acc, |acc, x| acc + x) }",
         )
@@ -1431,13 +1418,13 @@ mod tests {
         // descended the Module/Block/Bind/CallSite spine). Now the
         // full-position traversal resolves it and the whole block
         // fuses as one region.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:100; let a = [i64:1, i64:2]; \
              k + array::fold(a, i64:0, |acc, x| acc + x) }",
         )
         .await;
         // #204 position coverage: HOF in a SELECT ARM...
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; let x = i64:1; \
              select x { \
                i64:1 => array::fold(a, i64:0, |acc, y| acc + y), \
@@ -1445,7 +1432,7 @@ mod tests {
         )
         .await;
         // ...and as an ARRAY-LITERAL ELEMENT.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; \
              [array::fold(a, i64:0, |acc, x| acc + x), i64:5] }",
         )
@@ -1453,33 +1440,33 @@ mod tests {
         // STATICALLY may-bottom BODY (div by the element, no zero
         // present): de-fuses at build, node-walks to a real value all
         // modes agree on — the plan's explicit fold parity fixture.
-        all_three_agree(
+        agree(
             "{ let a = [i64:1, i64:2]; \
              array::fold(a, i64:100, |acc, x| acc / x) }",
         )
         .await;
         // STATICALLY may-bottom INIT (same contract, the init seam)
-        all_three_agree(
+        agree(
             "{ let n = i64:2; let a = [i64:1, i64:2]; \
              array::fold(a, i64:10 / n, |acc, x| acc + x) }",
         )
         .await;
         // string accumulator — not a register scalar → Ok(None) →
         // node-walk. Flip if/when value-shape accumulators land.
-        all_three_agree(
+        agree(
             r#"{ let a = [i64:1, i64:2]; array::fold(a, "", |acc, x| "[acc][x]") }"#,
         )
         .await;
         // OWNED input array (fresh slice producer) — adopted by the
         // scaffold.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::fold((a[1..])$, i64:0, |acc, x| acc + x) }",
         )
         .await;
         // Destructured `|acc, (k, v)|` callback — D3 (acc + leaves
         // all BindId-bound in the loop scope)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::fold(a, i64:0, |acc, (k, v)| acc + k * v) }",
         )
@@ -1493,22 +1480,22 @@ mod tests {
     /// and hands the scaffold an OWNED array (Borrowed body sources
     /// are refcount-cloned per iteration — probed below).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_flat_map_probes() {
+    async fn jit_flat_map_probes() {
         // scalar element → fresh array body
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; \
              array::flat_map(a, |x| [x, x * i64:10]) }",
         )
         .await;
         // composite (tuple) element flattened to its fields —
         // EXCEEDS classic (register-scalar-element gate there)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
              array::flat_map(a, |p| [p.0, p.1]) }",
         )
         .await;
         // capture in the body
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:2; let a = [i64:1, i64:2]; \
              array::flat_map(a, |x| [x * k]) }",
         )
@@ -1516,25 +1503,25 @@ mod tests {
         // BORROWED body source: the body is a Ref to an outer array,
         // so the scaffold's extend would consume the env's value —
         // `ensure_owned_composite_src` clones it per iteration
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let b = [i64:9]; let a = [i64:1, i64:2]; \
              array::flat_map(a, |x| b) }",
         )
         .await;
         // bare-element body — the OTHER branch of the callback union;
         // not Array-typed → Ok(None) → node-walk (classic parity)
-        all_three_agree(
+        agree(
             "{ let a = [i64:1, i64:2]; array::flat_map(a, |x| x) }",
         )
         .await;
         // OWNED input array — adopted by the scaffold
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::flat_map((a[1..])$, |x| [x]) }",
         )
         .await;
         // Destructured callback — D3
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2)]; \
              array::flat_map(a, |(k, v)| [k, v]) }",
         )
@@ -1549,31 +1536,31 @@ mod tests {
     /// rebind-and-jump), and `CallSite::emit_clif` emits a CLIF `call`
     /// with kind-grouped args + closure-converted captures.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_lambda_call_probes() {
+    async fn jit_lambda_call_probes() {
         // simple scalar call
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let f = |x: i64| x * i64:2; f(i64:21) }",
         )
         .await;
         // two call sites, one callee kernel
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let f = |x: i64| x + i64:1; f(i64:1) + f(i64:2) }",
         )
         .await;
         // scalar capture (closure conversion: `k` rides as a trailing
         // kernel arg, marshalled from the calling kernel's env)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:10; let f = |x: i64| x * k; f(i64:4) }",
         )
         .await;
         // f64 arg + return
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let f = |x: f64| x * f64:2.5; f(f64:4.0) }",
         )
         .await;
         // composite (array) arg — the literal is an OWNED caller-side
         // arg, dropped after the call (the callee clones on entry)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let f = |a: Array<i64>| a[i64:0]$ + a[i64:1]$; \
              f([i64:1, i64:2, i64:3]) }",
         )
@@ -1582,14 +1569,14 @@ mod tests {
         // lambda body never statically resolves (#203 — the same gap
         // on both paths), so the callee kernel can't build and the
         // call node-walks. Flip when #203 lands.
-        all_three_agree(
+        agree(
             "{ let f = |a: Array<i64>| \
                array::fold(a, i64:0, |acc, x| acc + x); \
              f([i64:1, i64:2, i64:3]) }",
         )
         .await;
         // labeled arg — used explicitly and via its default
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let f = |#k: i64 = i64:5, x: i64| x + k; \
              f(#k: i64:3, i64:2) + f(i64:2) }",
         )
@@ -1599,8 +1586,8 @@ mod tests {
         // the un-normalized select arm-union type; unreachable
         // classically because classic's planner never built this
         // kernel). Values agree via node-walk; flip to
-        // all_three_agree_fused_clean when #205 lands.
-        all_three_agree(
+        // agree_fused_clean when #205 lands.
+        agree(
             "{ let f = |x: i64| -> [i64, null] \
                select x { i64:0 => null, _ => x }; \
              f(i64:5) }",
@@ -1612,14 +1599,14 @@ mod tests {
         // never built because of it), and the non-tail self call
         // lowers to a `GirOp::Call` against the kernel's own FuncId —
         // real native recursion.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let rec f = |n: i64| -> i64 \
                select n { i64:0 => i64:0, _ => n + f(n - i64:1) }; \
              f(i64:10) }",
         )
         .await;
         // double recursion (two self-calls per arm, operand position)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let rec fib = |n: i64| -> i64 \
                select n { i64:0 => i64:0, i64:1 => i64:1, \
                _ => fib(n - i64:1) + fib(n - i64:2) }; \
@@ -1633,7 +1620,7 @@ mod tests {
         // stack-safe for the NODE-WALK (each recursive call nests
         // native update frames — 50k overflows the interp); the
         // fused-only deep probe below runs the same loop at 5M.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let rec lp = |n: i64, acc: i64| -> i64 \
                select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; \
              lp(i64:500, i64:0) }",
@@ -1643,7 +1630,7 @@ mod tests {
         // every kernel param (it doubles as the runtime arg layout)
         // but the TailCall rebinds only the leading formals — the
         // capture slot stays bound, loop-invariant.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:3; let rec f = |n: i64| -> i64 \
                select n { i64:0 => k, _ => f(n - i64:1) }; \
              f(i64:4) }",
@@ -1657,7 +1644,7 @@ mod tests {
         // mismatched binding: f2 de-fuses, the call node-walks, every
         // mode agrees on 8. Stays un-fused until known_fns re-keys by
         // BindId (the #203 follow-up).
-        all_three_agree(
+        agree(
             "{ let f = |x: i64| -> i64 x + i64:1; \
              let f = |n: i64| -> i64 f(n) * i64:2; f(i64:3) }",
         )
@@ -1667,7 +1654,7 @@ mod tests {
         // discovered — the map kernel Errs and the whole construct
         // node-walks (correct degradation). Extend discovery into HOF
         // analysis_pred bodies to flip this.
-        all_three_agree(
+        agree(
             "{ let f = |x: i64| x * i64:2; let a = [i64:1, i64:2]; \
              array::map(a, |x| f(x)) }",
         )
@@ -1684,13 +1671,13 @@ mod tests {
     /// actually compiled — a de-fuse here would BE the stack
     /// overflow, not a silent fallback.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_deep_tail_probe() {
+    async fn jit_deep_tail_probe() {
         let code = "{ let rec lp = |n: i64, acc: i64| -> i64 \
                      select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; \
                      lp(i64:5000000, i64:0) }";
         let (out, stats) = run_program_with_stats(
             code,
-            Mode::DirectJit,
+            Mode::Jit,
             Duration::from_secs(30),
         )
         .await;
@@ -1712,35 +1699,35 @@ mod tests {
     /// BindId-bound reads off the owned composite element
     /// (`HofElem::leaves` via `scalar_leaves`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_destructure_probes() {
+    async fn jit_destructure_probes() {
         // mixed-prim leaves (i64, f64), f64 result
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, f64:2.5), (i64:3, f64:0.5)]; \
              array::map(a, |(k, v)| v) }",
         )
         .await;
         // sparse leaves: `_` positions get no bind (and no read)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
              array::map(a, |(k, _)| k * i64:10) }",
         )
         .await;
         // find with a destructured predicate — the result is the
         // whole matched tuple
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
              array::find(a, |(k, v)| k > v) }",
         )
         .await;
         // 3-leaf tuple through fold
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2, i64:3), (i64:4, i64:5, i64:6)]; \
              array::fold(a, i64:0, |acc, (x, y, z)| acc + x * y + z) }",
         )
         .await;
         // composite leaf — outside the register-scalar V1 →
         // Ok(None) → node-walk (flip when composite leaves land)
-        all_three_agree(
+        agree(
             "{ let a = [((i64:1, i64:2), i64:3)]; \
              array::map(a, |(p, x)| x) }",
         )
@@ -1752,16 +1739,16 @@ mod tests {
     /// scalar in/out — the body's `Nullable<out>` Value-shape result
     /// is collected when non-null).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_filter_map_probes() {
+    async fn jit_filter_map_probes() {
         // select-bodied Nullable: keep evens doubled
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
              array::filter_map(a, |x| \
                select x % i64:2 { i64:0 => x * i64:10, _ => null }) }",
         )
         .await;
         // capture in the body
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:2; let a = [i64:1, i64:2, i64:3]; \
              array::filter_map(a, |x| \
                select x { i64:2 => x * k, _ => null }) }",
@@ -1769,14 +1756,14 @@ mod tests {
         .await;
         // composite element — outside the scalar-only scaffold →
         // Ok(None) → node-walk (classic parity; widen with #150)
-        all_three_agree(
+        agree(
             "{ let a = [(i64:1, i64:2)]; \
              array::filter_map(a, |p| \
                select p.0 { i64:1 => p.1, _ => null }) }",
         )
         .await;
         // OWNED input array — adopted by the scaffold
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter_map((a[1..])$, |x| \
                select x { i64:2 => x, _ => null }) }",
@@ -1789,15 +1776,15 @@ mod tests {
     /// exit, `Nullable<elem>` Value-shape result). The may-bottom
     /// predicate de-fuses at build, same contract as filter.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_find_probes() {
+    async fn jit_find_probes() {
         // scalar element, found
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:5, i64:3]; \
              array::find(a, |x| x > i64:2) }",
         )
         .await;
         // scalar element, NOT found (null result)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }",
         )
         .await;
@@ -1805,13 +1792,13 @@ mod tests {
         // element is consumed into the Nullable result, not-matched
         // ones drop per iteration. EXCEEDS classic for single-name
         // callbacks.
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:1)]; \
              array::find(a, |p| p.0 > p.1) }",
         )
         .await;
         // may-bottom predicate — build-time de-fuse, runtime-clean
-        all_three_agree(
+        agree(
             "{ let a = [i64:1, i64:5]; \
              array::find(a, |x| i64:10 / x > i64:4) }",
         )
@@ -1819,7 +1806,7 @@ mod tests {
         // OWNED input array — adopted by the scaffold (the early-exit
         // edges and the not-found edge all route through the shared
         // exit where the input drops)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find((a[1..])$, |x| x > i64:1) }",
         )
@@ -1832,23 +1819,23 @@ mod tests {
     /// Borrowed body source is refcount-cloned per the owned-pair
     /// contract).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_find_map_probes() {
+    async fn jit_find_map_probes() {
         // found: first even, doubled
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find_map(a, |x| \
                select x % i64:2 { i64:0 => x * i64:10, _ => null }) }",
         )
         .await;
         // not found → null
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:3]; \
              array::find_map(a, |x| \
                select x % i64:2 { i64:0 => x, _ => null }) }",
         )
         .await;
         // OWNED input array — adopted by the scaffold
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::find_map((a[1..])$, |x| \
                select x { i64:2 => x, _ => null }) }",
@@ -1864,34 +1851,34 @@ mod tests {
     /// positions and owned inputs adopted, HOF-of-HOF args fuse as
     /// MULTI-LOOP single kernels.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_owned_input_probes() {
+    async fn jit_owned_input_probes() {
         // array literal as the DIRECT argument
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "array::map([i64:1, i64:2, i64:3], |x| x * i64:2)",
         )
         .await;
         // PIPELINE: filter over an inlined map — two loops, one kernel
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::filter(array::map(a, |x| x * i64:2), |x| x > i64:2) }",
         )
         .await;
         // PIPELINE: fold over an inlined map
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
              array::fold(array::map(a, |x| x * x), i64:0, |acc, x| acc + x) }",
         )
         .await;
         // PIPELINE: find over an inlined filter (early exit consumes
         // an adopted intermediate)
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3, i64:4]; \
              array::find(array::filter(a, |x| x % i64:2 == i64:0), \
                |x| x > i64:2) }",
         )
         .await;
         // PIPELINE feeding init's output into flat_map
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "array::flat_map(array::init(i64:3, |i| i), |x| [x, x])",
         )
         .await;
@@ -1902,7 +1889,7 @@ mod tests {
         // destructor or double-free would crash the JIT mode; the
         // canonical outcome is a blocked output, Timeout in every
         // mode).
-        all_three_agree(
+        agree(
             "{ let a = [i64:9223372036854775807, i64:1]; \
              array::map(array::map(a, |x| x), |x| (x +? i64:1)$) }",
         )
@@ -1914,29 +1901,29 @@ mod tests {
     /// param binds the loop counter Variable itself; the body result
     /// pushes via `push_field`, the runtime bottom-abort seam).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn direct_node_jit_init_probes() {
+    async fn jit_init_probes() {
         // scalar body
-        all_three_agree_fused_clean("array::init(i64:4, |i| i * i)").await;
+        agree_fused_clean("array::init(i64:4, |i| i * i)").await;
         // composite (tuple) body
-        all_three_agree_fused_clean("array::init(i64:3, |i| (i, i + i64:1))")
+        agree_fused_clean("array::init(i64:3, |i| (i, i + i64:1))")
             .await;
         // capture in the body
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let k = i64:10; array::init(i64:3, |i| i * k) }",
         )
         .await;
         // computed n with a capture
-        all_three_agree_fused_clean(
+        agree_fused_clean(
             "{ let n = i64:2; array::init(n + i64:1, |i| i) }",
         )
         .await;
         // negative n clamps to the empty array (the scaffold's
         // node-walk-parity clamp)
-        all_three_agree_fused_clean("array::init(i64:0 - i64:2, |i| i)")
+        agree_fused_clean("array::init(i64:0 - i64:2, |i| i)")
             .await;
         // may-bottom n (div by a binding) — build-time de-fuse,
         // runtime-clean
-        all_three_agree(
+        agree(
             "{ let d = i64:2; array::init(i64:4 / d, |i| i) }",
         )
         .await;
@@ -1944,12 +1931,12 @@ mod tests {
 
     /// Broad differential sweep: the type-directed generator produces
     /// scalar / tuple / array / select programs. For EVERY one, `Interp`
-    /// (node-walk reference) and `DirectJit` (the new `compile_node`
+    /// (node-walk reference) and `Jit` (the new `compile_node`
     /// path, falling back to node-walk on any unsupported shape) must
     /// agree. A scalar program exercises `compile_node`; a non-scalar one
     /// exercises the fallback. Deterministic seed → reproducible.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn direct_node_jit_generated_sweep() {
+    async fn jit_generated_sweep() {
         use crate::generate::gen_program;
         use crate::mutate::Rng;
         let t = Duration::from_secs(10);
@@ -1959,7 +1946,7 @@ mod tests {
             let code = gen_program(&mut rng);
             let (interp, (direct, stats)) = tokio::join!(
                 run_program(&code, Mode::Interp, t),
-                run_program_with_stats(&code, Mode::DirectJit, t),
+                run_program_with_stats(&code, Mode::Jit, t),
             );
             fused += stats.fused;
             // Skip nondeterministic programs (a value whose Display
@@ -1972,7 +1959,7 @@ mod tests {
                     continue; // nondeterministic — not a backend bug
                 }
                 panic!(
-                    "Interp vs DirectJit diverge for `{code}`: \
+                    "Interp vs Jit diverge for `{code}`: \
                      {interp:?} vs {direct:?}"
                 );
             }

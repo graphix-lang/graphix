@@ -8,7 +8,7 @@
 //! compiles the body through the [`BodyCx`] handed to it.
 //!
 //! Two callers share the scaffolds:
-//! - the classic GIR arms in [`super`] (`GirOp::ArrayMap` & co.),
+//! - (historically) the classic GIR loop arms, deleted with the IR,
 //!   until Stage F of `design/distributed_jit.md` deletes them, and
 //! - the direct node path's `Apply::emit_clif` HOF impls (Stage D2),
 //!   whose closures compile Node bodies via `node.emit_clif(cx)`.

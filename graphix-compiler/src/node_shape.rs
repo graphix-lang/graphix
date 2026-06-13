@@ -16,14 +16,9 @@
 //! graph as text — an authoring aid for writing the spec in the first
 //! place, not part of the assertion path.
 
-use crate::{
-    gir::{GirExpr, GirKernel, GirOp, GirStmt},
-    typ::Type,
-    Node, NodeView, Rt, UserEvent,
-};
+use crate::{gir::KernelSig, typ::Type, Node, NodeView, Rt, UserEvent};
 use arcstr::ArcStr;
 use smallvec::SmallVec;
-use std::collections::BTreeSet;
 
 /// A declarative specification of a (sub)graph's shape.
 #[derive(Debug, Clone)]
@@ -96,8 +91,6 @@ pub struct GirMatcher {
     pub return_type: Option<Type>,
     /// Require exactly these scalar param names, in order.
     pub param_names: Option<Vec<ArcStr>>,
-    /// Each tag must appear somewhere in the kernel body.
-    pub contains_ops: Vec<GirOpTag>,
 }
 
 impl GirMatcher {
@@ -117,15 +110,9 @@ impl GirMatcher {
         self
     }
 
-    /// Require the body to contain at least one op with this tag.
-    pub fn contains(mut self, tag: GirOpTag) -> Self {
-        self.contains_ops.push(tag);
-        self
-    }
-
     /// Check this matcher against a real kernel. `Ok` on match, `Err`
     /// with a human reason on the first failing criterion.
-    fn check(&self, k: &GirKernel) -> Result<(), String> {
+    fn check(&self, k: &KernelSig) -> Result<(), String> {
         if let Some(rt) = &self.return_type {
             if &k.return_type != rt {
                 return Err(format!(
@@ -143,243 +130,11 @@ impl GirMatcher {
                 ));
             }
         }
-        for tag in &self.contains_ops {
-            if !kernel_contains_op(k, *tag) {
-                return Err(format!(
-                    "body does not contain a {tag:?} op (ops present: {:?})",
-                    kernel_op_tags(k)
-                ));
-            }
-        }
+        // Body-op assertions return as `EmitTag`s recorded during
+        // emission — F4 (#213). The GirOp-tag matcher died with the
+        // GIR IR; the parked fixture pins are marked `F4 (#213)`.
         Ok(())
     }
-}
-
-/// A `GirOp` variant discriminator, for [`GirMatcher::contains`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum GirOpTag {
-    Const,
-    ConstStr,
-    ValueArith,
-    ValueEq,
-    Concat,
-    ConstNull,
-    IsNull,
-    QopUnwrap,
-    Local,
-    Bin,
-    Cmp,
-    BoolBin,
-    Not,
-    Cast,
-    Call,
-    DynCall,
-    Block,
-    IfChain,
-    ArrayLen,
-    ArrayGet,
-    BytesIndex,
-    MapRef,
-    ArraySlice,
-    ArrayFold,
-    ArrayInit,
-    ArrayMap,
-    ArrayFilter,
-    ArrayFind,
-    ArrayFilterMap,
-    ArrayFindMap,
-    ArrayFlatMap,
-    TupleGet,
-    TupleNew,
-    StructGet,
-    StructNew,
-    VariantTagEq,
-    VariantPayload,
-    VariantNew,
-}
-
-/// The tag for a `GirOp`. Exhaustive so a new `GirOp` variant forces an
-/// update here (and a matching `GirOpTag` variant).
-fn gir_op_tag(op: &GirOp) -> GirOpTag {
-    match op {
-        // Const covers both scalar and value-shape constants now
-        // (ConstValue was merged into Const; see gir::GirOp::Const).
-        GirOp::Const(_) => GirOpTag::Const,
-        GirOp::ConstStr(_) => GirOpTag::ConstStr,
-        GirOp::ValueArith { .. } => GirOpTag::ValueArith,
-        GirOp::ValueEq { .. } => GirOpTag::ValueEq,
-        GirOp::Concat(_) => GirOpTag::Concat,
-        GirOp::ConstNull => GirOpTag::ConstNull,
-        GirOp::IsNull(_) => GirOpTag::IsNull,
-        GirOp::QopUnwrap { .. } => GirOpTag::QopUnwrap,
-        GirOp::Local(_) => GirOpTag::Local,
-        GirOp::Bin { .. } => GirOpTag::Bin,
-        GirOp::Cmp { .. } => GirOpTag::Cmp,
-        GirOp::BoolBin { .. } => GirOpTag::BoolBin,
-        GirOp::Not(_) => GirOpTag::Not,
-        GirOp::Cast { .. } => GirOpTag::Cast,
-        GirOp::Call { .. } => GirOpTag::Call,
-        GirOp::DynCall { .. } => GirOpTag::DynCall,
-        GirOp::Block { .. } => GirOpTag::Block,
-        GirOp::IfChain { .. } => GirOpTag::IfChain,
-        GirOp::ArrayLen { .. } => GirOpTag::ArrayLen,
-        GirOp::ArrayGet { .. } => GirOpTag::ArrayGet,
-        GirOp::BytesIndex { .. } => GirOpTag::BytesIndex,
-        GirOp::MapRef { .. } => GirOpTag::MapRef,
-        GirOp::ArraySlice { .. } => GirOpTag::ArraySlice,
-        GirOp::ArrayFold { .. } => GirOpTag::ArrayFold,
-        GirOp::ArrayInit { .. } => GirOpTag::ArrayInit,
-        GirOp::ArrayMap { .. } => GirOpTag::ArrayMap,
-        GirOp::ArrayFilter { .. } => GirOpTag::ArrayFilter,
-        GirOp::ArrayFind { .. } => GirOpTag::ArrayFind,
-        GirOp::ArrayFilterMap { .. } => GirOpTag::ArrayFilterMap,
-        GirOp::ArrayFindMap { .. } => GirOpTag::ArrayFindMap,
-        GirOp::ArrayFlatMap { .. } => GirOpTag::ArrayFlatMap,
-        GirOp::TupleGet { .. } => GirOpTag::TupleGet,
-        GirOp::TupleNew { .. } => GirOpTag::TupleNew,
-        GirOp::StructGet { .. } => GirOpTag::StructGet,
-        GirOp::StructNew { .. } => GirOpTag::StructNew,
-        GirOp::VariantTagEq { .. } => GirOpTag::VariantTagEq,
-        GirOp::VariantPayload { .. } => GirOpTag::VariantPayload,
-        GirOp::VariantNew { .. } => GirOpTag::VariantNew,
-    }
-}
-
-// ─── GIR op visitor (single source of recursion) ──────────────────
-
-/// Visit every `GirOp` in a statement (and its sub-expressions),
-/// depth-first.
-pub(crate) fn visit_ops_stmt(s: &GirStmt, f: &mut impl FnMut(&GirOp)) {
-    match s {
-        GirStmt::Let(l) => visit_ops(&l.value, f),
-        GirStmt::Return(e) | GirStmt::Discard(e) => visit_ops(e, f),
-        GirStmt::TailCall { args } => args.iter().for_each(|e| visit_ops(e, f)),
-        GirStmt::Select { scrut, arms } => {
-            if let Some(s) = scrut {
-                visit_ops(s, f);
-            }
-            for a in arms {
-                if let Some(c) = &a.cond {
-                    visit_ops(c, f);
-                }
-                a.body.iter().for_each(|s| visit_ops_stmt(s, f));
-            }
-        }
-    }
-}
-
-/// Visit `e`'s op and every op in its sub-expressions, depth-first.
-/// Exhaustive over `GirOp` so a new variant forces a sub-expression
-/// audit here.
-pub(crate) fn visit_ops(e: &GirExpr, f: &mut impl FnMut(&GirOp)) {
-    f(&e.op);
-    match &e.op {
-        GirOp::Const(_)
-        | GirOp::ConstStr(_)
-        | GirOp::ConstNull
-        | GirOp::Local(_)
-        | GirOp::ArrayLen { .. }
-        | GirOp::TupleGet { .. }
-        | GirOp::StructGet { .. }
-        | GirOp::VariantTagEq { .. }
-        | GirOp::VariantPayload { .. } => {}
-        GirOp::IsNull(inner)
-        | GirOp::Not(inner)
-        | GirOp::Cast { inner, .. }
-        | GirOp::QopUnwrap { inner, .. } => visit_ops(inner, f),
-        GirOp::Concat(parts) => parts.iter().for_each(|e| visit_ops(e, f)),
-        GirOp::Bin { lhs, rhs, .. }
-        | GirOp::Cmp { lhs, rhs, .. }
-        | GirOp::BoolBin { lhs, rhs, .. }
-        | GirOp::ValueArith { lhs, rhs, .. }
-        | GirOp::ValueEq { lhs, rhs, .. } => {
-            visit_ops(lhs, f);
-            visit_ops(rhs, f);
-        }
-        GirOp::ArrayGet { idx, .. } => visit_ops(idx, f),
-        GirOp::BytesIndex { bytes, idx } => {
-            visit_ops(bytes, f);
-            visit_ops(idx, f);
-        }
-        GirOp::MapRef { map, key } => {
-            visit_ops(map, f);
-            visit_ops(key, f);
-        }
-        GirOp::ArraySlice { source, start, end } => {
-            visit_ops(source, f);
-            if let Some(e) = start {
-                visit_ops(e, f);
-            }
-            if let Some(e) = end {
-                visit_ops(e, f);
-            }
-        }
-        GirOp::ArrayFold { init, body, .. } => {
-            visit_ops(init, f);
-            visit_ops(body, f);
-        }
-        GirOp::ArrayInit { n, body, .. } => {
-            visit_ops(n, f);
-            visit_ops(body, f);
-        }
-        GirOp::ArrayMap { body, .. } => visit_ops(body, f),
-        GirOp::ArrayFilter { predicate, .. } => visit_ops(predicate, f),
-        GirOp::ArrayFind { predicate, .. } => visit_ops(predicate, f),
-        GirOp::ArrayFilterMap { body, .. } => visit_ops(body, f),
-        GirOp::ArrayFindMap { body, .. } => visit_ops(body, f),
-        GirOp::ArrayFlatMap { body, .. } => visit_ops(body, f),
-        GirOp::TupleNew { fields, .. } => {
-            fields.iter().for_each(|e| visit_ops(e, f))
-        }
-        GirOp::StructNew { sorted_fields, .. } => {
-            sorted_fields.iter().for_each(|(_, e)| visit_ops(e, f))
-        }
-        GirOp::VariantNew { payloads, .. } => {
-            payloads.iter().for_each(|e| visit_ops(e, f))
-        }
-        GirOp::Block { lets, tail } => {
-            lets.iter().for_each(|l| visit_ops(&l.value, f));
-            visit_ops(tail, f);
-        }
-        GirOp::IfChain { scrut, arms } => {
-            if let Some(s) = scrut {
-                visit_ops(s, f);
-            }
-            for (c, v) in arms {
-                if let Some(c) = c {
-                    visit_ops(c, f);
-                }
-                visit_ops(v, f);
-            }
-        }
-        GirOp::Call { args, .. } | GirOp::DynCall { args, .. } => {
-            args.iter().for_each(|e| visit_ops(e, f))
-        }
-    }
-}
-
-fn kernel_contains_op(k: &GirKernel, tag: GirOpTag) -> bool {
-    let mut found = false;
-    let mut f = |op: &GirOp| {
-        if gir_op_tag(op) == tag {
-            found = true;
-        }
-    };
-    for s in &k.body {
-        visit_ops_stmt(s, &mut f);
-    }
-    found
-}
-
-fn kernel_op_tags(k: &GirKernel) -> BTreeSet<GirOpTag> {
-    let mut tags = BTreeSet::new();
-    let mut f = |op: &GirOp| {
-        tags.insert(gir_op_tag(op));
-    };
-    for s in &k.body {
-        visit_ops_stmt(s, &mut f);
-    }
-    tags
 }
 
 // ─── Matching ─────────────────────────────────────────────────────
@@ -497,10 +252,8 @@ fn describe_at<R: Rt, E: UserEvent>(
             let params: Vec<&str> =
                 k.params.iter().map(|p| p.name.as_str()).collect();
             out.push_str(&format!(
-                "{pad}Fused(returns={:?}, params={:?}, ops={:?})\n",
-                k.return_type,
-                params,
-                kernel_op_tags(k)
+                "{pad}Fused(returns={:?}, params={:?})\n",
+                k.return_type, params
             ));
             for feeder in fk.feeders() {
                 describe_at(feeder, depth + 1, out);

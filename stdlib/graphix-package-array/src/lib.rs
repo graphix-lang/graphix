@@ -9,8 +9,7 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     effects::EffectKind,
     expr::ExprId,
-    fusion::lowering::{emit_expr_node, FusionCtx, Input},
-    gir::{self, GirExpr, GirOp, PrimType},
+    gir::{self, PrimType},
     gir_jit::{self, scaffold, BodyCx, CompiledExpr, CompositeSource},
     node::genn,
     typ::{FnType, Type},
@@ -72,51 +71,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         )))
     }
 
-    fn emit_gir(
-        ctx: &mut FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-        array_arg: &Node<R, E>,
-        body: &Node<R, E>,
-        elem_name: &ArcStr,
-        in_elem: Type,
-        elem_binds: &[(BindId, usize)],
-    ) -> Option<GirExpr> {
-        // Array param name (the array kernel input the loop reads).
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        // The body emits inside a scope that has the per-element binding
-        // visible: a single scalar `Input` for `|x|`, or (for a
-        // `|(k, v)|` destructure) a composite element local plus the
-        // per-leaf `TupleGet` lets, wrapped into the body's `Block`.
-        let (in_elem, body_kir) = if elem_binds.is_empty() {
-            let prim = gir::scalar_prim(&in_elem)?;
-            let body_kir = ctx.with_input(
-                Input { name: elem_name.clone(), prim, bind_id: None },
-                |inner| emit_expr_node(body, inner, ec),
-            )?;
-            (gir::prim_type(prim), body_kir)
-        } else {
-            let body_block = graphix_compiler::fusion::lowering::emit_hof_body_destructured(
-                ctx, ec, body, elem_name, &in_elem, elem_binds,
-            )?;
-            (in_elem, body_block)
-        };
-        // Output element type is the body's type — prim or composite
-        // (e.g. a nested `array::map` producing `Array<_>`).
-        let out = body_kir.typ.clone();
-        if is_unit_or_null(&out) {
-            return None;
-        }
-        Some(GirExpr {
-            op: GirOp::ArrayMap {
-                array: array_name,
-                in_elem,
-                elem_local: elem_name.clone(),
-                body: Box::new(body_kir),
-            },
-            typ: gir::array_type(out),
-        })
-    }
-
     /// Direct-path map loop via `scaffold::emit_map_loop`. `Ok(None)`
     /// gates, all decided before the first emitted instruction: a
     /// destructured `|(k, v)|` callback (Stage D3), an element shape
@@ -125,7 +79,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
     /// pending-cleanup registration that lands with the owned-arg
     /// stage; until then those sites DynCall or node-walk, the status
     /// quo), and a body result that won't freeze concrete or is
-    /// Unit/bare-Null (mirroring `emit_gir`'s `is_unit_or_null` gate).
+    /// Unit/bare-Null (the `is_unit_or_null` gate).
     fn emit_clif(
         cx: &mut BodyCx,
         array_arg: &Node<R, E>,
@@ -215,49 +169,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         ))))
     }
 
-    fn emit_gir(
-        ctx: &mut FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-        array_arg: &Node<R, E>,
-        body: &Node<R, E>,
-        elem_name: &ArcStr,
-        in_elem: Type,
-        elem_binds: &[(BindId, usize)],
-    ) -> Option<GirExpr> {
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        let (elem, pred_kir) = if elem_binds.is_empty() {
-            let prim = gir::scalar_prim(&in_elem)?;
-            let pred_kir = ctx.with_input(
-                Input { name: elem_name.clone(), prim, bind_id: None },
-                |inner| emit_expr_node(body, inner, ec),
-            )?;
-            (gir::prim_type(prim), pred_kir)
-        } else {
-            let pred_block =
-                graphix_compiler::fusion::lowering::emit_hof_body_destructured(
-                    ctx, ec, body, elem_name, &in_elem, elem_binds,
-                )?;
-            (in_elem, pred_block)
-        };
-        // Predicate must return bool.
-        if pred_kir.typ != gir::prim_type(PrimType::Bool) {
-            return None;
-        }
-        Some(GirExpr {
-            op: GirOp::ArrayFilter {
-                array: array_name,
-                elem: elem.clone(),
-                elem_local: elem_name.clone(),
-                predicate: Box::new(pred_kir),
-            },
-            typ: gir::array_type(elem),
-        })
-    }
-
     /// Direct-path filter loop via `scaffold::emit_filter_loop`. Same
     /// `Ok(None)` gates as `MapImpl::emit_clif` (destructured callback,
     /// unbindable element shape, owned input array), plus the predicate
-    /// type must freeze to `bool` (mirroring `emit_gir`). Unlike a map
+    /// type must freeze to `bool`. Unlike a map
     /// body, a may-bottom (`Scalar2`) predicate Errs — the kernel
     /// de-fuses at build time and the call site node-walks. There is no
     /// runtime seam that could decide keep-vs-drop for a bottom
@@ -350,46 +265,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         }))))
     }
 
-    fn emit_gir(
-        ctx: &mut FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-        array_arg: &Node<R, E>,
-        body: &Node<R, E>,
-        elem_name: &ArcStr,
-        in_elem: Type,
-        elem_binds: &[(BindId, usize)],
-    ) -> Option<GirExpr> {
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        let body_kir = if elem_binds.is_empty() {
-            let prim = gir::scalar_prim(&in_elem)?;
-            ctx.with_input(
-                Input { name: elem_name.clone(), prim, bind_id: None },
-                |inner| emit_expr_node(body, inner, ec),
-            )?
-        } else {
-            graphix_compiler::fusion::lowering::emit_hof_body_destructured(
-                ctx, ec, body, elem_name, &in_elem, elem_binds,
-            )?
-        };
-        // Fuse only the array-returning shape of the `['b, Array<'b>]`
-        // callback (a bare-element body bails to the runtime dispatch).
-        let out_elem = gir::array_scalar_prim(&body_kir.typ)?;
-        Some(GirExpr {
-            op: GirOp::ArrayFlatMap {
-                array: array_name,
-                in_elem,
-                elem_local: elem_name.clone(),
-                out_elem,
-                body: Box::new(body_kir),
-            },
-            typ: gir::array_type(gir::prim_type(out_elem)),
-        })
-    }
-
     /// Direct-path flat_map loop via `scaffold::emit_flat_map_loop`.
     /// Same `Ok(None)` gates as `MapImpl::emit_clif`, plus the body
     /// must freeze to `Array<scalar>` — the array-returning shape of
-    /// the `['b, Array<'b>]` callback union, mirroring `emit_gir`'s
+    /// the `['b, Array<'b>]` callback union, mirroring map's
     /// `array_scalar_prim` gate (a bare-element body node-walks). The
     /// body closure hands the scaffold an OWNED array for `extend` to
     /// consume — a Borrowed body source (e.g. a Ref to an outer
@@ -488,44 +367,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         }))))
     }
 
-    fn emit_gir(
-        ctx: &mut FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-        array_arg: &Node<R, E>,
-        body: &Node<R, E>,
-        elem_name: &ArcStr,
-        in_elem: Type,
-        elem_binds: &[(BindId, usize)],
-    ) -> Option<GirExpr> {
-        if !elem_binds.is_empty() {
-            return None; // tuple-destructure callbacks not supported here yet
-        }
-        let in_elem = gir::scalar_prim(&in_elem)?;
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        let body_kir = ctx.with_input(
-            Input { name: elem_name.clone(), prim: in_elem, bind_id: None },
-            |inner| emit_expr_node(body, inner, ec),
-        )?;
-        // Body must return an option `[out_elem, null]`.
-        let out_elem = gir::scalar_prim(&gir::nullable_inner(&body_kir.typ)?)?;
-        Some(GirExpr {
-            op: GirOp::ArrayFilterMap {
-                array: array_name,
-                in_elem,
-                elem_local: elem_name.clone(),
-                out_elem,
-                body: Box::new(body_kir),
-            },
-            typ: gir::array_type(gir::prim_type(out_elem)),
-        })
-    }
-
     /// Direct-path filter_map loop via
     /// `scaffold::emit_filter_map_loop`. The scaffold is scalar-only
     /// on BOTH sides (it binds the element through the per-prim
     /// getter, no `bind_elem`, and casts the non-null payload back to
     /// the out prim), so the gates are: register-scalar element,
-    /// body freezes to `Nullable<scalar>` (mirroring `emit_gir`'s
+    /// body freezes to `Nullable<scalar>` (find_map's
     /// `nullable_inner` + `scalar_prim`). The scaffold itself Errs on
     /// a non-Value-shape body = build-time de-fuse.
     fn emit_clif(
@@ -606,44 +453,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
             .map(|(i, _)| a[i].clone())
             .unwrap_or(Value::Null);
         Some(r)
-    }
-
-    fn emit_gir(
-        ctx: &mut FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-        array_arg: &Node<R, E>,
-        body: &Node<R, E>,
-        elem_name: &ArcStr,
-        in_elem: Type,
-        elem_binds: &[(BindId, usize)],
-    ) -> Option<GirExpr> {
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        let pred_kir = if elem_binds.is_empty() {
-            let prim = gir::scalar_prim(&in_elem)?;
-            ctx.with_input(
-                Input { name: elem_name.clone(), prim, bind_id: None },
-                |inner| emit_expr_node(body, inner, ec),
-            )?
-        } else {
-            graphix_compiler::fusion::lowering::emit_hof_body_destructured(
-                ctx, ec, body, elem_name, &in_elem, elem_binds,
-            )?
-        };
-        // Predicate must return bool.
-        if pred_kir.typ != gir::prim_type(PrimType::Bool) {
-            return None;
-        }
-        // The matched element (scalar or composite) is the result, as an
-        // option (`null` if none match).
-        Some(GirExpr {
-            op: GirOp::ArrayFind {
-                array: array_name,
-                elem: in_elem.clone(),
-                elem_local: elem_name.clone(),
-                predicate: Box::new(pred_kir),
-            },
-            typ: gir::nullable_type(in_elem),
-        })
     }
 
     /// Direct-path find loop via `scaffold::emit_find_loop` — early
@@ -743,54 +552,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         Some(r)
     }
 
-    fn emit_gir(
-        ctx: &mut FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-        array_arg: &Node<R, E>,
-        body: &Node<R, E>,
-        elem_name: &ArcStr,
-        in_elem: Type,
-        elem_binds: &[(BindId, usize)],
-    ) -> Option<GirExpr> {
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        let (elem_typ, body_kir) = if elem_binds.is_empty() {
-            let prim = gir::scalar_prim(&in_elem)?;
-            let body_kir = ctx.with_input(
-                Input { name: elem_name.clone(), prim, bind_id: None },
-                |inner| emit_expr_node(body, inner, ec),
-            )?;
-            (gir::prim_type(prim), body_kir)
-        } else {
-            let body_block =
-                graphix_compiler::fusion::lowering::emit_hof_body_destructured(
-                    ctx, ec, body, elem_name, &in_elem, elem_binds,
-                )?;
-            (in_elem, body_block)
-        };
-        // Body must return an option `[out, null]`; the op returns the
-        // first non-null body value as that same `Nullable<out>`.
-        if !matches!(
-            gir::abi_kind(&body_kir.typ),
-            Some(gir::AbiKind::Nullable)
-        ) {
-            return None;
-        }
-        let out_ty = body_kir.typ.clone();
-        Some(GirExpr {
-            op: GirOp::ArrayFindMap {
-                array: array_name,
-                in_elem: elem_typ,
-                elem_local: elem_name.clone(),
-                body: Box::new(body_kir),
-            },
-            typ: out_ty,
-        })
-    }
-
     /// Direct-path find_map loop via `scaffold::emit_find_map_loop` —
     /// early exit on the first non-null body result, which IS the
     /// kernel's `Nullable<out>` result. The body must freeze to a
-    /// Nullable shape (mirroring `emit_gir`). The body pair leaves the
+    /// Nullable shape. The body pair leaves the
     /// loop as the result, so a Borrowed body source (a bare Ref read)
     /// is refcount-cloned via `ensure_owned_value_src` — the scaffold's
     /// owned-pair contract.
@@ -876,68 +641,10 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
 
     const NAME: &str = "array_fold";
 
-    fn emit_gir(
-        ctx: &mut FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-        array_arg: &Node<R, E>,
-        init_arg: &Node<R, E>,
-        body: &Node<R, E>,
-        acc_name: &ArcStr,
-        elem_name: &ArcStr,
-        in_elem: Type,
-        elem_binds: &[(BindId, usize)],
-    ) -> Option<GirExpr> {
-        let array_name = ctx.resolve_array_input(array_arg)?;
-        // Lower init in the outer ctx — no new locals needed.
-        let init_kir = emit_expr_node(init_arg, ctx, ec)?;
-        let acc_typ = gir::scalar_prim(&init_kir.typ)?;
-        // The body emits with the accumulator (always scalar) plus the
-        // element binding in scope: a single scalar `Input` for `|acc,
-        // x|`, or (for `|acc, (k, v)|`) a composite element local + the
-        // per-leaf `TupleGet` lets wrapped into the body's `Block`.
-        let (elem_typ, body_kir) = if elem_binds.is_empty() {
-            let prim = gir::scalar_prim(&in_elem)?;
-            let body_kir = ctx.with_input(
-                Input { name: acc_name.clone(), prim: acc_typ, bind_id: None },
-                |inner| {
-                    inner.with_input(
-                        Input { name: elem_name.clone(), prim, bind_id: None },
-                        |inner2| emit_expr_node(body, inner2, ec),
-                    )
-                },
-            )?;
-            (gir::prim_type(prim), body_kir)
-        } else {
-            let body_block = ctx.with_input(
-                Input { name: acc_name.clone(), prim: acc_typ, bind_id: None },
-                |inner| {
-                    graphix_compiler::fusion::lowering::emit_hof_body_destructured(
-                        inner, ec, body, elem_name, &in_elem, elem_binds,
-                    )
-                },
-            )?;
-            (in_elem, body_block)
-        };
-        if body_kir.typ != gir::prim_type(acc_typ) {
-            return None;
-        }
-        Some(GirExpr {
-            op: GirOp::ArrayFold {
-                array: array_name,
-                elem_typ,
-                init: Box::new(init_kir),
-                acc_local: acc_name.clone(),
-                elem_local: elem_name.clone(),
-                body: Box::new(body_kir),
-            },
-            typ: gir::prim_type(acc_typ),
-        })
-    }
-
     /// Direct-path fold loop via `scaffold::emit_fold_loop`. Same
     /// `Ok(None)` gates as `MapImpl::emit_clif`, plus the accumulator
     /// must be a register scalar whose prim the init and body types
-    /// agree on (mirroring `emit_gir`'s `scalar_prim(init)` +
+    /// agree on (`scalar_prim(init)` +
     /// `body == acc` checks). The init and body closures both carry
     /// the BUILD-time de-fuse contract: a may-bottom (`Scalar2`)
     /// result Errs — a bottom accumulator poisons every later
@@ -1197,7 +904,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const NAME: &str = "array_len";
     const NEEDS_CALLSITE: bool = false;
     const EFFECT: EffectKind = EffectKind::Sync;
-    const FUSABLE: bool = true;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -1206,24 +912,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
         }
     }
 
-    // `array::len(arr)` lowers to the pure-GIR `GirOp::ArrayLen` (a
+    // `array::len(arr)` lowers to a pure array-length read (a
     // length read off the array kernel input) — no DynCall needed. Only
     // fuses when the array arg resolves to a kernel input; otherwise
     // `None` falls back to DynCall.
-    fn emit_gir(
-        &self,
-        callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
-        _args: &[(Option<ArcStr>, &Node<R, E>)],
-        _arg_refs: &[Node<R, E>],
-        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        _ec: &mut ExecCtx<R, E>,
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        let arr_name = ctx.resolve_array_input(callsite.arg_positional(0)?)?;
-        Some(GirExpr {
-            op: GirOp::ArrayLen { name: arr_name },
-            typ: gir::prim_type(PrimType::U64),
-        })
-    }
 }
 
 type Len = CachedArgs<LenEv>;
@@ -1702,14 +1394,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
-    fn view(&self) -> graphix_compiler::ApplyView<'_, R, E> {
-        graphix_compiler::ApplyView::FusedBuiltin(self)
-    }
-
-    fn view_mut(&mut self) -> graphix_compiler::ApplyViewMut<'_, R, E> {
-        graphix_compiler::ApplyViewMut::FusedBuiltin(self)
-    }
-
     fn static_resolve_fn_args(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1896,7 +1580,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         // analysis_pred is analysis-only — no runtime sleep needed.
     }
 
-    /// Direct-path codegen (Stage D2) — the `emit_gir` twin below:
+    /// `array::init` codegen:
     /// `n` (positional 0) must freeze to an integer scalar, the index
     /// param binds the loop counter Variable itself (no per-iteration
     /// copy), and the body's per-index result is pushed via
@@ -1977,63 +1661,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
     }
 }
 
-/// Fusion-time codegen for `array::init`. Lowers to `GirOp::ArrayInit`
-/// when the callback was statically resolvable (`analysis_pred` is
-/// populated); falls back to DynCall otherwise.
-impl<R: Rt, E: UserEvent> graphix_compiler::GirEmitter<R, E> for Init<R, E> {
-    fn emit_gir(
-        &self,
-        callsite: &graphix_compiler::node::callsite::CallSite<R, E>,
-        _args: &[(Option<arcstr::ArcStr>, &Node<R, E>)],
-        _arg_refs: &[Node<R, E>],
-        ctx: &mut graphix_compiler::fusion::lowering::FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-    ) -> Option<graphix_compiler::gir::GirExpr> {
-        let slot = self.analysis_pred.as_ref()?;
-        // Positional arg 0 is the array size (`n`).
-        let n_node = callsite.arg_positional(0)?;
-        let n_kir = emit_expr_node(n_node, ctx, ec)?;
-        if !gir::scalar_prim(&n_kir.typ).is_some_and(|p| p.is_integer()) {
-            return None;
-        }
-        // Body Node via the inner CallSite's resolved Apply.
-        let pred_view = slot.pred.view();
-        let inner_cs = match pred_view {
-            graphix_compiler::NodeView::CallSite(cs) => cs,
-            _ => return None,
-        };
-        let g = match inner_cs.resolved_apply()? {
-            graphix_compiler::ApplyView::Lambda(g) => g,
-            _ => return None,
-        };
-        let body = g.body();
-        // Index param's name — from the lambda's FnType.args[0].kind.
-        let idx_name = match &g.typ().args.first()?.kind {
-            graphix_compiler::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
-            graphix_compiler::typ::FnArgKind::Labeled { name, .. } => name.clone(),
-            _ => return None,
-        };
-        let body_kir = ctx.with_input(
-            Input { name: idx_name.clone(), prim: PrimType::I64, bind_id: None },
-            |inner| emit_expr_node(body, inner, ec),
-        )?;
-        // Output element type is the body's type — prim or composite
-        // (tuple/struct/variant/…). Reject shapes with no array-element
-        // representation.
-        let elem = body_kir.typ.clone();
-        if is_unit_or_null(&elem) {
-            return None;
-        }
-        Some(GirExpr {
-            op: GirOp::ArrayInit {
-                n: Box::new(n_kir),
-                idx_local: idx_name,
-                body: Box::new(body_kir),
-            },
-            typ: gir::array_type(elem),
-        })
-    }
-}
 
 graphix_derive::defpackage! {
     builtins => [

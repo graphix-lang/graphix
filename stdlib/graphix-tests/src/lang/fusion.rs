@@ -1638,7 +1638,7 @@ proptest::proptest! {
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_external_scalar() -> Result<()> {
     use graphix_compiler::gir::{prim_type, PrimType};
-    use graphix_compiler::node_shape::{GirMatcher, GirOpTag, NodeShape};
+    use graphix_compiler::node_shape::{GirMatcher, NodeShape};
 
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
@@ -1658,9 +1658,10 @@ async fn node_shape_external_scalar() -> Result<()> {
     );
     ctx.rt.match_shape(eid, spec).await?;
 
-    // The matcher must have teeth: a wrong criterion (the body has no
-    // ArrayLen op) must produce a mismatch, not silently pass.
-    let bad = NodeShape::fused(GirMatcher::new().contains(GirOpTag::ArrayLen));
+    // The matcher must have teeth: a wrong criterion (the kernel's
+    // one param is `foo`, not `nope`) must produce a mismatch, not
+    // silently pass.
+    let bad = NodeShape::fused(GirMatcher::new().params(&["nope"]));
     let err = ctx.rt.match_shape(eid, bad).await;
     assert!(err.is_err(), "matcher should reject a wrong spec, but passed");
 

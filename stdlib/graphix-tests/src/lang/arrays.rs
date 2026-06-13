@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_compiler::node_shape::{GirMatcher, GirOpTag, NodeShape};
+use graphix_compiler::node_shape::{GirMatcher, NodeShape};
 use graphix_package_core::run;
 use netidx::publisher::Value;
 

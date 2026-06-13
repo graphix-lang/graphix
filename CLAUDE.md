@@ -289,23 +289,37 @@ HOF builtins (e.g. `MapQ`, `FoldQ`) that take function-typed arguments must retu
   kernel + delete the originals; JIT failure → don't splice, the originals
   node-walk.** There is no third evaluator.
 
-**Direction of travel:** the GIR interpreter (a slower second copy of the
-node-walk) was deleted; the GIR IR itself (`GirKernel`/`GirOp`/`GirExpr`) is
-being removed so the JIT walks the node graph directly via `NodeView` and emits
-CLIF — the pipeline becomes `Expr → node graph → CLIF` with no intermediate IR
-(`design/delete_gir_ir.md`, Stage 1 landed behind `CFlag::DirectNodeJit`). Until
-that lands, fusion lowers a node subtree to GIR (`fusion/lowering.rs`) and
-compiles GIR → CLIF (`gir_jit.rs`).
+**The GIR IR is GONE (F3, 2026-06-12).** The pipeline is `Expr → node
+graph → CLIF`, period: `fuse()` is `Update::jit` recursion, each
+node's `emit_clif` emits its own CLIF (`Apply::emit_clif` for
+builtins, `MapFn`/`FoldFn::emit_clif` + the `gir_jit::scaffold` loop
+scaffolds for HOFs), and kernel builds are pure SIGNATURE derivation
+— `sig_from_inputs` is the single sig builder, the `Arc<KernelSig>`
+is the compiled-callable handle, and "is it fusable" IS the compile
+attempt. `gir.rs` is ~70 lines of vocabulary (kernel_abi re-export,
+BinOp/CmpOp/BoolOp, KnownFusedFn); `GirExpr`/`GirOp`/`GirStmt`/
+`GirKernel`/`GirEmitter`/`FusedBuiltin`/`FUSABLE`/`emit_gir` no
+longer exist. See `design/distributed_jit.md` — "F3 — the delete"
+for what went and the two behavioral seams (fuse_callsite's
+fall-through to the split path on a failed whole-body compile;
+builtin-call discovery riding `for_each_node` with resolved
+FnTypes), and "Semantic contracts for emit work" for the six
+invariants the F2 flip taught us (replayability ≠ Sync, effects
+de-fuse-never-skip, first-dispatch-is-init, `(BindId, top_id)`
+wake-up keying, with_deref/registry lock discipline, dead-statement
+elimination). Remaining: F4 (#213) EmitTags for node_shape, #219
+missing-input bottom support.
 
 **Value & type representation — use the netidx types, no parallel copies:**
 
 - **Values:** netidx `Value` everywhere (`#[repr(u64)]`, 16 bytes = (disc,
   payload)). No bespoke value types — `RegValue`/`ConstVal`/`EvalResult` are
   gone. `Value::copy_unchecked` is the branch-free copy for proven scalars.
-- **Types:** netidx `Type` everywhere in the GIR. `GirType` is gone. Runtime
-  shape comes from `abi_kind(&Type) -> Option<AbiKind>` + `freeze_concrete` (in
-  `gir.rs`); `PrimType` is the closed register-scalar set (the one *good* small
-  classifier enum — exhaustively matched in codegen).
+- **Types:** netidx `Type` everywhere. `GirType` is gone. Runtime shape
+  comes from `abi_kind(&Type) -> Option<AbiKind>` + `freeze_concrete` (in
+  `kernel_abi.rs`, re-exported through `gir.rs`); `PrimType` is the closed
+  register-scalar set (the one *good* small classifier enum — exhaustively
+  matched in codegen).
 
 **Semantics — node-walk and JIT must agree (the differential fuzzer enforces it):**
 
@@ -362,9 +376,10 @@ async state). An *impure* callback splits at the async boundary — the sync par
 fuses + JITs per slot, the async residue node-walks. `design/impure_hof_fusion.md`,
 `design/composite_hof_fusion.md`, `design/clone_rebind_testing.md`.
 
-**Kernel ABI** (until GIR-IR removal lands): kind-grouped params — scalars,
-then array/tuple/struct pointers, then string, then 2-word variant/nullable/
-value — derived from a single source (`gir.rs` `abi_params`/`AbiParamKind`).
+**Kernel ABI**: kind-grouped params — scalars, then array/tuple/struct
+pointers, then string, then 2-word variant/nullable/value — derived from a
+single source (`kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`,
+re-exported through `gir.rs`).
 
 ### Design documents (`design/`)
 
@@ -628,8 +643,16 @@ value — derived from a single source (`gir.rs` `abi_params`/`AbiParamKind`).
   env-accounting probe caught it). Gates: 1429/1429 ×2, 115/115,
   regress 22/22 (findings/flip-jun2026 promoted), generate clean,
   mutation 1 divergence = #219 (the DOCUMENTED pre-existing JIT
-  missing-input gap, not flip-caused). NEXT: F3 delete → F4
-  EmitTags.
+  missing-input gap, not flip-caused).
+  **F3 LANDED (2026-06-12)** — the GIR IR deleted (~12.5k lines, 3
+  gated chunks, ZERO FuseExpect drift; "F3 — the delete" section has
+  the chunk detail + the two behavioral seams). Sig-only kernel
+  builds via the shared `sig_from_inputs`; `GirKernel` dissolved
+  into `Arc<KernelSig>`; `BodyEmitter` mandatory in the define loop;
+  builtin-call discovery on `for_each_node` (resolved-FnType-only —
+  the Expr-fallback walker died); fuzz probes two-mode
+  (`agree*`/`jit_*`); node_shape matches sig facts only until F4.
+  NEXT: F4 EmitTags (#213); #219 missing-input bottoms.
 - `delete_gir_ir.md` — superseded by `distributed_jit.md` (planned the same
   removal around a central walker); its scoping analysis and risks remain
   valid.

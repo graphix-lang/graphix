@@ -1,45 +1,28 @@
-//! Fusion: graphix's GIR-emission + kernel-build + native-code
-//! pipeline.
+//! Fusion: identify sync (pure) subtrees of the compiled node graph
+//! and JIT-compile them to native kernels.
 //!
-//! Layered pipeline:
+//! The architecture is distributed (`design/distributed_jit.md`):
+//! body code generation is `Update::emit_clif` / `Apply::emit_clif`
+//! trait methods living with each node, and the fusion phase is
+//! `Update::jit` recursion driven by [`fuse`]. This module supplies
+//! the shared mechanics those impls call:
 //!
-//! 1. **Walker** ([`walker`]): traverses the compiled node graph via
-//!    [`crate::NodeView`], producing a flat list of
-//!    [`walker::KernelCandidate`]s. Each candidate identifies a
-//!    Bind, Lambda, Block-module, or Region that should be fused.
-//!
-//! 2. **Builder** ([`builder`]): consumes candidates, emits each
-//!    body's GIR via [`lowering::emit_expr`], wraps the result in a
-//!    [`crate::gir::GirKernel`]. Calls into the JIT
-//!    ([`crate::gir_jit`]) to produce native code.
-//!
-//! 3. **Splicer** ([`builder::splice`]): replaces the original
-//!    `Node` in the runtime's node graph with a
-//!    [`builder::FusedKernel`] wrapper that holds the JIT artifact
-//!    and dispatches at `Update::update` time.
-//!
-//! 4. **Lowering** ([`lowering`]): the per-`ExprKind` → GirExpr
-//!    translation. This is the largest piece by line count — it
-//!    handles every shape of graphix expression we know how to
-//!    fuse. The translation is independent of the walker / builder
-//!    / splicer; those just orchestrate when and on what to call
-//!    it.
+//! - [`try_fuse`] — the whole-subtree compile attempt: region-input
+//!   collection → [`sig_from_inputs`] → builtin/lambda call-site
+//!   discovery → compile under the jit lock (`emit_clif` recursion
+//!   from the root) → [`builder::FusedKernel`] + feeders. "Is it
+//!   fusable" IS the compile attempt.
+//! - [`jit_node`] — the uniform child-visit protocol (try_fuse,
+//!   else recurse, swap in any replacement).
+//! - [`lowering`] — discovery, signature derivation (lambda callees,
+//!   per-slot HOF callbacks, body splits), abstract-type resolution.
+//! - [`builder`] — the runtime [`builder::FusedKernel`] carrier.
 
 pub mod builder;
 pub mod lowering;
-pub mod walker;
 
 // Re-export public surface so callers see a flat `fusion::*` API.
-pub use builder::{splice, BuiltKernel, FusedKernel, SpliceTarget};
-pub use walker::{
-    walk, CandidateCounts, CandidateKind, Candidates, KernelCandidate,
-};
-
-// Lowering re-exports — preserved during the v1→v2 transition so
-// existing callers (callsite.rs, mod.rs, node/*.rs, gx.rs) keep
-// finding `crate::fusion::emit_expr` etc. As the rip-out
-// progresses these will narrow to just the genuinely-needed
-// public surface.
+pub use builder::FusedKernel;
 pub use lowering::*;
 
 /// Compile-time fusion outcome counters, accumulated on
@@ -68,22 +51,12 @@ pub struct FusionStats {
     pub failed: Vec<(crate::expr::ExprId, compact_str::CompactString)>,
 }
 
-/// Run the fusion phase on a compiled Node tree.
+/// Run the fusion phase on a compiled Node tree: [`jit_node`] on the
+/// root — `Update::jit` recursion in which each node fuses its own
+/// maximal sync subtree via [`try_fuse`].
 ///
 /// Called by [`crate::compile`] between typecheck phase 2 and
-/// return. Walks the Node graph, identifies kernel candidates,
-/// builds GIR kernels, JIT-compiles them, splices them into the
-/// Node tree in place.
-///
-/// **Current scope**: zero-input `Region` candidates only — a
-/// non-Bind module-top-level expression whose body has no free
-/// variables (the canonical "constant kernel" case). Other
-/// candidate kinds (`LambdaBind`, `AnonymousLambda`, `ValueBind`,
-/// `Region` with free-var inputs) are recognized by the walker
-/// but skipped here; subsequent iterations add their build/splice
-/// support.
-///
-/// The function takes `&mut Node` rather than `&mut [Node]`
+/// return. The function takes `&mut Node` rather than `&mut [Node]`
 /// because — with `load()`'s Module wrapping in place — every
 /// compile produces one Node (a module containing the file's
 /// graph, or a single inline expression). Cross-Bind dependencies
@@ -94,23 +67,15 @@ pub fn fuse<R: crate::Rt, E: crate::UserEvent>(
     flags: enumflags2::BitFlags<crate::CFlag>,
 ) -> anyhow::Result<()> {
     // `FusionDisabled`: skip the whole phase — programs execute via
-    // the regular node-graph interpreter. Used by the test
-    // harness's `interp` mode as ground truth.
-    if flags.contains(crate::CFlag::FusionDisabled) {
+    // the node-walk. Used by the test harness's `interp` mode as
+    // ground truth. `JitDisabled`: fusion could build kernels but
+    // nothing can splice (a fused node REQUIRES a JIT artifact), so
+    // skip entirely.
+    let off = crate::CFlag::FusionDisabled | crate::CFlag::JitDisabled;
+    if flags.intersects(off) {
         return Ok(());
     }
-    let jit_disabled = flags.contains(crate::CFlag::JitDisabled);
-    // The distributed path (`design/distributed_jit.md`) IS fusion
-    // since the F2 flip (2026-06-13): `Update::jit` recursion — each
-    // node fuses its own maximal subtree via [`try_fuse`]. The classic
-    // central-planner walk that used to live here (walk/RegionPlan/
-    // build_region over GIR bodies) is unreachable and goes away with
-    // the F3 mass delete. `JitDisabled` means nothing can splice, so
-    // skip entirely.
-    if !jit_disabled {
-        jit_node(node, ctx)?;
-    }
-    Ok(())
+    jit_node(node, ctx)
 }
 
 /// One free-var input slot resolved during walker analysis.
@@ -124,17 +89,6 @@ pub(crate) struct FreeVarInput {
     /// Full graphix type — used to construct the runtime feeder Node
     /// (`genn::reference`), which needs the complete `Type`.
     pub(crate) typ: crate::typ::Type,
-}
-
-/// Owned data extracted from a Region candidate so we can free
-/// the walker's borrow into the tree before splicing.
-/// DEAD since the F2 flip (the classic `fuse()` planner body is
-/// gone) — deleted with the F3 mass delete.
-#[allow(dead_code)]
-struct RegionPlan {
-    source_id: crate::expr::ExprId,
-    body: crate::expr::Expr,
-    inputs: Vec<FreeVarInput>,
 }
 
 /// Walk the candidate subtree, collect every external Ref's
@@ -359,7 +313,7 @@ pub struct LambdaCallInfo {
     pub fn_name: arcstr::ArcStr,
     /// Kept alive so the return-ABI read outlives the build and the
     /// `by_kernel` entry pins the same `Arc`.
-    pub kernel: std::sync::Arc<crate::gir::GirKernel>,
+    pub kernel: std::sync::Arc<crate::gir::KernelSig>,
     /// The callee's flat input types in signature order — formals
     /// first, captures appended (`KnownFusedFn::arg_types`, cloned
     /// from the `CachedKernel` at discovery). These were resolved
@@ -390,34 +344,31 @@ pub struct CalleeBody<'n, R: crate::Rt, E: crate::UserEvent> {
 }
 
 /// Walk the region collecting every statically-resolved lambda call
-/// site (building or cache-hitting each callee's [`CachedKernel`] —
-/// GIR body included, which is how the callee compiles during the
-/// parallel period) plus the transitive callee closure. A lambda that
-/// fails to build (unsupported arg/return shape, body that doesn't
-/// lower) is simply NOT recorded — its call site bails at emission and
-/// the subtree node-walks.
+/// site, building (or cache-hitting) each callee's [`CachedKernel`]
+/// signature. A lambda that fails to build (unsupported arg/return
+/// shape) is simply NOT recorded — its call site bails at emission and
+/// the subtree node-walks. There is no transitive closure: a callee
+/// body's own call sites are #203-unresolved, so a callee's only
+/// cross-kernel reference is itself.
 ///
 /// The third return maps each callee kernel (by `Arc::as_ptr`
 /// identity — the define loop's cache key) to its body `Node`, reached
 /// live through this site's resolved `GXLambda`, plus the self-call
-/// emission info for recursive callees. The direct path emits callee
-/// bodies by walking the Node; transitively-discovered `sub_called`
-/// kernels aren't recorded (no site in THIS region resolves them;
-/// unreachable until #203 anyway — a fresh define with no recorded
-/// body falls back to its GIR body).
+/// emission info for recursive callees. Callee bodies compile by
+/// `emit_clif` over that Node.
 fn discover_lambda_calls<'n, R: crate::Rt, E: crate::UserEvent>(
     root: &'n crate::Node<R, E>,
     ctx: &mut crate::ExecCtx<R, E>,
 ) -> (
     nohash::IntMap<crate::expr::ExprId, LambdaCallInfo>,
-    std::collections::BTreeMap<arcstr::ArcStr, std::sync::Arc<crate::gir::GirKernel>>,
+    std::collections::BTreeMap<arcstr::ArcStr, std::sync::Arc<crate::gir::KernelSig>>,
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
 ) {
     let mut sites: nohash::IntMap<crate::expr::ExprId, LambdaCallInfo> =
         nohash::IntMap::default();
     let mut callees: std::collections::BTreeMap<
         arcstr::ArcStr,
-        std::sync::Arc<crate::gir::GirKernel>,
+        std::sync::Arc<crate::gir::KernelSig>,
     > = std::collections::BTreeMap::new();
     let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
         std::collections::BTreeMap::new();
@@ -458,7 +409,7 @@ fn discover_lambda_calls<'n, R: crate::Rt, E: crate::UserEvent>(
             crate::NodeView::Ref(r) => Some(r.id),
             _ => None,
         };
-        let Some((cached, sub)) = crate::fusion::lowering::build_lambda_kernel(
+        let Some(cached) = crate::fusion::lowering::build_lambda_kernel(
             g, &name, call_bind, ctx,
         ) else {
             return;
@@ -492,9 +443,6 @@ fn discover_lambda_calls<'n, R: crate::Rt, E: crate::UserEvent>(
                     )
                 }),
             });
-        for (sub_name, sub_kernel) in sub {
-            callees.entry(sub_name).or_insert(sub_kernel.kernel);
-        }
         sites.insert(
             n.spec().id,
             LambdaCallInfo {
@@ -554,7 +502,6 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
     node: &crate::Node<R, E>,
     ctx: &mut crate::ExecCtx<R, E>,
 ) -> anyhow::Result<Option<crate::Node<R, E>>> {
-    use crate::gir::AbiKind;
     // Identity suppression: a bare binding read (possibly through
     // grouping parens) forwards one input unchanged — fusing it wraps
     // zero compute in dispatch overhead (and the `run!` harness's
@@ -563,73 +510,23 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
     if region_is_identity(node) {
         return Ok(None);
     }
-    // Return-type gate: the kernel boundary can't represent bare
-    // `Null` (fusion must widen to Nullable first) or `Unit` (a
-    // side-effect-only marker), and a type that doesn't freeze to a
-    // concrete shape can't have an ABI at all. `freeze_normalized`
-    // because a select-rooted region's type is typecheck's raw arm
-    // union (`Set([i64, TVar→i64])`), which only freezes once
-    // flattened. On plain-freeze failure, retry through
-    // `resolve_abstract` (#218): a region returning an abstract-typed
-    // value (e.g. `Array<Elem>` with `Elem` an interface type) carries
-    // Refs the env-free freeze rejects; the resolved concrete rep IS
-    // the return ABI.
-    let return_type = match crate::gir::freeze_normalized(node.typ()) {
-        Some(t) => t,
-        None => {
-            let resolved = crate::fusion::lowering::resolve_abstract(
-                node.typ(),
-                &ctx.env,
-                0,
-            );
-            match crate::gir::freeze_normalized(&resolved) {
-                Some(t) => t,
-                None => return Ok(None),
-            }
-        }
+    let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
+        return Ok(None);
     };
-    match crate::gir::abi_kind(&return_type) {
-        Some(
-            AbiKind::Scalar(_)
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value
-            | AbiKind::String,
-        ) => {}
-        Some(AbiKind::Unit | AbiKind::Null) | None => return Ok(None),
-    }
     ctx.fusion_stats.attempted += 1;
     let inputs = collect_region_inputs(&**node, ctx);
-    // Scalar env slots resolve BindId-first (C2) — duplicate basenames
-    // are fine there. The OTHER per-kind tables are still name-keyed
-    // (BindId-keying lands per-table as each shape gains emission, C3+):
-    // two distinct non-scalar captures sharing a basename would
-    // silently alias one slot — refuse to fuse instead.
-    {
-        use crate::fusion::lowering::RegionInputKind;
-        let mut names: ahash::AHashSet<&str> = ahash::AHashSet::default();
-        for fv in &inputs {
-            if matches!(fv.kind, RegionInputKind::Prim(_)) {
-                continue;
-            }
-            if !names.insert(fv.name.as_str()) {
-                // A real blocker, not protocol noise — log it (a
-                // silent Ok(None) after `attempted += 1` makes the
-                // stats disagree with the failure list).
-                ctx.fusion_stats.failed.push((
-                    node.spec().id,
-                    compact_str::format_compact!(
-                        "non-scalar region inputs share basename `{}` — \
-                         refuse to fuse",
-                        fv.name
-                    ),
-                ));
-                return Ok(None);
-            }
-        }
+    if let Some(name) = non_scalar_basename_collision(&inputs) {
+        // A real blocker, not protocol noise — log it (a silent
+        // Ok(None) after `attempted += 1` makes the stats disagree
+        // with the failure list).
+        ctx.fusion_stats.failed.push((
+            node.spec().id,
+            compact_str::format_compact!(
+                "non-scalar region inputs share basename `{name}` — \
+                 refuse to fuse"
+            ),
+        ));
+        return Ok(None);
     }
     // Discover sync-builtin Apply sites BEFORE the kernel build (the
     // same Node-based prepass the classic path runs in `fuse`):
@@ -640,7 +537,7 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
     // to a DynCall.
     let mut discovery = crate::fusion::BuiltinCallDiscovery::default();
     crate::fusion::walk_node_for_builtin_calls::<R, E>(
-        &**node,
+        node,
         ctx,
         &crate::expr::ModPath::root(),
         &mut discovery,
@@ -653,18 +550,15 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
     let (lambda_sites, lambda_callees, callee_bodies) =
         discover_lambda_calls(node, ctx);
     let source_id = node.spec().id;
-    let mut sig = sig_from_inputs(
+    let (mut sig, _arg_types) = sig_from_inputs(
         arcstr::ArcStr::from(
             compact_str::format_compact!("region_{:?}", source_id).as_str(),
         ),
-        &inputs,
+        inputs.iter().map(|fv| (fv.name.clone(), &fv.kind, Some(fv.bind_id))),
         return_type,
     );
     sig.fn_params = discovery.fn_params;
-    let kernel = std::sync::Arc::new(crate::gir::GirKernel {
-        sig: std::sync::Arc::new(sig),
-        body: Vec::new(),
-    });
+    let kernel = std::sync::Arc::new(sig);
     // The compile attempt: entry binds the declared params, then the
     // body is emitted by `emit_clif` recursion from the root. Any Err
     // (a node that doesn't emit) discards the half-built function —
@@ -743,6 +637,68 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
     }
 }
 
+/// Scalar env slots resolve BindId-first (C2) — duplicate basenames
+/// are fine there. The OTHER per-kind tables are still name-keyed
+/// (BindId-keying lands per-table as each shape gains emission):
+/// two distinct non-scalar inputs sharing a basename would silently
+/// alias one slot — callers refuse to fuse instead. Returns the
+/// first colliding name.
+pub(crate) fn non_scalar_basename_collision(
+    inputs: &[FreeVarInput],
+) -> Option<&arcstr::ArcStr> {
+    use crate::fusion::lowering::RegionInputKind;
+    let mut names: ahash::AHashSet<&str> = ahash::AHashSet::default();
+    for fv in inputs {
+        if matches!(fv.kind, RegionInputKind::Prim(_)) {
+            continue;
+        }
+        if !names.insert(fv.name.as_str()) {
+            return Some(&fv.name);
+        }
+    }
+    None
+}
+
+/// Freeze a region root's graphix type into the kernel's return ABI
+/// type, or `None` if the region can't fuse. The kernel boundary
+/// can't represent bare `Null` (fusion must widen to Nullable first)
+/// or `Unit` (a side-effect-only marker), and a type that doesn't
+/// freeze to a concrete shape can't have an ABI at all.
+/// `freeze_normalized` because a select-rooted region's type is
+/// typecheck's raw arm union (`Set([i64, TVar→i64])`), which only
+/// freezes once flattened. On plain-freeze failure, retry through
+/// `resolve_abstract` (#218): a region returning an abstract-typed
+/// value (e.g. `Array<Elem>` with `Elem` an interface type) carries
+/// Refs the env-free freeze rejects; the resolved concrete rep IS
+/// the return ABI.
+pub(crate) fn freeze_region_return(
+    typ: &crate::typ::Type,
+    env: &crate::env::Env,
+) -> Option<crate::typ::Type> {
+    use crate::gir::AbiKind;
+    let return_type = match crate::gir::freeze_normalized(typ) {
+        Some(t) => t,
+        None => {
+            let resolved =
+                crate::fusion::lowering::resolve_abstract(typ, env, 0);
+            crate::gir::freeze_normalized(&resolved)?
+        }
+    };
+    match crate::gir::abi_kind(&return_type) {
+        Some(
+            AbiKind::Scalar(_)
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value
+            | AbiKind::String,
+        ) => Some(return_type),
+        Some(AbiKind::Unit | AbiKind::Null) | None => None,
+    }
+}
+
 /// True iff the subtree is a bare binding read (through any number of
 /// grouping parens) — the Node analog of the GIR
 /// `is_identity_passthrough` (`Return(Local(_))`) check.
@@ -760,18 +716,29 @@ fn region_is_identity<R: crate::Rt, E: crate::UserEvent>(
     }
 }
 
-/// Build a [`crate::gir::KernelSig`] straight from a region's typed
-/// input list — no GIR body, no `FusionCtx`. The per-kind routing is
-/// the same single-source-of-truth rule `populate_kernel_inputs`
-/// applies on the GIR path (one slot per input, one
-/// [`crate::gir::TailCallSlot`] per input in source order — the
-/// runtime's `build_arg_layout` reads the slot list for per-position
-/// routing even in non-tail kernels).
-fn sig_from_inputs(
+/// Build a [`crate::gir::KernelSig`] straight from a typed input list
+/// — no GIR body. The single source of truth for per-kind slot routing
+/// (one slot per input, one [`crate::gir::TailCallSlot`] per input in
+/// source order — the runtime's `build_arg_layout` reads the slot list
+/// for per-position routing even in non-tail kernels). Used by every
+/// kernel-build path: `try_fuse` regions, lambda kernels
+/// (`build_lambda_kernel` — formals carry `bind_id: None`, captures
+/// their binding), and body-split sub-regions.
+///
+/// The second return is the flat per-input graphix type list in slot
+/// order — [`crate::gir::KnownFusedFn::arg_types`], the caller-side
+/// type authority for cross-kernel call marshalling.
+pub(crate) fn sig_from_inputs<'k>(
     fn_name: arcstr::ArcStr,
-    inputs: &[FreeVarInput],
+    inputs: impl IntoIterator<
+        Item = (
+            arcstr::ArcStr,
+            &'k crate::fusion::lowering::RegionInputKind,
+            Option<crate::BindId>,
+        ),
+    >,
     return_type: crate::typ::Type,
-) -> crate::gir::KernelSig {
+) -> (crate::gir::KernelSig, Vec<crate::typ::Type>) {
     use crate::fusion::lowering::RegionInputKind;
     use crate::gir::{
         ArrayInput, Input, NullableInput, StringInput, StructInput,
@@ -792,12 +759,12 @@ fn sig_from_inputs(
         return_type,
         has_tail_loop: false,
     };
-    for fv in inputs {
-        let name = fv.name.clone();
-        let bind_id = Some(fv.bind_id);
-        let slot_kind = match &fv.kind {
+    let mut arg_types: Vec<crate::typ::Type> = Vec::new();
+    for (name, kind, bind_id) in inputs {
+        let slot_kind = match kind {
             RegionInputKind::Prim(prim) => {
                 sig.params.push(Input { name: name.clone(), prim: *prim, bind_id });
+                arg_types.push(crate::gir::prim_type(*prim));
                 TailCallSlotKind::Scalar(*prim)
             }
             RegionInputKind::Array(elem) => {
@@ -806,6 +773,7 @@ fn sig_from_inputs(
                     elem: elem.clone(),
                     bind_id,
                 });
+                arg_types.push(crate::gir::array_type(elem.clone()));
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Tuple(t) => {
@@ -820,6 +788,7 @@ fn sig_from_inputs(
                     elems,
                     bind_id,
                 });
+                arg_types.push(t.clone());
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Struct(t) => {
@@ -834,6 +803,7 @@ fn sig_from_inputs(
                     fields,
                     bind_id,
                 });
+                arg_types.push(t.clone());
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Variant(t) => {
@@ -846,6 +816,7 @@ fn sig_from_inputs(
                     cases,
                     bind_id,
                 });
+                arg_types.push(t.clone());
                 TailCallSlotKind::Variant
             }
             RegionInputKind::Nullable(elem) => {
@@ -854,11 +825,13 @@ fn sig_from_inputs(
                     elem: elem.clone(),
                     bind_id,
                 });
+                arg_types.push(crate::gir::nullable_type(elem.clone()));
                 TailCallSlotKind::Nullable
             }
             RegionInputKind::String => {
                 sig.string_params
                     .push(StringInput { name: name.clone(), bind_id });
+                arg_types.push(crate::gir::string_type());
                 TailCallSlotKind::String
             }
             RegionInputKind::Value(t) => {
@@ -867,12 +840,13 @@ fn sig_from_inputs(
                     typ: t.clone(),
                     bind_id,
                 });
+                arg_types.push(t.clone());
                 TailCallSlotKind::Value
             }
         };
         sig.tail_call_slots.push(TailCallSlot { name, kind: slot_kind });
     }
-    sig
+    (sig, arg_types)
 }
 
 /// Find a Node anywhere in the tree whose `spec().id == target`.

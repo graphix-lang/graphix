@@ -415,7 +415,7 @@ impl StructPatternNode {
     /// any other pattern shape. Used by HOF fusion to lower a `|(k, v)|`
     /// callback's arg destructure to per-leaf `TupleGet` bindings —
     /// `node::pattern` is `pub(crate)`, so callers outside the compiler
-    /// (e.g. `MapQ::emit_gir`) reach the leaves through this accessor
+    /// (e.g. `MapQ`'s `emit_clif`) reach the leaves through this accessor
     /// rather than matching the enum.
     pub fn tuple_leaves(&self) -> Option<Vec<(BindId, usize)>> {
         match self {

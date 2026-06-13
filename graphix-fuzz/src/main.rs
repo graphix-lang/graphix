@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
             let code = code.trim();
             match cmd {
                 "run" => {
-                    for mode in [Mode::Interp, Mode::Jit, Mode::DirectJit] {
+                    for mode in [Mode::Interp, Mode::Jit] {
                         let (o, stats) =
                             graphix_fuzz::run_program_with_stats(code, mode, TIMEOUT)
                                 .await;

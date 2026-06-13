@@ -1106,23 +1106,23 @@ pub struct KernelSig {
     /// Function-typed parameters in declaration order. Distinct from
     /// `params` because the interpreter holds them in a separate
     /// fn-args table (the value is a `LambdaDef`, not a primitive).
-    /// `GirOp::DynCall { fn_index }` indexes into this table.
+    /// a DynCall's `fn_index` indexes into this table.
     pub fn_params: Vec<FnParam>,
     /// Array-typed parameters. Sibling to `params`; kept separate so
     /// the scalar pipeline doesn't need to know about array types.
-    /// `GirOp::ArrayLen` / `GirOp::ArrayGet` reference these by name.
+    /// array length/element reads reference these by name.
     pub array_params: Vec<ArrayInput>,
-    /// Tuple-typed parameters. `GirOp::TupleGet` references these by
+    /// Tuple-typed parameters. Tuple element reads reference these by
     /// name + sorted index.
     pub tuple_params: Vec<TupleInput>,
-    /// Struct-typed parameters. `GirOp::StructGet` references these
+    /// Struct-typed parameters. Struct field reads reference these
     /// by name + field-name (resolved to sorted index at lowering).
     pub struct_params: Vec<StructInput>,
-    /// Variant-typed parameters. `GirOp::VariantTagEq` / VariantPayload
+    /// Variant-typed parameters. Variant tag-eq / payload reads
     /// reference these by name; the runtime layout puts the tag string
     /// at slot 0 and payloads at slots 1..N.
     pub variant_params: Vec<VariantInput>,
-    /// `[T, null]` option-shape parameters. `GirOp::IsNull` and Local
+    /// `[T, null]` option-shape parameters. Is-null checks and local
     /// reads against names here yield the slot's `Value` (either
     /// `Value::Null` or `T`'s runtime form). Stored separately from
     /// `variant_params` even though both use `Value` at runtime —

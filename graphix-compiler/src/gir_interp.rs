@@ -3,10 +3,10 @@
 //! Fusion has exactly two evaluators: the node-walk (`Box<dyn Update>`
 //! graph, the canonical model) and the cranelift JIT. The GIR
 //! interpreter that used to live here is gone — it was a redundant
-//! third evaluator (a centralized jump-table over [`GirOp`] that was
+//! third evaluator (a centralized jump-table over the GIR ops that was
 //! slower than the node-walk's distributed vtable dispatch and forced
 //! every semantics fix to be done three times). Fusion now builds a
-//! [`GirKernel`], JIT-compiles it, and:
+//! [`KernelSig`], JIT-compiles it, and:
 //!
 //! - JIT success → splice the native kernel + delete the original
 //!   nodes. [`GirNode`] is the [`Apply<R, E>`] wrapper that drives the
@@ -22,7 +22,7 @@
 //! needs, and nothing of the deleted interpreter.
 
 use crate::{
-    gir::GirKernel,
+    gir::KernelSig,
     Apply, Event, ExecCtx, Node, Rt, UserEvent,
 };
 use netidx::subscriber::Value;
@@ -444,7 +444,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
 
 // ─── DynCall dispatch for JIT'd kernels ──────────────────────────
 //
-// When a JIT'd kernel calls a HOF (GirOp::DynCall), the emitted code
+// When a JIT'd kernel calls a HOF (a DynCall site), the emitted code
 // invokes `graphix_dyncall` which indirects through the thread-local
 // `DYN_DISPATCH_HANDLE` to a monomorphized `dispatch_typed::<R, E>`.
 // `GirNode::update` populates the handle before calling the wrapper,
@@ -577,7 +577,7 @@ fn dyncall_scalar_return_bits(v: &Value) -> u64 {
     crate::gir_jit::pack_value_to_u64(v, prim)
 }
 
-/// Wraps a [`GirKernel`] as an [`Apply<R, E>`] so the runtime can call
+/// Wraps a [`KernelSig`] as an [`Apply<R, E>`] so the runtime can call
 /// into the interpreter through the same dispatch path it uses for
 /// every other function. On each `update` cycle we drive the input
 /// nodes, cache their values, and (once every input slot is populated)
@@ -592,7 +592,7 @@ pub struct GirNode<R: Rt, E: UserEvent> {
     /// The IR. `Arc` so structurally-identical kernels can share
     /// state (and, in M4e, share the JIT-compiled function pointer
     /// via an IR-hash cache).
-    kernel: Arc<GirKernel>,
+    kernel: Arc<KernelSig>,
     /// Per-cycle input cache, parallel to the `from` slice the runtime
     /// passes into `update`. `None` means "haven't seen a value yet";
     /// the kernel runs once every slot is `Some`.
@@ -635,7 +635,7 @@ enum ArgKind {
 /// this kernel — scalar params + all composite params + HOF-arg fn
 /// params (Binding-source fn params resolve through ctx.cached and
 /// don't count). Equals `arg_layout.len()`.
-pub fn total_kernel_arity(kernel: &GirKernel) -> usize {
+pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
     use crate::gir::FnSource;
     let param_source_count = kernel
         .fn_params
@@ -645,7 +645,7 @@ pub fn total_kernel_arity(kernel: &GirKernel) -> usize {
     kernel.tail_call_slots.len() + param_source_count
 }
 
-fn build_arg_layout(kernel: &GirKernel) -> Vec<ArgKind> {
+fn build_arg_layout(kernel: &KernelSig) -> Vec<ArgKind> {
     use crate::gir::{FnSource, TailCallSlotKind};
     // `tail_call_slots` is populated for every kernel and lists
     // params in source-declared order. Each slot carries a name
@@ -755,7 +755,7 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
     /// The compiled kernel IR this node executes. Used by graph
     /// introspection (`crate::node_shape`) to assert on what a region
     /// actually fused into.
-    pub fn kernel(&self) -> &Arc<GirKernel> {
+    pub fn kernel(&self) -> &Arc<KernelSig> {
         &self.kernel
     }
 
@@ -789,7 +789,7 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
     /// inner Applies that DynCall dispatches into).
     pub fn new(
         ctx: &mut crate::ExecCtx<R, E>,
-        kernel: Arc<GirKernel>,
+        kernel: Arc<KernelSig>,
         n_args: usize,
         wrapped: Arc<crate::gir_jit::WrappedKernel>,
         scope: crate::Scope,
@@ -1124,7 +1124,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         }
         //
         // Slot order is the canonical kind-grouped ABI layout
-        // (`GirKernel::abi_params`): scalar params first, then
+        // (`KernelSig::abi_params`): scalar params first, then
         // array/tuple/struct pointers, then variant/nullable
         // (disc, payload) pairs — exactly what the JIT wrapper
         // unpacks.
@@ -1271,7 +1271,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
             }
             // Unit-returning kernel: the JIT writes 0 into
             // *out; nothing to decode. The caller discards via
-            // `GirStmt::Discard` so the value is never inspected —
+            // a discarded statement so the value is never inspected —
             // a Bool placeholder is type-correct and cheap.
             Some(AbiKind::Unit) => Value::Bool(false),
             // String-returning kernel: `out[0]` is the ArcStr's

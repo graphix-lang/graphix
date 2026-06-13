@@ -535,7 +535,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// Typed view for analysis-layer code (notably fusion). Default
     /// returns `BuiltIn` — opaque, fusion treats this call as a
     /// runtime `DynCall`. `GXLambda` overrides to `Lambda(self)`,
-    /// fusible builtins override to `FusedBuiltin(self)`,
     /// `BuiltInLambda` delegates to `self.apply.view()`.
     ///
     /// The `BuiltIn` default works on `&dyn Apply` (no `Self: Sized`
@@ -600,7 +599,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// `MapQ` keeps `update()` as it was (per-array-element fresh
     /// `Apply` Nodes — preserving per-slot state for async
     /// callbacks); the pre-materialized Apply is consulted only by
-    /// `emit_gir`, and only when the callback is fully sync.
+    /// `emit_clif`, and only when the callback is fully sync.
     fn static_resolve_fn_args(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -677,20 +676,15 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 ///
 /// Variants:
 /// - [`Lambda`](ApplyView::Lambda) — a graphix-language lambda with
-///   a walkable [`Node`] body. Fusion's walker descends into the
-///   body via [`crate::node::lambda::GXLambda::body`].
-/// - [`FusedBuiltin`](ApplyView::FusedBuiltin) — a builtin that
-///   knows how to lower itself to GIR via the [`GirEmitter`] trait.
-///   The package owning the builtin implements both `Apply` and
-///   `GirEmitter` on the same type and overrides `view()` to return
-///   this variant.
+///   a walkable [`Node`] body. Fusion descends into the body via
+///   [`crate::node::lambda::GXLambda::body`].
 /// - [`BuiltIn`](ApplyView::BuiltIn) — opaque builtin. Fusion emits
-///   a runtime `DynCall`; no introspection beyond the trait
+///   a runtime `DynCall` (or the builtin participates directly via
+///   [`Apply::emit_clif`]); no introspection beyond the trait
 ///   methods. The default `view()` returns this — every Apply impl
 ///   inherits opaque-builtin semantics unless it overrides.
 pub enum ApplyView<'a, R: Rt, E: UserEvent> {
     Lambda(&'a crate::node::lambda::GXLambda<R, E>),
-    FusedBuiltin(&'a dyn GirEmitter<R, E>),
     BuiltIn,
 }
 
@@ -699,28 +693,7 @@ pub enum ApplyView<'a, R: Rt, E: UserEvent> {
 /// of a [`Lambda`](ApplyViewMut::Lambda)).
 pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
     Lambda(&'a mut crate::node::lambda::GXLambda<R, E>),
-    FusedBuiltin(&'a mut dyn GirEmitter<R, E>),
     BuiltIn,
-}
-
-/// Opt-in fusion trait. An Apply implementor that knows how to lower
-/// itself to GIR implements this trait and returns
-/// [`ApplyView::FusedBuiltin(self)`](ApplyView::FusedBuiltin) from
-/// `Apply::view()`.
-///
-/// `emit_gir` returns `None` if the call-site shape doesn't match
-/// what the emitter expects (e.g. a HOF callback isn't an inline
-/// lambda) — fusion falls back to `DynCall` in that case, never an
-/// error.
-pub trait GirEmitter<R: Rt, E: UserEvent>: Send + Sync {
-    fn emit_gir(
-        &self,
-        callsite: &crate::node::callsite::CallSite<R, E>,
-        args: &[(Option<ArcStr>, &Node<R, E>)],
-        arg_refs: &[Node<R, E>],
-        ctx: &mut crate::fusion::lowering::FusionCtx,
-        ec: &mut ExecCtx<R, E>,
-    ) -> Option<crate::gir::GirExpr>;
 }
 
 /// One entry in the `fn_args` slice passed to
@@ -889,7 +862,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     ///
     /// `self.spec().id == target` is **not** checked here — that's
     /// the caller's responsibility (handled at the top of
-    /// `fusion::builder::splice_into`). This method only descends
+    /// `fusion::splice_into`). This method only descends
     /// into children.
     fn splice_child(
         &mut self,
@@ -1411,7 +1384,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     ///
     /// The info captures everything fusion needs to lower an
     /// `Apply` site whose `function` resolves to this binding into
-    /// a `GirOp::DynCall` against a
+    /// a DynCall against a
     /// [`crate::gir::FnSource::Builtin`] slot: the canonical
     /// builtin `name` (matches `ctx.builtins`), the source-level
     /// `argspec` (with default expressions for labeled args), and
@@ -1438,21 +1411,18 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// JIT operations are compile-time only (rare, never on hot
     /// paths), so the lock cost is negligible.
     ///
-    /// Kernels with `GirOp::Call` compile into this module via
-    /// [`crate::gir_jit::compile_kernel_with_callees`]; kernels
-    /// without any calls use the single-kernel path
-    /// [`crate::gir_jit::compile_kernel_with_wrapper`] which creates
-    /// its own private `JitCtx` per call (no interaction with this
-    /// field). The async-JIT worker thread (`JIT_WORKER`) likewise
-    /// uses the single-kernel path and doesn't touch this field.
+    /// Every kernel compiles into this module via
+    /// [`crate::gir_jit::compile_kernel_with_callees_direct`] —
+    /// parent + callees declared and defined together so cross-kernel
+    /// calls dispatch as direct CLIF calls.
     pub jit: parking_lot::Mutex<gir_jit::Jit>,
     /// On-demand monomorphized lambda-kernel cache, keyed by
-    /// `(LambdaId, Arc<FnType>)`. Populated by fusion's emit_node
-    /// when it encounters an `ApplyView::Lambda` call site: build the
-    /// kernel once, reuse it for every subsequent call to the same
-    /// (lambda definition, monomorphization). Cross-kernel
-    /// `GirOp::Call` sites resolve against this map at splice time
-    /// (interp) and JIT-compile time (Phase D).
+    /// `(LambdaId, Arc<FnType>)`. Populated by `build_lambda_kernel`
+    /// (callee discovery, per-slot HOF fusion): build the signature
+    /// once, reuse it for every subsequent call to the same (lambda
+    /// definition, monomorphization). The cached `Arc<KernelSig>` IS
+    /// the compiled-callable handle — the JIT's `by_kernel` cache
+    /// keys on its pointer identity.
     pub fusion_kernels:
         parking_lot::Mutex<std::collections::BTreeMap<
             (LambdaId, std::sync::Arc<typ::FnType>),
@@ -1475,13 +1445,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// runs from a builtin's `static_resolve_fn_args` hook that doesn't
     /// receive the compile flags. Defaults `true`.
     pub jit_enabled: bool,
-    /// Whether the current compile runs the distributed direct-node
-    /// path. ALWAYS true since the F2 flip (2026-06-13,
-    /// `design/distributed_jit.md`) — direct Node emission is the
-    /// only fusion path; the classic GIR reader branches it gates are
-    /// dead and go away with the F3 mass delete (along with this
-    /// field).
-    pub direct_node_jit: bool,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub fusion_stats: FusionStats,
@@ -1536,7 +1499,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 nohash::IntSet::default(),
             )),
             jit_enabled: true,
-            direct_node_jit: true,
             fusion_stats: FusionStats::default(),
             fuse_top_id: None,
         })
