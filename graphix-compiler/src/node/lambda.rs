@@ -602,11 +602,6 @@ impl Lambda {
             intrinsic_effect: Mutex::new(EffectKind::Sync),
         });
         ctx.lambda_defs.insert(id, def.clone());
-        // (Previously: published the lambda's FnType under
-        // `ctx.fn_types[spec.id]` for the fusion pass. After Phase 5,
-        // the fusion pass reads this off the source `Expr.typ` cell
-        // — set by trait-default propagation in `Update::typecheck`
-        // — instead. No sidecar insertion needed.)
         Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
     }
 }
@@ -683,7 +678,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         let def = self
             .def
             .downcast_ref::<LambdaDef<R, E>>()

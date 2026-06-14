@@ -123,7 +123,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         }
     }
 
-    fn typecheck0_inner(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 

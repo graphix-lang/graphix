@@ -499,7 +499,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))

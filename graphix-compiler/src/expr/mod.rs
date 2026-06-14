@@ -24,7 +24,7 @@ use std::{
     path::PathBuf,
     result,
     str::FromStr,
-    sync::{LazyLock, OnceLock},
+    sync::LazyLock,
 };
 use triomphe::Arc;
 
@@ -294,7 +294,6 @@ impl ExprKind {
             ori: get_origin(),
             pos,
             kind: self,
-            typ: Arc::new(OnceLock::new()),
         }
     }
 
@@ -305,7 +304,6 @@ impl ExprKind {
             ori: get_origin(),
             pos: Default::default(),
             kind: self,
-            typ: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -433,19 +431,6 @@ pub struct Expr {
     pub ori: Arc<Origin>,
     pub pos: SourcePosition,
     pub kind: ExprKind,
-    /// Resolved type filled in by the type checker. Shared via Arc
-    /// so cloned Exprs see the same cell — typecheck may set it
-    /// through one clone and other clones must see the result. The
-    /// cell is `OnceLock` to enforce write-once semantics: the
-    /// type's *structure* is established once during typecheck;
-    /// later TVar refinement (deferred checks etc.) flows through
-    /// the inner `Arc<RwLock>` of TVars, not through reassigning
-    /// this field.
-    ///
-    /// Synthesized Exprs (e.g. fusion's tail tuple in module-kernel
-    /// build) start empty and stay that way — consumers must handle
-    /// `None` gracefully.
-    pub typ: Arc<OnceLock<Type>>,
 }
 
 impl fmt::Debug for Expr {
@@ -551,7 +536,6 @@ impl Expr {
             ori: get_origin(),
             pos,
             kind,
-            typ: Arc::new(OnceLock::new()),
         }
     }
 

@@ -6,7 +6,7 @@
 //! analysis those emitters consume.
 
 use crate::{
-    expr::{Expr, ExprKind, ModPath},
+    expr::{ExprKind, ModPath},
     fusion, gir,
     node::callsite::CallSite,
     typ::Type,
@@ -112,8 +112,8 @@ pub struct BuiltinCallDiscovery {
 /// Descent is [`crate::fusion::for_each_node`] — the canonical
 /// full-coverage walker, so lambda bodies are NOT descended (they
 /// are separate kernels with their own discovery pass). Each site
-/// reads the CallSite's resolved FnType (post-typecheck
-/// instantiation), never the source expression's typed-AST cell.
+/// reads the CallSite's resolved FnType and its compiled arg/return
+/// sub-nodes' types (post-typecheck), never the AST.
 ///
 /// Sites whose argument shape can't be lowered (unsupported arg
 /// type, async builtin, mismatched arity, …) are simply omitted —
@@ -133,11 +133,14 @@ pub fn walk_node_for_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
 }
 
 /// Register one CallSite as a builtin DynCall site, if it qualifies.
-/// Reads the resolved FnType from the CallSite (`callsite.ftype()
-/// .map(|ft| ft.resolve_tvars())`) — the post-typecheck
-/// instantiation — never the function expression's typed-AST cell
-/// (which for generic builtins like `str::parse` with a polymorphic
-/// `'b: Cast` return still holds the unresolved FnType).
+/// The FnType shape comes from the CallSite (`callsite.ftype()
+/// .map(|ft| ft.resolve_tvars())`); each concrete arg/return type
+/// comes from the compiled sub-nodes (`cs.arg_positional` /
+/// `cs.arg_named` / `cs.typ()`) — the node-resident types the
+/// typechecker resolved. Neither reads the AST: the function
+/// expression's FnType is unresolved for generic builtins (e.g.
+/// `str::parse` with a polymorphic `'b: Cast` return), and an arg
+/// node's `typ()` is its concrete instantiated type.
 fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -152,7 +155,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         ExprKind::Apply(a) => a,
         _ => return,
     };
-    // Same call-flow as the Expr-based path: the function must be a
+    // Only direct builtin calls qualify: the function must be a
     // direct binding Ref.
     let path = match &a.function.kind {
         ExprKind::Ref { name } => name,
@@ -174,10 +177,8 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(EffectKind::Sync) => {}
         _ => return,
     }
-    // **The payoff**: use the CallSite's resolved FnType (TVars
-    // unified at typecheck time to the call-site's concrete arg
-    // types), rather than reading the function expression's
-    // typed-AST cell.
+    // Use the CallSite's resolved FnType (TVars unified at typecheck
+    // time to the call-site's concrete arg types) for the call shape.
     //
     // After typecheck has run for this CallSite, `cs.ftype()` is
     // `Some(ft)` carrying the lambda's signature with the call-site's
@@ -187,8 +188,8 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     //
     // `cs.ftype()` may be `None` if typecheck hasn't run yet, or
     // didn't reach this site (e.g. a compile error elsewhere). Fall
-    // back to the binding's own FnType in that case — same shape
-    // the Expr-based path uses, just as the last-resort fallback.
+    // back to the binding's own (generic) FnType in that case as a
+    // last resort — it usually won't freeze, so the site stays unfused.
     let fn_type: std::sync::Arc<crate::typ::FnType> = match cs.ftype() {
         Some(ft) => std::sync::Arc::new(ft.resolve_tvars()),
         None => {
@@ -196,41 +197,36 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             std::sync::Arc::new(inner.clone())
         }
     };
-    // From here on the layout-derivation is identical to the
-    // Expr-based path. Re-using the same arg classification +
-    // GirType derivation keeps semantics consistent across the two
-    // walkers during the transition.
     let apply_id = apply_expr.id;
-    let mut call_positional: Vec<(usize, &Expr)> = Vec::new();
-    let mut call_labeled: ahash::AHashMap<&str, (usize, &Expr)> =
-        ahash::AHashMap::default();
-    for (call_idx, (label, e)) in a.args.iter().enumerate() {
+    let mut call_positional: Vec<usize> = Vec::new();
+    let mut call_labeled: ahash::AHashMap<&str, usize> = ahash::AHashMap::default();
+    for (call_idx, (label, _)) in a.args.iter().enumerate() {
         match label {
             Some(name) => {
-                call_labeled.insert(name.as_str(), (call_idx, e));
+                call_labeled.insert(name.as_str(), call_idx);
             }
-            None => call_positional.push((call_idx, e)),
+            None => call_positional.push(call_idx),
         }
     }
     let mut layout: Vec<crate::gir::BuiltinSlot> = Vec::new();
     let mut arg_types: Vec<Type> = Vec::new();
     let mut marshal_arg_indices: Vec<usize> = Vec::new();
-    let mut pos_iter = call_positional.iter();
+    let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
         use crate::typ::FnArgKind;
         match &fa.kind {
             FnArgKind::Positional { .. } => {
-                let (call_idx, arg_expr) = match pos_iter.next() {
+                let (pos_idx, call_idx) = match pos_iter.next() {
                     Some(p) => p,
                     None => return,
                 };
-                // resolve_tvars on the FnType has already deref'd
-                // every TVar, so `fa.typ` is the concrete arg
-                // type. Prefer the call-site Expr's typ cell if
-                // present (cheaper than re-dereffing) — both
-                // should agree post-resolve_tvars.
-                let arg_typ =
-                    arg_expr.typ.get().cloned().unwrap_or_else(|| fa.typ.clone());
+                // Concrete arg type from the compiled arg node — the
+                // node-resident value the typechecker resolved. Fall
+                // back to the formal type only if the node is absent.
+                let arg_typ = cs
+                    .arg_positional(pos_idx)
+                    .map(|n| n.typ().clone())
+                    .unwrap_or_else(|| fa.typ.clone());
                 let kt = match gir::freeze_concrete(&arg_typ) {
                     Some(t) => t,
                     None => return,
@@ -241,9 +237,11 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 marshal_arg_indices.push(*call_idx);
             }
             FnArgKind::Labeled { name, has_default } => {
-                if let Some((call_idx, arg_expr)) = call_labeled.remove(name.as_str()) {
-                    let arg_typ =
-                        arg_expr.typ.get().cloned().unwrap_or_else(|| fa.typ.clone());
+                if let Some(call_idx) = call_labeled.remove(name.as_str()) {
+                    let arg_typ = cs
+                        .arg_named(name)
+                        .map(|n| n.typ().clone())
+                        .unwrap_or_else(|| fa.typ.clone());
                     let kt = match gir::freeze_concrete(&arg_typ) {
                         Some(t) => t,
                         None => return,
@@ -283,10 +281,10 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         let from_call_idx = arg_types.len();
         let count = remaining.len();
         layout.push(crate::gir::BuiltinSlot::Variadic { from_call_idx, count });
-        for (call_idx, arg_expr) in remaining {
-            let arg_typ = arg_expr.typ.get().cloned().or_else(|| {
-                fn_type.vargs.as_ref().and_then(|t| t.with_deref(|t| t.cloned()))
-            });
+        for (pos_idx, call_idx) in remaining {
+            let arg_typ = cs.arg_positional(pos_idx).map(|n| n.typ().clone()).or_else(
+                || fn_type.vargs.as_ref().and_then(|t| t.with_deref(|t| t.cloned())),
+            );
             let arg_typ = match arg_typ {
                 Some(t) => t,
                 None => return,
@@ -302,10 +300,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     if !call_labeled.is_empty() {
         return;
     }
-    // Return type — resolved on the call-site FnType already, so
-    // we can use it directly. The Apply Expr's typ cell would
-    // agree if populated.
-    let ret_typ = apply_expr.typ.get().cloned().unwrap_or_else(|| fn_type.rtype.clone());
+    // Return type — the CallSite's own resolved output type (the
+    // node-resident value the typechecker propagated for this Apply).
+    let ret_typ = cs.typ().clone();
     let return_type = match gir::freeze_concrete(&ret_typ) {
         Some(t) => t,
         None => return,

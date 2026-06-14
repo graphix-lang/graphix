@@ -917,9 +917,8 @@ pub enum FnSource {
     /// the `LambdaDef`-rebind check entirely.
     ///
     /// `typ` is the resolved FnType at the call site (read by
-    /// fusion off `a.function.typ.get()` — the typed-AST cell on
-    /// the function expression of the Apply), needed by builtin
-    /// init fns.
+    /// fusion off the CallSite's resolved `ftype()`), needed by
+    /// builtin init fns.
     ///
     /// `layout` describes the callee's full formal-arg list (one
     /// entry per `typ.args` slot, in declaration order — same order

@@ -163,7 +163,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         }
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source.node, self.source.node.typecheck0(ctx))?;
         wrap!(self.i.node, self.i.node.typecheck0(ctx))?;
         let int = Type::Primitive(Typ::integer());
@@ -302,7 +302,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source.node, self.source.node.typecheck0(ctx))?;
         let it = Type::Primitive(Typ::integer());
         let bytes_typ = Type::Primitive(Typ::Bytes.into());
@@ -464,7 +464,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in &mut self.n {
             wrap!(n.node, n.node.typecheck0(ctx))?
         }

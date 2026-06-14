@@ -257,7 +257,6 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 ori,
                 pos: self.pos,
                 kind,
-                typ: Arc::new(std::sync::OnceLock::new()),
             }
         }
     }
@@ -476,7 +475,6 @@ async fn resolve(
             ori: parent,
             pos,
             kind,
-            typ: Arc::new(std::sync::OnceLock::new()),
         });
     }
     let mut msg = format_compact!("module {name} could not be found");
@@ -566,7 +564,6 @@ impl Expr {
                     ori: self.ori.clone(),
                     pos: self.pos,
                     kind: $kind,
-                    typ: self.typ.clone(),
                 })
             };
         }

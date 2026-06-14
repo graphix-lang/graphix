@@ -178,7 +178,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// The resolved function type at this call site. Populated by
-    /// `typecheck0_inner` during the typechecker's call-site unification
+    /// `typecheck0` during the typechecker's call-site unification
     /// pass — after typecheck, every reachable CallSite has this set
     /// to the lambda's FnType with the call-site's TVars unified in.
     ///
@@ -661,7 +661,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         &self.spec
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
@@ -672,14 +672,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let ftype = ftype.reset_tvars();
                 ftype.alias_tvars(&mut LPooled::take());
                 self.ftype = Some(ftype.clone());
-                // (Previously: published this Apply's call-site
-                // FnType under `ctx.fn_types[self.spec.id]`. After
-                // Phase 5, the fusion pass reads it off the
-                // function expression's `typ` cell — set by
-                // trait-default Update propagation — instead. The
-                // Apply's typecheck propagation handles populating
-                // the function expr's cell as part of recursing
-                // into children.)
                 let ftype = self.ftype.as_ref().unwrap();
                 if ftype.args.len() < self.args.len() && ftype.vargs.is_none() {
                     bail!(
@@ -855,34 +847,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         // Labeled-default type check — now sound: in this second pass the
         // closure is complete, so `len() == 1` truly means "exactly one
-        // possible callee."
-        let single: LPooled<Vec<LambdaId>> =
-            ftype.lambda_ids.ids().iter().copied().collect();
-        if single.len() == 1 {
-            let id = single[0];
-            if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
-                if let Some(ldef) = val.downcast_ref::<LambdaDef<R, E>>() {
-                    for farg in ftype.args.iter() {
-                        let name = match &farg.kind {
-                            FnArgKind::Labeled { name, has_default: true } => name,
-                            _ => continue,
-                        };
-                        match self.args.get(&ArgKey::Named(name.clone())) {
-                            Some(a) if a.is_default => (),
-                            _ => continue,
-                        };
-                        let def_typ = ldef.argspec.iter().find_map(|src| {
-                            let n = src.pattern.single_bind()?;
-                            if n.as_str() != name.as_str() {
-                                return None;
-                            }
-                            let d = src.labeled.as_ref()?.as_ref()?;
-                            d.typ.get().cloned()
-                        });
-                        if let Some(dt) = def_typ {
-                            wrap!(self.fnode, farg.typ.check_contains(&ctx.env, &dt))?;
-                        }
-                    }
+        // possible callee." The default's type comes straight off the
+        // default node this call site compiled (`a.node`), which is the
+        // same value typecheck0 resolved — no AST cell, and correct
+        // per-call-site (the default Expr is shared across sites, but its
+        // compiled node is not).
+        if ftype.lambda_ids.ids().len() == 1 {
+            for farg in ftype.args.iter() {
+                let name = match &farg.kind {
+                    FnArgKind::Labeled { name, has_default: true } => name,
+                    _ => continue,
+                };
+                let def_typ = match self.args.get(&ArgKey::Named(name.clone())) {
+                    Some(a) if a.is_default => a.node.as_ref().map(|n| n.typ().clone()),
+                    _ => continue,
+                };
+                if let Some(dt) = def_typ {
+                    wrap!(self.fnode, farg.typ.check_contains(&ctx.env, &dt))?;
                 }
             }
         }

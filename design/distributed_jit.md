@@ -825,11 +825,19 @@ flip).
   at F (Eric, 2026-06-10): `Update::splice_child` + `fusion::splice_into`
   (the parent-swap protocol never searches by ExprId; the impure-HOF
   split splice is re-expressed as `template.jit()` in Stage D), and the
-  `Expr.typ` typed-AST OnceCell — its only post-F reader is the lambda
-  default-arg type check (callsite.rs), re-homed onto `LambdaDef.argspec`;
-  with the cell gone, `Update::typecheck`/`typecheck_inner` collapse into
-  one method (the wrapper existed only to propagate into the cell — a
-  fossil of the pre-node-walk JIT-an-Expr era). `clone_rebind` STAYS:
+  `Expr.typ` typed-AST OnceCell (DONE 2026-06-14) — it had TWO post-F
+  readers, not one: fusion's builtin-call discovery (lowering.rs, the
+  LOAD-BEARING one — concrete arg/return types for generic builtins like
+  `str::parse`, which the function expr's unresolved FnType can't give;
+  dropping it silently lost fusion, `FUSION_INVOCATIONS=0`) and the lambda
+  default-arg type check (callsite.rs). Both re-homed onto the compiled
+  sub-nodes' own `typ()`: fusion reads `cs.arg_positional`/`cs.arg_named`/
+  `cs.typ()`, the default check reads `a.node.typ()` (this call site's own
+  compiled default node — strictly more correct than the shared write-once
+  cell, which a second call site of the same default could win). With the
+  cell gone, `Update::typecheck0`/`typecheck0_inner` collapsed into one
+  no-default `typecheck0` (the wrapper existed only to propagate into the
+  cell — a fossil of the pre-node-walk JIT-an-Expr era). `clone_rebind` STAYS:
   it's the runtime per-slot impure-HOF instantiation (fresh BindIds per
   slot's async residue, shared kernel Arcs), not fusion plumbing — the
   distributed design leans on it harder (template.jit() once, then

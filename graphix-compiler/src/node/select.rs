@@ -200,7 +200,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         self.arg.node.typecheck0(ctx)?;
         let mut rtype = Type::Primitive(BitFlags::empty());
         let mut mtype = Type::Primitive(BitFlags::empty());

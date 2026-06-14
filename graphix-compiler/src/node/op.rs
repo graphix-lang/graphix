@@ -90,7 +90,7 @@ macro_rules! compare_op {
                 self.rhs.node.sleep(ctx)
             }
 
-            fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
                 wrap!(
@@ -226,7 +226,7 @@ macro_rules! bool_op {
                 self.rhs.sleep(ctx)
             }
 
-            fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
                 let bt = Type::Primitive(Typ::Bool.into());
@@ -331,7 +331,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         let bt = Type::Primitive(Typ::Bool.into());
         wrap!(self.n, bt.check_contains(&ctx.env, self.n.typ()))?;
@@ -556,7 +556,7 @@ macro_rules! arith_op {
                 self.rhs.sleep(ctx);
             }
 
-            fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
                 let lhs = self.lhs.node.typ();

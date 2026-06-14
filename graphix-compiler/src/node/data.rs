@@ -81,7 +81,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n.node, n.node.typecheck0(ctx))?
         }
@@ -254,7 +254,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter().for_each(|r| r.n.node.refs(refs))
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let fields = match &self.spec.kind {
             ExprKind::StructWith(StructWithExpr { source: _, replace }) => {
@@ -417,7 +417,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         &self.spec
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("struct", ctx, self.source.typ(),
             Some(Type::Struct(flds)) => {
@@ -530,7 +530,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n.node, n.node.typecheck0(ctx))?
         }
@@ -648,7 +648,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n.node, n.node.typecheck0(ctx))?
         }
@@ -761,7 +761,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.source.sleep(ctx);
     }
 
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("tuple", ctx, self.source.typ(),
             Some(Type::Tuple(flds)) => Ok(flds[self.field].clone()),

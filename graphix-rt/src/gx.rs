@@ -85,7 +85,6 @@ fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
         ori,
         pos: Default::default(),
         kind: ExprKind::Do { exprs },
-        typ: Arc::new(std::sync::OnceLock::new()),
     }
 }
 

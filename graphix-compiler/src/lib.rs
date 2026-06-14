@@ -817,30 +817,19 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// delete the node and it's children from the specified context
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
 
-    /// type check the node and it's children. The default impl runs
-    /// the node-specific `typecheck0_inner` and, on success, propagates
-    /// the resolved `typ()` into the source `Expr`'s `typ` cell — so
-    /// after a successful typecheck pass every Expr in the program
-    /// reports its resolved Type via `Expr::typ.get()`. Don't override
-    /// unless you're sure you want to skip propagation (which is
-    /// almost certainly wrong — fusion and other AST consumers depend
-    /// on this).
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.typecheck0_inner(ctx)?;
-        let _ = self.spec().typ.set(self.typ().clone());
-        Ok(())
-    }
-
-    /// node-specific typecheck logic — see [`Self::typecheck0`].
-    fn typecheck0_inner(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
+    /// First typecheck pass: structural type checking. Each node checks
+    /// itself and recurses into its children (`wrap!(child,
+    /// child.typecheck0(ctx))?`), running over the whole tree before
+    /// `typecheck1`.
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
 
     /// Second typecheck pass, run over the whole tree AFTER `typecheck0`
     /// completes. By now every `FnType::lambda_ids` closure is final, so
     /// a `CallSite` can read it to decide static dispatch and drive the
     /// resolved-type-dependent finalization that used to be the deferred
     /// check. NO default impl: every `Update` node must recurse into its
-    /// children's `typecheck1` (mirroring `typecheck0_inner`'s child
-    /// walk), so a new node type is a compile error until it participates.
+    /// children's `typecheck1` (mirroring `typecheck0`'s child walk), so
+    /// a new node type is a compile error until it participates.
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
 
     /// return the node type
