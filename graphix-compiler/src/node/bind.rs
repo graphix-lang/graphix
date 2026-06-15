@@ -286,18 +286,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         Ok(None)
     }
 
-    fn splice_child(
-        &mut self,
-        target: ExprId,
-        replacement: crate::Node<R, E>,
-    ) -> std::result::Result<crate::Node<R, E>, crate::Node<R, E>> {
-        if self.node.spec().id == target {
-            Ok(std::mem::replace(&mut self.node, replacement))
-        } else {
-            self.node.splice_child(target, replacement)
-        }
-    }
-
     fn clone_rebind(
         &self,
         ctx: &mut ExecCtx<R, E>,

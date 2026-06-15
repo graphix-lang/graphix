@@ -852,40 +852,46 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                             {
                                 let fc = graphix_compiler::fusion::lowering::fuse_callsite(cs, ctx);
                                 if let Some(fc) = &fc {
-                                    if fc.is_split() {
+                                    // Whole body fused to one kernel: replace
+                                    // the body with that FusedKernel.
+                                    let element_ref = genn::reference(
+                                        ctx,
+                                        element_id,
+                                        self.etyp.clone(),
+                                        self.top_id,
+                                    );
+                                    if let Ok(fk) = fc.build_slot(
+                                        ctx,
+                                        vec![element_ref],
+                                        self.scope.clone(),
+                                        self.top_id,
+                                    ) {
                                         if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
                                             cs.resolved_apply_mut()
                                         {
-                                            let _ = fc.splice_into_body(
-                                                ctx,
-                                                g.body_mut(),
-                                                self.scope.clone(),
-                                                self.top_id,
-                                            );
+                                            let mut old = std::mem::replace(g.body_mut(), fk);
+                                            old.delete(ctx);
                                         }
-                                    } else {
-                                        let element_ref = genn::reference(
+                                    }
+                                } else if ctx.jit_enabled {
+                                    // Impure callback (async ops in the body):
+                                    // no whole-body kernel. Fuse the body's
+                                    // maximal sync sub-regions IN PLACE via the
+                                    // canonical walk — the async residue stays
+                                    // node-walked, and each per-slot clone_rebind
+                                    // shares the fused kernels' Arcs. Gated on
+                                    // jit_enabled (parity with the old
+                                    // build_body_split path; try_fuse doesn't
+                                    // self-gate, so JitDisabled would otherwise
+                                    // fuse). Formerly build_body_split +
+                                    // splice_into_body.
+                                    if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
+                                        cs.resolved_apply_mut()
+                                    {
+                                        let _ = graphix_compiler::fusion::jit_node(
+                                            g.body_mut(),
                                             ctx,
-                                            element_id,
-                                            self.etyp.clone(),
-                                            self.top_id,
                                         );
-                                        if let Ok(fk) = fc.build_slot(
-                                            ctx,
-                                            vec![element_ref],
-                                            self.scope.clone(),
-                                            self.top_id,
-                                        ) {
-                                            if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
-                                                cs.resolved_apply_mut()
-                                            {
-                                                let mut old = std::mem::replace(
-                                                    g.body_mut(),
-                                                    fk,
-                                                );
-                                                old.delete(ctx);
-                                            }
-                                        }
                                     }
                                 }
                             }

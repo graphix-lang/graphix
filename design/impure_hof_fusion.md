@@ -4,14 +4,22 @@
 
 ## ★ SUPERSEDING DESIGN (Jun 2026): clone the fused template per slot
 
-The splice machinery below (`FusedCallback`/`SplitKernel`/`build_body_split`/
-`splice_into_body`/`slot_spliced`/force-bind/deferred-splice) **shipped and
-works** (green, two regression fixtures), but it's MapQ-special and leaks
-split-awareness into the runtime. We're replacing it with a uniform,
-general mechanism the user and I aligned on: **fuse the `analysis_pred`
-once via the ordinary `fuse()` path, then `clone_rebind` that fused
-template per array slot.** This makes "fuse a partly-async callback" just
-"fuse a node tree, then clone it" — no MapQ-special types.
+**LANDED 2026-06-15 — this superseding design is now the ONLY mechanism;
+the splice machinery below is DELETED.** Gone: `FusedCallback.split` /
+`SplitKernel` / `build_body_split` / `splice_into_body`, plus the ExprId
+searcher they rode — `Update::splice_child` / `fusion::splice_into` /
+`fusion::find_node_by_id`. The impure-HOF split now runs the ordinary
+`fusion::jit_node` on `MapQ`'s cloned `analysis_pred` template body IN
+PLACE (gated on `ctx.jit_enabled`), then `clone_rebind`s the fused template
+per slot — "fuse a partly-async callback" became just "fuse the node tree,
+then clone it", no MapQ-special split types and no by-ExprId splice. The
+text below describes the deleted machinery and is kept for archaeology. See
+CLAUDE.md (Major recent changes) and `design/distributed_jit.md` (F stage).
+
+The original superseding note: the splice machinery below was MapQ-special
+and leaked split-awareness into the runtime; the replacement is **fuse the
+`analysis_pred` once via the ordinary fusion path, then `clone_rebind` that
+fused template per array slot.**
 
 ### Core insight
 

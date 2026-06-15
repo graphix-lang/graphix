@@ -839,34 +839,6 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// every exhaustive match consuming `NodeView` to be reviewed.
     fn view(&self) -> NodeView<'_, R, E>;
 
-    /// Find the descendant Node whose `spec().id == target` and
-    /// replace it with `replacement`. Used by the fusion splice
-    /// phase to swap a subtree for its kernel-backed equivalent.
-    ///
-    /// - `Ok(old_node)` — match found and replaced. The caller is
-    ///   responsible for deleting `old_node` from the `ExecCtx`
-    ///   (calling `.delete(ctx)`) before dropping.
-    /// - `Err(replacement)` — no match in this subtree. The
-    ///   `replacement` is returned unchanged so the caller can try
-    ///   elsewhere.
-    ///
-    /// The default impl treats `self` as a leaf (no children to
-    /// descend) and always returns `Err(replacement)`. Container
-    /// nodes (`Block`, `Module`, `Bind`) override to iterate
-    /// children and forward the search.
-    ///
-    /// `self.spec().id == target` is **not** checked here — that's
-    /// the caller's responsibility (handled at the top of
-    /// `fusion::splice_into`). This method only descends
-    /// into children.
-    fn splice_child(
-        &mut self,
-        _target: expr::ExprId,
-        replacement: Node<R, E>,
-    ) -> std::result::Result<Node<R, E>, Node<R, E>> {
-        Err(replacement)
-    }
-
     /// Produce an independent deep copy of this node positioned as if
     /// it were compiled fresh in the same lexical scope. Semantics:
     /// every binding the subtree *introduces* is re-minted to a fresh

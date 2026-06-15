@@ -824,7 +824,14 @@ flip).
   differential 45/45, regress 17/17, generate 200→0. Also dies
   at F (Eric, 2026-06-10): `Update::splice_child` + `fusion::splice_into`
   (the parent-swap protocol never searches by ExprId; the impure-HOF
-  split splice is re-expressed as `template.jit()` in Stage D), and the
+  split splice is re-expressed as `template.jit()` in Stage D). **DONE
+  2026-06-15**: the impure-HOF split now runs `fusion::jit_node` in place
+  on `MapQ`'s cloned template body (gated on `ctx.jit_enabled`); deleted
+  `splice_child` + the Bind/Module/Block overrides, `fusion::splice_into`,
+  `find_node_by_id`, `build_body_split`, `splice_into_body`, `SplitKernel`,
+  `FusedCallback.split`/`is_split`. `jit_node` fuses more than the old
+  per-`let`-value `build_body_split` (single-expr callback bodies), a
+  value-identical fusion GAIN (5 lib_tests re-annotated None→Jit). And the
   `Expr.typ` typed-AST OnceCell (DONE 2026-06-14) — it had TWO post-F
   readers, not one: fusion's builtin-call discovery (lowering.rs, the
   LOAD-BEARING one — concrete arg/return types for generic builtins like

@@ -624,10 +624,11 @@ async fn impure_hof_callback_splits() -> Result<()> {
 
 /// #153 — impure HOF callback whose sync sub-region CAPTURES an outer
 /// binding. `let k=10; … |x| { let v = x*k; counter <- v; v }` →
-/// [10,20,30]. The split kernel for `x*k` has inputs `{x (element), k
-/// (capture)}`; `splice_into_body` builds a per-slot feeder for each by
-/// name — `k`'s feeder reads the live outer binding. Locks in the
-/// capture-feeder path the element-only fixture above doesn't exercise.
+/// [10,20,30]. The in-place split fuses `x*k` with inputs `{x (element),
+/// k (capture)}`; `try_fuse`'s `collect_region_inputs` builds a feeder
+/// for each, and `clone_rebind` re-resolves them per slot by name — `k`'s
+/// feeder reads the live outer binding. Locks in the capture-feeder path
+/// the element-only fixture above doesn't exercise.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_callback_split_captures() -> Result<()> {

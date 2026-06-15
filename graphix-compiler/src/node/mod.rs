@@ -626,23 +626,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         Ok(None)
     }
 
-    fn splice_child(
-        &mut self,
-        target: ExprId,
-        mut replacement: Node<R, E>,
-    ) -> std::result::Result<Node<R, E>, Node<R, E>> {
-        for child in self.children.iter_mut() {
-            if child.spec().id == target {
-                return Ok(std::mem::replace(child, replacement));
-            }
-            match child.splice_child(target, replacement) {
-                Ok(old) => return Ok(old),
-                Err(r) => replacement = r,
-            }
-        }
-        Err(replacement)
-    }
-
     fn clone_rebind(
         &self,
         ctx: &mut ExecCtx<R, E>,

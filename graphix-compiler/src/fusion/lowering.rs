@@ -690,11 +690,13 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
 /// builtin keeps its own per-slot reactive lifecycle (one graph per
 /// element, fresh BindIds), and only the pure kernel is shared.
 pub struct FusedCallback {
-    /// The whole-body kernel — `Some` for the Phase-1 wholly-sync path
-    /// (`build_slot` wraps it in one `FusedKernel`). `None` when the body
-    /// has async ops and only its sync sub-regions fused — then `split`
-    /// below is non-empty and `build_slot` takes the splice path.
-    kernel: Option<std::sync::Arc<crate::gir::KernelSig>>,
+    /// The whole-body kernel — `build_slot` wraps it in one
+    /// `FusedKernel`. A callback becomes a `FusedCallback` only when its
+    /// WHOLE body lowers to one kernel; an impure callback (async ops in
+    /// the body) instead fuses its maximal sync sub-regions in place via
+    /// the canonical `fusion::jit_node` walk at the call site (see
+    /// `MapQ`'s template build) and never becomes a `FusedCallback`.
+    kernel: std::sync::Arc<crate::gir::KernelSig>,
     wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
     /// Captured outer bindings (closure conversion), in kernel-input
     /// order *after* the formal args. Each is fed by a shared `Ref`
@@ -705,32 +707,6 @@ pub struct FusedCallback {
     /// supplies. Kernel inputs are `formal args ++ captures`.
     n_formal: usize,
     /// Body spec + result type for the per-slot `FusedKernel` Node.
-    spec: crate::expr::Expr,
-    typ: crate::typ::Type,
-    /// Phase-2 partial-body split: when the whole body has async ops
-    /// (so `kernel` above couldn't be built over the whole body), this
-    /// holds one shared kernel per maximal sync sub-region (today: each
-    /// fusable `let`-value in the body block). Per slot, the runtime
-    /// splices a fresh `FusedKernel` (sharing each `Arc`) at the
-    /// sub-region's `ExprId` in the freshly-built body, and the async
-    /// residue (Connect/publish/…) runs as interpreted nodes reading the
-    /// published values. Empty for the wholly-sync Phase-1 path.
-    /// See `design/impure_hof_fusion.md` Phase 2.
-    split: Vec<SplitKernel>,
-}
-
-/// One shared sync sub-region kernel of an impure callback body, to be
-/// spliced into each per-slot body at `value_id`. See
-/// [`FusedCallback::split`].
-pub struct SplitKernel {
-    /// The `let`-value `ExprId` to splice the kernel at in each per-slot
-    /// body (the `Bind` wrapping it publishes the result).
-    value_id: crate::expr::ExprId,
-    kernel: std::sync::Arc<crate::gir::KernelSig>,
-    wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
-    /// The region's free-var inputs (bind_id + name + kind + typ),
-    /// re-resolved per slot to build the `FusedKernel` feeders.
-    inputs: Vec<crate::fusion::FreeVarInput>,
     spec: crate::expr::Expr,
     typ: crate::typ::Type,
 }
@@ -747,13 +723,13 @@ impl std::fmt::Debug for FusedCallback {
 
 /// Build a per-slot-dispatchable [`FusedCallback`] from a concretely-
 /// typed, statically-resolved analysis CallSite (e.g. MapQ's
-/// `analysis_pred.pred`). Returns `None` — caller falls back to the
-/// interpreted per-slot dispatch — when the callback isn't a resolved
-/// lambda, or its body doesn't lower to a kernel (today: any async op
-/// in the body bails `build_kir_kernel_from_region`; the partial-body
-/// split that lifts that is Phase 2 of `design/impure_hof_fusion.md`).
-/// JIT-compiles the kernel when `ec.jit_enabled` (interp fallback inside
-/// `FusedKernel` handles the `None`).
+/// `analysis_pred.pred`) when its WHOLE body lowers to one kernel.
+/// Returns `None` when the callback isn't a resolved lambda or its body
+/// has async ops (so it can't fuse as a single kernel) — the caller then
+/// fuses the body's maximal sync sub-regions in place via
+/// `fusion::jit_node` (the impure-HOF split), or falls back to the
+/// interpreted per-slot dispatch. JIT-compiles the kernel when
+/// `ec.jit_enabled` (interp fallback inside `FusedKernel` handles `None`).
 pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     cs: &crate::node::callsite::CallSite<R, E>,
     ec: &mut crate::ExecCtx<R, E>,
@@ -812,40 +788,31 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
             &nohash::IntMap::default(),
         ) {
             return Some(FusedCallback {
-                kernel: Some(cached.kernel),
+                kernel: cached.kernel,
                 wrapped: Some(wrapped),
                 captures: cached.captures,
                 n_formal,
                 spec,
                 typ,
-                split: Vec::new(),
             });
         }
     }
-    let split = build_body_split(g.body(), ec);
-    if split.is_empty() {
-        return None;
-    }
-    Some(FusedCallback {
-        kernel: None,
-        wrapped: None,
-        captures: Vec::new(),
-        n_formal,
-        spec,
-        typ,
-        split,
-    })
+    // The whole body didn't lower to one kernel (async ops in the body).
+    // The caller fuses its maximal sync sub-regions in place via
+    // `fusion::jit_node` (the impure-HOF split) — see `MapQ`'s template
+    // build.
+    None
 }
 
-/// JIT-compile a per-slot kernel when `ec.jit_enabled`, else `None`
-/// (the slot node-walks). Shared by the whole-body and split paths.
+/// JIT-compile the whole-body callback kernel when `ec.jit_enabled`,
+/// else `None` (the slot node-walks).
 ///
 /// `body` is the kernel's body Node and `self_call` its self-recursion
 /// info; the kernel emits by `emit_clif` over the Node. `apply_sites`
-/// is the body's builtin-call discovery (the split path has one; the
-/// whole-body path is empty). The callee set is always empty: a
-/// callback body's own call sites are #203-unresolved, and a
-/// self-recursive body resolves against the kernel's own declaration.
+/// is the body's builtin-call discovery (empty for the whole-body
+/// path). The callee set is always empty: a callback body's own call
+/// sites are #203-unresolved, and a self-recursive body resolves
+/// against the kernel's own declaration.
 fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
     ec: &mut crate::ExecCtx<R, E>,
     kernel: &std::sync::Arc<crate::gir::KernelSig>,
@@ -878,85 +845,6 @@ fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
     }
 }
 
-/// Phase-2 partial-body split. The whole callback body couldn't fuse
-/// (it has async ops), so build one shared kernel per fusable sync
-/// sub-region. Today's granularity: each `let`-value in the body block
-/// whose value compiles to a kernel. The async statements (`<-`,
-/// `publish`, …) and non-fusing lets are left for the per-slot
-/// interpreted residue. Returns the per-region `SplitKernel`s (empty
-/// when the body isn't a block, or no `let`-value fused). See
-/// `design/impure_hof_fusion.md` Phase 2.
-fn build_body_split<R: crate::Rt, E: crate::UserEvent>(
-    body: &crate::Node<R, E>,
-    ec: &mut crate::ExecCtx<R, E>,
-) -> Vec<SplitKernel> {
-    use crate::NodeView;
-    let mut out: Vec<SplitKernel> = Vec::new();
-    // Statement-level split only handles block bodies (`Do`) — a single-
-    // expr async body has no statement-level sync sub-region (that's the
-    // expression-level split, a follow-up).
-    let children: &[crate::Node<R, E>] = match body.view() {
-        NodeView::Block(blk) => &blk.children,
-        _ => return out,
-    };
-    for child in children {
-        // Each `let`-binding's value is a candidate sync sub-region.
-        let value_node = match child.view() {
-            NodeView::Bind(b) => &b.node,
-            _ => continue,
-        };
-        let value_id = value_node.spec().id;
-        let Some(return_type) =
-            crate::fusion::freeze_region_return(value_node.typ(), &ec.env)
-        else {
-            continue;
-        };
-        let inputs = crate::fusion::collect_region_inputs::<R, E>(&**value_node, ec);
-        // Non-scalar slots are still name-keyed — two same-basename
-        // inputs would silently alias one slot (same gate as
-        // `try_fuse`).
-        if crate::fusion::non_scalar_basename_collision(&inputs).is_some() {
-            continue;
-        }
-        let mut discovery = BuiltinCallDiscovery::default();
-        walk_node_for_builtin_calls::<R, E>(
-            value_node,
-            ec,
-            &crate::expr::ModPath::root(),
-            &mut discovery,
-        );
-        let fn_name = compact_str::format_compact!("__split_{:?}", value_id);
-        let (mut sig, _arg_types) = crate::fusion::sig_from_inputs(
-            ArcStr::from(fn_name.as_str()),
-            inputs.iter().map(|fv| (fv.name.clone(), &fv.kind, Some(fv.bind_id))),
-            return_type,
-        );
-        sig.fn_params = discovery.fn_params;
-        let kernel = std::sync::Arc::new(sig);
-        // The compile attempt is the fusability test: a `let`-value
-        // with async ops / unsupported shapes fails emission and
-        // stays in the per-slot residue.
-        let Some(wrapped) = jit_compile_split_kernel(
-            ec,
-            &kernel,
-            value_node,
-            None,
-            &discovery.apply_sites,
-        ) else {
-            continue;
-        };
-        out.push(SplitKernel {
-            value_id,
-            kernel,
-            wrapped: Some(wrapped),
-            inputs,
-            spec: value_node.spec().clone(),
-            typ: value_node.typ().clone(),
-        });
-    }
-    out
-}
-
 impl FusedCallback {
     /// Build a fresh per-slot [`builder::FusedKernel`] Node sharing this
     /// callback's compiled kernel `Arc`. `element_feeders` are the
@@ -978,19 +866,7 @@ impl FusedCallback {
                 element_feeders.len()
             );
         }
-        // Phase-2 split callbacks have no whole-body kernel; the per-slot
-        // splice (build the interpreted body + splice each `split` kernel
-        // at its `value_id`) is the next increment. For now, fall back to
-        // interpreted per-slot dispatch (MapQ's caller handles the Err).
-        let kernel = match &self.kernel {
-            Some(k) => k.clone(),
-            None => anyhow::bail!(
-                "fused HOF slot: partial-body split per-slot splice not \
-                 yet wired ({} sync sub-region(s) built) — interp fallback \
-                 (design/impure_hof_fusion.md Phase 2)",
-                self.split.len()
-            ),
-        };
+        let kernel = self.kernel.clone();
         let mut feeders = element_feeders;
         for cap in &self.captures {
             let typ = ctx
@@ -1011,75 +887,6 @@ impl FusedCallback {
             scope,
             top_id,
         )
-    }
-
-    /// True when this is a Phase-2 partial-body split callback — the
-    /// caller builds the interpreted per-slot body and calls
-    /// [`splice_into_body`](Self::splice_into_body), rather than using
-    /// [`build_slot`](Self::build_slot)'s whole-body `FusedKernel`.
-    pub fn is_split(&self) -> bool {
-        self.kernel.is_none() && !self.split.is_empty()
-    }
-
-    /// Splice the shared sync-region kernels into a freshly-built
-    /// per-slot body (e.g. MapQ's per-slot `GXLambda` body, accessed via
-    /// `CallSite::resolved_apply_mut` → `ApplyViewMut::Lambda` →
-    /// `body_mut`). For each `SplitKernel`: find its sub-region at
-    /// `value_id`, build a fresh `FusedKernel` (sharing the kernel `Arc`,
-    /// feeders matched **by name** to the per-slot body's free vars —
-    /// BindIds differ per slot, names don't), and splice it in. The
-    /// `Bind` wrapping the value publishes the kernel output; the async
-    /// residue (`<-`/`publish`/…) reads it as interpreted nodes. See
-    /// `design/impure_hof_fusion.md` Phase 2.
-    pub fn splice_into_body<R: crate::Rt, E: crate::UserEvent>(
-        &self,
-        ctx: &mut crate::ExecCtx<R, E>,
-        body: &mut crate::Node<R, E>,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
-    ) -> anyhow::Result<()> {
-        for sk in &self.split {
-            // Locate the sync sub-region in this per-slot body and collect
-            // its free-var bindings (fresh BindIds this slot).
-            let per_slot: Vec<(ArcStr, crate::BindId, crate::typ::Type)> = {
-                let subtree = match crate::fusion::find_node_by_id(body, sk.value_id) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                crate::fusion::collect_region_inputs::<R, E>(&**subtree, ctx)
-                    .into_iter()
-                    .map(|fv| (fv.name, fv.bind_id, fv.typ))
-                    .collect()
-            };
-            // Feeders in the kernel's input order (`sk.inputs`), matched
-            // by name to this slot's free-var bindings.
-            let mut feeders: Vec<crate::Node<R, E>> = Vec::with_capacity(sk.inputs.len());
-            for ki in &sk.inputs {
-                let (bind_id, typ) = match per_slot.iter().find(|(n, _, _)| *n == ki.name)
-                {
-                    Some((_, id, t)) => (*id, t.clone()),
-                    None => anyhow::bail!(
-                        "split feeder `{}` not found in per-slot body",
-                        ki.name
-                    ),
-                };
-                feeders.push(crate::node::genn::reference(ctx, bind_id, typ, top_id));
-            }
-            let fk = crate::fusion::builder::FusedKernel::<R, E>::new(
-                ctx,
-                sk.spec.clone(),
-                sk.typ.clone(),
-                sk.kernel.clone(),
-                sk.wrapped.clone(),
-                feeders.into_boxed_slice(),
-                scope.clone(),
-                top_id,
-            )?;
-            if let Ok(mut old) = crate::fusion::splice_into(body, sk.value_id, fk) {
-                old.delete(ctx);
-            }
-        }
-        Ok(())
     }
 }
 

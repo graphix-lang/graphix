@@ -542,21 +542,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
         Ok(None)
     }
-
-    fn splice_child(
-        &mut self,
-        target: ExprId,
-        mut replacement: crate::Node<R, E>,
-    ) -> std::result::Result<crate::Node<R, E>, crate::Node<R, E>> {
-        for child in self.nodes.iter_mut() {
-            if child.spec().id == target {
-                return Ok(std::mem::replace(child, replacement));
-            }
-            match child.splice_child(target, replacement) {
-                Ok(old) => return Ok(old),
-                Err(r) => replacement = r,
-            }
-        }
-        Err(replacement)
-    }
 }

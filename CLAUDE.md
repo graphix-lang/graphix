@@ -674,6 +674,32 @@ re-exported through `gir.rs`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **`Update::splice_child` deleted — the impure-HOF split re-expressed as `jit_node`.**
+  The only live user of the ExprId-keyed `splice_child` / `fusion::splice_into` was the
+  impure-HOF body split: `fuse_callsite`'s `build_body_split` computed `(value_id →
+  kernel)` pairs and a *separate* `splice_into_body` pass re-found each node by id to
+  install it — decoupled only because `fuse_callsite` borrows the CallSite immutably,
+  though both operate on the SAME template body. Now `fuse_callsite` does ONLY the
+  whole-body (Phase-1) attempt; when it returns `None` (impure callback), `MapQ`'s
+  template build runs the canonical `fusion::jit_node` on the cloned template body IN
+  PLACE — fusing each maximal sync sub-region via the standard parent-swap
+  (`std::mem::replace`), no id search. Gated on `ctx.jit_enabled` for exact parity with
+  the old `jit_compile_split_kernel` gate (`try_fuse` doesn't self-gate, so JitDisabled
+  would otherwise fuse). Deleted: `Update::splice_child` (+ Bind/Module/Block overrides),
+  `fusion::splice_into`, `fusion::find_node_by_id` (orphaned), `build_body_split`,
+  `splice_into_body`, `SplitKernel`, `FusedCallback.split`/`is_split` (−328 net). Removes
+  a DRY violation (`build_body_split` duplicated `try_fuse`'s region-finding) and there is
+  no `NodeViewMut`, so reusing `jit_node`'s concrete mutable descent is the only in-place
+  install that doesn't add a new abstraction. `jit_node` fuses strictly MORE than
+  `build_body_split` — single-expr callback bodies it skipped (it only walked block
+  `let`-values; `Connect` is fusion-terminal), e.g. `array::map(a, |s| str::trim(s))` —
+  so 5 lib_tests fixtures (`str::{split,rsplit,splitn,rsplitn}`, `list::find`, the
+  "ASPIRE: Jit" cases) gained fusion (None→Jit) and were re-annotated: the desired,
+  value-identical direction (predictable fusion). Validated: 1431×2 tests, FuseExpect
+  audit 0 unexpected drift, fuzz regress 22/0 + generate 3000 + mutation 3000 = 0
+  divergences (4 accepted-class crashes — huge-`init` hangs / runaway-recursion node-walk
+  stack overflows, pre-existing). `design/distributed_jit.md` had scheduled this for the
+  F stage.
 - **`static_resolve` pass deleted — 4 compile walks → 2.** The standalone
   post-typecheck static-resolution pass (`collect_lambda_binds` + `visit_mut`)
   is folded into typecheck: `typecheck0` builds `ctx.bind_to_lambda` (via
