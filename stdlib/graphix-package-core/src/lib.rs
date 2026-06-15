@@ -771,10 +771,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         // Look up the callback's wrapped `Value` (the form
         // `LambdaDef::init` -> Lambda Node emit), then statically
         // resolve the synthetic CallSite directly against
-        // `cb.lambda`. We skip going through
-        // `resolve_static_calls` (the outer walker) because we
-        // know the resolution target — no need to rebuild the
-        // bind_id -> Lambda map.
+        // `cb.lambda`. We resolve it here rather than relying on the
+        // call site's own `try_static_resolve` because we already know
+        // the resolution target — no need to consult `bind_to_lambda`.
         let fv = match ctx.lambda_defs.get(&cb.lambda.id).cloned() {
             Some(v) => v,
             None => return Ok(()),

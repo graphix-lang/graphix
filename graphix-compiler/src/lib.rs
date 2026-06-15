@@ -21,7 +21,6 @@ pub mod gir_jit_intern;
 pub mod kernel_abi;
 pub mod node;
 pub mod node_shape;
-pub mod static_resolve;
 pub mod typ;
 
 // Re-exported so packages implementing `Apply::emit_clif` get the
@@ -586,11 +585,11 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(())
     }
 
-    // CR estokes: Why is this not simply another typecheck phase?
-    /// Compile-time hook for HOF builtins. Called by
-    /// [`crate::static_resolve::resolve_static_calls`] after this
-    /// builtin has been constructed by its `BuiltIn::init`, with
-    /// `fn_args` listing the positional indices and `LambdaDef`s of
+    /// Compile-time hook for HOF builtins. Called from
+    /// [`crate::node::callsite::CallSite::try_static_resolve`] (at the
+    /// end of `typecheck1`) after this builtin has been constructed by
+    /// its `BuiltIn::init`, with `fn_args` listing the positional
+    /// indices and `LambdaDef`s of
     /// any fn-typed args at the call site that the compiler proved
     /// resolve statically to a single known lambda. The builtin can
     /// use these to pre-materialize internal `Apply` Nodes (e.g.
@@ -711,8 +710,8 @@ pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
 /// positional arg at `arg_idx` is fn-typed AND the compiler proved
 /// it resolves statically to a single known `LambdaDef`.
 ///
-/// The `LambdaDef` borrow is tied to the `static_resolve_calls`
-/// pass's lifetime; the builtin should consume what it needs from
+/// The `LambdaDef` borrow is tied to the `CallSite::try_static_resolve`
+/// call's lifetime; the builtin should consume what it needs from
 /// `lambda` synchronously (e.g. clone its `Arc<FnType>`,
 /// instantiate an internal Apply via `genn::apply` referencing
 /// `lambda.id`) and not store the reference.
@@ -1352,6 +1351,16 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// LambdaDefs indexed by LambdaId, used by `CallSite::typecheck1` to
     /// reach each callee/callback's retained check `Apply` (`def.check`).
     pub lambda_defs: IntMap<LambdaId, Value>,
+    /// `BindId → LambdaDef Value` for every lambda binding in the program
+    /// currently compiling. Populated during `typecheck0` (each
+    /// `Bind::typecheck0` records its own binding, `Module::typecheck0`
+    /// adds the signature→impl proxy entries) so it is globally complete
+    /// before `typecheck1` runs the static-resolution it feeds: a
+    /// `CallSite` whose `fnode` is a `Ref` looks its `BindId` up here to
+    /// pre-bind to a known lambda. This is a compile-time ANALYSIS map,
+    /// deliberately kept out of `cached` (runtime state) — see
+    /// `CallSite::typecheck1`. Cleared at the top of every `compile`.
+    pub bind_to_lambda: IntMap<BindId, Value>,
     /// Reference sites accumulated during compilation. Each is a
     /// textual occurrence of a name and the `BindId` it resolved to.
     /// At compile boundaries, swap with a fresh `REFERENCE_SITE_POOL`
@@ -1489,6 +1498,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             cached: IntMap::default(),
             rt: user,
             lambda_defs: IntMap::default(),
+            bind_to_lambda: IntMap::default(),
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
@@ -1613,6 +1623,10 @@ pub fn compile<R: Rt, E: UserEvent>(
     ctx.jit_enabled = !flags.contains(CFlag::JitDisabled);
     let top_id = spec.id;
     ctx.fuse_top_id = Some(top_id);
+    // Fresh per-compile lambda-binding index — `ExecCtx` fields otherwise
+    // accumulate across compiles. Populated during `typecheck0`, consumed
+    // by the static resolution in `typecheck1`.
+    ctx.bind_to_lambda.clear();
     let env = ctx.env.clone();
     let st = Instant::now();
     let mut node = match compiler::compile(ctx, flags, spec, scope, top_id) {
@@ -1637,17 +1651,12 @@ pub fn compile<R: Rt, E: UserEvent>(
         return Err(e);
     }
     info!("typecheck time {:?}", st.elapsed());
-    // Static call resolution: pre-bind every CallSite whose function
-    // expression resolves to a single known LambdaDef. Eliminates
-    // the "bind on first use" indirection on every subsequent
-    // update, and exposes the lambda body Node directly for
-    // fusion's walker to descend into.
-    let st = Instant::now();
-    if let Err(e) = crate::static_resolve::resolve_static_calls(ctx, &mut node) {
-        ctx.env = env;
-        return Err(e);
-    }
-    info!("static_resolve time {:?}", st.elapsed());
+    // Static call resolution is no longer a separate pass: the
+    // `BindId → LambdaDef` index is built during `typecheck0` and every
+    // statically-resolvable CallSite is pre-bound during `typecheck1`
+    // (`CallSite::try_static_resolve`). The pre-bind eliminates the
+    // "bind on first use" indirection on every subsequent update and
+    // exposes the lambda body Node directly for fusion's walker.
     // Fusion phase: walk the typed node graph, build kernels, splice
     // in place. Currently a no-op stub — see fusion/mod.rs::fuse and
     // the implementation plan for the iteration sequence.

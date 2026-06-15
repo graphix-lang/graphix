@@ -153,8 +153,7 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
 /// node before its children) — the canonical full-coverage immutable
 /// walker. The `NodeView` match is EXHAUSTIVE on purpose: a new node
 /// variant is a compile error here, not a silently-untraversed
-/// container (same discipline as `static_resolve::collect_lambda_binds`,
-/// which should migrate onto this walker at Stage F). Lambda BODIES are
+/// container. Lambda BODIES are
 /// not descended (a body compiles per call site — its call sites belong
 /// to the callee kernel's own discovery), and `FusedKernel` is opaque
 /// (post-fusion synthetic).

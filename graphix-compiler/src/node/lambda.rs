@@ -92,8 +92,8 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 /// Runtime representation of a graphix-language lambda (i.e. a user
 /// `fn` defined in `.gx` source). Produced by [`LambdaDef::init`]
 /// when a `CallSite` resolves to this lambda — either lazily on
-/// first runtime use, or eagerly at compile time by the
-/// `static_resolve` pass.
+/// first runtime use, or eagerly at compile time by
+/// `CallSite::try_static_resolve` (in `typecheck1`).
 ///
 /// Public surface for fusion: `Apply::view()` on `GXLambda` returns
 /// [`crate::ApplyView::Lambda(&self)`], letting fusion's walker

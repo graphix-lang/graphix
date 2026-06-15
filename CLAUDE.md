@@ -92,7 +92,11 @@ mdbook serve ../docs/book            # Serve docs locally
 
 1. **Parsing** (`graphix-compiler/src/expr/parser/`): Text → `Expr` AST with position info
 2. **Compilation** (`graphix-compiler/src/node/compiler.rs`): `Expr` → `Node<R, E>` graph
-3. **Type Checking**: Each node implements `typecheck()` to verify type correctness
+3. **Type Checking & static resolution**: each node implements `typecheck0`/`typecheck1`
+   (two passes). `typecheck0` also builds `ctx.bind_to_lambda` (the `BindId → LambdaDef`
+   index, via `Bind::lambda_def_value`); `CallSite::typecheck1` then pre-binds every
+   statically-resolvable call (`try_static_resolve`) and pre-materializes HOF callbacks.
+   This is the former standalone `static_resolve` pass, folded in — 4 compile walks → 2.
 
 Key types:
 - `Expr`: Immutable AST representation with `ExprKind` variants
@@ -670,6 +674,15 @@ re-exported through `gir.rs`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **`static_resolve` pass deleted — 4 compile walks → 2.** The standalone
+  post-typecheck static-resolution pass (`collect_lambda_binds` + `visit_mut`)
+  is folded into typecheck: `typecheck0` builds `ctx.bind_to_lambda` (via
+  `Bind::lambda_def_value` + `Module::typecheck0`'s sig→impl proxy entries) and
+  `CallSite::typecheck1` resolves via the new `try_static_resolve` (value-based —
+  the `unstable_bindings` guard kept; queuefn wrappers/`never()` stay dynamic;
+  callee bodies aren't descended, so no compile-time recursion). `Module::typecheck1`
+  now drives its children under the restored env (they get finalize for the first
+  time). Zero drift: 1429×2, FuseExpect audit 618 OK / 0 gain / 0 loss, fuzz clean.
 - **GIR IR removal** in progress — `compile_node` walks the node graph + emits
   CLIF directly (Stage 1 landed, gated by `CFlag::DirectNodeJit`).
 - **GIR interpreter deleted** — fusion is JIT-only; node-walk is the universal

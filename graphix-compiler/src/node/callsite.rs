@@ -158,9 +158,9 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
-    /// Set by the post-typecheck `resolve_static_calls` pass when the
-    /// function expression can be proven to always resolve to a single
-    /// known `LambdaDef`. When `true`, `update()` skips the lazy
+    /// Set by [`Self::try_static_resolve`] (at the end of `typecheck1`)
+    /// when the function expression can be proven to always resolve to a
+    /// single known `LambdaDef`. When `true`, `update()` skips the lazy
     /// `(fnode_value, function_value)`-equality + downcast +
     /// `bind()` arm — `self.function` is already bound and won't
     /// change. `fnode.update(ctx, event)` is still called every
@@ -226,7 +226,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// just-compiled state — runtime `bind()` fires lazily on the
     /// first cycle the `fnode` produces a LambdaDef Value).
     /// `Some(view)` after either the runtime dynamic bind or the
-    /// post-typecheck `static_resolve` pass has populated
+    /// `try_static_resolve` step in `typecheck1` has populated
     /// `self.function`.
     ///
     /// Used by fusion to descend through a resolved call site into a
@@ -513,11 +513,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// Pre-bind this CallSite to a statically known `LambdaDef` at
     /// compile time, replacing the lazy "bind on first call" path
-    /// `bind()` runs from inside `update()`. The post-typecheck
-    /// `resolve_static_calls` pass calls this once for every CallSite
-    /// whose function expression can be proven to resolve to exactly
-    /// one Lambda (i.e. a `Ref` to a non-`<-`-target binding whose
-    /// value is a Lambda, or a direct lambda literal `(|x|…)(42)`).
+    /// `bind()` runs from inside `update()`. Called from
+    /// [`Self::try_static_resolve`] (at the end of `typecheck1`) for
+    /// every CallSite whose function expression can be proven to resolve
+    /// to exactly one Lambda (i.e. a `Ref` to a non-`<-`-target binding
+    /// whose value is a Lambda, or a direct lambda literal `(|x|…)(42)`).
     ///
     /// Same arg-build + InitFn + typecheck work as [`Self::bind`],
     /// minus the event-cycle side effects. The runtime's first
@@ -539,6 +539,94 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.first_static_update = true;
         Ok(())
     }
+
+    /// Static call resolution — folded in from the deleted
+    /// `static_resolve` pass and invoked at the end of
+    /// [`Update::typecheck1`], by which point `ctx.bind_to_lambda` is
+    /// complete (built during `typecheck0`) and this site's callbacks
+    /// are finalized. If the function expression resolves to a single
+    /// known `LambdaDef` — a `Ref` to a non-`<-`-target lambda binding
+    /// (looked up in `bind_to_lambda`, with a fallback to `ctx.cached`
+    /// for separately-compiled stdlib callees), or a direct lambda
+    /// literal — pre-bind it via [`Self::resolve_static`]. Then give HOF
+    /// builtins the chance to pre-materialize their callback
+    /// `analysis_pred`s via [`Apply::static_resolve_fn_args`]. No-op for
+    /// dynamic call sites. (`bind_to_lambda` is a compile-time analysis
+    /// map kept distinct from runtime `cached`; the `.or_else(cached)`
+    /// only READS stdlib lambdas already legitimately there.)
+    fn try_static_resolve(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if self.statically_resolved {
+            return Ok(());
+        }
+        // Determine the target without holding a borrow on `self.fnode`
+        // / `ctx` past the match — the cloned `Value` owns its LambdaDef,
+        // so the `&mut self` for `resolve_static` is unencumbered.
+        let target: Option<Value> = match self.fnode.view() {
+            crate::NodeView::Ref(r) => {
+                if ctx.unstable_bindings.contains(&r.id) {
+                    None
+                } else {
+                    ctx.bind_to_lambda
+                        .get(&r.id)
+                        .or_else(|| ctx.cached.get(&r.id))
+                        .cloned()
+                }
+            }
+            crate::NodeView::Lambda(l) => Some(l.def_value().clone()),
+            _ => None,
+        };
+        let Some(fv) = target else { return Ok(()) };
+        let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
+            return Ok(());
+        };
+        self.resolve_static(ctx, def, fv.clone())?;
+        // HOF callback pre-materialization: every fn-typed positional arg
+        // that itself resolves to a known lambda becomes a `StaticFnArg`
+        // handed to the just-bound Apply.
+        let ftype = match self.resolved_ftype().or_else(|| self.ftype()) {
+            Some(ft) => ft.clone(),
+            None => return Ok(()),
+        };
+        let mut fn_arg_targets: Vec<(usize, Value)> = Vec::new();
+        for (i, farg) in ftype.args.iter().enumerate() {
+            if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
+                continue;
+            }
+            let Some(arg_node) = self.arg_positional(i) else { continue };
+            match arg_node.view() {
+                crate::NodeView::Lambda(l) => {
+                    fn_arg_targets.push((i, l.def_value().clone()));
+                }
+                crate::NodeView::Ref(r) => {
+                    if ctx.unstable_bindings.contains(&r.id) {
+                        continue;
+                    }
+                    if let Some(fv) = ctx.bind_to_lambda.get(&r.id) {
+                        fn_arg_targets.push((i, fv.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if fn_arg_targets.is_empty() {
+            return Ok(());
+        }
+        let Some((_, apply)) = self.function.as_mut() else {
+            return Ok(());
+        };
+        let mut fn_args: Vec<crate::StaticFnArg<'_, R, E>> =
+            Vec::with_capacity(fn_arg_targets.len());
+        for (idx, fv) in &fn_arg_targets {
+            if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
+                fn_args.push(crate::StaticFnArg { arg_idx: *idx, lambda: def });
+            }
+        }
+        if fn_args.is_empty() {
+            return Ok(());
+        }
+        apply.static_resolve_fn_args(ctx, &fn_args)?;
+        Ok(())
+    }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
@@ -554,9 +642,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        // Statically resolved fast path. The post-typecheck
-        // `resolve_static_calls` pass already invoked `(def.init)(...)`
-        // and stored the Apply on `self.function`. We still run
+        // Statically resolved fast path. The `try_static_resolve` step
+        // in `typecheck1` already invoked `(def.init)(...)` and stored
+        // the Apply on `self.function`. We still run
         // `fnode.update` for its side effects (Ref unref-counts,
         // downstream `ctx.cached` writes by other nodes that share
         // the binding's update path) but ignore the value. On the
@@ -867,6 +955,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
+        // Fold the former `static_resolve` pass in here: pre-bind the
+        // callee + pre-materialize HOF callbacks now that the index is
+        // complete and this site's callbacks are finalized.
+        self.try_static_resolve(ctx)?;
         Ok(())
     }
 

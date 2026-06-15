@@ -183,6 +183,17 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         Ok(Box::new(Self { spec, typ, pattern, node, scope: scope.clone() }))
     }
 
+    /// The LambdaDef `Value` this binding holds, when its value node is
+    /// a lambda (`let f = |…| …`) — `None` otherwise. The one home for
+    /// "is this a lambda binding," consumed by `Bind::typecheck0` to
+    /// populate `ctx.bind_to_lambda` (the static-resolution index).
+    pub(crate) fn lambda_def_value(&self) -> Option<Value> {
+        match self.node.view() {
+            crate::NodeView::Lambda(l) => Some(l.def_value().clone()),
+            _ => None,
+        }
+    }
+
     /// Return the id if this bind has only a single binding, otherwise return None
     pub(crate) fn single_id(&self) -> Option<BindId> {
         let mut id = None;
@@ -240,6 +251,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck0(ctx))?;
         wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        // Record this binding in the static-resolution index so a
+        // `CallSite` whose `fnode` resolves to it can pre-bind in
+        // `typecheck1`. Recording faux/inside-lambda binds is harmless:
+        // lexical scoping means no outside `Ref` resolves to them, and
+        // resolution never descends lambda bodies.
+        if let Some(fv) = self.lambda_def_value() {
+            self.pattern.ids(&mut |id| {
+                ctx.bind_to_lambda.insert(id, fv.clone());
+            });
+        }
         Ok(())
     }
 

@@ -278,17 +278,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         &self.source
     }
 
-    /// The interface re-export proxy map: `impl_id -> sig_id`. For a
-    /// signed module each public `val name` re-exports the impl
-    /// binding `name` — at runtime the module forwards the impl
-    /// binding's value to the signature binding (callers reference
-    /// the signature binding's `BindId`). Static call resolution uses
-    /// this to follow a caller's interface-binding `Ref` back to the
-    /// impl lambda.
-    pub(crate) fn proxy(&self) -> &IntMap<BindId, BindId> {
-        &self.proxy
-    }
-
     pub(super) fn compile_dynamic(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -502,12 +491,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
-        wrap!(self.source, t.check_contains(&self.env, self.source.typ()))
+        wrap!(self.source, t.check_contains(&self.env, self.source.typ()))?;
+        // Interface re-exports: a caller references the public signature
+        // binding's `BindId`, but the lambda lives on the impl binding
+        // (recorded by its own `Bind::typecheck0` during `compile_inner`).
+        // Proxy each sig id to its impl's LambdaDef so cross-module calls
+        // resolve. All `typecheck0` precedes all `typecheck1`, so the
+        // entry is present before resolution consumes it.
+        for (impl_id, sig_id) in self.proxy.iter() {
+            if let Some(fv) = ctx.bind_to_lambda.get(impl_id).cloned() {
+                ctx.bind_to_lambda.insert(*sig_id, fv);
+            }
+        }
+        Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
-        Ok(())
+        // Module children were typecheck0'd in `compile_inner` under the
+        // module env, but the main `typecheck1` walk doesn't reach them
+        // (this node only recurses `source`). Drive their `typecheck1`
+        // here under the restored env — to finalize call sites AND run the
+        // static resolution folded into `CallSite::typecheck1` (which the
+        // deleted `static_resolve` pass used to reach via its own walk).
+        // The restored env is required: `finalize_lambda` reads `ctx.env`.
+        let Self { env, nodes, .. } = self;
+        ctx.with_restored_mut(env, |ctx| {
+            for n in nodes.iter_mut() {
+                wrap!(n, n.typecheck1(ctx))?;
+            }
+            Ok(())
+        })
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {

@@ -1242,9 +1242,9 @@ mod tests {
         )
         .await;
         // Nested map-in-map: does NOT inline on either path — the
-        // inner CallSite lives in the callback's lambda body, which
-        // `resolve_static_calls` never descends into, so the inner
-        // MapQ has no analysis_pred (and no bound function) at
+        // inner CallSite lives in the callback's lambda body, which the
+        // static resolution in `typecheck1` never descends into, so the
+        // inner MapQ has no analysis_pred (and no bound function) at
         // emission time. Classic has the identical gap (its emit_gir
         // path hits the same unresolved inner site); the runtime
         // per-slot machinery carries correctness. Flip to
@@ -1414,7 +1414,7 @@ mod tests {
         )
         .await;
         // HOF callsite in OPERAND position (under the `+`) — pre-#204
-        // neither path statically resolved it (static_resolve only
+        // neither path statically resolved it (static resolution only
         // descended the Module/Block/Bind/CallSite spine). Now the
         // full-position traversal resolves it and the whole block
         // fuses as one region.
