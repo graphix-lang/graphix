@@ -197,6 +197,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
+        _fn_args: &[crate::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         wrap!(self.body, self.body.typecheck1(ctx))
     }
@@ -298,13 +299,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.view_mut()
     }
 
-    fn static_resolve_fn_args(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        fn_args: &[crate::StaticFnArg<'_, R, E>],
-    ) -> Result<()> {
-        self.apply.static_resolve_fn_args(ctx, fn_args)
-    }
 
     fn emit_clif(
         &self,
@@ -365,8 +359,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         args: &mut [Node<R, E>],
         resolved: &FnType,
+        fn_args: &[crate::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
-        self.apply.typecheck1(ctx, args, resolved)
+        self.apply.typecheck1(ctx, args, resolved, fn_args)
     }
 
     fn typ(&self) -> Arc<FnType> {

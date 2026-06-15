@@ -1,0 +1,4 @@
+// CRASH: child HANG (outer deadline)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+array::init(i64:9223372036854775807, |i| (`I32(i32:1), list::from_array([i64:6, i64:2])))

@@ -355,6 +355,11 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         resolved: &FnType,
+        // Absorbed, not forwarded: the inner `EvalCached` impl is never a
+        // HOF (HOFs are direct `Apply` impls), so it never needs the
+        // statically-resolved callbacks. Keeps `EvalCached::typecheck1`
+        // at its current signature.
+        _fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         self.t.typecheck1(ctx, from, resolved)
     }
@@ -484,6 +489,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         resolved: &FnType,
+        // Absorbed (see CachedArgs): inner EvalCachedAsync is never a HOF.
+        _fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         self.t.typecheck1(ctx, from, resolved)
     }
@@ -661,8 +668,8 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     slots: Vec<Slot<R, E>>,
     cur: T::Collection,
     t: T,
-    /// Analysis-only Slot pre-materialized by
-    /// [`Apply::static_resolve_fn_args`] when the callback is
+    /// Analysis-only Slot pre-materialized by the bound-instance firing
+    /// of [`Apply::typecheck1`] (with `fn_args`) when the callback is
     /// statically resolvable. Mirrors what `update()` builds per
     /// element at runtime, but with the inner CallSite already
     /// resolved against the callback's `LambdaDef` so fusion's
@@ -731,13 +738,17 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
-    fn static_resolve_fn_args(
+    fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
         fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
-        // MapQ takes the callback at positional arg index 1.
-        // (Index 0 is the input array.)
+        // HOF callback pre-materialization (the bound-instance firing —
+        // `fn_args` non-empty). MapQ takes the callback at positional arg
+        // index 1 (index 0 is the input array). Empty `fn_args` (the
+        // scratch `def.check` firing) → `find` returns None → no-op.
         let Some(cb) = fn_args.iter().find(|a| a.arg_idx == 1) else {
             return Ok(());
         };
@@ -1222,13 +1233,16 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
-    fn static_resolve_fn_args(
+    fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
         fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
-        // FoldQ: positional args are (input, init, callback).
-        // Callback at index 2.
+        // HOF callback pre-materialization (bound-instance firing). FoldQ:
+        // positional args are (input, init, callback); callback at index 2.
+        // Empty `fn_args` (scratch firing) → `find` None → no-op.
         let Some(cb) = fn_args.iter().find(|a| a.arg_idx == 2) else {
             return Ok(());
         };

@@ -107,8 +107,10 @@ fn finalize_lambda<R: Rt, E: UserEvent>(
             .downcast_ref::<LambdaDef<R, E>>()
             .expect("failed to unwrap lambda for typecheck1");
         if let Some(apply) = &mut *ldef.check.lock() {
+            // Scratch `def.check` firing: empty `fn_args` — the HOF
+            // callback hook only fires on the bound apply (try_static_resolve).
             apply
-                .typecheck1(ctx, &mut [], resolved)
+                .typecheck1(ctx, &mut [], resolved, &[])
                 .with_context(|| ErrorContext((**spec).clone()))?;
         }
     }
@@ -550,7 +552,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// for separately-compiled stdlib callees), or a direct lambda
     /// literal — pre-bind it via [`Self::resolve_static`]. Then give HOF
     /// builtins the chance to pre-materialize their callback
-    /// `analysis_pred`s via [`Apply::static_resolve_fn_args`]. No-op for
+    /// `analysis_pred`s via the bound-instance firing of
+    /// [`Apply::typecheck1`] (with the discovered `fn_args`). No-op for
     /// dynamic call sites. (`bind_to_lambda` is a compile-time analysis
     /// map kept distinct from runtime `cached`; the `.or_else(cached)`
     /// only READS stdlib lambdas already legitimately there.)
@@ -624,7 +627,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if fn_args.is_empty() {
             return Ok(());
         }
-        apply.static_resolve_fn_args(ctx, &fn_args)?;
+        // Bound-instance firing of the CallSite phase: hand the resolved
+        // callbacks to the bound apply's `typecheck1`. `fn_args` non-empty
+        // here (HOF call site) is what distinguishes this from the scratch
+        // `def.check` firing in `finalize_lambda` (empty `fn_args`).
+        apply.typecheck1(ctx, &mut [], &ftype, &fn_args)?;
         Ok(())
     }
 }

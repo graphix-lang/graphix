@@ -570,46 +570,34 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(())
     }
 
-    /// Second typecheck pass ("CallSite phase"): always called from
-    /// `CallSite::typecheck1` with the resolved call-site FnType. A
-    /// builtin extracts call-site-directed types here (e.g. `str::parse`
-    /// reads its target type from `resolved`); a HOF builtin
-    /// pre-materializes its callback; a `GXLambda` recurses its body.
-    /// Default no-op — a builtin with no call-site work ignores it.
+    /// Second typecheck pass ("CallSite phase"). Fires on TWO distinct
+    /// `Apply` instances, distinguished by `fn_args`:
+    ///
+    /// - On the LambdaDef's retained `check` SCRATCH apply, via
+    ///   [`crate::node::callsite::finalize_lambda`], with `fn_args = &[]`.
+    ///   A builtin extracts call-site-directed types here (e.g.
+    ///   `str::parse` reads its target type from `resolved`); a
+    ///   `GXLambda` recurses its body.
+    /// - HOF call sites ONLY: on the per-call-site BOUND apply
+    ///   (`cs.function`), via `CallSite::try_static_resolve`, with
+    ///   `fn_args` listing the positional indices and `LambdaDef`s of the
+    ///   fn-typed args the compiler proved resolve statically to a single
+    ///   known lambda. A HOF builtin (`MapQ`/`FoldQ`/`Init`) uses these to
+    ///   pre-materialize its callback `analysis_pred` — which fusion's
+    ///   `emit_clif` later inlines. This MUST be built on the bound
+    ///   instance (the one runtime clones per slot), so gate it on
+    ///   `fn_args` (an empty slice means "no statically-resolved
+    ///   callbacks", which auto-no-ops the scratch firing).
+    ///
+    /// Default no-op — a builtin with no call-site work ignores both
+    /// `resolved` and `fn_args`. (Formerly two methods, `typecheck1` +
+    /// `static_resolve_fn_args`; folded into one — the HOF hook is just
+    /// the bound-instance firing of this same phase.)
     fn typecheck1(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    /// Compile-time hook for HOF builtins. Called from
-    /// [`crate::node::callsite::CallSite::try_static_resolve`] (at the
-    /// end of `typecheck1`) after this builtin has been constructed by
-    /// its `BuiltIn::init`, with `fn_args` listing the positional
-    /// indices and `LambdaDef`s of
-    /// any fn-typed args at the call site that the compiler proved
-    /// resolve statically to a single known lambda. The builtin can
-    /// use these to pre-materialize internal `Apply` Nodes (e.g.
-    /// `MapQ` synthesizes its callback `Apply` via `genn::apply`)
-    /// so fusion's walker can later descend into the callback body
-    /// through normal `CallSite`-resolved machinery — no LambdaDef
-    /// poking needed at fusion time.
-    ///
-    /// Default no-op. Builtins that don't take fn-typed args, or
-    /// don't fuse their callbacks, can ignore this entirely.
-    ///
-    /// **Important — analysis only.** Anything constructed here must
-    /// not change the builtin's runtime behavior. For example,
-    /// `MapQ` keeps `update()` as it was (per-array-element fresh
-    /// `Apply` Nodes — preserving per-slot state for async
-    /// callbacks); the pre-materialized Apply is consulted only by
-    /// `emit_clif`, and only when the callback is fully sync.
-    fn static_resolve_fn_args(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
         _fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         Ok(())
@@ -705,8 +693,8 @@ pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
     BuiltIn,
 }
 
-/// One entry in the `fn_args` slice passed to
-/// [`Apply::static_resolve_fn_args`]. Records that the call site's
+/// One entry in the `fn_args` slice passed to [`Apply::typecheck1`] (the
+/// bound-instance, HOF-callback firing). Records that the call site's
 /// positional arg at `arg_idx` is fn-typed AND the compiler proved
 /// it resolves statically to a single known `LambdaDef`.
 ///
@@ -1453,7 +1441,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Read by code paths that JIT-compile outside `fuse()`'s
     /// flag-aware loop — notably the per-slot HOF dispatch
     /// (`fusion::fuse_callsite`, `design/impure_hof_fusion.md`), which
-    /// runs from a builtin's `static_resolve_fn_args` hook that doesn't
+    /// runs from a HOF builtin's `typecheck1` callback hook that doesn't
     /// receive the compile flags. Defaults `true`.
     pub jit_enabled: bool,
     /// Compile-time fusion outcome counters, accumulated across every

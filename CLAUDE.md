@@ -683,6 +683,16 @@ re-exported through `gir.rs`).
   callee bodies aren't descended, so no compile-time recursion). `Module::typecheck1`
   now drives its children under the restored env (they get finalize for the first
   time). Zero drift: 1429×2, FuseExpect audit 618 OK / 0 gain / 0 loss, fuzz clean.
+- **`Apply::static_resolve_fn_args` deleted — folded into `Apply::typecheck1`**
+  (now 5-arg: `+ fn_args: &[StaticFnArg]`). The HOF callback hook was a second
+  compile-time `Apply` method in the same phase. `typecheck1` fires on the scratch
+  `def.check` (`fn_args=&[]`) AND, HOF call sites only, the bound `cs.function`
+  (with the discovered `fn_args`, via `try_static_resolve`). HOF builtins
+  (`MapQ`/`FoldQ`/`Init`) gate on `fn_args.find(arg_idx==N)`; `CachedArgs`/
+  `CachedArgsAsync` absorb the param (inner `EvalCached` is never a HOF, so those
+  traits stay unchanged). The value-based discovery stays at the call site
+  (soundness — it needs the source arg node to skip queuefn wrappers). New
+  `queuefn_hof_callback` regression test. Zero drift: 1431×2, audit 618 OK, fuzz clean.
 - **GIR IR removal** in progress — `compile_node` walks the node graph + emits
   CLIF directly (Stage 1 landed, gated by `CFlag::DirectNodeJit`).
 - **GIR interpreter deleted** — fusion is JIT-only; node-walk is the universal

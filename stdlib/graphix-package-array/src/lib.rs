@@ -1335,8 +1335,8 @@ struct Init<R: Rt, E: UserEvent> {
     top_id: ExprId,
     mftyp: TArc<FnType>,
     slots: Vec<Slot<R, E>>,
-    /// Analysis-only Slot pre-materialized by
-    /// `Apply::static_resolve_fn_args` when the callback is
+    /// Analysis-only Slot pre-materialized by the bound-instance firing
+    /// of `Apply::typecheck1` (with `fn_args`) when the callback is
     /// statically resolvable. See `MapQ::analysis_pred` for the
     /// full design rationale. `None` for dynamic callbacks
     /// (fusion falls back to DynCall in that case).
@@ -1378,13 +1378,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
-    fn static_resolve_fn_args(
+    fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
         fn_args: &[graphix_compiler::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
-        // Init takes the callback at positional arg index 1
-        // (index 0 is the size).
+        // HOF callback pre-materialization (bound-instance firing). Init
+        // takes the callback at positional arg index 1 (index 0 is the
+        // size). Empty `fn_args` (scratch firing) → `find` None → no-op.
         let Some(cb) = fn_args.iter().find(|a| a.arg_idx == 1) else {
             return Ok(());
         };

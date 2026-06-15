@@ -345,6 +345,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
+        // queuefn has a fn-typed arg but only does type extraction here;
+        // it ignores the HOF callback list (it builds no `analysis_pred`).
+        _fn_args: &[graphix_compiler::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         if let Some(ft) = extract_fn_arg_type(resolved, 2) {
             self.ftyp = Some(ft);
