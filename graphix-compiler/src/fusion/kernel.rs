@@ -8,7 +8,7 @@
 //!   nodes. [`Kernel`] is the [`Apply<R, E>`] wrapper that drives the
 //!   feeders, packs args across the JIT ABI boundary, dispatches HOF
 //!   arguments via the DynCall side-channel, and unpacks the result.
-//! - JIT failure (or `JitDisabled`) → DON'T splice. The original nodes
+//! - JIT failure → DON'T splice. The original nodes
 //!   stay in the graph and run through the node-walk, the universal
 //!   fallback. A [`Kernel`] cannot be constructed without a JIT
 //!   wrapper, so this is structural.

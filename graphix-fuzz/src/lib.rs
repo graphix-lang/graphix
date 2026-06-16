@@ -1,14 +1,11 @@
 //! Differential model-checking oracle for the graphix fusion/JIT backend.
 //!
-//! A program is run under several compiler-flag configurations of the
+//! A program is run under two compiler-flag configurations of the
 //! *same* front-end:
 //!   - **interp** (`CFlag::FusionDisabled`) — the node-walk interpreter,
 //!     the simple, more-trusted reference model.
 //!   - **jit** (no flags) — the fusion + cranelift-JIT backend, the
 //!     system under test.
-//!   - **fused** (`CFlag::JitDisabled`) — fusion that runs on the
-//!     interpreter; used only to *bisect* a divergence (emit vs JIT
-//!     codegen), not in the hot path.
 //!
 //! For any deterministic program the configurations must produce the
 //! same observable result. A difference proves a bug exists — usually in
@@ -60,13 +57,11 @@ pub const REGISTER: &[RegisterFn] = &[
 
 /// The mode a program was run under.
 ///
-/// There are only two evaluators: the
-/// node-walk (the reference) and fusion + cranelift JIT (the system
-/// under test). The old middle `Fused` mode (`CFlag::JitDisabled` —
-/// fusion on, dispatch via the interpreter) no longer has an
-/// interpreter to dispatch into: with `JitDisabled`, fusion builds
-/// kernels but can't splice them, so the program node-walks — identical
-/// to `Interp`. We drop it.
+/// There are only two evaluators: the node-walk (the reference) and
+/// fusion + cranelift JIT (the system under test). There is no third
+/// "fuse but don't JIT" mode — fusion is JIT-only (no interpreter to
+/// dispatch a built-but-unspliced kernel into), so the single
+/// `FusionDisabled` flag toggles all of fusion on or off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Node-walk interpreter (`CFlag::FusionDisabled`) — the reference.

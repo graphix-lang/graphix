@@ -447,7 +447,7 @@ fn discover_lambda_calls<'n, R: crate::Rt, E: crate::UserEvent>(
 /// attempted; a failed attempt falls through to finer-grained fusion
 /// inside.
 ///
-/// The `FusionDisabled` / `JitDisabled` short-circuit is NOT here — it
+/// The `FusionDisabled` short-circuit is NOT here — it
 /// is checked once in [`crate::compile`] before this is called, rather
 /// than on every recursive step.
 pub fn fuse<R: crate::Rt, E: crate::UserEvent>(

@@ -82,21 +82,16 @@ pub enum CFlag {
     WarnUnhandled,
     WarnUnused,
     WarningsAreErrors,
-    /// Skip the fusion phase entirely. `compile()` runs build +
-    /// typecheck and returns the regular Node graph; no kernels
-    /// are built, no splicing happens. Used by the test harness's
-    /// `interp` mode as ground truth — the program executes
-    /// purely through the Update-trait node-walk.
+    /// Disable fusion entirely — both the compile-time whole-graph
+    /// phase AND the runtime per-slot HOF-callback fusion (which gates
+    /// on `ExecCtx::fusion_enabled`, set from this flag). `compile()`
+    /// runs build + typecheck and returns the regular Node graph; no
+    /// kernels are built or spliced anywhere. This is the test harness's
+    /// `interp` mode: the program executes PURELY through the
+    /// Update-trait node-walk, the canonical model. The single fusion
+    /// control knob — fusion is JIT-only (no interpreter), so there is
+    /// no meaningful "fuse but don't JIT" state to represent.
     FusionDisabled,
-    /// Run the fusion phase but skip JIT-compilation. Kernels are
-    /// still BUILT (CLIF emission), but with no JIT wrapper a
-    /// [`crate::fusion::kernel::Kernel`] can't be constructed
-    /// (fusion is JIT-only), so nothing is
-    /// spliced and the program node-walks. With the interpreter
-    /// removed this is now behaviourally identical to
-    /// `FusionDisabled`; it remains as the "build kernels but don't
-    /// JIT" knob.
-    JitDisabled,
 }
 
 #[allow(dead_code)]
@@ -1403,14 +1398,16 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// the node-walk instead of hanging the compiler. `Arc` so a
     /// drop-guard can hold the set without borrowing the `ExecCtx`.
     pub(crate) fusion_building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
-    /// Whether JIT compilation is enabled for the current compile.
-    /// Set by [`compile`] from `!flags.contains(CFlag::JitDisabled)`.
-    /// Read by code paths that JIT-compile outside `fuse()`'s
-    /// flag-aware loop — notably the per-slot HOF dispatch
-    /// (`fusion::fuse_callsite`, `design/impure_hof_fusion.md`), which
-    /// runs from a HOF builtin's `typecheck1` callback hook that doesn't
-    /// receive the compile flags. Defaults `true`.
-    pub jit_enabled: bool,
+    /// Whether fusion is enabled for the current compile. Set by
+    /// [`compile`] from `!flags.contains(CFlag::FusionDisabled)`. The
+    /// in-context mirror of the flag, for the per-slot HOF fusion path
+    /// (`fusion::fuse_callsite`, `design/impure_hof_fusion.md`) — which
+    /// runs from a HOF builtin's `typecheck1` callback hook and from
+    /// `MapQ::update`, neither of which receives the compile flags. Gating
+    /// it here (not just the compile-time `fuse()` phase) is what makes
+    /// `FusionDisabled` a TRUE node-walk: without it, HOF callbacks would
+    /// still fuse per-slot. Defaults `true`.
+    pub fusion_enabled: bool,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub fusion_stats: FusionStats,
@@ -1464,7 +1461,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion_building: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
             )),
-            jit_enabled: true,
+            fusion_enabled: true,
             fusion_stats: FusionStats::default(),
             fuse_top_id: None,
         })
@@ -1575,7 +1572,7 @@ pub fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<Node<R, E>> {
-    ctx.jit_enabled = !flags.contains(CFlag::JitDisabled);
+    ctx.fusion_enabled = !flags.contains(CFlag::FusionDisabled);
     let top_id = spec.id;
     ctx.fuse_top_id = Some(top_id);
     ctx.bind_to_lambda.clear();
@@ -1599,8 +1596,7 @@ pub fn compile<R: Rt, E: UserEvent>(
         return Err(e);
     }
     info!("typecheck time {:?}", st.elapsed());
-    let off = CFlag::FusionDisabled | CFlag::JitDisabled;
-    if !flags.intersects(off) {
+    if ctx.fusion_enabled {
         let st = Instant::now();
         if let Err(e) = crate::fusion::fuse(&mut node, ctx) {
             ctx.env = env;

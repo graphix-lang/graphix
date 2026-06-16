@@ -129,10 +129,10 @@ where
 }
 
 /// Like [`init_with_setup`] but lets the caller pin the
-/// compile-time flags (`CFlag::FusionDisabled`, `CFlag::JitDisabled`,
+/// compile-time flags (`CFlag::FusionDisabled`,
 /// etc.) the runtime will pass to every `compile()` it dispatches.
 /// Used by the [`run!`] macro to drive the same fixture through
-/// the interp / fused / jit modes.
+/// the interp / jit modes.
 pub async fn init_with_flags_and_setup<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[RegisterFn],
@@ -263,11 +263,10 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 ///   we observe it in jit mode or not. `cfg(debug_assertions)`-gated
 ///   since the counters only exist in debug builds.
 ///
-/// There is no fusion interpreter, so the old middle `fused`
-/// mode (`JitDisabled` — fusion on, dispatch via the interpreter) no
-/// longer exists: with no interpreter, `JitDisabled` means "build
-/// kernels but don't splice them", which is identical to `interp`
-/// (node-walk). The macro now expands to a child module `mod $name {
+/// There is no third "fuse but don't JIT" mode: fusion is JIT-only,
+/// so `FusionDisabled` toggles all of fusion (compile-time AND the
+/// runtime per-slot HOF path, via `ExecCtx::fusion_enabled`) on or off.
+/// The macro expands to a child module `mod $name {
 /// fn interp() … fn jit() … }` — two `#[tokio::test(flavor =
 /// "current_thread")]` functions, one result per mode.
 #[macro_export]

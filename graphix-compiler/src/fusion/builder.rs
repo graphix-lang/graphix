@@ -58,7 +58,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
         // A fused node REQUIRES a JIT. There is no interpreter fallback —
-        // if JIT compilation failed (or `JitDisabled` was set), refuse
+        // if JIT compilation failed, refuse
         // to construct. Every splice site treats this `Err` as "don't
         // splice — leave the original nodes to node-walk", which is
         // the universal fallback.

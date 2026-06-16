@@ -729,7 +729,7 @@ impl std::fmt::Debug for FusedCallback {
 /// fuses the body's maximal sync sub-regions in place via
 /// `fusion::fuse` (the impure-HOF split), or falls back to the
 /// interpreted per-slot dispatch. JIT-compiles the kernel when
-/// `ec.jit_enabled` (interp fallback inside `FusedKernel` handles `None`).
+/// `ec.fusion_enabled` (interp fallback inside `FusedKernel` handles `None`).
 pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     cs: &crate::node::callsite::CallSite<R, E>,
     ec: &mut crate::ExecCtx<R, E>,
@@ -804,7 +804,7 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     None
 }
 
-/// JIT-compile the whole-body callback kernel when `ec.jit_enabled`,
+/// JIT-compile the whole-body callback kernel when `ec.fusion_enabled`,
 /// else `None` (the slot node-walks).
 ///
 /// `body` is the kernel's body Node and `self_call` its self-recursion
@@ -820,9 +820,10 @@ fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
     self_call: Option<&(crate::BindId, crate::fusion::LambdaCallInfo)>,
     apply_sites: &nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
 ) -> Option<std::sync::Arc<crate::fusion::emit::WrappedKernel>> {
-    if !ec.jit_enabled {
+    if !ec.fusion_enabled {
         return None;
     }
+    eprintln!("PROBE_PERSLOT_HOF_KERNEL_COMPILING fusion_enabled={}", ec.fusion_enabled);
     let r = crate::fusion::emit::compile_kernel_with_callees_direct(
         &mut ec.jit.lock(),
         kernel,

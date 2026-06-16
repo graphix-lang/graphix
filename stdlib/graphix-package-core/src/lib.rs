@@ -873,18 +873,21 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                                             old.delete(ctx);
                                         }
                                     }
-                                } else if ctx.jit_enabled {
+                                } else if ctx.fusion_enabled {
                                     // Impure callback (async ops in the body):
                                     // no whole-body kernel. Fuse the body's
                                     // maximal sync sub-regions IN PLACE via the
                                     // canonical walk — the async residue stays
                                     // node-walked, and each per-slot clone_rebind
                                     // shares the fused kernels' Arcs. Gated on
-                                    // jit_enabled (parity with the old
-                                    // build_body_split path; try_fuse doesn't
-                                    // self-gate, so JitDisabled would otherwise
-                                    // fuse). Formerly build_body_split +
-                                    // splice_into_body.
+                                    // `fusion_enabled` so `FusionDisabled` (interp
+                                    // mode) node-walks the callback too: `try_fuse`
+                                    // doesn't self-gate, so without this the HOF
+                                    // callback would fuse even with fusion off.
+                                    // (The whole-body branch above is gated the
+                                    // same way — `fuse_callsite` returns None when
+                                    // fusion is disabled.) Formerly
+                                    // build_body_split + splice_into_body.
                                     if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
                                         cs.resolved_apply_mut()
                                     {
