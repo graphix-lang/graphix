@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_compiler::node_shape::{GirMatcher, NodeShape};
+use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 use graphix_package_core::run;
 use netidx::publisher::Value;
 
@@ -16,9 +16,9 @@ const ARRAY_INDEXING0: &str = r#"
 run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
+}; shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
 
-// ── array[i] bounds-check seam (node-walk / gir-interp / JIT) ──
+// ── array[i] bounds-check seam (node-walk / JIT) ──
 // `array[i]` is `[elem, Error<…>]`: out-of-bounds (or negative
 // underflow) produces an `ArrayIndexError` rather than the element,
 // via the shared `array_index`. These exercise every branch across all
@@ -26,8 +26,8 @@ run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
 // the JIT model `a[i]` as a bare scalar with no bounds check. The
 // in-bounds cases pin the exact element value (catching an off-by-one
 // in the negative-from-end math); the error cases pin `is_err` (before
-// the fix, the gir-interp would *panic* on these and the JIT read
-// garbage).
+// the fix, the JIT read garbage on these out-of-bounds reads
+// without the check).
 
 // positive index past the end → error
 run!(array_index_oob_pos, r#"{ let a = [10, 20, 30]; a[10] }"#,
@@ -63,7 +63,7 @@ const ARRAY_INDEXING1: &str = r#"
 }
 "#;
 
-// `a[i..j]` (ArraySlice) lowers to `GirOp::ArraySlice` (Nullable<Array>).
+// `a[i..j]` (ArraySlice) lowers to the array-slice op (Nullable<Array>).
 run!(array_indexing1, ARRAY_INDEXING1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(1), Value::I64(2)] =>
         true,

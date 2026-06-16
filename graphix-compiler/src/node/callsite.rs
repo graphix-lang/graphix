@@ -991,8 +991,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
         if let Some((_, f)) = &self.function {
             // A resolved user-lambda callee is a cross-kernel call:
             // `try_fuse`'s analysis discovered the site and built (or
@@ -1002,7 +1002,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // lower) de-fuses and the subtree node-walks.
             if matches!(f.view(), crate::ApplyView::Lambda(_)) {
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
-                    return crate::gir_jit::emit_lambda_call_node(cx, self, &info);
+                    return crate::fusion::emit::emit_lambda_call_node(cx, self, &info);
                 }
                 bail!(
                     "emit_clif: lambda call site `{}` not discovered — \
@@ -1032,7 +1032,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             );
             if is_self {
                 let info = info.clone();
-                return crate::gir_jit::emit_lambda_call_node(cx, self, &info);
+                return crate::fusion::emit::emit_lambda_call_node(cx, self, &info);
             }
         }
         // Builtin DynCall. `marshal_arg_indices[i]` is a position in
@@ -1075,7 +1075,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        crate::gir_jit::emit_dyncall_node(cx, &info, &arg_nodes)
+        crate::fusion::emit::emit_dyncall_node(cx, &info, &arg_nodes)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

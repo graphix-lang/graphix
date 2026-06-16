@@ -47,11 +47,11 @@ async fn load_and_await(code: &str) -> Result<Value> {
 async fn load_qop_unwraps_result() -> Result<()> {
     // `str::parse("42")?` — Qop on a `Result<i64, ParseError>` return.
     // The Result lowers to `Nullable<i64>` and Qop is lowered to
-    // `GirOp::QopUnwrap` which extracts the success i64. JIT must
+    // the qop-unwrap CLIF emission which extracts the success i64. JIT must
     // fire because there's no Block-with-let wrapper here.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from(
@@ -81,7 +81,7 @@ async fn load_qop_unwraps_result() -> Result<()> {
         }
     };
     assert_eq!(value, Value::Bool(true));
-    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
     assert!(inv > 0, "JIT_INVOCATIONS=0 — Qop kernel didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -95,7 +95,7 @@ async fn load_variadic_and_jits() -> Result<()> {
     // `BuiltinSlot::Variadic` slot path through DynCall.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from("and(true, true, false)")))
@@ -123,7 +123,7 @@ async fn load_variadic_and_jits() -> Result<()> {
         }
     };
     assert_eq!(value, Value::Bool(false));
-    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
     assert!(inv > 0, "JIT_INVOCATIONS=0 — variadic and didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -134,11 +134,11 @@ async fn load_variadic_and_jits() -> Result<()> {
 async fn load_array_literal_jits() -> Result<()> {
     // `[1, 2, 3]` as a program body — exercises `ExprKind::Array`
     // lowering via the new `emit_array_new` path, which reuses
-    // `GirOp::TupleNew` and tags the outer GirType as `Array(I64)`.
+    // the tuple-new CLIF emission and tags the outer type as an i64 array.
     // Counter > 0 proves the JIT'd kernel ran.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from("[1, 2, 3]")))
@@ -173,7 +173,7 @@ async fn load_array_literal_jits() -> Result<()> {
     assert_eq!(arr[0], Value::I64(1));
     assert_eq!(arr[1], Value::I64(2));
     assert_eq!(arr[2], Value::I64(3));
-    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
     assert!(inv > 0, "JIT_INVOCATIONS=0 — array literal kernel didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -194,7 +194,7 @@ async fn load_single_arith() -> Result<()> {
 /// program that calls `core::bit_and` — a sync builtin with two
 /// `i64` args and an `i64` return. Discovery should register the
 /// call site as a `FnSource::Builtin` slot; the JIT-compiled
-/// kernel issues a `GirOp::DynCall` that dispatches into the
+/// kernel issues a DynCall that dispatches into the
 /// builtin's `Apply::update` through `dispatch_typed`. The
 /// counter assertion proves the JIT'd wrapper ran (so the
 /// builtin's DynCall actually executed natively).
@@ -205,7 +205,7 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
     let ctx = init(tx).await?;
     // Reset AFTER init so we count only fixture JIT, not stdlib
     // root-module compilation.
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from(
@@ -235,7 +235,7 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
         }
     };
     assert_eq!(value, Value::I64(0x0F));
-    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
     assert!(inv > 0, "JIT_INVOCATIONS=0 — bit_and call didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -250,11 +250,11 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn jit_counter_bumps_on_load() -> Result<()> {
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
-    assert_eq!(graphix_compiler::gir_jit_helpers::jit_invocations(), 0);
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    assert_eq!(graphix_compiler::fusion::emit_helpers::jit_invocations(), 0);
     let v = load_and_await("3 * 4 + 5").await?;
     assert_eq!(v, Value::I64(17));
-    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
     assert!(
         inv > 0,
         "JIT_INVOCATIONS=0 after a kernel-spliced load — the JIT \
@@ -331,7 +331,7 @@ async fn compile_then_compile_external_scalar() -> Result<()> {
 /// → `populate_kernel_inputs` → runtime arg-packing chain for a String
 /// kernel parameter (not const-inlined, since the binding lives in a
 /// separate compilation unit). The direct ABI round-trip lives in
-/// `gir_{interp,jit}::tests::*string_and_value_kernel_params`; this
+/// `fusion::{kernel,emit}::tests::*string_and_value_kernel_params`; this
 /// closes the discovery + native-dispatch half.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
@@ -339,7 +339,7 @@ async fn external_string_region_param() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     let _first = ctx.rt.compile(ArcStr::from("let s = \"hello\";")).await?;
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx.rt.compile(ArcStr::from("str::len(s)")).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -354,7 +354,7 @@ async fn external_string_region_param() -> Result<()> {
                         if id == eid {
                             assert_eq!(v, Value::I64(5));
                             assert!(
-                                graphix_compiler::gir_jit_helpers::jit_invocations() > 0,
+                                graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
                                 "string region-param kernel should JIT-dispatch"
                             );
                             ctx.shutdown().await;
@@ -369,7 +369,7 @@ async fn external_string_region_param() -> Result<()> {
 
 /// End-to-end value-shape region-input param: an external `datetime`
 /// binding flows into a fused kernel as a `value_params` slot and is
-/// consumed by `GirOp::ValueArith` (`d + duration:1.s`). The result is
+/// consumed by the value-arith CLIF emission (`d + duration:1.s`). The result is
 /// a `datetime`, decoded back through the two-register value boundary.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
@@ -380,7 +380,7 @@ async fn external_datetime_region_param() -> Result<()> {
         .rt
         .compile(ArcStr::from("let d = datetime:\"2024-01-01T00:00:00Z\";"))
         .await?;
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx.rt.compile(ArcStr::from("d + duration:1.s")).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -400,7 +400,7 @@ async fn external_datetime_region_param() -> Result<()> {
                                 "expected 2024-01-01T00:00:01Z, got {v:?}"
                             );
                             assert!(
-                                graphix_compiler::gir_jit_helpers::jit_invocations() > 0,
+                                graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
                                 "datetime region-param kernel should JIT-dispatch"
                             );
                             ctx.shutdown().await;
@@ -472,7 +472,7 @@ async fn load_uses_external_scalar() -> Result<()> {
 async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::gir_jit_helpers::reset_jit_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx.rt.load(Source::Internal(ArcStr::from(code))).await?;
     let eid = res
         .exprs
@@ -498,7 +498,7 @@ async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
             }
         }
     };
-    let inv = graphix_compiler::gir_jit_helpers::jit_invocations();
+    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
     ctx.shutdown().await;
     Ok((value, inv))
 }
@@ -520,7 +520,7 @@ async fn closure_primitive_capture() -> Result<()> {
 /// t.0 + t.1 + x; g(10)` → 13. The capture `t` is a tuple, so the
 /// call passes a composite arg across the kernel boundary. The
 /// interpreter routes it into the callee's tuple slot
-/// (`eval_kernel_full`); the JIT's `GirOp::Call` arm doesn't lower
+/// (`eval_kernel_full`); the JIT's cross-kernel-call emission doesn't lower
 /// composite args yet, so in jit mode `fuse()` falls back to the
 /// interpreter. Either way the value is correct. When #131-JIT lands,
 /// upgrade this to `load_value_and_jit` + assert `JIT_INVOCATIONS > 0`.
@@ -562,7 +562,7 @@ async fn closure_capture_respects_shadow() -> Result<()> {
 /// C8 — fn-typed external (statically resolved). `let f = |x| x + 1;
 /// let g = |y| f(y) * 2; g(5)` → 12. `g` references `f` (a function),
 /// which is NOT a value capture — the body's CallSite resolves to
-/// `f`'s kernel and emits a `GirOp::Call`. Verifies fn externals
+/// `f`'s kernel and emits a cross-kernel call. Verifies fn externals
 /// don't break closure conversion.
 #[tokio::test(flavor = "current_thread")]
 async fn closure_fn_external_static() -> Result<()> {
@@ -574,11 +574,11 @@ async fn closure_fn_external_static() -> Result<()> {
 /// Cross-kernel-call arg ordering regression guard: a lambda whose
 /// formal args are `(composite, scalar)`. The callee's ABI groups
 /// params by kind (scalars first, then composite pointers — see
-/// `GirKernel::abi_params`), so a naive positional arg pass would
+/// `KernelSig::abi_params`), so a naive positional arg pass would
 /// route the scalar `5` into the tuple-pointer slot and dereference
 /// it (a misaligned-pointer crash). The interpreter buckets each arg
-/// by `GirType` into the right slot, so `g((10,20), 5)` = 35 with no
-/// crash. (The JIT `GirOp::Call` arm returns Err for the composite
+/// by `AbiKind` into the right slot, so `g((10,20), 5)` = 35 with no
+/// crash. (The JIT cross-kernel-call emission returns Err for the composite
 /// arg and falls back to interp until #131-JIT; that's where this
 /// guard matters most — the JIT must assemble args in kind-grouped
 /// order.)
@@ -1093,7 +1093,7 @@ async fn clone_nested_capture() -> Result<()> {
 /// value, inside the per-slot clone path. The arm body's `Ref(n)` now
 /// resolves to the scrutinee via `known_consts` (the fix in
 /// `emit_arm_condition`'s `Bind` arm); previously it lowered to a
-/// dangling `GirOp::Local("n")` that panicked at runtime.
+/// dangling local read of `n` that panicked at runtime.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_select_let_bound() -> Result<()> {
     assert_i64s(
@@ -1133,9 +1133,9 @@ async fn region_select_let_bound() -> Result<()> {
 
 #[cfg(debug_assertions)]
 async fn pure_select_value_and_fusion(body: &str) -> Result<(Value, u64)> {
-    graphix_compiler::gir_jit_helpers::reset_fusion_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_fusion_invocations();
     let v = pure_map(body).await?;
-    let f = graphix_compiler::gir_jit_helpers::fusion_invocations();
+    let f = graphix_compiler::fusion::emit_helpers::fusion_invocations();
     Ok((v, f))
 }
 
@@ -1203,7 +1203,7 @@ async fn fused_select_arith_wrapped() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
-    graphix_compiler::gir_jit_helpers::reset_fusion_invocations();
+    graphix_compiler::fusion::emit_helpers::reset_fusion_invocations();
     let v = load_and_await(
         "select rand::rand(#start: 0, #end: 1000000, #clock: 1) \
          { n => n == n }",
@@ -1211,7 +1211,7 @@ async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
     .await?;
     assert_eq!(v, Value::Bool(true));
     assert!(
-        graphix_compiler::gir_jit_helpers::fusion_invocations() > 0,
+        graphix_compiler::fusion::emit_helpers::fusion_invocations() > 0,
         "rand-scrutinee select should fuse (the dup bug was fusion-only)"
     );
     Ok(())
@@ -1638,8 +1638,8 @@ proptest::proptest! {
 // `load_uses_external_scalar`).
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_external_scalar() -> Result<()> {
-    use graphix_compiler::gir::{prim_type, PrimType};
-    use graphix_compiler::node_shape::{GirMatcher, NodeShape};
+    use graphix_compiler::fusion::vocab::{prim_type, PrimType};
+    use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
@@ -1650,11 +1650,11 @@ async fn node_shape_external_scalar() -> Result<()> {
     // The whole expression fuses into one kernel: scalar input `foo`,
     // returns i64, body multiplies (a `Bin` op).
     let spec = NodeShape::fused(
-        GirMatcher::new()
+        KernelMatcher::new()
             .returns(prim_type(PrimType::I64))
             .params(&["foo"]),
-        // F4 (#213): `.contains(GirOpTag::Bin)` pin removed at the F2
-        // flip — direct kernels carry no GIR body to tag-match;
+        // F4 (#213): the binary-op tag pin removed at the F2
+        // flip — direct kernels carry no op-tag metadata to tag-match;
         // restore as an EmitTag assertion.
     );
     ctx.rt.match_shape(eid, spec).await?;
@@ -1662,7 +1662,7 @@ async fn node_shape_external_scalar() -> Result<()> {
     // The matcher must have teeth: a wrong criterion (the kernel's
     // one param is `foo`, not `nope`) must produce a mismatch, not
     // silently pass.
-    let bad = NodeShape::fused(GirMatcher::new().params(&["nope"]));
+    let bad = NodeShape::fused(KernelMatcher::new().params(&["nope"]));
     let err = ctx.rt.match_shape(eid, bad).await;
     assert!(err.is_err(), "matcher should reject a wrong spec, but passed");
 

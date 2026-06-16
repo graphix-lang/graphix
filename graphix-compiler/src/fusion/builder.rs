@@ -2,12 +2,12 @@
 //! JIT artifact + its input feeder Nodes as an ordinary `Update`
 //! node. Built by `fusion::try_fuse` (regions) and
 //! `FusedCallback::build_slot` (per-slot HOF dispatch); the actual
-//! kernel executor is [`crate::gir_interp::GirNode`].
+//! kernel executor is [`crate::fusion::kernel::Kernel`].
 
 use crate::{
     expr::Expr,
-    gir::KernelSig,
-    gir_jit::WrappedKernel,
+    fusion::vocab::KernelSig,
+    fusion::emit::WrappedKernel,
     Event, ExecCtx, Node, Refs, Rt, UserEvent, Update,
 };
 use anyhow::{anyhow, Result};
@@ -26,14 +26,14 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: crate::typ::Type,
     /// One feeder Node per kernel input slot. Driven by
-    /// `GirNode::update` via the `from` slice.
+    /// `Kernel::update` via the `from` slice.
     feeders: Box<[Node<R, E>]>,
     /// The actual kernel executor — handles JIT/interp dispatch,
     /// `DYN_DISPATCH_HANDLE` setup, builtin slot pre-binding,
     /// pending-flag propagation, composite-return marshalling.
-    /// Routing through `GirNode` (instead of re-implementing the
+    /// Routing through `Kernel` (instead of re-implementing the
     /// dispatch surface) keeps FusedKernel minimal.
-    inner: crate::gir_interp::GirNode<R, E>,
+    inner: crate::fusion::kernel::Kernel<R, E>,
     _phantom: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
@@ -57,7 +57,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         top_id: crate::expr::ExprId,
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
-        // A fused node REQUIRES a JIT. The GIR interpreter is gone —
+        // A fused node REQUIRES a JIT. There is no interpreter fallback —
         // if JIT compilation failed (or `JitDisabled` was set), refuse
         // to construct. Every splice site treats this `Err` as "don't
         // splice — leave the original nodes to node-walk", which is
@@ -71,7 +71,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ))
             }
         };
-        let inner = crate::gir_interp::GirNode::new(
+        let inner = crate::fusion::kernel::Kernel::new(
             ctx, kernel, n_args, wrapped, scope, top_id,
         )?;
         Ok(Box::new(Self {
@@ -102,7 +102,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<Value> {
-        // Delegate to GirNode (Apply) — drives the feeders, sets up
+        // Delegate to Kernel (Apply) — drives the feeders, sets up
         // the DynCall dispatch handle, invokes JIT (or interp), and
         // decodes the return value.
         use crate::Apply;
@@ -156,7 +156,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     ) -> Node<R, E> {
         // An ordinary Node: recurse its feeder deps (Refs that re-resolve
         // to the slot's fresh element / captures by name) and clone the
-        // GirNode by SHARING the immutable kernel/JIT/registry Arcs while
+        // Kernel by SHARING the immutable kernel/JIT/registry Arcs while
         // re-initing per-cycle scratch + dyn_slots. The kernel is
         // incidental — the precompiled update logic, shared across slots.
         let feeders: Box<[Node<R, E>]> =
@@ -165,7 +165,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         let inner = self
             .inner
             .clone_shared(ctx, n_args, scope.clone(), self.spec.id)
-            .expect("FusedKernel GirNode clone_shared failed");
+            .expect("FusedKernel Kernel clone_shared failed");
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),

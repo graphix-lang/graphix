@@ -26,8 +26,8 @@
 //!   helper's named primitive type.
 //!
 //! Fusion-built kernels statically guarantee all three (the
-//! typechecker pinned the param's `GirType::Array<T>` /
-//! `GirType::Tuple([..., T, ...])` shape, and the runtime hands
+//! typechecker pinned the param's `Type::Array<T>` /
+//! `Type::Tuple([..., T, ...])` shape, and the runtime hands
 //! us a `Value::Array(ValArray)` that matches).
 
 use netidx_value::{ValArray, Value};
@@ -40,7 +40,7 @@ use poolshark::local::LPooled;
 ///
 /// Top check: the outer `Value` is exactly two machine words,
 /// 8-byte aligned. This is the assumption the helpers' two-`I64`
-/// CLIF signature and `GirNode::update`'s slot-pair pack/unpack
+/// CLIF signature and `Kernel::update`'s slot-pair pack/unpack
 /// depend on.
 ///
 /// Per-payload checks: each non-primitive variant payload must fit
@@ -281,8 +281,8 @@ pub unsafe extern "C" fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
 ///     allocation (when an earlier scalar DynCall pended silently
 ///     and the kernel's return path produced an owned heap value).
 ///
-/// The flag stays set so that `GirNode::update`'s wrapper-level
-/// check sees it and returns `None`. `GirNode::update` resets the
+/// The flag stays set so that `Kernel::update`'s wrapper-level
+/// check sees it and returns `None`. `Kernel::update` resets the
 /// flag to `false` at the top of every kernel invocation, so a
 /// stale `true` from a previous run never leaks across.
 ///
@@ -317,7 +317,7 @@ pub unsafe extern "C" fn graphix_value_buf_push_arcstr(
 }
 
 /// Push an owned `ArcStr` onto the dyncall arg buffer, wrapping it in
-/// `Value::String`. Used for `GirType::String` DynCall args — the
+/// `Value::String`. Used for `Type::String` DynCall args — the
 /// caller's SSA holds an owned ArcStr (bit-equivalent to its raw
 /// thin pointer) and transfers ownership into the buf.
 #[unsafe(no_mangle)]
@@ -450,7 +450,7 @@ pub extern "C" fn graphix_value_drop(disc: u64, payload: u64) {
     );
     // SAFETY: disc is nonzero and JIT'd code only ever passes word
     // pairs it received from a Value-producing helper, so the bits
-    // are a valid `Value` (same decode as `GirNode::update`'s
+    // are a valid `Value` (same decode as `Kernel::update`'s
     // value-shape return path).
     drop(unsafe { std::mem::transmute::<[u64; 2], Value>([disc, payload]) })
 }
@@ -568,12 +568,12 @@ pub extern "C" fn graphix_array_slice(src: Value, start: i64, end: i64, flags: i
 //
 // `ArcStr` is `repr(transparent)` over a thin pointer, so it travels
 // across the JIT/Rust boundary as a single 8-byte value. Codegen
-// treats `GirType::String` SSA values as `i64` CLIF values holding
+// treats `Type::String` SSA values as `i64` CLIF values holding
 // the ArcStr's raw pointer. Lifetime tracking matches the variant /
 // nullable scheme — every owned ArcStr SSA either feeds a consumer
 // helper that takes ownership (e.g. `graphix_string_buf_push_arcstr`
 // drops on push) or is returned across the kernel boundary (the
-// wrapper hands it to `GirNode::update` which wraps it into a
+// wrapper hands it to `Kernel::update` which wraps it into a
 // `Value::String`). On the pending path the in-flight string buf
 // (still owned by the kernel) drops via `graphix_string_buf_drop`.
 
@@ -609,7 +609,7 @@ pub extern "C" fn graphix_arcstr_drop(s: u64) {
     );
     // SAFETY: nonzero, and JIT'd code only ever passes bits it
     // received from an ArcStr-producing helper (same decode as
-    // `GirNode::update`'s String return path).
+    // `Kernel::update`'s String return path).
     drop(unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(s) })
 }
 
@@ -627,7 +627,7 @@ pub extern "C" fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
 }
 
 /// Build a `Value::String` from an owned ArcStr — boundary
-/// marshaling for kernel-return-type `GirType::String`. Consumes the
+/// marshaling for kernel-return-type `Type::String`. Consumes the
 /// ArcStr (transfers ownership into the Value).
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_value_new_string(s: arcstr::ArcStr) -> Value {
@@ -798,9 +798,9 @@ pub extern "C" fn graphix_variant_payload_bool(v: Value, payload_idx: usize) -> 
 //
 // JIT'd kernels invoke fn-typed params (HOF args) via the
 // `graphix_dyncall` helper. The dispatch is type-erased through a
-// `DynDispatchHandle` set on a thread-local by `GirNode::update`:
+// `DynDispatchHandle` set on a thread-local by `Kernel::update`:
 //
-//   1. Before calling the wrapper, GirNode::update builds a
+//   1. Before calling the wrapper, Kernel::update builds a
 //      `DynDispatchHandle` whose `dispatch` is a monomorphized
 //      `dispatch_typed::<R, E>` function pointer and whose `state`
 //      points to a per-call struct holding the dyn_slots, ctx,
@@ -814,9 +814,9 @@ pub extern "C" fn graphix_variant_payload_bool(v: Value, payload_idx: usize) -> 
 //   4. If the inner Apply returns `None` (callee not ready this
 //      cycle), `dispatch` returns 0 and sets `DYNCALL_PENDING`.
 //      Otherwise it returns the scalar result's raw u64 bits.
-//   5. After the wrapper returns, GirNode::update checks
+//   5. After the wrapper returns, Kernel::update checks
 //      `DYNCALL_PENDING` (and resets it). If set, the kernel
-//      result is discarded and GirNode::update returns `None` so
+//      result is discarded and Kernel::update returns `None` so
 //      the runtime re-fires next cycle.
 //
 // Restrictions: this v1 only supports DynCalls where both args
@@ -845,7 +845,7 @@ pub struct DynCallRet {
 }
 
 /// Type-erased per-call dispatch handle, lifetime-tied to one
-/// `GirNode::update` invocation. Built on the stack there and
+/// `Kernel::update` invocation. Built on the stack there and
 /// pointed at via the thread-local.
 #[repr(C)]
 pub struct DynDispatchHandle {
@@ -868,12 +868,12 @@ pub struct DynDispatchHandle {
 thread_local! {
     /// Pointer to the active `DynDispatchHandle` for the JIT'd
     /// kernel currently on the call stack. Set/restored by
-    /// `GirNode::update`. Null when no JIT'd kernel is in flight.
+    /// `Kernel::update`. Null when no JIT'd kernel is in flight.
     pub static DYN_DISPATCH_HANDLE: Cell<*const DynDispatchHandle> =
         const { Cell::new(std::ptr::null()) };
 
     /// Sticky flag set by `dispatch_typed` when an inner Apply
-    /// returns `None`. Read and reset by `GirNode::update` after
+    /// returns `None`. Read and reset by `Kernel::update` after
     /// the wrapper returns; if true, the kernel's result is
     /// discarded and `update` itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
@@ -893,14 +893,14 @@ thread_local! {
 
     /// Per-thread *fused-kernel* execution counter, debug-build only.
     /// Bumped by [`record_fusion_invocation`] at the commit point of
-    /// every fused-kernel execution — `GirNode::update` once it has
+    /// every fused-kernel execution — `Kernel::update` once it has
     /// decided to run — regardless of whether the kernel runs via the
     /// JIT or the interpreter. Together with [`JIT_INVOCATIONS`] this
     /// lets the test harness distinguish three observable fusion
     /// outcomes for a fixture: `FUSION > 0 && JIT > 0` (fused + JIT),
     /// `FUSION > 0 && JIT == 0` (fused but ran on interp — the JIT
     /// can't lower this shape yet), and `FUSION == 0` (no fusion at
-    /// all). A JIT'd kernel bumps both (its `GirNode::update` runs,
+    /// all). A JIT'd kernel bumps both (its `Kernel::update` runs,
     /// then its JIT wrapper runs); an interp-fused kernel bumps only
     /// this one.
     #[cfg(debug_assertions)]
@@ -908,7 +908,7 @@ thread_local! {
 }
 
 /// Bump the per-thread fused-kernel execution counter. Called from
-/// `GirNode::update` once a fused kernel commits to running (after
+/// `Kernel::update` once a fused kernel commits to running (after
 /// the "did any input update" gate). `cfg(debug_assertions)`-gated.
 #[cfg(debug_assertions)]
 pub fn record_fusion_invocation() {
@@ -1018,7 +1018,7 @@ pub unsafe extern "C" fn graphix_dyncall(
     let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
     if handle.is_null() {
         panic!(
-            "graphix_dyncall: no DynDispatchHandle set — GirNode::update \
+            "graphix_dyncall: no DynDispatchHandle set — Kernel::update \
              must populate the thread-local before invoking JIT'd code \
              that calls HOFs"
         );
@@ -1485,11 +1485,11 @@ mod tests {
     /// clear. The clearing variant (former behavior) caused a
     /// latent UB on composite-DynCall pending paths — the JIT pre_
     /// pending block consumed the flag from inside the kernel,
-    /// confusing `GirNode::update`'s wrapper-level pending check
+    /// confusing `Kernel::update`'s wrapper-level pending check
     /// into decoding the kernel's null sentinel as a real Value
     /// (`Box::from_raw(0)` or `transmute([0, 0]) -> Value`).
     /// Multiple calls in succession must all observe the same
-    /// state; the flag stays set until `GirNode::update` resets
+    /// state; the flag stays set until `Kernel::update` resets
     /// it at the top of the NEXT kernel invocation.
     #[test]
     fn pending_take_is_peek_not_clear() {

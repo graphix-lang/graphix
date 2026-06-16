@@ -303,8 +303,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     fn emit_clif(
         &self,
         callsite: &crate::node::callsite::CallSite<R, E>,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<Option<crate::gir_jit::CompiledExpr>> {
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<Option<crate::fusion::emit::CompiledExpr>> {
         // Without this delegation the trait default's `Ok(None)`
         // silently swallows every builtin's emission hook — the
         // call site falls to DynCall and the builtin "loses fusion"

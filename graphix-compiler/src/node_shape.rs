@@ -4,7 +4,7 @@
 //! fusion fired. Neither can see *what fused into what*. A [`NodeShape`]
 //! is a declarative *specification* of a compiled (sub)graph: either a
 //! standard node (a `NodeView` kind plus child shapes), a fused kernel
-//! matched by partial [`GirMatcher`] criteria, or [`NodeShape::Any`]
+//! matched by partial [`KernelMatcher`] criteria, or [`NodeShape::Any`]
 //! (a don't-care wildcard). [`match_node`] checks a real `Node` against
 //! a spec and returns a precise mismatch reason on failure.
 //!
@@ -16,7 +16,7 @@
 //! graph as text — an authoring aid for writing the spec in the first
 //! place, not part of the assertion path.
 
-use crate::{gir::KernelSig, typ::Type, Node, NodeView, Rt, UserEvent};
+use crate::{fusion::vocab::KernelSig, typ::Type, Node, NodeView, Rt, UserEvent};
 use arcstr::ArcStr;
 use smallvec::SmallVec;
 
@@ -33,8 +33,8 @@ pub enum NodeShape {
         kind: Option<ArcStr>,
         children: Vec<NodeShape>,
     },
-    /// A fused kernel matched against partial [`GirMatcher`] criteria.
-    Fused(GirMatcher),
+    /// A fused kernel matched against partial [`KernelMatcher`] criteria.
+    Fused(KernelMatcher),
     /// Matches if *any* node in the subtree (this node or a
     /// descendant) matches the inner spec. Lets a test assert "this
     /// program contains a kernel shaped like X" without spelling out
@@ -57,7 +57,7 @@ impl NodeShape {
     }
 
     /// A fused kernel matching `m`.
-    pub fn fused(m: GirMatcher) -> Self {
+    pub fn fused(m: KernelMatcher) -> Self {
         NodeShape::Fused(m)
     }
 
@@ -69,7 +69,7 @@ impl NodeShape {
 
     /// Convenience: `contains(fused(m))` — a kernel matching `m`
     /// somewhere in the program.
-    pub fn contains_fused(m: GirMatcher) -> Self {
+    pub fn contains_fused(m: KernelMatcher) -> Self {
         NodeShape::contains(NodeShape::fused(m))
     }
 
@@ -86,14 +86,14 @@ impl NodeShape {
 /// (or additive); an unset field is a wildcard, so a spec asserts only
 /// what it cares about — no brittle full-IR transcript.
 #[derive(Debug, Clone, Default)]
-pub struct GirMatcher {
+pub struct KernelMatcher {
     /// Require this exact kernel return type.
     pub return_type: Option<Type>,
     /// Require exactly these scalar param names, in order.
     pub param_names: Option<Vec<ArcStr>>,
 }
 
-impl GirMatcher {
+impl KernelMatcher {
     pub fn new() -> Self {
         Self::default()
     }
@@ -131,8 +131,9 @@ impl GirMatcher {
             }
         }
         // Body-op assertions return as `EmitTag`s recorded during
-        // emission — F4 (#213). The GirOp-tag matcher died with the
-        // GIR IR; the parked fixture pins are marked `F4 (#213)`.
+        // emission — F4 (#213). Kernels carry no per-op tags yet, so
+        // there's no body-op matcher; the parked fixture pins are
+        // marked `F4 (#213)`.
         Ok(())
     }
 }

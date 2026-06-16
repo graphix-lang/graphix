@@ -123,9 +123,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -253,9 +253,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_map_ref_node(cx, &self.source.node, &self.key.node)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_map_ref_node(cx, &self.source.node, &self.key.node)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

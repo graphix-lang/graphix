@@ -5,11 +5,9 @@
 //! ([`BinOp`], [`CmpOp`], [`BoolOp`]) and the cross-kernel call
 //! signature ([`KnownFusedFn`]).
 //!
-//! The GIR intermediate representation that used to live here
-//! (`GirExpr`/`GirOp`/`GirStmt`) was deleted with the direct
-//! node-emission flip (`design/distributed_jit.md`): body code
-//! generation is `Update::emit_clif` / `Apply::emit_clif` walking the
-//! node graph, so there is no IR between the nodes and CLIF.
+//! Body code generation is `Update::emit_clif` / `Apply::emit_clif`
+//! walking the node graph (`design/distributed_jit.md`), so there is
+//! no IR between the nodes and CLIF.
 
 use crate::typ::Type;
 

@@ -213,8 +213,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
         // `(x)` — grouping only; transparent recurse.
         self.n.emit_clif(cx)
     }
@@ -477,9 +477,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_const_node(cx, &self.value, &self.typ)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_const_node(cx, &self.value, &self.typ)
     }
 
     fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
@@ -604,12 +604,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_block_node(cx, &self.children)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_block_node(cx, &self.children)
     }
 
-    fn jit(
+    fn fuse(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
     ) -> Result<Option<Node<R, E>>> {
@@ -621,7 +621,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         // emit_block_node has no publish, so a region containing a
         // bind only ever covers block-scoped lets.
         for child in self.children.iter_mut() {
-            crate::fusion::jit_node(child, ctx)?;
+            crate::fusion::fuse(child, ctx)?;
         }
         Ok(None)
     }
@@ -749,9 +749,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_string_interpolate_node(cx, &self.args)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_string_interpolate_node(cx, &self.args)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -1074,9 +1074,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_cast_node(cx, &self.n, &self.target)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_cast_node(cx, &self.n, &self.target)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

@@ -7,16 +7,14 @@
 //! policy — WHAT the loop body computes — via a body closure that
 //! compiles the body through the [`BodyCx`] handed to it.
 //!
-//! Two callers share the scaffolds:
-//! - (historically) the classic GIR loop arms, deleted with the IR,
-//!   until Stage F of `design/distributed_jit.md` deletes them, and
-//! - the direct node path's `Apply::emit_clif` HOF impls (Stage D2),
-//!   whose closures compile Node bodies via `node.emit_clif(cx)`.
+//! The scaffolds' caller is the direct node path's
+//! `Apply::emit_clif` HOF impls (Stage D2), whose closures compile
+//! Node bodies via `node.emit_clif(cx)`.
 //!
-//! The emitted CLIF is instruction-for-instruction what the GIR arms
-//! emitted before the extraction; changes here must preserve the
-//! emission sequence exactly (instruction order, block-creation
-//! order, variable-declaration order).
+//! The emitted CLIF must stay instruction-for-instruction stable;
+//! changes here must preserve the emission sequence exactly
+//! (instruction order, block-creation order, variable-declaration
+//! order).
 
 use super::*;
 
@@ -32,8 +30,8 @@ use super::*;
 /// valarray analogue of [`register_hof_buf`]) and pass `owned: true`,
 /// or bind it into the env as an owned composite local and pass
 /// `owned: false` (env scope-exit drops it — passing `owned: true` as
-/// well would DOUBLE-drop on the normal path). The classic GIR arms
-/// always pass `owned: false` (the array is a borrowed env local).
+/// well would DOUBLE-drop on the normal path). A borrowed env-local
+/// array passes `owned: false`.
 pub struct ArraySrc {
     pub ptr: ClifValue,
     pub owned: bool,
@@ -43,9 +41,9 @@ pub struct ArraySrc {
 /// duration of each iteration, with shape dispatch from `typ`. `id` is
 /// the callback's element-arg `BindId` when the caller has one (the
 /// direct node path, where the body's element `Ref`s carry it and
-/// resolve BindId-first — the #162/#167 shadowing class); the classic
-/// GIR arms pass `None` (their synthetic locals are name-only). Bind
-/// bookkeeping emits no instructions, so `Some` vs `None` never
+/// resolve BindId-first — the #162/#167 shadowing class); a name-only
+/// caller passes `None` (its synthetic locals are looked up by name).
+/// Bind bookkeeping emits no instructions, so `Some` vs `None` never
 /// changes the emitted CLIF.
 pub struct HofElem<'a> {
     pub name: &'a ArcStr,
@@ -56,11 +54,9 @@ pub struct HofElem<'a> {
     /// [`bind_elem`] reads each off the owned composite element and
     /// binds it BindId-first, so the body's leaf `Ref`s resolve
     /// without name plumbing. Sparse positions (`|(k, _)|`) simply
-    /// have no entry. Empty for single-name callbacks and for every
-    /// classic GIR arm (classic lowers destructure as body-block
-    /// `TupleGet` lets instead). Only valid on a composite element —
-    /// leaves on a scalar element are a caller bug ([`bind_elem`]
-    /// Errs).
+    /// have no entry. Empty for single-name callbacks. Only valid on
+    /// a composite element — leaves on a scalar element are a caller
+    /// bug ([`bind_elem`] Errs).
     pub leaves: &'a [(crate::BindId, usize, PrimType)],
 }
 
@@ -105,7 +101,7 @@ fn bind_elem(
     i_now: ClifValue,
     elem: &HofElem,
 ) -> Result<BoundElem> {
-    match gir::abi_kind(elem.typ) {
+    match vocab::abi_kind(elem.typ) {
         Some(AbiKind::Scalar(prim)) => {
             if !elem.leaves.is_empty() {
                 return Err(anyhow!(
@@ -168,8 +164,8 @@ fn drop_composite_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
 }
 
 /// Drop the input array when the caller passed it owned — emitted at
-/// the single post-loop merge point of each scaffold. The classic GIR
-/// arms always pass `owned: false`, so this emits nothing for them.
+/// the single post-loop merge point of each scaffold. A borrowed
+/// array (`owned: false`) emits nothing.
 /// Register an OWNED input array (a fresh producer the caller just
 /// emitted — literal, slice, inlined-HOF result) for pending cleanup:
 /// a DynCall / `?` / bottom-abort that pends inside the loop body
@@ -325,7 +321,7 @@ pub fn push_field(
     typ: &Type,
     src: CompositeSource,
 ) -> Result<()> {
-    let helper_name: &str = match gir::abi_kind(typ) {
+    let helper_name: &str = match vocab::abi_kind(typ) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => match src {
             CompositeSource::Owned => "graphix_value_buf_push_array",
@@ -362,7 +358,7 @@ pub fn push_field(
     // (`is_value_shape()`). When it only listed Variant|Nullable, a
     // DateTime/Duration/Bytes/Map field fell to the `_` arm and
     // `.single()` Err'd, silently de-fusing the whole kernel.
-    if gir::is_value_shape(typ) {
+    if vocab::is_value_shape(typ) {
         let (disc, payload) = match cv {
             CompiledExpr::Value { disc, payload } => (disc, payload),
             _ => {
@@ -501,7 +497,7 @@ where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
 {
     let composite = matches!(
-        gir::abi_kind(elem.typ),
+        vocab::abi_kind(elem.typ),
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
     );
     adopt_owned_src(cx, &arr);
@@ -668,14 +664,14 @@ where
 
 /// `array::fold(arr, init, |acc, x| body)` — a scalar accumulator
 /// Variable threaded through the loop. Per iteration the acc is bound
-/// FIRST, then the element (GIR construction pins this order); the
+/// FIRST, then the element (this binding order is load-bearing); the
 /// body's result re-defines the acc Variable. No output buf, no
 /// pending-cleanup registration.
 ///
 /// The `init`/`body` closures must yield a DEFINITELY-VALID scalar:
 /// the design contract is that a may-bottom fold body de-fuses at
-/// BUILD time, so a closure holding a `Scalar2` must Err (the GIR
-/// arms get this from `compile_scalar`'s `.single()`), never strip
+/// BUILD time, so a closure holding a `Scalar2` must Err (callers
+/// get this from `compile_scalar`'s `.single()`), never strip
 /// the validity bit and return the bare value. Same contract for
 /// [`emit_filter_loop`]/[`emit_find_loop`] predicates and
 /// [`emit_flat_map_loop`] bodies. Contrast [`push_field`] (the map

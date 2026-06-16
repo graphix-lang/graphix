@@ -287,9 +287,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_select_node(cx, self)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_select_node(cx, self)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

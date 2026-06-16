@@ -288,22 +288,51 @@ HOF builtins (e.g. `MapQ`, `FoldQ`) that take function-typed arguments must retu
   be correct (see the global `node-walk-is-canonical` memory). A fusion/JIT bug
   can *lose fusion* (a perf regression) but can never produce a *wrong answer* —
   correctness is structural.
-- **Fusion → cranelift JIT** (`fusion/`, `gir_jit.rs`) identifies sync (pure)
-  subtrees and compiles them to native code. **JIT success → splice the native
-  kernel + delete the originals; JIT failure → don't splice, the originals
-  node-walk.** There is no third evaluator.
+- **Fusion → cranelift JIT** (`fusion/`, the emitter is `fusion/emit.rs`)
+  identifies sync (pure) subtrees and compiles them to native code. **JIT
+  success → splice the native kernel + delete the originals; JIT failure →
+  don't splice, the originals node-walk.** There is no third evaluator.
 
-**The GIR IR is GONE (F3, 2026-06-12).** The pipeline is `Expr → node
-graph → CLIF`, period: `fuse()` is `Update::jit` recursion, each
-node's `emit_clif` emits its own CLIF (`Apply::emit_clif` for
-builtins, `MapFn`/`FoldFn::emit_clif` + the `gir_jit::scaffold` loop
-scaffolds for HOFs), and kernel builds are pure SIGNATURE derivation
-— `sig_from_inputs` is the single sig builder, the `Arc<KernelSig>`
-is the compiled-callable handle, and "is it fusable" IS the compile
-attempt. `gir.rs` is ~70 lines of vocabulary (kernel_abi re-export,
-BinOp/CmpOp/BoolOp, KnownFusedFn); `GirExpr`/`GirOp`/`GirStmt`/
-`GirKernel`/`GirEmitter`/`FusedBuiltin`/`FUSABLE`/`emit_gir` no
-longer exist. See `design/distributed_jit.md` — "F3 — the delete"
+**The GIR IR is GONE (F3, 2026-06-12; the gir-named files were renamed
+into `fusion/` on 2026-06-16 — pure churn, behavior-neutral).** The
+pipeline is `Expr → node graph → CLIF`, period: `fusion::fuse` is
+`Update::fuse` recursion, each node's `emit_clif` emits its own CLIF
+(`Apply::emit_clif` for builtins, `MapFn`/`FoldFn::emit_clif` + the
+`fusion::emit::scaffold` loop scaffolds for HOFs), and kernel builds
+are pure SIGNATURE derivation — `sig_from_inputs` is the single sig
+builder, the `Arc<KernelSig>` is the compiled-callable handle, and "is
+it fusable" IS the compile attempt. `fusion/vocab.rs` is ~70 lines of
+vocabulary (kernel_abi re-export, BinOp/CmpOp/BoolOp, KnownFusedFn);
+`GirExpr`/`GirOp`/`GirStmt`/`GirKernel`/`GirEmitter`/`FusedBuiltin`/
+`FUSABLE`/`emit_gir` no longer exist.
+
+> **GIR is historical — do NOT rebuild it.** GIR was a parallel typed
+> IR (`GirExpr`/`GirOp`/`GirStmt`/`GirKernel`/`GirType`) plus a GIR
+> *interpreter* — a redundant THIRD evaluator beside the node-walk and
+> the JIT. It was removed deliberately because: (1) the interpreter
+> forced every semantics fix to be written THREE times (node-walk +
+> GIR-interp + JIT), a standing drift hazard, and its centralized
+> jump-table was slower than the node-walk's distributed vtable
+> dispatch; (2) the closed op-set was a *vocabulary tax* — every new
+> op/shape had to be added to `GirOp`/`GirType` AND the node graph AND
+> the emitter; (3) the op-list was a pass-through label anyway —
+> emission keys off the netidx `Type` + `abi_kind`, never off `GirOp`
+> structure, so **the node graph already IS the IR**. Lesson: keep the
+> node graph as the single IR and distribute codegen as `emit_clif`
+> per node; the only part of `GirKernel` worth keeping was the ABI
+> contract, which survives as `KernelSig` / `abi_kind` in
+> `kernel_abi.rs`.
+
+The 2026-06-16 rename map: `gir_jit.rs → fusion/emit.rs`,
+`gir_interp.rs → fusion/kernel.rs` (`GirNode → Kernel`), `gir.rs →
+fusion/vocab.rs`, `gir_jit_helpers.rs → fusion/emit_helpers.rs`,
+`gir_jit_intern.rs → fusion/intern.rs`, `gir_jit_scaffold.rs →
+fusion/scaffold.rs` (still a submodule of `emit`); `Update::jit →
+Update::fuse`, `fusion::jit_node → fusion::fuse` (the old
+flag-checking `fuse` driver was deleted and its `FusionDisabled |
+JitDisabled` skip promoted into `compile()`, so it's checked once
+instead of every recursion); `GirMatcher → KernelMatcher`. See
+`design/distributed_jit.md` — "F3 — the delete"
 for what went and the two behavioral seams (fuse_callsite's
 fall-through to the split path on a failed whole-body compile;
 builtin-call discovery riding `for_each_node` with resolved
@@ -321,7 +350,7 @@ missing-input bottom support.
   gone. `Value::copy_unchecked` is the branch-free copy for proven scalars.
 - **Types:** netidx `Type` everywhere. `GirType` is gone. Runtime shape
   comes from `abi_kind(&Type) -> Option<AbiKind>` + `freeze_concrete` (in
-  `kernel_abi.rs`, re-exported through `gir.rs`); `PrimType` is the closed
+  `kernel_abi.rs`, re-exported through `fusion/vocab.rs`); `PrimType` is the closed
   register-scalar set (the one *good* small classifier enum — exhaustively
   matched in codegen).
 
@@ -367,7 +396,7 @@ missing-input bottom support.
   to fuse — the direct path degrades silently, so value agreement alone can't
   catch a coverage regression. Landing it immediately exposed two probes that
   had NEVER compiled (CompileErr == CompileErr passes `all_three_agree`).
-  Read `failed` as a blocker profile, not a gap count: the jit_node
+  Read `failed` as a blocker profile, not a gap count: the `fusion::fuse`
   attempt-then-recurse protocol means a wholly-fused trivial program still
   logs ~3 Module/Bind misses.
 - A divergence is **at least as likely a fused/JIT bug as a node-walk one** —
@@ -383,13 +412,13 @@ fuses + JITs per slot, the async residue node-walks. `design/impure_hof_fusion.m
 **Kernel ABI**: kind-grouped params — scalars, then array/tuple/struct
 pointers, then string, then 2-word variant/nullable/value — derived from a
 single source (`kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`,
-re-exported through `gir.rs`).
+re-exported through `fusion/vocab.rs`).
 
 ### Design documents (`design/`)
 
 **Current / active:**
 - `distributed_jit.md` — the GIR-IR removal as it's actually being executed:
-  fusion/JIT distributed as `Update::emit_clif` + `Update::jit` trait methods
+  fusion/JIT distributed as `Update::emit_clif` + `Update::fuse` trait methods
   (the delete/sleep/refs pattern), `Apply::emit_clif` for builtins,
   `fusion::try_fuse` as mechanics-only library, `KernelSig` in
   `kernel_abi.rs`. In progress (Stage A landed; Stage C complete through
@@ -407,11 +436,11 @@ re-exported through `gir.rs`).
   `compile_ifchain` trap was reachable there and SIGILL'd — #201,
   classic path now refuses identically; the stmt form was already
   immune via its pending-exit scrutinee gate). Both repros live in
-  findings/select-jun2026. `gir::freeze_normalized` exists because
+  findings/select-jun2026. `fusion::vocab::freeze_normalized` exists because
   typecheck leaves a select's result type as the un-flattened arm
   union (`Set([i64, TVar→i64])`), which `freeze_concrete` rejects.
   Stage D1 landed: the eight HOF loop scaffolds extracted from the
-  GirOp arms into `gir_jit/scaffold` (`gir_jit_scaffold.rs`) —
+  GirOp arms into `fusion/scaffold.rs` —
   mechanics (loop/buf/element binding+drops/pending-cleanup) behind
   `emit_*_loop` fns taking body closures over `BodyCx`; verified
   CLIF-identical via `GRAPHIX_DUMP_CLIF` differential. D2 reuses the
@@ -628,7 +657,7 @@ re-exported through `gir.rs`).
   re-annotated Jit). Remaining before F2: one-time FuseExpect
   re-annotation of the gains → F2 flip → F3 delete → F4 EmitTags.
   **F2 FLIPPED (2026-06-13)**: CFlag::DirectNodeJit gone, fuse() =
-  unconditional jit_node recursion (classic planner body deleted),
+  unconditional fuse recursion (classic planner body deleted),
   Mode::DirectJit aliases Mode::Jit, 168 FuseExpect upgrades, 5
   GirOp-tag shape pins parked for F4. Six flip-surfaced defects
   fixed (design/distributed_jit.md "F2 — the flip" has the detail):
@@ -667,6 +696,12 @@ re-exported through `gir.rs`).
 - `impure_hof_fusion.md`, `composite_hof_fusion.md` — HOF fusion.
 - `clone_rebind_testing.md` — the `clone_rebind` contract + its test campaign.
 - `queue_fn.md` — `queue_fn` feature design.
+- `fusion_lowering_split.md` — **PROPOSED, not built.** Split `try_fuse`'s welded
+  analysis+lowering into a pure fusion *analysis* pass (color nodes with a
+  `KernelId`, build per-kernel descriptors in `ctx`) consumed by a thin lowering
+  pass (descriptors → CLIF). Node graph stays the IR; descriptors are the data
+  seam. Motivated by legibility (see the `feedback_clarity_as_participation`
+  memory).
 
 **Historical** (earlier fusion stages — superseded, kept for archaeology):
 `fusion_architecture.md`, `unified_fusion.md`, `whole_graph_fusion.md`,
@@ -674,14 +709,34 @@ re-exported through `gir.rs`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
-- **`Update::splice_child` deleted — the impure-HOF split re-expressed as `jit_node`.**
+- **`jit` → `fuse` rename + flag-check promotion + the `gir` naming scrub
+  (2026-06-16; pure churn, behavior-neutral — 1431×2 differential tests pass).**
+  The fusion driver `Update::jit` became `Update::fuse` (it fuses, it doesn't
+  JIT), and the free function `fusion::jit_node` became `fusion::fuse`. The old
+  tiny `fusion::fuse` driver — whose only job was the `FusionDisabled |
+  JitDisabled` skip — was deleted and that check promoted into `compile()`, so
+  it runs once instead of on every recursive step. Separately, the lingering
+  `gir` naming (the GIR IR itself was deleted at F3; only the names survived as
+  "deferred churn") was scrubbed: the six `gir*.rs` files moved into `fusion/`
+  (`emit.rs`, `kernel.rs`, `vocab.rs`, `emit_helpers.rs`, `intern.rs`,
+  `scaffold.rs`), `crate::gir_*` / `graphix_compiler::gir_*` paths rewrote to
+  `fusion::*`, `GirNode → Kernel`, `GirMatcher → KernelMatcher`, `gir_*` test
+  names de-prefixed, and ~186 GIR mentions in comments/strings reworded to
+  current-state vocabulary. Zero `gir` remains in the codebase. See the "GIR is
+  historical — do NOT rebuild it" note above for the why. (Follow-up noted by the
+  scrub agents: several comments still cite *deleted-but-not-gir-named* helpers —
+  `compile_ifchain`, `compile_concat`, `from_type`, `emit_lambda_call`,
+  `eval_kernel_full`, etc. — left intact since they contain no `gir`; a separate
+  de-staling pass could address them.)
+
+- **`Update::splice_child` deleted — the impure-HOF split re-expressed as `fuse`.**
   The only live user of the ExprId-keyed `splice_child` / `fusion::splice_into` was the
   impure-HOF body split: `fuse_callsite`'s `build_body_split` computed `(value_id →
   kernel)` pairs and a *separate* `splice_into_body` pass re-found each node by id to
   install it — decoupled only because `fuse_callsite` borrows the CallSite immutably,
   though both operate on the SAME template body. Now `fuse_callsite` does ONLY the
   whole-body (Phase-1) attempt; when it returns `None` (impure callback), `MapQ`'s
-  template build runs the canonical `fusion::jit_node` on the cloned template body IN
+  template build runs the canonical `fusion::fuse` on the cloned template body IN
   PLACE — fusing each maximal sync sub-region via the standard parent-swap
   (`std::mem::replace`), no id search. Gated on `ctx.jit_enabled` for exact parity with
   the old `jit_compile_split_kernel` gate (`try_fuse` doesn't self-gate, so JitDisabled
@@ -689,8 +744,8 @@ re-exported through `gir.rs`).
   `fusion::splice_into`, `fusion::find_node_by_id` (orphaned), `build_body_split`,
   `splice_into_body`, `SplitKernel`, `FusedCallback.split`/`is_split` (−328 net). Removes
   a DRY violation (`build_body_split` duplicated `try_fuse`'s region-finding) and there is
-  no `NodeViewMut`, so reusing `jit_node`'s concrete mutable descent is the only in-place
-  install that doesn't add a new abstraction. `jit_node` fuses strictly MORE than
+  no `NodeViewMut`, so reusing `fusion::fuse`'s concrete mutable descent is the only in-place
+  install that doesn't add a new abstraction. `fusion::fuse` fuses strictly MORE than
   `build_body_split` — single-expr callback bodies it skipped (it only walked block
   `let`-values; `Connect` is fusion-terminal), e.g. `array::map(a, |s| str::trim(s))` —
   so 5 lib_tests fixtures (`str::{split,rsplit,splitn,rsplitn}`, `list::find`, the

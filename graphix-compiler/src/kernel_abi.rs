@@ -6,9 +6,8 @@
 //! ([`abi_kind`] / [`AbiKind`]), type freezing ([`freeze_concrete`]),
 //! the typed kernel input slots, and [`KernelSig`] — the kind-grouped
 //! parameter/return wire layout every ABI site derives from instead
-//! of hand-walking per-kind lists. The GIR op-list IR is being
-//! removed (the JIT emits CLIF straight from the node graph); this
-//! module is the part that survives.
+//! of hand-walking per-kind lists. The JIT emits CLIF straight from
+//! the node graph; this module holds the durable, body-free contract.
 
 use crate::typ::{AbstractId, Type};
 use crate::BindId;
@@ -157,45 +156,37 @@ impl PrimType {
 // `scalar_prim`, `is_value_shape`).
 
 
-// ─── Type-based classifier (additive foundation for the GirType→Type
-//     refactor) ─────────────────────────────────────────────────────
+// ─── Type-based runtime-shape classifier ─────────────────────────────
 //
 // These three pieces — [`AbiKind`], [`abi_kind`], and
-// [`freeze_concrete`] — reproduce the *decisions* of
-// [`GirType::from_type`] while carrying the structure in a plain
-// netidx [`Type`] instead of the parallel [`GirType`] enum. The
-// differential test at the bottom of this file proves the
-// correspondence shape-by-shape. None of this touches `GirType`,
-// `from_type`, or any existing usage; it is purely additive groundwork
-// before the larger cut.
+// [`freeze_concrete`] — classify the runtime shape of a netidx
+// [`Type`] over the fusable subset. [`abi_kind`] returns the flat,
+// top-level [`AbiKind`] (it does not recurse to verify nested
+// fusability); [`freeze_concrete`] recurses, producing a fully-
+// concrete `Type` (or `None` if any nested element is non-fusable).
 //
-// **Important parity note.** `from_type` is `Env`-free and does NOT
-// resolve `Type::Ref` aliases (a bare `Type::Ref` reaching it falls
-// through to `PrimType::from_type` → `None`); the fusion callers
-// pre-resolve Refs via `resolve_abstract` before calling `from_type`.
-// To keep the invariant `freeze_concrete(t).is_some() ==
-// from_type(t).is_some()` *exact* (and the signature `Env`-free, like
-// `from_type`), `freeze_concrete` mirrors `from_type`'s traversal
-// precisely: it derefs TVars (`with_deref`) and expands nullary
-// `Type::Abstract` via [`ABSTRACT_REGISTRY`], but it does NOT resolve
+// **Important parity note.** Neither resolves `Type::Ref` aliases (a
+// bare `Type::Ref` reaching the scalar fallback yields `None`); the
+// fusion callers pre-resolve Refs via `resolve_abstract` before
+// classifying. Both deref TVars (`with_deref`) and expand nullary
+// `Type::Abstract` via [`ABSTRACT_REGISTRY`], but neither resolves
 // `Type::Ref`. A frozen `Type` is therefore TVar-free and (nullary-)
 // abstract-free over the fusable subset; Ref-resolution, if needed,
-// happens in the caller exactly as it does for `from_type` today.
+// happens in the caller.
 
-/// The flat, top-level runtime-shape classifier — the `Type`-based
-/// twin of the leaf shapes [`GirType::from_type`] produces. Unlike
-/// `GirType`, this is *not* nested: any structure (element / field /
-/// payload types) is carried by the classified [`Type`] itself and
-/// read back out via the structure accessors ([`array_elem`],
-/// [`tuple_slots`], [`struct_fields`], [`variant_cases`],
-/// [`nullable_inner`]).
+/// The flat, top-level runtime-shape classifier — the leaf shapes a
+/// `Type` can take at the ABI boundary. This is *not* nested: any
+/// structure (element / field / payload types) is carried by the
+/// classified [`Type`] itself and read back out via the structure
+/// accessors ([`array_elem`], [`tuple_slots`], [`struct_fields`],
+/// [`variant_cases`], [`nullable_inner`]).
 ///
 /// Mirrors [`AbiParamKind`] plus the two non-param leaf shapes
-/// `from_type` can yield (`Unit` from `Type::Bottom`, `Null` from the
+/// [`abi_kind`] can yield (`Unit` from `Type::Bottom`, `Null` from the
 /// null primitive). `Value` here is the *bare* value-shape group —
 /// `DateTime` / `Duration` / `Bytes` / `Map` / `Error` — which all
-/// share the two-register `Value` wire form and which `GirType`
-/// distinguishes only to pick the right runtime carrier.
+/// share the two-register `Value` wire form; the carried `Type`
+/// selects the right runtime carrier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbiKind {
     Scalar(PrimType),
@@ -248,14 +239,13 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
     })
 }
 
-/// Classify the TOP-LEVEL runtime shape of a `Type`, mirroring the
-/// arms of [`GirType::from_type`] but returning the flat [`AbiKind`]
-/// (it does NOT recurse to verify element fusability — that's
-/// [`freeze_concrete`]'s job). Derefs TVars via `with_deref`; expands
-/// nullary `Type::Abstract` via [`ABSTRACT_REGISTRY`]. Returns `None`
-/// for the same top-level shapes `from_type` rejects (unbound TVar,
-/// `Type::Fn`, multi-member non-option/non-variant `Set`,
-/// parameterized abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
+/// Classify the TOP-LEVEL runtime shape of a `Type`, returning the
+/// flat [`AbiKind`] (it does NOT recurse to verify element fusability
+/// — that's [`freeze_concrete`]'s job). Derefs TVars via `with_deref`;
+/// expands nullary `Type::Abstract` via [`ABSTRACT_REGISTRY`]. Returns
+/// `None` for the top-level shapes that aren't fusable (unbound TVar,
+/// `Type::Fn`, multi-member non-option/non-variant `Set`, parameterized
+/// abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
     // Clone the deref'd type OUT of `with_deref` so the TVar's read
     // guard is DROPPED before the body runs: the Abstract arm takes
@@ -328,9 +318,8 @@ pub fn abi_kind(t: &Type) -> Option<AbiKind> {
             });
             if all_variants {
                 // Note: an EMPTY set classifies as a variant union here
-                // (zero members vacuously all-variant) — matching
-                // `from_type`, whose variant-union collect over zero
-                // members yields `Some(vec![])` → `GirType::Variant`.
+                // (zero members vacuously all-variant) — a variant-union
+                // over zero members still yields `AbiKind::Variant`.
                 return Some(AbiKind::Variant);
             }
             return None;
@@ -375,18 +364,15 @@ fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
 }
 
 /// Produce a fully-concrete `Type` (no live TVars, no nullary
-/// abstracts) over the fusable subset, mirroring
-/// [`GirType::from_type`]'s traversal and accept/reject decisions
-/// exactly. Returns `None` iff `from_type` returns `None` for the same
-/// input — that is the load-bearing invariant the differential test
-/// asserts.
+/// abstracts) over the fusable subset, recursing through every nested
+/// element. Returns `None` if any part of the type is non-fusable —
+/// the accept/reject decisions match [`abi_kind`] at each level.
 ///
 /// A `depth` cap (16, matching `resolve_abstract`) terminates on
-/// recursive abstract types: when the cap trips we return `None`,
-/// which is also what `from_type` does for such types (it would
-/// recurse until the registry yields a shape it can't represent, or
-/// stack-overflow — here we simply cap and reject, which is the safe
-/// matching behavior since recursive types aren't fusable anyway).
+/// recursive abstract types: when the cap trips we return `None`. Such
+/// types would otherwise recurse until the registry yields a shape we
+/// can't represent, or stack-overflow — capping and rejecting is safe
+/// since recursive types aren't fusable anyway.
 pub fn freeze_concrete(t: &Type) -> Option<Type> {
     freeze_concrete_d(t, 0)
 }
@@ -525,10 +511,10 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
 
 // ─── Structure accessors over a (frozen) `Type` ──────────────────────
 //
-// These read nesting out of a `Type` the way the `GirType::as_*`
-// accessors read it out of a `GirType`. They expect a frozen (concrete)
-// `Type` but tolerate live TVars by deref'ing; they do not resolve
-// Refs (parity with `from_type`).
+// These read nesting out of a `Type`: element, slot, field, payload,
+// and option-inner types. They expect a frozen (concrete) `Type` but
+// tolerate live TVars by deref'ing; they do not resolve Refs (the
+// callers pre-resolve via `resolve_abstract`).
 
 /// Element type of a `Type::Array`; `None` otherwise.
 pub fn array_elem(t: &Type) -> Option<&Type> {
@@ -556,8 +542,8 @@ pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type)]> {
 
 /// The variant cases of a `Type`: a single `Type::Variant` yields one
 /// case; a `Type::Set` of single-Variant members yields the case list
-/// (mirroring `GirType::from_type`'s Variant-union handling). `None`
-/// for any other shape. Each case is `(tag, payload-types)`.
+/// (the same variant-union handling [`abi_kind`] uses). `None` for
+/// any other shape. Each case is `(tag, payload-types)`.
 pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
     fn one(t: &Type) -> Option<(ArcStr, Vec<Type>)> {
         t.with_deref(|r| match r {
@@ -586,8 +572,8 @@ pub fn freeze_normalized(t: &Type) -> Option<Type> {
     freeze_concrete(t).or_else(|| freeze_concrete(&t.normalize()))
 }
 
-/// Normalizes ALL THREE option-shaped forms `GirType::Nullable`
-/// collapses and returns the (frozen) success type `T`:
+/// Normalizes ALL THREE option-shaped forms that collapse to
+/// [`AbiKind::Nullable`] and returns the (frozen) success type `T`:
 /// - `Type::Set([T, null])` (the explicit option Set),
 /// - `Type::Set([T, Error])` (the result Set),
 /// - the collapsed 2-bit primitive `T | null`.
@@ -625,7 +611,7 @@ pub fn nullable_inner(t: &Type) -> Option<Type> {
 
 /// The scalar [`PrimType`] of a `Type` whose top-level shape is a plain
 /// register scalar; `None` for any composite / string / value-shape /
-/// option type. Replaces `GirType::as_prim`.
+/// option type.
 pub fn scalar_prim(t: &Type) -> Option<PrimType> {
     match abi_kind(t) {
         Some(AbiKind::Scalar(p)) => Some(p),
@@ -635,7 +621,7 @@ pub fn scalar_prim(t: &Type) -> Option<PrimType> {
 
 /// If `t` is `Array<P>` with a plain scalar element, the element
 /// `PrimType`; `None` if the element is composite or `t` isn't an
-/// array. Replaces `GirType::as_array_prim`.
+/// array.
 pub fn array_scalar_prim(t: &Type) -> Option<PrimType> {
     array_elem(t).and_then(scalar_prim)
 }
@@ -643,7 +629,7 @@ pub fn array_scalar_prim(t: &Type) -> Option<PrimType> {
 /// True for the "Value-shape" types — those whose JIT/runtime
 /// representation is a two-register `Value` (disc + payload):
 /// `Variant`, `Nullable`/option/result, `DateTime`, `Duration`,
-/// `Bytes`, `Map`, `Error`. Replaces `GirType::is_value_shape`.
+/// `Bytes`, `Map`, `Error`.
 pub fn is_value_shape(t: &Type) -> bool {
     matches!(
         abi_kind(t),
@@ -653,10 +639,9 @@ pub fn is_value_shape(t: &Type) -> bool {
 
 // ─── Concrete-`Type` constructors for the leaf shapes ────────────────
 //
-// Carrying `Type` in the GIR means the emitter sometimes needs to mint
-// a concrete `Type` for a shape it knows by hand (a `string` let, a
-// `null` literal, a scalar result). These build the frozen `Type` the
-// classifier recognizes.
+// The emitter sometimes needs to mint a concrete `Type` for a shape it
+// knows by hand (a `string` let, a `null` literal, a scalar result).
+// These build the frozen `Type` the classifier recognizes.
 
 /// A plain scalar `Type` for a [`PrimType`] (`Type::Primitive`).
 pub fn prim_type(p: PrimType) -> Type {
@@ -755,7 +740,7 @@ pub struct Input {
 }
 
 /// An array value passed as a kernel parameter. The element type is
-/// any [`GirType`] — primitive or nested composite. Runtime value is
+/// any [`Type`] — primitive or nested composite. Runtime value is
 /// `&ValArray`; for primitive elements the JIT loads via
 /// `arr.get_unchecked::<T>(i)`, for composite elements via a
 /// `*mut Value` accessor.
@@ -767,7 +752,7 @@ pub struct ArrayInput {
 }
 
 /// A tuple value passed as a kernel parameter. Per-slot types can be
-/// any [`GirType`] (nested tuples / structs / variants / arrays
+/// any [`Type`] (nested tuples / structs / variants / arrays
 /// allowed). Same `&ValArray` runtime boundary as [`ArrayInput`].
 #[derive(Debug, Clone)]
 pub struct TupleInput {
@@ -777,7 +762,7 @@ pub struct TupleInput {
 }
 
 /// A struct value passed as a kernel parameter. Field types can be
-/// any [`GirType`]. Same `&ValArray` boundary, with fields stored at
+/// any [`Type`]. Same `&ValArray` boundary, with fields stored at
 /// compile-time-known sorted-by-name positions.
 #[derive(Debug, Clone)]
 pub struct StructInput {
@@ -787,7 +772,7 @@ pub struct StructInput {
 }
 
 /// A variant value passed as a kernel parameter. Payload types per
-/// case can be any [`GirType`]. Same `&ValArray` boundary as
+/// case can be any [`Type`]. Same `&ValArray` boundary as
 /// tuples/structs, but the slot at index 0 is the tag string (an
 /// interned `ArcStr`) and payloads start at index 1. `cases`
 /// enumerates the legal `(tag, payload_types)` shapes — at runtime
@@ -824,7 +809,7 @@ pub struct StringInput {
 
 /// A Value-shape kernel let-binding whose type is `DateTime` or
 /// `Duration`. Unlike `NullableInput` (which stores only the inner
-/// `T` of `[T, null]`), this carries the full `GirType` so a `Ref`
+/// `T` of `[T, null]`), this carries the full `Type` so a `Ref`
 /// read resolves to the correct `DateTime`/`Duration` type. Runtime
 /// representation rides the interpreter's `nullables` Value slot
 /// (a name→Value map); the JIT uses the `nullables` `ValueVar` slot.
@@ -901,7 +886,7 @@ pub struct FnParam {
 pub enum FnSource {
     /// HOF argument: the kernel's caller passes a `LambdaDef` value
     /// at position `arg_pos` (zero-based, in the lambda's source-
-    /// order argument list, mixed with primitive args). GirNode's
+    /// order argument list, mixed with primitive args). Kernel's
     /// runtime extracts it from the incoming `from` slice.
     Param { arg_pos: u32 },
     /// Statically-resolved user binding: the `LambdaDef` lives in
@@ -910,7 +895,7 @@ pub enum FnSource {
     /// callee inline (its body uses unsupported constructs) but can
     /// still call it via Apply::update.
     Binding { bind_id: crate::BindId },
-    /// Sync builtin call. Resolved at `GirNode::new` time by looking
+    /// Sync builtin call. Resolved at `Kernel::new` time by looking
     /// up `name` in `ctx.builtins`, constructing the builtin's
     /// `Apply<R, E>` via the registered init fn, and stashing it in
     /// the per-kernel slot. The slot is pre-bound — `dispatch` skips
@@ -935,7 +920,7 @@ pub enum FnSource {
         layout: std::sync::Arc<[BuiltinSlot]>,
         /// Lambda ID of the binding this call resolves to (when the
         /// fusion discovery pass could identify it). Used by
-        /// `GirNode::pre_bind_builtin` to look up the lambda's
+        /// `Kernel::pre_bind_builtin` to look up the lambda's
         /// env+scope so a `BuiltinSlot::LabeledDefault` whose
         /// expression references free variables visible only in
         /// the lambda's original module scope (e.g. `default_escape`
@@ -1133,7 +1118,7 @@ pub struct KernelSig {
     pub string_params: Vec<StringInput>,
     /// Bare value-shape parameters — `DateTime` / `Duration` /
     /// `Bytes`. Two-word `Value` wire shape like variant/nullable,
-    /// but carries the full `GirType` (no inner `elem` indirection)
+    /// but carries the full `Type` (no inner `elem` indirection)
     /// so a `Local` read re-wraps to the right type. Rides the same
     /// `env.nullables` Value slot as those types' locals.
     pub value_params: Vec<ValueInput>,

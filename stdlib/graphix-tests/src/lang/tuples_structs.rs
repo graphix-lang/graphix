@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_compiler::node_shape::{GirMatcher, NodeShape};
+use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 use graphix_package_core::run;
 use netidx::publisher::Value;
 
@@ -20,7 +20,7 @@ run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
+   shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
 
 // A composite literal with a value-shape (Duration) field. The
 // `compile_and_push_field` helper-selection already routed all six
@@ -83,7 +83,7 @@ run!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
+   shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
 
 const STRUCTS0: &str = r#"
 {
@@ -115,7 +115,7 @@ run!(structs0, STRUCTS0, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(GirMatcher::new() /* F4 (#213): GirOp-tag pin removed at the F2 flip — direct kernels carry no GIR body; restore as an EmitTag assertion */));
+   shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
 
 const BINDSTRUCT: &str = r#"
 {
@@ -285,16 +285,16 @@ run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
 //
 // A top-level `let f = <lambda>` bails the enclosing Do (a lambda
 // binding can't be a kernel value), so a top-level `f(args)` never
-// becomes a `GirOp::Call` — `f` just runs as its own kernel with
-// composite *params*. To exercise a real cross-kernel `GirOp::Call`
+// becomes a cross-kernel call — `f` just runs as its own kernel with
+// composite *params*. To exercise a real cross-kernel call
 // with a non-scalar arg/return, the call must sit inside ANOTHER
-// lambda's body: `g`'s kernel then contains `GirOp::Call(h, …)`.
+// lambda's body: `g`'s kernel then contains the call to `h`.
 //
 // The interpreter routes each Call arg into the callee's per-kind
 // slot (`eval_kernel_full`). The callee `h` is itself eagerly fused
 // and JITs, so the observed state is `Jit` even though `g`'s kernel
 // currently falls back to interp for the composite Call (the JIT
-// `GirOp::Call` arm is the #131-JIT follow-up — it would let `g`'s
+// cross-kernel-call arm is the #131-JIT follow-up — it would let `g`'s
 // kernel JIT the call too, which the FUSION/JIT counters can't
 // distinguish from the callee JIT-ing).
 
@@ -333,8 +333,8 @@ run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
 // A value-shape (nullable) RETURN from a lambda, end-to-end: `f`
 // returns `[i64, null]` via a `select` with a `null` arm, and is
 // called inside the result block. The block's tail type is the
-// collapsed `i64 | null` primitive form; `GirType::from_type` now
-// recognises it (gir.rs), so `infer_body_rtype`'s fast path keeps
+// collapsed `i64 | null` primitive form; `abi_kind` now
+// recognises it (vocab.rs), so `infer_body_rtype`'s fast path keeps
 // the region from de-fusing. Exercises #131's value-shape Call
 // return through the full fusion pipeline.
 const CALL_NULLABLE_RETURN: &str = r#"
@@ -355,7 +355,7 @@ run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ── Value-shape `==` / `!=` (GirOp::ValueEq) ──────────────────────
+// ── Value-shape `==` / `!=` (the ValueEq op) ──────────────────────
 
 // String equality — exercises the String operand of `ValueEq`
 // (wrapped into `Value::String` for the comparison).

@@ -13,11 +13,6 @@ pub mod effects;
 pub mod env;
 pub mod expr;
 pub mod fusion;
-pub mod gir;
-pub mod gir_interp;
-pub mod gir_jit;
-pub mod gir_jit_helpers;
-pub mod gir_jit_intern;
 pub mod kernel_abi;
 pub mod node;
 pub mod node_shape;
@@ -34,7 +29,7 @@ use crate::{
     effects::EffectKind,
     env::Env,
     expr::{ExprId, ModPath},
-    gir_jit::{BodyCx, CompiledExpr},
+    fusion::emit::{BodyCx, CompiledExpr},
     node::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
@@ -94,9 +89,9 @@ pub enum CFlag {
     /// purely through the Update-trait node-walk.
     FusionDisabled,
     /// Run the fusion phase but skip JIT-compilation. Kernels are
-    /// still BUILT (GIR emission), but with no JIT wrapper a
-    /// [`crate::gir_interp::GirNode`] can't be constructed (the GIR
-    /// interpreter is gone — fusion is JIT-only), so nothing is
+    /// still BUILT (CLIF emission), but with no JIT wrapper a
+    /// [`crate::fusion::kernel::Kernel`] can't be constructed
+    /// (fusion is JIT-only), so nothing is
     /// spliced and the program node-walks. With the interpreter
     /// removed this is now behaviourally identical to
     /// `FusionDisabled`; it remains as the "build kernels but don't
@@ -377,7 +372,7 @@ pub struct ScopeMapEntry {
 /// Metadata captured for every `let foo = |...| 'builtin_name`
 /// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
 /// binding's [`BindId`] so the fusion pass can lower `Apply` sites
-/// targeting this binding into a [`crate::gir::FnSource::Builtin`]
+/// targeting this binding into a [`crate::fusion::vocab::FnSource::Builtin`]
 /// slot without round-tripping through the runtime's `LambdaDef`
 /// value.
 ///
@@ -387,7 +382,7 @@ pub struct ScopeMapEntry {
 ///
 /// `argspec` is the original source-level argument list (including
 /// each labeled arg's default expression, if any), needed to
-/// construct the per-formal-arg [`crate::gir::BuiltinSlot`]
+/// construct the per-formal-arg [`crate::fusion::vocab::BuiltinSlot`]
 /// layout at fusion time.
 ///
 /// `typ` is the binding's resolved function type at the binding
@@ -402,7 +397,7 @@ pub struct BuiltinBindInfo {
     pub typ: triomphe::Arc<typ::FnType>,
     /// Lambda definition ID for this binding's value (if it was
     /// compiled as a lambda — every binding registered here was).
-    /// Used by `GirNode::pre_bind_builtin` to look up the lambda's
+    /// Used by `Kernel::pre_bind_builtin` to look up the lambda's
     /// env+scope when compiling a `BuiltinSlot::LabeledDefault`
     /// expression — defaults may reference free variables visible
     /// only in the lambda's original definition scope.
@@ -903,7 +898,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// an impl compiles its children via `child.emit_clif(cx)`; the
     /// raw cranelift builder is `cx.b` and the graphix-specific
     /// surface (env binds, helper FuncRefs, taint/pending) lives on
-    /// [`crate::gir_jit::BodyCx`].
+    /// [`crate::fusion::emit::BodyCx`].
     ///
     /// The default is `Err`: this node doesn't emit, so any kernel
     /// attempt whose subtree contains it fails to compile and the
@@ -912,8 +907,8 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// fusion, never produce a wrong answer.
     fn emit_clif(
         &self,
-        _cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
+        _cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
         anyhow::bail!(
             "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
              node-walks",
@@ -928,8 +923,8 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     ///   this in." The caller (the parent node, or the compile-time
     ///   driver for roots) calls `old.delete(ctx)` after the swap.
     /// - `Ok(None)` — no replacement at this level. The impl already
-    ///   recursed `jit` into its own children via `&mut self` (using
-    ///   [`crate::fusion::jit_node`], which also attempts
+    ///   recursed `fuse` into its own children via `&mut self` (using
+    ///   [`crate::fusion::fuse`], which also attempts
     ///   [`crate::fusion::try_fuse`] on each child) and swapped any
     ///   that returned a replacement.
     ///
@@ -940,7 +935,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// is spliced and nothing below it is attempted). The default is
     /// `Ok(None)` with no recursion — correct for leaves; container
     /// nodes override.
-    fn jit(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         Ok(None)
     }
 }
@@ -1356,7 +1351,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// The info captures everything fusion needs to lower an
     /// `Apply` site whose `function` resolves to this binding into
     /// a DynCall against a
-    /// [`crate::gir::FnSource::Builtin`] slot: the canonical
+    /// [`crate::fusion::vocab::FnSource::Builtin`] slot: the canonical
     /// builtin `name` (matches `ctx.builtins`), the source-level
     /// `argspec` (with default expressions for labeled args), and
     /// the resolved `FnType`.
@@ -1383,10 +1378,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// paths), so the lock cost is negligible.
     ///
     /// Every kernel compiles into this module via
-    /// [`crate::gir_jit::compile_kernel_with_callees_direct`] —
+    /// [`crate::fusion::emit::compile_kernel_with_callees_direct`] —
     /// parent + callees declared and defined together so cross-kernel
     /// calls dispatch as direct CLIF calls.
-    pub jit: parking_lot::Mutex<gir_jit::Jit>,
+    pub jit: parking_lot::Mutex<fusion::emit::Jit>,
     /// On-demand monomorphized lambda-kernel cache, keyed by
     /// `(LambdaId, Arc<FnType>)`. Populated by `build_lambda_kernel`
     /// (callee discovery, per-slot HOF fusion): build the signature
@@ -1464,7 +1459,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
-            jit: parking_lot::Mutex::new(gir_jit::Jit::new()?),
+            jit: parking_lot::Mutex::new(fusion::emit::Jit::new()?),
             fusion_kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             fusion_building: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
@@ -1583,9 +1578,6 @@ pub fn compile<R: Rt, E: UserEvent>(
     ctx.jit_enabled = !flags.contains(CFlag::JitDisabled);
     let top_id = spec.id;
     ctx.fuse_top_id = Some(top_id);
-    // Fresh per-compile lambda-binding index — `ExecCtx` fields otherwise
-    // accumulate across compiles. Populated during `typecheck0`, consumed
-    // by the static resolution in `typecheck1`.
     ctx.bind_to_lambda.clear();
     let env = ctx.env.clone();
     let st = Instant::now();
@@ -1602,29 +1594,19 @@ pub fn compile<R: Rt, E: UserEvent>(
         ctx.env = env;
         return Err(e);
     }
-    // Second typecheck pass: pass 0 has now built the whole tree, so every
-    // `lambda_ids` closure is final. `typecheck1` finalizes call-site-
-    // dependent type info (the former deferred check), with `&mut self` at
-    // each CallSite.
     if let Err(e) = node.typecheck1(ctx) {
         ctx.env = env;
         return Err(e);
     }
     info!("typecheck time {:?}", st.elapsed());
-    // Static call resolution is no longer a separate pass: the
-    // `BindId → LambdaDef` index is built during `typecheck0` and every
-    // statically-resolvable CallSite is pre-bound during `typecheck1`
-    // (`CallSite::try_static_resolve`). The pre-bind eliminates the
-    // "bind on first use" indirection on every subsequent update and
-    // exposes the lambda body Node directly for fusion's walker.
-    // Fusion phase: walk the typed node graph, build kernels, splice
-    // in place. Currently a no-op stub — see fusion/mod.rs::fuse and
-    // the implementation plan for the iteration sequence.
-    let st = Instant::now();
-    if let Err(e) = crate::fusion::fuse(&mut node, ctx, flags) {
-        ctx.env = env;
-        return Err(e);
+    let off = CFlag::FusionDisabled | CFlag::JitDisabled;
+    if !flags.intersects(off) {
+        let st = Instant::now();
+        if let Err(e) = crate::fusion::fuse(&mut node, ctx) {
+            ctx.env = env;
+            return Err(e);
+        }
+        info!("fusion time {:?}", st.elapsed());
     }
-    info!("fusion time {:?}", st.elapsed());
     Ok(node)
 }

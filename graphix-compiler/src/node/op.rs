@@ -111,11 +111,11 @@ macro_rules! compare_op {
 
             fn emit_clif(
                 &self,
-                cx: &mut $crate::gir_jit::BodyCx,
-            ) -> Result<$crate::gir_jit::CompiledExpr> {
-                $crate::gir_jit::emit_cmp_node(
+                cx: &mut $crate::fusion::emit::BodyCx,
+            ) -> Result<$crate::fusion::emit::CompiledExpr> {
+                $crate::fusion::emit::emit_cmp_node(
                     cx,
-                    $crate::gir::CmpOp::$name,
+                    $crate::fusion::vocab::CmpOp::$name,
                     &self.lhs.node,
                     &self.rhs.node,
                 )
@@ -246,11 +246,11 @@ macro_rules! bool_op {
 
             fn emit_clif(
                 &self,
-                cx: &mut $crate::gir_jit::BodyCx,
-            ) -> Result<$crate::gir_jit::CompiledExpr> {
-                $crate::gir_jit::emit_bool_node(
+                cx: &mut $crate::fusion::emit::BodyCx,
+            ) -> Result<$crate::fusion::emit::CompiledExpr> {
+                $crate::fusion::emit::emit_bool_node(
                     cx,
-                    $crate::gir::BoolOp::$name,
+                    $crate::fusion::vocab::BoolOp::$name,
                     &self.lhs.node,
                     &self.rhs.node,
                 )
@@ -348,9 +348,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_not_node(cx, &self.n)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_not_node(cx, &self.n)
     }
 
     fn clone_rebind(
@@ -431,7 +431,7 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
 }
 
 /// Generate the `Update::emit_clif` override for an [`arith_op!`] type.
-/// `$base` is the unchecked [`crate::gir::BinOp`] (`Add` for both `+`
+/// `$base` is the unchecked [`crate::fusion::vocab::BinOp`] (`Add` for both `+`
 /// and `+?`). Unchecked ops emit through the shared arith relay;
 /// checked ops route to the checked relay (Value-shape result — the
 /// success value or the `ArithError` error value).
@@ -439,11 +439,11 @@ macro_rules! arith_emit_clif {
     (false, $base:ident) => {
         fn emit_clif(
             &self,
-            cx: &mut $crate::gir_jit::BodyCx,
-        ) -> Result<$crate::gir_jit::CompiledExpr> {
-            $crate::gir_jit::emit_arith_node(
+            cx: &mut $crate::fusion::emit::BodyCx,
+        ) -> Result<$crate::fusion::emit::CompiledExpr> {
+            $crate::fusion::emit::emit_arith_node(
                 cx,
-                $crate::gir::BinOp::$base,
+                $crate::fusion::vocab::BinOp::$base,
                 &self.lhs.node,
                 &self.rhs.node,
             )
@@ -452,11 +452,11 @@ macro_rules! arith_emit_clif {
     (true, $base:ident) => {
         fn emit_clif(
             &self,
-            cx: &mut $crate::gir_jit::BodyCx,
-        ) -> Result<$crate::gir_jit::CompiledExpr> {
-            $crate::gir_jit::emit_checked_arith_node(
+            cx: &mut $crate::fusion::emit::BodyCx,
+        ) -> Result<$crate::fusion::emit::CompiledExpr> {
+            $crate::fusion::emit::emit_checked_arith_node(
                 cx,
-                $crate::gir::BinOp::$base,
+                $crate::fusion::vocab::BinOp::$base,
                 &self.lhs.node,
                 &self.rhs.node,
             )

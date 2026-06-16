@@ -45,8 +45,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
 }
 
 /// The runtime semantics of `array[i]` — the single source of truth
-/// shared by the node-walk ([`ArrayRef::update`]), the GIR interpreter
-/// ([`crate::gir_interp`]), and the JIT (via
+/// shared by the node-walk ([`ArrayRef::update`]) and the JIT (via
 /// `graphix_valarray_index`). On success returns the bare element; on
 /// an out-of-bounds index returns the `ArrayIndexError` value (the
 /// access type is `[elem, Error<…>]`, so callers wrap the result in
@@ -54,7 +53,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
 ///
 /// Negative indices count from the end: `a[-1]` is the last element and
 /// `a[-len]` is the first (element 0). The shared single source of
-/// truth, so node-walk / gir-interp / JIT agree bit-for-bit.
+/// truth, so node-walk / JIT agree bit-for-bit.
 pub(crate) fn array_index(elts: &ValArray, i: i64) -> Value {
     if i >= 0 {
         let i = i as usize;
@@ -76,7 +75,7 @@ pub(crate) fn array_index(elts: &ValArray, i: i64) -> Value {
 /// Shared `bytes[i]` indexing — the same bounds-check / negative-from-end
 /// rule as [`array_index`], returning `Value::U8` or the out-of-bounds
 /// error (the access type is `[u8, Error<…>]` → `Nullable<u8>`). Single
-/// source of truth for node-walk / gir-interp / JIT.
+/// source of truth for node-walk / JIT.
 pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
     let idx = if i >= 0 { i } else { b.len() as i64 + i };
     if idx >= 0 && (idx as usize) < b.len() {
@@ -89,7 +88,7 @@ pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
 /// Shared `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` slicing for arrays
 /// and bytes, given pre-parsed `usize` bounds. Returns the sub-array /
 /// sub-bytes or an error (`[T, Error<…>]` → `Nullable<T>`). Single source
-/// of truth for node-walk / gir-interp / JIT.
+/// of truth for node-walk / JIT.
 pub(crate) fn array_slice(
     src: &Value,
     start: Option<usize>,
@@ -128,10 +127,10 @@ pub(crate) fn array_slice(
 /// A negative bound wraps to `usize::MAX` via `i as usize`, exactly
 /// matching the node-walk's `cast_to::<usize>()` (whose `FromValue for
 /// usize` does `Value::I64(v) => Ok(v as usize)`). So an out-of-range
-/// (incl. negative) bound surfaces the SAME "out of bounds" error in all
-/// three backends — this is just `array_slice` (the node-walk's own
-/// function) with the i64→usize wrap applied. Shared by the gir-interp
-/// and JIT slice paths.
+/// (incl. negative) bound surfaces the SAME "out of bounds" error in
+/// both backends — this is just `array_slice` (the node-walk's own
+/// function) with the i64→usize wrap applied. Shared by the JIT
+/// slice path.
 pub(crate) fn array_slice_i64(
     src: &Value,
     start: Option<i64>,
@@ -215,9 +214,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_array_ref_node(cx, &self.source.node, &self.i.node)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_array_ref_node(cx, &self.source.node, &self.i.node)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -378,9 +377,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_array_slice_node(
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_array_slice_node(
             cx,
             &self.source.node,
             self.start.as_ref().map(|c| &c.node),
@@ -495,11 +494,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
         // `[a, b, c]` — the runtime shape (a flat ValArray) is
         // identical to a tuple literal's; share the producer relay.
-        crate::gir_jit::emit_tuple_new_node(cx, &self.n)
+        crate::fusion::emit::emit_tuple_new_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

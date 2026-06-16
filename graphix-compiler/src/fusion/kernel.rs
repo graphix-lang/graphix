@@ -1,35 +1,31 @@
 //! Runtime wrapper around a JIT-compiled kernel.
 //!
 //! Fusion has exactly two evaluators: the node-walk (`Box<dyn Update>`
-//! graph, the canonical model) and the cranelift JIT. The GIR
-//! interpreter that used to live here is gone — it was a redundant
-//! third evaluator (a centralized jump-table over the GIR ops that was
-//! slower than the node-walk's distributed vtable dispatch and forced
-//! every semantics fix to be done three times). Fusion now builds a
+//! graph, the canonical model) and the cranelift JIT. Fusion builds a
 //! [`KernelSig`], JIT-compiles it, and:
 //!
 //! - JIT success → splice the native kernel + delete the original
-//!   nodes. [`GirNode`] is the [`Apply<R, E>`] wrapper that drives the
+//!   nodes. [`Kernel`] is the [`Apply<R, E>`] wrapper that drives the
 //!   feeders, packs args across the JIT ABI boundary, dispatches HOF
 //!   arguments via the DynCall side-channel, and unpacks the result.
 //! - JIT failure (or `JitDisabled`) → DON'T splice. The original nodes
 //!   stay in the graph and run through the node-walk, the universal
-//!   fallback. A [`GirNode`] cannot be constructed without a JIT
+//!   fallback. A [`Kernel`] cannot be constructed without a JIT
 //!   wrapper, so this is structural.
 //!
-//! This file keeps [`GirNode`], its arg-layout / arg-packing, and the
+//! This file keeps [`Kernel`], its arg-layout / arg-packing, and the
 //! [`DynCallSlot`] cross-call machinery — everything the JIT boundary
-//! needs, and nothing of the deleted interpreter.
+//! needs.
 
 use crate::{
-    gir::KernelSig,
+    fusion::vocab::KernelSig,
     Apply, Event, ExecCtx, Node, Rt, UserEvent,
 };
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::sync::Arc;
 
-// ─── GirNode: the Apply<R, E> wrapper ────────────────────────────
+// ─── Kernel: the Apply<R, E> wrapper ────────────────────────────
 
 /// Per-DynCall-site state. For each fn-typed param of the kernel we
 /// pre-allocate a slot containing the BindIds the side-channel uses,
@@ -41,7 +37,7 @@ use std::sync::Arc;
 /// Generic over `R, E` because the cached `Box<dyn Apply<R, E>>` and
 /// the arg-ref nodes are.
 pub struct DynCallSlot<R: Rt, E: UserEvent> {
-    /// One BindId per callee argument. Pre-allocated at GirNode
+    /// One BindId per callee argument. Pre-allocated at Kernel
     /// construction. The DynCall-time dispatcher writes the converted
     /// arg `Value` into `event.variables[bind_ids[i]]`; the matching
     /// `Ref` node in `arg_refs` reads it back inside the inner
@@ -56,14 +52,14 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// pre-bound slots (`pre_bound = true`) the pointer is a stable
     /// sentinel and `dispatch` never re-inits.
     current: Option<(*const u8, Box<dyn Apply<R, E>>)>,
-    /// `true` when the slot was bound at GirNode construction time
+    /// `true` when the slot was bound at Kernel construction time
     /// (e.g. `FnSource::Builtin` — the call target is fixed and
     /// can't change). `dispatch` short-circuits the LambdaDef
     /// downcast + rebind check for these slots.
     pre_bound: bool,
     /// External BindIds referenced by labeled-default Node trees of
     /// `BuiltinSlot::LabeledDefault` slots. At every dispatch cycle
-    /// `GirNode::update` primes `event.variables[id]` from
+    /// `Kernel::update` primes `event.variables[id]` from
     /// `ctx.cached[id]` for each entry here, so the default's `Ref`
     /// node finds its value (mirrors `CallSite::bind`'s default-arg
     /// priming step at the inner `compile_default!` call). Empty
@@ -103,7 +99,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// the expected types of the callee's args; we allocate one
     /// BindId + one [`crate::node::bind::Ref`] node per arg.
     pub fn new(
-        fn_param: &crate::gir::FnParam,
+        fn_param: &crate::fusion::vocab::FnParam,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> Self {
@@ -115,8 +111,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             bind_ids.push(id);
             // Ref reads `event.variables[id]` (or falls back to
             // `ctx.cached[id]`) on each `update`. `typ` is the
-            // FnParam's declared (frozen) `Type` — used directly now
-            // that the GIR carries netidx `Type` everywhere.
+            // FnParam's declared (frozen) netidx `Type`, used directly.
             let typ = arg_kty.clone();
             let node = crate::node::bind::Ref::new::<R, E>(
                 id,
@@ -142,7 +137,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// registered init fn and stash it as a pre-bound slot.
     /// Dispatch will route every call into this Apply without ever
     /// re-binding. Used for `FnSource::Builtin` fn_params at
-    /// `GirNode::new` time.
+    /// `Kernel::new` time.
     ///
     /// `layout` describes the callee's full formal-arg list (one
     /// entry per `typ.args` slot, declaration order). For each:
@@ -160,11 +155,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
         builtin_name: &str,
         typ: &crate::typ::FnType,
-        layout: &[crate::gir::BuiltinSlot],
+        layout: &[crate::fusion::vocab::BuiltinSlot],
         lambda_id: Option<crate::LambdaId>,
     ) -> ::anyhow::Result<()> {
         use ::anyhow::anyhow;
-        use crate::gir::BuiltinSlot;
+        use crate::fusion::vocab::BuiltinSlot;
         // Restore the lambda's env + lexical scope so labeled-default
         // expressions that reference free variables visible only in
         // the lambda's original module scope (e.g. `default_escape`
@@ -261,7 +256,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     };
                     // Mirror `compile_default!`'s priming: walk the
                     // default node's external Refs and record them so
-                    // `GirNode::update` can prime `event.variables[id]`
+                    // `Kernel::update` can prime `event.variables[id]`
                     // from `ctx.cached[id]` at every cycle. Without
                     // this, a default like `default_escape` (Ref to
                     // a module-level binding) reads None on the first
@@ -319,7 +314,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     }
 
     /// Eagerly initialize the inner Apply against `lambda_value`'s
-    /// LambdaDef. Used at GirNode construction for binding-source
+    /// LambdaDef. Used at Kernel construction for binding-source
     /// fn_params whose callee is known up front. Pre-initializing
     /// matters because the inner Apply's body wires up bind_id
     /// subscriptions via `ref_var(..., top_id)` during init — if we
@@ -447,12 +442,12 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
 // When a JIT'd kernel calls a HOF (a DynCall site), the emitted code
 // invokes `graphix_dyncall` which indirects through the thread-local
 // `DYN_DISPATCH_HANDLE` to a monomorphized `dispatch_typed::<R, E>`.
-// `GirNode::update` populates the handle before calling the wrapper,
+// `Kernel::update` populates the handle before calling the wrapper,
 // passing a `DispatcherState` whose erased pointer holds the per-call
 // references (`dyn_slots`, `fn_arg_values`, `ctx`, `event`).
 
-/// Per-call state shared between Rust-side `GirNode::update` and the
-/// JIT-side `graphix_dyncall` dispatcher. Held by `GirNode::update`
+/// Per-call state shared between Rust-side `Kernel::update` and the
+/// JIT-side `graphix_dyncall` dispatcher. Held by `Kernel::update`
 /// on its stack for the duration of the wrapper call; the handle's
 /// `state` pointer references this struct.
 ///
@@ -469,19 +464,19 @@ struct DispatcherState<R: Rt, E: UserEvent> {
 }
 
 /// Monomorphized DynCall dispatcher. The function pointer is stored
-/// in `DynDispatchHandle.dispatch` per-call by `GirNode::update`.
+/// in `DynDispatchHandle.dispatch` per-call by `Kernel::update`.
 ///
 /// SAFETY contract: `state_ptr` must point to a valid
 /// `DispatcherState<R, E>` for THIS R, E. The per-call references
 /// it holds (dyn_slots, ctx, event, fn_arg_values) must be live
-/// for the duration of this call. GirNode::update ensures both.
+/// for the duration of this call. Kernel::update ensures both.
 pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     state_ptr: *mut u8,
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
     ret_kind: u8,
-) -> crate::gir_jit_helpers::DynCallRet {
-    use crate::gir_jit_helpers::DynCallRet;
+) -> crate::fusion::emit_helpers::DynCallRet {
+    use crate::fusion::emit_helpers::DynCallRet;
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
     let fn_arg_values = unsafe { &*state.fn_arg_values };
@@ -523,7 +518,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                 //
                 // SAFETY: Value is `#[repr(u64)]`, 16 bytes /
                 // 8-byte aligned — layout pinned by
-                // `gir_jit_helpers`. `ManuallyDrop` prevents the
+                // `emit_helpers`. `ManuallyDrop` prevents the
                 // local `v`'s Drop from running while we transmute
                 // its bits out; ownership transfers to the caller.
                 let v = std::mem::ManuallyDrop::new(v);
@@ -542,7 +537,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                 // so the raw u64 is a valid ArcStr bit pattern; the
                 // caller's String SSA reads it directly without a
                 // boundary decode (the kernel-return path at
-                // `GirNode::update`'s String arm uses the same
+                // `Kernel::update`'s String arm uses the same
                 // transmute pattern).
                 match v {
                     Value::String(s) => {
@@ -561,7 +556,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
         },
         None => {
-            crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+            crate::fusion::emit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
             DynCallRet { word0: 0, word1: 0 }
         }
     }
@@ -569,12 +564,12 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
 
 /// Pack a scalar [`Value`]'s bits into a u64 for the DynCall ABI's
 /// scalar return path, deriving the `PrimType` from the value's own
-/// variant. Same encoding as [`crate::gir_jit::pack_value_to_u64`].
+/// variant. Same encoding as [`crate::fusion::emit::pack_value_to_u64`].
 fn dyncall_scalar_return_bits(v: &Value) -> u64 {
-    let prim = crate::gir::scalar_prim_of_value(v).unwrap_or_else(|| {
+    let prim = crate::fusion::vocab::scalar_prim_of_value(v).unwrap_or_else(|| {
         panic!("DynCall scalar return: callee produced non-scalar {v:?}")
     });
-    crate::gir_jit::pack_value_to_u64(v, prim)
+    crate::fusion::emit::pack_value_to_u64(v, prim)
 }
 
 /// Wraps a [`KernelSig`] as an [`Apply<R, E>`] so the runtime can call
@@ -588,7 +583,7 @@ fn dyncall_scalar_return_bits(v: &Value) -> u64 {
 /// `Box<dyn Apply<R, E>>` and `Node<R, E>`. (Pre-DynCall versions
 /// were intentionally non-generic; the tradeoff is now in DynCall's
 /// favor.)
-pub struct GirNode<R: Rt, E: UserEvent> {
+pub struct Kernel<R: Rt, E: UserEvent> {
     /// The IR. `Arc` so structurally-identical kernels can share
     /// state (and, in M4e, share the JIT-compiled function pointer
     /// via an IR-hash cache).
@@ -600,7 +595,7 @@ pub struct GirNode<R: Rt, E: UserEvent> {
     /// The compiled JIT wrapper this node dispatches into. Required:
     /// a fused node without a JIT cannot exist — JIT failure means
     /// the region was never spliced and the original nodes node-walk.
-    jit: Arc<crate::gir_jit::WrappedKernel>,
+    jit: Arc<crate::fusion::emit::WrappedKernel>,
     /// One slot per `kernel.fn_params` entry. Empty for kernels with
     /// no HOF args. The DynCall dispatcher closure (assembled inside
     /// `Apply<R, E>::update`) borrows this slice mutably to invoke
@@ -631,12 +626,12 @@ enum ArgKind {
     Value(u32),
 }
 
-/// Total number of input slots the runtime passes into a GirNode for
+/// Total number of input slots the runtime passes into a Kernel for
 /// this kernel — scalar params + all composite params + HOF-arg fn
 /// params (Binding-source fn params resolve through ctx.cached and
 /// don't count). Equals `arg_layout.len()`.
 pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
-    use crate::gir::FnSource;
+    use crate::fusion::vocab::FnSource;
     let param_source_count = kernel
         .fn_params
         .iter()
@@ -646,7 +641,7 @@ pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
 }
 
 fn build_arg_layout(kernel: &KernelSig) -> Vec<ArgKind> {
-    use crate::gir::{FnSource, TailCallSlotKind};
+    use crate::fusion::vocab::{FnSource, TailCallSlotKind};
     // `tail_call_slots` is populated for every kernel and lists
     // params in source-declared order. Each slot carries a name
     // matching one of the kernel's *_params lists. Walking this list
@@ -741,9 +736,9 @@ fn build_arg_layout(kernel: &KernelSig) -> Vec<ArgKind> {
     out
 }
 
-impl<R: Rt, E: UserEvent> std::fmt::Debug for GirNode<R, E> {
+impl<R: Rt, E: UserEvent> std::fmt::Debug for Kernel<R, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GirNode")
+        f.debug_struct("Kernel")
             .field("fn_name", &self.kernel.fn_name)
             .field("params", &self.kernel.params.len())
             .field("fn_params", &self.kernel.fn_params.len())
@@ -751,7 +746,7 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for GirNode<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> GirNode<R, E> {
+impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// The compiled kernel IR this node executes. Used by graph
     /// introspection (`crate::node_shape`) to assert on what a region
     /// actually fused into.
@@ -775,10 +770,10 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
         Self::new(ctx, self.kernel.clone(), n_args, self.jit.clone(), scope, top_id)
     }
 
-    /// Single construction chokepoint: a GirNode dispatches into
+    /// Single construction chokepoint: a Kernel dispatches into
     /// `wrapped`, the JIT artifact — there is no other way to make
     /// one (JIT failure means the region is never spliced and the
-    /// original nodes node-walk). Builds the GirNode and runs both
+    /// original nodes node-walk). Builds the Kernel and runs both
     /// pre-init helpers (`pre_init_binding_slots` for binding-source
     /// fn_params, `pre_init_builtin_slots` for builtin-source
     /// fn_params). Without those, the first `DynCall` into the kernel
@@ -791,14 +786,14 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
         kernel: Arc<KernelSig>,
         n_args: usize,
-        wrapped: Arc<crate::gir_jit::WrappedKernel>,
+        wrapped: Arc<crate::fusion::emit::WrappedKernel>,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> ::anyhow::Result<Self> {
         debug_assert_eq!(
             n_args,
             total_kernel_arity(&kernel),
-            "GirNode arity = sum of all slot kinds"
+            "Kernel arity = sum of all slot kinds"
         );
         let dyn_slots = kernel
             .fn_params
@@ -833,12 +828,12 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
     ) {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::gir::FnSource::Binding { bind_id } = &fp.source
+            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source
             {
                 if let Some(v) = ctx.cached.get(bind_id).cloned() {
                     if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
                         log::warn!(
-                            "gir_interp: pre_init for fn_param `{}` failed: \
+                            "kernel: pre_init for fn_param `{}` failed: \
                              {e:#}; falling back to lazy init (multi-cycle \
                              callees may hang)",
                             fp.name
@@ -854,7 +849,7 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
     }
 
     /// Eagerly construct the Apply for each `FnSource::Builtin`
-    /// fn_param. Must be called once after `GirNode::new` (typically
+    /// fn_param. Must be called once after `Kernel::new` (typically
     /// right next to `pre_init_binding_slots`) — without it, the
     /// builtin slots stay empty and the first DynCall into them
     /// panics. Construction routes through `ctx.builtins[name].init`
@@ -864,7 +859,7 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::gir::FnSource::Builtin {
+            if let crate::fusion::vocab::FnSource::Builtin {
                 name,
                 typ,
                 layout,
@@ -888,7 +883,7 @@ impl<R: Rt, E: UserEvent> GirNode<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
+impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -913,7 +908,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         // dispatches. Without this check, a kernel that DynCalls
         // into `helper` never reruns after helper's first publish.
         for fp in self.kernel.fn_params.iter() {
-            if let crate::gir::FnSource::Binding { bind_id } = &fp.source
+            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source
             {
                 if event.variables.contains_key(bind_id) {
                     any_updated = true;
@@ -940,8 +935,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         let has_dynamic_fn_params = self.kernel.fn_params.iter().any(|fp| {
             matches!(
                 fp.source,
-                crate::gir::FnSource::Param { .. }
-                    | crate::gir::FnSource::Binding { .. }
+                crate::fusion::vocab::FnSource::Param { .. }
+                    | crate::fusion::vocab::FnSource::Binding { .. }
             )
         });
         if !any_updated
@@ -960,7 +955,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         // "fused but ran on interp" from "no fusion". The JIT path
         // additionally bumps `JIT_INVOCATIONS` inside its wrapper.
         #[cfg(debug_assertions)]
-        crate::gir_jit_helpers::record_fusion_invocation();
+        crate::fusion::emit_helpers::record_fusion_invocation();
         // Prime per-cycle `event.variables` from `ctx.cached` for
         // every external Ref appearing inside a `BuiltinSlot::
         // LabeledDefault`'s compiled Node. Mirrors `CallSite::bind`'s
@@ -1046,7 +1041,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         // neither has a value yet, the kernel can't run — return
         // None and try again next cycle.
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::gir::FnSource::Binding { bind_id } = &fp.source
+            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source
             {
                 let v = event
                     .variables
@@ -1070,13 +1065,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         for (i, p) in k.params.iter().enumerate() {
             let v = param_opts[i].as_ref()?;
             scalar_arg_bits
-                .push(crate::gir_jit::pack_value_to_u64(v, p.prim));
+                .push(crate::fusion::emit::pack_value_to_u64(v, p.prim));
         }
         let composite_arr = |i: usize| -> Option<ValArray> {
             match param_opts[i].as_ref()? {
                 Value::Array(a) => Some(a.clone()),
                 v => panic!(
-                    "GirNode: composite param expected Value::Array, \
+                    "Kernel: composite param expected Value::Array, \
                      got {v:?}"
                 ),
             }
@@ -1112,7 +1107,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
             match param_opts[base_string + j].as_ref()? {
                 Value::String(s) => string_args.push(s.clone()),
                 v => panic!(
-                    "GirNode: string param expected Value::String, \
+                    "Kernel: string param expected Value::String, \
                      got {v:?}"
                 ),
             }
@@ -1167,7 +1162,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         // `Value` as its two `repr(u64)` words (disc, payload).
         // Safe: Value is `#[repr(u64)]`, 16 bytes / 8-byte
         // aligned, layout pinned by the const_assert in
-        // `gir_jit_helpers`. We don't transfer ownership —
+        // `emit_helpers`. We don't transfer ownership —
         // the kernel refcount-bumps on entry via
         // `graphix_value_clone`.
         for v in &variant_args {
@@ -1223,22 +1218,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
             ctx: ctx as *mut ExecCtx<R, E>,
             event: event as *mut Event<E>,
         };
-        let handle = crate::gir_jit_helpers::DynDispatchHandle {
+        let handle = crate::fusion::emit_helpers::DynDispatchHandle {
             dispatch: dispatch_typed::<R, E>,
             state: (&mut state) as *mut _ as *mut u8,
         };
-        let prev_handle = crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
+        let prev_handle = crate::fusion::emit_helpers::DYN_DISPATCH_HANDLE
             .with(|c| c.replace(&handle as *const _));
         // Always reset the pending flag before the call so
         // we can distinguish "this kernel pended" from
         // "some earlier kernel left the flag set."
-        crate::gir_jit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+        crate::fusion::emit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
         unsafe {
             f(slots.as_ptr(), out.as_mut_ptr());
         }
-        crate::gir_jit_helpers::DYN_DISPATCH_HANDLE
+        crate::fusion::emit_helpers::DYN_DISPATCH_HANDLE
             .with(|c| c.set(prev_handle));
-        let pending = crate::gir_jit_helpers::DYNCALL_PENDING
+        let pending = crate::fusion::emit_helpers::DYNCALL_PENDING
             .with(|c| c.replace(false));
         if pending {
             // The kernel's *out slot is either a garbage
@@ -1258,11 +1253,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
         // - Variant/Nullable/value-shape: out[0] = Value disc,
         //   out[1] = payload. Transmute the two u64s back into a
         //   Value (`#[repr(u64)]`, 16 bytes / 8-byte aligned —
-        //   layout pinned by `gir_jit_helpers`).
-        use crate::gir::AbiKind;
-        let v = match crate::gir::abi_kind(&self.kernel.return_type) {
+        //   layout pinned by `emit_helpers`).
+        use crate::fusion::vocab::AbiKind;
+        let v = match crate::fusion::vocab::abi_kind(&self.kernel.return_type) {
             Some(AbiKind::Scalar(p)) => {
-                crate::gir_jit::unpack_u64_to_value(out[0], p)
+                crate::fusion::emit::unpack_u64_to_value(out[0], p)
             }
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 let ptr = out[0] as *mut ValArray;
@@ -1312,14 +1307,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
     }
 
     fn refs(&self, refs: &mut crate::Refs) {
-        // GirNode replaces a CallSite for fused lambdas. The
+        // Kernel replaces a CallSite for fused lambdas. The
         // CallSite would have walked its inner Apply's refs to
         // build subscription state — when those BindIds fire, the
         // runtime re-triggers the parent. We must do the same: walk
         // every DynCallSlot's inner Apply (the actual callee) plus
         // the slot's arg-ref nodes, and register binding-source
         // fn_param BindIds. Without this, the runtime never re-
-        // fires GirNode when the inner callee or its dependencies
+        // fires Kernel when the inner callee or its dependencies
         // update — exactly the DynCall hang we caught with the
         // differential harness.
         for slot in &self.dyn_slots {
@@ -1334,7 +1329,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
             }
         }
         for fp in &self.kernel.fn_params {
-            if let crate::gir::FnSource::Binding { bind_id } = &fp.source {
+            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source {
                 refs.refed.insert(*bind_id);
             }
         }
@@ -1345,14 +1340,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GirNode<R, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gir::PrimType;
+    use crate::fusion::vocab::PrimType;
 
     #[test]
     fn value_boundary_bits_round_trip() {
         // Value → u64 bits (pack) → Value (unpack) should be lossless
-        // for the scalar primitives that cross the JIT boundary. The
-        // GIR interpreter is gone; this is the one boundary-helper unit
-        // test that doesn't exercise it.
+        // for the scalar primitives that cross the JIT boundary.
         let cases: &[(Value, PrimType)] = &[
             (Value::I64(42), PrimType::I64),
             (Value::I64(i64::MIN), PrimType::I64),
@@ -1365,8 +1358,8 @@ mod tests {
             (Value::I8(-1), PrimType::I8),
         ];
         for (v, p) in cases {
-            let bits = crate::gir_jit::pack_value_to_u64(v, *p);
-            assert_eq!(crate::gir_jit::unpack_u64_to_value(bits, *p), *v);
+            let bits = crate::fusion::emit::pack_value_to_u64(v, *p);
+            assert_eq!(crate::fusion::emit::unpack_u64_to_value(bits, *p), *v);
         }
     }
 }

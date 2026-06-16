@@ -47,7 +47,7 @@ run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // Composite-output `array::map`: the body produces a tuple per element,
-// so the output is `Array<(i64, i64)>`. Exercises `GirOp::ArrayMap`'s
+// so the output is `Array<(i64, i64)>`. Exercises the map loop's
 // composite-output push (`compile_and_push_field`) without nesting.
 const ARRAY_MAP_TUPLE: &str = r#"
 {
@@ -217,7 +217,7 @@ run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
 });
 
 // Scalar `array::filter_map` whose body is an option-typed `select`
-// with no sample operator — lowers to `GirOp::ArrayFilterMap` and JITs
+// with no sample operator — lowers to the filter-map loop and JITs
 // (the Nullable-collecting loop checks each body result's discriminant
 // against `null` and pushes the non-null payload).
 const ARRAY_FILTER_MAP_SCALAR: &str = r#"
@@ -250,9 +250,9 @@ const ARRAY_FIND: &str = r#"
 
 // Composite element `(string, i64)` + `|(k, _)|` destructure + composite
 // *output*: `array::find` returns the matched element, so the result is
-// `Nullable<(string, i64)>`. `GirOp::ArrayFind`'s found edge wraps the
+// `Nullable<(string, i64)>`. The array-find loop's found edge wraps the
 // owned `*ValArray` element into a value-shape Value (consumes it); the
-// advance edge drops it (conditional consume, like `ArrayFilter`).
+// advance edge drops it (conditional consume, like `array::filter`).
 run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -263,7 +263,7 @@ run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
     }
 });
 
-// Scalar-element `array::find` lowers to `GirOp::ArrayFind` (result
+// Scalar-element `array::find` lowers to the array-find loop (result
 // `Nullable<i64>`) and JITs via an early-exit loop whose found / not-
 // found edges feed a two-word `(disc, payload)` merge.
 const ARRAY_FIND_SCALAR: &str = r#"
@@ -293,7 +293,7 @@ run!(array_find_scalar_none, ARRAY_FIND_SCALAR_NONE, |v: Result<&Value>| {
 });
 
 // Composite element + composite output, all-prim — exercises the
-// `GirOp::ArrayFind` found-edge `graphix_value_new_from_array` wrap +
+// array-find found-edge `graphix_value_new_from_array` wrap +
 // advance-edge `graphix_valarray_drop` without a string leaf. Result is
 // the matched `(i64, i64)` element as a `Nullable<(i64, i64)>`.
 const ARRAY_FIND_COMPOSITE: &str = r#"
@@ -312,7 +312,7 @@ run!(array_find_composite, ARRAY_FIND_COMPOSITE, |v: Result<&Value>| {
 
 // No element matches — every composite element is fetched + dropped on the
 // advance edge, then `not_found` returns `null`. Exercises the
-// `GirOp::ArrayFind` conditional-drop path with zero wraps (the most likely
+// array-find conditional-drop path with zero wraps (the most likely
 // place a leak or double-free in the owned-element drop would surface).
 const ARRAY_FIND_COMPOSITE_NONE: &str = r#"
 {
@@ -338,7 +338,7 @@ const ARRAY_FIND_MAP: &str = r#"
 
 // Composite element `(string, i64)` + `|(k, v)|` destructure + the
 // `false => v ~ null` Sample arm — all fuse + JIT, via
-// `GirOp::ArrayFindMap` (early-exit, first-non-null `Nullable<i64>`).
+// the array-find-map loop (early-exit, first-non-null `Nullable<i64>`).
 // The string leaf (`k`) binds as a string local in the destructure
 // Block — which JITs since the Block-let-String codegen gap was fixed.
 run!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
@@ -348,7 +348,7 @@ run!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
     }
 });
 
-// All-prim composite element — exercises the `GirOp::ArrayFindMap` JIT
+// All-prim composite element — exercises the array-find-map JIT
 // path (composite element + destructure + early-exit Nullable merge)
 // without the string field that keeps `array_find_map` on the interp.
 const ARRAY_FIND_MAP_PRIM: &str = r#"

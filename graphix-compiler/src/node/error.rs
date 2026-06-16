@@ -332,8 +332,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
         // A `?` with an enclosing catch handler delivers its error by
         // WRITING the handler's variable (`update` above: set_var /
         // event.variables on `self.id`) — an effect a fused kernel
@@ -348,7 +348,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                  delivery is a variable write; subtree node-walks"
             );
         }
-        crate::gir_jit::emit_qop_node(cx, &self.n)
+        crate::fusion::emit::emit_qop_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -444,9 +444,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_qop_node(cx, &self.n)
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_qop_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

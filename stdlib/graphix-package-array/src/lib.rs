@@ -9,8 +9,8 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     effects::EffectKind,
     expr::ExprId,
-    gir::{self, PrimType},
-    gir_jit::{self, scaffold, BodyCx, CompiledExpr, CompositeSource},
+    fusion::vocab::{self, PrimType},
+    fusion::emit::{self, scaffold, BodyCx, CompiledExpr, CompositeSource},
     node::genn,
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
@@ -30,8 +30,8 @@ use triomphe::Arc as TArc;
 /// True if a (frozen) `Type`'s top-level shape is `Unit` (side-effect-
 /// only) or bare `Null` — neither is a valid array element shape.
 fn is_unit_or_null(t: &Type) -> bool {
-    use gir::AbiKind;
-    matches!(gir::abi_kind(t), Some(AbiKind::Unit | AbiKind::Null))
+    use vocab::AbiKind;
+    matches!(vocab::abi_kind(t), Some(AbiKind::Unit | AbiKind::Null))
 }
 
 /// Destructure leaves (`|(k, v)|` — pattern BindId + tuple position)
@@ -52,7 +52,7 @@ fn scalar_leaves(
     elem_binds
         .iter()
         .map(|(id, i)| {
-            ts.get(*i).and_then(gir::scalar_prim).map(|p| (*id, *i, p))
+            ts.get(*i).and_then(vocab::scalar_prim).map(|p| (*id, *i, p))
         })
         .collect()
 }
@@ -89,9 +89,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use gir::AbiKind;
+        use vocab::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+        let Some(in_elem) = vocab::freeze_normalized(in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -100,7 +100,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
-        match gir::abi_kind(&in_elem) {
+        match vocab::abi_kind(&in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -112,12 +112,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = gir_jit::node_composite_source(array_arg)
+        let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
         // Output element type is the body's result — `freeze_normalized`
         // because typecheck can leave a select-valued body's type as the
         // un-flattened arm union.
-        let Some(out_typ) = gir::freeze_normalized(body.typ()) else {
+        let Some(out_typ) = vocab::freeze_normalized(body.typ()) else {
             return Ok(None);
         };
         if is_unit_or_null(&out_typ) {
@@ -132,7 +132,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
                  non-Single {cv:?}"
             ),
         };
-        let out_src = gir_jit::node_composite_source(body);
+        let out_src = emit::node_composite_source(body);
         scaffold::emit_map_loop(
             cx,
             scaffold::ArraySrc { ptr: arr_ptr, owned },
@@ -186,9 +186,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use gir::AbiKind;
+        use vocab::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+        let Some(in_elem) = vocab::freeze_normalized(in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -197,7 +197,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
-        match gir::abi_kind(&in_elem) {
+        match vocab::abi_kind(&in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -209,10 +209,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = gir_jit::node_composite_source(array_arg)
+        let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match gir::freeze_normalized(body.typ()) {
-            Some(t) if matches!(gir::scalar_prim(&t), Some(PrimType::Bool)) => {
+        match vocab::freeze_normalized(body.typ()) {
+            Some(t) if matches!(vocab::scalar_prim(&t), Some(PrimType::Bool)) => {
             }
             _ => return Ok(None),
         }
@@ -282,9 +282,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use gir::AbiKind;
+        use vocab::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+        let Some(in_elem) = vocab::freeze_normalized(in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -293,7 +293,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
-        match gir::abi_kind(&in_elem) {
+        match vocab::abi_kind(&in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -305,11 +305,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = gir_jit::node_composite_source(array_arg)
+        let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match gir::freeze_normalized(body.typ())
+        match vocab::freeze_normalized(body.typ())
             .as_ref()
-            .and_then(gir::array_scalar_prim)
+            .and_then(vocab::array_scalar_prim)
         {
             Some(_) => {}
             None => return Ok(None),
@@ -323,7 +323,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                  to non-Single {cv:?}"
             ),
         };
-        let body_src = gir_jit::node_composite_source(body);
+        let body_src = emit::node_composite_source(body);
         scaffold::emit_flat_map_loop(
             cx,
             scaffold::ArraySrc { ptr: arr_ptr, owned },
@@ -341,7 +341,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                          value ({cv:?}) — de-fuse to node-walk"
                     ),
                 };
-                gir_jit::ensure_owned_composite_src(cx, body_src, p)
+                emit::ensure_owned_composite_src(cx, body_src, p)
             },
         )
         .map(|v| Some(CompiledExpr::Single(v)))
@@ -390,9 +390,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         if !elem_binds.is_empty() {
             return Ok(None);
         }
-        let in_prim = match gir::freeze_normalized(in_elem)
+        let in_prim = match vocab::freeze_normalized(in_elem)
             .as_ref()
-            .and_then(gir::scalar_prim)
+            .and_then(vocab::scalar_prim)
         {
             Some(p) => p,
             None => return Ok(None),
@@ -400,12 +400,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = gir_jit::node_composite_source(array_arg)
+        let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        let out_prim = match gir::freeze_normalized(body.typ())
-            .and_then(|t| gir::nullable_inner(&t))
+        let out_prim = match vocab::freeze_normalized(body.typ())
+            .and_then(|t| vocab::nullable_inner(&t))
             .as_ref()
-            .and_then(gir::scalar_prim)
+            .and_then(vocab::scalar_prim)
         {
             Some(p) => p,
             None => return Ok(None),
@@ -471,9 +471,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use gir::AbiKind;
+        use vocab::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+        let Some(in_elem) = vocab::freeze_normalized(in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -482,7 +482,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
-        match gir::abi_kind(&in_elem) {
+        match vocab::abi_kind(&in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -494,10 +494,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = gir_jit::node_composite_source(array_arg)
+        let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match gir::freeze_normalized(body.typ()) {
-            Some(t) if matches!(gir::scalar_prim(&t), Some(PrimType::Bool)) => {
+        match vocab::freeze_normalized(body.typ()) {
+            Some(t) if matches!(vocab::scalar_prim(&t), Some(PrimType::Bool)) => {
             }
             _ => return Ok(None),
         }
@@ -568,9 +568,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use gir::AbiKind;
+        use vocab::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+        let Some(in_elem) = vocab::freeze_normalized(in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -579,7 +579,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
-        match gir::abi_kind(&in_elem) {
+        match vocab::abi_kind(&in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -591,9 +591,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = gir_jit::node_composite_source(array_arg)
+        let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match gir::freeze_normalized(body.typ()).as_ref().map(gir::abi_kind) {
+        match vocab::freeze_normalized(body.typ()).as_ref().map(vocab::abi_kind) {
             Some(Some(AbiKind::Nullable)) => {}
             _ => return Ok(None),
         }
@@ -606,7 +606,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
                  to non-Single {cv:?}"
             ),
         };
-        let body_src = gir_jit::node_composite_source(body);
+        let body_src = emit::node_composite_source(body);
         let (disc, payload) = scaffold::emit_find_map_loop(
             cx,
             scaffold::ArraySrc { ptr: arr_ptr, owned },
@@ -624,7 +624,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
                          shape ({cv:?}) — de-fuse to node-walk"
                     ),
                 };
-                gir_jit::ensure_owned_value_src(cx, body_src, d, p)
+                emit::ensure_owned_value_src(cx, body_src, d, p)
             },
         )?;
         Ok(Some(CompiledExpr::Value { disc, payload }))
@@ -663,9 +663,9 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use gir::AbiKind;
+        use vocab::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = gir::freeze_normalized(in_elem) else {
+        let Some(in_elem) = vocab::freeze_normalized(in_elem) else {
             return Ok(None);
         };
         // A destructured `|acc, (k, v)|` callback binds per-leaf reads
@@ -674,7 +674,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         let Some(leaves) = scalar_leaves(&in_elem, elem_binds) else {
             return Ok(None);
         };
-        match gir::abi_kind(&in_elem) {
+        match vocab::abi_kind(&in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -686,20 +686,20 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = gir_jit::node_composite_source(array_arg)
+        let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
         // The acc threads through the loop as a register Variable —
         // init and body must both freeze to the same register scalar.
-        let acc_prim = match gir::freeze_normalized(init_arg.typ())
+        let acc_prim = match vocab::freeze_normalized(init_arg.typ())
             .as_ref()
-            .and_then(gir::scalar_prim)
+            .and_then(vocab::scalar_prim)
         {
             Some(p) => p,
             None => return Ok(None),
         };
-        match gir::freeze_normalized(body.typ())
+        match vocab::freeze_normalized(body.typ())
             .as_ref()
-            .and_then(gir::scalar_prim)
+            .and_then(vocab::scalar_prim)
         {
             Some(p) if p == acc_prim => {}
             _ => return Ok(None),
@@ -1584,9 +1584,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         let Some(n_node) = callsite.arg_positional(0) else {
             return Ok(None);
         };
-        let n_prim = match gir::freeze_normalized(n_node.typ())
+        let n_prim = match vocab::freeze_normalized(n_node.typ())
             .as_ref()
-            .and_then(gir::scalar_prim)
+            .and_then(vocab::scalar_prim)
         {
             Some(p) if p.is_integer() => p,
             _ => return Ok(None),
@@ -1617,7 +1617,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         };
         let idx_id = g.args().first().and_then(|p| p.single_bind_id());
         // Output element type is the body's result.
-        let Some(out_typ) = gir::freeze_normalized(body.typ()) else {
+        let Some(out_typ) = vocab::freeze_normalized(body.typ()) else {
             return Ok(None);
         };
         if is_unit_or_null(&out_typ) {
@@ -1632,7 +1632,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
                  non-scalar value ({cv:?}) — de-fuse to node-walk"
             ),
         };
-        let out_src = gir_jit::node_composite_source(body);
+        let out_src = emit::node_composite_source(body);
         scaffold::emit_init_loop(
             cx,
             n_raw,

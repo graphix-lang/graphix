@@ -7,7 +7,7 @@
 //!   - **jit** (no flags) — the fusion + cranelift-JIT backend, the
 //!     system under test.
 //!   - **fused** (`CFlag::JitDisabled`) — fusion that runs on the
-//!     interpreter; used only to *bisect* a divergence (GIR/emit vs JIT
+//!     interpreter; used only to *bisect* a divergence (emit vs JIT
 //!     codegen), not in the hot path.
 //!
 //! For any deterministic program the configurations must produce the
@@ -60,7 +60,7 @@ pub const REGISTER: &[RegisterFn] = &[
 
 /// The mode a program was run under.
 ///
-/// The GIR interpreter is gone, so there are only two evaluators: the
+/// There are only two evaluators: the
 /// node-walk (the reference) and fusion + cranelift JIT (the system
 /// under test). The old middle `Fused` mode (`CFlag::JitDisabled` —
 /// fusion on, dispatch via the interpreter) no longer has an
@@ -74,7 +74,7 @@ pub enum Mode {
     /// Fusion + cranelift JIT (no flags) — the system under test.
     /// Since the F2 flip (2026-06-13, `design/distributed_jit.md`)
     /// this is the direct node-emission path (`Update::emit_clif`
-    /// recursion); the classic GIR body path is gone.
+    /// recursion).
     Jit,
 }
 
@@ -253,7 +253,7 @@ pub struct Divergence {
 
 impl Divergence {
     /// A one-line classification. With only two evaluators left, every
-    /// divergence is "node-walk vs fused+JIT" — the fusion path (GIR
+    /// divergence is "node-walk vs fused+JIT" — the fusion path (CLIF
     /// emit + cranelift codegen, which can't be told apart now that
     /// there's no interpreter-only mode to bisect against) produced a
     /// different result from the canonical node-walk.
@@ -828,8 +828,8 @@ async fn run_pool(
 mod tests {
     use super::*;
 
-    /// Per-shape JIT probes (grown stage-by-stage during the GIR-IR
-    /// removal, `design/distributed_jit.md`). Each pins the JIT
+    /// Per-shape JIT probes (grown stage-by-stage during the fusion
+    /// buildout, `design/distributed_jit.md`). Each pins the JIT
     /// (`Mode::Jit`, `Update::emit_clif` emission) against the
     /// node-walk reference (`Interp`); a program the JIT can't compile
     /// must still produce the right value by not fusing → node-walking.
@@ -1121,9 +1121,9 @@ mod tests {
         .await;
     }
 
-    /// Stage C6 probes: string interpolation (`emit_string_interpolate_node`,
-    /// the Node twin of the GIR Concat arm) and checked arithmetic
-    /// (`emit_checked_arith_node` — NEW coverage, the GIR path never
+    /// Stage C6 probes: string interpolation (`emit_string_interpolate_node`)
+    /// and checked arithmetic
+    /// (`emit_checked_arith_node` — NEW coverage, no earlier path
     /// lowered `+?` and friends). The generated sweep produces neither
     /// construct, so without probes a regression would be invisible.
     /// Checked-arith semantics under test: overflow / div-by-zero is a
@@ -1178,7 +1178,7 @@ mod tests {
         .await;
         // Checked result interpolated after unwrap — the unwrapped part
         // is a possibly-bottom Scalar2, which the interpolate relay's
-        // `.single()` refuses (the GIR `compile_scalar` parity): the
+        // `.single()` refuses (a may-bottom part has no single value): the
         // INTERPOLATION doesn't fuse, node-walks to the right value in
         // every mode. Deliberate fallback (same sub-region caveat as
         // the Nullable-part probe above).
@@ -1245,7 +1245,7 @@ mod tests {
         // inner CallSite lives in the callback's lambda body, which the
         // static resolution in `typecheck1` never descends into, so the
         // inner MapQ has no analysis_pred (and no bound function) at
-        // emission time. Classic has the identical gap (its emit_gir
+        // emission time. Classic has the identical gap (its lowering
         // path hits the same unresolved inner site); the runtime
         // per-slot machinery carries correctness. Flip to
         // `agree_fused` when static resolution descends
@@ -1303,7 +1303,7 @@ mod tests {
         )
         .await;
         // composite (tuple) element + accessors in the predicate —
-        // EXCEEDS classic: emit_gir requires a register-scalar element
+        // EXCEEDS classic: its lowering requires a register-scalar element
         // for single-name callbacks, the direct path binds composites
         // (keep MOVES the element, not-keep takes the drop_block)
         agree_fused_clean(
@@ -1389,7 +1389,7 @@ mod tests {
         )
         .await;
         // composite (tuple) element + accessors — EXCEEDS classic
-        // (emit_gir requires a register-scalar element for single-name
+        // (its lowering requires a register-scalar element for single-name
         // callbacks)
         agree_fused_clean(
             "{ let a = [(i64:1, i64:2), (i64:3, i64:4)]; \
@@ -1531,7 +1531,7 @@ mod tests {
     /// Stage E probes: cross-kernel lambda calls on the direct path —
     /// `try_fuse`'s analysis discovers statically-resolved lambda call
     /// sites (full-coverage `for_each_node` walk), builds each callee
-    /// kernel via the shared `build_lambda_kernel` (GIR body,
+    /// kernel via the shared `build_lambda_kernel` (node body,
     /// classic-proven — including self-recursion and the tail
     /// rebind-and-jump), and `CallSite::emit_clif` emits a CLIF `call`
     /// with kind-grouped args + closure-converted captures.
@@ -1582,7 +1582,7 @@ mod tests {
         )
         .await;
         // Nullable (value-shape) return from a select body — blocked
-        // by #205 (pre-existing classic-GIR: GirStmt::Return routes on
+        // by #205 (pre-existing: the kernel-return emission routes on
         // the un-normalized select arm-union type; unreachable
         // classically because classic's planner never built this
         // kernel). Values agree via node-walk; flip to
@@ -1597,7 +1597,7 @@ mod tests {
         // from the captures scan (a rec binding's env type is a
         // TVar-wrapped Fn the scan can't freeze — recursive lambdas
         // never built because of it), and the non-tail self call
-        // lowers to a `GirOp::Call` against the kernel's own FuncId —
+        // lowers to a CLIF `call` against the kernel's own FuncId —
         // real native recursion.
         agree_fused_clean(
             "{ let rec f = |n: i64| -> i64 \
@@ -1615,7 +1615,7 @@ mod tests {
         .await;
         // tail recursion (E3): `body_has_self_tail_call` detects the
         // tail-position self call (BindId-matched), the kernel gets
-        // `has_tail_loop`, and `GirStmt::TailCall` compiles to a
+        // `has_tail_loop`, and the tail-call emission compiles to a
         // rebind-and-jump — a native loop, constant stack. Depth kept
         // stack-safe for the NODE-WALK (each recursive call nests
         // native update frames — 50k overflows the interp); the

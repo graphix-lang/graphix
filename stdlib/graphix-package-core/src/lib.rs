@@ -601,7 +601,7 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     fn finish(&mut self, slots: &[Slot<R, E>], a: &Self::Collection) -> Option<Value>;
 
     /// Codegen hook for the node-graph JIT. Implementations emit the
-    /// HOF loop into the open kernel via the `gir_jit::scaffold` fns,
+    /// HOF loop into the open kernel via the `emit::scaffold` fns,
     /// compiling the callback body with `body.emit_clif(cx)`.
     /// Returning `Ok(None)` (the default) falls back to the runtime
     /// HOF dispatch (per-element [`Apply`] Nodes via
@@ -631,14 +631,14 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// live with each `MapFn` impl (the package that defines the
     /// runtime semantics) — the compiler doesn't know builtin names.
     fn emit_clif(
-        _cx: &mut graphix_compiler::gir_jit::BodyCx,
+        _cx: &mut graphix_compiler::fusion::emit::BodyCx,
         _array_arg: &Node<R, E>,
         _body: &Node<R, E>,
         _elem_name: &ArcStr,
         _elem_id: Option<graphix_compiler::BindId>,
         _in_elem: &graphix_compiler::typ::Type,
         _elem_binds: &[(graphix_compiler::BindId, usize)],
-    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
         Ok(None)
     }
 }
@@ -888,7 +888,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                                     if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
                                         cs.resolved_apply_mut()
                                     {
-                                        let _ = graphix_compiler::fusion::jit_node(
+                                        let _ = graphix_compiler::fusion::fuse(
                                             g.body_mut(),
                                             ctx,
                                         );
@@ -1061,8 +1061,8 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
     fn emit_clif(
         &self,
         callsite: &CallSite<R, E>,
-        cx: &mut graphix_compiler::gir_jit::BodyCx,
-    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+        cx: &mut graphix_compiler::fusion::emit::BodyCx,
+    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
         // No analysis_pred → callback wasn't statically resolvable.
         let Some(slot) = self.analysis_pred.as_ref() else {
             return Ok(None);
@@ -1136,7 +1136,7 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
     /// callback's arg patterns — the direct path resolves Refs
     /// BindId-first.
     fn emit_clif(
-        _cx: &mut graphix_compiler::gir_jit::BodyCx,
+        _cx: &mut graphix_compiler::fusion::emit::BodyCx,
         _array_arg: &Node<R, E>,
         _init_arg: &Node<R, E>,
         _body: &Node<R, E>,
@@ -1146,7 +1146,7 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
         _elem_id: Option<graphix_compiler::BindId>,
         _in_elem: &graphix_compiler::typ::Type,
         _elem_binds: &[(graphix_compiler::BindId, usize)],
-    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
         Ok(None)
     }
 }
@@ -1480,8 +1480,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
     fn emit_clif(
         &self,
         callsite: &CallSite<R, E>,
-        cx: &mut graphix_compiler::gir_jit::BodyCx,
-    ) -> Result<Option<graphix_compiler::gir_jit::CompiledExpr>> {
+        cx: &mut graphix_compiler::fusion::emit::BodyCx,
+    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
         let Some(slot) = self.analysis_pred.as_ref() else {
             return Ok(None);
         };

@@ -22,7 +22,7 @@
 //! first, then composite pointers, then two-word `Value`s — defined
 //! once by [`KernelSig::abi_params`] and consumed by every ABI site
 //! (the signature builder, the wrapper unpacker, the entry binder,
-//! and the runtime arg packer in `gir_interp`). Per-kind wire shape:
+//! and the runtime arg packer in `kernel`). Per-kind wire shape:
 //!
 //! - scalar `i8/i16/i32/i64/u8/u16/u32/u64` → CLIF `I8`/`I16`/`I32`/`I64`;
 //!   `f32/f64` → `F32`/`F64`; `bool` → `I8` (0 = false, non-zero = true)
@@ -35,7 +35,7 @@
 //! The runtime calls through the uniform-slot [`WrappedKernel`]
 //! (args*, out* — see `define_wrapper`).
 
-use crate::gir::{
+use crate::fusion::vocab::{
     self, AbiKind, AbiParamKind, AbiReturn, BinOp, BoolOp, CmpOp, KernelSig,
     PrimType,
 };
@@ -61,10 +61,10 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use std::collections::BTreeMap;
 
-/// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the GIR
-/// arms below and the direct node path's HOF emitters (Stage D2 of
+/// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the
+/// direct node path's HOF emitters (Stage D2 of
 /// `design/distributed_jit.md`).
-#[path = "gir_jit_scaffold.rs"]
+#[path = "scaffold.rs"]
 pub mod scaffold;
 
 // ─── JIT context ─────────────────────────────────────────────────
@@ -82,7 +82,7 @@ pub struct JitCtx {
     /// graphix-level name (e.g. `iterate`) shows up across multiple
     /// fused lambdas in a single program.
     counter: u32,
-    /// Pre-declared FuncIds for the `gir_jit_helpers::*` runtime
+    /// Pre-declared FuncIds for the `emit_helpers::*` runtime
     /// helpers — registered once at construction so per-function
     /// codegen can materialize FuncRefs to them without re-declaring.
     helper_ids: HelperFuncIds,
@@ -107,10 +107,10 @@ impl JitCtx {
             .finish(settings::Flags::new(flag_builder))
             .context("isa_builder.finish")?;
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
-        // Make the gir_jit_helpers entry points resolvable from JIT'd
+        // Make the emit_helpers entry points resolvable from JIT'd
         // code. Each one is `#[no_mangle] extern "C"`, registered
         // here under the same symbol name we use in `declare_function`.
-        for (name, ptr) in crate::gir_jit_helpers::all_symbols() {
+        for (name, ptr) in crate::fusion::emit_helpers::all_symbols() {
             builder.symbol(name, ptr);
         }
         let mut module = JITModule::new(builder);
@@ -183,7 +183,7 @@ fn push_abi_returns(sig: &mut Signature, kernel: &KernelSig) -> Result<()> {
         }
         None => {
             return Err(anyhow!(
-                "kernel returns bare GirType::Null; should have \
+                "kernel returns the bare Null type; should have \
                  widened to Nullable<T> at construction"
             ))
         }
@@ -275,7 +275,7 @@ impl WrappedKernel {
 // same `Arc<KernelSig>` referenced from multiple parent kernels
 // reuses one compilation within a single ExecCtx. Names alone
 // aren't unique enough — two distinct programs can both have a
-// binding `foo` with different GIR.
+// binding `foo` with a different fused kernel.
 //
 // (Was a process-global `SHARED_JIT` static before May 2026; moved
 // to per-context to align with the runtime's documented "multiple
@@ -287,7 +287,7 @@ pub struct Jit {
     /// Per-kernel cache: Arc<KernelSig> raw pointer → cached entry.
     /// We keep the Arc alive in the entry so the raw pointer key
     /// stays valid for the lifetime of the ExecCtx. Without it,
-    /// Arc-allocator reuse could land a different GIR at the same
+    /// Arc-allocator reuse could land a different KernelSig at the same
     /// address and we'd return a stale FuncId pointing at code with
     /// the wrong signature.
     by_kernel: BTreeMap<usize, CachedKernel>,
@@ -336,9 +336,9 @@ unsafe impl Send for Jit {}
 /// `discover_lambda_calls`) emits from its body Node with EMPTY
 /// apply/lambda site maps (a callee body is a self-contained
 /// expression over its params: inner call sites are #203-unresolved,
-/// so no site of either kind can exist in one today). A fresh callee
-/// WITHOUT a recorded body (recursive until F0b; `sub_called`
-/// transitive kernels) falls back to its GIR body.
+/// so no site of either kind can exist in one today). A callee
+/// WITHOUT a recorded body bails (the whole region de-fuses);
+/// discovery records a body for every callee it returns.
 pub fn compile_kernel_with_callees_direct<R: crate::Rt, E: crate::UserEvent>(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
@@ -1059,13 +1059,13 @@ fn compile_into_function(
     // `pending_exit` itself owns nothing.
     //
     // The kernel result on the pending path is discarded by
-    // `GirNode::update` (which checks `DYNCALL_PENDING` after the
+    // `Kernel::update` (which checks `DYNCALL_PENDING` after the
     // wrapper returns), so the sentinel value is never observed —
     // it just has to be a well-typed CLIF value of the right width.
     let pending_exit_block = *lower.pending_exit.borrow();
     if let Some(pe) = pending_exit_block {
         b.switch_to_block(pe);
-        match gir::abi_kind(&kernel.return_type) {
+        match vocab::abi_kind(&kernel.return_type) {
             Some(AbiKind::Scalar(p)) => {
                 let s = zero_const(b, p);
                 b.ins().return_(&[s]);
@@ -1116,7 +1116,7 @@ fn compile_into_function(
 /// stable `*const ArcStr` pointers.
 ///
 /// Each unique string used by the kernel is interned through the
-/// global [`crate::gir_jit_intern`] table (which gives back a
+/// global [`crate::fusion::intern`] table (which gives back a
 /// refcount-shared canonical `ArcStr`), and the canonical clone is
 /// stored at a fixed index in `slots`. Codegen emits an `iconst`
 /// of `&slots[index]` for each reference; the pointer is valid for
@@ -1235,7 +1235,7 @@ pub(crate) struct LowerCtx<'a> {
     /// pass the resulting refs in here. Empty for kernels with no
     /// lambda call sites.
     callee_refs: &'a BTreeMap<ArcStr, FuncRef>,
-    /// `FuncRef`s for the `gir_jit_helpers::*` runtime helpers.
+    /// `FuncRef`s for the `emit_helpers::*` runtime helpers.
     /// Declared in the current function before the FunctionBuilder
     /// is constructed (same constraint as `callee_refs`). Lookups
     /// are by helper name (e.g. `"graphix_valarray_get_i64"`).
@@ -1246,7 +1246,7 @@ pub(crate) struct LowerCtx<'a> {
     /// composite slots hit `env.composites`. `None` for kernels
     /// without a tail loop (or that hand-built fixtures leave
     /// empty).
-    tail_call_slots: Option<&'a [crate::gir::TailCallSlot]>,
+    tail_call_slots: Option<&'a [crate::fusion::vocab::TailCallSlot]>,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
     /// pops it once `graphix_dyncall` has consumed it. A composite-
@@ -1294,7 +1294,7 @@ pub(crate) struct LowerCtx<'a> {
         >,
     >,
     /// Discovered statically-resolved lambda call sites — the direct
-    /// path's `ExprId → LambdaCallInfo` map (`None` on the GIR path).
+    /// path's `ExprId → LambdaCallInfo` map (`None` for callee bodies).
     /// `CallSite::emit_clif` resolves a registered site to a CLIF
     /// `call` against `callee_refs[info.fn_name]`.
     lambda_call_sites: Option<
@@ -1306,9 +1306,9 @@ pub(crate) struct LowerCtx<'a> {
     /// (`emit_body_tail`); value-position ones call the kernel's own
     /// FuncRef (`CallSite::emit_clif`).
     self_call: Option<&'a (crate::BindId, crate::fusion::LambdaCallInfo)>,
-    /// Type-resolution env snapshot for the direct path (`None` on the
-    /// GIR path — its lowering pre-resolved every baked type). See
-    /// [`BodyEmitter::type_env`] and [`resolve_node_typ`].
+    /// Type-resolution env snapshot for the direct path (`None` when
+    /// no [`BodyEmitter`] supplies it). See [`BodyEmitter::type_env`]
+    /// and [`resolve_node_typ`].
     type_env: Option<&'a crate::env::Env>,
 }
 
@@ -1317,8 +1317,7 @@ pub(crate) struct LowerCtx<'a> {
 /// `Type::Ref`s to abstract type names (e.g. an interface's
 /// `type Elem`) whose concrete rep `abi_kind`/freeze can't see —
 /// `resolve_abstract` expands them (env `lookup_ref` + the abstract
-/// registry). On the GIR path (`type_env: None`) the type returns
-/// unchanged — its lowering already resolved everything it baked.
+/// registry). When `type_env` is `None` the type returns unchanged.
 fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
     match ctx.type_env {
         Some(env) => crate::fusion::lowering::resolve_abstract(t, env, 0),
@@ -1326,15 +1325,15 @@ fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
     }
 }
 
-/// [`gir::freeze_normalized`] with an abstract-Ref resolution RETRY
+/// [`vocab::freeze_normalized`] with an abstract-Ref resolution RETRY
 /// (#218): on failure, resolve through the region's env snapshot and
 /// freeze again. The retry only runs when the plain freeze fails, so
 /// the common (concrete-typed) path pays nothing; a freeze that
 /// already succeeds can't be changed by resolution (it was fully
 /// concrete).
 fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
-    gir::freeze_normalized(t)
-        .or_else(|| gir::freeze_normalized(&resolve_node_typ(ctx, t)))
+    vocab::freeze_normalized(t)
+        .or_else(|| vocab::freeze_normalized(&resolve_node_typ(ctx, t)))
 }
 
 /// FuncRefs into the JIT module for each runtime helper, valid
@@ -1364,7 +1363,7 @@ impl HelperFuncIds {
         let mut ids = BTreeMap::new();
         // Each helper's signature. The naming convention encodes the
         // return type — we match on that to pick the right CLIF sig.
-        for (name, _ptr) in crate::gir_jit_helpers::all_symbols() {
+        for (name, _ptr) in crate::fusion::emit_helpers::all_symbols() {
             let sig = helper_signature(module, name)?;
             let fid = module
                 .declare_function(name, Linkage::Import, &sig)
@@ -1809,7 +1808,7 @@ fn declare_helpers(
 // values; the SysV AMD64 ABI passes them in two integer registers
 // when crossing the helper boundary. Discriminant constants below
 // mirror the values in `netidx_value::Value`'s definition; the
-// const block at the bottom of `gir_jit_helpers.rs` keeps Value's
+// const block at the bottom of `emit_helpers.rs` keeps Value's
 // layout pinned at 16 bytes, so these stay coherent.
 mod value_disc {
     pub const U8: i64 = 0x0000_0001;
@@ -1863,7 +1862,7 @@ struct ValueVar {
 /// Result of emitting one expression node: either a single CLIF value
 /// (for scalar/composite/pointer-shaped exprs) or a Value-shaped
 /// `(disc, payload)` pair (for variant/nullable exprs). Consumers
-/// dispatch on the expression's `GirType`; the helpers `single()` /
+/// dispatch on the expression's `AbiKind`; the helpers `single()` /
 /// `value()` assert the expected variant and bail loudly if a site
 /// mishandles a Value-shaped result.
 #[derive(Debug, Clone, Copy)]
@@ -1876,7 +1875,7 @@ pub enum CompiledExpr {
     /// codegen cost for the common case). Taint propagates through
     /// pure scalar ops (Bin/Cmp/BoolBin/Not/Cast/IfChain) and is
     /// resolved at the kernel OUTPUT: an invalid output makes
-    /// `GirNode::update` return `None` (the boundary moves the abort
+    /// `Kernel::update` return `None` (the boundary moves the abort
     /// from the producing site to the output, so an intermediate
     /// bottom an un-taken arm never consumes no longer aborts the
     /// whole kernel — see `design/representable_bottom.md`).
@@ -1902,7 +1901,7 @@ impl CompiledExpr {
             )),
             CompiledExpr::Value { .. } => Err(anyhow!(
                 "JIT: expected single CLIF value, got Value-shaped (disc, \
-                 payload) pair — GIR is malformed or consumer is wrong"
+                 payload) pair — emission is malformed or consumer is wrong"
             )),
         }
     }
@@ -1924,7 +1923,7 @@ impl CompiledExpr {
             CompiledExpr::Scalar2 { value, valid } => Ok((value, valid)),
             CompiledExpr::Value { .. } => Err(anyhow!(
                 "JIT: expected scalar, got Value-shaped (disc, payload) \
-                 pair — GIR is malformed or consumer is wrong"
+                 pair — emission is malformed or consumer is wrong"
             )),
         }
     }
@@ -1935,7 +1934,7 @@ impl CompiledExpr {
             CompiledExpr::Single(_) | CompiledExpr::Scalar2 { .. } => {
                 Err(anyhow!(
                     "JIT: expected Value-shaped (disc, payload), got single \
-                     — GIR is malformed or consumer is wrong"
+                     — emission is malformed or consumer is wrong"
                 ))
             }
         }
@@ -2226,7 +2225,7 @@ fn emit_tail_rebind_jump(
     sources: &[CompositeSource],
 ) -> Result<()> {
     let head = ctx.loop_head.ok_or_else(|| {
-        anyhow!("GIR malformed: TailCall in kernel without has_tail_loop")
+        anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
     // Back-compat: hand-built test kernels leave `tail_call_slots`
     // empty and assume all params are scalar in declaration order.
@@ -2243,10 +2242,10 @@ fn emit_tail_rebind_jump(
     }
     let slots = ctx.tail_call_slots.unwrap();
     // Slots cover EVERY kernel value param (they double as the
-    // runtime arg layout — `arg_layout`, gir_interp.rs); a tail call
+    // runtime arg layout — `arg_layout`, kernel.rs); a tail call
     // rebinds only the leading FORMALS.
     debug_assert!(new_vals.len() <= slots.len());
-    use crate::gir::TailCallSlotKind;
+    use crate::fusion::vocab::TailCallSlotKind;
     let drop_helper = ctx
         .helper_refs
         .get("graphix_valarray_drop")
@@ -2383,7 +2382,7 @@ fn emit_tail_rebind_jump(
 
 /// Emit a value-bottom abort: when the I8 `valid` bit is 0, set the
 /// pending flag, run `emit_pending_cleanup`, and jump to `pending_exit`
-/// (so `GirNode::update` returns `None`). Falls through to a fresh
+/// (so `Kernel::update` returns `None`). Falls through to a fresh
 /// `continue_block` when valid. Used where a tainted scalar is consumed
 /// by a site that has no per-value validity channel (e.g. a composite
 /// producer field) — the bottom must propagate to the kernel OUTPUT.
@@ -2494,9 +2493,9 @@ trait BodyEmitter {
     /// `typ` cells can carry `Type::Ref`s to abstract type names whose
     /// concrete rep needs `env.lookup_ref` + the abstract registry
     /// (`resolve_abstract`) before `abi_kind`/freeze can classify
-    /// them. `None` on the GIR path — its lowering pre-resolved every
-    /// type it baked into the body. NOT for binding lookups; those
-    /// stay in the analysis phase, per the BodyCx design.
+    /// them. Defaults to `None`; [`NodeBodyEmitter`] supplies it. NOT
+    /// for binding lookups; those stay in the analysis phase, per the
+    /// BodyCx design.
     fn type_env(&self) -> Option<&crate::env::Env> {
         None
     }
@@ -2595,7 +2594,7 @@ pub struct BodyCx<'a, 'f, 'c> {
 }
 
 impl BodyCx<'_, '_, '_> {
-    /// FuncRef for a registered `gir_jit_helpers` runtime helper.
+    /// FuncRef for a registered `emit_helpers` runtime helper.
     pub fn helper(&self, name: &str) -> Result<FuncRef> {
         self.ctx
             .helper_refs
@@ -2614,7 +2613,7 @@ impl BodyCx<'_, '_, '_> {
         let ptr = match lazy.iter().find(|b| b.as_ref() == s) {
             Some(b) => b.as_ref() as *const ArcStr,
             None => {
-                lazy.push(Box::new(crate::gir_jit_intern::intern(s)));
+                lazy.push(Box::new(crate::fusion::intern::intern(s)));
                 lazy.last().unwrap().as_ref() as *const ArcStr
             }
         };
@@ -2746,7 +2745,7 @@ fn emit_kernel_return(
     cv: CompiledExpr,
     src: CompositeSource,
 ) -> Result<()> {
-    match gir::abi_kind(return_type) {
+    match vocab::abi_kind(return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = match cv {
                 CompiledExpr::Value { disc, payload } => (disc, payload),
@@ -2782,7 +2781,7 @@ fn emit_kernel_return(
         }
         Some(AbiKind::String) => {
             // String results are owned at production (reads clone);
-            // no ensure needed — mirror the GIR String return arm.
+            // no ensure needed.
             let v = cv.single()?;
             emit_return_pending_check(
                 cx.b,
@@ -2860,10 +2859,7 @@ fn ref_local_name(spec: &crate::expr::Expr) -> Option<&str> {
 //
 // The per-node `Update::emit_clif` impls (node/*.rs) are thin shims
 // over these crate-internal helpers, which own the CLIF mechanics
-// (`JitEnv`/`LowerCtx` stay private to this module). Each relay
-// mirrors the corresponding GIR arm of `compile_expr` exactly — same
-// helpers, same taint propagation — so the two paths can't drift
-// while both are alive.
+// (`JitEnv`/`LowerCtx` stay private to this module).
 
 /// Constant literal, dispatched on its runtime shape:
 ///
@@ -2878,7 +2874,7 @@ pub(crate) fn emit_const_node(
     value: &Value,
     typ: &Type,
 ) -> Result<CompiledExpr> {
-    match gir::abi_kind(typ) {
+    match vocab::abi_kind(typ) {
         Some(AbiKind::Scalar(prim)) => {
             Ok(CompiledExpr::Single(compile_const(cx.b, value, prim)))
         }
@@ -2928,7 +2924,7 @@ pub(crate) fn emit_map_new_node<R: crate::Rt, E: crate::UserEvent>(
              subtree node-walks"
         )
     })?;
-    let typ = gir::freeze_concrete(typ).unwrap_or_else(gir::map_type);
+    let typ = vocab::freeze_concrete(typ).unwrap_or_else(vocab::map_type);
     emit_const_node(cx, &v, &typ)
 }
 
@@ -2943,12 +2939,12 @@ pub(crate) fn emit_ref_node(
     typ: &Type,
     id: crate::BindId,
 ) -> Result<CompiledExpr> {
-    match gir::abi_kind(typ) {
+    match vocab::abi_kind(typ) {
         // Scalar: BindId-first — exact under shadowing (an outer
         // capture and an inner let sharing a basename resolve to
-        // different slots). Name fallback covers id-less slots (the
-        // GIR path's synthetic locals; direct-path slots all carry
-        // ids). Surfaces a tainted local's validity bit.
+        // different slots). Name fallback covers id-less slots
+        // (synthetic locals that carry no BindId). Surfaces a tainted
+        // local's validity bit.
         Some(AbiKind::Scalar(_)) => {
             let (var, valid, _) = match cx.env.lookup_bind_id(id) {
                 Some(slot) => slot,
@@ -2972,7 +2968,7 @@ pub(crate) fn emit_ref_node(
         }
         // String: read the slot and refcount-bump — each consumer gets
         // an independently-owned ArcStr; the slot keeps its own ref
-        // until scope exit. Mirrors the GIR string-Local arm.
+        // until scope exit.
         Some(AbiKind::String) => {
             let name = ref_local_name(spec).ok_or_else(|| {
                 anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
@@ -2987,8 +2983,7 @@ pub(crate) fn emit_ref_node(
         }
         // Variant / Nullable / value-shape: BORROWED two-word read —
         // the env still owns the ref; consumers clone via
-        // `ensure_owned_value_src` when they need ownership. Mirrors
-        // the GIR value-Local arm.
+        // `ensure_owned_value_src` when they need ownership.
         Some(AbiKind::Variant) => {
             let name = ref_local_name(spec).ok_or_else(|| {
                 anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
@@ -3016,8 +3011,8 @@ pub(crate) fn emit_ref_node(
         // Composite: BORROWED pointer read — consumers clone via
         // `ensure_owned_composite_src` when they need ownership.
         // BindId-first like the scalar arm (exact under shadowing);
-        // name fallback covers the id-less slots (params, lets, the
-        // GIR path's locals).
+        // name fallback covers the id-less slots (params, lets,
+        // synthetic locals).
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let var = match cx.env.lookup_composite_bind_id(id) {
                 Some(var) => var,
@@ -3038,13 +3033,12 @@ pub(crate) fn emit_ref_node(
     }
 }
 
-/// Arithmetic — compile both operands, then the SAME `compile_bin`
+/// Arithmetic — compile both operands, then the shared `compile_bin`
 /// helper (including the div/mod taint/guard), propagating operand
-/// validity exactly as the GIR `Bin` arm. A datetime/duration operand
+/// validity. A datetime/duration operand
 /// routes to the `ValueArith` mirror first (netidx `Value` arithmetic
 /// via the `graphix_value_<op>` helpers, both operands OWNED since the
-/// helpers consume) — the same dispatch `emit_arith` makes when
-/// lowering to GIR.
+/// helpers consume).
 pub(crate) fn emit_arith_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     op: BinOp,
@@ -3078,14 +3072,14 @@ pub(crate) fn emit_arith_node<R: crate::Rt, E: crate::UserEvent>(
     // Ref resolution retry, #218), or Err → no fusion.
     let prim = freeze_node_typ(cx.ctx, lhs.typ())
         .as_ref()
-        .and_then(gir::scalar_prim)
+        .and_then(vocab::scalar_prim)
         .ok_or_else(|| {
             anyhow!(
                 "emit_clif: arith operand of non-scalar type {:?}",
                 lhs.typ()
             )
         })?;
-    // Integer div/mod taint/guard — identical to the GIR `Bin` arm.
+    // Integer div/mod taint/guard.
     if matches!(op, BinOp::Div | BinOp::Mod)
         && prim.is_integer()
         && node_int_div_may_bottom(lhs, rhs)
@@ -3127,8 +3121,7 @@ pub(crate) fn emit_arith_node<R: crate::Rt, E: crate::UserEvent>(
     Ok(scalar_result(value, valid))
 }
 
-/// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`) — NEW
-/// direct-path coverage; the GIR path never lowered these. Both
+/// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
 /// operands are compiled as OWNED `(disc, payload)` Values (the same
 /// route as `emit_arith_node`'s ValueArith dispatch — the helpers
 /// consume), then the `graphix_value_checked_<op>` helper computes via
@@ -3160,10 +3153,10 @@ pub(crate) fn emit_checked_arith_node<R: crate::Rt, E: crate::UserEvent>(
 
 /// Comparison — `compile_cmp` (total-order floats) on scalar operands,
 /// propagating operand validity. Non-scalar `==`/`!=` (String,
-/// composite, value-shape) mirrors the GIR `ValueEq` arm: both operands
-/// as OWNED `(disc, payload)` Values (the helper consumes them),
+/// composite, value-shape) compiles both operands as OWNED
+/// `(disc, payload)` Values (the helper consumes them),
 /// compared via netidx `Value` PartialEq. Ordering operators on
-/// non-scalar operands aren't lowered (mirrors `gir::cmp`) — Err, the
+/// non-scalar operands aren't lowered (mirrors `vocab::cmp`) — Err, the
 /// region node-walks.
 pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
@@ -3172,9 +3165,9 @@ pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
     rhs: &crate::Node<R, E>,
 ) -> Result<CompiledExpr> {
     let lprim =
-        gir::freeze_normalized(lhs.typ()).as_ref().and_then(gir::scalar_prim);
+        vocab::freeze_normalized(lhs.typ()).as_ref().and_then(vocab::scalar_prim);
     let rprim =
-        gir::freeze_normalized(rhs.typ()).as_ref().and_then(gir::scalar_prim);
+        vocab::freeze_normalized(rhs.typ()).as_ref().and_then(vocab::scalar_prim);
     if let (Some(lp), Some(_)) = (lprim, rprim) {
         let lcv = lhs.emit_clif(cx)?;
         let rcv = rhs.emit_clif(cx)?;
@@ -3190,18 +3183,18 @@ pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
         other => {
             return Err(anyhow!(
                 "emit_clif: ordering cmp {other:?} on non-scalar operands \
-                 — not lowered (mirrors gir::cmp)"
+                 — not lowered (mirrors vocab::cmp)"
             ));
         }
     };
     for t in [lhs.typ(), rhs.typ()] {
         if matches!(
-            gir::abi_kind(t),
+            vocab::abi_kind(t),
             Some(AbiKind::Unit | AbiKind::Null) | None
         ) {
             return Err(anyhow!(
                 "emit_clif: ==/!= operand of type {t:?} has no comparable \
-                 runtime form (mirrors gir::cmp)"
+                 runtime form (mirrors vocab::cmp)"
             ));
         }
     }
@@ -3219,8 +3212,7 @@ pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
 }
 
 /// Logical — STRICT `band`/`bor` (both operands always compiled),
-/// taint-propagating, matching the GIR `BoolBin` arm and the
-/// node-walk's `bool_op!`.
+/// taint-propagating, matching the node-walk's `bool_op!`.
 pub(crate) fn emit_bool_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     op: BoolOp,
@@ -3261,7 +3253,7 @@ pub(crate) fn emit_cast_node<R: crate::Rt, E: crate::UserEvent>(
     let target = PrimType::from_type(target).ok_or_else(|| {
         anyhow!("emit_clif: TypeCast to non-scalar target {target:?}")
     })?;
-    let src = gir::scalar_prim(inner.typ()).ok_or_else(|| {
+    let src = vocab::scalar_prim(inner.typ()).ok_or_else(|| {
         anyhow!(
             "emit_clif: cast source of non-scalar typ {:?}",
             inner.typ()
@@ -3274,12 +3266,12 @@ pub(crate) fn emit_cast_node<R: crate::Rt, E: crate::UserEvent>(
     Ok(scalar_result(value, valid))
 }
 
-/// String interpolation `"x is [x]"` — the Node twin of the GIR
-/// `Concat` arm ([`compile_concat`]): build a heap-owned `*mut String`,
+/// String interpolation `"x is [x]"` — build a heap-owned
+/// `*mut String`,
 /// push each part (append-as-str for string parts — reads are already
 /// owned clones, the push consumes; Display-rendered for scalars via
 /// the shared [`string_buf_push_helper`]), finalize into an OWNED
-/// ArcStr. Keeps the GIR restriction on part shapes: a non-scalar /
+/// ArcStr. Keeps the restriction on part shapes: a non-scalar /
 /// non-string part (a Nullable from `a[i]`, a composite, a value-shape
 /// — see findings "StringInterpolate non-scalar part") is Err, the
 /// subtree node-walks.
@@ -3294,8 +3286,8 @@ pub(crate) fn emit_string_interpolate_node<R: crate::Rt, E: crate::UserEvent>(
         let part = &a.node;
         // `freeze_normalized` so a select-valued part (whose type is
         // the un-normalized arm union) still classifies.
-        let frozen = gir::freeze_normalized(part.typ());
-        match frozen.as_ref().and_then(gir::abi_kind) {
+        let frozen = vocab::freeze_normalized(part.typ());
+        match frozen.as_ref().and_then(vocab::abi_kind) {
             Some(AbiKind::String) => {
                 let s = part.emit_clif(cx)?.single()?;
                 let push = cx.helper("graphix_string_buf_push_arcstr")?;
@@ -3309,8 +3301,7 @@ pub(crate) fn emit_string_interpolate_node<R: crate::Rt, E: crate::UserEvent>(
             other => {
                 return Err(anyhow!(
                     "emit_clif: string-interpolate part of shape {other:?} \
-                     — only String and scalar parts are lowered (mirrors \
-                     the GIR Concat restriction)"
+                     — only String and scalar parts are lowered"
                 ));
             }
         }
@@ -3367,7 +3358,7 @@ pub(crate) fn emit_block_node<R: crate::Rt, E: crate::UserEvent>(
             let src = node_composite_source(child);
             let result = match tail_cv {
                 CompiledExpr::Single(v) => {
-                    match gir::abi_kind(child.typ()) {
+                    match vocab::abi_kind(child.typ()) {
                         Some(
                             AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
                         ) => CompiledExpr::Single(
@@ -3484,8 +3475,7 @@ fn emit_block_stmt<R: crate::Rt, E: crate::UserEvent>(
         // fails its emit and the whole block falls back to the
         // node-walk.) A discarded may-bottom scalar is fine — the
         // bottom is never consumed. Owned non-scalar results are
-        // dropped: discarding is consuming. (The GIR Discard arm
-        // leaks these; doing better here can't diverge values.)
+        // dropped: discarding is consuming.
         _ => {
             let cv = child.emit_clif(cx)?;
             emit_discard_result(cx, child, cv)?;
@@ -3548,7 +3538,7 @@ fn emit_body_tail<R: crate::Rt, E: crate::UserEvent>(
 
 /// Tail-position select: the shared pattern chain with arms that
 /// TERMINATE (return or self tail-call jump) instead of widening to a
-/// merge block — the Node twin of the GIR `compile_select_stmt`.
+/// merge block.
 fn emit_select_node_tail<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     sel: &crate::node::select::Select<R, E>,
@@ -3604,7 +3594,7 @@ fn emit_self_tail_call<R: crate::Rt, E: crate::UserEvent>(
         }
     };
     // Labeled args would need default materialization in source order;
-    // de-fuse (parity with the GIR path's no-labels rule).
+    // de-fuse.
     if spec_apply.args.iter().any(|(label, _)| label.is_some()) {
         return Err(anyhow!(
             "emit_clif: labeled args on a self tail-call"
@@ -3653,8 +3643,8 @@ fn emit_let_node<R: crate::Rt, E: crate::UserEvent>(
 ) -> Result<()> {
     // `freeze_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
-    let frozen = gir::freeze_normalized(value.typ());
-    match frozen.as_ref().and_then(gir::abi_kind) {
+    let frozen = vocab::freeze_normalized(value.typ());
+    match frozen.as_ref().and_then(vocab::abi_kind) {
         Some(AbiKind::Scalar(p)) => {
             let cv = value.emit_clif(cx)?;
             match cv {
@@ -3716,7 +3706,7 @@ fn emit_let_node<R: crate::Rt, E: crate::UserEvent>(
             cx.b.def_var(payload_var, payload);
             let vv = ValueVar { disc: disc_var, payload: payload_var };
             if matches!(
-                frozen.as_ref().and_then(gir::abi_kind),
+                frozen.as_ref().and_then(vocab::abi_kind),
                 Some(AbiKind::Variant)
             ) {
                 cx.env.bind_variant(name.clone(), vv);
@@ -3763,7 +3753,7 @@ fn emit_discard_result<R: crate::Rt, E: crate::UserEvent>(
     let owned =
         matches!(node_composite_source(node), CompositeSource::Owned);
     match cv {
-        CompiledExpr::Single(v) => match gir::abi_kind(node.typ()) {
+        CompiledExpr::Single(v) => match vocab::abi_kind(node.typ()) {
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
                 if owned =>
             {
@@ -3825,13 +3815,12 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: &EnvMark) -> Result<()> {
 /// production) is wrapped via `graphix_value_new_string` (consumes); a
 /// composite is owned-ensured then wrapped via
 /// `graphix_value_new_from_array` (consumes). A possibly-bottom
-/// (`Scalar2`) scalar errors — same as the GIR path's
-/// `compile_scalar` → `.single()`.
+/// (`Scalar2`) scalar errors via `.single()`.
 fn emit_owned_value_operand_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     node: &crate::Node<R, E>,
 ) -> Result<(ClifValue, ClifValue)> {
-    match gir::abi_kind(node.typ()) {
+    match vocab::abi_kind(node.typ()) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = node.emit_clif(cx)?.value()?;
             ensure_owned_value_src(
@@ -3884,7 +3873,7 @@ fn emit_push_field_node<R: crate::Rt, E: crate::UserEvent>(
     buf: ClifValue,
     field: &crate::Node<R, E>,
 ) -> Result<()> {
-    let helper_name: &str = match gir::abi_kind(field.typ()) {
+    let helper_name: &str = match vocab::abi_kind(field.typ()) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             match node_composite_source(field) {
@@ -3903,9 +3892,8 @@ fn emit_push_field_node<R: crate::Rt, E: crate::UserEvent>(
             }
         }
         // String SSA is the ArcStr's raw thin-pointer bits (owned);
-        // `_push_string` takes it by value (consumes). See the GIR
-        // `compile_and_push_field` for why `_push_arcstr` (which
-        // derefs a `*const ArcStr`) would be UB here.
+        // `_push_string` takes it by value (consumes). `_push_arcstr`
+        // (which derefs a `*const ArcStr`) would be UB here.
         Some(AbiKind::String) => "graphix_value_buf_push_string",
         other => {
             return Err(anyhow!(
@@ -3915,7 +3903,7 @@ fn emit_push_field_node<R: crate::Rt, E: crate::UserEvent>(
         }
     };
     let push = cx.helper(helper_name)?;
-    if gir::is_value_shape(field.typ()) {
+    if vocab::is_value_shape(field.typ()) {
         let (disc, payload) = field.emit_clif(cx)?.value()?;
         cx.b.ins().call(push, &[buf, disc, payload]);
     } else {
@@ -3944,8 +3932,8 @@ fn emit_push_field_node<R: crate::Rt, E: crate::UserEvent>(
 
 /// Tuple / array literal — build a `Vec<Value>` field-by-field via the
 /// producer helpers, then finalize into an owned `*mut ValArray`.
-/// Mirrors the GIR `TupleNew` arm (array literals lower to the same op
-/// — the runtime shape is identical, only the static type differs).
+/// Tuples and array literals share this emission — the runtime shape
+/// is identical, only the static type differs.
 pub(crate) fn emit_tuple_new_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     fields: &[crate::node::Cached<R, E>],
@@ -3962,11 +3950,10 @@ pub(crate) fn emit_tuple_new_node<R: crate::Rt, E: crate::UserEvent>(
     Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
 }
 
-/// Struct literal — mirrors the GIR `StructNew` arm: an outer ValArray
-/// of inner `[name, value]` pairs, fields sorted alphabetically by
-/// name (graphix's canonical struct layout, same sort
-/// `emit_struct_new` applies when lowering to GIR). Field names are
-/// interned lazily via [`BodyCx::interned_str`].
+/// Struct literal — an outer ValArray of inner `[name, value]` pairs,
+/// fields sorted alphabetically by name (graphix's canonical struct
+/// layout). Field names are interned lazily via
+/// [`BodyCx::interned_str`].
 pub(crate) fn emit_struct_new_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     names: &[ArcStr],
@@ -4002,10 +3989,10 @@ pub(crate) fn emit_struct_new_node<R: crate::Rt, E: crate::UserEvent>(
     Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
 }
 
-/// Variant constructor — mirrors the GIR `VariantNew` arm. Nullary →
+/// Variant constructor. Nullary →
 /// `Value::String(tag)` via `graphix_value_new_string_from_arcstr`
-/// (clones the interned tag — see the GIR arm for why the clone is
-/// mandatory). With payloads → `Value::Array([tag, p0, ...])` built
+/// (clones the interned tag — the borrowed interned pointer makes the
+/// clone mandatory). With payloads → `Value::Array([tag, p0, ...])` built
 /// via the buf helpers and unwrapped into a two-register Value by
 /// `graphix_value_new_from_array`. The tag is interned lazily via
 /// [`BodyCx::interned_str`].
@@ -4051,7 +4038,7 @@ fn emit_accessor_source_node<R: crate::Rt, E: crate::UserEvent>(
     source: &crate::Node<R, E>,
     want: AbiKind,
 ) -> Result<(ClifValue, CompositeSource)> {
-    if gir::abi_kind(source.typ()) != Some(want) {
+    if vocab::abi_kind(source.typ()) != Some(want) {
         return Err(anyhow!(
             "emit_clif: accessor source of type {:?} isn't {want:?}",
             source.typ()
@@ -4075,9 +4062,9 @@ fn emit_accessor_source_drop(
     Ok(())
 }
 
-/// `t.<idx>` — mirrors the GIR `TupleGet` arm: a statically-valid
-/// index, read through `compile_element_read` (owned result; Value
-/// shape for a value-shape element, Single otherwise).
+/// `t.<idx>` — a statically-valid index, read through
+/// `compile_element_read` (owned result; Value shape for a value-shape
+/// element, Single otherwise).
 pub(crate) fn emit_tuple_ref_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     source: &crate::Node<R, E>,
@@ -4097,8 +4084,8 @@ pub(crate) fn emit_tuple_ref_node<R: crate::Rt, E: crate::UserEvent>(
     Ok(result)
 }
 
-/// `s.field` — mirrors the GIR `StructGet` arm (the two-level kv-pair
-/// read via the `struct_get_*` helper family). `sorted_idx` is the
+/// `s.field` — the two-level kv-pair read via the `struct_get_*`
+/// helper family. `sorted_idx` is the
 /// field's position in the struct type's canonical (sorted) layout —
 /// resolved by the node's typecheck.
 pub(crate) fn emit_struct_ref_node<R: crate::Rt, E: crate::UserEvent>(
@@ -4119,8 +4106,8 @@ pub(crate) fn emit_struct_ref_node<R: crate::Rt, E: crate::UserEvent>(
     Ok(result)
 }
 
-/// `a[i]` / `bytes[i]` — mirrors the GIR `ArrayGet` / `BytesIndex`
-/// arms. The result type is always `Nullable<elem>` (out-of-bounds →
+/// `a[i]` / `bytes[i]` — the result type is always `Nullable<elem>`
+/// (out-of-bounds →
 /// the `ArrayIndexError` Value), produced by the shared bounds-checked
 /// helpers (`graphix_valarray_index` routes through the node-walk's
 /// own `node::array::array_index`, `graphix_bytes_index` through
@@ -4130,7 +4117,7 @@ pub(crate) fn emit_array_ref_node<R: crate::Rt, E: crate::UserEvent>(
     source: &crate::Node<R, E>,
     idx: &crate::Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let idx_prim = gir::scalar_prim(idx.typ())
+    let idx_prim = vocab::scalar_prim(idx.typ())
         .filter(|p| p.is_integer())
         .ok_or_else(|| {
             anyhow!(
@@ -4138,7 +4125,7 @@ pub(crate) fn emit_array_ref_node<R: crate::Rt, E: crate::UserEvent>(
                 idx.typ()
             )
         })?;
-    if matches!(gir::abi_kind(source.typ()), Some(AbiKind::Array)) {
+    if matches!(vocab::abi_kind(source.typ()), Some(AbiKind::Array)) {
         let (arr_ptr, src) =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_val = idx.emit_clif(cx)?.single()?;
@@ -4151,8 +4138,7 @@ pub(crate) fn emit_array_ref_node<R: crate::Rt, E: crate::UserEvent>(
         return Ok(CompiledExpr::Value { disc, payload });
     }
     if crate::fusion::lowering::is_bytes(source.typ()) {
-        // The helper consumes the bytes operand — owned, like the GIR
-        // `BytesIndex` arm.
+        // The helper consumes the bytes operand — owned.
         let (bd, bp) = emit_owned_value_operand_node(cx, source)?;
         let i = idx.emit_clif(cx)?.single()?;
         let helper = cx.helper("graphix_bytes_index")?;
@@ -4166,8 +4152,8 @@ pub(crate) fn emit_array_ref_node<R: crate::Rt, E: crate::UserEvent>(
     ))
 }
 
-/// `m{key}` — mirrors the GIR `MapRef` arm: both operands as OWNED
-/// `(disc, payload)` Values (the helper consumes them);
+/// `m{key}` — both operands as OWNED `(disc, payload)` Values (the
+/// helper consumes them);
 /// `graphix_map_ref` does the lookup (shared `node::map::map_get`
 /// semantics), returning `Nullable<V>` as two words.
 pub(crate) fn emit_map_ref_node<R: crate::Rt, E: crate::UserEvent>(
@@ -4189,8 +4175,8 @@ pub(crate) fn emit_map_ref_node<R: crate::Rt, E: crate::UserEvent>(
     Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
 }
 
-/// `a[i..j]` — mirrors the GIR `ArraySlice` arm: the source as an
-/// OWNED Value (the helper consumes it; a composite source is wrapped
+/// `a[i..j]` — the source as an OWNED Value (the helper consumes it;
+/// a composite source is wrapped
 /// via `graphix_value_new_from_array`), present bounds as integer
 /// scalars with a flag bit each, absent bounds pass 0 with the bit
 /// cleared. Result is `Nullable<source>` (shared
@@ -4201,7 +4187,7 @@ pub(crate) fn emit_array_slice_node<R: crate::Rt, E: crate::UserEvent>(
     start: Option<&crate::Node<R, E>>,
     end: Option<&crate::Node<R, E>>,
 ) -> Result<CompiledExpr> {
-    if !(matches!(gir::abi_kind(source.typ()), Some(AbiKind::Array))
+    if !(matches!(vocab::abi_kind(source.typ()), Some(AbiKind::Array))
         || crate::fusion::lowering::is_bytes(source.typ()))
     {
         return Err(anyhow!(
@@ -4218,7 +4204,7 @@ pub(crate) fn emit_array_slice_node<R: crate::Rt, E: crate::UserEvent>(
         match n {
             None => Ok(cx.b.ins().iconst(types::I64, 0)),
             Some(n) => {
-                if !gir::scalar_prim(n.typ()).is_some_and(|p| p.is_integer())
+                if !vocab::scalar_prim(n.typ()).is_some_and(|p| p.is_integer())
                 {
                     return Err(anyhow!(
                         "emit_clif: slice bound of non-integer type {:?}",
@@ -4242,21 +4228,20 @@ pub(crate) fn emit_array_slice_node<R: crate::Rt, E: crate::UserEvent>(
 
 /// `?` / `$` — both unwrap a Nullable<T> to T (else pass the value
 /// through unchanged for a non-Nullable inner, mirroring `wrap_qop`'s
-/// None branch). The Node twin of `wrap_qop` fused with the two GIR
-/// `QopUnwrap` compile arms (`compile_scalar_qop_unwrap` for scalar /
-/// string / composite success, the `compile_value_expr` arm for
-/// Value-shape success).
+/// None branch). Scalar / string / composite success returns the
+/// unwrapped element; Value-shape success returns the (disc, payload)
+/// pair.
 pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     inner: &crate::Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let Some(inner_typ) = gir::freeze_concrete(inner.typ()) else {
+    let Some(inner_typ) = vocab::freeze_concrete(inner.typ()) else {
         return Err(anyhow!(
             "emit_clif: `?` inner type {:?} doesn't freeze concrete",
             inner.typ()
         ));
     };
-    let Some(success_typ) = gir::nullable_inner(&inner_typ) else {
+    let Some(success_typ) = vocab::nullable_inner(&inner_typ) else {
         return inner.emit_clif(cx);
     };
     let cv = inner.emit_clif(cx)?;
@@ -4271,7 +4256,7 @@ pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
     };
     // `disc == Typ::Error` (`0x2000_0000`) means bottom.
     let is_err = cx.b.ins().icmp_imm(IntCC::Equal, disc, 0x2000_0000_i64);
-    match gir::abi_kind(&success_typ) {
+    match vocab::abi_kind(&success_typ) {
         // Prim success — BRANCHLESS per-value validity. The payload
         // word holds the success bits when !is_err; on the error path
         // the bits are garbage but `valid=0` means they're never used.
@@ -4329,9 +4314,8 @@ pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
             // representation. Composite: the payload word is the
             // ValArray BITS, but the composite ABI is a boxed
             // `*mut ValArray` — re-box via `graphix_value_into_array`
-            // (consumes) / `_borrowed` (clones inner); see the GIR arm
-            // (#199).
-            let v = match gir::abi_kind(&success_typ) {
+            // (consumes) / `_borrowed` (clones inner) (#199).
+            let v = match vocab::abi_kind(&success_typ) {
                 Some(AbiKind::String) => {
                     if inner_owned {
                         payload
@@ -4409,10 +4393,9 @@ pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
 /// Builtin DynCall — marshal the (marshal-ordered) `args` into a
 /// fresh `LPooled<Vec<Value>>` buf, dispatch via `graphix_dyncall`
 /// against the `FnSource::Builtin` slot at `info.fn_index`, then
-/// decode the return per shape. The Node twin of
-/// `marshal_dyncall_args` fused with the two GIR `DynCall` decode
-/// arms (`compile_scalar_impl` for scalar / unit / string / composite
-/// returns, the `compile_value_expr` arm for Value-shape returns).
+/// decode the return per shape: scalar / unit / string / composite
+/// returns the unwrapped value, a Value-shape return passes the
+/// (disc, payload) pair through.
 pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     info: &crate::fusion::lowering::BuiltinCallSiteInfo,
@@ -4432,13 +4415,13 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
         // needs to agree; a mismatch aborts the kernel (the classic
         // path refuses at lowering — same net effect, the subtree
         // node-walks).
-        let Some(frozen) = gir::freeze_normalized(arg_node.typ()) else {
+        let Some(frozen) = vocab::freeze_normalized(arg_node.typ()) else {
             return Err(anyhow!(
                 "emit_clif: DynCall arg type {:?} doesn't freeze concrete",
                 arg_node.typ()
             ));
         };
-        if gir::abi_kind(&frozen) != gir::abi_kind(t) {
+        if vocab::abi_kind(&frozen) != vocab::abi_kind(t) {
             return Err(anyhow!(
                 "emit_clif: DynCall arg shape {:?} disagrees with the \
                  discovered arg type {t:?}",
@@ -4452,7 +4435,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
         // bound to a local) transfers ownership into the buf. Using the
         // borrowed helper on an Owned source leaks the original; the
         // move helper on a Borrowed source double-frees it.
-        let helper_name: &str = match gir::abi_kind(t) {
+        let helper_name: &str = match vocab::abi_kind(t) {
             Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 match node_composite_source(arg_node) {
@@ -4485,7 +4468,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
             }
         };
         let push = cx.helper(helper_name)?;
-        if gir::is_value_shape(t) {
+        if vocab::is_value_shape(t) {
             let (disc, payload) = arg_node.emit_clif(cx)?.value()?;
             cx.b.ins().call(push, &[buf, disc, payload]);
         } else {
@@ -4497,7 +4480,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
         }
     }
     let dyncall = cx.helper("graphix_dyncall")?;
-    let ret_kind: i64 = match gir::abi_kind(&info.return_type) {
+    let ret_kind: i64 = match vocab::abi_kind(&info.return_type) {
         Some(AbiKind::Scalar(_)) => 0,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => 1,
         // Variant / Nullable / value-shape all come back as a
@@ -4537,11 +4520,11 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
     // in-flight stack before the (possible) pending branch below, so
     // a `pre_pending` block here doesn't try to double-free it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    match gir::abi_kind(&info.return_type) {
+    match vocab::abi_kind(&info.return_type) {
         Some(AbiKind::Scalar(p)) => {
             // Scalar return: 0 on pending is a harmless sentinel for
             // downstream scalar arithmetic. No branch needed — the
-            // wrapper-level DYNCALL_PENDING check in GirNode::update
+            // wrapper-level DYNCALL_PENDING check in Kernel::update
             // discards the whole kernel result.
             Ok(CompiledExpr::Single(cast_u64_to_prim(cx.b, raw0, p)))
         }
@@ -4601,8 +4584,7 @@ enum SelectMerge {
 }
 
 /// The select scrutinee, emitted exactly ONCE up front; every arm
-/// condition and pattern bind reuses these SSA values (the direct
-/// path's form of the GIR `__sel_scrut` stabilization — SSA reuse
+/// condition and pattern bind reuses these SSA values (SSA reuse
 /// gives eval-once for free). `Opaque` (string / composite) supports
 /// only Ignore / guard arms, none of which can test the value.
 #[derive(Clone, Copy)]
@@ -4614,17 +4596,15 @@ enum SelectScrut {
 
 /// A pattern binding to install in the arm's matched region, under the
 /// pattern's real `BindId` (the arm body's `Ref`s resolve BindId-first,
-/// so no shadow guard is needed — unlike the GIR `known_consts`
-/// channel).
+/// so no shadow guard is needed).
 enum SelectArmBind {
     /// `n => ...` — bind the scalar scrutinee itself.
     Scrut(crate::BindId),
     /// `` `Tag(n) `` — bind one scalar variant payload. The read uses
     /// `unreachable_unchecked` on a wrong-tag value, so it MUST be
     /// emitted inside the matched region (after the tag-eq branch) —
-    /// never in the fall-through chain. (The GIR path inlines payload
-    /// reads into the cond via known_consts; the node-walk evaluates
-    /// binds only after the pattern matches — we follow the node-walk.)
+    /// never in the fall-through chain. (The node-walk evaluates binds
+    /// only after the pattern matches — we follow the node-walk.)
     Payload { id: crate::BindId, idx: usize, prim: PrimType },
 }
 
@@ -4637,9 +4617,8 @@ enum SelectArmBind {
 ///   value (a `Scalar2` scrutinee's validity ANDs into every arm's
 ///   result validity — the #178 scrutinee gate);
 /// - an explicit type predicate is TESTED (`null as _` → IsNull;
-///   `i64 as _` over `[i64, null]` → NOT-null). The GIR path emits
-///   the non-null case as trivially-true, which is order-unsound —
-///   here the test is explicit so arm order is right by construction;
+///   `i64 as _` over `[i64, null]` → NOT-null), so arm order is right
+///   by construction;
 /// - a guard runs only after the pattern matches, with the pattern's
 ///   binds in scope; a bottom guard means the arm does NOT match;
 /// - the first matching arm wins; an arm with no condition and no
@@ -4649,8 +4628,7 @@ enum SelectArmBind {
 /// only where typecheck's exhaustiveness makes it unreachable: a
 /// guarded final arm, or a conditional final arm under a possibly-
 /// bottom scrutinee (whose garbage cond bits could miss every arm),
-/// refuse to fuse instead. (The GIR path traps live in that second
-/// case — see the C5 findings.)
+/// refuse to fuse instead.
 pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     sel: &crate::node::select::Select<R, E>,
@@ -4658,13 +4636,13 @@ pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
     }
-    let result_typ = gir::freeze_normalized(sel.typ()).ok_or_else(|| {
+    let result_typ = vocab::freeze_normalized(sel.typ()).ok_or_else(|| {
         anyhow!(
             "emit_clif: select result type {:?} doesn't freeze concrete",
             sel.typ()
         )
     })?;
-    let merge_shape = match gir::abi_kind(&result_typ) {
+    let merge_shape = match vocab::abi_kind(&result_typ) {
         Some(AbiKind::Scalar(p)) => SelectMerge::Scalar(p),
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             SelectMerge::Value
@@ -4762,14 +4740,14 @@ fn classify_select_scrutinee<R: crate::Rt, E: crate::UserEvent>(
     sel: &crate::node::select::Select<R, E>,
 ) -> Result<(SelectScrut, AbiKind, Type)> {
     let scrut_typ =
-        gir::freeze_normalized(sel.arg.node.typ()).ok_or_else(|| {
+        vocab::freeze_normalized(sel.arg.node.typ()).ok_or_else(|| {
             anyhow!(
                 "emit_clif: select scrutinee type {:?} doesn't freeze \
                  concrete",
                 sel.arg.node.typ()
             )
         })?;
-    let scrut_kind = gir::abi_kind(&scrut_typ).ok_or_else(|| {
+    let scrut_kind = vocab::abi_kind(&scrut_typ).ok_or_else(|| {
         anyhow!("emit_clif: select scrutinee shape not classifiable")
     })?;
     let scrut = match scrut_kind {
@@ -4790,8 +4768,8 @@ fn classify_select_scrutinee<R: crate::Rt, E: crate::UserEvent>(
         AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
             // The (disc, payload) pair stays live across the whole arm
             // chain with no drop path, so it must be a borrowed env
-            // slot (a Ref read) — the GIR variant arms had the same
-            // Local-only rule. An owned producer scrutinee would leak.
+            // slot (a Ref read). An owned producer scrutinee would
+            // leak.
             if node_composite_source(&sel.arg.node)
                 != CompositeSource::Borrowed
             {
@@ -4858,7 +4836,7 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
         let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
             None
         } else {
-            let pred = gir::freeze_concrete(&pat.type_predicate)
+            let pred = vocab::freeze_concrete(&pat.type_predicate)
                 .ok_or_else(|| {
                     anyhow!(
                         "emit_clif: select type predicate {:?} doesn't \
@@ -4902,9 +4880,9 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
                         }
                         SelectScrut::Value { disc, .. }
                             if matches!(scrut_kind, AbiKind::Nullable)
-                                && gir::nullable_inner(&scrut_typ)
+                                && vocab::nullable_inner(&scrut_typ)
                                     .as_ref()
-                                    .and_then(gir::scalar_prim)
+                                    .and_then(vocab::scalar_prim)
                                     == PrimType::from_typ(pt) =>
                         {
                             // `[T, null]` runtime value is T or null,
@@ -4949,7 +4927,7 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
             },
             StructPatternNode::Literal(v) => {
                 let lit_prim =
-                    gir::scalar_prim_of_value(v).ok_or_else(|| {
+                    vocab::scalar_prim_of_value(v).ok_or_else(|| {
                         anyhow!(
                             "emit_clif: non-scalar literal pattern {v:?}"
                         )
@@ -4996,9 +4974,8 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
                 };
                 // Payload types come from the arm's own (frozen)
                 // type predicate — `Variant(tag, elts)` for exactly
-                // this arm, unlike the GIR path's whole-scrutinee
-                // VariantInfo case table.
-                let pred = gir::freeze_concrete(&pat.type_predicate)
+                // this arm.
+                let pred = vocab::freeze_concrete(&pat.type_predicate)
                     .ok_or_else(|| {
                         anyhow!(
                             "emit_clif: variant pattern predicate {:?} \
@@ -5024,7 +5001,7 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
                 {
                     match sub {
                         StructPatternNode::Bind(id) => {
-                            let prim = gir::scalar_prim(elt)
+                            let prim = vocab::scalar_prim(elt)
                                 .ok_or_else(|| {
                                     anyhow!(
                                         "emit_clif: non-scalar variant \
@@ -5214,7 +5191,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
 ) -> Result<()> {
     use crate::NodeView;
     let body_frozen =
-        gir::freeze_normalized(body.node.typ()).ok_or_else(|| {
+        vocab::freeze_normalized(body.node.typ()).ok_or_else(|| {
             anyhow!(
                 "emit_clif: select arm type {:?} doesn't freeze concrete",
                 body.node.typ()
@@ -5222,7 +5199,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
         })?;
     match merge_shape {
         SelectMerge::Scalar(rp) => {
-            if gir::scalar_prim(&body_frozen) != Some(rp) {
+            if vocab::scalar_prim(&body_frozen) != Some(rp) {
                 return Err(anyhow!(
                     "emit_clif: select arm type {body_frozen:?} doesn't \
                      match the scalar merge {rp:?}"
@@ -5246,7 +5223,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
         SelectMerge::Value => {
             // Node twin of `widen_arm_to_value`, keyed on the arm
             // BODY's frozen type.
-            let (d, p) = match gir::abi_kind(&body_frozen) {
+            let (d, p) = match vocab::abi_kind(&body_frozen) {
                 Some(AbiKind::Null) => {
                     // A bare-null arm body has nothing to emit (and a
                     // Null-shaped node can't emit anyway); only the
@@ -5292,7 +5269,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
         }
         SelectMerge::Composite => {
             if !matches!(
-                gir::abi_kind(&body_frozen),
+                vocab::abi_kind(&body_frozen),
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
             ) {
                 return Err(anyhow!(
@@ -5310,7 +5287,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
             cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
         }
         SelectMerge::String => {
-            if !matches!(gir::abi_kind(&body_frozen), Some(AbiKind::String)) {
+            if !matches!(vocab::abi_kind(&body_frozen), Some(AbiKind::String)) {
                 return Err(anyhow!(
                     "emit_clif: select arm type {body_frozen:?} doesn't \
                      match the string merge"
@@ -5325,7 +5302,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
     Ok(())
 }
 
-/// Node-graph analog of `gir::int_div_may_bottom` — true unless the
+/// Node-graph analog of `vocab::int_div_may_bottom` — true unless the
 /// divisor is a non-zero constant (and, for signed, the dividend isn't
 /// the MIN/-1 overflow pair). Conservative `true` keeps the runtime
 /// guard; a provable non-bottom skips it. Sees through `ExplicitParens`.
@@ -5509,11 +5486,10 @@ impl<R: crate::Rt, E: crate::UserEvent> LambdaCallSlot<'_, R, E> {
 /// name fallback; V1 supports scalar + composite captures — a
 /// value-shape capture Errs (those env tables are still name-keyed)
 /// and the subtree node-walks. A may-bottom (`Scalar2`) scalar arg or
-/// capture Errs = de-fuse (same `compile_scalar` contract as the GIR
-/// caller). The result is unpacked per the callee's return ABI: one
+/// capture Errs = de-fuse (same `compile_scalar` contract). The
+/// result is unpacked per the callee's return ABI: one
 /// CLIF result for scalar / composite-pointer returns, a two-word
-/// `(disc, payload)` pair for variant/nullable — owned, like the GIR
-/// arm's classification.
+/// `(disc, payload)` pair for variant/nullable — owned.
 pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     cs: &crate::node::callsite::CallSite<R, E>,
@@ -5574,10 +5550,9 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
     for cap in &info.captures {
         slots.push(LambdaCallSlot::Cap(cap));
     }
-    // Shape gate — same as the GIR caller: scalar / composite /
-    // variant / nullable only.
+    // Shape gate — scalar / composite / variant / nullable only.
     for s in &slots {
-        match gir::abi_kind(s.typ()) {
+        match vocab::abi_kind(s.typ()) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -5647,14 +5622,14 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
         Ok(cx.b.use_var(var))
     };
     let is_kind = |s: &&LambdaCallSlot<R, E>, k: AbiKind| {
-        gir::abi_kind(s.typ()) == Some(k)
+        vocab::abi_kind(s.typ()) == Some(k)
     };
     let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len());
     let mut drops: Vec<CallArgDrop> = Vec::new();
     // Scalars first.
     for s in slots
         .iter()
-        .filter(|s| matches!(gir::abi_kind(s.typ()), Some(AbiKind::Scalar(_))))
+        .filter(|s| matches!(vocab::abi_kind(s.typ()), Some(AbiKind::Scalar(_))))
     {
         let v = match s {
             LambdaCallSlot::Arg(n, _) => emit_arg_single(cx, n)?,
@@ -5715,7 +5690,7 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
     })?;
     let inst = cx.b.ins().call(*func_ref, &clif_args);
     let ret = &info.kernel.return_type;
-    let result = match gir::abi_kind(ret) {
+    let result = match vocab::abi_kind(ret) {
         Some(
             AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple
             | AbiKind::Struct,
@@ -5881,7 +5856,7 @@ fn emit_pending_cleanup(
 /// to `pending_exit`, so the sentinel never flows into downstream
 /// code whose derefs and drops assume validity. Falls through on the
 /// non-pending path. (`pending_take` READS without clearing, so the
-/// wrapper-level check in `GirNode::update` still fires.)
+/// wrapper-level check in `Kernel::update` still fires.)
 ///
 /// Register-scalar results don't branch — their 0 sentinel is inert
 /// for downstream arithmetic and the wrapper discards the kernel
@@ -5936,7 +5911,7 @@ enum ReturnDropShape {
     /// pending path the same way composite/Value returns are: every
     /// string constant / concat / local read produces an owned
     /// ArcStr whose refcount would never decrement if
-    /// `GirNode::update` discards the wrapper result.
+    /// `Kernel::update` discards the wrapper result.
     String(ClifValue),
 }
 
@@ -5944,11 +5919,11 @@ enum ReturnDropShape {
 /// `DYNCALL_PENDING` peek. If pending fired earlier (e.g., a scalar
 /// DynCall deep in the body that doesn't short-circuit on
 /// its own), the about-to-return result is an owned heap allocation
-/// that `GirNode::update`'s wrapper-level pending check would
+/// that `Kernel::update`'s wrapper-level pending check would
 /// discard — leaking it. On pending: drop the result, run
 /// `emit_pending_cleanup` to drop env / in-flight DynCall bufs,
 /// jump to `pending_exit` (which emits a sentinel and returns).
-/// `GirNode::update` then sees `DYNCALL_PENDING` (still set —
+/// `Kernel::update` then sees `DYNCALL_PENDING` (still set —
 /// `pending_take` no longer clears) and returns `None`. On the
 /// non-pending fall-through, control returns to the caller, which
 /// emits its own `drop_owned_composites + return`.
@@ -6070,7 +6045,7 @@ fn struct_get_helper(p: PrimType) -> Result<&'static str> {
     })
 }
 
-/// Map an element [`GirType`] to its element-read helper symbol —
+/// Map an element [`Type`] to its element-read helper symbol —
 /// primitive (`get_<prim>`), String (`get_arcstr`), composite
 /// (`get_array`, a `*mut ValArray`), or value-shape (`get_value`, a
 /// two-word `Value`). `struct_access` picks the `struct_get_*` (two-
@@ -6079,7 +6054,7 @@ fn element_read_helper(
     elem: &Type,
     struct_access: bool,
 ) -> Result<&'static str> {
-    Ok(match gir::abi_kind(elem) {
+    Ok(match vocab::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => {
             if struct_access {
                 struct_get_helper(p)?
@@ -6110,14 +6085,14 @@ fn element_read_helper(
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             return Err(anyhow!(
-                "element read of Unit/Null/non-fusable slot — GIR is malformed"
+                "element read of Unit/Null/non-fusable slot — emission is malformed"
             ));
         }
     })
 }
 
 /// Emit an element read: `arr_ptr[idx]` (or struct field) of the given
-/// element `GirType`, dispatching to the right `..._get_*` helper. The
+/// element `Type`, dispatching to the right `..._get_*` helper. The
 /// result is OWNED (fresh box / refcount-bumped clone). Returns
 /// `CompiledExpr::Value` for a value-shape element (two-register
 /// Value) and `CompiledExpr::Single` for scalar / string / composite-
@@ -6138,7 +6113,7 @@ fn compile_element_read(
         .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
     let call = b.ins().call(helper, &[arr_ptr, idx_val]);
     let r = b.inst_results(call);
-    if gir::is_value_shape(&elem) {
+    if vocab::is_value_shape(&elem) {
         Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
     } else {
         Ok(CompiledExpr::Single(r[0]))
@@ -6162,7 +6137,7 @@ fn widen_to_i64(
             b.ins().uextend(types::I64, v)
         }
         PrimType::F32 | PrimType::F64 => {
-            panic!("widen_to_i64: float index — GIR malformed")
+            panic!("widen_to_i64: float index — emission malformed")
         }
     }
 }
@@ -6223,9 +6198,8 @@ fn value_new_prim_helper(p: PrimType) -> &'static str {
 }
 
 /// The `graphix_string_buf_push_*` helper that Display-renders a
-/// scalar of `p` into a Concat / string-interpolate buffer. Shared by
-/// the GIR `Concat` arm ([`compile_concat`]) and the direct path
-/// ([`emit_string_interpolate_node`]).
+/// scalar of `p` into a Concat / string-interpolate buffer. Used by
+/// [`emit_string_interpolate_node`].
 fn string_buf_push_helper(p: PrimType) -> &'static str {
     match p {
         PrimType::I64 => "graphix_string_buf_push_i64",
@@ -6304,7 +6278,7 @@ fn compile_const(b: &mut FunctionBuilder, v: &Value, prim: PrimType) -> ClifValu
 
 /// A zero / false constant of the given prim type. Used for the
 /// `pending_exit` block's sentinel return value (never observed —
-/// `GirNode::update` discards the result on the pending path — but
+/// `Kernel::update` discards the result on the pending path — but
 /// CLIF needs a well-typed value of the right width).
 fn zero_const(b: &mut FunctionBuilder, p: PrimType) -> ClifValue {
     match p {

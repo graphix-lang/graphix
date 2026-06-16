@@ -39,7 +39,7 @@ const ERROR: &str = r#"
 "#;
 
 // `error(v)` is a Sync builtin (`fn(e: 'a) -> Error<'a>`) — now fuses as a
-// value-shape `DynCall` (`GirType::Error`, runtime `Value::Error(Arc)`,
+// value-shape `DynCall` (an error value, runtime `Value::Error(Arc)`,
 // reusing the bytes/map two-register `Value` machinery).
 run!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,

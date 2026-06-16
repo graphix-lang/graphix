@@ -97,9 +97,9 @@ run!(float_subnormal, FLOAT_SUBNORMAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 5e-324_f64 + 5e-324)
 });
 
-// Float modulo. Cranelift has no `frem`, so the JIT bails — and with the
-// GIR interpreter gone, a kernel that can't JIT isn't spliced at all, so
-// the program node-walks (FuseExpect::None). It must still produce the
+// Float modulo. Cranelift has no `frem`, so the JIT bails — a kernel that
+// can't JIT isn't spliced at all, so the program node-walks
+// (FuseExpect::None). It must still produce the
 // right value. Regression for a fuzzer-found bug (#175): the JIT's
 // float-`%` arm emitted a runtime trap that crashed the whole runtime
 // instead of bailing. Found by graphix-fuzz on `f64:7.0 % f64:3.0`.
@@ -115,7 +115,7 @@ run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {
 });
 
 // ── Checked-arithmetic overflow detection (regression for the
-//    +?/-?/*? wrapping bug). These don't fuse (`+?` has no GIR
+//    +?/-?/*? wrapping bug). These don't fuse (`+?` has no fusion
 //    lowering), so they run the node-walk. ──
 
 const CHECKED_ADD_OVERFLOW: &str = "is_err(i64:9223372036854775807 +? i64:1)";
@@ -187,7 +187,7 @@ run!(div_in_untaken_arm, DIV_IN_ARM, |v: Result<&Value>| {
 
 // Cluster B: an error() value passed to a builtin (a value-shape DynCall
 // arg) must not crash the fused interp — the marshalling match was missing
-// the GirType::Error arm.
+// the value-shape error arm.
 const ERR_DYNCALL_ARG: &str = "is_err(error(1))";
 run!(err_as_dyncall_arg, ERR_DYNCALL_ARG, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
@@ -288,7 +288,7 @@ run!(sink_literal_arm_taken, SINK_LITERAL_ARM_TAKEN, |v: Result<&Value>| {
 });
 
 // Expression form: a block-with-select used as a sub-expression lowers to
-// `GirOp::Block { lets, tail: IfChain }`; the sink pass must reach the
+// a block of lets with an if-chain tail; the sink pass must reach the
 // IfChain arms there too (here the block is an arithmetic operand).
 const SINK_EXPR_OPERAND: &str =
     "({ let v = i64:1 / i64:0; select i64:5 { 2 => v, _ => i64:99 } }) + i64:1";

@@ -3,7 +3,7 @@ use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 // Focused bytes-local coverage: a `bytes` literal bound to a let-local
-// and returned — exercises `GirOp::ConstValue` (bytes), the `value_inputs`
+// and returned — exercises the bytes constant CLIF emission, the `value_inputs`
 // slot + `Local` read, and the bytes kernel return, all as Value-shape.
 run!(bytes_const_local, r#"{ let x = bytes:SGVsbG8=; x }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bytes(b)) if b.as_ref() == b"Hello")

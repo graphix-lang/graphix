@@ -224,9 +224,9 @@ run!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Fusion smoke test: a fully-annotated arithmetic lambda. With the
-// GIR path wired through Lambda::compile, this should run via
-// GirNode (tree-walking interpreter over typed primitives) instead
+// Fusion smoke test: a fully-annotated arithmetic lambda. With
+// fusion wired through Lambda::compile, this should run via
+// Kernel (tree-walking interpreter over typed primitives) instead
 // of GXLambda (node-graph walker). Output equality is the
 // regression check; the speed benefit is exercised in M5.
 const KIR_FUSED_ARITH: &str = r#"
@@ -239,14 +239,14 @@ const KIR_FUSED_ARITH: &str = r#"
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
-run!(gir_fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
+run!(fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
     Ok(Value::I64(25)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // Fusion smoke test: tail-recursive countdown with full annotations
 // and the binding-name hint. Self-call in tail position lowers to
-// `GirStmt::TailCall` + `loop` back-edge, runs through GirNode.
+// a tail-call rebind-and-jump loop, runs through Kernel.
 const KIR_FUSED_TAIL_LOOP: &str = r#"
 {
     let rec countdown = |n: i64, acc: i64| -> i64
@@ -261,7 +261,7 @@ const KIR_FUSED_TAIL_LOOP: &str = r#"
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
-run!(gir_fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
+run!(fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
@@ -284,7 +284,7 @@ const KIR_FUSED_MANDELBROT: &str = r#"
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
-run!(gir_fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
+run!(fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
     // c=1+0i: trace 0 → 1 → 2 → 5 → escape; |5|² = 25 > 4 at i=7.
     Ok(Value::I64(7)) => true,
     _ => false,
@@ -304,7 +304,7 @@ const KIR_FUSED_DEFERRED_MAP: &str = r#"
 }
 "#;
 
-run!(gir_fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
+run!(fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
     // sum_{i=0}^{99} 2i = 2 * 99*100/2 = 9900
     Ok(Value::I64(9900)) => true,
     _ => false,
@@ -331,7 +331,7 @@ const KIR_LAZY_NO_ANNOTATIONS: &str = r#"
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
-run!(gir_lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
+run!(lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
     // 1 + 2 + ... + 100 = 5050
     Ok(Value::I64(5050)) => true,
     _ => false,
@@ -359,7 +359,7 @@ const KIR_LAZY_THREE_LEVEL: &str = r#"
 "#;
 
 // ASPIRE: Jit (currently None) — blocked on: unannotated recursive lambdas
-run!(gir_lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
+run!(lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
@@ -368,7 +368,7 @@ run!(gir_lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
 // the kernel build for `combine` would fail because `f: fn(i64) ->
 // i64` isn't a primitive — so combine's body ran through GXLambda.
 // With DynCall, fusion registers `f` as a fn-typed param, the body
-// `f(x) + 1` lowers to GirOp::DynCall, and the interpreter
+// `f(x) + 1` lowers to a DynCall, and the fused kernel
 // dispatches to the LambdaDef passed at the call site. Result is
 // 5*5 + 1 = 26.
 const KIR_DYNCALL_HOF: &str = r#"
@@ -382,7 +382,7 @@ const KIR_DYNCALL_HOF: &str = r#"
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
-run!(gir_dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
+run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
     Ok(Value::I64(26)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
@@ -391,8 +391,8 @@ run!(gir_dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
 // lambda whose body uses a non-primitive intermediate (Array<i64>),
 // so its kernel build returns None and the lazy-fusion path
 // registers it as a `FnSource::Binding` DynCall slot. `outer`
-// fuses, lowering `helper(x)` to `GirOp::DynCall` against the
-// binding's BindId; at runtime GirNode reads ctx.cached[bind_id]
+// fuses, lowering `helper(x)` to a DynCall against the
+// binding's BindId; at runtime Kernel reads ctx.cached[bind_id]
 // for the LambdaDef and dispatches via `Apply::update`. Result is
 // helper(5) + 1 = (5*5+5*5) + 1 = 51.
 const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
@@ -408,7 +408,7 @@ const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(
-    gir_dyncall_static_nonfusable,
+    dyncall_static_nonfusable,
     KIR_DYNCALL_STATIC_NONFUSABLE,
     |v: Result<&Value>| match v {
         Ok(Value::I64(51)) => true,

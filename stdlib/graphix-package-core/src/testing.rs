@@ -17,7 +17,7 @@ pub struct TestCtx {
 /// test, so the suite is a live, drift-detecting map of the fusion
 /// frontier.
 ///
-/// The GIR interpreter is gone — fusion is JIT-only. A kernel that
+/// Fusion is JIT-only. A kernel that
 /// can't JIT-compile is never spliced; its original nodes node-walk
 /// instead. So there is no "fuses but runs on the interpreter" state:
 /// a program either fuses + JITs (`Jit`) or doesn't fuse at all
@@ -39,13 +39,13 @@ pub enum FuseExpect {
 /// `FUSION_INVOCATIONS` / `JIT_INVOCATIONS` counters (reset after
 /// runtime init, so they reflect only the fixture's own program).
 ///
-/// With the GIR interpreter gone, a fused kernel always JITs (`fuse()`
+/// A fused kernel always JITs (`fuse()`
 /// only splices a kernel it could JIT-compile), so `FUSION > 0` and
 /// `JIT > 0` move together. A kernel that can't JIT isn't spliced —
 /// FUSION stays 0 and the program node-walks.
 #[cfg(debug_assertions)]
 pub fn check_fuse_expectation(expect: FuseExpect) {
-    use graphix_compiler::gir_jit_helpers::{
+    use graphix_compiler::fusion::emit_helpers::{
         fusion_invocations, jit_invocations,
     };
     let fusion = fusion_invocations();
@@ -263,7 +263,7 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 ///   we observe it in jit mode or not. `cfg(debug_assertions)`-gated
 ///   since the counters only exist in debug builds.
 ///
-/// The GIR interpreter has been deleted, so the old middle `fused`
+/// There is no fusion interpreter, so the old middle `fused`
 /// mode (`JitDisabled` — fusion on, dispatch via the interpreter) no
 /// longer exists: with no interpreter, `JitDisabled` means "build
 /// kernels but don't splice them", which is identical to `interp`
@@ -273,7 +273,7 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 #[macro_export]
 macro_rules! run {
     // ── NodeShape-bearing forms (trailing `; shape: <NodeShape>`) ──
-    // Pin the compiled GIR shape in addition to the value + fusion
+    // Pin the compiled node-graph shape in addition to the value + fusion
     // expectation. The spec is checked in `fused` mode (graph shape is
     // backend-independent). Must precede the plain `; $fexpect` arms so
     // the longer token sequence matches first.
@@ -341,9 +341,9 @@ macro_rules! run {
                 if reset_counters_after_init {
                     #[cfg(debug_assertions)]
                     {
-                        ::graphix_compiler::gir_jit_helpers::reset_jit_invocations();
-                        ::graphix_compiler::gir_jit_helpers::reset_fusion_invocations();
-                        ::graphix_compiler::gir_jit_helpers::reset_fuse_bails();
+                        ::graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+                        ::graphix_compiler::fusion::emit_helpers::reset_fusion_invocations();
+                        ::graphix_compiler::fusion::emit_helpers::reset_fuse_bails();
                     }
                 }
                 let bs = &ctx.rt;
@@ -457,9 +457,9 @@ macro_rules! run {
                         false,
                     ).await?;
                     let fusion =
-                        ::graphix_compiler::gir_jit_helpers::fusion_invocations();
+                        ::graphix_compiler::fusion::emit_helpers::fusion_invocations();
                     let jit =
-                        ::graphix_compiler::gir_jit_helpers::jit_invocations();
+                        ::graphix_compiler::fusion::emit_helpers::jit_invocations();
                     eprintln!(
                         "FUSEMAPF\t{}\t{}",
                         module_path!(),
@@ -467,7 +467,7 @@ macro_rules! run {
                     );
                     {
                         let bails =
-                            ::graphix_compiler::gir_jit_helpers::take_fuse_bails();
+                            ::graphix_compiler::fusion::emit_helpers::take_fuse_bails();
                         let joined = bails
                             .iter()
                             .map(|s| s.as_str())
@@ -504,7 +504,7 @@ macro_rules! run {
                         false,
                     ).await?;
                     let fusion =
-                        ::graphix_compiler::gir_jit_helpers::fusion_invocations();
+                        ::graphix_compiler::fusion::emit_helpers::fusion_invocations();
                     let expected = $fexpect;
                     let observed = if fusion > 0 {
                         $crate::testing::FuseExpect::Jit

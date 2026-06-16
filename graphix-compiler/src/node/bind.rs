@@ -273,7 +273,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         crate::NodeView::Bind(self)
     }
 
-    fn jit(
+    fn fuse(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
     ) -> Result<Option<Node<R, E>>> {
@@ -282,7 +282,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // (the ValueBind splice shape). A whole-Bind fusion can't
         // happen anyway — Bind has no emit_clif, so any try_fuse
         // rooted here fails structurally.
-        crate::fusion::jit_node(&mut self.node, ctx)?;
+        crate::fusion::fuse(&mut self.node, ctx)?;
         Ok(None)
     }
 
@@ -413,9 +413,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 
     fn emit_clif(
         &self,
-        cx: &mut crate::gir_jit::BodyCx,
-    ) -> Result<crate::gir_jit::CompiledExpr> {
-        crate::gir_jit::emit_ref_node(
+        cx: &mut crate::fusion::emit::BodyCx,
+    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        crate::fusion::emit::emit_ref_node(
             cx,
             self.spec.as_ref(),
             &self.typ,

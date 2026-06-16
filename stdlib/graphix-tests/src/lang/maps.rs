@@ -87,7 +87,7 @@ const MAP_REF0: &str = r#"
 }
 "#;
 
-// `m{key}` (MapRef) lowers to `GirOp::MapRef` (Nullable<V>).
+// `m{key}` (MapRef) lowers to the map-ref CLIF emission (Nullable<V>).
 run!(map_ref0, MAP_REF0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,

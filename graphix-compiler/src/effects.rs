@@ -4,7 +4,7 @@
 //! every operation in the dataflow graph is classified `Sync` or
 //! `Async` based on whether it can produce an output on a cycle later
 //! than the trigger that activated it. Sync operations can be fused
-//! into a single GIR kernel; async operations form fusion boundaries
+//! into a single fused kernel; async operations form fusion boundaries
 //! that the runtime mediates.
 //!
 //! This module owns the `EffectKind` lattice and the rules for joining
@@ -17,7 +17,7 @@
 /// `Sync` means: every output the operation produces appears on the
 /// same cycle as the input that triggered it (or it produces no output
 /// for that input). `Sync` operations are fusion candidates — multiple
-/// `Sync` operations can collapse into a single GIR kernel.
+/// `Sync` operations can collapse into a single fused kernel.
 ///
 /// `Async` means: the operation may produce output on a cycle later
 /// than the trigger that activated it. Async operations are fusion

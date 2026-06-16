@@ -7,7 +7,7 @@
 
 use crate::{
     expr::{ExprKind, ModPath},
-    fusion, gir,
+    fusion::{self, vocab},
     node::callsite::CallSite,
     typ::Type,
     ExecCtx, Rt, Update, UserEvent,
@@ -17,8 +17,8 @@ use netidx_value::Value;
 
 // Re-export the canonical kernel-ABI types so existing callers
 // (graphix-shell, in-tree tests) keep compiling. The definitive home
-// is `crate::kernel_abi` (via `crate::gir`).
-pub use crate::gir::{Input, KnownFusedFn, PrimType};
+// is `crate::kernel_abi` (via `crate::fusion::vocab`).
+pub use crate::fusion::vocab::{Input, KnownFusedFn, PrimType};
 
 /// Cached entry in [`crate::ExecCtx::fusion_kernels`]. One per
 /// `(LambdaId, Arc<FnType>)` monomorphization of a lambda definition.
@@ -28,7 +28,7 @@ pub use crate::gir::{Input, KnownFusedFn, PrimType};
 #[derive(Debug, Clone)]
 pub struct CachedKernel {
     pub fn_name: ArcStr,
-    pub kernel: std::sync::Arc<crate::gir::KernelSig>,
+    pub kernel: std::sync::Arc<crate::fusion::vocab::KernelSig>,
     pub signature: KnownFusedFn,
     /// Captured outer-scope bindings the lambda body references,
     /// lifted to extra positional kernel arguments (closure
@@ -69,7 +69,7 @@ pub struct CaptureSlot {
 /// for `CallSite::emit_clif`'s builtin DynCall arm.
 ///
 /// `fn_index` is the slot index in `KernelSig.fn_params` for this
-/// call site's [`crate::gir::FnSource::Builtin`] entry.
+/// call site's [`crate::fusion::vocab::FnSource::Builtin`] entry.
 ///
 /// `marshal_arg_indices` maps each kernel-level marshalled DynCall
 /// arg position to its index in `Apply.args` (source order). At
@@ -96,7 +96,7 @@ pub struct BuiltinCallSiteInfo {
 pub struct BuiltinCallDiscovery {
     /// `FnParam` slots to install in the kernel sig's `fn_params` —
     /// one per discovered builtin Apply site, in walk order.
-    pub fn_params: Vec<crate::gir::FnParam>,
+    pub fn_params: Vec<crate::fusion::vocab::FnParam>,
     /// `Apply.spec.id → BuiltinCallSiteInfo` lookup so
     /// `CallSite::emit_clif` can recognise the call site at emit
     /// time and lower it to a DynCall.
@@ -106,7 +106,7 @@ pub struct BuiltinCallDiscovery {
 /// Walk a Node subtree to discover builtin Apply sites: every
 /// `CallSite` whose target resolves to a sync builtin binding
 /// registered in `ctx.builtin_bindings` gets a
-/// [`crate::gir::FnParam`] slot ([`crate::gir::FnSource::Builtin`])
+/// [`crate::fusion::vocab::FnParam`] slot ([`crate::fusion::vocab::FnSource::Builtin`])
 /// and an `apply_sites` entry, capturing the layout `emit_dyncall`
 /// needs to dispatch via the runtime's builtin Apply machinery.
 /// Descent is [`crate::fusion::for_each_node`] — the canonical
@@ -208,7 +208,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             None => call_positional.push(call_idx),
         }
     }
-    let mut layout: Vec<crate::gir::BuiltinSlot> = Vec::new();
+    let mut layout: Vec<crate::fusion::vocab::BuiltinSlot> = Vec::new();
     let mut arg_types: Vec<Type> = Vec::new();
     let mut marshal_arg_indices: Vec<usize> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
@@ -227,12 +227,12 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
-                let kt = match gir::freeze_concrete(&arg_typ) {
+                let kt = match vocab::freeze_concrete(&arg_typ) {
                     Some(t) => t,
                     None => return,
                 };
                 let slot_idx = arg_types.len();
-                layout.push(crate::gir::BuiltinSlot::Positional(slot_idx));
+                layout.push(crate::fusion::vocab::BuiltinSlot::Positional(slot_idx));
                 arg_types.push(kt);
                 marshal_arg_indices.push(*call_idx);
             }
@@ -242,12 +242,12 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         .arg_named(name)
                         .map(|n| n.typ().clone())
                         .unwrap_or_else(|| fa.typ.clone());
-                    let kt = match gir::freeze_concrete(&arg_typ) {
+                    let kt = match vocab::freeze_concrete(&arg_typ) {
                         Some(t) => t,
                         None => return,
                     };
                     let slot_idx = arg_types.len();
-                    layout.push(crate::gir::BuiltinSlot::Positional(slot_idx));
+                    layout.push(crate::fusion::vocab::BuiltinSlot::Positional(slot_idx));
                     arg_types.push(kt);
                     marshal_arg_indices.push(call_idx);
                 } else if *has_default {
@@ -266,7 +266,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         Some(d) => d,
                         None => return,
                     };
-                    layout.push(crate::gir::BuiltinSlot::LabeledDefault(default));
+                    layout.push(crate::fusion::vocab::BuiltinSlot::LabeledDefault(default));
                 } else {
                     return;
                 }
@@ -280,7 +280,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         }
         let from_call_idx = arg_types.len();
         let count = remaining.len();
-        layout.push(crate::gir::BuiltinSlot::Variadic { from_call_idx, count });
+        layout.push(crate::fusion::vocab::BuiltinSlot::Variadic { from_call_idx, count });
         for (pos_idx, call_idx) in remaining {
             let arg_typ = cs.arg_positional(pos_idx).map(|n| n.typ().clone()).or_else(
                 || fn_type.vargs.as_ref().and_then(|t| t.with_deref(|t| t.cloned())),
@@ -289,7 +289,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 Some(t) => t,
                 None => return,
             };
-            let kt = match gir::freeze_concrete(&arg_typ) {
+            let kt = match vocab::freeze_concrete(&arg_typ) {
                 Some(t) => t,
                 None => return,
             };
@@ -303,7 +303,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // Return type — the CallSite's own resolved output type (the
     // node-resident value the typechecker propagated for this Apply).
     let ret_typ = cs.typ().clone();
-    let return_type = match gir::freeze_concrete(&ret_typ) {
+    let return_type = match vocab::freeze_concrete(&ret_typ) {
         Some(t) => t,
         None => return,
     };
@@ -314,9 +314,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         return;
     }
     let fn_index = out.fn_params.len() as u32;
-    out.fn_params.push(crate::gir::FnParam {
+    out.fn_params.push(crate::fusion::vocab::FnParam {
         name: info.name.clone(),
-        source: crate::gir::FnSource::Builtin {
+        source: crate::fusion::vocab::FnSource::Builtin {
             name: info.name.clone(),
             typ: fn_type,
             layout: std::sync::Arc::from(layout),
@@ -384,7 +384,7 @@ fn const_valarray<R: crate::Rt, E: crate::UserEvent>(
 /// `Value::Map`, or `None` if any entry isn't constant. Shared by
 /// `node_const_value`'s `Map` arm and `emit_map_new`.
 /// (`pub(crate)`: also the direct path's `emit_map_new_node` —
-/// gir_jit.rs — const-folds through it.)
+/// fusion::emit — const-folds through it.)
 pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
     keys: &[crate::node::Cached<R, E>],
     vals: &[crate::node::Cached<R, E>],
@@ -406,14 +406,14 @@ pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
 /// `(LambdaId, resolved FnType)` monomorphization, then registers
 /// Resolve named (`Type::Ref`) and abstract (`Type::Abstract`) types
 /// to their concrete representation, recursing through composites, so
-/// `GirType::from_type` can determine an abstract-typed value's runtime
+/// `abi_kind` can determine an abstract-typed value's runtime
 /// shape. This is fusion-internal only — the abstraction stays opaque
 /// to the type system; the optimizer peeks at the registered concrete
 /// rep purely to size kernel slots.
 ///
 /// A depth cap (and the unchanged-on-failure fallback) makes recursive
 /// types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate by
-/// returning the type as-is — `from_type` then yields `None` and the
+/// returning the type as-is — `abi_kind` then yields `None` and the
 /// kernel simply doesn't fuse, which is correct.
 pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) -> Type {
     use triomphe::Arc;
@@ -451,7 +451,7 @@ pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) 
             // which deadlocks under parking_lot's fair lock the moment
             // any writer (`check_sig`) queues between the two reads
             // (the post-F2-flip parallel test wedge's second edge).
-            let concrete = gir::ABSTRACT_REGISTRY.read().get(id).cloned();
+            let concrete = vocab::ABSTRACT_REGISTRY.read().get(id).cloned();
             match concrete {
                 Some(concrete) => r(&concrete),
                 None => typ.clone(),
@@ -477,7 +477,7 @@ pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) 
 /// cross-kernel call path, which then registered the callee) and — the
 /// reason it's extracted — the per-slot HOF dispatch path
 /// (`design/impure_hof_fusion.md`), which wraps the artifact in a
-/// runtime `GirNode` instead.
+/// runtime `Kernel` instead.
 ///
 /// `kernel_name` becomes the built `CachedKernel.fn_name`; a cache hit
 /// returns the first builder's name. The region-splice path passes the
@@ -546,7 +546,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             _ => return None,
         };
         let arg_typ = resolve_abstract(&fa.typ, &ec.env, 0);
-        let kt = gir::freeze_concrete(&arg_typ)?;
+        let kt = vocab::freeze_concrete(&arg_typ)?;
         let kind = type_to_region_input_kind(kt)?;
         inputs.push((name, kind, None));
     }
@@ -608,7 +608,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             // the whole build returns None below.
             continue;
         }
-        let kt = match gir::freeze_concrete(&resolve_abstract(&cap_typ, &ec.env, 0)) {
+        let kt = match vocab::freeze_concrete(&resolve_abstract(&cap_typ, &ec.env, 0)) {
             Some(t) => t,
             None => return None,
         };
@@ -620,7 +620,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         inputs.push((name.clone(), kind, Some(bind_id)));
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
-    let return_typ = gir::freeze_concrete(&resolve_abstract(&typ.rtype, &ec.env, 0))?;
+    let return_typ = vocab::freeze_concrete(&resolve_abstract(&typ.rtype, &ec.env, 0))?;
     // Cross-kernel calls support scalar + composite (array/tuple/
     // struct) + value-shape (variant/nullable) args, captures, and
     // returns. Args and captures are already restricted to those
@@ -630,8 +630,8 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // the cross-kernel call boundary, so refuse those — the call
     // stays on the node-walk (via `GXLambda`).
     if matches!(
-        gir::abi_kind(&return_typ),
-        Some(gir::AbiKind::String | gir::AbiKind::Unit | gir::AbiKind::Null)
+        vocab::abi_kind(&return_typ),
+        Some(vocab::AbiKind::String | vocab::AbiKind::Unit | vocab::AbiKind::Null)
     ) {
         return None;
     }
@@ -694,10 +694,10 @@ pub struct FusedCallback {
     /// `FusedKernel`. A callback becomes a `FusedCallback` only when its
     /// WHOLE body lowers to one kernel; an impure callback (async ops in
     /// the body) instead fuses its maximal sync sub-regions in place via
-    /// the canonical `fusion::jit_node` walk at the call site (see
+    /// the canonical `fusion::fuse` walk at the call site (see
     /// `MapQ`'s template build) and never becomes a `FusedCallback`.
-    kernel: std::sync::Arc<crate::gir::KernelSig>,
-    wrapped: Option<std::sync::Arc<crate::gir_jit::WrappedKernel>>,
+    kernel: std::sync::Arc<crate::fusion::vocab::KernelSig>,
+    wrapped: Option<std::sync::Arc<crate::fusion::emit::WrappedKernel>>,
     /// Captured outer bindings (closure conversion), in kernel-input
     /// order *after* the formal args. Each is fed by a shared `Ref`
     /// feeder (to its bind_id) appended after the per-slot element
@@ -727,7 +727,7 @@ impl std::fmt::Debug for FusedCallback {
 /// Returns `None` when the callback isn't a resolved lambda or its body
 /// has async ops (so it can't fuse as a single kernel) — the caller then
 /// fuses the body's maximal sync sub-regions in place via
-/// `fusion::jit_node` (the impure-HOF split), or falls back to the
+/// `fusion::fuse` (the impure-HOF split), or falls back to the
 /// interpreted per-slot dispatch. JIT-compiles the kernel when
 /// `ec.jit_enabled` (interp fallback inside `FusedKernel` handles `None`).
 pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
@@ -799,7 +799,7 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     }
     // The whole body didn't lower to one kernel (async ops in the body).
     // The caller fuses its maximal sync sub-regions in place via
-    // `fusion::jit_node` (the impure-HOF split) — see `MapQ`'s template
+    // `fusion::fuse` (the impure-HOF split) — see `MapQ`'s template
     // build.
     None
 }
@@ -815,15 +815,15 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
 /// against the kernel's own declaration.
 fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
     ec: &mut crate::ExecCtx<R, E>,
-    kernel: &std::sync::Arc<crate::gir::KernelSig>,
+    kernel: &std::sync::Arc<crate::fusion::vocab::KernelSig>,
     body: &crate::Node<R, E>,
     self_call: Option<&(crate::BindId, crate::fusion::LambdaCallInfo)>,
     apply_sites: &nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
-) -> Option<std::sync::Arc<crate::gir_jit::WrappedKernel>> {
+) -> Option<std::sync::Arc<crate::fusion::emit::WrappedKernel>> {
     if !ec.jit_enabled {
         return None;
     }
-    let r = crate::gir_jit::compile_kernel_with_callees_direct(
+    let r = crate::fusion::emit::compile_kernel_with_callees_direct(
         &mut ec.jit.lock(),
         kernel,
         &std::collections::BTreeMap::new(),
@@ -934,7 +934,7 @@ pub enum RegionInputKind {
     /// type, frozen).
     Array(Type),
     /// Tuple — the carried `Type` is the full `Type::Tuple` (per-slot
-    /// types read back via `gir::tuple_slots`).
+    /// types read back via `vocab::tuple_slots`).
     Tuple(Type),
     /// Struct — the carried `Type` is the full `Type::Struct`.
     Struct(Type),
@@ -969,7 +969,7 @@ pub enum RegionInputKind {
 /// `value_params` 2-word slot — both with full backend (interp + JIT)
 /// marshalling.
 pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
-    use crate::gir::AbiKind;
+    use crate::fusion::vocab::AbiKind;
     // FREEZE at the boundary. The Type comes from a binding's declared
     // type, which may still wrap a (bound) TVar or a Ref. `abi_kind`
     // derefs, so it classifies a TVar-bound `Tuple` as `Tuple` — but the
@@ -977,17 +977,17 @@ pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
     // that `populate_kernel_inputs` later runs on the STORED `Type`
     // would then return `None` and silently produce an empty slot. Store
     // the concrete frozen `Type` so those accessors always succeed.
-    let t = crate::gir::freeze_concrete(&t)?;
-    match crate::gir::abi_kind(&t)? {
+    let t = crate::fusion::vocab::freeze_concrete(&t)?;
+    match crate::fusion::vocab::abi_kind(&t)? {
         AbiKind::Scalar(p) => Some(RegionInputKind::Prim(p)),
         AbiKind::Array => {
-            crate::gir::array_elem(&t).map(|e| RegionInputKind::Array(e.clone()))
+            crate::fusion::vocab::array_elem(&t).map(|e| RegionInputKind::Array(e.clone()))
         }
         AbiKind::Tuple => Some(RegionInputKind::Tuple(t)),
         AbiKind::Struct => Some(RegionInputKind::Struct(t)),
         AbiKind::Variant => Some(RegionInputKind::Variant(t)),
         AbiKind::Nullable => {
-            crate::gir::nullable_inner(&t).map(RegionInputKind::Nullable)
+            crate::fusion::vocab::nullable_inner(&t).map(RegionInputKind::Nullable)
         }
         AbiKind::String => Some(RegionInputKind::String),
         AbiKind::Value => Some(RegionInputKind::Value(t)),
@@ -999,8 +999,8 @@ pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
 /// shape — every fusable shape except `Unit` (no value to pass) and
 /// bare `Null` (always widened to `Nullable<T>` at construction).
 fn is_dyncall_arg_supported(t: &Type) -> bool {
-    use crate::gir::AbiKind;
-    match crate::gir::abi_kind(t) {
+    use crate::fusion::vocab::AbiKind;
+    match crate::fusion::vocab::abi_kind(t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array
@@ -1046,8 +1046,8 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
 /// shape — every fusable shape except bare `Null`. `Unit` IS allowed
 /// (side-effect-only sync builtins like `println` return Bottom).
 fn is_dyncall_return_supported(t: &Type) -> bool {
-    use crate::gir::AbiKind;
-    match crate::gir::abi_kind(t) {
+    use crate::fusion::vocab::AbiKind;
+    match crate::fusion::vocab::abi_kind(t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array

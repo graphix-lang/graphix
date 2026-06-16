@@ -201,11 +201,11 @@ fn check_sig<R: Rt, E: UserEvent>(
                     }
                     abstract_types.insert(*id, td.typ.clone());
                     // Persist the abstract→concrete mapping so fusion's
-                    // `GirType::from_type` can lower abstract-typed values
+                    // `abi_kind` can lower abstract-typed values
                     // to their concrete representation (the abstraction
                     // stays opaque to the type system; only the optimizer
                     // peeks). Keyed by globally-unique `AbstractId`.
-                    crate::gir::ABSTRACT_REGISTRY
+                    crate::fusion::vocab::ABSTRACT_REGISTRY
                         .write()
                         .insert(*id, td.typ.scope_refs(&scope.lexical));
                 }
@@ -528,7 +528,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         crate::NodeView::Module(self)
     }
 
-    fn jit(
+    fn fuse(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
     ) -> Result<Option<Node<R, E>>> {
@@ -538,7 +538,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         // the module's source string, whose compiled graph gets its
         // own fusion pass inside `compile_source` at runtime.)
         for child in self.nodes.iter_mut() {
-            crate::fusion::jit_node(child, ctx)?;
+            crate::fusion::fuse(child, ctx)?;
         }
         Ok(None)
     }
