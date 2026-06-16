@@ -709,6 +709,32 @@ re-exported through `fusion/vocab.rs`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Type concretization: fixed depth caps → real cycle detection (2026-06-16;
+  predictable-performance fix + a latent hang closed).** The three functions
+  that concretize a type by expanding nullary `Type::Abstract` (and, for
+  `resolve_abstract`, named `Type::Ref`) through `ABSTRACT_REGISTRY` —
+  `freeze_concrete` + `abi_kind` (`kernel_abi.rs`) and `resolve_abstract`
+  (`fusion/lowering.rs`) — used a fixed `depth > 16` cap to terminate on
+  recursive types. The cap incremented on EVERY recursion (structural nesting
+  too), so it silently refused to fuse deeply-nested but FINITE, non-recursive
+  types (a 17-deep array/tuple/struct) — a predictable-performance violation.
+  Replaced with a stack-allocated `Seen` cons-list (`kernel_abi::Seen` /
+  `ExpandKey`, zero-heap) that cycle-detects by EXPANSION IDENTITY (full
+  `TypeRef` / `AbstractId`): structural depth no longer trips it (finite types
+  of any depth fuse), while true recursion — self / mutual / Ref-mediated /
+  option-of-self — terminates by re-occurring-key detection → `None`/opaque
+  (correct: a recursive type has no fixed ABI layout). `freeze_concrete` needs
+  no backstop (nullary abstracts can't grow params); `resolve_abstract` keeps a
+  generous 256-EXPANSION backstop only for non-regular recursion (`type T<'a> =
+  T<Array<'a>>`, which identity can't catch). Structural recursion is
+  intentionally unbounded, consistent with sibling type-walks
+  (`normalize`/`contains`/`resolve_tvars`) — any overflow-deep type dies in the
+  parser/typechecker first. **`abi_kind` was a THIRD unguarded concretizer**
+  (`type A = [A, null]` would have hung it) — found and fixed by a 3-lens
+  adversarial review (all lenses: "sound"). Verified: 4 unit tests (40-deep
+  finite freezes; self/mutual/option-of-self recursion terminates+rejects),
+  1431×2 differential tests, all `Seen` lifetimes sound (covariant cons-on-stack).
+
 - **`JitDisabled` flag deleted — one fusion flag, and `interp` made a TRUE
   node-walk (2026-06-16; values behavior-neutral, 1431×2 tests pass).**
   `CFlag::JitDisabled` was dead (never set anywhere) and "behaviourally

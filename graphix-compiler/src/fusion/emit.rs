@@ -1320,7 +1320,7 @@ pub(crate) struct LowerCtx<'a> {
 /// registry). When `type_env` is `None` the type returns unchanged.
 fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
     match ctx.type_env {
-        Some(env) => crate::fusion::lowering::resolve_abstract(t, env, 0),
+        Some(env) => crate::fusion::lowering::resolve_abstract(t, env),
         None => t.clone(),
     }
 }

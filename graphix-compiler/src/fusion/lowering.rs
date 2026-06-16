@@ -402,25 +402,46 @@ pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
 /// On-demand monomorphization for a user lambda encountered at a
 /// `CallSite` whose `resolved_apply()` is `ApplyView::Lambda(&g)`.
 ///
-/// Looks up (or builds + caches) a fused kernel for the
-/// `(LambdaId, resolved FnType)` monomorphization, then registers
-/// Resolve named (`Type::Ref`) and abstract (`Type::Abstract`) types
-/// to their concrete representation, recursing through composites, so
-/// `abi_kind` can determine an abstract-typed value's runtime
-/// shape. This is fusion-internal only — the abstraction stays opaque
-/// to the type system; the optimizer peeks at the registered concrete
-/// rep purely to size kernel slots.
+/// Resolve named (`Type::Ref`) and abstract (`Type::Abstract`) types to
+/// their concrete representation, recursing through composites, so
+/// `abi_kind` / `freeze_concrete` can determine an abstract-typed value's
+/// runtime shape. This is fusion-internal only — the abstraction stays
+/// opaque to the type system; the optimizer peeks at the registered
+/// concrete rep purely to size kernel slots.
 ///
-/// A depth cap (and the unchanged-on-failure fallback) makes recursive
-/// types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate by
-/// returning the type as-is — `abi_kind` then yields `None` and the
-/// kernel simply doesn't fuse, which is correct.
-pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) -> Type {
+/// Recursive types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate
+/// by [`crate::kernel_abi::Seen`] cycle detection on the expansion arms
+/// (`Ref` and nullary `Abstract`): a re-occurring expansion is left
+/// as-is, `abi_kind` then yields `None`, and the kernel simply doesn't
+/// fuse — correct, since a recursive type has no fixed ABI layout.
+/// Detection is by expansion IDENTITY (full `TypeRef` / `AbstractId`), so
+/// structural depth never trips it — a deeply-nested but FINITE type
+/// resolves fully (unlike the old depth cap, which conflated deep with
+/// recursive and silently refused such types). The one case identity
+/// can't catch is NON-regular recursion whose params grow each step
+/// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
+/// expansion chain (NOT structural depth) guarantees termination there.
+pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env) -> Type {
+    resolve_abstract_d(typ, env, None)
+}
+
+fn resolve_abstract_d<'a>(
+    typ: &Type,
+    env: &crate::env::Env,
+    seen: Option<&'a crate::kernel_abi::Seen<'a>>,
+) -> Type {
+    use crate::kernel_abi::{ExpandKey, Seen};
     use triomphe::Arc;
-    if depth > 16 {
+    // Non-regular-recursion backstop (see fn doc). Counts EXPANSIONS, not
+    // structural nesting, so finite types of any structural depth are
+    // unaffected. It bounds the number of distinct EXPANSIONS on one path
+    // (named-alias / abstract hops): the case it's FOR is non-regular
+    // recursion whose params grow each step (identity can't catch it), but
+    // a pathologically long FINITE expansion chain (>256 distinct hops)
+    // would also be left opaque and simply not fuse.
+    if Seen::len(seen) > 256 {
         return typ.clone();
     }
-    let r = |t: &Type| resolve_abstract(t, env, depth + 1);
     match typ {
         // Deref bound TVars and resolve through them — an INFERRED
         // binding type (e.g. a region input's `let` binding, #218) is
@@ -435,34 +456,57 @@ pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env, depth: usize) 
         // locks that cross-holding deadlocked concurrent compiles in
         // one process (caught as the post-flip parallel test wedge —
         // every worker parked on `check_sig`'s registry write).
+        //
+        // A TVar deref is not an expansion (it can't recurse forever —
+        // TVar bindings are occurs-checked), so `seen` passes through.
         Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
-            Some(t) => r(&t),
+            Some(t) => resolve_abstract_d(&t, env, seen),
             None => typ.clone(),
         },
-        Type::Ref(_) => match typ.lookup_ref(env) {
-            Ok(resolved) if !matches!(&resolved, Type::Ref(_)) => r(&resolved),
-            _ => typ.clone(),
-        },
+        Type::Ref(tr) => {
+            let key = ExpandKey::Ref(tr.clone());
+            if Seen::contains(seen, &key) {
+                return typ.clone(); // recursive named type — leave opaque
+            }
+            match typ.lookup_ref(env) {
+                Ok(resolved) if !matches!(&resolved, Type::Ref(_)) => {
+                    let node = Seen::push(seen, key);
+                    resolve_abstract_d(&resolved, env, Some(&node))
+                }
+                _ => typ.clone(),
+            }
+        }
         Type::Abstract { id, params } if params.is_empty() => {
+            let key = ExpandKey::Abstract(*id);
+            if Seen::contains(seen, &key) {
+                return typ.clone(); // recursive abstract — leave opaque
+            }
             // Bind the clone FIRST: matching directly on
             // `REGISTRY.read().get(..).cloned()` keeps the read guard
-            // alive as a match temporary through `r(&concrete)` — the
-            // recursion then re-reads the registry while holding it,
-            // which deadlocks under parking_lot's fair lock the moment
-            // any writer (`check_sig`) queues between the two reads
-            // (the post-F2-flip parallel test wedge's second edge).
+            // alive as a match temporary through the recursion — which
+            // then re-reads the registry while holding it, deadlocking
+            // under parking_lot's fair lock the moment any writer
+            // (`check_sig`) queues between the two reads (the post-F2-flip
+            // parallel test wedge's second edge).
             let concrete = vocab::ABSTRACT_REGISTRY.read().get(id).cloned();
             match concrete {
-                Some(concrete) => r(&concrete),
+                Some(concrete) => {
+                    let node = Seen::push(seen, key);
+                    resolve_abstract_d(&concrete, env, Some(&node))
+                }
                 None => typ.clone(),
             }
         }
-        Type::Tuple(ts) => Type::Tuple(Arc::from_iter(ts.iter().map(|t| r(t)))),
-        Type::Array(t) => Type::Array(Arc::new(r(t))),
-        Type::Set(ts) => Type::Set(Arc::from_iter(ts.iter().map(|t| r(t)))),
-        Type::Struct(fs) => {
-            Type::Struct(Arc::from_iter(fs.iter().map(|(n, t)| (n.clone(), r(t)))))
-        }
+        Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
+            ts.iter().map(|t| resolve_abstract_d(t, env, seen)),
+        )),
+        Type::Array(t) => Type::Array(Arc::new(resolve_abstract_d(t, env, seen))),
+        Type::Set(ts) => Type::Set(Arc::from_iter(
+            ts.iter().map(|t| resolve_abstract_d(t, env, seen)),
+        )),
+        Type::Struct(fs) => Type::Struct(Arc::from_iter(
+            fs.iter().map(|(n, t)| (n.clone(), resolve_abstract_d(t, env, seen))),
+        )),
         other => other.clone(),
     }
 }
@@ -545,7 +589,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             crate::typ::FnArgKind::Labeled { name, .. } => name.clone(),
             _ => return None,
         };
-        let arg_typ = resolve_abstract(&fa.typ, &ec.env, 0);
+        let arg_typ = resolve_abstract(&fa.typ, &ec.env);
         let kt = vocab::freeze_concrete(&arg_typ)?;
         let kind = type_to_region_input_kind(kt)?;
         inputs.push((name, kind, None));
@@ -608,7 +652,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             // the whole build returns None below.
             continue;
         }
-        let kt = match vocab::freeze_concrete(&resolve_abstract(&cap_typ, &ec.env, 0)) {
+        let kt = match vocab::freeze_concrete(&resolve_abstract(&cap_typ, &ec.env)) {
             Some(t) => t,
             None => return None,
         };
@@ -620,7 +664,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         inputs.push((name.clone(), kind, Some(bind_id)));
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
-    let return_typ = vocab::freeze_concrete(&resolve_abstract(&typ.rtype, &ec.env, 0))?;
+    let return_typ = vocab::freeze_concrete(&resolve_abstract(&typ.rtype, &ec.env))?;
     // Cross-kernel calls support scalar + composite (array/tuple/
     // struct) + value-shape (variant/nullable) args, captures, and
     // returns. Args and captures are already restricted to those

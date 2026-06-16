@@ -9,7 +9,7 @@
 //! of hand-walking per-kind lists. The JIT emits CLIF straight from
 //! the node graph; this module holds the durable, body-free contract.
 
-use crate::typ::{AbstractId, Type};
+use crate::typ::{AbstractId, Type, TypeRef};
 use crate::BindId;
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
@@ -246,7 +246,17 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 /// `None` for the top-level shapes that aren't fusable (unbound TVar,
 /// `Type::Fn`, multi-member non-option/non-variant `Set`, parameterized
 /// abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
+///
+/// Recursive abstract types (a registry rep that re-reaches its own id,
+/// directly or through an option-of-self) terminate via [`Seen`] cycle
+/// detection on the abstract-expansion recursion and return `None` (a
+/// recursive type has no flat ABI kind) — the same mechanism
+/// [`freeze_concrete`] / `resolve_abstract` use.
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
+    abi_kind_d(t, None)
+}
+
+fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
     // Clone the deref'd type OUT of `with_deref` so the TVar's read
     // guard is DROPPED before the body runs: the Abstract arm takes
     // `ABSTRACT_REGISTRY.read()` and the Set/Abstract arms recurse
@@ -270,8 +280,14 @@ pub fn abi_kind(t: &Type) -> Option<AbiKind> {
             Type::Struct(_) => return Some(AbiKind::Struct),
             Type::Variant(_, _) => return Some(AbiKind::Variant),
             Type::Abstract { id, params } if params.is_empty() => {
+                let key = ExpandKey::Abstract(*id);
+                if Seen::contains(seen, &key) {
+                    // Recursive abstract — no flat ABI kind.
+                    return None;
+                }
                 let concrete = ABSTRACT_REGISTRY.read().get(id).cloned();
-                return concrete.as_ref().and_then(abi_kind);
+                let node = Seen::push(seen, key);
+                return concrete.as_ref().and_then(|c| abi_kind_d(c, Some(&node)));
             }
             _ => {}
         }
@@ -310,7 +326,12 @@ pub fn abi_kind(t: &Type) -> Option<AbiKind> {
             // success member must itself be classifiable, else the whole
             // shape is non-fusable.
             if let Some(succ) = option_result_success(members) {
-                return succ.and_then(|s| abi_kind(s)).map(|_| AbiKind::Nullable);
+                // Pass `seen` through — the success member's abstract (if
+                // any) must be checked against the accumulated path, so an
+                // option-of-self (`type A = [A, null]`) terminates.
+                return succ
+                    .and_then(|s| abi_kind_d(s, seen))
+                    .map(|_| AbiKind::Nullable);
             }
             // Variant union: every member must be a single Variant.
             let all_variants = members.iter().all(|m| {
@@ -363,26 +384,82 @@ fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
     }
 }
 
+/// One type EXPANSION on the path from the root, for cycle detection
+/// during concretization: the identity of a resolved abstract or named
+/// (`Type::Ref`) type. Structural nesting (array/tuple/struct) is NOT an
+/// expansion — only following an abstract to its registry rep, or a
+/// `Ref` to its definition, is. Shared by [`freeze_concrete`] (abstracts
+/// only — it rejects `Ref`) and `fusion::lowering::resolve_abstract`
+/// (both).
+#[derive(PartialEq)]
+pub(crate) enum ExpandKey {
+    Abstract(AbstractId),
+    Ref(TypeRef),
+}
+
+/// Stack-allocated cons-list of the [`ExpandKey`]s on the current path
+/// from the root — the basis for cycle detection while concretizing a
+/// type. ONLY an actual abstract/`Ref` expansion extends the chain;
+/// structural recursion passes it through unchanged. So it terminates on
+/// true type recursion (a key that re-occurs) while letting arbitrarily-
+/// deep FINITE types through. This replaces the old fixed depth cap,
+/// which incremented on every recursion and so conflated "deeply nested"
+/// with "recursive" — silently refusing to fuse deeply-nested but
+/// non-recursive types (a predictable-performance violation). Membership
+/// is an O(chain) walk; the chain length is the count of nested
+/// expansions (tiny), so no heap.
+pub(crate) struct Seen<'a> {
+    key: ExpandKey,
+    len: usize,
+    prev: Option<&'a Seen<'a>>,
+}
+
+impl<'a> Seen<'a> {
+    pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: ExpandKey) -> Self {
+        Self { key, len: Self::len(prev) + 1, prev }
+    }
+
+    pub(crate) fn contains(mut cur: Option<&Self>, key: &ExpandKey) -> bool {
+        while let Some(s) = cur {
+            if &s.key == key {
+                return true;
+            }
+            cur = s.prev;
+        }
+        false
+    }
+
+    pub(crate) fn len(this: Option<&Self>) -> usize {
+        this.map_or(0, |s| s.len)
+    }
+}
+
 /// Produce a fully-concrete `Type` (no live TVars, no nullary
 /// abstracts) over the fusable subset, recursing through every nested
 /// element. Returns `None` if any part of the type is non-fusable —
 /// the accept/reject decisions match [`abi_kind`] at each level.
 ///
-/// A `depth` cap (16, matching `resolve_abstract`) terminates on
-/// recursive abstract types: when the cap trips we return `None`. Such
-/// types would otherwise recurse until the registry yields a shape we
-/// can't represent, or stack-overflow — capping and rejecting is safe
-/// since recursive types aren't fusable anyway.
+/// Recursive abstract types terminate by [`Seen`] cycle detection on the
+/// nullary-abstract expansion arm (the only expansion site here — `Ref`
+/// is rejected) and return `None`, which is correct: a recursive type has
+/// no fixed kernel-ABI layout, so it is unfusable regardless. Nullary
+/// abstracts carry no params, so they cannot "grow" across expansions —
+/// identity detection is therefore complete here and needs no depth
+/// backstop. Structural recursion (array/tuple/struct/variant nesting)
+/// is intentionally unbounded: it terminates on a finite type, and any
+/// type deep enough to overflow it here would already have overflowed
+/// the parser (source nesting is stack-limited) or the typechecker's own
+/// uncapped type walks (`normalize` / `contains` / `resolve_tvars`). The
+/// bound is thus inherited upstream — consistent with those sibling
+/// passes — not a fixed cap re-imposed here (the old `depth > 16` cap
+/// was, and it rejected legitimate deeply-nested finite types).
 pub fn freeze_concrete(t: &Type) -> Option<Type> {
-    freeze_concrete_d(t, 0)
+    freeze_concrete_d(t, None)
 }
 
-fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
-    if depth > 16 {
-        return None;
-    }
-    // Deref-clone hoisted out of the guard — see `abi_kind`'s note
-    // (the Abstract arm takes the registry lock and most arms recurse).
+fn freeze_concrete_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
+    // Deref-clone hoisted out — see `abi_kind`'s note (the Abstract arm
+    // takes the registry lock and most arms recurse).
     let resolved = t.with_deref(|r| r.cloned());
     {
         let resolved = resolved.as_ref()?;
@@ -420,13 +497,13 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
                 PrimType::from_type(resolved).map(|_| Type::Primitive(*p))
             }
             Type::Array(inner) => {
-                let inner = freeze_concrete_d(inner, depth + 1)?;
+                let inner = freeze_concrete_d(inner, seen)?;
                 Some(Type::Array(Arc::new(inner)))
             }
             Type::Tuple(elems) => {
                 let frozen: Option<Vec<Type>> = elems
                     .iter()
-                    .map(|e| freeze_concrete_d(e, depth + 1))
+                    .map(|e| freeze_concrete_d(e, seen))
                     .collect();
                 Some(Type::Tuple(Arc::from_iter(frozen?)))
             }
@@ -434,7 +511,7 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
                 let frozen: Option<Vec<(ArcStr, Type)>> = fields
                     .iter()
                     .map(|(n, ft)| {
-                        freeze_concrete_d(ft, depth + 1).map(|t| (n.clone(), t))
+                        freeze_concrete_d(ft, seen).map(|t| (n.clone(), t))
                     })
                     .collect();
                 Some(Type::Struct(Arc::from_iter(frozen?)))
@@ -442,7 +519,7 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
             Type::Variant(tag, payloads) => {
                 let frozen: Option<Vec<Type>> = payloads
                     .iter()
-                    .map(|p| freeze_concrete_d(p, depth + 1))
+                    .map(|p| freeze_concrete_d(p, seen))
                     .collect();
                 Some(Type::Variant(tag.clone(), Arc::from_iter(frozen?)))
             }
@@ -459,7 +536,7 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
                     // success in place, preserving member order.
                     let succ_idx =
                         if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
-                    let frozen_succ = freeze_concrete_d(succ, depth + 1)?;
+                    let frozen_succ = freeze_concrete_d(succ, seen)?;
                     let m0 = if succ_idx == 0 {
                         frozen_succ.clone()
                     } else {
@@ -484,7 +561,7 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
                             Some(Type::Variant(tag, payloads)) => {
                                 let fp: Option<Vec<Type>> = payloads
                                     .iter()
-                                    .map(|p| freeze_concrete_d(p, depth + 1))
+                                    .map(|p| freeze_concrete_d(p, seen))
                                     .collect();
                                 Some(Type::Variant(
                                     tag.clone(),
@@ -498,8 +575,16 @@ fn freeze_concrete_d(t: &Type, depth: usize) -> Option<Type> {
                 Some(Type::Set(Arc::from_iter(frozen?)))
             }
             Type::Abstract { id, params } if params.is_empty() => {
+                let key = ExpandKey::Abstract(*id);
+                if Seen::contains(seen, &key) {
+                    // Recursive abstract: no fixed kernel-ABI layout, so
+                    // unfusable — `None` is the correct answer, not just a
+                    // fallback.
+                    return None;
+                }
                 let concrete = ABSTRACT_REGISTRY.read().get(id).cloned()?;
-                freeze_concrete_d(&concrete, depth + 1)
+                let node = Seen::push(seen, key);
+                freeze_concrete_d(&concrete, Some(&node))
             }
             // Everything else: Any, Fn, Ref, ByRef, parameterized
             // Abstract, multi-member non-option/non-variant Set
@@ -1220,5 +1305,94 @@ impl KernelSig {
             }
             AbiKind::Null => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use triomphe::Arc;
+
+    fn i64_t() -> Type {
+        Type::Primitive(Typ::I64.into())
+    }
+
+    /// A deeply-nested but FINITE, non-recursive type must freeze. The old
+    /// fixed depth cap (16) incremented on every structural level and so
+    /// silently rejected it — a predictable-performance bug. Cycle
+    /// detection keys on expansion identity, so structural depth no longer
+    /// trips it.
+    #[test]
+    fn deep_finite_type_freezes() {
+        let mut t = i64_t();
+        for _ in 0..40 {
+            t = Type::Array(Arc::new(t));
+        }
+        assert!(
+            freeze_concrete(&t).is_some(),
+            "a 40-deep nested array is finite and should freeze"
+        );
+    }
+
+    /// A self-referential abstract type must (a) TERMINATE — not hang or
+    /// stack-overflow (the test hanging would itself be the failure) — and
+    /// (b) reject (`None`): a recursive type has no fixed kernel-ABI layout.
+    #[test]
+    fn recursive_abstract_terminates_and_rejects() {
+        let id = AbstractId::new();
+        // Concrete impl references its own abstract id: `(Self, i64)`.
+        let rec_impl = Type::Tuple(Arc::from_iter([
+            Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) },
+            i64_t(),
+        ]));
+        ABSTRACT_REGISTRY.write().insert(id, rec_impl);
+        let t = Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
+        assert!(
+            freeze_concrete(&t).is_none(),
+            "a recursive abstract is unfusable (and must not loop)"
+        );
+        ABSTRACT_REGISTRY.write().remove(&id);
+    }
+
+    /// MUTUAL recursion (abstract A's rep contains B, B's contains A) must
+    /// also terminate + reject — the cons-list carries BOTH ids on the path.
+    #[test]
+    fn mutually_recursive_abstracts_terminate() {
+        let a = AbstractId::new();
+        let b = AbstractId::new();
+        let abst =
+            |id| Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
+        ABSTRACT_REGISTRY
+            .write()
+            .insert(a, Type::Tuple(Arc::from_iter([abst(b), i64_t()])));
+        ABSTRACT_REGISTRY
+            .write()
+            .insert(b, Type::Tuple(Arc::from_iter([abst(a), i64_t()])));
+        assert!(
+            freeze_concrete(&abst(a)).is_none(),
+            "mutually-recursive abstracts are unfusable (and must terminate)"
+        );
+        ABSTRACT_REGISTRY.write().remove(&a);
+        ABSTRACT_REGISTRY.write().remove(&b);
+    }
+
+    /// `abi_kind` is the third concretizer with abstract-expansion
+    /// recursion: an option-of-self (`type A = [A, null]`) must terminate
+    /// (the new cycle guard) and yield `None` — without the guard this
+    /// loops forever.
+    #[test]
+    fn abi_kind_option_of_self_terminates() {
+        let a = AbstractId::new();
+        let abst = Type::Abstract { id: a, params: Arc::from_iter(Vec::<Type>::new()) };
+        let opt_self = Type::Set(Arc::from_iter([
+            abst.clone(),
+            Type::Primitive(Typ::Null.into()),
+        ]));
+        ABSTRACT_REGISTRY.write().insert(a, opt_self);
+        assert!(
+            abi_kind(&abst).is_none(),
+            "option-of-self abstract has no flat ABI kind (and must terminate)"
+        );
+        ABSTRACT_REGISTRY.write().remove(&a);
     }
 }

@@ -108,7 +108,7 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
         // system's view; only the kernel-slot classification (`kind`,
         // which carries the frozen types) needs the concrete rep.
         let resolved =
-            crate::fusion::lowering::resolve_abstract(&b.typ, &ctx.env, 0);
+            crate::fusion::lowering::resolve_abstract(&b.typ, &ctx.env);
         let Some(frozen) = crate::fusion::vocab::freeze_concrete(&resolved) else {
             return;
         };
@@ -661,7 +661,7 @@ pub(crate) fn freeze_region_return(
         Some(t) => t,
         None => {
             let resolved =
-                crate::fusion::lowering::resolve_abstract(typ, env, 0);
+                crate::fusion::lowering::resolve_abstract(typ, env);
             crate::fusion::vocab::freeze_normalized(&resolved)?
         }
     };
