@@ -329,8 +329,8 @@ fusion/vocab.rs`, `gir_jit_helpers.rs → fusion/emit_helpers.rs`,
 `gir_jit_intern.rs → fusion/intern.rs`, `gir_jit_scaffold.rs →
 fusion/scaffold.rs` (still a submodule of `emit`); `Update::jit →
 Update::fuse`, `fusion::jit_node → fusion::fuse` (the old
-flag-checking `fuse` driver was deleted and its `FusionDisabled |
-JitDisabled` skip promoted into `compile()`, so it's checked once
+flag-checking `fuse` driver was deleted and its skip promoted into
+`compile()` via `ExecCtx::fusion_enabled`, so it's checked once
 instead of every recursion); `GirMatcher → KernelMatcher`. See
 `design/distributed_jit.md` — "F3 — the delete"
 for what went and the two behavioral seams (fuse_callsite's
@@ -708,6 +708,22 @@ re-exported through `fusion/vocab.rs`).
 `whole_graph_fusion_m7.md`.
 
 ### Major recent changes (newest first; `git log` for detail)
+
+- **`JitDisabled` flag deleted — one fusion flag, and `interp` made a TRUE
+  node-walk (2026-06-16; values behavior-neutral, 1431×2 tests pass).**
+  `CFlag::JitDisabled` was dead (never set anywhere) and "behaviourally
+  identical to `FusionDisabled`" by its own doc. Worse: `jit_enabled` (derived
+  from `!JitDisabled`, so permanently `true`) gated the *runtime per-slot
+  HOF-callback* fusion path — which has no compile-flag access — so `interp`
+  mode (`FusionDisabled` only) was STILL fusing `map`/`filter`/`fold` callbacks
+  per-slot, silently contaminating the differential oracle's "node-walk ground
+  truth" (proven: an instrumented probe fired 6× under interp-only map tests).
+  Collapsed to the single `FusionDisabled` flag; `jit_enabled → fusion_enabled`,
+  derived from `!FusionDisabled`, now gating BOTH the compile-time phase and the
+  per-slot path. `interp` is now a pure node-walk (probe fires 0× for interp
+  programs), so the oracle regains its node-walk-vs-fused guarantee for HOFs —
+  and the node-walk HOF path it now actually exercises agrees with fused (no
+  latent bug surfaced). One bool, fusion on/off; invalid states unrepresentable.
 
 - **`jit` → `fuse` rename + flag-check promotion + the `gir` naming scrub
   (2026-06-16; pure churn, behavior-neutral — 1431×2 differential tests pass).**

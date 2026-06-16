@@ -823,7 +823,6 @@ fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
     if !ec.fusion_enabled {
         return None;
     }
-    eprintln!("PROBE_PERSLOT_HOF_KERNEL_COMPILING fusion_enabled={}", ec.fusion_enabled);
     let r = crate::fusion::emit::compile_kernel_with_callees_direct(
         &mut ec.jit.lock(),
         kernel,
