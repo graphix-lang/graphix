@@ -204,9 +204,10 @@ fn check_sig<R: Rt, E: UserEvent>(
                     // `abi_kind` can lower abstract-typed values
                     // to their concrete representation (the abstraction
                     // stays opaque to the type system; only the optimizer
-                    // peeks). Keyed by globally-unique `AbstractId`.
-                    crate::fusion::vocab::ABSTRACT_REGISTRY
-                        .write()
+                    // peeks). Stored on the `ExecCtx`, so it drops with
+                    // the context (`AbstractId`s are minted fresh per
+                    // compile — a global map would leak).
+                    ctx.abstract_registry
                         .insert(*id, td.typ.scope_refs(&scope.lexical));
                 }
                 _ => {

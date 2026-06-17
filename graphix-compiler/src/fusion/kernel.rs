@@ -1255,7 +1255,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         //   Value (`#[repr(u64)]`, 16 bytes / 8-byte aligned —
         //   layout pinned by `emit_helpers`).
         use crate::fusion::vocab::AbiKind;
-        let v = match crate::fusion::vocab::abi_kind(&self.kernel.return_type) {
+        let v = match crate::fusion::vocab::abi_kind(
+            &ctx.abstract_registry,
+            &self.kernel.return_type,
+        ) {
             Some(AbiKind::Scalar(p)) => {
                 crate::fusion::emit::unpack_u64_to_value(out[0], p)
             }

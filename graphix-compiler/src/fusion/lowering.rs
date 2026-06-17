@@ -227,7 +227,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
-                let kt = match vocab::freeze_concrete(&arg_typ) {
+                let kt = match vocab::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
                     Some(t) => t,
                     None => return,
                 };
@@ -242,7 +242,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         .arg_named(name)
                         .map(|n| n.typ().clone())
                         .unwrap_or_else(|| fa.typ.clone());
-                    let kt = match vocab::freeze_concrete(&arg_typ) {
+                    let kt = match vocab::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
                         Some(t) => t,
                         None => return,
                     };
@@ -289,7 +289,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 Some(t) => t,
                 None => return,
             };
-            let kt = match vocab::freeze_concrete(&arg_typ) {
+            let kt = match vocab::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
                 Some(t) => t,
                 None => return,
             };
@@ -303,14 +303,14 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // Return type — the CallSite's own resolved output type (the
     // node-resident value the typechecker propagated for this Apply).
     let ret_typ = cs.typ().clone();
-    let return_type = match vocab::freeze_concrete(&ret_typ) {
+    let return_type = match vocab::freeze_for_abi(&ctx.abstract_registry, &ret_typ) {
         Some(t) => t,
         None => return,
     };
-    if !arg_types.iter().all(is_dyncall_arg_supported) {
+    if !arg_types.iter().all(|t| is_dyncall_arg_supported(&ctx.abstract_registry, t)) {
         return;
     }
-    if !is_dyncall_return_supported(&return_type) {
+    if !is_dyncall_return_supported(&ctx.abstract_registry, &return_type) {
         return;
     }
     let fn_index = out.fn_params.len() as u32;
@@ -404,7 +404,7 @@ pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
 ///
 /// Resolve named (`Type::Ref`) and abstract (`Type::Abstract`) types to
 /// their concrete representation, recursing through composites, so
-/// `abi_kind` / `freeze_concrete` can determine an abstract-typed value's
+/// `abi_kind` / `freeze_for_abi` can determine an abstract-typed value's
 /// runtime shape. This is fusion-internal only — the abstraction stays
 /// opaque to the type system; the optimizer peeks at the registered
 /// concrete rep purely to size kernel slots.
@@ -421,11 +421,16 @@ pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
 /// can't catch is NON-regular recursion whose params grow each step
 /// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
 /// expansion chain (NOT structural depth) guarantees termination there.
-pub(crate) fn resolve_abstract(typ: &Type, env: &crate::env::Env) -> Type {
-    resolve_abstract_d(typ, env, None)
+pub(crate) fn resolve_abstract(
+    reg: &crate::kernel_abi::AbstractRegistry,
+    typ: &Type,
+    env: &crate::env::Env,
+) -> Type {
+    resolve_abstract_d(reg, typ, env, None)
 }
 
 fn resolve_abstract_d<'a>(
+    reg: &crate::kernel_abi::AbstractRegistry,
     typ: &Type,
     env: &crate::env::Env,
     seen: Option<&'a crate::kernel_abi::Seen<'a>>,
@@ -460,7 +465,7 @@ fn resolve_abstract_d<'a>(
         // A TVar deref is not an expansion (it can't recurse forever —
         // TVar bindings are occurs-checked), so `seen` passes through.
         Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
-            Some(t) => resolve_abstract_d(&t, env, seen),
+            Some(t) => resolve_abstract_d(reg, &t, env, seen),
             None => typ.clone(),
         },
         Type::Ref(tr) => {
@@ -471,7 +476,7 @@ fn resolve_abstract_d<'a>(
             match typ.lookup_ref(env) {
                 Ok(resolved) if !matches!(&resolved, Type::Ref(_)) => {
                     let node = Seen::push(seen, key);
-                    resolve_abstract_d(&resolved, env, Some(&node))
+                    resolve_abstract_d(reg, &resolved, env, Some(&node))
                 }
                 _ => typ.clone(),
             }
@@ -481,31 +486,25 @@ fn resolve_abstract_d<'a>(
             if Seen::contains(seen, &key) {
                 return typ.clone(); // recursive abstract — leave opaque
             }
-            // Bind the clone FIRST: matching directly on
-            // `REGISTRY.read().get(..).cloned()` keeps the read guard
-            // alive as a match temporary through the recursion — which
-            // then re-reads the registry while holding it, deadlocking
-            // under parking_lot's fair lock the moment any writer
-            // (`check_sig`) queues between the two reads (the post-F2-flip
-            // parallel test wedge's second edge).
-            let concrete = vocab::ABSTRACT_REGISTRY.read().get(id).cloned();
-            match concrete {
+            match reg.get(id) {
                 Some(concrete) => {
                     let node = Seen::push(seen, key);
-                    resolve_abstract_d(&concrete, env, Some(&node))
+                    resolve_abstract_d(reg, &concrete, env, Some(&node))
                 }
                 None => typ.clone(),
             }
         }
         Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(t, env, seen)),
+            ts.iter().map(|t| resolve_abstract_d(reg, t, env, seen)),
         )),
-        Type::Array(t) => Type::Array(Arc::new(resolve_abstract_d(t, env, seen))),
+        Type::Array(t) => {
+            Type::Array(Arc::new(resolve_abstract_d(reg, t, env, seen)))
+        }
         Type::Set(ts) => Type::Set(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(t, env, seen)),
+            ts.iter().map(|t| resolve_abstract_d(reg, t, env, seen)),
         )),
         Type::Struct(fs) => Type::Struct(Arc::from_iter(
-            fs.iter().map(|(n, t)| (n.clone(), resolve_abstract_d(t, env, seen))),
+            fs.iter().map(|(n, t)| (n.clone(), resolve_abstract_d(reg, t, env, seen))),
         )),
         other => other.clone(),
     }
@@ -589,9 +588,9 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             crate::typ::FnArgKind::Labeled { name, .. } => name.clone(),
             _ => return None,
         };
-        let arg_typ = resolve_abstract(&fa.typ, &ec.env);
-        let kt = vocab::freeze_concrete(&arg_typ)?;
-        let kind = type_to_region_input_kind(kt)?;
+        let arg_typ = resolve_abstract(&ec.abstract_registry, &fa.typ, &ec.env);
+        let kt = vocab::freeze_for_abi(&ec.abstract_registry, &arg_typ)?;
+        let kind = type_to_region_input_kind(&ec.abstract_registry, kt)?;
         inputs.push((name, kind, None));
     }
     // Closure conversion: every binding the body references but
@@ -630,7 +629,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         // position, a native call elsewhere), never as a value. It
         // can't be scanned as one anyway: a rec binding's env type is
         // a TVar-wrapped `Fn` that the shallow `Type::Fn` skip below
-        // misses and `freeze_concrete` then rejects, killing the
+        // misses and `freeze_for_abi` then rejects, killing the
         // whole build (recursive lambdas never fused because of it).
         if Some(bind_id) == self_bind {
             continue;
@@ -652,11 +651,14 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
             // the whole build returns None below.
             continue;
         }
-        let kt = match vocab::freeze_concrete(&resolve_abstract(&cap_typ, &ec.env)) {
+        let kt = match vocab::freeze_for_abi(
+            &ec.abstract_registry,
+            &resolve_abstract(&ec.abstract_registry, &cap_typ, &ec.env),
+        ) {
             Some(t) => t,
             None => return None,
         };
-        let kind = match type_to_region_input_kind(kt.clone()) {
+        let kind = match type_to_region_input_kind(&ec.abstract_registry, kt.clone()) {
             Some(k) => k,
             None => return None,
         };
@@ -664,7 +666,10 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         inputs.push((name.clone(), kind, Some(bind_id)));
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
-    let return_typ = vocab::freeze_concrete(&resolve_abstract(&typ.rtype, &ec.env))?;
+    let return_typ = vocab::freeze_for_abi(
+        &ec.abstract_registry,
+        &resolve_abstract(&ec.abstract_registry, &typ.rtype, &ec.env),
+    )?;
     // Cross-kernel calls support scalar + composite (array/tuple/
     // struct) + value-shape (variant/nullable) args, captures, and
     // returns. Args and captures are already restricted to those
@@ -674,7 +679,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // the cross-kernel call boundary, so refuse those — the call
     // stays on the node-walk (via `GXLambda`).
     if matches!(
-        vocab::abi_kind(&return_typ),
+        vocab::abi_kind(&ec.abstract_registry, &return_typ),
         Some(vocab::AbiKind::String | vocab::AbiKind::Unit | vocab::AbiKind::Null)
     ) {
         return None;
@@ -877,6 +882,7 @@ fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
         &std::collections::BTreeMap::new(),
         self_call,
         &ec.env,
+        &ec.abstract_registry,
     );
     match r {
         Ok(w) => Some(std::sync::Arc::new(w)),
@@ -1012,7 +1018,10 @@ pub enum RegionInputKind {
 /// `string_params` 1-word ABI slot, a value-shape input rides the
 /// `value_params` 2-word slot — both with full backend (interp + JIT)
 /// marshalling.
-pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
+pub(crate) fn type_to_region_input_kind(
+    reg: &crate::kernel_abi::AbstractRegistry,
+    t: Type,
+) -> Option<RegionInputKind> {
     use crate::fusion::vocab::AbiKind;
     // FREEZE at the boundary. The Type comes from a binding's declared
     // type, which may still wrap a (bound) TVar or a Ref. `abi_kind`
@@ -1021,8 +1030,8 @@ pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
     // that `populate_kernel_inputs` later runs on the STORED `Type`
     // would then return `None` and silently produce an empty slot. Store
     // the concrete frozen `Type` so those accessors always succeed.
-    let t = crate::fusion::vocab::freeze_concrete(&t)?;
-    match crate::fusion::vocab::abi_kind(&t)? {
+    let t = crate::fusion::vocab::freeze_for_abi(reg, &t)?;
+    match crate::fusion::vocab::abi_kind(reg, &t)? {
         AbiKind::Scalar(p) => Some(RegionInputKind::Prim(p)),
         AbiKind::Array => {
             crate::fusion::vocab::array_elem(&t).map(|e| RegionInputKind::Array(e.clone()))
@@ -1031,7 +1040,7 @@ pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
         AbiKind::Struct => Some(RegionInputKind::Struct(t)),
         AbiKind::Variant => Some(RegionInputKind::Variant(t)),
         AbiKind::Nullable => {
-            crate::fusion::vocab::nullable_inner(&t).map(RegionInputKind::Nullable)
+            crate::fusion::vocab::nullable_inner(reg, &t).map(RegionInputKind::Nullable)
         }
         AbiKind::String => Some(RegionInputKind::String),
         AbiKind::Value => Some(RegionInputKind::Value(t)),
@@ -1042,9 +1051,12 @@ pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
 /// True if a (frozen) `Type` is a marshallable `DynCall` **argument**
 /// shape — every fusable shape except `Unit` (no value to pass) and
 /// bare `Null` (always widened to `Nullable<T>` at construction).
-fn is_dyncall_arg_supported(t: &Type) -> bool {
+fn is_dyncall_arg_supported(
+    reg: &crate::kernel_abi::AbstractRegistry,
+    t: &Type,
+) -> bool {
     use crate::fusion::vocab::AbiKind;
-    match crate::fusion::vocab::abi_kind(t) {
+    match crate::fusion::vocab::abi_kind(reg, t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array
@@ -1089,9 +1101,12 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
 /// True if a (frozen) `Type` is a marshallable `DynCall` **return**
 /// shape — every fusable shape except bare `Null`. `Unit` IS allowed
 /// (side-effect-only sync builtins like `println` return Bottom).
-fn is_dyncall_return_supported(t: &Type) -> bool {
+fn is_dyncall_return_supported(
+    reg: &crate::kernel_abi::AbstractRegistry,
+    t: &Type,
+) -> bool {
     use crate::fusion::vocab::AbiKind;
-    match crate::fusion::vocab::abi_kind(t) {
+    match crate::fusion::vocab::abi_kind(reg, t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array

@@ -349,7 +349,7 @@ missing-input bottom support.
   payload)). No bespoke value types — `RegValue`/`ConstVal`/`EvalResult` are
   gone. `Value::copy_unchecked` is the branch-free copy for proven scalars.
 - **Types:** netidx `Type` everywhere. `GirType` is gone. Runtime shape
-  comes from `abi_kind(&Type) -> Option<AbiKind>` + `freeze_concrete` (in
+  comes from `abi_kind(&Type) -> Option<AbiKind>` + `freeze_for_abi` (in
   `kernel_abi.rs`, re-exported through `fusion/vocab.rs`); `PrimType` is the closed
   register-scalar set (the one *good* small classifier enum — exhaustively
   matched in codegen).
@@ -436,9 +436,9 @@ re-exported through `fusion/vocab.rs`).
   `compile_ifchain` trap was reachable there and SIGILL'd — #201,
   classic path now refuses identically; the stmt form was already
   immune via its pending-exit scrutinee gate). Both repros live in
-  findings/select-jun2026. `fusion::vocab::freeze_normalized` exists because
+  findings/select-jun2026. `fusion::vocab::freeze_for_abi_normalized` exists because
   typecheck leaves a select's result type as the un-flattened arm
-  union (`Set([i64, TVar→i64])`), which `freeze_concrete` rejects.
+  union (`Set([i64, TVar→i64])`), which `freeze_for_abi` rejects.
   Stage D1 landed: the eight HOF loop scaffolds extracted from the
   GirOp arms into `fusion/scaffold.rs` —
   mechanics (loop/buf/element binding+drops/pending-cleanup) behind
@@ -535,7 +535,7 @@ re-exported through `fusion/vocab.rs`).
   lambdas fuse on the direct path. The REAL build-killer was the
   captures scan, not the `self_info: None` hardcode — a rec
   binding's env type is a TVar-wrapped `Fn` the shallow skip missed,
-  so `freeze_concrete` rejected the self-"capture".
+  so `freeze_for_abi` rejected the self-"capture".
   `build_lambda_kernel` gains `self_bind: Option<BindId>` (the call
   site's fnode Ref id, threaded from discovery /
   `ensure_lambda_kernel` / the per-slot path): the self-reference is
@@ -709,11 +709,70 @@ re-exported through `fusion/vocab.rs`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **`ABSTRACT_REGISTRY` global → per-`ExecCtx` field (2026-06-16;
+  behavior-neutral, fixes an unbounded-growth leak).** The fusion abstract-type
+  registry (`AbstractId → concrete Type`, written by `check_sig` during
+  typecheck, read by the fusion classifiers to peek through abstract types to
+  their wire shape) was a process-global `static LazyLock<RwLock<IntMap>>`. Two
+  problems: (1) `AbstractId`s are minted fresh on every compile (each `ExecCtx`
+  recompiles its stdlib from source), so the global grew without bound across a
+  long-lived process spinning up contexts — a leak; (2) it was a global when the
+  access points all have an `ExecCtx`. Moved it to a plain `ExecCtx`
+  field, `pub abstract_registry: AbstractRegistry` (a newtype over
+  `nohash::IntMap<AbstractId, Type>` in `kernel_abi.rs`). **No lock, no interior
+  mutability**: writes (typecheck, `&mut ctx`) and reads (fusion, `&ctx`) are
+  disjoint phases within a single `compile()`, and `compile()` is
+  single-threaded — the old `RwLock` existed only to guard concurrent compiles
+  of *different* contexts on parallel test threads, contention that per-context
+  storage erases (along with the whole cross-lock deadlock-avoidance discipline).
+  Per-context is also *correct*: a `Type`/`AbstractId` never escapes its owning
+  context (verified), so context A never resolves an abstract context B
+  registered. The three reader fns (`freeze_for_abi`, `abi_kind`,
+  `resolve_abstract`) and their helpers (`freeze_for_abi_normalized`,
+  `nullable_inner`, `scalar_prim`, `array_scalar_prim`, `is_value_shape`,
+  `KernelSig::abi_return`) now take a non-generic `&AbstractRegistry` first param
+  (kept non-generic to avoid rippling `<R,E>` into the classifiers). Threading:
+  ~87 call sites. Sites with an `ExecCtx` pass `&ctx.abstract_registry`; the
+  ~60 emit-path sites read it via `BodyCx::registry()` (returns the `'c`-lifetime
+  borrow from `LowerCtx`, INDEPENDENT of `&self`, so a reader call coexists with
+  `&mut cx`), threaded `ExecCtx → BodyEmitter::registry() → LowerCtx.registry`;
+  leaf helpers got a `reg` param. The `kernel_abi` unit tests became hermetic (a
+  local `AbstractRegistry`, no more global insert/remove dance). Eric's call:
+  full move (vs the lighter global-with-Drop-cleanup) for the architecture win,
+  knowing the cost was ~87 mechanical edits not "three places."
+
+- **`freeze_concrete` → `freeze_for_abi` rename + scratch-Vec pooling
+  (2026-06-16; behavior-neutral).** Two related cleanups in `kernel_abi.rs`.
+  (1) `freeze_concrete`/`freeze_concrete_d`/`freeze_normalized` renamed to
+  `freeze_for_abi`/`freeze_for_abi_d`/`freeze_for_abi_normalized` (the
+  `vocab::*` glob re-export carries the path; all callers in
+  `fusion/{lowering,mod,emit}.rs` + `graphix-package-array` updated). The name
+  now states what it IS: not (only) a `Type → Type` normalize but the
+  **kernel-ABI encodability gate** — concretizing TVars is the means, deciding
+  register/`Value` encodability and returning the wire shape is the end. This
+  is *why* it lives in `kernel_abi` and not on `Type`: its `None`s are valid
+  types with no kernel encoding (`Fn`/`Ref`/`decimal`), its accept rule is
+  `PrimType::from_typ` (a register gate), it peeks through `ABSTRACT_REGISTRY`
+  (opaque to the type system), and the `Map`/`Error` pass-through stops
+  recursion exactly at the `AbiKind::Value` boundary (carried as an opaque
+  two-register `Value`, params never reach the wire) — none of which a generic
+  type normalize would do. The pure type-level concretization it rests on
+  already lives on `Type` as `with_deref`/`normalize`. Expanded the fn doc to
+  record this. (2) The five transient scratch `Vec`s in `freeze_for_abi_d`
+  (Tuple/Struct/Variant elems + Set variant-union outer & inner) now collect
+  into `LPooled<Vec<_>>` and `drain(..)` into `Arc::from_iter`:
+  `triomphe::Arc::from_iter` allocates its own backing and never adopts the Vec
+  (unlike `std::sync::Arc`), so the collect Vec was pure transient garbage —
+  pooling it turns the warm path from two allocs (scratch + Arc) to one. Design
+  point that fell out of this (Eric): the pooling reinforces the placement —
+  we pool scratch in service of building a *wire-layout descriptor*, not
+  normalizing a type.
+
 - **Type concretization: fixed depth caps → real cycle detection (2026-06-16;
   predictable-performance fix + a latent hang closed).** The three functions
   that concretize a type by expanding nullary `Type::Abstract` (and, for
   `resolve_abstract`, named `Type::Ref`) through `ABSTRACT_REGISTRY` —
-  `freeze_concrete` + `abi_kind` (`kernel_abi.rs`) and `resolve_abstract`
+  `freeze_for_abi` + `abi_kind` (`kernel_abi.rs`) and `resolve_abstract`
   (`fusion/lowering.rs`) — used a fixed `depth > 16` cap to terminate on
   recursive types. The cap incremented on EVERY recursion (structural nesting
   too), so it silently refused to fuse deeply-nested but FINITE, non-recursive
@@ -723,7 +782,7 @@ re-exported through `fusion/vocab.rs`).
   `TypeRef` / `AbstractId`): structural depth no longer trips it (finite types
   of any depth fuse), while true recursion — self / mutual / Ref-mediated /
   option-of-self — terminates by re-occurring-key detection → `None`/opaque
-  (correct: a recursive type has no fixed ABI layout). `freeze_concrete` needs
+  (correct: a recursive type has no fixed ABI layout). `freeze_for_abi` needs
   no backstop (nullary abstracts can't grow params); `resolve_abstract` keeps a
   generous 256-EXPANSION backstop only for non-regular recursion (`type T<'a> =
   T<Array<'a>>`, which identity can't catch). Structural recursion is

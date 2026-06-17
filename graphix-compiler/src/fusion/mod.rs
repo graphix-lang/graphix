@@ -99,7 +99,7 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
         }
         let Some(b) = ctx.env.by_id.get(&id) else { return };
         // Resolve named/abstract type refs to their concrete rep
-        // BEFORE freezing — `freeze_concrete` is deliberately Env-free
+        // BEFORE freezing — `freeze_for_abi` is deliberately Env-free
         // and rejects `Type::Ref`, so an abstract-typed input (a Ref
         // to a hidden-rep type name, e.g. an interface's `type Elem`)
         // needs the same `resolve_abstract` pre-pass the classic
@@ -107,14 +107,20 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
         // below stays UNRESOLVED — the runtime Ref wants the type
         // system's view; only the kernel-slot classification (`kind`,
         // which carries the frozen types) needs the concrete rep.
-        let resolved =
-            crate::fusion::lowering::resolve_abstract(&b.typ, &ctx.env);
-        let Some(frozen) = crate::fusion::vocab::freeze_concrete(&resolved) else {
+        let resolved = crate::fusion::lowering::resolve_abstract(
+            &ctx.abstract_registry,
+            &b.typ,
+            &ctx.env,
+        );
+        let Some(frozen) =
+            crate::fusion::vocab::freeze_for_abi(&ctx.abstract_registry, &resolved)
+        else {
             return;
         };
-        let Some(kind) =
-            crate::fusion::lowering::type_to_region_input_kind(frozen)
-        else {
+        let Some(kind) = crate::fusion::lowering::type_to_region_input_kind(
+            &ctx.abstract_registry,
+            frozen,
+        ) else {
             return;
         };
         out.push(FreeVarInput {
@@ -491,7 +497,9 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
     if region_is_identity(node) {
         return Ok(None);
     }
-    let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
+    let Some(return_type) =
+        freeze_region_return(&ctx.abstract_registry, node.typ(), &ctx.env)
+    else {
         return Ok(None);
     };
     ctx.fusion_stats.attempted += 1;
@@ -554,6 +562,7 @@ pub fn try_fuse<R: crate::Rt, E: crate::UserEvent>(
         &callee_bodies,
         None,
         &ctx.env,
+        &ctx.abstract_registry,
     ) {
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
@@ -645,7 +654,7 @@ pub(crate) fn non_scalar_basename_collision(
 /// can't represent bare `Null` (fusion must widen to Nullable first)
 /// or `Unit` (a side-effect-only marker), and a type that doesn't
 /// freeze to a concrete shape can't have an ABI at all.
-/// `freeze_normalized` because a select-rooted region's type is
+/// `freeze_for_abi_normalized` because a select-rooted region's type is
 /// typecheck's raw arm union (`Set([i64, TVar→i64])`), which only
 /// freezes once flattened. On plain-freeze failure, retry through
 /// `resolve_abstract` (#218): a region returning an abstract-typed
@@ -653,19 +662,21 @@ pub(crate) fn non_scalar_basename_collision(
 /// Refs the env-free freeze rejects; the resolved concrete rep IS
 /// the return ABI.
 pub(crate) fn freeze_region_return(
+    reg: &crate::kernel_abi::AbstractRegistry,
     typ: &crate::typ::Type,
     env: &crate::env::Env,
 ) -> Option<crate::typ::Type> {
     use crate::fusion::vocab::AbiKind;
-    let return_type = match crate::fusion::vocab::freeze_normalized(typ) {
+    let return_type = match crate::fusion::vocab::freeze_for_abi_normalized(reg, typ)
+    {
         Some(t) => t,
         None => {
             let resolved =
-                crate::fusion::lowering::resolve_abstract(typ, env);
-            crate::fusion::vocab::freeze_normalized(&resolved)?
+                crate::fusion::lowering::resolve_abstract(reg, typ, env);
+            crate::fusion::vocab::freeze_for_abi_normalized(reg, &resolved)?
         }
     };
-    match crate::fusion::vocab::abi_kind(&return_type) {
+    match crate::fusion::vocab::abi_kind(reg, &return_type) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array

@@ -3,7 +3,7 @@
 //!
 //! Everything here is derived from netidx [`Type`]s: the closed
 //! register-scalar set ([`PrimType`]), the runtime shape classifier
-//! ([`abi_kind`] / [`AbiKind`]), type freezing ([`freeze_concrete`]),
+//! ([`abi_kind`] / [`AbiKind`]), type freezing ([`freeze_for_abi`]),
 //! the typed kernel input slots, and [`KernelSig`] — the kind-grouped
 //! parameter/return wire layout every ABI site derives from instead
 //! of hand-walking per-kind lists. The JIT emits CLIF straight from
@@ -13,22 +13,52 @@ use crate::typ::{AbstractId, Type, TypeRef};
 use crate::BindId;
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
-use std::sync::LazyLock;
+use poolshark::local::LPooled;
 use triomphe::Arc;
 
-/// Fusion-time registry mapping each abstract type's [`AbstractId`] to its
-/// concrete implementation type. Populated by
+/// Per-`ExecCtx` registry mapping each abstract type's [`AbstractId`] to
+/// its concrete implementation type. Populated by
 /// `node::module::check_sig` when a signed module's `type X;` is matched
-/// to its impl `type X = …`. The fusion classifier ([`abi_kind`] /
-/// [`freeze_concrete`]) consults it to resolve an abstract-typed value
-/// to its concrete shape — the optimizer peeks through the abstraction,
-/// but only here (the type system keeps it opaque everywhere else, and
-/// the registry is only ever read during fusion).
-/// Keyed by the globally-unique `AbstractId`, so it is safe to share
-/// across concurrently-compiling `ExecCtx`s.
-pub static ABSTRACT_REGISTRY: LazyLock<
-    parking_lot::RwLock<nohash::IntMap<AbstractId, Type>>,
-> = LazyLock::new(|| parking_lot::RwLock::new(nohash::IntMap::default()));
+/// to its impl `type X = …`. The fusion classifiers ([`abi_kind`] /
+/// [`freeze_for_abi`] / `resolve_abstract`) consult it to resolve an
+/// abstract-typed value to its concrete shape — the optimizer peeks
+/// through the abstraction, but only here (the type system keeps it
+/// opaque everywhere else, and the registry is only ever read during
+/// fusion).
+///
+/// Lives on the `ExecCtx` (a field, not a process-global) so it is
+/// dropped with the context. `AbstractId`s are minted fresh on every
+/// compile — each `ExecCtx` recompiles its stdlib from source and gets
+/// new ids — so a global map would grow without bound across a
+/// long-lived process that spins up many contexts. Per-context storage
+/// is also correct: a `Type` (and its `AbstractId`s) never escapes its
+/// owning context, so context A never needs to resolve an abstract that
+/// context B registered.
+///
+/// No lock or interior mutability: writes happen during typecheck
+/// (`check_sig`, holding `&mut ExecCtx`) and reads during fusion (a
+/// shared `&AbstractRegistry` borrow), and those phases are disjoint
+/// within a single `compile()`. The old process-global needed an
+/// `RwLock` purely to guard concurrent compiles of *different* contexts
+/// on parallel threads; per-context that contention — and the whole
+/// cross-lock deadlock-avoidance discipline it forced — is gone.
+#[derive(Debug, Default)]
+pub struct AbstractRegistry(nohash::IntMap<AbstractId, Type>);
+
+impl AbstractRegistry {
+    /// Register `id`'s concrete implementation type. Called by
+    /// `check_sig` during typecheck.
+    pub fn insert(&mut self, id: AbstractId, typ: Type) {
+        self.0.insert(id, typ);
+    }
+
+    /// The concrete implementation type registered for `id`, cloned out
+    /// (a few `Arc` bumps) so the classifier holds no borrow across its
+    /// recursion. `None` for an unregistered id (non-fusable).
+    pub fn get(&self, id: &AbstractId) -> Option<Type> {
+        self.0.get(id).cloned()
+    }
+}
 
 // ─── Primitive types ─────────────────────────────────────────────
 
@@ -151,18 +181,17 @@ impl PrimType {
 //
 // The fused-kernel type lattice is plain netidx [`Type`]; shape
 // classification + the structure accessors live in the
-// classifier section (`abi_kind`, `freeze_concrete`, `array_elem`,
+// classifier section (`abi_kind`, `freeze_for_abi`, `array_elem`,
 // `tuple_slots`, `struct_fields`, `variant_cases`, `nullable_inner`,
 // `scalar_prim`, `is_value_shape`).
-
 
 // ─── Type-based runtime-shape classifier ─────────────────────────────
 //
 // These three pieces — [`AbiKind`], [`abi_kind`], and
-// [`freeze_concrete`] — classify the runtime shape of a netidx
+// [`freeze_for_abi`] — classify the runtime shape of a netidx
 // [`Type`] over the fusable subset. [`abi_kind`] returns the flat,
 // top-level [`AbiKind`] (it does not recurse to verify nested
-// fusability); [`freeze_concrete`] recurses, producing a fully-
+// fusability); [`freeze_for_abi`] recurses, producing a fully-
 // concrete `Type` (or `None` if any nested element is non-fusable).
 //
 // **Important parity note.** Neither resolves `Type::Ref` aliases (a
@@ -232,38 +261,40 @@ impl AbiKind {
 /// Derefs TVars, like `from_type`'s own primitive arms.
 fn is_single_prim(t: &Type, which: Typ) -> bool {
     t.with_deref(|r| match r {
-        Some(Type::Primitive(p)) => {
-            p.contains(which) && p.iter().count() == 1
-        }
+        Some(Type::Primitive(p)) => p.contains(which) && p.iter().count() == 1,
         _ => false,
     })
 }
 
 /// Classify the TOP-LEVEL runtime shape of a `Type`, returning the
 /// flat [`AbiKind`] (it does NOT recurse to verify element fusability
-/// — that's [`freeze_concrete`]'s job). Derefs TVars via `with_deref`;
-/// expands nullary `Type::Abstract` via [`ABSTRACT_REGISTRY`]. Returns
-/// `None` for the top-level shapes that aren't fusable (unbound TVar,
-/// `Type::Fn`, multi-member non-option/non-variant `Set`, parameterized
-/// abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
+/// — that's [`freeze_for_abi`]'s job). Derefs TVars via `with_deref`;
+/// expands nullary `Type::Abstract` via the [`AbstractRegistry`].
+/// Returns `None` for the top-level shapes that aren't fusable (unbound
+/// TVar, `Type::Fn`, multi-member non-option/non-variant `Set`,
+/// parameterized abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
 ///
 /// Recursive abstract types (a registry rep that re-reaches its own id,
 /// directly or through an option-of-self) terminate via [`Seen`] cycle
 /// detection on the abstract-expansion recursion and return `None` (a
 /// recursive type has no flat ABI kind) — the same mechanism
-/// [`freeze_concrete`] / `resolve_abstract` use.
-pub fn abi_kind(t: &Type) -> Option<AbiKind> {
-    abi_kind_d(t, None)
+/// [`freeze_for_abi`] / `resolve_abstract` use.
+pub fn abi_kind(reg: &AbstractRegistry, t: &Type) -> Option<AbiKind> {
+    abi_kind_d(reg, t, None)
 }
 
-fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
+fn abi_kind_d(
+    reg: &AbstractRegistry,
+    t: &Type,
+    seen: Option<&Seen>,
+) -> Option<AbiKind> {
     // Clone the deref'd type OUT of `with_deref` so the TVar's read
-    // guard is DROPPED before the body runs: the Abstract arm takes
-    // `ABSTRACT_REGISTRY.read()` and the Set/Abstract arms recurse
-    // (more TVar guards). With parking_lot's fair, non-reentrant locks
-    // that cross-holding deadlocked concurrent compiles in one process
-    // (the post-F2-flip parallel test wedge). Same discipline as
-    // `resolve_abstract`'s TVar arm and `freeze_concrete_d`.
+    // guard is DROPPED before the body runs: the Set/Abstract arms
+    // recurse (more TVar guards), and parking_lot's fair, non-reentrant
+    // TVar lock can't be re-acquired while held. (The registry no longer
+    // participates — it's a plain per-ctx borrow now, not a lock — but
+    // the TVar deref-clone discipline still stands. Same as
+    // `resolve_abstract`'s TVar arm and `freeze_for_abi_d`.)
     let resolved = t.with_deref(|r| r.cloned());
     {
         let resolved = resolved.as_ref()?;
@@ -285,9 +316,11 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
                     // Recursive abstract — no flat ABI kind.
                     return None;
                 }
-                let concrete = ABSTRACT_REGISTRY.read().get(id).cloned();
+                let concrete = reg.get(id);
                 let node = Seen::push(seen, key);
-                return concrete.as_ref().and_then(|c| abi_kind_d(c, Some(&node)));
+                return concrete
+                    .as_ref()
+                    .and_then(|c| abi_kind_d(reg, c, Some(&node)));
             }
             _ => {}
         }
@@ -330,13 +363,13 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
                 // any) must be checked against the accumulated path, so an
                 // option-of-self (`type A = [A, null]`) terminates.
                 return succ
-                    .and_then(|s| abi_kind_d(s, seen))
+                    .and_then(|s| abi_kind_d(reg, s, seen))
                     .map(|_| AbiKind::Nullable);
             }
             // Variant union: every member must be a single Variant.
-            let all_variants = members.iter().all(|m| {
-                m.with_deref(|r| matches!(r, Some(Type::Variant(_, _))))
-            });
+            let all_variants = members
+                .iter()
+                .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _)))));
             if all_variants {
                 // Note: an EMPTY set classifies as a variant union here
                 // (zero members vacuously all-variant) — a variant-union
@@ -362,8 +395,7 @@ fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
         return None;
     }
     let is_null = |m: &Type| is_single_prim(m, Typ::Null);
-    let is_err =
-        |m: &Type| m.with_deref(|r| matches!(r, Some(Type::Error(_))));
+    let is_err = |m: &Type| m.with_deref(|r| matches!(r, Some(Type::Error(_))));
     // Stage 1: `[T, null]` — exactly one member is the null primitive;
     // the OTHER is the success T (regardless of what T is).
     match (is_null(&members[0]), is_null(&members[1])) {
@@ -388,7 +420,7 @@ fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
 /// during concretization: the identity of a resolved abstract or named
 /// (`Type::Ref`) type. Structural nesting (array/tuple/struct) is NOT an
 /// expansion — only following an abstract to its registry rep, or a
-/// `Ref` to its definition, is. Shared by [`freeze_concrete`] (abstracts
+/// `Ref` to its definition, is. Shared by [`freeze_for_abi`] (abstracts
 /// only — it rejects `Ref`) and `fusion::lowering::resolve_abstract`
 /// (both).
 #[derive(PartialEq)]
@@ -434,10 +466,25 @@ impl<'a> Seen<'a> {
     }
 }
 
-/// Produce a fully-concrete `Type` (no live TVars, no nullary
+/// The kernel-ABI encodability gate. Despite the "freeze" framing this
+/// is not (only) a `Type → Type` normalization — concretizing the TVars
+/// is the *means*; deciding whether the type can be encoded into the
+/// kernel's register/`Value` layout, and handing back the concrete wire
+/// shape when it can, is the *end*. The pure type-level concretization it
+/// rests on already lives on `Type` (`with_deref` / `normalize`); what is
+/// left here is the ABI delta, which is why this belongs in `kernel_abi`
+/// and not on `Type`: the `None`s are perfectly valid types (`Fn`, `Ref`,
+/// `decimal`, a bare function) that simply have no kernel encoding, the
+/// register gate is `PrimType::from_typ`, and it peeks through
+/// [`ABSTRACT_REGISTRY`] (which the type system keeps opaque everywhere
+/// else).
+///
+/// Concretely: produce a fully-concrete `Type` (no live TVars, no nullary
 /// abstracts) over the fusable subset, recursing through every nested
 /// element. Returns `None` if any part of the type is non-fusable —
-/// the accept/reject decisions match [`abi_kind`] at each level.
+/// the accept/reject decisions match [`abi_kind`] at each level (e.g.
+/// `Map`/`Error` stop the recursion: they are carried as an opaque
+/// two-register `Value`, so their parameters never reach the wire).
 ///
 /// Recursive abstract types terminate by [`Seen`] cycle detection on the
 /// nullary-abstract expansion arm (the only expansion site here — `Ref`
@@ -453,13 +500,17 @@ impl<'a> Seen<'a> {
 /// bound is thus inherited upstream — consistent with those sibling
 /// passes — not a fixed cap re-imposed here (the old `depth > 16` cap
 /// was, and it rejected legitimate deeply-nested finite types).
-pub fn freeze_concrete(t: &Type) -> Option<Type> {
-    freeze_concrete_d(t, None)
+pub fn freeze_for_abi(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
+    freeze_for_abi_d(reg, t, None)
 }
 
-fn freeze_concrete_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
-    // Deref-clone hoisted out — see `abi_kind`'s note (the Abstract arm
-    // takes the registry lock and most arms recurse).
+fn freeze_for_abi_d(
+    reg: &AbstractRegistry,
+    t: &Type,
+    seen: Option<&Seen>,
+) -> Option<Type> {
+    // Deref-clone hoisted out — see `abi_kind`'s note (most arms recurse
+    // under the TVar lock).
     let resolved = t.with_deref(|r| r.cloned());
     {
         let resolved = resolved.as_ref()?;
@@ -486,9 +537,7 @@ fn freeze_concrete_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                 // `from_type`'s collapsed-option arm).
                 if p.contains(Typ::Null) && p.iter().count() == 2 {
                     let other = p.iter().find(|f| *f != Typ::Null)?;
-                    if other == Typ::String
-                        || PrimType::from_typ(other).is_some()
-                    {
+                    if other == Typ::String || PrimType::from_typ(other).is_some() {
                         return Some(Type::Primitive(*p));
                     }
                     return None;
@@ -497,31 +546,32 @@ fn freeze_concrete_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                 PrimType::from_type(resolved).map(|_| Type::Primitive(*p))
             }
             Type::Array(inner) => {
-                let inner = freeze_concrete_d(inner, seen)?;
+                let inner = freeze_for_abi_d(reg, inner, seen)?;
                 Some(Type::Array(Arc::new(inner)))
             }
             Type::Tuple(elems) => {
-                let frozen: Option<Vec<Type>> = elems
-                    .iter()
-                    .map(|e| freeze_concrete_d(e, seen))
-                    .collect();
-                Some(Type::Tuple(Arc::from_iter(frozen?)))
+                let frozen: Option<LPooled<Vec<Type>>> =
+                    elems.iter().map(|e| freeze_for_abi_d(reg, e, seen)).collect();
+                let mut frozen = frozen?;
+                Some(Type::Tuple(Arc::from_iter(frozen.drain(..))))
             }
             Type::Struct(fields) => {
-                let frozen: Option<Vec<(ArcStr, Type)>> = fields
+                let frozen: Option<LPooled<Vec<(ArcStr, Type)>>> = fields
                     .iter()
                     .map(|(n, ft)| {
-                        freeze_concrete_d(ft, seen).map(|t| (n.clone(), t))
+                        freeze_for_abi_d(reg, ft, seen).map(|t| (n.clone(), t))
                     })
                     .collect();
-                Some(Type::Struct(Arc::from_iter(frozen?)))
+                let mut frozen = frozen?;
+                Some(Type::Struct(Arc::from_iter(frozen.drain(..))))
             }
             Type::Variant(tag, payloads) => {
-                let frozen: Option<Vec<Type>> = payloads
+                let frozen: Option<LPooled<Vec<Type>>> = payloads
                     .iter()
-                    .map(|p| freeze_concrete_d(p, seen))
+                    .map(|p| freeze_for_abi_d(reg, p, seen))
                     .collect();
-                Some(Type::Variant(tag.clone(), Arc::from_iter(frozen?)))
+                let mut frozen = frozen?;
+                Some(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..))))
             }
             Type::Set(members) => {
                 // `[T, null]` / `[T, Error]` → freeze the success
@@ -534,24 +584,19 @@ fn freeze_concrete_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                     // The success member is `members[0]` or `members[1]`;
                     // the other is the marker (kept as-is). Freeze the
                     // success in place, preserving member order.
-                    let succ_idx =
-                        if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
-                    let frozen_succ = freeze_concrete_d(succ, seen)?;
+                    let succ_idx = if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
+                    let frozen_succ = freeze_for_abi_d(reg, succ, seen)?;
                     let m0 = if succ_idx == 0 {
                         frozen_succ.clone()
                     } else {
                         members[0].clone()
                     };
-                    let m1 = if succ_idx == 1 {
-                        frozen_succ
-                    } else {
-                        members[1].clone()
-                    };
+                    let m1 = if succ_idx == 1 { frozen_succ } else { members[1].clone() };
                     return Some(Type::Set(Arc::from_iter([m0, m1])));
                 }
                 // Variant union: every member a single Variant; freeze
                 // each.
-                let frozen: Option<Vec<Type>> = members
+                let frozen: Option<LPooled<Vec<Type>>> = members
                     .iter()
                     .map(|m| {
                         // Clone out, then recurse guard-free (see
@@ -559,20 +604,22 @@ fn freeze_concrete_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                         let m = m.with_deref(|r| r.cloned());
                         match m {
                             Some(Type::Variant(tag, payloads)) => {
-                                let fp: Option<Vec<Type>> = payloads
+                                let fp: Option<LPooled<Vec<Type>>> = payloads
                                     .iter()
-                                    .map(|p| freeze_concrete_d(p, seen))
+                                    .map(|p| freeze_for_abi_d(reg, p, seen))
                                     .collect();
+                                let mut fp = fp?;
                                 Some(Type::Variant(
                                     tag.clone(),
-                                    Arc::from_iter(fp?),
+                                    Arc::from_iter(fp.drain(..)),
                                 ))
                             }
                             _ => None,
                         }
                     })
                     .collect();
-                Some(Type::Set(Arc::from_iter(frozen?)))
+                let mut frozen = frozen?;
+                Some(Type::Set(Arc::from_iter(frozen.drain(..))))
             }
             Type::Abstract { id, params } if params.is_empty() => {
                 let key = ExpandKey::Abstract(*id);
@@ -582,9 +629,9 @@ fn freeze_concrete_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                     // fallback.
                     return None;
                 }
-                let concrete = ABSTRACT_REGISTRY.read().get(id).cloned()?;
+                let concrete = reg.get(id)?;
                 let node = Seen::push(seen, key);
-                freeze_concrete_d(&concrete, Some(&node))
+                freeze_for_abi_d(reg, &concrete, Some(&node))
             }
             // Everything else: Any, Fn, Ref, ByRef, parameterized
             // Abstract, multi-member non-option/non-variant Set
@@ -645,16 +692,19 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
     }
 }
 
-/// [`freeze_concrete`], retrying through [`Type::normalize`] when the
+/// [`freeze_for_abi`], retrying through [`Type::normalize`] when the
 /// direct freeze fails. Typecheck can leave a union un-flattened — a
 /// `select`'s result type is the raw fold of its arm types, e.g.
-/// `Set([i64, TVar→i64])` — which `freeze_concrete` rejects (it
+/// `Set([i64, TVar→i64])` — which `freeze_for_abi` rejects (it
 /// mirrors `from_type` shape-for-shape). Normalizing flattens and
 /// merges the set (→ `i64`) without changing the denoted type. The
 /// normalize pass only runs when the direct freeze fails, so the
 /// common path neither pays for it nor rewrites TVar bindings.
-pub fn freeze_normalized(t: &Type) -> Option<Type> {
-    freeze_concrete(t).or_else(|| freeze_concrete(&t.normalize()))
+pub fn freeze_for_abi_normalized(
+    reg: &AbstractRegistry,
+    t: &Type,
+) -> Option<Type> {
+    freeze_for_abi(reg, t).or_else(|| freeze_for_abi(reg, &t.normalize()))
 }
 
 /// Normalizes ALL THREE option-shaped forms that collapse to
@@ -663,8 +713,8 @@ pub fn freeze_normalized(t: &Type) -> Option<Type> {
 /// - `Type::Set([T, Error])` (the result Set),
 /// - the collapsed 2-bit primitive `T | null`.
 /// Returns `None` for any non-option shape. The returned `T` is frozen
-/// (run through [`freeze_concrete`]) so callers get a concrete inner.
-pub fn nullable_inner(t: &Type) -> Option<Type> {
+/// (run through [`freeze_for_abi`]) so callers get a concrete inner.
+pub fn nullable_inner(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
     // Deref-clone hoisted out of the guard — see `abi_kind`'s note
     // (the Set arm freezes the success member, which recurses).
     let resolved = t.with_deref(|r| r.cloned());
@@ -672,22 +722,19 @@ pub fn nullable_inner(t: &Type) -> Option<Type> {
         let resolved = resolved.as_ref()?;
         match resolved {
             // Collapsed `T | null` primitive.
-            Type::Primitive(p)
-                if p.contains(Typ::Null) && p.iter().count() == 2 =>
-            {
+            Type::Primitive(p) if p.contains(Typ::Null) && p.iter().count() == 2 => {
                 let other = p.iter().find(|f| *f != Typ::Null)?;
                 if other == Typ::String {
                     return Some(Type::Primitive(Typ::String.into()));
                 }
-                PrimType::from_typ(other)
-                    .map(|pt| Type::Primitive(pt.to_typ().into()))
+                PrimType::from_typ(other).map(|pt| Type::Primitive(pt.to_typ().into()))
             }
             Type::Set(members) => {
                 // Same null-first priority as `from_type` /
-                // `freeze_concrete`. `[null, Error<T>]` → success is
+                // `freeze_for_abi`. `[null, Error<T>]` → success is
                 // `Error<T>` (null is the marker).
                 let succ = option_result_success(members)??;
-                freeze_concrete(succ)
+                freeze_for_abi(reg, succ)
             }
             _ => None,
         }
@@ -697,8 +744,8 @@ pub fn nullable_inner(t: &Type) -> Option<Type> {
 /// The scalar [`PrimType`] of a `Type` whose top-level shape is a plain
 /// register scalar; `None` for any composite / string / value-shape /
 /// option type.
-pub fn scalar_prim(t: &Type) -> Option<PrimType> {
-    match abi_kind(t) {
+pub fn scalar_prim(reg: &AbstractRegistry, t: &Type) -> Option<PrimType> {
+    match abi_kind(reg, t) {
         Some(AbiKind::Scalar(p)) => Some(p),
         _ => None,
     }
@@ -707,17 +754,17 @@ pub fn scalar_prim(t: &Type) -> Option<PrimType> {
 /// If `t` is `Array<P>` with a plain scalar element, the element
 /// `PrimType`; `None` if the element is composite or `t` isn't an
 /// array.
-pub fn array_scalar_prim(t: &Type) -> Option<PrimType> {
-    array_elem(t).and_then(scalar_prim)
+pub fn array_scalar_prim(reg: &AbstractRegistry, t: &Type) -> Option<PrimType> {
+    array_elem(t).and_then(|e| scalar_prim(reg, e))
 }
 
 /// True for the "Value-shape" types — those whose JIT/runtime
 /// representation is a two-register `Value` (disc + payload):
 /// `Variant`, `Nullable`/option/result, `DateTime`, `Duration`,
 /// `Bytes`, `Map`, `Error`.
-pub fn is_value_shape(t: &Type) -> bool {
+pub fn is_value_shape(reg: &AbstractRegistry, t: &Type) -> bool {
     matches!(
-        abi_kind(t),
+        abi_kind(reg, t),
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
     )
 }
@@ -1123,9 +1170,7 @@ impl AbiParamKind {
     /// words, everything else is one" rule.
     pub fn wire_words(self) -> usize {
         match self {
-            AbiParamKind::Variant
-            | AbiParamKind::Nullable
-            | AbiParamKind::Value => 2,
+            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => 2,
             _ => 1,
         }
     }
@@ -1231,18 +1276,12 @@ impl KernelSig {
             .params
             .iter()
             .map(|p| (&p.name, AbiParamKind::Scalar(p.prim), p.bind_id));
-        let arrays = self
-            .array_params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::Array, p.bind_id));
-        let tuples = self
-            .tuple_params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::Tuple, p.bind_id));
-        let structs = self
-            .struct_params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::Struct, p.bind_id));
+        let arrays =
+            self.array_params.iter().map(|p| (&p.name, AbiParamKind::Array, p.bind_id));
+        let tuples =
+            self.tuple_params.iter().map(|p| (&p.name, AbiParamKind::Tuple, p.bind_id));
+        let structs =
+            self.struct_params.iter().map(|p| (&p.name, AbiParamKind::Struct, p.bind_id));
         let variants = self
             .variant_params
             .iter()
@@ -1251,14 +1290,10 @@ impl KernelSig {
             .nullable_params
             .iter()
             .map(|p| (&p.name, AbiParamKind::Nullable, p.bind_id));
-        let strings = self
-            .string_params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::String, p.bind_id));
-        let values = self
-            .value_params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::Value, p.bind_id));
+        let strings =
+            self.string_params.iter().map(|p| (&p.name, AbiParamKind::String, p.bind_id));
+        let values =
+            self.value_params.iter().map(|p| (&p.name, AbiParamKind::Value, p.bind_id));
         scalars
             .chain(arrays)
             .chain(tuples)
@@ -1292,17 +1327,15 @@ impl KernelSig {
     /// invalid bare-`Null` return (fusion must widen to `Nullable<T>`
     /// before producing). Callers translate `None` into their own
     /// error with context.
-    pub fn abi_return(&self) -> Option<AbiReturn> {
-        match abi_kind(&self.return_type)? {
+    pub fn abi_return(&self, reg: &AbstractRegistry) -> Option<AbiReturn> {
+        match abi_kind(reg, &self.return_type)? {
             AbiKind::Scalar(p) => Some(AbiReturn::One { prim: Some(p) }),
             AbiKind::Array
             | AbiKind::Tuple
             | AbiKind::Struct
             | AbiKind::Unit
             | AbiKind::String => Some(AbiReturn::One { prim: None }),
-            AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
-                Some(AbiReturn::Two)
-            }
+            AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Some(AbiReturn::Two),
             AbiKind::Null => None,
         }
     }
@@ -1324,12 +1357,13 @@ mod tests {
     /// trips it.
     #[test]
     fn deep_finite_type_freezes() {
+        let reg = AbstractRegistry::default();
         let mut t = i64_t();
         for _ in 0..40 {
             t = Type::Array(Arc::new(t));
         }
         assert!(
-            freeze_concrete(&t).is_some(),
+            freeze_for_abi(&reg, &t).is_some(),
             "a 40-deep nested array is finite and should freeze"
         );
     }
@@ -1339,41 +1373,35 @@ mod tests {
     /// (b) reject (`None`): a recursive type has no fixed kernel-ABI layout.
     #[test]
     fn recursive_abstract_terminates_and_rejects() {
+        let mut reg = AbstractRegistry::default();
         let id = AbstractId::new();
         // Concrete impl references its own abstract id: `(Self, i64)`.
         let rec_impl = Type::Tuple(Arc::from_iter([
             Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) },
             i64_t(),
         ]));
-        ABSTRACT_REGISTRY.write().insert(id, rec_impl);
+        reg.insert(id, rec_impl);
         let t = Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
         assert!(
-            freeze_concrete(&t).is_none(),
+            freeze_for_abi(&reg, &t).is_none(),
             "a recursive abstract is unfusable (and must not loop)"
         );
-        ABSTRACT_REGISTRY.write().remove(&id);
     }
 
     /// MUTUAL recursion (abstract A's rep contains B, B's contains A) must
     /// also terminate + reject — the cons-list carries BOTH ids on the path.
     #[test]
     fn mutually_recursive_abstracts_terminate() {
+        let mut reg = AbstractRegistry::default();
         let a = AbstractId::new();
         let b = AbstractId::new();
-        let abst =
-            |id| Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
-        ABSTRACT_REGISTRY
-            .write()
-            .insert(a, Type::Tuple(Arc::from_iter([abst(b), i64_t()])));
-        ABSTRACT_REGISTRY
-            .write()
-            .insert(b, Type::Tuple(Arc::from_iter([abst(a), i64_t()])));
+        let abst = |id| Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
+        reg.insert(a, Type::Tuple(Arc::from_iter([abst(b), i64_t()])));
+        reg.insert(b, Type::Tuple(Arc::from_iter([abst(a), i64_t()])));
         assert!(
-            freeze_concrete(&abst(a)).is_none(),
+            freeze_for_abi(&reg, &abst(a)).is_none(),
             "mutually-recursive abstracts are unfusable (and must terminate)"
         );
-        ABSTRACT_REGISTRY.write().remove(&a);
-        ABSTRACT_REGISTRY.write().remove(&b);
     }
 
     /// `abi_kind` is the third concretizer with abstract-expansion
@@ -1382,17 +1410,15 @@ mod tests {
     /// loops forever.
     #[test]
     fn abi_kind_option_of_self_terminates() {
+        let mut reg = AbstractRegistry::default();
         let a = AbstractId::new();
         let abst = Type::Abstract { id: a, params: Arc::from_iter(Vec::<Type>::new()) };
-        let opt_self = Type::Set(Arc::from_iter([
-            abst.clone(),
-            Type::Primitive(Typ::Null.into()),
-        ]));
-        ABSTRACT_REGISTRY.write().insert(a, opt_self);
+        let opt_self =
+            Type::Set(Arc::from_iter([abst.clone(), Type::Primitive(Typ::Null.into())]));
+        reg.insert(a, opt_self);
         assert!(
-            abi_kind(&abst).is_none(),
+            abi_kind(&reg, &abst).is_none(),
             "option-of-self abstract has no flat ABI kind (and must terminate)"
         );
-        ABSTRACT_REGISTRY.write().remove(&a);
     }
 }

@@ -101,7 +101,7 @@ fn bind_elem(
     i_now: ClifValue,
     elem: &HofElem,
 ) -> Result<BoundElem> {
-    match vocab::abi_kind(elem.typ) {
+    match vocab::abi_kind(cx.registry(), elem.typ) {
         Some(AbiKind::Scalar(prim)) => {
             if !elem.leaves.is_empty() {
                 return Err(anyhow!(
@@ -321,7 +321,7 @@ pub fn push_field(
     typ: &Type,
     src: CompositeSource,
 ) -> Result<()> {
-    let helper_name: &str = match vocab::abi_kind(typ) {
+    let helper_name: &str = match vocab::abi_kind(cx.registry(), typ) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => match src {
             CompositeSource::Owned => "graphix_value_buf_push_array",
@@ -358,7 +358,7 @@ pub fn push_field(
     // (`is_value_shape()`). When it only listed Variant|Nullable, a
     // DateTime/Duration/Bytes/Map field fell to the `_` arm and
     // `.single()` Err'd, silently de-fusing the whole kernel.
-    if vocab::is_value_shape(typ) {
+    if vocab::is_value_shape(cx.registry(), typ) {
         let (disc, payload) = match cv {
             CompiledExpr::Value { disc, payload } => (disc, payload),
             _ => {
@@ -497,7 +497,7 @@ where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
 {
     let composite = matches!(
-        vocab::abi_kind(elem.typ),
+        vocab::abi_kind(cx.registry(), elem.typ),
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
     );
     adopt_owned_src(cx, &arr);

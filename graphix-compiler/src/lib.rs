@@ -1411,6 +1411,16 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub fusion_stats: FusionStats,
+    /// Fusion-time registry mapping each abstract type's `AbstractId` to
+    /// its concrete implementation type. Written by `check_sig` during
+    /// typecheck; read by the fusion classifiers
+    /// ([`crate::kernel_abi::freeze_for_abi`] / `abi_kind` /
+    /// `resolve_abstract`) to peek through an abstract type's opacity to
+    /// its wire shape. Owned per-context (not a process-global) so it
+    /// drops with the `ExecCtx` — `AbstractId`s are minted fresh per
+    /// compile, so a global would leak. See
+    /// [`crate::kernel_abi::AbstractRegistry`].
+    pub abstract_registry: crate::kernel_abi::AbstractRegistry,
     /// The TOP expression id of the compile currently running — set by
     /// [`compile`] before the fusion phase. `try_fuse` builds its
     /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
@@ -1463,6 +1473,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             )),
             fusion_enabled: true,
             fusion_stats: FusionStats::default(),
+            abstract_registry: crate::kernel_abi::AbstractRegistry::default(),
             fuse_top_id: None,
         })
     }
