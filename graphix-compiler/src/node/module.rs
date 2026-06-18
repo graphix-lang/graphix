@@ -6,10 +6,10 @@ use crate::{
         parser, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig,
         SigKind, Source, StructurePattern, TypeDefExpr,
     },
+    ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
     node::{bind::Bind, Nop},
     typ::{AbstractId, Type},
-    wrap, BindId, CFlag, Event, ExecCtx, ModuleInternalView, ModuleRefSite, Node, Refs,
-    Rt, Scope, SigImplLink, Update, UserEvent,
+    wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
 };
 use ahash::AHashSet;
 use anyhow::{bail, Context, Result};
@@ -18,7 +18,7 @@ use compact_str::{format_compact, CompactString};
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use nohash::IntMap;
-use poolshark::{global::GPooled, local::LPooled};
+use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
 
@@ -27,7 +27,6 @@ fn bind_sig(
     mod_env: &mut Env,
     scope: &Scope,
     sig: &Sig,
-    module_refs: &mut GPooled<Vec<ModuleRefSite>>,
 ) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
     for si in sig.items.iter() {
@@ -37,7 +36,7 @@ fn bind_sig(
                 let scope = scope.append(name);
                 env.modules.insert_cow(scope.lexical.clone());
                 if env.lsp_mode {
-                    module_refs.push(ModuleRefSite {
+                    env.push_module_reference(ModuleRefSite {
                         pos: si.pos,
                         ori: si_ori.clone(),
                         name: ModPath::from_iter([name.clone()]),
@@ -53,7 +52,7 @@ fn bind_sig(
                     let canonical = env
                         .canonical_modpath(&scope.lexical, name)
                         .unwrap_or_else(|| name.clone());
-                    module_refs.push(ModuleRefSite {
+                    env.push_module_reference(ModuleRefSite {
                         pos: si.pos,
                         ori: si_ori.clone(),
                         name: name.clone(),
@@ -291,7 +290,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, flags, (*source).clone(), scope, top_id)?;
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
-        bind_sig(&mut ctx.env, &mut env, &scope, &sig, &mut ctx.module_references)
+        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
             .context("binding module signature")?;
         Ok(Box::new(Self {
             spec,
@@ -318,7 +317,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
         let mut env = ctx.env.clone();
-        bind_sig(&mut ctx.env, &mut env, &scope, &sig, &mut ctx.module_references)
+        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
             .with_context(|| format!("binding signature for module {}", scope.lexical))?;
         let mut t = Self {
             spec,

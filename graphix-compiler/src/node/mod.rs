@@ -289,7 +289,7 @@ impl Use {
                 .env
                 .canonical_modpath(&scope.lexical, name)
                 .unwrap_or_else(|| name.clone());
-            ctx.module_references.push(crate::ModuleRefSite {
+            ctx.env.push_module_reference(crate::ide::ModuleRefSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
                 name: name.clone(),
@@ -802,7 +802,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         // stable (only the specific BindId being written is unstable).
         ctx.unstable_bindings.insert(id);
         if ctx.env.lsp_mode {
-            ctx.references.push(crate::ReferenceSite {
+            ctx.env.push_reference(crate::ide::ReferenceSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
                 name: name.clone(),
@@ -930,7 +930,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
         if ctx.env.lsp_mode {
-            ctx.references.push(crate::ReferenceSite {
+            ctx.env.push_reference(crate::ide::ReferenceSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
                 name: name.clone(),

@@ -37,7 +37,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     if ctx.env.lsp_mode {
-        ctx.scope_map.push(crate::ScopeMapEntry {
+        ctx.env.push_scope_map_entry(crate::ide::ScopeMapEntry {
             pos: spec.pos,
             ori: spec.ori.clone(),
             scope: scope.clone(),
@@ -93,7 +93,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     }
                     _ => None,
                 };
-                ctx.module_references.push(crate::ModuleRefSite {
+                ctx.env.push_module_reference(crate::ide::ModuleRefSite {
                     pos: spec.pos,
                     ori: spec.ori.clone(),
                     name: crate::expr::ModPath::from([name.as_str()]),

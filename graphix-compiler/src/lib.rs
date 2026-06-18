@@ -13,7 +13,7 @@ pub mod effects;
 pub mod env;
 pub mod expr;
 pub mod fusion;
-pub mod kernel_abi;
+pub mod ide;
 pub mod node;
 pub mod node_shape;
 pub mod typ;
@@ -314,60 +314,10 @@ pub struct Refs {
 
 pub use combine::stream::position::SourcePosition;
 
-/// A textual occurrence of a name at a specific source position that
-/// the compiler resolved to a particular `BindId`. Populated as a side
-/// effect of compilation so IDE tooling can answer
-/// `textDocument/references` and `textDocument/definition` without
-/// re-implementing name resolution.
-///
-/// `def_pos` and `def_ori` mirror the bind's declaration site at
-/// resolution time. They're captured here because some bindings
-/// (notably lambda parameters) are unbound from the env when the
-/// callsite that created them is dropped — but their declaration
-/// site is still meaningful to the user.
-#[derive(Debug, Clone)]
-pub struct ReferenceSite {
-    pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
-    pub name: expr::ModPath,
-    pub bind_id: BindId,
-    pub def_pos: SourcePosition,
-    pub def_ori: Arc<expr::Origin>,
-}
-
-/// A textual occurrence of a module reference (either `use foo;` or
-/// `mod foo;`). For the `mod foo;` case `def_ori` points at the file
-/// the module's body was loaded from — that's the natural target for
-/// go-to-definition on a module name.
-#[derive(Debug, Clone)]
-pub struct ModuleRefSite {
-    pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
-    /// Module name as the user wrote it (might be relative).
-    pub name: expr::ModPath,
-    /// Absolute module path the compiler resolved this reference to.
-    pub canonical: expr::ModPath,
-    /// Origin of the module's body (the file it was loaded from)
-    /// when this site is itself a declaration that pulled the
-    /// module in. `None` for plain `use` sites.
-    pub def_ori: Option<Arc<expr::Origin>>,
-}
-
-/// One entry in the per-compile scope map: the compiler descended
-/// into an `Expr` at this `(pos, ori)` while in this `scope`. IDE
-/// tooling answers `cursor → scope` by finding the entry with the
-/// greatest `pos` ≤ the cursor in the same file.
-#[derive(Debug, Clone)]
-pub struct ScopeMapEntry {
-    pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
-    pub scope: Scope,
-}
-
 /// Metadata captured for every `let foo = |...| 'builtin_name`
 /// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
 /// binding's [`BindId`] so the fusion pass can lower `Apply` sites
-/// targeting this binding into a [`crate::fusion::vocab::FnSource::Builtin`]
+/// targeting this binding into a [`crate::fusion::kernel_abi::FnSource::Builtin`]
 /// slot without round-tripping through the runtime's `LambdaDef`
 /// value.
 ///
@@ -377,7 +327,7 @@ pub struct ScopeMapEntry {
 ///
 /// `argspec` is the original source-level argument list (including
 /// each labeled arg's default expression, if any), needed to
-/// construct the per-formal-arg [`crate::fusion::vocab::BuiltinSlot`]
+/// construct the per-formal-arg [`crate::fusion::kernel_abi::BuiltinSlot`]
 /// layout at fusion time.
 ///
 /// `typ` is the binding's resolved function type at the binding
@@ -398,63 +348,6 @@ pub struct BuiltinBindInfo {
     /// only in the lambda's original definition scope.
     pub lambda_id: Option<LambdaId>,
 }
-
-/// A textual occurrence of a type reference (e.g. `Foo` in `let x: Foo`).
-/// Captured by the compiler when a `Type::Ref` carrying parse-time
-/// position info gets dereferenced. `def_pos`/`def_ori` point at the
-/// `type Foo = …` declaration site so go-to-def on a type name lands
-/// on the typedef.
-#[derive(Debug, Clone)]
-pub struct TypeRefSite {
-    pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
-    /// The name as written in source (e.g. `Result`, `array::Foo`).
-    pub name: expr::ModPath,
-    /// Canonical scope of the typedef the reference resolved to.
-    pub canonical_scope: expr::ModPath,
-    pub def_pos: SourcePosition,
-    pub def_ori: Arc<expr::Origin>,
-}
-
-/// Maps a `val foo: T` declaration in a `.gxi` interface to its
-/// `let foo = …` implementation site in the paired `.gx`. Populated by
-/// `check_sig` whenever it matches a sig proxy bind to its impl bind.
-/// Used by IDE tooling to (a) goto-def from a sig val site to the impl,
-/// and (b) union find-references results across both `BindId`s.
-/// Only populated when `env.lsp_mode` is set.
-#[derive(Debug, Clone)]
-pub struct SigImplLink {
-    pub scope: expr::ModPath,
-    pub name: compact_str::CompactString,
-    pub sig_id: BindId,
-    pub impl_id: BindId,
-}
-
-/// Per-module snapshot of the *internal* env (the impl's view, where
-/// implementation bindings shadow sig proxies). The CheckResult's
-/// top-level `env` is the *external* view across the project; this
-/// per-module entry lets IDE queries on names inside a module reach
-/// the impl bind metadata. Only populated when `env.lsp_mode` is set.
-#[derive(Debug, Clone)]
-pub struct ModuleInternalView {
-    pub scope: expr::ModPath,
-    pub env: env::Env,
-}
-
-/// Pools backing the IDE side-channel collections. `GPooled` so the
-/// buffers can return to the same pool after crossing the
-/// runtime-task → LSP-thread boundary as part of `CheckResult`. Sized
-/// generously since the LSP recompiles on every keystroke and these
-/// can grow into the tens of thousands of entries on large modules.
-pub static REFERENCE_SITE_POOL: LazyLock<Pool<Vec<ReferenceSite>>> =
-    LazyLock::new(|| Pool::new(64, 65536));
-pub static MODULE_REF_SITE_POOL: LazyLock<Pool<Vec<ModuleRefSite>>> =
-    LazyLock::new(|| Pool::new(64, 65536));
-pub static SCOPE_MAP_ENTRY_POOL: LazyLock<Pool<Vec<ScopeMapEntry>>> =
-    LazyLock::new(|| Pool::new(64, 65536));
-// `TYPE_REF_SITE_POOL`, `SIG_LINK_POOL`, and `MODULE_INTERNAL_VIEW_POOL`
-// back the per-check `Lsp` sinks; they live in `env` next to the
-// `Lsp` struct that consumes them.
 
 impl Refs {
     pub fn clear(&mut self) {
@@ -949,14 +842,6 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// The name of the builtin, this must be package::unique_name for
     /// builtins in a package
     const NAME: &str;
-    /// Does this builtin need a 2nd typecheck pass? If yes then typecheck will
-    /// be called a second time after all types are resolved and may examine
-    /// them and have a second chance to reject the program. For example
-    /// - type directed deserialization functions need the final deserialization
-    ///   type to decide if it's valid, and to build their schema.
-    /// - type requirements not expressable in the grammar. For example this
-    ///   argument must be some kind of struct, and the fields and types must
-    ///   correspond to some other struct (e.g. publish rpc)
     /// Sync/async classification for fusion. Conservative default is
     /// `Async`; override to `Sync` when the builtin produces all of its
     /// output on the same cycle as the input that triggered it (it may
@@ -1311,20 +1196,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// deliberately kept out of `cached` (runtime state) — see
     /// `CallSite::typecheck1`. Cleared at the top of every `compile`.
     pub bind_to_lambda: IntMap<BindId, Value>,
-    /// Reference sites accumulated during compilation. Each is a
-    /// textual occurrence of a name and the `BindId` it resolved to.
-    /// At compile boundaries, swap with a fresh `REFERENCE_SITE_POOL`
-    /// container via `mem::replace` (not `mem::take` — `Default`
-    /// routes to the unsized thread-local registry, not our named
-    /// pool). Only populated when `env.lsp_mode` is set.
-    pub references: GPooled<Vec<ReferenceSite>>,
-    /// Module reference sites — `use foo;` and `mod foo;` mentions.
-    /// Same scoping rules as `references`.
-    pub module_references: GPooled<Vec<ModuleRefSite>>,
-    /// Per-compile scope map. `compile()` pushes one entry every
-    /// time it's invoked, recording the scope it was called with.
-    /// IDE tooling reads this to answer `cursor → scope` queries.
-    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
     /// BindIds of bindings that are the target of a `<-` (Connect)
     /// somewhere in the program. Populated lazily by
     /// [`crate::node::Connect::compile`] — every Connect resolves
@@ -1346,7 +1217,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// The info captures everything fusion needs to lower an
     /// `Apply` site whose `function` resolves to this binding into
     /// a DynCall against a
-    /// [`crate::fusion::vocab::FnSource::Builtin`] slot: the canonical
+    /// [`crate::fusion::kernel_abi::FnSource::Builtin`] slot: the canonical
     /// builtin `name` (matches `ctx.builtins`), the source-level
     /// `argspec` (with default expressions for labeled args), and
     /// the resolved `FnType`.
@@ -1414,13 +1285,13 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Fusion-time registry mapping each abstract type's `AbstractId` to
     /// its concrete implementation type. Written by `check_sig` during
     /// typecheck; read by the fusion classifiers
-    /// ([`crate::kernel_abi::freeze_for_abi`] / `abi_kind` /
+    /// ([`crate::fusion::kernel_abi::freeze_for_abi`] / `abi_kind` /
     /// `resolve_abstract`) to peek through an abstract type's opacity to
     /// its wire shape. Owned per-context (not a process-global) so it
     /// drops with the `ExecCtx` — `AbstractId`s are minted fresh per
     /// compile, so a global would leak. See
-    /// [`crate::kernel_abi::AbstractRegistry`].
-    pub abstract_registry: crate::kernel_abi::AbstractRegistry,
+    /// [`crate::fusion::kernel_abi::AbstractRegistry`].
+    pub abstract_registry: crate::fusion::kernel_abi::AbstractRegistry,
     /// The TOP expression id of the compile currently running — set by
     /// [`compile`] before the fusion phase. `try_fuse` builds its
     /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
@@ -1461,9 +1332,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             rt: user,
             lambda_defs: IntMap::default(),
             bind_to_lambda: IntMap::default(),
-            references: REFERENCE_SITE_POOL.take(),
-            module_references: MODULE_REF_SITE_POOL.take(),
-            scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
             jit: parking_lot::Mutex::new(fusion::emit::Jit::new()?),
@@ -1473,7 +1341,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             )),
             fusion_enabled: true,
             fusion_stats: FusionStats::default(),
-            abstract_registry: crate::kernel_abi::AbstractRegistry::default(),
+            abstract_registry: crate::fusion::kernel_abi::AbstractRegistry::default(),
             fuse_top_id: None,
         })
     }

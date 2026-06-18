@@ -169,12 +169,12 @@ impl LspBackend for ShellLspBackend {
         root: &Path,
         initial_scope: Option<ArcStr>,
     ) -> Result<TypecheckResult> {
-        let CheckResult { env, references, module_references, scope_map, lsp } =
+        let CheckResult { env, ide } =
             self.rt_handle.block_on(self.gx.check_with_resolvers(
                 Source::File(root.to_path_buf()),
                 self.resolvers_for(root),
                 initial_scope,
             ))?;
-        Ok(TypecheckResult { env, references, module_references, scope_map, lsp })
+        Ok(TypecheckResult { env, ide })
     }
 }

@@ -249,7 +249,7 @@ impl Type {
                 }
                 if env.lsp_mode {
                     if let (Some(pos), Some(ori)) = (pos, ori) {
-                        env.push_type_ref(crate::TypeRefSite {
+                        env.push_type_ref(crate::ide::TypeRefSite {
                             pos: *pos,
                             ori: ori.clone(),
                             name: name.clone(),
@@ -299,7 +299,7 @@ impl Type {
                             ori.clone(),
                         ),
                     };
-                    env.push_type_ref(crate::TypeRefSite {
+                    env.push_type_ref(crate::ide::TypeRefSite {
                         pos,
                         ori: ori.clone(),
                         name: tr.name.clone(),

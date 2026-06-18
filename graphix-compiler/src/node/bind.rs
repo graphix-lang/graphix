@@ -355,7 +355,7 @@ impl Ref {
                 let def_pos = bind.pos;
                 let def_ori = bind.ori.clone();
                 if ctx.env.lsp_mode {
-                    ctx.references.push(crate::ReferenceSite {
+                    ctx.env.push_reference(crate::ide::ReferenceSite {
                         pos: spec.pos,
                         ori: spec.ori.clone(),
                         name: name.clone(),

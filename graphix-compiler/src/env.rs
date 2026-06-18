@@ -1,7 +1,11 @@
 use crate::{
     expr::{ModPath, Origin, Sandbox},
+    ide::{
+        Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
+        SigImplLink, TypeRefSite,
+    },
     typ::{TVar, Type},
-    BindId, ModuleInternalView, Scope, SigImplLink, TypeRefSite,
+    BindId, Scope,
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, Result};
@@ -11,11 +15,8 @@ use compact_str::CompactString;
 use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
 use netidx::path::Path;
 use parking_lot::Mutex;
-use poolshark::{
-    global::{GPooled, Pool},
-    local::LPooled,
-};
-use std::{fmt, iter, mem, ops::Bound, sync::LazyLock};
+use poolshark::local::LPooled;
+use std::{fmt, iter, mem, ops::Bound};
 use triomphe::Arc;
 
 pub struct Bind {
@@ -64,46 +65,6 @@ pub struct TypeDef {
     pub ori: Arc<Origin>,
 }
 
-/// IDE side-channels accumulated during compilation when `lsp_mode` is
-/// on. Pushed to from places that hold `&Env` rather than threaded
-/// through every typecheck signature, but tied to a specific `Env` via
-/// the `Arc<Mutex<Lsp>>` field — so two unrelated compiles can't
-/// cross-pollute, and a multi-threaded compile is just a `Mutex` lock
-/// away.
-///
-/// The runtime's `check` installs a fresh `Lsp` at the start of each
-/// check cycle and drains it at the end; non-LSP compiles leave
-/// `Env.lsp` as `None` and pay nothing at the push sites.
-#[derive(Debug)]
-pub struct Lsp {
-    pub type_refs: GPooled<Vec<TypeRefSite>>,
-    pub sig_links: GPooled<Vec<SigImplLink>>,
-    pub module_internals: GPooled<Vec<ModuleInternalView>>,
-}
-
-impl Lsp {
-    /// Fresh, empty sinks pulled from the named pools.
-    pub fn new() -> Self {
-        static TYPE_REF_SITE_POOL: LazyLock<Pool<Vec<TypeRefSite>>> =
-            LazyLock::new(|| Pool::new(64, 65536));
-        static SIG_LINK_POOL: LazyLock<Pool<Vec<SigImplLink>>> =
-            LazyLock::new(|| Pool::new(32, 4096));
-        static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
-            LazyLock::new(|| Pool::new(32, 4096));
-        Self {
-            type_refs: TYPE_REF_SITE_POOL.take(),
-            sig_links: SIG_LINK_POOL.take(),
-            module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
-        }
-    }
-}
-
-impl Default for Lsp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: Map<BindId, Bind>,
@@ -121,16 +82,24 @@ pub struct Env {
     /// the compiler. Only populated when `lsp_mode` is set.
     pub ide_binds: Map<ModPath, Map<CompactString, Bind>>,
     /// True iff the compiler should populate IDE side-channels
-    /// (`ide_binds`, the `lsp` sinks, etc.). Toggled by the LSP
+    /// (`ide_binds`, the `ide` sink, etc.). Toggled by the LSP
     /// runtime; normal compiles leave it unset and pay no IDE cost.
     pub lsp_mode: bool,
-    /// IDE side-channel sinks for type references, sig→impl links,
-    /// and per-module env snapshots. `Some(_)` only when running
-    /// under an LSP-style check; clones share the inner `Arc<Mutex>`
-    /// so reentrant or concurrent compiles within a single check all
-    /// drain into the same buffer. The runtime swaps this in/out at
-    /// each check boundary.
-    pub lsp: Option<Arc<Mutex<Lsp>>>,
+    /// Every IDE side-channel ([`Ide`]): name/module/type references,
+    /// the scope map, sig→impl links, and per-module env snapshots.
+    /// `Some(_)` only when running under an LSP-style check; clones
+    /// share the inner `Arc<Mutex>` so reentrant or concurrent compiles
+    /// within a single check all drain into the same buffer. The runtime
+    /// swaps this in/out at each check boundary. Sites that hold `&mut
+    /// ExecCtx` push the first three tables via [`Env::push_reference`] /
+    /// [`Env::push_module_reference`] / [`Env::push_scope_map_entry`];
+    /// sites that hold only `&Env` push the rest via [`Env::push_type_ref`]
+    /// / [`Env::push_sig_link`] / [`Env::push_module_internal_view`].
+    ///
+    /// Named `ide` rather than `lsp` because the sink is general IDE
+    /// tooling state, not specific to the language server — other
+    /// consumers (e.g. atlas) may read it too.
+    pub ide: Option<Arc<Mutex<Ide>>>,
 }
 
 impl Env {
@@ -145,7 +114,7 @@ impl Env {
             catch,
             ide_binds,
             lsp_mode: _,
-            lsp: _,
+            ide: _,
         } = self;
         *by_id = Map::new();
         *binds = Map::new();
@@ -161,7 +130,7 @@ impl Env {
     // snapshot `other`, but leave the bind and type environment
     // alone. `ide_binds` is preserved across restoration so IDE
     // tooling sees lambda parameters / let bindings that were
-    // introduced inside the restored region. The `lsp` sink is
+    // introduced inside the restored region. The `ide` sink is
     // preserved on `self` so any pushes that happened inside the
     // restored region accumulate alongside the rest of the check.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
@@ -175,7 +144,7 @@ impl Env {
             byref_chain: self.byref_chain.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
-            lsp: self.lsp.clone(),
+            ide: self.ide.clone(),
         }
     }
 
@@ -190,30 +159,52 @@ impl Env {
             ide_binds: self.ide_binds.clone(),
             byref_chain: self.byref_chain.clone(),
             lsp_mode: self.lsp_mode,
-            lsp: self.lsp.clone(),
+            ide: self.ide.clone(),
         }
     }
 
-    /// Push a `TypeRefSite` into the active LSP sink, if any. No-op
-    /// when `self.lsp` is `None` (every non-LSP compile).
+    /// Push a `ReferenceSite` into the active IDE sink, if any. No-op
+    /// when `self.ide` is `None` (every non-LSP compile).
+    pub fn push_reference(&self, site: ReferenceSite) {
+        if let Some(ide) = &self.ide {
+            ide.lock().references.push(site);
+        }
+    }
+
+    /// Push a `ModuleRefSite` into the active IDE sink, if any.
+    pub fn push_module_reference(&self, site: ModuleRefSite) {
+        if let Some(ide) = &self.ide {
+            ide.lock().module_references.push(site);
+        }
+    }
+
+    /// Push a `ScopeMapEntry` into the active IDE sink, if any.
+    pub fn push_scope_map_entry(&self, entry: ScopeMapEntry) {
+        if let Some(ide) = &self.ide {
+            ide.lock().scope_map.push(entry);
+        }
+    }
+
+    /// Push a `TypeRefSite` into the active IDE sink, if any. No-op
+    /// when `self.ide` is `None` (every non-LSP compile).
     pub fn push_type_ref(&self, site: TypeRefSite) {
-        if let Some(lsp) = &self.lsp {
-            lsp.lock().type_refs.push(site);
+        if let Some(ide) = &self.ide {
+            ide.lock().type_refs.push(site);
         }
     }
 
-    /// Push a `SigImplLink` into the active LSP sink, if any.
+    /// Push a `SigImplLink` into the active IDE sink, if any.
     pub fn push_sig_link(&self, link: SigImplLink) {
-        if let Some(lsp) = &self.lsp {
-            lsp.lock().sig_links.push(link);
+        if let Some(ide) = &self.ide {
+            ide.lock().sig_links.push(link);
         }
     }
 
-    /// Push a per-module internal-view snapshot into the active LSP
+    /// Push a per-module internal-view snapshot into the active IDE
     /// sink, if any.
     pub fn push_module_internal_view(&self, view: ModuleInternalView) {
-        if let Some(lsp) = &self.lsp {
-            lsp.lock().module_internals.push(view);
+        if let Some(ide) = &self.ide {
+            ide.lock().module_internals.push(view);
         }
     }
 

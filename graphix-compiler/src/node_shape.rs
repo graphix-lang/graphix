@@ -16,7 +16,7 @@
 //! graph as text — an authoring aid for writing the spec in the first
 //! place, not part of the assertion path.
 
-use crate::{fusion::vocab::KernelSig, typ::Type, Node, NodeView, Rt, UserEvent};
+use crate::{fusion::kernel_abi::KernelSig, typ::Type, Node, NodeView, Rt, UserEvent};
 use arcstr::ArcStr;
 use smallvec::SmallVec;
 

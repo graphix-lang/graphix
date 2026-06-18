@@ -1638,7 +1638,7 @@ proptest::proptest! {
 // `load_uses_external_scalar`).
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_external_scalar() -> Result<()> {
-    use graphix_compiler::fusion::vocab::{prim_type, PrimType};
+    use graphix_compiler::fusion::kernel_abi::{prim_type, PrimType};
     use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 
     let (tx, _rx) = mpsc::channel(10);

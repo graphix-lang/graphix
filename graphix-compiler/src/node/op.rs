@@ -14,6 +14,39 @@ use std::fmt;
 use std::ops::{Add as _, Div as _, Mul as _, Rem as _, Sub as _};
 use triomphe::Arc;
 
+// ─── Scalar operator taxonomy ────────────────────────────────────
+//
+// The arithmetic / comparison / boolean operators, named once and
+// shared by both evaluators: the node-walk in this module constructs
+// them and the JIT (`fusion::emit`) consumes them when emitting CLIF.
+// They live with the node-walk — the canonical evaluator that defines
+// these operators' semantics — and the JIT imports them from here.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BoolOp {
+    And,
+    Or,
+}
+
 macro_rules! compare_op {
     ($name:ident, $op:tt) => {
         #[derive(Debug)]
@@ -115,7 +148,7 @@ macro_rules! compare_op {
             ) -> Result<$crate::fusion::emit::CompiledExpr> {
                 $crate::fusion::emit::emit_cmp_node(
                     cx,
-                    $crate::fusion::vocab::CmpOp::$name,
+                    $crate::node::op::CmpOp::$name,
                     &self.lhs.node,
                     &self.rhs.node,
                 )
@@ -250,7 +283,7 @@ macro_rules! bool_op {
             ) -> Result<$crate::fusion::emit::CompiledExpr> {
                 $crate::fusion::emit::emit_bool_node(
                     cx,
-                    $crate::fusion::vocab::BoolOp::$name,
+                    $crate::node::op::BoolOp::$name,
                     &self.lhs.node,
                     &self.rhs.node,
                 )
@@ -431,7 +464,7 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
 }
 
 /// Generate the `Update::emit_clif` override for an [`arith_op!`] type.
-/// `$base` is the unchecked [`crate::fusion::vocab::BinOp`] (`Add` for both `+`
+/// `$base` is the unchecked [`crate::node::op::BinOp`] (`Add` for both `+`
 /// and `+?`). Unchecked ops emit through the shared arith relay;
 /// checked ops route to the checked relay (Value-shape result — the
 /// success value or the `ArithError` error value).
@@ -443,7 +476,7 @@ macro_rules! arith_emit_clif {
         ) -> Result<$crate::fusion::emit::CompiledExpr> {
             $crate::fusion::emit::emit_arith_node(
                 cx,
-                $crate::fusion::vocab::BinOp::$base,
+                $crate::node::op::BinOp::$base,
                 &self.lhs.node,
                 &self.rhs.node,
             )
@@ -456,7 +489,7 @@ macro_rules! arith_emit_clif {
         ) -> Result<$crate::fusion::emit::CompiledExpr> {
             $crate::fusion::emit::emit_checked_arith_node(
                 cx,
-                $crate::fusion::vocab::BinOp::$base,
+                $crate::node::op::BinOp::$base,
                 &self.lhs.node,
                 &self.rhs.node,
             )

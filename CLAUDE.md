@@ -301,8 +301,12 @@ pipeline is `Expr → node graph → CLIF`, period: `fusion::fuse` is
 `fusion::emit::scaffold` loop scaffolds for HOFs), and kernel builds
 are pure SIGNATURE derivation — `sig_from_inputs` is the single sig
 builder, the `Arc<KernelSig>` is the compiled-callable handle, and "is
-it fusable" IS the compile attempt. `fusion/vocab.rs` is ~70 lines of
-vocabulary (kernel_abi re-export, BinOp/CmpOp/BoolOp, KnownFusedFn);
+it fusable" IS the compile attempt. The kernel-ABI vocabulary
+(`KernelSig`/`abi_kind`/`freeze_for_abi`/slots/`FnSource`/`BuiltinSlot`, plus
+`KnownFusedFn`) lives in the single `fusion/kernel_abi.rs` (the old
+`fusion/vocab.rs` that re-exported it was deleted — one module, one path); the
+`BinOp`/`CmpOp`/`BoolOp` scalar operator enums (not ABI — shared by node-walk
+and JIT) live in `node::op` with the node-walk, and `fusion::emit` imports them;
 `GirExpr`/`GirOp`/`GirStmt`/`GirKernel`/`GirEmitter`/`FusedBuiltin`/
 `FUSABLE`/`emit_gir` no longer exist.
 
@@ -321,7 +325,7 @@ vocabulary (kernel_abi re-export, BinOp/CmpOp/BoolOp, KnownFusedFn);
 > node graph as the single IR and distribute codegen as `emit_clif`
 > per node; the only part of `GirKernel` worth keeping was the ABI
 > contract, which survives as `KernelSig` / `abi_kind` in
-> `kernel_abi.rs`.
+> `fusion/kernel_abi.rs`.
 
 The 2026-06-16 rename map: `gir_jit.rs → fusion/emit.rs`,
 `gir_interp.rs → fusion/kernel.rs` (`GirNode → Kernel`), `gir.rs →
@@ -350,7 +354,7 @@ missing-input bottom support.
   gone. `Value::copy_unchecked` is the branch-free copy for proven scalars.
 - **Types:** netidx `Type` everywhere. `GirType` is gone. Runtime shape
   comes from `abi_kind(&Type) -> Option<AbiKind>` + `freeze_for_abi` (in
-  `kernel_abi.rs`, re-exported through `fusion/vocab.rs`); `PrimType` is the closed
+  `fusion/kernel_abi.rs`); `PrimType` is the closed
   register-scalar set (the one *good* small classifier enum — exhaustively
   matched in codegen).
 
@@ -411,8 +415,7 @@ fuses + JITs per slot, the async residue node-walks. `design/impure_hof_fusion.m
 
 **Kernel ABI**: kind-grouped params — scalars, then array/tuple/struct
 pointers, then string, then 2-word variant/nullable/value — derived from a
-single source (`kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`,
-re-exported through `fusion/vocab.rs`).
+single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Design documents (`design/`)
 
@@ -421,7 +424,7 @@ re-exported through `fusion/vocab.rs`).
   fusion/JIT distributed as `Update::emit_clif` + `Update::fuse` trait methods
   (the delete/sleep/refs pattern), `Apply::emit_clif` for builtins,
   `fusion::try_fuse` as mechanics-only library, `KernelSig` in
-  `kernel_abi.rs`. In progress (Stage A landed; Stage C complete through
+  `fusion/kernel_abi.rs`. In progress (Stage A landed; Stage C complete through
   C6 — scalars, strings/values, BindId env, composites, qop/DynCall,
   `select` via `emit_select_node`, StringInterpolate via
   `emit_string_interpolate_node`, and checked arith via
@@ -436,7 +439,7 @@ re-exported through `fusion/vocab.rs`).
   `compile_ifchain` trap was reachable there and SIGILL'd — #201,
   classic path now refuses identically; the stmt form was already
   immune via its pending-exit scrutinee gate). Both repros live in
-  findings/select-jun2026. `fusion::vocab::freeze_for_abi_normalized` exists because
+  findings/select-jun2026. `fusion::kernel_abi::freeze_for_abi_normalized` exists because
   typecheck leaves a select's result type as the un-flattened arm
   union (`Set([i64, TVar→i64])`), which `freeze_for_abi` rejects.
   Stage D1 landed: the eight HOF loop scaffolds extracted from the
@@ -708,6 +711,67 @@ re-exported through `fusion/vocab.rs`).
 `whole_graph_fusion_m7.md`.
 
 ### Major recent changes (newest first; `git log` for detail)
+
+- **`fusion::vocab` deleted — folded into `fusion::kernel_abi`, one module
+  (2026-06-18; behavior-neutral, 1431×2 + 29 LSP tests pass).** `vocab` was a
+  66-line module that did three things: `pub use crate::fusion::kernel_abi::*`
+  (so every ABI type had TWO reachable names — `kernel_abi::X` and the alias
+  `vocab::X` — used inconsistently across ~120 sites), plus its own
+  `KnownFusedFn` (the cross-kernel call signature — actually ABI) and the
+  `BinOp`/`CmpOp`/`BoolOp` scalar operator enums (shared by the node-walk
+  `node::op` and the JIT `fusion::emit`). Deleted `vocab`: the re-export (the
+  two-name ambiguity) is gone, `KnownFusedFn` moved into `kernel_abi` (it's ABI),
+  and the operator enums moved into `node::op` — they aren't ABI, and `node::op`
+  is the canonical evaluator that defines those operators' semantics, so the JIT
+  imports them from there (`use crate::node::op::{BinOp, CmpOp, BoolOp}`; the
+  node↔fusion coupling already exists — `node::op`'s `emit_clif` methods call
+  `fusion::emit`). One path per type, both clear names. ~120 `vocab::` references
+  rewrote to `kernel_abi::` across the compiler + 2 stdlib crates
+  (`graphix-package-array`, `graphix-tests`); external `Apply::emit_clif`
+  implementors now import `fusion::kernel_abi::*` instead of `fusion::vocab::*`.
+
+- **`kernel_abi` moved from toplevel into `fusion` (2026-06-18; pure relocation,
+  behavior-neutral, 1431×2 + 29 LSP tests pass).** `kernel_abi.rs` →
+  `fusion/kernel_abi.rs`; the `pub mod kernel_abi;` declaration moved from
+  `lib.rs` into `fusion/mod.rs`; ~30 `crate::kernel_abi::` paths rewrote to
+  `crate::fusion::kernel_abi::` (matching fusion's existing fully-qualified
+  `crate::fusion::vocab::` house style), and `vocab`'s `pub use
+  crate::kernel_abi::*` became `pub use crate::fusion::kernel_abi::*`. It was
+  toplevel only as a GIR-removal survivor (it's the ABI contract that outlived
+  `GirKernel`), never relocated. It's used exclusively by `fusion/*` plus the one
+  `ExecCtx::abstract_registry` field (a fusion-only artifact written by typecheck
+  solely for fusion to read); external stdlib `Apply::emit_clif` implementors
+  reach it through `fusion::vocab::*` and saw zero API change. Clean leaf (depends
+  only on `typ`/`BindId`), so no cycle. `lib.rs`'s two `kernel_abi::AbstractRegistry`
+  references became `fusion::kernel_abi::AbstractRegistry` — consistent with how
+  `lib.rs` already reaches `fusion::emit::Jit` / `fusion::FusionStats`.
+
+- **IDE/LSP side-channels unified into one `ide::Ide` struct; new toplevel
+  `ide` module (2026-06-18; behavior-neutral, 1431×2 + 29 LSP tests pass).**
+  IDE tooling data (go-to-def / find-refs / cursor→scope) was spread across two
+  homes split only by what the push site could reach: three loose `ExecCtx`
+  fields (`references`/`module_references`/`scope_map`, pushed from `&mut
+  ExecCtx`) and a separate `env::Lsp` struct (`type_refs`/`sig_links`/
+  `module_internals`, pushed from `&Env` via `Arc<Mutex>`). Collapsed to ONE
+  struct, `ide::Ide`, holding all six tables, owned via the shared
+  `Env.ide: Option<Arc<Mutex<Ide>>>` sink (renamed from `Env.lsp` — the sink
+  is general IDE state, not language-server-specific; atlas etc. may read it)
+  — `ExecCtx` now carries ZERO IDE fields. The three former `ExecCtx` pushes route through new `Env` helpers
+  (`push_reference`/`push_module_reference`/`push_scope_map_entry`, siblings of
+  the existing `push_type_ref`/etc.), so all six tables share the one
+  lsp-gated, clone-shared sink. New `graphix-compiler/src/ide.rs` owns the six
+  site types (`ReferenceSite`, `ModuleRefSite`, `ScopeMapEntry`, `TypeRefSite`,
+  `SigImplLink`, `ModuleInternalView`), the six pools (now private statics local
+  to `Ide::new()`), and `Ide` — moved out of `lib.rs`/`env.rs`; external crates
+  import from `graphix_compiler::ide::*`. `BuiltinBindInfo` stayed in `lib.rs`
+  (it's fusion, not IDE). Downstream mirrors (`CheckResult`, the LSP
+  `Document`/`TypecheckResult`/`ProjectResult`) each collapsed their four IDE
+  fields to one `ide: Ide`, and `gx.rs::check_inner`'s three field swaps + the
+  lsp swap became the single `env.ide` swap. Eric's call (vs the lighter
+  "group the 3 in ExecCtx" option): full unification — one home for every IDE
+  table, ExecCtx decluttered to nothing IDE-shaped, the `&mut ExecCtx` vs
+  `&Env` access split erased. The added `Arc<Mutex>` on the three former-direct
+  pushes is compile-time-only and lsp-gated (negligible).
 
 - **`ABSTRACT_REGISTRY` global → per-`ExecCtx` field (2026-06-16;
   behavior-neutral, fixes an unbounded-growth leak).** The fusion abstract-type

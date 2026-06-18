@@ -6,7 +6,7 @@
 
 use crate::{
     expr::Expr,
-    fusion::vocab::KernelSig,
+    fusion::kernel_abi::KernelSig,
     fusion::emit::WrappedKernel,
     Event, ExecCtx, Node, Refs, Rt, UserEvent, Update,
 };

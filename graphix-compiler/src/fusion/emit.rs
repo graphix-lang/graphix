@@ -35,10 +35,10 @@
 //! The runtime calls through the uniform-slot [`WrappedKernel`]
 //! (args*, out* — see `define_wrapper`).
 
-use crate::fusion::vocab::{
-    self, AbiKind, AbiParamKind, AbiReturn, BinOp, BoolOp, CmpOp, KernelSig,
-    PrimType,
+use crate::fusion::kernel_abi::{
+    self, AbiKind, AbiParamKind, AbiReturn, KernelSig, PrimType,
 };
+use crate::node::op::{BinOp, BoolOp, CmpOp};
 use crate::typ::Type;
 // Emission calls `Update` trait methods (`typ`, `view`, `emit_clif`)
 // on region-root Nodes.
@@ -172,7 +172,7 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
 fn push_abi_returns(
     sig: &mut Signature,
     kernel: &KernelSig,
-    registry: &crate::kernel_abi::AbstractRegistry,
+    registry: &crate::fusion::kernel_abi::AbstractRegistry,
 ) -> Result<()> {
     match kernel.abi_return(registry) {
         Some(AbiReturn::One { prim: Some(p) }) => {
@@ -359,7 +359,7 @@ pub fn compile_kernel_with_callees_direct<R: crate::Rt, E: crate::UserEvent>(
     callee_bodies: &BTreeMap<usize, crate::fusion::CalleeBody<'_, R, E>>,
     parent_self_call: Option<&(crate::BindId, crate::fusion::LambdaCallInfo)>,
     type_env: &crate::env::Env,
-    registry: &crate::kernel_abi::AbstractRegistry,
+    registry: &crate::fusion::kernel_abi::AbstractRegistry,
 ) -> Result<WrappedKernel> {
     let empty_apply = nohash::IntMap::default();
     let empty_lambda = nohash::IntMap::default();
@@ -407,7 +407,7 @@ fn compile_kernel_with_callees_impl(
     kernel: &std::sync::Arc<KernelSig>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<KernelSig>>,
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
-    registry: &crate::kernel_abi::AbstractRegistry,
+    registry: &crate::fusion::kernel_abi::AbstractRegistry,
 ) -> Result<WrappedKernel> {
     let mut to_define: Vec<std::sync::Arc<KernelSig>> = Vec::new();
     let r = compile_kernel_with_callees_inner(
@@ -439,7 +439,7 @@ fn compile_kernel_with_callees_inner(
     callees: &BTreeMap<ArcStr, std::sync::Arc<KernelSig>>,
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     to_define: &mut Vec<std::sync::Arc<KernelSig>>,
-    registry: &crate::kernel_abi::AbstractRegistry,
+    registry: &crate::fusion::kernel_abi::AbstractRegistry,
 ) -> Result<WrappedKernel> {
     // Phase 1 — declare every kernel in the closure (parent + all
     // transitively-reachable callees). Cached entries reuse their
@@ -528,7 +528,7 @@ fn ensure_declared(
     jit: &mut Jit,
     k: &std::sync::Arc<KernelSig>,
     to_define: &mut Vec<std::sync::Arc<KernelSig>>,
-    registry: &crate::kernel_abi::AbstractRegistry,
+    registry: &crate::fusion::kernel_abi::AbstractRegistry,
 ) -> Result<(FuncId, Signature)> {
     let key = std::sync::Arc::as_ptr(k) as usize;
     if let Some(e) = jit.by_kernel.get(&key) {
@@ -685,7 +685,7 @@ fn define_wrapper(
     jit: &mut JitCtx,
     kernel: &KernelSig,
     typed_func_id: FuncId,
-    registry: &crate::kernel_abi::AbstractRegistry,
+    registry: &crate::fusion::kernel_abi::AbstractRegistry,
 ) -> Result<FuncId> {
     let symbol = jit.next_symbol(&format!("{}_wrap", kernel.fn_name));
     let ptr_ty = jit.module.target_config().pointer_type();
@@ -1079,7 +1079,7 @@ fn compile_into_function(
     let pending_exit_block = *lower.pending_exit.borrow();
     if let Some(pe) = pending_exit_block {
         b.switch_to_block(pe);
-        match vocab::abi_kind(lower.registry, &kernel.return_type) {
+        match kernel_abi::abi_kind(lower.registry, &kernel.return_type) {
             Some(AbiKind::Scalar(p)) => {
                 let s = zero_const(b, p);
                 b.ins().return_(&[s]);
@@ -1260,7 +1260,7 @@ pub(crate) struct LowerCtx<'a> {
     /// composite slots hit `env.composites`. `None` for kernels
     /// without a tail loop (or that hand-built fixtures leave
     /// empty).
-    tail_call_slots: Option<&'a [crate::fusion::vocab::TailCallSlot]>,
+    tail_call_slots: Option<&'a [crate::fusion::kernel_abi::TailCallSlot]>,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
     /// pops it once `graphix_dyncall` has consumed it. A composite-
@@ -1328,7 +1328,7 @@ pub(crate) struct LowerCtx<'a> {
     /// [`BodyEmitter::registry`]. Read by the emit-time type
     /// classifiers (`abi_kind`/freeze/`resolve_abstract`) via
     /// [`BodyCx::registry`].
-    registry: &'a crate::kernel_abi::AbstractRegistry,
+    registry: &'a crate::fusion::kernel_abi::AbstractRegistry,
 }
 
 /// Resolve named/abstract type refs in a node-carried `Type` through
@@ -1346,15 +1346,15 @@ fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
     }
 }
 
-/// [`vocab::freeze_for_abi_normalized`] with an abstract-Ref resolution RETRY
+/// [`kernel_abi::freeze_for_abi_normalized`] with an abstract-Ref resolution RETRY
 /// (#218): on failure, resolve through the region's env snapshot and
 /// freeze again. The retry only runs when the plain freeze fails, so
 /// the common (concrete-typed) path pays nothing; a freeze that
 /// already succeeds can't be changed by resolution (it was fully
 /// concrete).
 fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
-    vocab::freeze_for_abi_normalized(ctx.registry, t).or_else(|| {
-        vocab::freeze_for_abi_normalized(ctx.registry, &resolve_node_typ(ctx, t))
+    kernel_abi::freeze_for_abi_normalized(ctx.registry, t).or_else(|| {
+        kernel_abi::freeze_for_abi_normalized(ctx.registry, &resolve_node_typ(ctx, t))
     })
 }
 
@@ -2267,7 +2267,7 @@ fn emit_tail_rebind_jump(
     // runtime arg layout — `arg_layout`, kernel.rs); a tail call
     // rebinds only the leading FORMALS.
     debug_assert!(new_vals.len() <= slots.len());
-    use crate::fusion::vocab::TailCallSlotKind;
+    use crate::fusion::kernel_abi::TailCallSlotKind;
     let drop_helper = ctx
         .helper_refs
         .get("graphix_valarray_drop")
@@ -2527,7 +2527,7 @@ trait BodyEmitter {
     /// peek through abstract types to their wire shape. Threaded from the
     /// `ExecCtx` into [`LowerCtx`] so emit-time type classification has
     /// the same view as the analysis phase.
-    fn registry(&self) -> &crate::kernel_abi::AbstractRegistry;
+    fn registry(&self) -> &crate::fusion::kernel_abi::AbstractRegistry;
 }
 
 /// The body emitter — walks the region-root `Node` via `emit_clif`
@@ -2552,7 +2552,7 @@ struct NodeBodyEmitter<'a, R: crate::Rt, E: crate::UserEvent> {
     type_env: &'a crate::env::Env,
     /// The compiling `ExecCtx`'s abstract-type registry — see
     /// [`BodyEmitter::registry`].
-    registry: &'a crate::kernel_abi::AbstractRegistry,
+    registry: &'a crate::fusion::kernel_abi::AbstractRegistry,
 }
 
 impl<R: crate::Rt, E: crate::UserEvent> BodyEmitter
@@ -2609,7 +2609,7 @@ impl<R: crate::Rt, E: crate::UserEvent> BodyEmitter
         Some(self.type_env)
     }
 
-    fn registry(&self) -> &crate::kernel_abi::AbstractRegistry {
+    fn registry(&self) -> &crate::fusion::kernel_abi::AbstractRegistry {
         self.registry
     }
 }
@@ -2631,13 +2631,13 @@ pub struct BodyCx<'a, 'f, 'c> {
 
 impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// The compiling context's abstract-type registry, for the emit-time
-    /// type classifiers (`vocab::abi_kind`/`freeze_for_abi`/…). Borrowed
+    /// type classifiers (`kernel_abi::abi_kind`/`freeze_for_abi`/…). Borrowed
     /// from the [`LowerCtx`], which got it from [`BodyEmitter::registry`].
     /// Returns the `'c`-lifetime borrow (the registry lives in the
     /// `LowerCtx`, not in `self`), so reading it does NOT hold `cx`
     /// borrowed — a reader call can coexist with `&mut cx` in the same
     /// expression.
-    pub fn registry(&self) -> &'c crate::kernel_abi::AbstractRegistry {
+    pub fn registry(&self) -> &'c crate::fusion::kernel_abi::AbstractRegistry {
         self.ctx.registry
     }
 
@@ -2792,7 +2792,7 @@ fn emit_kernel_return(
     cv: CompiledExpr,
     src: CompositeSource,
 ) -> Result<()> {
-    match vocab::abi_kind(cx.registry(), return_type) {
+    match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = match cv {
                 CompiledExpr::Value { disc, payload } => (disc, payload),
@@ -2921,7 +2921,7 @@ pub(crate) fn emit_const_node(
     value: &Value,
     typ: &Type,
 ) -> Result<CompiledExpr> {
-    match vocab::abi_kind(cx.registry(), typ) {
+    match kernel_abi::abi_kind(cx.registry(), typ) {
         Some(AbiKind::Scalar(prim)) => {
             Ok(CompiledExpr::Single(compile_const(cx.b, value, prim)))
         }
@@ -2971,7 +2971,7 @@ pub(crate) fn emit_map_new_node<R: crate::Rt, E: crate::UserEvent>(
              subtree node-walks"
         )
     })?;
-    let typ = vocab::freeze_for_abi(cx.registry(), typ).unwrap_or_else(vocab::map_type);
+    let typ = kernel_abi::freeze_for_abi(cx.registry(), typ).unwrap_or_else(kernel_abi::map_type);
     emit_const_node(cx, &v, &typ)
 }
 
@@ -2986,7 +2986,7 @@ pub(crate) fn emit_ref_node(
     typ: &Type,
     id: crate::BindId,
 ) -> Result<CompiledExpr> {
-    match vocab::abi_kind(cx.registry(), typ) {
+    match kernel_abi::abi_kind(cx.registry(), typ) {
         // Scalar: BindId-first — exact under shadowing (an outer
         // capture and an inner let sharing a basename resolve to
         // different slots). Name fallback covers id-less slots
@@ -3119,7 +3119,7 @@ pub(crate) fn emit_arith_node<R: crate::Rt, E: crate::UserEvent>(
     // Ref resolution retry, #218), or Err → no fusion.
     let prim = freeze_node_typ(cx.ctx, lhs.typ())
         .as_ref()
-        .and_then(|t| vocab::scalar_prim(cx.registry(), t))
+        .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
         .ok_or_else(|| {
             anyhow!(
                 "emit_clif: arith operand of non-scalar type {:?}",
@@ -3203,7 +3203,7 @@ pub(crate) fn emit_checked_arith_node<R: crate::Rt, E: crate::UserEvent>(
 /// composite, value-shape) compiles both operands as OWNED
 /// `(disc, payload)` Values (the helper consumes them),
 /// compared via netidx `Value` PartialEq. Ordering operators on
-/// non-scalar operands aren't lowered (mirrors `vocab::cmp`) — Err, the
+/// non-scalar operands aren't lowered (mirrors `kernel_abi::cmp`) — Err, the
 /// region node-walks.
 pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
@@ -3212,9 +3212,9 @@ pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
     rhs: &crate::Node<R, E>,
 ) -> Result<CompiledExpr> {
     let lprim =
-        vocab::freeze_for_abi_normalized(cx.registry(), lhs.typ()).as_ref().and_then(|t| vocab::scalar_prim(cx.registry(), t));
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), lhs.typ()).as_ref().and_then(|t| kernel_abi::scalar_prim(cx.registry(), t));
     let rprim =
-        vocab::freeze_for_abi_normalized(cx.registry(), rhs.typ()).as_ref().and_then(|t| vocab::scalar_prim(cx.registry(), t));
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), rhs.typ()).as_ref().and_then(|t| kernel_abi::scalar_prim(cx.registry(), t));
     if let (Some(lp), Some(_)) = (lprim, rprim) {
         let lcv = lhs.emit_clif(cx)?;
         let rcv = rhs.emit_clif(cx)?;
@@ -3230,18 +3230,18 @@ pub(crate) fn emit_cmp_node<R: crate::Rt, E: crate::UserEvent>(
         other => {
             return Err(anyhow!(
                 "emit_clif: ordering cmp {other:?} on non-scalar operands \
-                 — not lowered (mirrors vocab::cmp)"
+                 — not lowered (mirrors kernel_abi::cmp)"
             ));
         }
     };
     for t in [lhs.typ(), rhs.typ()] {
         if matches!(
-            vocab::abi_kind(cx.registry(), t),
+            kernel_abi::abi_kind(cx.registry(), t),
             Some(AbiKind::Unit | AbiKind::Null) | None
         ) {
             return Err(anyhow!(
                 "emit_clif: ==/!= operand of type {t:?} has no comparable \
-                 runtime form (mirrors vocab::cmp)"
+                 runtime form (mirrors kernel_abi::cmp)"
             ));
         }
     }
@@ -3300,7 +3300,7 @@ pub(crate) fn emit_cast_node<R: crate::Rt, E: crate::UserEvent>(
     let target = PrimType::from_type(target).ok_or_else(|| {
         anyhow!("emit_clif: TypeCast to non-scalar target {target:?}")
     })?;
-    let src = vocab::scalar_prim(cx.registry(), inner.typ()).ok_or_else(|| {
+    let src = kernel_abi::scalar_prim(cx.registry(), inner.typ()).ok_or_else(|| {
         anyhow!(
             "emit_clif: cast source of non-scalar typ {:?}",
             inner.typ()
@@ -3333,8 +3333,8 @@ pub(crate) fn emit_string_interpolate_node<R: crate::Rt, E: crate::UserEvent>(
         let part = &a.node;
         // `freeze_for_abi_normalized` so a select-valued part (whose type is
         // the un-normalized arm union) still classifies.
-        let frozen = vocab::freeze_for_abi_normalized(cx.registry(), part.typ());
-        match frozen.as_ref().and_then(|t| vocab::abi_kind(cx.registry(), t)) {
+        let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), part.typ());
+        match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)) {
             Some(AbiKind::String) => {
                 let s = part.emit_clif(cx)?.single()?;
                 let push = cx.helper("graphix_string_buf_push_arcstr")?;
@@ -3405,7 +3405,7 @@ pub(crate) fn emit_block_node<R: crate::Rt, E: crate::UserEvent>(
             let src = node_composite_source(child);
             let result = match tail_cv {
                 CompiledExpr::Single(v) => {
-                    match vocab::abi_kind(cx.registry(), child.typ()) {
+                    match kernel_abi::abi_kind(cx.registry(), child.typ()) {
                         Some(
                             AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
                         ) => CompiledExpr::Single(
@@ -3690,8 +3690,8 @@ fn emit_let_node<R: crate::Rt, E: crate::UserEvent>(
 ) -> Result<()> {
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
-    let frozen = vocab::freeze_for_abi_normalized(cx.registry(), value.typ());
-    match frozen.as_ref().and_then(|t| vocab::abi_kind(cx.registry(), t)) {
+    let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());
+    match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)) {
         Some(AbiKind::Scalar(p)) => {
             let cv = value.emit_clif(cx)?;
             match cv {
@@ -3753,7 +3753,7 @@ fn emit_let_node<R: crate::Rt, E: crate::UserEvent>(
             cx.b.def_var(payload_var, payload);
             let vv = ValueVar { disc: disc_var, payload: payload_var };
             if matches!(
-                frozen.as_ref().and_then(|t| vocab::abi_kind(cx.registry(), t)),
+                frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)),
                 Some(AbiKind::Variant)
             ) {
                 cx.env.bind_variant(name.clone(), vv);
@@ -3800,7 +3800,7 @@ fn emit_discard_result<R: crate::Rt, E: crate::UserEvent>(
     let owned =
         matches!(node_composite_source(node), CompositeSource::Owned);
     match cv {
-        CompiledExpr::Single(v) => match vocab::abi_kind(cx.registry(), node.typ()) {
+        CompiledExpr::Single(v) => match kernel_abi::abi_kind(cx.registry(), node.typ()) {
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
                 if owned =>
             {
@@ -3867,7 +3867,7 @@ fn emit_owned_value_operand_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     node: &crate::Node<R, E>,
 ) -> Result<(ClifValue, ClifValue)> {
-    match vocab::abi_kind(cx.registry(), node.typ()) {
+    match kernel_abi::abi_kind(cx.registry(), node.typ()) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = node.emit_clif(cx)?.value()?;
             ensure_owned_value_src(
@@ -3920,7 +3920,7 @@ fn emit_push_field_node<R: crate::Rt, E: crate::UserEvent>(
     buf: ClifValue,
     field: &crate::Node<R, E>,
 ) -> Result<()> {
-    let helper_name: &str = match vocab::abi_kind(cx.registry(), field.typ()) {
+    let helper_name: &str = match kernel_abi::abi_kind(cx.registry(), field.typ()) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             match node_composite_source(field) {
@@ -3950,7 +3950,7 @@ fn emit_push_field_node<R: crate::Rt, E: crate::UserEvent>(
         }
     };
     let push = cx.helper(helper_name)?;
-    if vocab::is_value_shape(cx.registry(), field.typ()) {
+    if kernel_abi::is_value_shape(cx.registry(), field.typ()) {
         let (disc, payload) = field.emit_clif(cx)?.value()?;
         cx.b.ins().call(push, &[buf, disc, payload]);
     } else {
@@ -4085,7 +4085,7 @@ fn emit_accessor_source_node<R: crate::Rt, E: crate::UserEvent>(
     source: &crate::Node<R, E>,
     want: AbiKind,
 ) -> Result<(ClifValue, CompositeSource)> {
-    if vocab::abi_kind(cx.registry(), source.typ()) != Some(want) {
+    if kernel_abi::abi_kind(cx.registry(), source.typ()) != Some(want) {
         return Err(anyhow!(
             "emit_clif: accessor source of type {:?} isn't {want:?}",
             source.typ()
@@ -4164,7 +4164,7 @@ pub(crate) fn emit_array_ref_node<R: crate::Rt, E: crate::UserEvent>(
     source: &crate::Node<R, E>,
     idx: &crate::Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let idx_prim = vocab::scalar_prim(cx.registry(), idx.typ())
+    let idx_prim = kernel_abi::scalar_prim(cx.registry(), idx.typ())
         .filter(|p| p.is_integer())
         .ok_or_else(|| {
             anyhow!(
@@ -4172,7 +4172,7 @@ pub(crate) fn emit_array_ref_node<R: crate::Rt, E: crate::UserEvent>(
                 idx.typ()
             )
         })?;
-    if matches!(vocab::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
+    if matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
         let (arr_ptr, src) =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_val = idx.emit_clif(cx)?.single()?;
@@ -4234,7 +4234,7 @@ pub(crate) fn emit_array_slice_node<R: crate::Rt, E: crate::UserEvent>(
     start: Option<&crate::Node<R, E>>,
     end: Option<&crate::Node<R, E>>,
 ) -> Result<CompiledExpr> {
-    if !(matches!(vocab::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array))
+    if !(matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array))
         || crate::fusion::lowering::is_bytes(source.typ()))
     {
         return Err(anyhow!(
@@ -4251,7 +4251,7 @@ pub(crate) fn emit_array_slice_node<R: crate::Rt, E: crate::UserEvent>(
         match n {
             None => Ok(cx.b.ins().iconst(types::I64, 0)),
             Some(n) => {
-                if !vocab::scalar_prim(cx.registry(), n.typ()).is_some_and(|p| p.is_integer())
+                if !kernel_abi::scalar_prim(cx.registry(), n.typ()).is_some_and(|p| p.is_integer())
                 {
                     return Err(anyhow!(
                         "emit_clif: slice bound of non-integer type {:?}",
@@ -4282,13 +4282,13 @@ pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
     cx: &mut BodyCx,
     inner: &crate::Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let Some(inner_typ) = vocab::freeze_for_abi(cx.registry(), inner.typ()) else {
+    let Some(inner_typ) = kernel_abi::freeze_for_abi(cx.registry(), inner.typ()) else {
         return Err(anyhow!(
             "emit_clif: `?` inner type {:?} doesn't freeze concrete",
             inner.typ()
         ));
     };
-    let Some(success_typ) = vocab::nullable_inner(cx.registry(), &inner_typ) else {
+    let Some(success_typ) = kernel_abi::nullable_inner(cx.registry(), &inner_typ) else {
         return inner.emit_clif(cx);
     };
     let cv = inner.emit_clif(cx)?;
@@ -4303,7 +4303,7 @@ pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
     };
     // `disc == Typ::Error` (`0x2000_0000`) means bottom.
     let is_err = cx.b.ins().icmp_imm(IntCC::Equal, disc, 0x2000_0000_i64);
-    match vocab::abi_kind(cx.registry(), &success_typ) {
+    match kernel_abi::abi_kind(cx.registry(), &success_typ) {
         // Prim success — BRANCHLESS per-value validity. The payload
         // word holds the success bits when !is_err; on the error path
         // the bits are garbage but `valid=0` means they're never used.
@@ -4362,7 +4362,7 @@ pub(crate) fn emit_qop_node<R: crate::Rt, E: crate::UserEvent>(
             // ValArray BITS, but the composite ABI is a boxed
             // `*mut ValArray` — re-box via `graphix_value_into_array`
             // (consumes) / `_borrowed` (clones inner) (#199).
-            let v = match vocab::abi_kind(cx.registry(), &success_typ) {
+            let v = match kernel_abi::abi_kind(cx.registry(), &success_typ) {
                 Some(AbiKind::String) => {
                     if inner_owned {
                         payload
@@ -4462,13 +4462,13 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
         // needs to agree; a mismatch aborts the kernel (the classic
         // path refuses at lowering — same net effect, the subtree
         // node-walks).
-        let Some(frozen) = vocab::freeze_for_abi_normalized(cx.registry(), arg_node.typ()) else {
+        let Some(frozen) = kernel_abi::freeze_for_abi_normalized(cx.registry(), arg_node.typ()) else {
             return Err(anyhow!(
                 "emit_clif: DynCall arg type {:?} doesn't freeze concrete",
                 arg_node.typ()
             ));
         };
-        if vocab::abi_kind(cx.registry(), &frozen) != vocab::abi_kind(cx.registry(), t) {
+        if kernel_abi::abi_kind(cx.registry(), &frozen) != kernel_abi::abi_kind(cx.registry(), t) {
             return Err(anyhow!(
                 "emit_clif: DynCall arg shape {:?} disagrees with the \
                  discovered arg type {t:?}",
@@ -4482,7 +4482,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
         // bound to a local) transfers ownership into the buf. Using the
         // borrowed helper on an Owned source leaks the original; the
         // move helper on a Borrowed source double-frees it.
-        let helper_name: &str = match vocab::abi_kind(cx.registry(), t) {
+        let helper_name: &str = match kernel_abi::abi_kind(cx.registry(), t) {
             Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 match node_composite_source(arg_node) {
@@ -4515,7 +4515,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
             }
         };
         let push = cx.helper(helper_name)?;
-        if vocab::is_value_shape(cx.registry(), t) {
+        if kernel_abi::is_value_shape(cx.registry(), t) {
             let (disc, payload) = arg_node.emit_clif(cx)?.value()?;
             cx.b.ins().call(push, &[buf, disc, payload]);
         } else {
@@ -4527,7 +4527,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
         }
     }
     let dyncall = cx.helper("graphix_dyncall")?;
-    let ret_kind: i64 = match vocab::abi_kind(cx.registry(), &info.return_type) {
+    let ret_kind: i64 = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(_)) => 0,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => 1,
         // Variant / Nullable / value-shape all come back as a
@@ -4567,7 +4567,7 @@ pub(crate) fn emit_dyncall_node<R: crate::Rt, E: crate::UserEvent>(
     // in-flight stack before the (possible) pending branch below, so
     // a `pre_pending` block here doesn't try to double-free it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    match vocab::abi_kind(cx.registry(), &info.return_type) {
+    match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => {
             // Scalar return: 0 on pending is a harmless sentinel for
             // downstream scalar arithmetic. No branch needed — the
@@ -4683,13 +4683,13 @@ pub(crate) fn emit_select_node<R: crate::Rt, E: crate::UserEvent>(
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
     }
-    let result_typ = vocab::freeze_for_abi_normalized(cx.registry(), sel.typ()).ok_or_else(|| {
+    let result_typ = kernel_abi::freeze_for_abi_normalized(cx.registry(), sel.typ()).ok_or_else(|| {
         anyhow!(
             "emit_clif: select result type {:?} doesn't freeze concrete",
             sel.typ()
         )
     })?;
-    let merge_shape = match vocab::abi_kind(cx.registry(), &result_typ) {
+    let merge_shape = match kernel_abi::abi_kind(cx.registry(), &result_typ) {
         Some(AbiKind::Scalar(p)) => SelectMerge::Scalar(p),
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             SelectMerge::Value
@@ -4787,14 +4787,14 @@ fn classify_select_scrutinee<R: crate::Rt, E: crate::UserEvent>(
     sel: &crate::node::select::Select<R, E>,
 ) -> Result<(SelectScrut, AbiKind, Type)> {
     let scrut_typ =
-        vocab::freeze_for_abi_normalized(cx.registry(), sel.arg.node.typ()).ok_or_else(|| {
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), sel.arg.node.typ()).ok_or_else(|| {
             anyhow!(
                 "emit_clif: select scrutinee type {:?} doesn't freeze \
                  concrete",
                 sel.arg.node.typ()
             )
         })?;
-    let scrut_kind = vocab::abi_kind(cx.registry(), &scrut_typ).ok_or_else(|| {
+    let scrut_kind = kernel_abi::abi_kind(cx.registry(), &scrut_typ).ok_or_else(|| {
         anyhow!("emit_clif: select scrutinee shape not classifiable")
     })?;
     let scrut = match scrut_kind {
@@ -4883,7 +4883,7 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
         let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
             None
         } else {
-            let pred = vocab::freeze_for_abi(cx.registry(), &pat.type_predicate)
+            let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
                 .ok_or_else(|| {
                     anyhow!(
                         "emit_clif: select type predicate {:?} doesn't \
@@ -4927,9 +4927,9 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
                         }
                         SelectScrut::Value { disc, .. }
                             if matches!(scrut_kind, AbiKind::Nullable)
-                                && vocab::nullable_inner(cx.registry(), &scrut_typ)
+                                && kernel_abi::nullable_inner(cx.registry(), &scrut_typ)
                                     .as_ref()
-                                    .and_then(|t| vocab::scalar_prim(cx.registry(), t))
+                                    .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
                                     == PrimType::from_typ(pt) =>
                         {
                             // `[T, null]` runtime value is T or null,
@@ -4974,7 +4974,7 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
             },
             StructPatternNode::Literal(v) => {
                 let lit_prim =
-                    vocab::scalar_prim_of_value(v).ok_or_else(|| {
+                    kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
                         anyhow!(
                             "emit_clif: non-scalar literal pattern {v:?}"
                         )
@@ -5022,7 +5022,7 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
                 // Payload types come from the arm's own (frozen)
                 // type predicate — `Variant(tag, elts)` for exactly
                 // this arm.
-                let pred = vocab::freeze_for_abi(cx.registry(), &pat.type_predicate)
+                let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
                     .ok_or_else(|| {
                         anyhow!(
                             "emit_clif: variant pattern predicate {:?} \
@@ -5048,7 +5048,7 @@ fn emit_select_arms<R: crate::Rt, E: crate::UserEvent>(
                 {
                     match sub {
                         StructPatternNode::Bind(id) => {
-                            let prim = vocab::scalar_prim(cx.registry(), elt)
+                            let prim = kernel_abi::scalar_prim(cx.registry(), elt)
                                 .ok_or_else(|| {
                                     anyhow!(
                                         "emit_clif: non-scalar variant \
@@ -5238,7 +5238,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
 ) -> Result<()> {
     use crate::NodeView;
     let body_frozen =
-        vocab::freeze_for_abi_normalized(cx.registry(), body.node.typ()).ok_or_else(|| {
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.node.typ()).ok_or_else(|| {
             anyhow!(
                 "emit_clif: select arm type {:?} doesn't freeze concrete",
                 body.node.typ()
@@ -5246,7 +5246,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
         })?;
     match merge_shape {
         SelectMerge::Scalar(rp) => {
-            if vocab::scalar_prim(cx.registry(), &body_frozen) != Some(rp) {
+            if kernel_abi::scalar_prim(cx.registry(), &body_frozen) != Some(rp) {
                 return Err(anyhow!(
                     "emit_clif: select arm type {body_frozen:?} doesn't \
                      match the scalar merge {rp:?}"
@@ -5270,7 +5270,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
         SelectMerge::Value => {
             // Node twin of `widen_arm_to_value`, keyed on the arm
             // BODY's frozen type.
-            let (d, p) = match vocab::abi_kind(cx.registry(), &body_frozen) {
+            let (d, p) = match kernel_abi::abi_kind(cx.registry(), &body_frozen) {
                 Some(AbiKind::Null) => {
                     // A bare-null arm body has nothing to emit (and a
                     // Null-shaped node can't emit anyway); only the
@@ -5316,7 +5316,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
         }
         SelectMerge::Composite => {
             if !matches!(
-                vocab::abi_kind(cx.registry(), &body_frozen),
+                kernel_abi::abi_kind(cx.registry(), &body_frozen),
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
             ) {
                 return Err(anyhow!(
@@ -5334,7 +5334,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
             cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
         }
         SelectMerge::String => {
-            if !matches!(vocab::abi_kind(cx.registry(), &body_frozen), Some(AbiKind::String)) {
+            if !matches!(kernel_abi::abi_kind(cx.registry(), &body_frozen), Some(AbiKind::String)) {
                 return Err(anyhow!(
                     "emit_clif: select arm type {body_frozen:?} doesn't \
                      match the string merge"
@@ -5349,7 +5349,7 @@ fn emit_select_value_arm<R: crate::Rt, E: crate::UserEvent>(
     Ok(())
 }
 
-/// Node-graph analog of `vocab::int_div_may_bottom` — true unless the
+/// Node-graph analog of `kernel_abi::int_div_may_bottom` — true unless the
 /// divisor is a non-zero constant (and, for signed, the dividend isn't
 /// the MIN/-1 overflow pair). Conservative `true` keeps the runtime
 /// guard; a provable non-bottom skips it. Sees through `ExplicitParens`.
@@ -5604,7 +5604,7 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
     }
     // Shape gate — scalar / composite / variant / nullable only.
     for s in &slots {
-        match vocab::abi_kind(reg, s.typ()) {
+        match kernel_abi::abi_kind(reg, s.typ()) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -5674,14 +5674,14 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
         Ok(cx.b.use_var(var))
     };
     let is_kind = |s: &&LambdaCallSlot<R, E>, k: AbiKind| {
-        vocab::abi_kind(reg, s.typ()) == Some(k)
+        kernel_abi::abi_kind(reg, s.typ()) == Some(k)
     };
     let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len());
     let mut drops: Vec<CallArgDrop> = Vec::new();
     // Scalars first.
     for s in slots
         .iter()
-        .filter(|s| matches!(vocab::abi_kind(reg, s.typ()), Some(AbiKind::Scalar(_))))
+        .filter(|s| matches!(kernel_abi::abi_kind(reg, s.typ()), Some(AbiKind::Scalar(_))))
     {
         let v = match s {
             LambdaCallSlot::Arg(n, _) => emit_arg_single(cx, n)?,
@@ -5742,7 +5742,7 @@ pub(crate) fn emit_lambda_call_node<R: crate::Rt, E: crate::UserEvent>(
     })?;
     let inst = cx.b.ins().call(*func_ref, &clif_args);
     let ret = &info.kernel.return_type;
-    let result = match vocab::abi_kind(reg, ret) {
+    let result = match kernel_abi::abi_kind(reg, ret) {
         Some(
             AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple
             | AbiKind::Struct,
@@ -6103,11 +6103,11 @@ fn struct_get_helper(p: PrimType) -> Result<&'static str> {
 /// two-word `Value`). `struct_access` picks the `struct_get_*` (two-
 /// level kv-pair read) family over the flat `valarray_get_*` family.
 fn element_read_helper(
-    reg: &crate::kernel_abi::AbstractRegistry,
+    reg: &crate::fusion::kernel_abi::AbstractRegistry,
     elem: &Type,
     struct_access: bool,
 ) -> Result<&'static str> {
-    Ok(match vocab::abi_kind(reg, elem) {
+    Ok(match kernel_abi::abi_kind(reg, elem) {
         Some(AbiKind::Scalar(p)) => {
             if struct_access {
                 struct_get_helper(p)?
@@ -6166,7 +6166,7 @@ fn compile_element_read(
         .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
     let call = b.ins().call(helper, &[arr_ptr, idx_val]);
     let r = b.inst_results(call);
-    if vocab::is_value_shape(ctx.registry, &elem) {
+    if kernel_abi::is_value_shape(ctx.registry, &elem) {
         Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
     } else {
         Ok(CompiledExpr::Single(r[0]))

@@ -23,8 +23,8 @@ pub mod emit;
 pub mod emit_helpers;
 pub mod intern;
 pub mod kernel;
+pub mod kernel_abi;
 pub mod lowering;
-pub mod vocab;
 
 // Re-export public surface so callers see a flat `fusion::*` API.
 pub use builder::FusedKernel;
@@ -113,7 +113,7 @@ pub(crate) fn collect_region_inputs<R: crate::Rt, E: crate::UserEvent>(
             &ctx.env,
         );
         let Some(frozen) =
-            crate::fusion::vocab::freeze_for_abi(&ctx.abstract_registry, &resolved)
+            crate::fusion::kernel_abi::freeze_for_abi(&ctx.abstract_registry, &resolved)
         else {
             return;
         };
@@ -296,7 +296,7 @@ pub struct LambdaCallInfo {
     pub fn_name: arcstr::ArcStr,
     /// Kept alive so the return-ABI read outlives the build and the
     /// `by_kernel` entry pins the same `Arc`.
-    pub kernel: std::sync::Arc<crate::fusion::vocab::KernelSig>,
+    pub kernel: std::sync::Arc<crate::fusion::kernel_abi::KernelSig>,
     /// The callee's flat input types in signature order — formals
     /// first, captures appended (`KnownFusedFn::arg_types`, cloned
     /// from the `CachedKernel` at discovery). These were resolved
@@ -344,14 +344,14 @@ fn discover_lambda_calls<'n, R: crate::Rt, E: crate::UserEvent>(
     ctx: &mut crate::ExecCtx<R, E>,
 ) -> (
     nohash::IntMap<crate::expr::ExprId, LambdaCallInfo>,
-    std::collections::BTreeMap<arcstr::ArcStr, std::sync::Arc<crate::fusion::vocab::KernelSig>>,
+    std::collections::BTreeMap<arcstr::ArcStr, std::sync::Arc<crate::fusion::kernel_abi::KernelSig>>,
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
 ) {
     let mut sites: nohash::IntMap<crate::expr::ExprId, LambdaCallInfo> =
         nohash::IntMap::default();
     let mut callees: std::collections::BTreeMap<
         arcstr::ArcStr,
-        std::sync::Arc<crate::fusion::vocab::KernelSig>,
+        std::sync::Arc<crate::fusion::kernel_abi::KernelSig>,
     > = std::collections::BTreeMap::new();
     let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
         std::collections::BTreeMap::new();
@@ -662,21 +662,21 @@ pub(crate) fn non_scalar_basename_collision(
 /// Refs the env-free freeze rejects; the resolved concrete rep IS
 /// the return ABI.
 pub(crate) fn freeze_region_return(
-    reg: &crate::kernel_abi::AbstractRegistry,
+    reg: &crate::fusion::kernel_abi::AbstractRegistry,
     typ: &crate::typ::Type,
     env: &crate::env::Env,
 ) -> Option<crate::typ::Type> {
-    use crate::fusion::vocab::AbiKind;
-    let return_type = match crate::fusion::vocab::freeze_for_abi_normalized(reg, typ)
+    use crate::fusion::kernel_abi::AbiKind;
+    let return_type = match crate::fusion::kernel_abi::freeze_for_abi_normalized(reg, typ)
     {
         Some(t) => t,
         None => {
             let resolved =
                 crate::fusion::lowering::resolve_abstract(reg, typ, env);
-            crate::fusion::vocab::freeze_for_abi_normalized(reg, &resolved)?
+            crate::fusion::kernel_abi::freeze_for_abi_normalized(reg, &resolved)?
         }
     };
-    match crate::fusion::vocab::abi_kind(reg, &return_type) {
+    match crate::fusion::kernel_abi::abi_kind(reg, &return_type) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array
@@ -708,9 +708,9 @@ fn region_is_identity<R: crate::Rt, E: crate::UserEvent>(
     }
 }
 
-/// Build a [`crate::fusion::vocab::KernelSig`] straight from a typed input list
+/// Build a [`crate::fusion::kernel_abi::KernelSig`] straight from a typed input list
 /// — signature only, no body. The single source of truth for per-kind slot routing
-/// (one slot per input, one [`crate::fusion::vocab::TailCallSlot`] per input in
+/// (one slot per input, one [`crate::fusion::kernel_abi::TailCallSlot`] per input in
 /// source order — the runtime's `build_arg_layout` reads the slot list
 /// for per-position routing even in non-tail kernels). Used by every
 /// kernel-build path: `try_fuse` regions, lambda kernels
@@ -718,7 +718,7 @@ fn region_is_identity<R: crate::Rt, E: crate::UserEvent>(
 /// their binding), and body-split sub-regions.
 ///
 /// The second return is the flat per-input graphix type list in slot
-/// order — [`crate::fusion::vocab::KnownFusedFn::arg_types`], the caller-side
+/// order — [`crate::fusion::kernel_abi::KnownFusedFn::arg_types`], the caller-side
 /// type authority for cross-kernel call marshalling.
 pub(crate) fn sig_from_inputs<'k>(
     fn_name: arcstr::ArcStr,
@@ -730,13 +730,13 @@ pub(crate) fn sig_from_inputs<'k>(
         ),
     >,
     return_type: crate::typ::Type,
-) -> (crate::fusion::vocab::KernelSig, Vec<crate::typ::Type>) {
+) -> (crate::fusion::kernel_abi::KernelSig, Vec<crate::typ::Type>) {
     use crate::fusion::lowering::RegionInputKind;
-    use crate::fusion::vocab::{
+    use crate::fusion::kernel_abi::{
         ArrayInput, Input, NullableInput, StringInput, StructInput,
         TailCallSlot, TailCallSlotKind, TupleInput, ValueInput, VariantInput,
     };
-    let mut sig = crate::fusion::vocab::KernelSig {
+    let mut sig = crate::fusion::kernel_abi::KernelSig {
         fn_name,
         params: Vec::new(),
         fn_params: Vec::new(),
@@ -756,7 +756,7 @@ pub(crate) fn sig_from_inputs<'k>(
         let slot_kind = match kind {
             RegionInputKind::Prim(prim) => {
                 sig.params.push(Input { name: name.clone(), prim: *prim, bind_id });
-                arg_types.push(crate::fusion::vocab::prim_type(*prim));
+                arg_types.push(crate::fusion::kernel_abi::prim_type(*prim));
                 TailCallSlotKind::Scalar(*prim)
             }
             RegionInputKind::Array(elem) => {
@@ -765,11 +765,11 @@ pub(crate) fn sig_from_inputs<'k>(
                     elem: elem.clone(),
                     bind_id,
                 });
-                arg_types.push(crate::fusion::vocab::array_type(elem.clone()));
+                arg_types.push(crate::fusion::kernel_abi::array_type(elem.clone()));
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Tuple(t) => {
-                let elems = crate::fusion::vocab::tuple_slots(t)
+                let elems = crate::fusion::kernel_abi::tuple_slots(t)
                     .map(<[crate::typ::Type]>::to_vec)
                     .expect(
                         "RegionInputKind::Tuple must carry a frozen \
@@ -784,7 +784,7 @@ pub(crate) fn sig_from_inputs<'k>(
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Struct(t) => {
-                let fields = crate::fusion::vocab::struct_fields(t)
+                let fields = crate::fusion::kernel_abi::struct_fields(t)
                     .map(<[(arcstr::ArcStr, crate::typ::Type)]>::to_vec)
                     .expect(
                         "RegionInputKind::Struct must carry a frozen \
@@ -799,7 +799,7 @@ pub(crate) fn sig_from_inputs<'k>(
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Variant(t) => {
-                let cases = crate::fusion::vocab::variant_cases(t).expect(
+                let cases = crate::fusion::kernel_abi::variant_cases(t).expect(
                     "RegionInputKind::Variant must carry a frozen variant \
                      Type (freeze invariant)",
                 );
@@ -817,13 +817,13 @@ pub(crate) fn sig_from_inputs<'k>(
                     elem: elem.clone(),
                     bind_id,
                 });
-                arg_types.push(crate::fusion::vocab::nullable_type(elem.clone()));
+                arg_types.push(crate::fusion::kernel_abi::nullable_type(elem.clone()));
                 TailCallSlotKind::Nullable
             }
             RegionInputKind::String => {
                 sig.string_params
                     .push(StringInput { name: name.clone(), bind_id });
-                arg_types.push(crate::fusion::vocab::string_type());
+                arg_types.push(crate::fusion::kernel_abi::string_type());
                 TailCallSlotKind::String
             }
             RegionInputKind::Value(t) => {

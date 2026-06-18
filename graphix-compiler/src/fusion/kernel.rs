@@ -18,7 +18,7 @@
 //! needs.
 
 use crate::{
-    fusion::vocab::KernelSig,
+    fusion::kernel_abi::KernelSig,
     Apply, Event, ExecCtx, Node, Rt, UserEvent,
 };
 use netidx::subscriber::Value;
@@ -99,7 +99,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// the expected types of the callee's args; we allocate one
     /// BindId + one [`crate::node::bind::Ref`] node per arg.
     pub fn new(
-        fn_param: &crate::fusion::vocab::FnParam,
+        fn_param: &crate::fusion::kernel_abi::FnParam,
         scope: crate::Scope,
         top_id: crate::expr::ExprId,
     ) -> Self {
@@ -155,11 +155,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
         builtin_name: &str,
         typ: &crate::typ::FnType,
-        layout: &[crate::fusion::vocab::BuiltinSlot],
+        layout: &[crate::fusion::kernel_abi::BuiltinSlot],
         lambda_id: Option<crate::LambdaId>,
     ) -> ::anyhow::Result<()> {
         use ::anyhow::anyhow;
-        use crate::fusion::vocab::BuiltinSlot;
+        use crate::fusion::kernel_abi::BuiltinSlot;
         // Restore the lambda's env + lexical scope so labeled-default
         // expressions that reference free variables visible only in
         // the lambda's original module scope (e.g. `default_escape`
@@ -566,7 +566,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
 /// scalar return path, deriving the `PrimType` from the value's own
 /// variant. Same encoding as [`crate::fusion::emit::pack_value_to_u64`].
 fn dyncall_scalar_return_bits(v: &Value) -> u64 {
-    let prim = crate::fusion::vocab::scalar_prim_of_value(v).unwrap_or_else(|| {
+    let prim = crate::fusion::kernel_abi::scalar_prim_of_value(v).unwrap_or_else(|| {
         panic!("DynCall scalar return: callee produced non-scalar {v:?}")
     });
     crate::fusion::emit::pack_value_to_u64(v, prim)
@@ -631,7 +631,7 @@ enum ArgKind {
 /// params (Binding-source fn params resolve through ctx.cached and
 /// don't count). Equals `arg_layout.len()`.
 pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
-    use crate::fusion::vocab::FnSource;
+    use crate::fusion::kernel_abi::FnSource;
     let param_source_count = kernel
         .fn_params
         .iter()
@@ -641,7 +641,7 @@ pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
 }
 
 fn build_arg_layout(kernel: &KernelSig) -> Vec<ArgKind> {
-    use crate::fusion::vocab::{FnSource, TailCallSlotKind};
+    use crate::fusion::kernel_abi::{FnSource, TailCallSlotKind};
     // `tail_call_slots` is populated for every kernel and lists
     // params in source-declared order. Each slot carries a name
     // matching one of the kernel's *_params lists. Walking this list
@@ -828,7 +828,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
     ) {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source
+            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source
             {
                 if let Some(v) = ctx.cached.get(bind_id).cloned() {
                     if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
@@ -859,7 +859,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         ctx: &mut crate::ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::fusion::vocab::FnSource::Builtin {
+            if let crate::fusion::kernel_abi::FnSource::Builtin {
                 name,
                 typ,
                 layout,
@@ -908,7 +908,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // dispatches. Without this check, a kernel that DynCalls
         // into `helper` never reruns after helper's first publish.
         for fp in self.kernel.fn_params.iter() {
-            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source
+            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source
             {
                 if event.variables.contains_key(bind_id) {
                     any_updated = true;
@@ -935,8 +935,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let has_dynamic_fn_params = self.kernel.fn_params.iter().any(|fp| {
             matches!(
                 fp.source,
-                crate::fusion::vocab::FnSource::Param { .. }
-                    | crate::fusion::vocab::FnSource::Binding { .. }
+                crate::fusion::kernel_abi::FnSource::Param { .. }
+                    | crate::fusion::kernel_abi::FnSource::Binding { .. }
             )
         });
         if !any_updated
@@ -1041,7 +1041,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // neither has a value yet, the kernel can't run — return
         // None and try again next cycle.
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source
+            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source
             {
                 let v = event
                     .variables
@@ -1254,8 +1254,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         //   out[1] = payload. Transmute the two u64s back into a
         //   Value (`#[repr(u64)]`, 16 bytes / 8-byte aligned —
         //   layout pinned by `emit_helpers`).
-        use crate::fusion::vocab::AbiKind;
-        let v = match crate::fusion::vocab::abi_kind(
+        use crate::fusion::kernel_abi::AbiKind;
+        let v = match crate::fusion::kernel_abi::abi_kind(
             &ctx.abstract_registry,
             &self.kernel.return_type,
         ) {
@@ -1332,7 +1332,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             }
         }
         for fp in &self.kernel.fn_params {
-            if let crate::fusion::vocab::FnSource::Binding { bind_id } = &fp.source {
+            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source {
                 refs.refed.insert(*bind_id);
             }
         }
@@ -1343,7 +1343,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fusion::vocab::PrimType;
+    use crate::fusion::kernel_abi::PrimType;
 
     #[test]
     fn value_boundary_bits_round_trip() {

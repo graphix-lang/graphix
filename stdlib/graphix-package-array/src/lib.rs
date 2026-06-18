@@ -9,7 +9,7 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     effects::EffectKind,
     expr::ExprId,
-    fusion::vocab::{self, PrimType},
+    fusion::kernel_abi::{self, PrimType},
     fusion::emit::{self, scaffold, BodyCx, CompiledExpr, CompositeSource},
     node::genn,
     typ::{FnType, Type},
@@ -29,9 +29,9 @@ use triomphe::Arc as TArc;
 
 /// True if a (frozen) `Type`'s top-level shape is `Unit` (side-effect-
 /// only) or bare `Null` — neither is a valid array element shape.
-fn is_unit_or_null(reg: &vocab::AbstractRegistry, t: &Type) -> bool {
-    use vocab::AbiKind;
-    matches!(vocab::abi_kind(reg, t), Some(AbiKind::Unit | AbiKind::Null))
+fn is_unit_or_null(reg: &kernel_abi::AbstractRegistry, t: &Type) -> bool {
+    use kernel_abi::AbiKind;
+    matches!(kernel_abi::abi_kind(reg, t), Some(AbiKind::Unit | AbiKind::Null))
 }
 
 /// Destructure leaves (`|(k, v)|` — pattern BindId + tuple position)
@@ -42,7 +42,7 @@ fn is_unit_or_null(reg: &vocab::AbstractRegistry, t: &Type) -> bool {
 /// node-walk (composite leaves are a future widening). An empty
 /// `elem_binds` (single-name callback) is trivially `Some(empty)`.
 fn scalar_leaves(
-    reg: &vocab::AbstractRegistry,
+    reg: &kernel_abi::AbstractRegistry,
     in_elem: &Type,
     elem_binds: &[(BindId, usize)],
 ) -> Option<Vec<(BindId, usize, PrimType)>> {
@@ -53,7 +53,7 @@ fn scalar_leaves(
     elem_binds
         .iter()
         .map(|(id, i)| {
-            ts.get(*i).and_then(|t| vocab::scalar_prim(reg, t)).map(|p| (*id, *i, p))
+            ts.get(*i).and_then(|t| kernel_abi::scalar_prim(reg, t)).map(|p| (*id, *i, p))
         })
         .collect()
 }
@@ -90,9 +90,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use vocab::AbiKind;
+        use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = vocab::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -101,7 +101,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
-        match vocab::abi_kind(cx.registry(), &in_elem) {
+        match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -118,7 +118,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // Output element type is the body's result — `freeze_for_abi_normalized`
         // because typecheck can leave a select-valued body's type as the
         // un-flattened arm union.
-        let Some(out_typ) = vocab::freeze_for_abi_normalized(cx.registry(), body.typ()) else {
+        let Some(out_typ) = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) else {
             return Ok(None);
         };
         if is_unit_or_null(cx.registry(), &out_typ) {
@@ -187,9 +187,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use vocab::AbiKind;
+        use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = vocab::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -198,7 +198,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
-        match vocab::abi_kind(cx.registry(), &in_elem) {
+        match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -212,8 +212,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
         let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match vocab::freeze_for_abi_normalized(cx.registry(), body.typ()) {
-            Some(t) if matches!(vocab::scalar_prim(cx.registry(), &t), Some(PrimType::Bool)) => {
+        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) {
+            Some(t) if matches!(kernel_abi::scalar_prim(cx.registry(), &t), Some(PrimType::Bool)) => {
             }
             _ => return Ok(None),
         }
@@ -283,9 +283,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use vocab::AbiKind;
+        use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = vocab::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -294,7 +294,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
-        match vocab::abi_kind(cx.registry(), &in_elem) {
+        match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -308,9 +308,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
         let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match vocab::freeze_for_abi_normalized(cx.registry(), body.typ())
+        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
             .as_ref()
-            .and_then(|t| vocab::array_scalar_prim(cx.registry(), t))
+            .and_then(|t| kernel_abi::array_scalar_prim(cx.registry(), t))
         {
             Some(_) => {}
             None => return Ok(None),
@@ -391,9 +391,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         if !elem_binds.is_empty() {
             return Ok(None);
         }
-        let in_prim = match vocab::freeze_for_abi_normalized(cx.registry(), in_elem)
+        let in_prim = match kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem)
             .as_ref()
-            .and_then(|t| vocab::scalar_prim(cx.registry(), t))
+            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
         {
             Some(p) => p,
             None => return Ok(None),
@@ -403,10 +403,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
         let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        let out_prim = match vocab::freeze_for_abi_normalized(cx.registry(), body.typ())
-            .and_then(|t| vocab::nullable_inner(cx.registry(), &t))
+        let out_prim = match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+            .and_then(|t| kernel_abi::nullable_inner(cx.registry(), &t))
             .as_ref()
-            .and_then(|t| vocab::scalar_prim(cx.registry(), t))
+            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
         {
             Some(p) => p,
             None => return Ok(None),
@@ -472,9 +472,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use vocab::AbiKind;
+        use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = vocab::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -483,7 +483,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
-        match vocab::abi_kind(cx.registry(), &in_elem) {
+        match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -497,8 +497,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
         let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match vocab::freeze_for_abi_normalized(cx.registry(), body.typ()) {
-            Some(t) if matches!(vocab::scalar_prim(cx.registry(), &t), Some(PrimType::Bool)) => {
+        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) {
+            Some(t) if matches!(kernel_abi::scalar_prim(cx.registry(), &t), Some(PrimType::Bool)) => {
             }
             _ => return Ok(None),
         }
@@ -569,9 +569,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use vocab::AbiKind;
+        use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = vocab::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -580,7 +580,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
-        match vocab::abi_kind(cx.registry(), &in_elem) {
+        match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -594,7 +594,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
         let owned = emit::node_composite_source(array_arg)
             == CompositeSource::Owned;
-        match vocab::freeze_for_abi_normalized(cx.registry(), body.typ()).as_ref().map(|t| vocab::abi_kind(cx.registry(), t)) {
+        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()).as_ref().map(|t| kernel_abi::abi_kind(cx.registry(), t)) {
             Some(Some(AbiKind::Nullable)) => {}
             _ => return Ok(None),
         }
@@ -664,9 +664,9 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         in_elem: &Type,
         elem_binds: &[(BindId, usize)],
     ) -> Result<Option<CompiledExpr>> {
-        use vocab::AbiKind;
+        use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = vocab::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
             return Ok(None);
         };
         // A destructured `|acc, (k, v)|` callback binds per-leaf reads
@@ -675,7 +675,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
-        match vocab::abi_kind(cx.registry(), &in_elem) {
+        match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -691,16 +691,16 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
             == CompositeSource::Owned;
         // The acc threads through the loop as a register Variable —
         // init and body must both freeze to the same register scalar.
-        let acc_prim = match vocab::freeze_for_abi_normalized(cx.registry(), init_arg.typ())
+        let acc_prim = match kernel_abi::freeze_for_abi_normalized(cx.registry(), init_arg.typ())
             .as_ref()
-            .and_then(|t| vocab::scalar_prim(cx.registry(), t))
+            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
         {
             Some(p) => p,
             None => return Ok(None),
         };
-        match vocab::freeze_for_abi_normalized(cx.registry(), body.typ())
+        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
             .as_ref()
-            .and_then(|t| vocab::scalar_prim(cx.registry(), t))
+            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
         {
             Some(p) if p == acc_prim => {}
             _ => return Ok(None),
@@ -1585,9 +1585,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         let Some(n_node) = callsite.arg_positional(0) else {
             return Ok(None);
         };
-        let n_prim = match vocab::freeze_for_abi_normalized(cx.registry(), n_node.typ())
+        let n_prim = match kernel_abi::freeze_for_abi_normalized(cx.registry(), n_node.typ())
             .as_ref()
-            .and_then(|t| vocab::scalar_prim(cx.registry(), t))
+            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
         {
             Some(p) if p.is_integer() => p,
             _ => return Ok(None),
@@ -1618,7 +1618,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         };
         let idx_id = g.args().first().and_then(|p| p.single_bind_id());
         // Output element type is the body's result.
-        let Some(out_typ) = vocab::freeze_for_abi_normalized(cx.registry(), body.typ()) else {
+        let Some(out_typ) = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) else {
             return Ok(None);
         };
         if is_unit_or_null(cx.registry(), &out_typ) {

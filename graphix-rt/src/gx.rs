@@ -579,21 +579,9 @@ impl<X: GXExt> GX<X> {
         initial_scope: Option<ArcStr>,
     ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
         let env = self.ctx.env.clone();
-        let prev_refs = std::mem::replace(
-            &mut self.ctx.references,
-            graphix_compiler::REFERENCE_SITE_POOL.take(),
-        );
-        let prev_modrefs = std::mem::replace(
-            &mut self.ctx.module_references,
-            graphix_compiler::MODULE_REF_SITE_POOL.take(),
-        );
-        let prev_scopemap = std::mem::replace(
-            &mut self.ctx.scope_map,
-            graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
-        );
-        let prev_lsp = if self.ctx.env.lsp_mode {
-            self.ctx.env.lsp.replace(Arc::new(parking_lot::Mutex::new(
-                graphix_compiler::env::Lsp::new(),
+        let prev_ide = if self.ctx.env.lsp_mode {
+            self.ctx.env.ide.replace(Arc::new(parking_lot::Mutex::new(
+                graphix_compiler::ide::Ide::new(),
             )))
         } else {
             None
@@ -634,44 +622,20 @@ impl<X: GXExt> GX<X> {
                 }
             }
             let env = self.ctx.env.clone();
-            let references = std::mem::replace(
-                &mut self.ctx.references,
-                graphix_compiler::REFERENCE_SITE_POOL.take(),
-            );
-            let module_references = std::mem::replace(
-                &mut self.ctx.module_references,
-                graphix_compiler::MODULE_REF_SITE_POOL.take(),
-            );
-            let lsp = match self.ctx.env.lsp.as_ref() {
-                None => graphix_compiler::env::Lsp::new(),
-                Some(lsp) => {
-                    std::mem::replace(&mut *lsp.lock(), graphix_compiler::env::Lsp::new())
+            let ide = match self.ctx.env.ide.as_ref() {
+                None => graphix_compiler::ide::Ide::new(),
+                Some(ide) => {
+                    std::mem::replace(&mut *ide.lock(), graphix_compiler::ide::Ide::new())
                 }
             };
-            let scope_map = std::mem::replace(
-                &mut self.ctx.scope_map,
-                graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
-            );
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
-            Ok((
-                Arc::from_iter(exprs),
-                crate::CheckResult {
-                    env,
-                    references,
-                    module_references,
-                    scope_map,
-                    lsp,
-                },
-            ))
+            Ok((Arc::from_iter(exprs), crate::CheckResult { env, ide }))
         };
         let res = go.await;
         self.ctx.env = env;
-        self.ctx.references = prev_refs;
-        self.ctx.module_references = prev_modrefs;
-        self.ctx.scope_map = prev_scopemap;
-        self.ctx.env.lsp = prev_lsp;
+        self.ctx.env.ide = prev_ide;
         res
     }
 

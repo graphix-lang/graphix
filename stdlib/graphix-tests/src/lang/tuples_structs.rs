@@ -334,7 +334,7 @@ run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
 // returns `[i64, null]` via a `select` with a `null` arm, and is
 // called inside the result block. The block's tail type is the
 // collapsed `i64 | null` primitive form; `abi_kind` now
-// recognises it (vocab.rs), so `infer_body_rtype`'s fast path keeps
+// recognises it (kernel_abi.rs), so `infer_body_rtype`'s fast path keeps
 // the region from de-fusing. Exercises #131's value-shape Call
 // return through the full fusion pipeline.
 const CALL_NULLABLE_RETURN: &str = r#"

@@ -16,6 +16,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath, ModuleResolver, Source},
+    ide::Ide,
     typ::{FnType, Type},
     BindId, CFlag, Event, ExecCtx, FusionStats, NoUserEvent, Scope, UserEvent,
 };
@@ -141,22 +142,15 @@ pub struct CompRes<X: GXExt> {
 }
 
 /// Result of a typecheck-only compile pass. Carries the env as it
-/// would be after the source was compiled, plus the set of resolved
-/// name references and module references encountered during
-/// compilation. The IDE-side collections are `GPooled` so the buffers
-/// return to the runtime-side named pools after crossing the LSP
-/// thread boundary, keeping the recompile-per-keystroke loop
-/// allocation-free in steady state.
+/// would be after the source was compiled, plus every IDE side-channel
+/// ([`Ide`]) encountered during compilation. The `Ide` collections are
+/// `GPooled` so the buffers return to the named pools after crossing the
+/// LSP thread boundary, keeping the recompile-per-keystroke loop
+/// allocation-free in steady state. `ide` is empty for non-LSP compiles.
 #[derive(Debug)]
 pub struct CheckResult {
     pub env: Env,
-    pub references: GPooled<Vec<graphix_compiler::ReferenceSite>>,
-    pub module_references: GPooled<Vec<graphix_compiler::ModuleRefSite>>,
-    pub scope_map: GPooled<Vec<graphix_compiler::ScopeMapEntry>>,
-    /// IDE side-channels populated only in `lsp_mode`: type references,
-    /// sig→impl bind links, and per-module impl-side env snapshots.
-    /// Empty for non-LSP compiles.
-    pub lsp: graphix_compiler::env::Lsp,
+    pub ide: Ide,
 }
 
 pub struct Ref<X: GXExt> {
