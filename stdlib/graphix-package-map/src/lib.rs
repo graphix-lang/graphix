@@ -18,8 +18,7 @@ use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
-use std::collections::VecDeque;
-use std::fmt::Debug;
+use std::{collections::VecDeque, fmt::Debug};
 
 #[derive(Debug, Default)]
 struct MapImpl;
@@ -103,8 +102,8 @@ type Fold<R, E> = FoldQ<R, E, FoldImpl>;
 struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
-    const NAME: &str = "map_len";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "map_len";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -120,8 +119,8 @@ type Len = CachedArgs<LenEv>;
 struct GetEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
-    const NAME: &str = "map_get";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "map_get";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -139,8 +138,8 @@ type Get = CachedArgs<GetEv>;
 struct GetOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
-    const NAME: &str = "map_get_or";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "map_get_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1], &from.0[2]) {
@@ -158,8 +157,8 @@ type GetOr = CachedArgs<GetOrEv>;
 struct InsertEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
-    const NAME: &str = "map_insert";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "map_insert";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1], &from.0[2]) {
@@ -177,8 +176,8 @@ type Insert = CachedArgs<InsertEv>;
 struct RemoveEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
-    const NAME: &str = "map_remove";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "map_remove";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -325,9 +324,9 @@ struct Change<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Change<R, E> {
-    const NAME: &str = "map_change";
     // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "map_change";
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,

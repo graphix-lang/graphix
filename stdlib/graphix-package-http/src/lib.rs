@@ -230,8 +230,8 @@ pub(crate) struct HttpClientEv;
 // http::client constructs a client config — pure value computation.
 // The actual requests go through HttpRequestEv (async). Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
-    const NAME: &str = "http_client";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "http_client";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
@@ -271,8 +271,8 @@ pub(crate) type HttpClient = CachedArgs<HttpClientEv>;
 pub(crate) struct HttpDefaultClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
-    const NAME: &str = "http_default_client";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "http_default_client";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         cached.0.get(0)?.as_ref()?;
@@ -288,8 +288,8 @@ pub(crate) type HttpDefaultClient = CachedArgs<HttpDefaultClientEv>;
 pub(crate) struct HttpServerAddrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
-    const NAME: &str = "http_server_addr";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "http_server_addr";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.get(0)?.as_ref()?;
@@ -354,8 +354,9 @@ async fn send_request(
 pub(crate) struct HttpRequestEv;
 
 impl EvalCachedAsync for HttpRequestEv {
-    const NAME: &str = "http_request";
     type Args = RequestArgs<ArcStr>;
+
+    const NAME: &str = "http_request";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         prepare_request_args(cached)
@@ -395,8 +396,9 @@ pub(crate) type HttpRequest = CachedArgsAsync<HttpRequestEv>;
 pub(crate) struct HttpRequestBinEv;
 
 impl EvalCachedAsync for HttpRequestBinEv {
-    const NAME: &str = "http_request_bin";
     type Args = RequestArgs<Bytes>;
+
+    const NAME: &str = "http_request_bin";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         prepare_request_args(cached)

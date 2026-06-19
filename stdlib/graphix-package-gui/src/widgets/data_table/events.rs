@@ -2,8 +2,8 @@
 //! lifecycle, clicks, scroll, and column resize drags. Dispatched to
 //! by the `on_message` arm of the `GuiWidget` trait impl.
 
-use super::types::{cell_path_matches, parse_or_quote, ResizeDrag, ViewportMetrics};
 use super::{
+    types::{cell_path_matches, parse_or_quote, ResizeDrag, ViewportMetrics},
     DataTableW, DisplayMode, DEFAULT_MAX_COL_WIDTH, MIN_COL_WIDTH, ROW_HEIGHT_ESTIMATE,
     ROW_NAME_KEY, ROW_NAME_KEY_ARC, ROW_NAME_LABEL,
 };
@@ -191,11 +191,8 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(crate) fn handle_cell_edit_submit(&mut self) -> bool {
         if let Some((ref row_path, ref col)) = self.editing {
-            let callable_id = self
-                .columns
-                .get(col)
-                .and_then(|c| c.callback.as_ref())
-                .map(|cb| cb.id());
+            let callable_id =
+                self.columns.get(col).and_then(|c| c.callback.as_ref()).map(|cb| cb.id());
             if let Some(cid) = callable_id {
                 let cell_path = row_path.append(col);
                 let v = parse_or_quote(&self.edit_buffer);

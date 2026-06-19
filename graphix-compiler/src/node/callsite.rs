@@ -1,11 +1,12 @@
 use super::{bind::Ref, compiler::compile, Nop, NOP};
 use crate::{
     deref_typ,
-    expr::{ErrorContext, Expr, ExprId},
+    expr::{ErrorContext, Expr, ExprId, ExprKind},
+    fusion::emit::{emit_dyncall_node, emit_lambda_call_node, BodyCx, CompiledExpr},
     node::lambda::LambdaDef,
     typ::{FnArgKind, FnType, Type},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, LambdaId, Node, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent,
+    wrap, Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId,
+    Node, NodeView, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, Context, Result};
@@ -35,7 +36,7 @@ fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
     args: &TArc<[(Option<ArcStr>, Expr)]>,
 ) -> Result<()> {
     let path = match &f.kind {
-        crate::expr::ExprKind::Ref { name } => name,
+        ExprKind::Ref { name } => name,
         _ => return Ok(()),
     };
     if args.iter().any(|(label, _)| label.is_none()) {
@@ -203,7 +204,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// runtime sub-Node per arg.
     pub fn spec_args(&self) -> &TArc<[(Option<ArcStr>, Expr)]> {
         match &self.spec.kind {
-            crate::expr::ExprKind::Apply(a) => &a.args,
+            ExprKind::Apply(a) => &a.args,
             _ => unreachable!("CallSite spec must be ExprKind::Apply"),
         }
     }
@@ -232,16 +233,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// `self.function`.
     ///
     /// Used by fusion to descend through a resolved call site into a
-    /// user lambda's body. See [`crate::ApplyView`] for the variants.
-    pub fn resolved_apply(&self) -> Option<crate::ApplyView<'_, R, E>> {
+    /// user lambda's body. See [`ApplyView`] for the variants.
+    pub fn resolved_apply(&self) -> Option<ApplyView<'_, R, E>> {
         self.function.as_ref().map(|(_, a)| a.view())
     }
 
     /// Mutable counterpart to [`Self::resolved_apply`]. Fusion uses
     /// this when it needs to splice an inner sub-kernel into a Node
     /// reachable through the resolved Apply — e.g. a
-    /// [`crate::ApplyViewMut::Lambda`]'s body Node.
-    pub fn resolved_apply_mut(&mut self) -> Option<crate::ApplyViewMut<'_, R, E>> {
+    /// [`ApplyViewMut::Lambda`]'s body Node.
+    pub fn resolved_apply_mut(&mut self) -> Option<ApplyViewMut<'_, R, E>> {
         self.function.as_mut().map(|(_, a)| a.view_mut())
     }
 
@@ -565,7 +566,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // / `ctx` past the match — the cloned `Value` owns its LambdaDef,
         // so the `&mut self` for `resolve_static` is unencumbered.
         let target: Option<Value> = match self.fnode.view() {
-            crate::NodeView::Ref(r) => {
+            NodeView::Ref(r) => {
                 if ctx.unstable_bindings.contains(&r.id) {
                     None
                 } else {
@@ -575,7 +576,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         .cloned()
                 }
             }
-            crate::NodeView::Lambda(l) => Some(l.def_value().clone()),
+            NodeView::Lambda(l) => Some(l.def_value().clone()),
             _ => None,
         };
         let Some(fv) = target else { return Ok(()) };
@@ -597,10 +598,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             let Some(arg_node) = self.arg_positional(i) else { continue };
             match arg_node.view() {
-                crate::NodeView::Lambda(l) => {
+                NodeView::Lambda(l) => {
                     fn_arg_targets.push((i, l.def_value().clone()));
                 }
-                crate::NodeView::Ref(r) => {
+                NodeView::Ref(r) => {
                     if ctx.unstable_bindings.contains(&r.id) {
                         continue;
                     }
@@ -617,11 +618,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some((_, apply)) = self.function.as_mut() else {
             return Ok(());
         };
-        let mut fn_args: Vec<crate::StaticFnArg<'_, R, E>> =
+        let mut fn_args: Vec<StaticFnArg<'_, R, E>> =
             Vec::with_capacity(fn_arg_targets.len());
         for (idx, fv) in &fn_arg_targets {
             if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
-                fn_args.push(crate::StaticFnArg { arg_idx: *idx, lambda: def });
+                fn_args.push(StaticFnArg { arg_idx: *idx, lambda: def });
             }
         }
         if fn_args.is_empty() {
@@ -985,14 +986,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::CallSite(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::CallSite(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
         if let Some((_, f)) = &self.function {
             // A resolved user-lambda callee is a cross-kernel call:
             // `try_fuse`'s analysis discovered the site and built (or
@@ -1000,9 +1001,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // against it. An undiscovered site (the lambda didn't
             // build — unsupported arg/return shape, body that doesn't
             // lower) de-fuses and the subtree node-walks.
-            if matches!(f.view(), crate::ApplyView::Lambda(_)) {
+            if matches!(f.view(), ApplyView::Lambda(_)) {
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
-                    return crate::fusion::emit::emit_lambda_call_node(cx, self, &info);
+                    return emit_lambda_call_node(cx, self, &info);
                 }
                 bail!(
                     "emit_clif: lambda call site `{}` not discovered — \
@@ -1028,11 +1029,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if let Some((sb, info)) = cx.self_call_info() {
             let is_self = matches!(
                 self.fnode.view(),
-                crate::NodeView::Ref(r) if r.id == *sb
+                NodeView::Ref(r) if r.id == *sb
             );
             if is_self {
                 let info = info.clone();
-                return crate::fusion::emit::emit_lambda_call_node(cx, self, &info);
+                return emit_lambda_call_node(cx, self, &info);
             }
         }
         // Builtin DynCall. `marshal_arg_indices[i]` is a position in
@@ -1046,7 +1047,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             None => bail!("emit_clif: builtin call site not discovered — doesn't fuse"),
         };
         let spec_apply = match &self.spec.kind {
-            crate::expr::ExprKind::Apply(a) => a,
+            ExprKind::Apply(a) => a,
             _ => bail!("CallSite spec must be ExprKind::Apply"),
         };
         let mut source_nodes: Vec<&Node<R, E>> =
@@ -1075,7 +1076,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        crate::fusion::emit::emit_dyncall_node(cx, &info, &arg_nodes)
+        emit_dyncall_node(cx, &info, &arg_nodes)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -1125,7 +1126,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // be re-bound that way: re-init would recompile its body from spec,
         // discarding the spliced FusedKernels.)
         let (function, statically_resolved) = match &self.function {
-            Some((v, apply)) if matches!(apply.view(), crate::ApplyView::Lambda(_)) => (
+            Some((v, apply)) if matches!(apply.view(), ApplyView::Lambda(_)) => (
                 Some((v.clone(), apply.clone_rebind(ctx, scope))),
                 self.statically_resolved,
             ),

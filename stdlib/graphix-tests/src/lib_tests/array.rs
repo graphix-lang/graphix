@@ -182,12 +182,7 @@ run!(array_flat_map_destructure, ARRAY_FLAT_MAP_DESTRUCTURE, |v: Result<&Value>|
     match v {
         Ok(Value::Array(a)) => matches!(
             &a[..],
-            [
-                Value::I64(1),
-                Value::I64(10),
-                Value::I64(2),
-                Value::I64(20)
-            ]
+            [Value::I64(1), Value::I64(10), Value::I64(2), Value::I64(20)]
         ),
         _ => false,
     }

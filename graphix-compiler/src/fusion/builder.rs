@@ -2,13 +2,13 @@
 //! JIT artifact + its input feeder Nodes as an ordinary `Update`
 //! node. Built by `fusion::try_fuse` (regions) and
 //! `FusedCallback::build_slot` (per-slot HOF dispatch); the actual
-//! kernel executor is [`crate::fusion::kernel::Kernel`].
+//! kernel executor is [`Kernel`].
 
 use crate::{
-    expr::Expr,
-    fusion::kernel_abi::KernelSig,
-    fusion::emit::WrappedKernel,
-    Event, ExecCtx, Node, Refs, Rt, UserEvent, Update,
+    expr::{Expr, ExprId},
+    fusion::{emit::WrappedKernel, kernel::Kernel, kernel_abi::KernelSig},
+    typ::Type,
+    Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
 };
 use anyhow::{anyhow, Result};
 use netidx_value::Value;
@@ -24,7 +24,7 @@ use std::sync::Arc as StdArc;
 /// reaches this struct.
 pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
-    typ: crate::typ::Type,
+    typ: Type,
     /// One feeder Node per kernel input slot. Driven by
     /// `Kernel::update` via the `from` slice.
     feeders: Box<[Node<R, E>]>,
@@ -33,15 +33,13 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// pending-flag propagation, composite-return marshalling.
     /// Routing through `Kernel` (instead of re-implementing the
     /// dispatch surface) keeps FusedKernel minimal.
-    inner: crate::fusion::kernel::Kernel<R, E>,
+    inner: Kernel<R, E>,
     _phantom: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
 impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FusedKernel")
-            .field("inputs", &self.feeders.len())
-            .finish()
+        f.debug_struct("FusedKernel").field("inputs", &self.feeders.len()).finish()
     }
 }
 
@@ -49,12 +47,12 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     pub fn new(
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
-        typ: crate::typ::Type,
+        typ: Type,
         kernel: StdArc<KernelSig>,
         wrapped: Option<StdArc<WrappedKernel>>,
         feeders: Box<[Node<R, E>]>,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
+        scope: Scope,
+        top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
         // A fused node REQUIRES a JIT. There is no interpreter fallback —
@@ -71,7 +69,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ))
             }
         };
-        let inner = crate::fusion::kernel::Kernel::new(
+        let inner = Kernel::new(
             ctx, kernel, n_args, wrapped, scope, top_id,
         )?;
         Ok(Box::new(Self {
@@ -84,7 +82,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     }
 
     /// The compiled kernel IR this region fused into. Used by graph
-    /// introspection (`crate::node_shape`) to assert what fused.
+    /// introspection (`node_shape`) to assert what fused.
     pub fn kernel(&self) -> &StdArc<KernelSig> {
         self.inner.kernel()
     }
@@ -97,20 +95,14 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<Value> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
         // Delegate to Kernel (Apply) — drives the feeders, sets up
         // the DynCall dispatch handle, invokes JIT (or interp), and
         // decodes the return value.
-        use crate::Apply;
         self.inner.update(ctx, &mut self.feeders, event)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        use crate::Apply;
         self.inner.delete(ctx);
         for feeder in self.feeders.iter_mut() {
             feeder.delete(ctx);
@@ -131,7 +123,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         Ok(())
     }
 
-    fn typ(&self) -> &crate::typ::Type {
+    fn typ(&self) -> &Type {
         &self.typ
     }
 
@@ -145,15 +137,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::FusedKernel(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::FusedKernel(self)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &crate::Scope,
-    ) -> Node<R, E> {
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // An ordinary Node: recurse its feeder deps (Refs that re-resolve
         // to the slot's fresh element / captures by name) and clone the
         // Kernel by SHARING the immutable kernel/JIT/registry Arcs while
@@ -175,5 +163,3 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         })
     }
 }
-
-

@@ -62,18 +62,21 @@ pub struct HofElem<'a> {
 
 /// A bound per-iteration element — see [`bind_elem`].
 pub(crate) enum BoundElem {
-    Scalar { var: Variable, prim: PrimType },
+    Scalar {
+        var: Variable,
+        prim: PrimType,
+    },
     /// An owned `*mut ValArray`: a consumer that doesn't move it into
     /// the output must drop it before the iteration ends.
-    Composite { var: Variable },
+    Composite {
+        var: Variable,
+    },
 }
 
 impl BoundElem {
     fn var(&self) -> Variable {
         match self {
-            BoundElem::Scalar { var, .. } | BoundElem::Composite { var } => {
-                *var
-            }
+            BoundElem::Scalar { var, .. } | BoundElem::Composite { var } => *var,
         }
     }
 
@@ -136,19 +139,13 @@ fn bind_elem(
                 let v = cx.b.inst_results(call)[0];
                 let lvar = cx.b.declare_var(prim_to_clif(*prim));
                 cx.b.def_var(lvar, v);
-                let name: ArcStr = compact_str::format_compact!(
-                    "__leaf{}",
-                    id.inner()
-                )
-                .as_str()
-                .into();
+                let name: ArcStr =
+                    compact_str::format_compact!("__leaf{}", id.inner()).as_str().into();
                 cx.env.bind_with_id(name, lvar, *prim, Some(*id));
             }
             Ok(BoundElem::Composite { var })
         }
-        _ => Err(anyhow!(
-            "HOF element shape not supported by the JIT loop scaffolds"
-        )),
+        _ => Err(anyhow!("HOF element shape not supported by the JIT loop scaffolds")),
     }
 }
 
@@ -325,18 +322,12 @@ pub fn push_field(
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => match src {
             CompositeSource::Owned => "graphix_value_buf_push_array",
-            CompositeSource::Borrowed => {
-                "graphix_value_buf_push_array_borrowed"
-            }
+            CompositeSource::Borrowed => "graphix_value_buf_push_array_borrowed",
         },
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            match src {
-                CompositeSource::Owned => "graphix_value_buf_push_value",
-                CompositeSource::Borrowed => {
-                    "graphix_value_buf_push_value_borrowed"
-                }
-            }
-        }
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => match src {
+            CompositeSource::Owned => "graphix_value_buf_push_value",
+            CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
+        },
         Some(AbiKind::String) => "graphix_value_buf_push_string",
         Some(AbiKind::Unit) => {
             return Err(anyhow!(
@@ -411,8 +402,7 @@ where
     let buf_new = cx.helper("graphix_value_buf_new")?;
     let n_widened = widen_to_i64(cx.b, n_raw, n_prim);
     let zero_clamp = cx.b.ins().iconst(types::I64, 0);
-    let is_neg =
-        cx.b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
+    let is_neg = cx.b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
     let n_val = cx.b.ins().select(is_neg, zero_clamp, n_widened);
     let call = cx.b.ins().call(buf_new, &[n_val]);
     let buf = cx.b.inst_results(call)[0];
@@ -523,12 +513,8 @@ where
     cx.b.ins().brif(keep, push_block, &[], not_kept, &[]);
     cx.b.switch_to_block(push_block);
     let push = match &bound {
-        BoundElem::Scalar { prim, .. } => {
-            cx.helper(value_buf_push_helper(*prim)?)?
-        }
-        BoundElem::Composite { .. } => {
-            cx.helper("graphix_value_buf_push_array")?
-        }
+        BoundElem::Scalar { prim, .. } => cx.helper(value_buf_push_helper(*prim)?)?,
+        BoundElem::Composite { .. } => cx.helper("graphix_value_buf_push_array")?,
     };
     let elem_again = cx.b.use_var(bound.var());
     cx.b.ins().call(push, &[buf, elem_again]);
@@ -763,8 +749,7 @@ where
     let (disc, payload) = match &bound {
         BoundElem::Scalar { var, prim } => {
             let elem_again = cx.b.use_var(*var);
-            let disc =
-                cx.b.ins().iconst(types::I64, prim_to_value_disc(*prim));
+            let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(*prim));
             let payload = scalar_to_payload_i64(cx.b, *prim, elem_again);
             (disc, payload)
         }
@@ -778,9 +763,7 @@ where
             (r[0], r[1])
         }
     };
-    cx.b
-        .ins()
-        .jump(exit, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
+    cx.b.ins().jump(exit, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
     cx.b.switch_to_block(advance);
     // Not matched this iteration — drop an owned composite element.
     drop_composite_elem(cx, &bound)?;
@@ -792,10 +775,7 @@ where
     cx.b.seal_block(not_found);
     let null_disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
     let null_payload = cx.b.ins().iconst(types::I64, 0);
-    cx.b.ins().jump(
-        exit,
-        &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)],
-    );
+    cx.b.ins().jump(exit, &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)]);
     cx.b.switch_to_block(exit);
     cx.b.seal_block(exit);
     let disc = cx.b.block_params(exit)[0];
@@ -844,16 +824,13 @@ where
     let (bdisc, bpayload) = body(cx)?;
     drop_composite_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    let is_null =
-        cx.b.ins().icmp_imm(IntCC::Equal, bdisc, value_disc::NULL);
+    let is_null = cx.b.ins().icmp_imm(IntCC::Equal, bdisc, value_disc::NULL);
     // not-null → found; null → advance. `bdisc`/`bpayload`
     // dominate `found` (computed before the branch).
     cx.b.ins().brif(is_null, advance, &[], found, &[]);
     cx.b.switch_to_block(found);
     cx.b.seal_block(found);
-    cx.b
-        .ins()
-        .jump(exit, &[BlockArg::Value(bdisc), BlockArg::Value(bpayload)]);
+    cx.b.ins().jump(exit, &[BlockArg::Value(bdisc), BlockArg::Value(bpayload)]);
     cx.b.switch_to_block(advance);
     emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(advance);
@@ -863,10 +840,7 @@ where
     cx.b.seal_block(not_found);
     let null_disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
     let null_payload = cx.b.ins().iconst(types::I64, 0);
-    cx.b.ins().jump(
-        exit,
-        &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)],
-    );
+    cx.b.ins().jump(exit, &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)]);
     cx.b.switch_to_block(exit);
     cx.b.seal_block(exit);
     let disc = cx.b.block_params(exit)[0];

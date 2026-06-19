@@ -2,16 +2,19 @@ use super::{compiler::compile, CFlag, Cached};
 use crate::{
     defetyp,
     expr::{Expr, ExprId},
+    fusion::emit::{emit_not_node, BodyCx, CompiledExpr},
     typ::Type,
-    wrap, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    wrap, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
 };
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, ValArray, Value};
-use std::fmt;
-use std::ops::{Add as _, Div as _, Mul as _, Rem as _, Sub as _};
+use std::{
+    fmt,
+    ops::{Add as _, Div as _, Mul as _, Rem as _, Sub as _},
+};
 use triomphe::Arc;
 
 // ─── Scalar operator taxonomy ────────────────────────────────────
@@ -375,22 +378,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         wrap!(self.n, self.n.typecheck1(ctx))
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Not(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Not(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_not_node(cx, &self.n)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_not_node(cx, &self.n)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-    ) -> Node<R, E> {
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
@@ -464,7 +463,7 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
 }
 
 /// Generate the `Update::emit_clif` override for an [`arith_op!`] type.
-/// `$base` is the unchecked [`crate::node::op::BinOp`] (`Add` for both `+`
+/// `$base` is the unchecked [`BinOp`] (`Add` for both `+`
 /// and `+?`). Unchecked ops emit through the shared arith relay;
 /// checked ops route to the checked relay (Value-shape result — the
 /// success value or the `ArithError` error value).
@@ -532,7 +531,7 @@ macro_rules! arith_op {
                 scope: &Scope,
                 top_id: ExprId,
                 lhs: &Expr,
-                rhs: &Expr
+                rhs: &Expr,
             ) -> Result<Node<R, E>> {
                 let lhs = Cached::new(compile(ctx, flags, lhs.clone(), scope, top_id)?);
                 let rhs = Cached::new(compile(ctx, flags, rhs.clone(), scope, top_id)?);
@@ -542,7 +541,13 @@ macro_rules! arith_op {
         }
 
         impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
-            fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+            arith_emit_clif!($checked, $base);
+
+            fn update(
+                &mut self,
+                ctx: &mut ExecCtx<R, E>,
+                event: &mut Event<E>,
+            ) -> Option<Value> {
                 let lhs_up = self.lhs.update(ctx, event);
                 let rhs_up = self.rhs.update(ctx, event);
                 let lhs = self.lhs.cached.as_ref()?;
@@ -554,11 +559,18 @@ macro_rules! arith_op {
                     } else {
                         match result {
                             Value::Error(e) => {
-                                log::error!("arith error in {} at {} {e}", self.spec.ori, self.spec.pos);
-                                eprintln!("arith error in {} at {} {e}", self.spec.ori, self.spec.pos);
+                                log::error!(
+                                    "arith error in {} at {} {e}",
+                                    self.spec.ori,
+                                    self.spec.pos
+                                );
+                                eprintln!(
+                                    "arith error in {} at {} {e}",
+                                    self.spec.ori, self.spec.pos
+                                );
                                 None
                             }
-                            v => Some(v)
+                            v => Some(v),
                         }
                     }
                 } else {
@@ -596,8 +608,12 @@ macro_rules! arith_op {
                 let rhs = self.rhs.node.typ();
                 match (lhs.with_deref(|t| t.cloned()), rhs.with_deref(|t| t.cloned())) {
                     (None, None) | (Some(_), Some(_)) => (),
-                    (Some(t), None) => { let _ = rhs.contains(&ctx.env, &t); }
-                    (None, Some(t)) => { let _ = lhs.contains(&ctx.env, &t); },
+                    (Some(t), None) => {
+                        let _ = rhs.contains(&ctx.env, &t);
+                    }
+                    (None, Some(t)) => {
+                        let _ = lhs.contains(&ctx.env, &t);
+                    }
                 }
                 // init types that aren't known by now to Number
                 let typ = Type::Primitive(Typ::number());
@@ -608,11 +624,18 @@ macro_rules! arith_op {
                 wrap!(self.lhs.node, typ.check_contains(&ctx.env, lhs))?;
                 wrap!(self.rhs.node, typ.check_contains(&ctx.env, rhs))?;
                 let base = $opn.base_op();
-                let ut = match (lhs.with_deref(|t| t.cloned()), rhs.with_deref(|t| t.cloned())) {
+                let ut = match (
+                    lhs.with_deref(|t| t.cloned()),
+                    rhs.with_deref(|t| t.cloned()),
+                ) {
                     (None, _) | (_, None) => bail!("type must be known"),
-                    (Some(lhs@ Type::Primitive(p0)), Some(rhs@ Type::Primitive(p1))) => {
+                    (
+                        Some(lhs @ Type::Primitive(p0)),
+                        Some(rhs @ Type::Primitive(p1)),
+                    ) => {
                         if p0.contains(Typ::DateTime) {
-                            if p1 == Typ::Duration && (base == Op::Add || base == Op::Sub) {
+                            if p1 == Typ::Duration && (base == Op::Add || base == Op::Sub)
+                            {
                                 Type::Primitive(Typ::DateTime.into())
                             } else {
                                 bail!("can't perform {lhs} {} {rhs}", $opn)
@@ -624,15 +647,20 @@ macro_rules! arith_op {
                                 bail!("can't perform {lhs} {} {rhs}", $opn)
                             }
                         } else if p0.contains(Typ::Duration) {
-                            if p1 == Typ::Duration && (base == Op::Add || base == Op::Sub) {
+                            if p1 == Typ::Duration && (base == Op::Add || base == Op::Sub)
+                            {
                                 Type::Primitive(Typ::Duration.into())
-                            } else if (Typ::integer() | Typ::F32 | Typ::F64).contains(p1) && (base == Op::Mul || base == Op::Div) {
+                            } else if (Typ::integer() | Typ::F32 | Typ::F64).contains(p1)
+                                && (base == Op::Mul || base == Op::Div)
+                            {
                                 Type::Primitive(Typ::Duration.into())
                             } else {
                                 bail!("can't perform {lhs} {} {rhs}", $opn)
                             }
                         } else if p1.contains(Typ::Duration) {
-                            if (Typ::integer() | Typ::F32 | Typ::F64).contains(p0) && base == Op::Mul {
+                            if (Typ::integer() | Typ::F32 | Typ::F64).contains(p0)
+                                && base == Op::Mul
+                            {
                                 Type::Primitive(Typ::Duration.into())
                             } else {
                                 bail!("can't perform {lhs} {} {rhs}", $opn)
@@ -641,7 +669,7 @@ macro_rules! arith_op {
                             wrap!(self, lhs.union(&ctx.env, &rhs))?
                         }
                     }
-                    (Some(_), Some(_)) => wrap!(self, lhs.union(&ctx.env, rhs))?
+                    (Some(_), Some(_)) => wrap!(self, lhs.union(&ctx.env, rhs))?,
                 };
                 let ut = if $checked {
                     Type::Set(Arc::from_iter([ut, ARITH_ERR.clone()]))
@@ -661,13 +689,7 @@ macro_rules! arith_op {
                 $crate::NodeView::$name(self)
             }
 
-            arith_emit_clif!($checked, $base);
-
-            fn clone_rebind(
-                &self,
-                ctx: &mut ExecCtx<R, E>,
-                scope: &Scope,
-            ) -> Node<R, E> {
+            fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
                 Box::new(Self {
                     spec: self.spec.clone(),
                     typ: self.typ.clone(),
@@ -676,7 +698,7 @@ macro_rules! arith_op {
                 })
             }
         }
-    }
+    };
 }
 
 // Unchecked ops use the operator trait methods (`add` = wrapping for ints,

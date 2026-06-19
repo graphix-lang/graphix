@@ -29,10 +29,7 @@ pub enum NodeShape {
     /// [`kind_name`]) must match when `Some`; `None` matches any kind.
     /// `children` match the node's children positionally — use
     /// [`NodeShape::Any`] to skip a child you don't care about.
-    Node {
-        kind: Option<ArcStr>,
-        children: Vec<NodeShape>,
-    },
+    Node { kind: Option<ArcStr>, children: Vec<NodeShape> },
     /// A fused kernel matched against partial [`KernelMatcher`] criteria.
     Fused(KernelMatcher),
     /// Matches if *any* node in the subtree (this node or a
@@ -122,12 +119,9 @@ impl KernelMatcher {
             }
         }
         if let Some(names) = &self.param_names {
-            let actual: Vec<ArcStr> =
-                k.params.iter().map(|p| p.name.clone()).collect();
+            let actual: Vec<ArcStr> = k.params.iter().map(|p| p.name.clone()).collect();
             if actual != *names {
-                return Err(format!(
-                    "param names: expected {names:?}, got {actual:?}"
-                ));
+                return Err(format!("param names: expected {names:?}, got {actual:?}"));
             }
         }
         // Body-op assertions return as `EmitTag`s recorded during
@@ -186,9 +180,7 @@ fn match_at<R: Rt, E: UserEvent>(
             if let Some(k) = kind {
                 let actual = kind_name(&view);
                 if actual != *k {
-                    return Err(format!(
-                        "at {path}: expected kind {k}, got {actual}"
-                    ));
+                    return Err(format!("at {path}: expected kind {k}, got {actual}"));
                 }
             }
             match node_children(&view) {
@@ -206,9 +198,7 @@ fn match_at<R: Rt, E: UserEvent>(
                             children.len()
                         ));
                     }
-                    for (i, (child, cspec)) in
-                        kids.iter().zip(children).enumerate()
-                    {
+                    for (i, (child, cspec)) in kids.iter().zip(children).enumerate() {
                         match_at(child, cspec, &format!("{path}/{i}"))?;
                     }
                     Ok(())
@@ -241,17 +231,12 @@ pub fn describe_node<R: Rt, E: UserEvent>(node: &Node<R, E>) -> String {
     out
 }
 
-fn describe_at<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    depth: usize,
-    out: &mut String,
-) {
+fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
     match node.view() {
         NodeView::FusedKernel(fk) => {
             let k = fk.kernel();
-            let params: Vec<&str> =
-                k.params.iter().map(|p| p.name.as_str()).collect();
+            let params: Vec<&str> = k.params.iter().map(|p| p.name.as_str()).collect();
             out.push_str(&format!(
                 "{pad}Fused(returns={:?}, params={:?})\n",
                 k.return_type, params
@@ -396,7 +381,11 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         // `Contains` descend through a kernel into what feeds it).
         V::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
         // True leaves — no child nodes.
-        V::Ref(_) | V::Constant(_) | V::Use(_) | V::TypeDef(_) | V::Nop(_)
+        V::Ref(_)
+        | V::Constant(_)
+        | V::Use(_)
+        | V::TypeDef(_)
+        | V::Nop(_)
         | V::Lambda(_) => {}
         // Binops returned above via the first match.
         V::Add(_)

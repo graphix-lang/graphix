@@ -4,8 +4,10 @@ use crate::{
     env::Env,
     expr::{self, Expr, ExprId, ModPath},
     format_with_flags,
+    fusion::emit::{emit_qop_node, BodyCx, CompiledExpr},
     typ::{Type, TypeRef},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
+    wrap, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
+    Update,
     UserEvent,
 };
 use anyhow::{anyhow, bail, Result};
@@ -21,11 +23,12 @@ pub(super) static ECHAIN: LazyLock<ModPath> =
     LazyLock::new(|| ModPath::from(["ErrChain"]));
 
 fn typ_echain(param: Type) -> Type {
-    Type::Ref (TypeRef {
+    Type::Ref(TypeRef {
         scope: ModPath::root(),
         name: ECHAIN.clone(),
         params: Arc::from_iter([param]),
-     ..Default::default()})
+        ..Default::default()
+    })
 }
 
 pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
@@ -85,7 +88,13 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
         }
         let id = ctx
             .env
-            .bind_variable(&catch_scope.lexical, &tc.bind, typ, spec.pos, spec.ori.clone())
+            .bind_variable(
+                &catch_scope.lexical,
+                &tc.bind,
+                typ,
+                spec.pos,
+                spec.ori.clone(),
+            )
             .id;
         let handler = compile(ctx, flags, (*tc.handler).clone(), &catch_scope, top_id)?;
         ctx.env.catch.insert_cow(inner_scope.dynamic.clone(), id);
@@ -151,8 +160,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
         self.handler.refs(refs);
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::TryCatch(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::TryCatch(self)
     }
 }
 
@@ -326,14 +335,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Qop(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Qop(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
         // A `?` with an enclosing catch handler delivers its error by
         // WRITING the handler's variable (`update` above: set_var /
         // event.variables on `self.id`) — an effect a fused kernel
@@ -348,7 +357,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                  delivery is a variable write; subtree node-walks"
             );
         }
-        crate::fusion::emit::emit_qop_node(cx, &self.n)
+        emit_qop_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -438,15 +447,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::OrNever(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::OrNever(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_qop_node(cx, &self.n)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_qop_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

@@ -712,6 +712,39 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **rustfmt revived + workspace-wide import hygiene (2026-06-18/19;
+  behavior-neutral, 1431×2 + 29 LSP green).** `rustfmt.toml` pinned
+  `required_version = "1.4.12"` (uninstallable; only 1.9.0 exists) so **rustfmt
+  had been refusing to run for ages** — which is why imports drifted. Fixed:
+  dropped the pin, migrated the deprecated options (`merge_imports` →
+  `imports_granularity = "Crate"`, `fn_args_layout` → `fn_params_layout`,
+  `hide_parse_errors` → `show_parse_errors`), enabled `unstable_features` (the
+  import-merging is nightly-only) — so **`cargo +nightly fmt` works again** and
+  enforces grouping going forward. Ran it once over the whole repo (128 files,
+  −464 net) to absorb 1.4.12→1.9.0 drift and merge every stacked `use crate::X;
+  use crate::Y;` into `use crate::{X, Y}`. Then hand-hoisted repeated inline
+  `crate::a::B` full paths into grouped `use` blocks across the fusion core
+  (`fusion/{mod,lowering,emit,emit_helpers,builder,kernel}.rs`), `lib.rs`, and
+  the whole `node/` cluster (`mod,op,data,callsite,bind,array,lambda,error,map,
+  select`) + `graphix-lsp/state.rs`. **Use-statement standard** (now in the
+  global CLAUDE.md): items used >1× → top-level (or fn-local) `use`, grouped by
+  crate/module; single-use at discretion (favor importing long paths); avoid
+  glob `use` except crate preludes, test-module `use super::*`, and fn-local
+  enum-variant globs. **Two files deliberately keep full paths** — `fusion/
+  scaffold.rs` (`use super::*` over `emit`'s scope — an extracted-from-`emit`
+  submodule, de-globbing it is a 25+ item churn for no gain) and
+  `graphix-package-core/src/testing.rs` (the `run!`/`run_with_tempdir!` exported
+  macros need absolute `::graphix_compiler::…` paths to expand in other crates —
+  same reason `$crate::` paths are sacrosanct). Mechanical-sweep gotchas worth
+  remembering for next time: never shorten `$crate::` or `::graphix_compiler::`
+  inside macro bodies; the path-inventory regex truncates digit-suffixed names
+  (`array_slice_i64` → `array_slice_i`); doc-only refs become dangling intra-doc
+  links if shortened to an unimported name (keep them fully qualified); and
+  shortening `crate::m::foo` → `foo` when a same-named local `fn foo` exists
+  silently creates infinite self-recursion that COMPILES (bit `state.rs`'s
+  `path_to_uri` wrapper).
+
+
 - **`fusion::vocab` deleted — folded into `fusion::kernel_abi`, one module
   (2026-06-18; behavior-neutral, 1431×2 + 29 LSP tests pass).** `vocab` was a
   66-line module that did three things: `pub use crate::fusion::kernel_abi::*`

@@ -1,5 +1,7 @@
-use super::dataset::{chart_mode, ChartMode, DatasetEntry};
-use super::types::*;
+use super::{
+    dataset::{chart_mode, ChartMode, DatasetEntry},
+    types::*,
+};
 use crate::widgets::Renderer;
 use graphix_rt::GXExt;
 use iced_core::{mouse, Point, Rectangle};
@@ -87,8 +89,7 @@ impl ChartState {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<iced_widget::Action<crate::widgets::Message>> {
-        use iced_core::event::Event;
-        use iced_core::mouse::Event as ME;
+        use iced_core::{event::Event, mouse::Event as ME};
         use iced_widget::Action;
 
         let mode = chart_mode(&chart.datasets);

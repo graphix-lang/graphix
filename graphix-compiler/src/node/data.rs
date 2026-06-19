@@ -2,9 +2,13 @@ use super::{compiler::compile, Cached};
 use crate::{
     deref_typ,
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
+    fusion::emit::{
+        emit_struct_new_node, emit_struct_ref_node, emit_tuple_new_node,
+        emit_tuple_ref_node, emit_variant_new_node, BodyCx, CompiledExpr,
+    },
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    update_args, wrap, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
+    Scope, Update, UserEvent,
 };
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
@@ -110,15 +114,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Struct(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Struct(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_struct_new_node(cx, &self.names, &self.n)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_struct_new_node(cx, &self.names, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -303,8 +307,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::StructWith(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::StructWith(self)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -443,21 +447,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::StructRef(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::StructRef(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
         // `field` is the position in the struct type's canonical
         // (sorted) layout, resolved by typecheck; unresolved → the
         // subtree node-walks.
-        let sorted_idx = self.field.ok_or_else(|| {
-            anyhow::anyhow!("emit_clif: struct field index unresolved")
-        })?;
-        crate::fusion::emit::emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
+        let sorted_idx = self
+            .field
+            .ok_or_else(|| anyhow::anyhow!("emit_clif: struct field index unresolved"))?;
+        emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -555,15 +559,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Tuple(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Tuple(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_tuple_new_node(cx, &self.n)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_tuple_new_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -676,15 +680,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Variant(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Variant(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_variant_new_node(cx, &self.tag, &self.n)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_variant_new_node(cx, &self.tag, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -781,15 +785,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::TupleRef(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::TupleRef(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

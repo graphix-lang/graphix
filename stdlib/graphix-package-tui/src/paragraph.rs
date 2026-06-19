@@ -78,13 +78,13 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
                 "paragraph",
                 "scroll.y",
                 &mut self.last_warned_scroll_y,
-                s.0.0,
+                s.0 .0,
             );
             let x = validate::clamp_u16(
                 "paragraph",
                 "scroll.x",
                 &mut self.last_warned_scroll_x,
-                s.0.1,
+                s.0 .1,
             );
             p = p.scroll((y, x))
         }

@@ -2,8 +2,11 @@
 //! `GuiTestHarness::dt()` helpers can inspect widths, sparkline
 //! histories, and the grid snapshot without doing a full render pass.
 
-use super::types::{decimate_sparkline, row_basename};
-use super::{DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY, VALUE_COL_KEY};
+use super::{
+    types::{decimate_sparkline, row_basename},
+    DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY,
+    VALUE_COL_KEY,
+};
 use arcstr::ArcStr;
 use graphix_rt::GXExt;
 use netidx::path::Path;

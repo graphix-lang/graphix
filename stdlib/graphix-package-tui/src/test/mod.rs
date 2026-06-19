@@ -20,8 +20,10 @@
 use ahash::AHashMap;
 use anyhow::{bail, Context, Result};
 use crossterm::event::Event;
-use graphix_compiler::expr::{ExprId, ModuleResolver};
-use graphix_compiler::BindId;
+use graphix_compiler::{
+    expr::{ExprId, ModuleResolver},
+    BindId,
+};
 use graphix_package_core::testing::{self, RegisterFn, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};

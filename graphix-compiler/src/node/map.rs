@@ -1,9 +1,11 @@
 use crate::{
     defetyp, err, errf,
     expr::{Expr, ExprId},
+    fusion::emit::{emit_map_new_node, emit_map_ref_node, BodyCx, CompiledExpr},
     node::{compiler::compile, Cached},
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    update_args, wrap, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -117,15 +119,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Map(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Map(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -247,15 +249,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.key.sleep(ctx);
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::MapRef(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::MapRef(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_map_ref_node(cx, &self.source.node, &self.key.node)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_map_ref_node(cx, &self.source.node, &self.key.node)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

@@ -10,8 +10,7 @@ use graphix_compiler::{
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapCollection, MapFn, MapQ, Slot,
@@ -20,7 +19,10 @@ use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
-use std::{collections::hash_map::Entry, collections::VecDeque, fmt::Debug};
+use std::{
+    collections::{hash_map::Entry, VecDeque},
+    fmt::Debug,
+};
 use triomphe::Arc as TArc;
 
 // ── Value-level list helpers ─────────────────────────────────────
@@ -170,6 +172,7 @@ struct ListMapImpl;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListMapImpl {
     type Collection = ListColl;
+
     const NAME: &str = "list_map";
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
@@ -184,6 +187,7 @@ struct ListFilterImpl;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilterImpl {
     type Collection = ListColl;
+
     const NAME: &str = "list_filter";
 
     fn finish(&mut self, slots: &[Slot<R, E>], a: &ListColl) -> Option<Value> {
@@ -205,6 +209,7 @@ struct ListFilterMapImpl;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilterMapImpl {
     type Collection = ListColl;
+
     const NAME: &str = "list_filter_map";
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
@@ -222,6 +227,7 @@ struct ListFlatMapImpl;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFlatMapImpl {
     type Collection = ListColl;
+
     const NAME: &str = "list_flat_map";
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
@@ -246,6 +252,7 @@ struct ListFindImpl;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFindImpl {
     type Collection = ListColl;
+
     const NAME: &str = "list_find";
 
     fn finish(&mut self, slots: &[Slot<R, E>], a: &ListColl) -> Option<Value> {
@@ -266,6 +273,7 @@ struct ListFindMapImpl;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFindMapImpl {
     type Collection = ListColl;
+
     const NAME: &str = "list_find_map";
 
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
@@ -289,6 +297,7 @@ struct ListFoldImpl;
 
 impl<R: Rt, E: UserEvent> FoldFn<R, E> for ListFoldImpl {
     type Collection = ListColl;
+
     const NAME: &str = "list_fold";
 }
 
@@ -300,8 +309,8 @@ type ListFold<R, E> = FoldQ<R, E, ListFoldImpl>;
 struct NilEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for NilEv {
-    const NAME: &str = "list_nil";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_nil";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.0[0].as_ref()?;
@@ -315,8 +324,8 @@ type Nil = CachedArgs<NilEv>;
 struct ConsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConsEv {
-    const NAME: &str = "list_cons";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_cons";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let head = from.0[0].as_ref()?;
@@ -331,8 +340,8 @@ type Cons = CachedArgs<ConsEv>;
 struct SingletonEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SingletonEv {
-    const NAME: &str = "list_singleton";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_singleton";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0[0].as_ref()?;
@@ -346,8 +355,8 @@ type Singleton = CachedArgs<SingletonEv>;
 struct HeadEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HeadEv {
-    const NAME: &str = "list_head";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_head";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -364,8 +373,8 @@ type Head = CachedArgs<HeadEv>;
 struct TailEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TailEv {
-    const NAME: &str = "list_tail";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_tail";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -382,8 +391,8 @@ type Tail = CachedArgs<TailEv>;
 struct UnconsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnconsEv {
-    const NAME: &str = "list_uncons";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_uncons";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -402,8 +411,8 @@ type Uncons = CachedArgs<UnconsEv>;
 struct IsEmptyEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsEmptyEv {
-    const NAME: &str = "list_is_empty";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_is_empty";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -417,8 +426,8 @@ type IsEmpty = CachedArgs<IsEmptyEv>;
 struct NthEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for NthEv {
-    const NAME: &str = "list_nth";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_nth";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -449,8 +458,8 @@ type Nth = CachedArgs<NthEv>;
 struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
-    const NAME: &str = "list_len";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_len";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -464,8 +473,8 @@ type Len = CachedArgs<LenEv>;
 struct ReverseEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReverseEv {
-    const NAME: &str = "list_reverse";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_reverse";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -486,8 +495,8 @@ type Reverse = CachedArgs<ReverseEv>;
 struct TakeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TakeEv {
-    const NAME: &str = "list_take";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_take";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let n = match from.0[0].as_ref()? {
@@ -508,8 +517,8 @@ type Take = CachedArgs<TakeEv>;
 struct DropEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DropEv {
-    const NAME: &str = "list_drop";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_drop";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let n = match from.0[0].as_ref()? {
@@ -537,8 +546,8 @@ type Drop_ = CachedArgs<DropEv>;
 struct ToArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayEv {
-    const NAME: &str = "list_to_array";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_to_array";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -555,8 +564,8 @@ type ToArray = CachedArgs<ToArrayEv>;
 struct FromArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
-    const NAME: &str = "list_from_array";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_from_array";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match from.0[0].as_ref()? {
@@ -572,8 +581,8 @@ type FromArray = CachedArgs<FromArrayEv>;
 struct ConcatEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
-    const NAME: &str = "list_concat";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_concat";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         // Collect all lists into a flat buffer, then build from back.
@@ -603,8 +612,8 @@ type Concat = CachedArgs<ConcatEv>;
 struct FlattenEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
-    const NAME: &str = "list_flatten";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_flatten";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -625,8 +634,8 @@ type Flatten = CachedArgs<FlattenEv>;
 struct SortEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
-    const NAME: &str = "list_sort";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_sort";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fn cn(v: &Value) -> Value {
@@ -669,8 +678,8 @@ type Sort = CachedArgs<SortEv>;
 struct EnumerateEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
-    const NAME: &str = "list_enumerate";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_enumerate";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -689,8 +698,8 @@ type Enumerate_ = CachedArgs<EnumerateEv>;
 struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
-    const NAME: &str = "list_zip";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_zip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let l0 = from.0[0].as_ref()?;
@@ -715,8 +724,8 @@ struct UnzipEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
-    const NAME: &str = "list_unzip";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_unzip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
@@ -866,9 +875,9 @@ struct ListInit<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListInit<R, E> {
-    const NAME: &str = "list_init";
     // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "list_init";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

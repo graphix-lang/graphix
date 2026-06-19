@@ -2,17 +2,14 @@
 //! widths, scroll math, and row-height selection. Everything here is
 //! pure state math — no rendering, no subscription side effects.
 
-use super::types::{
-    col_header_width, col_text_width, row_basename, value_to_f64, ColumnType,
-};
 use super::{
+    types::{col_header_width, col_text_width, row_basename, value_to_f64, ColumnType},
     DataTableW, DisplayMode, MIN_COL_WIDTH, ROW_BUFFER, ROW_HEIGHT_CONTROLS,
     ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY, ROW_NAME_KEY_ARC, ROW_NAME_LABEL, VALUE_COL_KEY,
 };
 use arcstr::ArcStr;
 use graphix_rt::GXExt;
-use netidx::path::Path;
-use netidx::publisher::Value;
+use netidx::{path::Path, publisher::Value};
 use poolshark::local::LPooled;
 
 impl<X: GXExt> DataTableW<X> {
@@ -174,11 +171,7 @@ impl<X: GXExt> DataTableW<X> {
         if let Some(w) = self.effective_col_width(col_name) {
             return w;
         }
-        self.cached_col_widths
-            .lock()
-            .get(col_name)
-            .copied()
-            .unwrap_or(MIN_COL_WIDTH)
+        self.cached_col_widths.lock().get(col_name).copied().unwrap_or(MIN_COL_WIDTH)
     }
 
     /// Smallest `first_col` such that `cols[first_col..total]` (plus the
@@ -363,9 +356,10 @@ impl<X: GXExt> DataTableW<X> {
                     for row_path in self.row_paths.iter() {
                         let key = (row_path.clone(), col_name.clone());
                         let id = inner.cells.get(&key).copied();
-                        let text = id.and_then(|id| inner.formatted_for(id)).unwrap_or_else(
-                            || self.default_for(col_name, row_basename(row_path)),
-                        );
+                        let text =
+                            id.and_then(|id| inner.formatted_for(id)).unwrap_or_else(
+                                || self.default_for(col_name, row_basename(row_path)),
+                            );
                         w = w.max(col_text_width(&text).max(MIN_COL_WIDTH));
                     }
                     widths.insert(col_name.clone(), w);

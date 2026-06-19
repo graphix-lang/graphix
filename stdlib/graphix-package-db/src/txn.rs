@@ -1,7 +1,9 @@
-use crate::encoding::{decode_value, encode_key, encode_value, parse_batch_ops};
-use crate::tree::{
-    check_or_store_meta, extract_key_typ_from_rtype, extract_type_strings_from_rtype,
-    get_db, read_meta, types_are_concrete, DEFAULT_TREE_META, META_TREE,
+use crate::{
+    encoding::{decode_value, encode_key, encode_value, parse_batch_ops},
+    tree::{
+        check_or_store_meta, extract_key_typ_from_rtype, extract_type_strings_from_rtype,
+        get_db, read_meta, types_are_concrete, DEFAULT_TREE_META, META_TREE,
+    },
 };
 use ahash::AHashMap;
 use anyhow::{bail, Result};
@@ -13,12 +15,11 @@ use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
 use netidx_value::Value;
 use poolshark::global::{GPooled, Pool};
-use std::collections::hash_map::Entry;
-use std::sync::LazyLock;
 use std::{
     cell::{Cell, RefCell},
+    collections::hash_map::Entry,
     fmt,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, LazyLock},
 };
 use tokio::sync::oneshot;
 
@@ -430,8 +431,9 @@ fn txn_thread(db: sled::Db, cmd_rx: mpsc::Receiver<TxnMsg>) {
 pub(crate) struct DbTxnBeginEv;
 
 impl EvalCachedAsync for DbTxnBeginEv {
-    const NAME: &str = "db_txn_begin";
     type Args = sled::Db;
+
+    const NAME: &str = "db_txn_begin";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_db(cached, 0)
@@ -470,8 +472,9 @@ pub(crate) struct DbTxnTreeEv {
 }
 
 impl EvalCachedAsync for DbTxnTreeEv {
-    const NAME: &str = "db_txn_tree";
     type Args = DbTxnTreeArgs;
+
+    const NAME: &str = "db_txn_tree";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -556,8 +559,9 @@ pub(crate) type DbTxnTree = CachedArgsAsync<DbTxnTreeEv>;
 pub(crate) struct DbTxnGetEv;
 
 impl EvalCachedAsync for DbTxnGetEv {
-    const NAME: &str = "db_txn_get";
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
+
+    const NAME: &str = "db_txn_get";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;
@@ -582,8 +586,9 @@ pub(crate) type DbTxnGet = CachedArgsAsync<DbTxnGetEv>;
 pub(crate) struct DbTxnInsertEv;
 
 impl EvalCachedAsync for DbTxnInsertEv {
-    const NAME: &str = "db_txn_insert";
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>, GPooled<Vec<u8>>);
+
+    const NAME: &str = "db_txn_insert";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;
@@ -613,8 +618,9 @@ pub(crate) type DbTxnInsert = CachedArgsAsync<DbTxnInsertEv>;
 pub(crate) struct DbTxnRemoveEv;
 
 impl EvalCachedAsync for DbTxnRemoveEv {
-    const NAME: &str = "db_txn_remove";
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
+
+    const NAME: &str = "db_txn_remove";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;
@@ -639,8 +645,9 @@ pub(crate) type DbTxnRemove = CachedArgsAsync<DbTxnRemoveEv>;
 pub(crate) struct DbTxnCommitEv;
 
 impl EvalCachedAsync for DbTxnCommitEv {
-    const NAME: &str = "db_txn_commit";
     type Args = Arc<TxnInner>;
+
+    const NAME: &str = "db_txn_commit";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_txn(cached, 0)
@@ -659,8 +666,9 @@ pub(crate) type DbTxnCommit = CachedArgsAsync<DbTxnCommitEv>;
 pub(crate) struct DbTxnRollbackEv;
 
 impl EvalCachedAsync for DbTxnRollbackEv {
-    const NAME: &str = "db_txn_rollback";
     type Args = Arc<TxnInner>;
+
+    const NAME: &str = "db_txn_rollback";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_txn(cached, 0)
@@ -679,8 +687,9 @@ pub(crate) type DbTxnRollback = CachedArgsAsync<DbTxnRollbackEv>;
 pub(crate) struct DbTxnBatchEv;
 
 impl EvalCachedAsync for DbTxnBatchEv {
-    const NAME: &str = "db_txn_batch";
     type Args = (Arc<TxnTreeInner>, sled::Batch);
+
+    const NAME: &str = "db_txn_batch";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;

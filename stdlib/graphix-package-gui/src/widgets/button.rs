@@ -91,7 +91,6 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         Ok(changed)
     }
 
-
     fn view(&self) -> IcedElement<'_> {
         let mut btn = widget::Button::new(self.child.view());
         if !self.disabled.t.unwrap_or(false) {

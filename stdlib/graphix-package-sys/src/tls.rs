@@ -13,8 +13,9 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub(crate) struct TlsConnectEv;
 
 impl EvalCachedAsync for TlsConnectEv {
-    const NAME: &str = "sys_tls_connect";
     type Args = (Option<Bytes>, ArcStr, StreamValue);
+
+    const NAME: &str = "sys_tls_connect";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let ca_cert = match cached.0.first()? {
@@ -100,8 +101,9 @@ pub(crate) type TlsConnect = CachedArgsAsync<TlsConnectEv>;
 pub(crate) struct TlsAcceptEv;
 
 impl EvalCachedAsync for TlsAcceptEv {
-    const NAME: &str = "sys_tls_accept";
     type Args = (Bytes, Bytes, StreamValue);
+
+    const NAME: &str = "sys_tls_accept";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let cert = cached.get::<Bytes>(0)?;

@@ -5,8 +5,7 @@ use iced_core::{
 };
 
 use super::{Message, Renderer};
-use crate::theme::GraphixTheme;
-use crate::types::ShortcutV;
+use crate::{theme::GraphixTheme, types::ShortcutV};
 use graphix_rt::CallableId;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 

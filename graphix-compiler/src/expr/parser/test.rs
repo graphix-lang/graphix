@@ -632,11 +632,12 @@ fn select1() {
         ),
         (
             Pattern {
-                type_predicate: Some(Type::Ref (TypeRef {
+                type_predicate: Some(Type::Ref(TypeRef {
                     scope: ModPath::root(),
                     name: ["Foo"].into(),
                     params: Arc::from_iter([]),
-                 ..Default::default()})),
+                    ..Default::default()
+                })),
                 structure_predicate: StructurePattern::Struct {
                     all: None,
                     exhaustive: false,
@@ -789,13 +790,13 @@ fn lambda() {
                 labeled: None,
                 pattern: StructurePattern::Bind("foo".into()),
                 constraint: None,
-                        pos: Default::default(),
+                pos: Default::default(),
             },
             Arg {
                 labeled: None,
                 pattern: StructurePattern::Bind("bar".into()),
                 constraint: None,
-                        pos: Default::default(),
+                pos: Default::default(),
             },
         ]),
         rtype: None,
@@ -871,7 +872,7 @@ fn apply_lambda() {
                     labeled: None,
                     pattern: StructurePattern::Bind("a".into()),
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 }]),
                 vargs: Some(None),
                 rtype: None,
@@ -900,20 +901,21 @@ fn apply_typed_lambda() {
                         labeled: None,
                         pattern: StructurePattern::Bind("a".into()),
                         constraint: None,
-                                        pos: Default::default(),
+                        pos: Default::default(),
                     },
                     Arg {
                         labeled: None,
                         pattern: StructurePattern::Bind("b".into()),
                         constraint: Some(Type::Set(Arc::from_iter([
                             Type::Primitive(Typ::Null.into()),
-                            Type::Ref (TypeRef {
+                            Type::Ref(TypeRef {
                                 scope: ModPath::root(),
                                 name: ["Number"].into(),
                                 params: Arc::from_iter([]),
-                             ..Default::default()}),
+                                ..Default::default()
+                            }),
                         ]))),
-                                        pos: Default::default(),
+                        pos: Default::default(),
                     },
                 ]),
                 vargs: Some(Some(Type::Primitive(Typ::String.into()))),
@@ -945,7 +947,7 @@ fn typed_array() {
                 constraint: Some(Type::Array(Arc::new(Type::TVar(TVar::empty_named(
                     "a".into(),
                 ))))),
-                        pos: Default::default(),
+                pos: Default::default(),
             }]),
             vargs: None,
             constraints: Arc::from_iter([]),
@@ -969,28 +971,20 @@ fn labeled_argument_lambda() {
         typ: Some(Type::Fn(Arc::new(FnType {
             args: Arc::from_iter([
                 FnArgType {
-                    kind: FnArgKind::Labeled {
-                        name: "foo".into(),
-                        has_default: true,
-                    },
-                    typ: Type::Ref (TypeRef {
+                    kind: FnArgKind::Labeled { name: "foo".into(), has_default: true },
+                    typ: Type::Ref(TypeRef {
                         scope: ModPath::root(),
                         name: ["Number"].into(),
                         params: Arc::from_iter([]),
-                     ..Default::default()}),
+                        ..Default::default()
+                    }),
                 },
                 FnArgType {
-                    kind: FnArgKind::Labeled {
-                        name: "bar".into(),
-                        has_default: true,
-                    },
+                    kind: FnArgKind::Labeled { name: "bar".into(), has_default: true },
                     typ: Type::Primitive(Typ::String.into()),
                 },
                 FnArgType {
-                    kind: FnArgKind::Labeled {
-                        name: "a".into(),
-                        has_default: false,
-                    },
+                    kind: FnArgKind::Labeled { name: "a".into(), has_default: false },
                     typ: Type::Any,
                 },
                 FnArgType {
@@ -1012,12 +1006,13 @@ fn labeled_argument_lambda() {
                     labeled: Some(Some(
                         ExprKind::Constant(Value::I64(3)).to_expr_nopos(),
                     )),
-                    constraint: Some(Type::Ref (TypeRef {
+                    constraint: Some(Type::Ref(TypeRef {
                         scope: ModPath::root(),
                         name: ["Number"].into(),
                         params: Arc::from_iter([]),
-                     ..Default::default()})),
-                                pos: Default::default(),
+                        ..Default::default()
+                    })),
+                    pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("bar".into()),
@@ -1025,19 +1020,19 @@ fn labeled_argument_lambda() {
                         ExprKind::Constant("hello".into()).to_expr_nopos(),
                     )),
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("a".into()),
                     labeled: Some(None),
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("baz".into()),
                     labeled: None,
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 },
             ]),
             vargs: None,

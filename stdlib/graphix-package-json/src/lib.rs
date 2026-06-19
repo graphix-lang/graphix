@@ -6,8 +6,10 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    effects::EffectKind, errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope,
-    UserEvent,
+    effects::EffectKind,
+    errf,
+    typ::{FnType, Type},
+    ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -17,7 +19,10 @@ use graphix_package_sys::{get_stream, StreamKind};
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
 use std::sync::Arc;
-use tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 
 // ── JSON ↔ Value conversion ──────────────────────────────────────
 
@@ -142,8 +147,9 @@ struct JsonReadEv {
 }
 
 impl EvalCachedAsync for JsonReadEv {
-    const NAME: &str = "json_read";
     type Args = ReadInput;
+
+    const NAME: &str = "json_read";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -242,8 +248,8 @@ struct JsonWriteStrEv;
 
 // json::write_str is a pure Value→string conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
-    const NAME: &str = "json_write_str";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "json_write_str";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -277,8 +283,8 @@ type JsonWriteStr = CachedArgs<JsonWriteStrEv>;
 struct JsonWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
-    const NAME: &str = "json_write_bytes";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "json_write_bytes";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -308,8 +314,9 @@ type JsonWriteBytes = CachedArgs<JsonWriteBytesEv>;
 struct JsonWriteStreamEv;
 
 impl EvalCachedAsync for JsonWriteStreamEv {
-    const NAME: &str = "json_write_stream";
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, serde_json::Value);
+
+    const NAME: &str = "json_write_stream";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let pretty = cached.get::<bool>(0)?;

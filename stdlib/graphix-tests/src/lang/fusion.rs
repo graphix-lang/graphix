@@ -54,9 +54,7 @@ async fn load_qop_unwraps_result() -> Result<()> {
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
-        .load(Source::Internal(ArcStr::from(
-            "re::is_match(#pat:r'a', \"abc\")?\n",
-        )))
+        .load(Source::Internal(ArcStr::from("re::is_match(#pat:r'a', \"abc\")?\n")))
         .await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -96,10 +94,8 @@ async fn load_variadic_and_jits() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from("and(true, true, false)")))
-        .await?;
+    let res =
+        ctx.rt.load(Source::Internal(ArcStr::from("and(true, true, false)"))).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -139,10 +135,7 @@ async fn load_array_literal_jits() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from("[1, 2, 3]")))
-        .await?;
+    let res = ctx.rt.load(Source::Internal(ArcStr::from("[1, 2, 3]"))).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
     tokio::pin!(timeout);
@@ -208,9 +201,7 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
-        .load(Source::Internal(ArcStr::from(
-            "bit_and(i64:0xFF, i64:0x0F)",
-        )))
+        .load(Source::Internal(ArcStr::from("bit_and(i64:0xFF, i64:0x0F)")))
         .await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -474,11 +465,7 @@ async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx.rt.load(Source::Internal(ArcStr::from(code))).await?;
-    let eid = res
-        .exprs
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("no top-level expr"))?
-        .id;
+    let eid = res.exprs.first().ok_or_else(|| anyhow::anyhow!("no top-level expr"))?.id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
     tokio::pin!(timeout);
     let value = loop {
@@ -526,9 +513,7 @@ async fn closure_primitive_capture() -> Result<()> {
 /// upgrade this to `load_value_and_jit` + assert `JIT_INVOCATIONS > 0`.
 #[tokio::test(flavor = "current_thread")]
 async fn closure_tuple_capture_falls_back() -> Result<()> {
-    let v =
-        load_and_await("let t = (1, 2); let g = |x| t.0 + t.1 + x; g(10)")
-            .await?;
+    let v = load_and_await("let t = (1, 2); let g = |x| t.0 + t.1 + x; g(10)").await?;
     assert_eq!(v, Value::I64(13));
     Ok(())
 }
@@ -610,8 +595,7 @@ async fn impure_hof_callback_splits() -> Result<()> {
     )
     .await?;
     match v {
-        Value::Array(a)
-            if &a[..] == [Value::I64(3), Value::I64(5), Value::I64(7)] => {}
+        Value::Array(a) if &a[..] == [Value::I64(3), Value::I64(5), Value::I64(7)] => {}
         other => bail!("unexpected value: {other:?}"),
     }
     assert!(
@@ -638,15 +622,11 @@ async fn impure_hof_callback_split_captures() -> Result<()> {
     )
     .await?;
     match v {
-        Value::Array(a)
-            if &a[..]
-                == [Value::I64(10), Value::I64(20), Value::I64(30)] => {}
+        Value::Array(a) if &a[..] == [Value::I64(10), Value::I64(20), Value::I64(30)] => {
+        }
         other => bail!("unexpected value: {other:?}"),
     }
-    assert!(
-        inv > 0,
-        "JIT_INVOCATIONS=0 — captured sync sub-region didn't fuse"
-    );
+    assert!(inv > 0, "JIT_INVOCATIONS=0 — captured sync sub-region didn't fuse");
     Ok(())
 }
 
@@ -668,9 +648,7 @@ async fn impure_hof_builtin_in_residue() -> Result<()> {
     )
     .await?;
     match v {
-        Value::Array(a)
-            if &a[..]
-                == [Value::I64(2), Value::I64(4), Value::I64(6)] => {}
+        Value::Array(a) if &a[..] == [Value::I64(2), Value::I64(4), Value::I64(6)] => {}
         other => bail!("unexpected value: {other:?}"),
     }
     Ok(())
@@ -705,8 +683,7 @@ async fn clone_map(body: &str) -> Result<Value> {
 /// `clone_rebind` template path. `body` must be a single expression
 /// (no leading `let`), so the bare-expression lambda body is valid.
 async fn pure_map(body: &str) -> Result<Value> {
-    let prog =
-        format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {body})");
+    let prog = format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {body})");
     load_and_await(&prog).await
 }
 
@@ -731,9 +708,9 @@ fn assert_i64s(v: &Value, expected: &[i64]) -> Result<()> {
 fn assert_strs(v: &Value, expected: &[&str]) -> Result<()> {
     let Value::Array(a) = v else { bail!("not an array: {v:?}") };
     let ok = a.len() == expected.len()
-        && a.iter().zip(expected).all(|(x, e)| {
-            matches!(x, Value::String(s) if s.as_str() == *e)
-        });
+        && a.iter()
+            .zip(expected)
+            .all(|(x, e)| matches!(x, Value::String(s) if s.as_str() == *e));
     if ok {
         Ok(())
     } else {
@@ -980,10 +957,7 @@ async fn clone_arith_capture() -> Result<()> {
 /// `Select` (single arm + wildcard) on the element, returning a capture.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_select_capture() -> Result<()> {
-    assert_i64s(
-        &clone_map("select x { 1 => k, n => n * k }").await?,
-        &[3, 6, 9, 12],
-    )
+    assert_i64s(&clone_map("select x { 1 => k, n => n * k }").await?, &[3, 6, 9, 12])
 }
 
 /// `Select` with TWO arms binding the SAME name (`a`) — the transient
@@ -992,10 +966,7 @@ async fn clone_select_capture() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn clone_select_same_name() -> Result<()> {
     assert_i64s(
-        &clone_map(
-            "select x { i64 as a if a > k => a + k, i64 as a => a * k }",
-        )
-        .await?,
+        &clone_map("select x { i64 as a if a > k => a + k, i64 as a => a * k }").await?,
         &[3, 6, 9, 7],
     )
 }
@@ -1013,8 +984,7 @@ async fn clone_compare_capture() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn clone_boolops_capture() -> Result<()> {
     assert_i64s(
-        &clone_map("select (x > k) || (x == 1) { true => 1, false => 0 }")
-            .await?,
+        &clone_map("select (x > k) || (x == 1) { true => 1, false => 0 }").await?,
         &[1, 0, 0, 1],
     )
 }
@@ -1037,27 +1007,20 @@ async fn clone_tuple_accessor_capture() -> Result<()> {
 /// `Struct` producer + `StructRef` accessor + capture.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_struct_accessor_capture() -> Result<()> {
-    assert_i64s(
-        &clone_map("let s = {a: x, b: k}; s.a * s.b").await?,
-        &[3, 6, 9, 12],
-    )
+    assert_i64s(&clone_map("let s = {a: x, b: k}; s.a * s.b").await?, &[3, 6, 9, 12])
 }
 
 /// `Array` producer + `ArrayRef` accessor + capture.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_array_accessor_capture() -> Result<()> {
-    assert_i64s(
-        &clone_map("let a2 = [x, k, x + k]; a2[2]").await?,
-        &[4, 5, 6, 7],
-    )
+    assert_i64s(&clone_map("let a2 = [x, k, x + k]; a2[2]").await?, &[4, 5, 6, 7])
 }
 
 /// `Variant` producer + `Select` destructure of it + capture.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_variant_capture() -> Result<()> {
     assert_i64s(
-        &clone_map("let v = `Pair(x, k); select v { `Pair(a, b) => a + b }")
-            .await?,
+        &clone_map("let v = `Pair(x, k); select v { `Pair(a, b) => a + b }").await?,
         &[4, 5, 6, 7],
     )
 }
@@ -1074,10 +1037,7 @@ async fn clone_map_accessor_capture() -> Result<()> {
 /// `StringInterpolate` carrying both element and capture.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_string_capture() -> Result<()> {
-    assert_strs(
-        &clone_map("\"[x]:[k]\"").await?,
-        &["1:3", "2:3", "3:3", "4:3"],
-    )
+    assert_strs(&clone_map("\"[x]:[k]\"").await?, &["1:3", "2:3", "3:3", "4:3"])
 }
 
 /// Nested: `Tuple` + `Add`/`Mul` + `TupleRef` + `StringInterpolate`.
@@ -1107,9 +1067,7 @@ async fn clone_select_let_bound() -> Result<()> {
 /// confirming the defect was in `emit_select_as_expr`/`emit_arm_condition`,
 /// not the per-slot clone.
 async fn region_map(body: &str) -> Result<Value> {
-    let prog = format!(
-        "let k = 3; array::map([1, 2, 3, 4], |x: i64| {{ {body} }})"
-    );
+    let prog = format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {{ {body} }})");
     load_and_await(&prog).await
 }
 
@@ -1143,9 +1101,7 @@ async fn pure_select_value_and_fusion(body: &str) -> Result<(Value, u64)> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_catch_all() -> Result<()> {
-    let (v, f) =
-        pure_select_value_and_fusion("select x { 1 => k, n => n * k }")
-            .await?;
+    let (v, f) = pure_select_value_and_fusion("select x { 1 => k, n => n * k }").await?;
     assert!(f > 0, "select-with-binding should fuse, FUSION=0");
     assert_i64s(&v, &[3, 6, 9, 12])
 }
@@ -1155,10 +1111,8 @@ async fn fused_select_catch_all() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_typed_capture() -> Result<()> {
-    let (v, f) = pure_select_value_and_fusion(
-        "select x { 1 => k, i64 as n => n * k }",
-    )
-    .await?;
+    let (v, f) =
+        pure_select_value_and_fusion("select x { 1 => k, i64 as n => n * k }").await?;
     assert!(f > 0, "typed-capture select should fuse, FUSION=0");
     assert_i64s(&v, &[3, 6, 9, 12])
 }
@@ -1182,10 +1136,8 @@ async fn fused_select_guard_capture() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_arith_wrapped() -> Result<()> {
-    let (v, f) = pure_select_value_and_fusion(
-        "1 + (select x { 1 => k, n => n * k })",
-    )
-    .await?;
+    let (v, f) =
+        pure_select_value_and_fusion("1 + (select x { 1 => k, n => n * k })").await?;
     assert!(f > 0, "arith-wrapped binding select should fuse, FUSION=0");
     assert_i64s(&v, &[4, 7, 10, 13])
 }
@@ -1227,8 +1179,7 @@ async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_stabilize_multiref() -> Result<()> {
     let (v, f) =
-        pure_select_value_and_fusion("select (x + 1) { m => m + m + m }")
-            .await?;
+        pure_select_value_and_fusion("select (x + 1) { m => m + m + m }").await?;
     assert!(f > 0, "stabilized-scrutinee select should fuse, FUSION=0");
     assert_i64s(&v, &[6, 9, 12, 15])
 }
@@ -1388,8 +1339,7 @@ fn iota(n: i64) -> Value {
 
 #[tokio::test(flavor = "current_thread")]
 async fn env_accounting_grow_shrink() -> Result<()> {
-    use graphix_compiler::expr::ModPath;
-    use graphix_compiler::Scope;
+    use graphix_compiler::{expr::ModPath, Scope};
 
     let (tx, mut rx) = mpsc::channel(64);
     let ctx = init(tx).await?;
@@ -1433,9 +1383,7 @@ async fn env_accounting_grow_shrink() -> Result<()> {
         // shrink → 0 slots
         ctx.rt.set(
             arr_id,
-            Value::Array(netidx_value::ValArray::from_iter_exact(
-                std::iter::empty(),
-            )),
+            Value::Array(netidx_value::ValArray::from_iter_exact(std::iter::empty())),
         )?;
         await_map_len(&mut rx, eid, 0).await?;
         bottoms.push(ctx.rt.env_stats().await?);
@@ -1511,10 +1459,7 @@ async fn clone_trycatch_catch_capture() -> Result<()> {
 /// propagates), so the try value `x / k` is returned every slot.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_trycatch_try_capture() -> Result<()> {
-    assert_i64s(
-        &clone_map("try (x / k) catch(e) => -1").await?,
-        &[0, 0, 1, 1],
-    )
+    assert_i64s(&clone_map("try (x / k) catch(e) => -1").await?, &[0, 0, 1, 1])
 }
 
 /// Sample `x ~ k`: emit `k`'s current value when the element `x` fires.
@@ -1558,25 +1503,21 @@ fn body_strategy() -> impl proptest::strategy::Strategy<Value = String> {
     ];
     leaf.prop_recursive(4, 48, 8, |inner| {
         prop_oneof![
-            (inner.clone(), inner.clone())
-                .prop_map(|(a, b)| format!("({a} + {b})")),
-            (inner.clone(), inner.clone())
-                .prop_map(|(a, b)| format!("({a} - {b})")),
-            (inner.clone(), inner.clone())
-                .prop_map(|(a, b)| format!("({a} * {b})")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a} + {b})")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a} - {b})")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a} * {b})")),
             // literal-pattern select (`_` makes it exhaustive)
-            (inner.clone(), inner.clone(), inner.clone()).prop_map(
-                |(a, b, c)| format!("(select {a} {{ 0 => {b}, _ => {c} }})")
-            ),
+            (inner.clone(), inner.clone(), inner.clone())
+                .prop_map(|(a, b, c)| format!("(select {a} {{ 0 => {b}, _ => {c} }})")),
             // arm-BINDING select — exercises the #162 fix: the catch-all
             // `q =>` binds the scrutinee, and the body reads it (`q +
             // c`). `q` is a fresh name (never x/k and never referenced by
             // a sibling arm), so it can't hit the #167 shadow-hang. Both
             // the clone and reference paths must resolve `q` to the
             // scrutinee value identically.
-            (inner.clone(), inner.clone(), inner.clone()).prop_map(
-                |(a, b, c)| format!("(select {a} {{ 0 => {b}, q => (q + {c}) }})")
-            ),
+            (inner.clone(), inner.clone(), inner.clone()).prop_map(|(a, b, c)| format!(
+                "(select {a} {{ 0 => {b}, q => (q + {c}) }})"
+            )),
             // tuple + accessor — field access needs a binding first
             // (`(a,b).0` is a parse error), so emit a block-expr; nesting
             // shadows `p`, which is valid and extra coverage.
@@ -1585,12 +1526,10 @@ fn body_strategy() -> impl proptest::strategy::Strategy<Value = String> {
             (inner.clone(), inner.clone())
                 .prop_map(|(a, b)| format!("({{ let p = ({a}, {b}); p.1 }})")),
             // struct + accessor — same block-expr shape via `s`.
-            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!(
-                "({{ let s = {{f: {a}, g: {b}}}; s.f }})"
-            )),
-            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!(
-                "({{ let s = {{f: {a}, g: {b}}}; s.g }})"
-            )),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| format!("({{ let s = {{f: {a}, g: {b}}}; s.f }})")),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| format!("({{ let s = {{f: {a}, g: {b}}}; s.g }})")),
         ]
     })
 }
@@ -1638,8 +1577,10 @@ proptest::proptest! {
 // `load_uses_external_scalar`).
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_external_scalar() -> Result<()> {
-    use graphix_compiler::fusion::kernel_abi::{prim_type, PrimType};
-    use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
+    use graphix_compiler::{
+        fusion::kernel_abi::{prim_type, PrimType},
+        node_shape::{KernelMatcher, NodeShape},
+    };
 
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
@@ -1650,9 +1591,7 @@ async fn node_shape_external_scalar() -> Result<()> {
     // The whole expression fuses into one kernel: scalar input `foo`,
     // returns i64, body multiplies (a `Bin` op).
     let spec = NodeShape::fused(
-        KernelMatcher::new()
-            .returns(prim_type(PrimType::I64))
-            .params(&["foo"]),
+        KernelMatcher::new().returns(prim_type(PrimType::I64)).params(&["foo"]),
         // F4 (#213): the binary-op tag pin removed at the F2
         // flip — direct kernels carry no op-tag metadata to tag-match;
         // restore as an EmitTag assertion.
@@ -1687,12 +1626,8 @@ async fn load_just_bind_no_output() -> Result<()> {
     // reports this via `output: false` on the returned CompExp.
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from("let x = 5")))
-        .await?;
-    let comp =
-        res.exprs.first().ok_or_else(|| anyhow::anyhow!("no comp expr"))?;
+    let res = ctx.rt.load(Source::Internal(ArcStr::from("let x = 5"))).await?;
+    let comp = res.exprs.first().ok_or_else(|| anyhow::anyhow!("no comp expr"))?;
     assert!(!comp.output, "let-only file should have output=false");
     ctx.shutdown().await;
     Ok(())

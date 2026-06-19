@@ -1,9 +1,11 @@
-use super::dataset::{chart_mode, ChartMode, DatasetEntry, XYKind};
-use super::interact::{draw_tooltip, ChartState, PlotInfo};
-use super::plotters_backend::{estimate_text, IcedBackend};
-use super::ranges::*;
-use super::types::*;
-use super::ChartW;
+use super::{
+    dataset::{chart_mode, ChartMode, DatasetEntry, XYKind},
+    interact::{draw_tooltip, ChartState, PlotInfo},
+    plotters_backend::{estimate_text, IcedBackend},
+    ranges::*,
+    types::*,
+    ChartW,
+};
 use crate::widgets::Renderer;
 use graphix_rt::GXExt;
 use iced_core::mouse;

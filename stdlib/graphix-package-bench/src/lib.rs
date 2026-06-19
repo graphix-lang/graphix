@@ -16,8 +16,8 @@ struct MandelbrotIterate {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MandelbrotIterate {
-    const NAME: &str = "bench_mandelbrot_iterate";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "bench_mandelbrot_iterate";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -42,13 +42,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
             return None;
         }
         match &self.args.0[..] {
-            [
-                Some(Value::F64(zr0)),
-                Some(Value::F64(zi0)),
-                Some(Value::F64(cr)),
-                Some(Value::F64(ci)),
-                Some(Value::I64(max_iter)),
-            ] => {
+            [Some(Value::F64(zr0)), Some(Value::F64(zi0)), Some(Value::F64(cr)), Some(Value::F64(ci)), Some(Value::I64(max_iter))] =>
+            {
                 let cr = *cr;
                 let ci = *ci;
                 let mut zr = *zr0;

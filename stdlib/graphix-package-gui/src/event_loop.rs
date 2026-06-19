@@ -26,9 +26,11 @@ use log::error;
 use netidx::publisher::Value;
 use nohash::IntMap;
 use poolshark::local::LPooled;
-use std::cell::RefCell;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    cell::RefCell,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::{mpsc, oneshot};
 use winit::{
     application::ApplicationHandler,

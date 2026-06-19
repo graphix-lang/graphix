@@ -1,7 +1,16 @@
 use crate::{
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
+    fusion::{
+        emit::{
+            emit_block_node, emit_cast_node, emit_const_node,
+            emit_string_interpolate_node, BodyCx, CompiledExpr,
+        },
+        fuse,
+    },
+    ide::{ModuleRefSite, ReferenceSite},
     typ::{TVal, TVar, Type},
-    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent, CAST_ERR,
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent, CAST_ERR,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::{literal, ArcStr};
@@ -145,8 +154,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Nop(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Nop(self)
     }
 
     fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
@@ -207,23 +216,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.refs(refs);
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::ExplicitParens(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::ExplicitParens(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
         // `(x)` — grouping only; transparent recurse.
         self.n.emit_clif(cx)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
-        Box::new(Self {
-            spec: self.spec.clone(),
-            n: self.n.clone_rebind(ctx, scope),
-        })
+        Box::new(Self { spec: self.spec.clone(), n: self.n.clone_rebind(ctx, scope) })
     }
 }
 
@@ -289,7 +295,7 @@ impl Use {
                 .env
                 .canonical_modpath(&scope.lexical, name)
                 .unwrap_or_else(|| name.clone());
-            ctx.env.push_module_reference(crate::ide::ModuleRefSite {
+            ctx.env.push_module_reference(ModuleRefSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
                 name: name.clone(),
@@ -334,8 +340,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
         &Type::Bottom
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Use(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Use(self)
     }
 }
 
@@ -405,8 +411,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         &Type::Bottom
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::TypeDef(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::TypeDef(self)
     }
 }
 
@@ -471,15 +477,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         &self.spec
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Constant(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Constant(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_const_node(cx, &self.value, &self.typ)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_const_node(cx, &self.value, &self.typ)
     }
 
     fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
@@ -531,10 +537,8 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     ) -> Result<Node<R, E>> {
         // Snapshot fusion-visibility state so binds *inside* this
         // block don't leak their consts into the outer scope.
-        let result: Result<Box<[Node<R, E>]>> = exprs
-            .iter()
-            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
-            .collect();
+        let result: Result<Box<[Node<R, E>]>> =
+            exprs.iter().map(|e| compile(ctx, flags, e.clone(), scope, top_id)).collect();
         let children = result?;
         Ok(Box::new(Self { module, spec, children, scope: scope.clone() }))
     }
@@ -598,21 +602,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Block(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Block(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_block_node(cx, &self.children)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_block_node(cx, &self.children)
     }
 
-    fn fuse(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // Statement spine: each child fuses its own maximal subtree
         // (or recurses further). The Block itself only fuses when a
         // PARENT's try_fuse succeeds on a region containing it (via
@@ -621,24 +622,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         // emit_block_node has no publish, so a region containing a
         // bind only ever covers block-scoped lets.
         for child in self.children.iter_mut() {
-            crate::fusion::fuse(child, ctx)?;
+            fuse(child, ctx)?;
         }
         Ok(None)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-    ) -> Node<R, E> {
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // `Do` children share the block's scope (see `Block::compile`),
         // so recurse in lexical order — each `Bind` re-mints into the
         // (transient) scope name map before later siblings resolve names.
-        let children: Box<[Node<R, E>]> = self
-            .children
-            .iter()
-            .map(|c| c.clone_rebind(ctx, scope))
-            .collect();
+        let children: Box<[Node<R, E>]> =
+            self.children.iter().map(|c| c.clone_rebind(ctx, scope)).collect();
         Box::new(Self {
             module: self.module,
             spec: self.spec.clone(),
@@ -743,15 +737,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::StringInterpolate(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::StringInterpolate(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_string_interpolate_node(cx, &self.args)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_string_interpolate_node(cx, &self.args)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -802,7 +796,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         // stable (only the specific BindId being written is unstable).
         ctx.unstable_bindings.insert(id);
         if ctx.env.lsp_mode {
-            ctx.env.push_reference(crate::ide::ReferenceSite {
+            ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
                 name: name.clone(),
@@ -858,15 +852,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Connect(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Connect(self)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-    ) -> Node<R, E> {
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // Re-resolve the `<-` target by name: an outer Connect target
         // (e.g. `counter`, shared across slots) resolves to the unchanged
         // outer binding; an internal target (a block-local re-minted by an
@@ -877,9 +867,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
             .by_id
             .get(&self.id)
             .map(|b| ModPath::from_iter([b.name.as_str()]))
-            .and_then(|n| {
-                ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id)
-            })
+            .and_then(|n| ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id))
             .unwrap_or(self.id);
         ctx.unstable_bindings.insert(new_id);
         let node = self.node.clone_rebind(ctx, scope);
@@ -907,13 +895,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         top_id: ExprId,
         spec: Expr,
     ) -> Node<R, E> {
-        Box::new(Self {
-            spec,
-            rhs: Cached::new(rhs),
-            src_id,
-            target_id: None,
-            top_id,
-        })
+        Box::new(Self { spec, rhs: Cached::new(rhs), src_id, target_id: None, top_id })
     }
 
     pub(crate) fn compile(
@@ -930,7 +912,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
         if ctx.env.lsp_mode {
-            ctx.env.push_reference(crate::ide::ReferenceSite {
+            ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
                 name: name.clone(),
@@ -1001,8 +983,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::ConnectDeref(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::ConnectDeref(self)
     }
 }
 
@@ -1068,15 +1050,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::TypeCast(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::TypeCast(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_cast_node(cx, &self.n, &self.target)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_cast_node(cx, &self.n, &self.target)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -1162,8 +1144,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Any(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Any(self)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -1263,7 +1245,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Sample(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Sample(self)
     }
 }

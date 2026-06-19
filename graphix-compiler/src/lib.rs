@@ -29,7 +29,10 @@ use crate::{
     effects::EffectKind,
     env::Env,
     expr::{ExprId, ModPath},
-    fusion::emit::{BodyCx, CompiledExpr},
+    fusion::{
+        emit::{BodyCx, CompiledExpr},
+        kernel_abi::AbstractRegistry,
+    },
     node::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
@@ -317,7 +320,7 @@ pub use combine::stream::position::SourcePosition;
 /// Metadata captured for every `let foo = |...| 'builtin_name`
 /// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
 /// binding's [`BindId`] so the fusion pass can lower `Apply` sites
-/// targeting this binding into a [`crate::fusion::kernel_abi::FnSource::Builtin`]
+/// targeting this binding into a [`fusion::kernel_abi::FnSource::Builtin`]
 /// slot without round-tripping through the runtime's `LambdaDef`
 /// value.
 ///
@@ -327,7 +330,7 @@ pub use combine::stream::position::SourcePosition;
 ///
 /// `argspec` is the original source-level argument list (including
 /// each labeled arg's default expression, if any), needed to
-/// construct the per-formal-arg [`crate::fusion::kernel_abi::BuiltinSlot`]
+/// construct the per-formal-arg [`fusion::kernel_abi::BuiltinSlot`]
 /// layout at fusion time.
 ///
 /// `typ` is the binding's resolved function type at the binding
@@ -457,7 +460,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// `Apply` instances, distinguished by `fn_args`:
     ///
     /// - On the LambdaDef's retained `check` SCRATCH apply, via
-    ///   [`crate::node::callsite::finalize_lambda`], with `fn_args = &[]`.
+    ///   [`node::callsite::finalize_lambda`], with `fn_args = &[]`.
     ///   A builtin extracts call-site-directed types here (e.g.
     ///   `str::parse` reads its target type from `resolved`); a
     ///   `GXLambda` recurses its body.
@@ -557,7 +560,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 /// Variants:
 /// - [`Lambda`](ApplyView::Lambda) — a graphix-language lambda with
 ///   a walkable [`Node`] body. Fusion descends into the body via
-///   [`crate::node::lambda::GXLambda::body`].
+///   [`GXLambda::body`].
 /// - [`BuiltIn`](ApplyView::BuiltIn) — opaque builtin. Fusion emits
 ///   a runtime `DynCall` (or the builtin participates directly via
 ///   [`Apply::emit_clif`]); no introspection beyond the trait
@@ -612,68 +615,68 @@ pub struct StaticFnArg<'a, R: Rt, E: UserEvent> {
 #[allow(missing_docs)]
 pub enum NodeView<'a, R: Rt, E: UserEvent> {
     // Fusion-relevant containers
-    Bind(&'a crate::node::bind::Bind<R, E>),
-    Lambda(&'a crate::node::lambda::Lambda),
-    Block(&'a crate::node::Block<R, E>),
-    Module(&'a crate::node::module::Module<R, E>),
+    Bind(&'a node::bind::Bind<R, E>),
+    Lambda(&'a node::lambda::Lambda),
+    Block(&'a node::Block<R, E>),
+    Module(&'a node::module::Module<R, E>),
     // Child-bearing non-container
-    CallSite(&'a crate::node::callsite::CallSite<R, E>),
-    Select(&'a crate::node::select::Select<R, E>),
-    TryCatch(&'a crate::node::error::TryCatch<R, E>),
-    Qop(&'a crate::node::error::Qop<R, E>),
-    OrNever(&'a crate::node::error::OrNever<R, E>),
-    ExplicitParens(&'a crate::node::ExplicitParens<R, E>),
-    TypeCast(&'a crate::node::TypeCast<R, E>),
-    Connect(&'a crate::node::Connect<R, E>),
-    ConnectDeref(&'a crate::node::ConnectDeref<R, E>),
-    StringInterpolate(&'a crate::node::StringInterpolate<R, E>),
-    Any(&'a crate::node::Any<R, E>),
-    Sample(&'a crate::node::Sample<R, E>),
+    CallSite(&'a CallSite<R, E>),
+    Select(&'a node::select::Select<R, E>),
+    TryCatch(&'a node::error::TryCatch<R, E>),
+    Qop(&'a node::error::Qop<R, E>),
+    OrNever(&'a node::error::OrNever<R, E>),
+    ExplicitParens(&'a node::ExplicitParens<R, E>),
+    TypeCast(&'a node::TypeCast<R, E>),
+    Connect(&'a node::Connect<R, E>),
+    ConnectDeref(&'a node::ConnectDeref<R, E>),
+    StringInterpolate(&'a node::StringInterpolate<R, E>),
+    Any(&'a node::Any<R, E>),
+    Sample(&'a node::Sample<R, E>),
     // Producers
-    Struct(&'a crate::node::data::Struct<R, E>),
-    StructWith(&'a crate::node::data::StructWith<R, E>),
-    Tuple(&'a crate::node::data::Tuple<R, E>),
-    Variant(&'a crate::node::data::Variant<R, E>),
-    Array(&'a crate::node::array::Array<R, E>),
-    Map(&'a crate::node::map::Map<R, E>),
+    Struct(&'a node::data::Struct<R, E>),
+    StructWith(&'a node::data::StructWith<R, E>),
+    Tuple(&'a node::data::Tuple<R, E>),
+    Variant(&'a node::data::Variant<R, E>),
+    Array(&'a node::array::Array<R, E>),
+    Map(&'a node::map::Map<R, E>),
     // Accessors
-    StructRef(&'a crate::node::data::StructRef<R, E>),
-    TupleRef(&'a crate::node::data::TupleRef<R, E>),
-    ArrayRef(&'a crate::node::array::ArrayRef<R, E>),
-    ArraySlice(&'a crate::node::array::ArraySlice<R, E>),
-    MapRef(&'a crate::node::map::MapRef<R, E>),
+    StructRef(&'a node::data::StructRef<R, E>),
+    TupleRef(&'a node::data::TupleRef<R, E>),
+    ArrayRef(&'a node::array::ArrayRef<R, E>),
+    ArraySlice(&'a node::array::ArraySlice<R, E>),
+    MapRef(&'a node::map::MapRef<R, E>),
     // Binding access
-    Ref(&'a crate::node::bind::Ref),
-    ByRef(&'a crate::node::bind::ByRef<R, E>),
-    Deref(&'a crate::node::bind::Deref<R, E>),
+    Ref(&'a node::bind::Ref),
+    ByRef(&'a node::bind::ByRef<R, E>),
+    Deref(&'a node::bind::Deref<R, E>),
     // Arithmetic — one variant per macro-generated struct in node/op.rs
-    Add(&'a crate::node::op::Add<R, E>),
-    Sub(&'a crate::node::op::Sub<R, E>),
-    Mul(&'a crate::node::op::Mul<R, E>),
-    Div(&'a crate::node::op::Div<R, E>),
-    Mod(&'a crate::node::op::Mod<R, E>),
-    CheckedAdd(&'a crate::node::op::CheckedAdd<R, E>),
-    CheckedSub(&'a crate::node::op::CheckedSub<R, E>),
-    CheckedMul(&'a crate::node::op::CheckedMul<R, E>),
-    CheckedDiv(&'a crate::node::op::CheckedDiv<R, E>),
-    CheckedMod(&'a crate::node::op::CheckedMod<R, E>),
+    Add(&'a node::op::Add<R, E>),
+    Sub(&'a node::op::Sub<R, E>),
+    Mul(&'a node::op::Mul<R, E>),
+    Div(&'a node::op::Div<R, E>),
+    Mod(&'a node::op::Mod<R, E>),
+    CheckedAdd(&'a node::op::CheckedAdd<R, E>),
+    CheckedSub(&'a node::op::CheckedSub<R, E>),
+    CheckedMul(&'a node::op::CheckedMul<R, E>),
+    CheckedDiv(&'a node::op::CheckedDiv<R, E>),
+    CheckedMod(&'a node::op::CheckedMod<R, E>),
     // Comparison + logical
-    Eq(&'a crate::node::op::Eq<R, E>),
-    Ne(&'a crate::node::op::Ne<R, E>),
-    Lt(&'a crate::node::op::Lt<R, E>),
-    Gt(&'a crate::node::op::Gt<R, E>),
-    Lte(&'a crate::node::op::Lte<R, E>),
-    Gte(&'a crate::node::op::Gte<R, E>),
-    And(&'a crate::node::op::And<R, E>),
-    Or(&'a crate::node::op::Or<R, E>),
-    Not(&'a crate::node::op::Not<R, E>),
+    Eq(&'a node::op::Eq<R, E>),
+    Ne(&'a node::op::Ne<R, E>),
+    Lt(&'a node::op::Lt<R, E>),
+    Gt(&'a node::op::Gt<R, E>),
+    Lte(&'a node::op::Lte<R, E>),
+    Gte(&'a node::op::Gte<R, E>),
+    And(&'a node::op::And<R, E>),
+    Or(&'a node::op::Or<R, E>),
+    Not(&'a node::op::Not<R, E>),
     // Leaves and declarations
-    Constant(&'a crate::node::Constant),
-    Use(&'a crate::node::Use),
-    TypeDef(&'a crate::node::TypeDef),
-    Nop(&'a crate::node::Nop),
+    Constant(&'a node::Constant),
+    Use(&'a node::Use),
+    TypeDef(&'a node::TypeDef),
+    Nop(&'a node::Nop),
     // Synthetic — produced by fusion itself.
-    FusedKernel(&'a crate::fusion::FusedKernel<R, E>),
+    FusedKernel(&'a fusion::FusedKernel<R, E>),
 }
 
 /// Update represents a regular graph node, as opposed to a function
@@ -766,12 +769,12 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
                 Some(b) => b.name.clone(),
                 None => continue,
             };
-            let mp = crate::expr::ModPath::from_iter([name.as_str()]);
+            let mp = ModPath::from_iter([name.as_str()]);
             if ctx.env.lookup_bind(&scope.lexical, &mp).is_none() {
                 ctx.env.alias_variable(&scope.lexical, &name, bid);
             }
         }
-        crate::compiler::compile(
+        compiler::compile(
             ctx,
             enumflags2::BitFlags::empty(),
             self.spec().clone(),
@@ -786,7 +789,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// an impl compiles its children via `child.emit_clif(cx)`; the
     /// raw cranelift builder is `cx.b` and the graphix-specific
     /// surface (env binds, helper FuncRefs, taint/pending) lives on
-    /// [`crate::fusion::emit::BodyCx`].
+    /// [`BodyCx`].
     ///
     /// The default is `Err`: this node doesn't emit, so any kernel
     /// attempt whose subtree contains it fails to compile and the
@@ -795,8 +798,8 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// fusion, never produce a wrong answer.
     fn emit_clif(
         &self,
-        _cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        _cx: &mut BodyCx,
+    ) -> Result<fusion::emit::CompiledExpr> {
         anyhow::bail!(
             "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
              node-walks",
@@ -812,8 +815,8 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     ///   driver for roots) calls `old.delete(ctx)` after the swap.
     /// - `Ok(None)` — no replacement at this level. The impl already
     ///   recursed `fuse` into its own children via `&mut self` (using
-    ///   [`crate::fusion::fuse`], which also attempts
-    ///   [`crate::fusion::try_fuse`] on each child) and swapped any
+    ///   [`fusion::fuse`], which also attempts
+    ///   [`fusion::try_fuse`] on each child) and swapped any
     ///   that returned a replacement.
     ///
     /// Policy is per-node — that's the point of the design: a
@@ -1198,7 +1201,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub bind_to_lambda: IntMap<BindId, Value>,
     /// BindIds of bindings that are the target of a `<-` (Connect)
     /// somewhere in the program. Populated lazily by
-    /// [`crate::node::Connect::compile`] — every Connect resolves
+    /// [`node::Connect::compile`] — every Connect resolves
     /// its target name to a BindId via `env.lookup_bind`, and that
     /// BindId is recorded here. Fusion's stability checks consult
     /// this set to determine whether a Bind's value can be safely
@@ -1217,12 +1220,12 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// The info captures everything fusion needs to lower an
     /// `Apply` site whose `function` resolves to this binding into
     /// a DynCall against a
-    /// [`crate::fusion::kernel_abi::FnSource::Builtin`] slot: the canonical
+    /// [`fusion::kernel_abi::FnSource::Builtin`] slot: the canonical
     /// builtin `name` (matches `ctx.builtins`), the source-level
     /// `argspec` (with default expressions for labeled args), and
     /// the resolved `FnType`.
     ///
-    /// Populated by [`crate::node::bind::Bind::compile`] when the
+    /// Populated by [`node::bind::Bind::compile`] when the
     /// value being bound is an `ExprKind::Lambda` with
     /// `body == Either::Right(name)`. User-lambda bindings leave
     /// no entry here; only builtin lambdas appear.
@@ -1244,7 +1247,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// paths), so the lock cost is negligible.
     ///
     /// Every kernel compiles into this module via
-    /// [`crate::fusion::emit::compile_kernel_with_callees_direct`] —
+    /// [`fusion::emit::compile_kernel_with_callees_direct`] —
     /// parent + callees declared and defined together so cross-kernel
     /// calls dispatch as direct CLIF calls.
     pub jit: parking_lot::Mutex<fusion::emit::Jit>,
@@ -1285,13 +1288,13 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Fusion-time registry mapping each abstract type's `AbstractId` to
     /// its concrete implementation type. Written by `check_sig` during
     /// typecheck; read by the fusion classifiers
-    /// ([`crate::fusion::kernel_abi::freeze_for_abi`] / `abi_kind` /
+    /// ([`fusion::kernel_abi::freeze_for_abi`] / `abi_kind` /
     /// `resolve_abstract`) to peek through an abstract type's opacity to
     /// its wire shape. Owned per-context (not a process-global) so it
     /// drops with the `ExecCtx` — `AbstractId`s are minted fresh per
     /// compile, so a global would leak. See
-    /// [`crate::fusion::kernel_abi::AbstractRegistry`].
-    pub abstract_registry: crate::fusion::kernel_abi::AbstractRegistry,
+    /// [`AbstractRegistry`].
+    pub abstract_registry: AbstractRegistry,
     /// The TOP expression id of the compile currently running — set by
     /// [`compile`] before the fusion phase. `try_fuse` builds its
     /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
@@ -1301,7 +1304,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// real top expression at count zero once the spliced original's
     /// Refs unref — a fused region fed by a `<-`-written variable
     /// would then never see updates past the first cycle.
-    pub(crate) fuse_top_id: Option<crate::expr::ExprId>,
+    pub(crate) fuse_top_id: Option<ExprId>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1341,7 +1344,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             )),
             fusion_enabled: true,
             fusion_stats: FusionStats::default(),
-            abstract_registry: crate::fusion::kernel_abi::AbstractRegistry::default(),
+            abstract_registry: AbstractRegistry::default(),
             fuse_top_id: None,
         })
     }
@@ -1477,7 +1480,7 @@ pub fn compile<R: Rt, E: UserEvent>(
     info!("typecheck time {:?}", st.elapsed());
     if ctx.fusion_enabled {
         let st = Instant::now();
-        if let Err(e) = crate::fusion::fuse(&mut node, ctx) {
+        if let Err(e) = fusion::fuse(&mut node, ctx) {
             ctx.env = env;
             return Err(e);
         }

@@ -2,7 +2,9 @@ use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
 use compact_str::format_compact;
 use graphix_compiler::{
-    deref_typ, effects::EffectKind, err, errf,
+    deref_typ,
+    effects::EffectKind,
+    err, errf,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
@@ -47,8 +49,8 @@ pub(crate) struct Write {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
-    const NAME: &str = "sys_net_write";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_net_write";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -164,8 +166,8 @@ pub(crate) struct Subscribe {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
-    const NAME: &str = "sys_net_subscribe";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_net_subscribe";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -281,8 +283,8 @@ pub(crate) struct RpcCall {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
-    const NAME: &str = "sys_net_call";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_net_call";
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -406,8 +408,8 @@ macro_rules! list {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            const NAME: &str = $builtin;
             const EFFECT: EffectKind = EffectKind::Async;
+            const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(
                 ctx: &'a mut ExecCtx<R, E>,
@@ -520,8 +522,8 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
-    const NAME: &str = "sys_net_publish";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_net_publish";
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -800,8 +802,8 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
-    const NAME: &str = "sys_net_publish_rpc";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_net_publish_rpc";
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,

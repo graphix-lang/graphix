@@ -44,8 +44,7 @@ use ratatui::{
 use scrollbar::ScrollbarW;
 use smallvec::SmallVec;
 use sparkline::SparklineW;
-use std::sync::LazyLock;
-use std::{borrow::Cow, future::Future, marker::PhantomData, pin::Pin};
+use std::{borrow::Cow, future::Future, marker::PhantomData, pin::Pin, sync::LazyLock};
 use text::TextW;
 use tokio::{select, sync::oneshot, task};
 use triomphe::Arc;
@@ -562,11 +561,14 @@ async fn run<X: GXExt>(
     Ok(())
 }
 
-static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref (TypeRef {
-    scope: ModPath::root(),
-    name: ModPath::from(["tui", "Tui"]),
-    params: Arc::from_iter([]),
- ..Default::default()}));
+static TUITYP: LazyLock<Type> = LazyLock::new(|| {
+    Type::Ref(TypeRef {
+        scope: ModPath::root(),
+        name: ModPath::from(["tui", "Tui"]),
+        params: Arc::from_iter([]),
+        ..Default::default()
+    })
+});
 
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Tui<X> {

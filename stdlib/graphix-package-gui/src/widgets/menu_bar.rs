@@ -1,5 +1,7 @@
-use super::menu_bar_widget::{MenuGroupDesc, MenuItemDesc, OwnedMenuBar};
-use super::{GuiW, IcedElement};
+use super::{
+    menu_bar_widget::{MenuGroupDesc, MenuItemDesc, OwnedMenuBar},
+    GuiW, IcedElement,
+};
 use crate::types::{LengthV, ShortcutV};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;

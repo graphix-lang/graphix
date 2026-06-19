@@ -12,8 +12,8 @@ macro_rules! dirs_builtin {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            const NAME: &str = $builtin;
             const EFFECT: EffectKind = EffectKind::Sync;
+            const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

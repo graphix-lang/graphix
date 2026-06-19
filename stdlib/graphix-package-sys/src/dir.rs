@@ -43,8 +43,9 @@ fn blocking_walkdir(args: ReadDirArgs) -> Result<LPooled<Vec<DirEntry>>> {
 pub(crate) struct ReadDirEv;
 
 impl EvalCachedAsync for ReadDirEv {
-    const NAME: &str = "sys_fs_readdir";
     type Args = result::Result<ReadDirArgs, ArcStr>;
+
+    const NAME: &str = "sys_fs_readdir";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let max_depth = cached.get::<i64>(0)?;
@@ -108,8 +109,9 @@ pub(crate) type ReadDir = CachedArgsAsync<ReadDirEv>;
 pub(crate) struct CreateDirOp;
 
 impl EvalCachedAsync for CreateDirOp {
-    const NAME: &str = "sys_fs_create_dir";
     type Args = (bool, ArcStr);
+
+    const NAME: &str = "sys_fs_create_dir";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((cached.get::<bool>(0)?, cached.get::<ArcStr>(1)?))
@@ -136,8 +138,9 @@ pub(crate) type CreateDir = CachedArgsAsync<CreateDirOp>;
 pub(crate) struct RemoveDirOp;
 
 impl EvalCachedAsync for RemoveDirOp {
-    const NAME: &str = "sys_fs_remove_dir";
     type Args = (bool, ArcStr);
+
+    const NAME: &str = "sys_fs_remove_dir";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((cached.get::<bool>(0)?, cached.get::<ArcStr>(1)?))

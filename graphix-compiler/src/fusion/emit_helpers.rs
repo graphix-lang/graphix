@@ -30,6 +30,11 @@
 //! `Type::Tuple([..., T, ...])` shape, and the runtime hands
 //! us a `Value::Array(ValArray)` that matches).
 
+use crate::node::{
+    array::{array_index, array_slice_i64, bytes_index},
+    map::map_get,
+    op::wrap_arith_error,
+};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 
@@ -417,9 +422,7 @@ pub unsafe extern "C" fn graphix_value_into_array(v: Value) -> *mut ValArray {
 /// inner ValArray (refcount bump) and forgets the input so the
 /// caller's bits stay valid.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_into_array_borrowed(
-    v: Value,
-) -> *mut ValArray {
+pub unsafe extern "C" fn graphix_value_into_array_borrowed(v: Value) -> *mut ValArray {
     let ptr = match &v {
         Value::Array(a) => Box::into_raw(Box::new(a.clone())),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -476,9 +479,7 @@ pub extern "C" fn graphix_value_clone(v: Value) -> Value {
 /// `ptr` must point to a live `Value` that outlives the JIT'd code.
 /// The per-kernel `KernelValues` table owns it (like `KernelStrings`
 /// for `ArcStr`), kept alive on the `CachedKernel`.
-pub unsafe extern "C" fn graphix_value_clone_from_static(
-    ptr: *const Value,
-) -> Value {
+pub unsafe extern "C" fn graphix_value_clone_from_static(ptr: *const Value) -> Value {
     unsafe { (*ptr).clone() }
 }
 
@@ -507,13 +508,13 @@ value_arith_helper!(graphix_value_rem, %);
 // Checked arithmetic (`+?`/`-?`/`*?`/`/?`/`%?`) — netidx's `checked_*`
 // inherent methods, with any raw error wrapped into the catchable
 // `ArithError` error VALUE through the SAME
-// [`crate::node::op::wrap_arith_error`] core the node-walk's checked
+// [`wrap_arith_error`] core the node-walk's checked
 // update uses (never bottom, unlike unchecked div0). Each helper
 // CONSUMES both args, same contract as the unchecked family above.
 macro_rules! value_checked_arith_helper {
     ($name:ident, $method:ident) => {
         pub extern "C" fn $name(l: Value, r: Value) -> Value {
-            crate::node::op::wrap_arith_error(l.$method(r))
+            wrap_arith_error(l.$method(r))
         }
     };
 }
@@ -538,7 +539,7 @@ pub extern "C" fn graphix_value_eq(l: Value, r: Value) -> u8 {
 /// Value (passed owned by `compile_owned_value_operand`).
 pub extern "C" fn graphix_bytes_index(v: Value, i: i64) -> Value {
     match &v {
-        Value::Bytes(b) => crate::node::array::bytes_index(b, i),
+        Value::Bytes(b) => bytes_index(b, i),
         _ => Value::error("ArrayIndexError: expected bytes"),
     }
 }
@@ -549,7 +550,7 @@ pub extern "C" fn graphix_bytes_index(v: Value, i: i64) -> Value {
 /// CONSUMES both operands (passed owned by
 /// `compile_owned_value_operand`).
 pub extern "C" fn graphix_map_ref(map: Value, key: Value) -> Value {
-    crate::node::map::map_get(&map, &key)
+    map_get(&map, &key)
 }
 
 /// Array/bytes slice `a[i..j]`. `flags` bit0 =
@@ -558,10 +559,15 @@ pub extern "C" fn graphix_map_ref(map: Value, key: Value) -> Value {
 /// sub-array/sub-bytes or an error (`Nullable<source>`'s `Value`).
 /// CONSUMES the source Value (passed owned by
 /// `compile_owned_value_operand`).
-pub extern "C" fn graphix_array_slice(src: Value, start: i64, end: i64, flags: i64) -> Value {
+pub extern "C" fn graphix_array_slice(
+    src: Value,
+    start: i64,
+    end: i64,
+    flags: i64,
+) -> Value {
     let s = if flags & 1 != 0 { Some(start) } else { None };
     let e = if flags & 2 != 0 { Some(end) } else { None };
-    crate::node::array::array_slice_i64(&src, s, e)
+    array_slice_i64(&src, s, e)
 }
 
 // ─── String / ArcStr helpers ──────────────────────────────────────
@@ -656,9 +662,7 @@ pub unsafe extern "C" fn graphix_string_buf_drop(buf: *mut String) {
 /// Finalize a string buf into an owned ArcStr. Consumes the buf
 /// (frees the Box) and returns the resulting ArcStr.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_string_buf_finalize(
-    buf: *mut String,
-) -> arcstr::ArcStr {
+pub unsafe extern "C" fn graphix_string_buf_finalize(buf: *mut String) -> arcstr::ArcStr {
     let s = unsafe { *Box::from_raw(buf) };
     arcstr::ArcStr::from(s.as_str())
 }
@@ -1213,16 +1217,13 @@ struct_get_impl!(graphix_struct_get_u64, u64);
 /// `arr[idx]` with the full source-level `array[i]` semantics — bounds
 /// check, negative-from-end indexing, and the `ArrayIndexError` value
 /// on out-of-bounds — by delegating to the shared
-/// [`crate::node::array::array_index`]. Used by the JIT's `ArrayGet`
+/// [`array_index`]. Used by the JIT's `ArrayGet`
 /// (whose result type is `Nullable<elem>`); returns the element on
 /// success or the error Value otherwise, as a two-register `Value`.
 /// `idx` is a signed `i64` (negatives index from the end).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_index(
-    p: *const ValArray,
-    idx: i64,
-) -> Value {
-    crate::node::array::array_index(unsafe { arr(p) }, idx)
+pub unsafe extern "C" fn graphix_valarray_index(p: *const ValArray, idx: i64) -> Value {
+    array_index(unsafe { arr(p) }, idx)
 }
 
 /// `arr[idx]` as an owned `*mut ValArray` (Array/Tuple/Struct elem).
@@ -1368,10 +1369,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ),
         ("graphix_value_drop", graphix_value_drop as *const u8),
         ("graphix_value_clone", graphix_value_clone as *const u8),
-        (
-            "graphix_value_clone_from_static",
-            graphix_value_clone_from_static as *const u8,
-        ),
+        ("graphix_value_clone_from_static", graphix_value_clone_from_static as *const u8),
         ("graphix_value_add", graphix_value_add as *const u8),
         ("graphix_value_sub", graphix_value_sub as *const u8),
         ("graphix_value_mul", graphix_value_mul as *const u8),
@@ -1434,46 +1432,34 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         // (`icmp_imm Equal disc, NULL_DISC`) and never calls it.
         ("graphix_value_is_null", graphix_value_is_null as *const u8),
         // ─── String helpers ──────────────────────────────────────
-        ("graphix_arcstr_clone_from_static",
-         graphix_arcstr_clone_from_static as *const u8),
+        (
+            "graphix_arcstr_clone_from_static",
+            graphix_arcstr_clone_from_static as *const u8,
+        ),
         ("graphix_arcstr_clone", graphix_arcstr_clone as *const u8),
         ("graphix_arcstr_drop", graphix_arcstr_drop as *const u8),
         ("graphix_value_new_string", graphix_value_new_string as *const u8),
         ("graphix_string_buf_new", graphix_string_buf_new as *const u8),
         ("graphix_string_buf_drop", graphix_string_buf_drop as *const u8),
-        ("graphix_string_buf_finalize",
-         graphix_string_buf_finalize as *const u8),
-        ("graphix_string_buf_push_arcstr",
-         graphix_string_buf_push_arcstr as *const u8),
-        ("graphix_string_buf_push_i64",
-         graphix_string_buf_push_i64 as *const u8),
-        ("graphix_string_buf_push_u64",
-         graphix_string_buf_push_u64 as *const u8),
-        ("graphix_string_buf_push_i32",
-         graphix_string_buf_push_i32 as *const u8),
-        ("graphix_string_buf_push_u32",
-         graphix_string_buf_push_u32 as *const u8),
-        ("graphix_string_buf_push_i16",
-         graphix_string_buf_push_i16 as *const u8),
-        ("graphix_string_buf_push_u16",
-         graphix_string_buf_push_u16 as *const u8),
-        ("graphix_string_buf_push_i8",
-         graphix_string_buf_push_i8 as *const u8),
-        ("graphix_string_buf_push_u8",
-         graphix_string_buf_push_u8 as *const u8),
-        ("graphix_string_buf_push_f64",
-         graphix_string_buf_push_f64 as *const u8),
-        ("graphix_string_buf_push_f32",
-         graphix_string_buf_push_f32 as *const u8),
-        ("graphix_string_buf_push_bool",
-         graphix_string_buf_push_bool as *const u8),
+        ("graphix_string_buf_finalize", graphix_string_buf_finalize as *const u8),
+        ("graphix_string_buf_push_arcstr", graphix_string_buf_push_arcstr as *const u8),
+        ("graphix_string_buf_push_i64", graphix_string_buf_push_i64 as *const u8),
+        ("graphix_string_buf_push_u64", graphix_string_buf_push_u64 as *const u8),
+        ("graphix_string_buf_push_i32", graphix_string_buf_push_i32 as *const u8),
+        ("graphix_string_buf_push_u32", graphix_string_buf_push_u32 as *const u8),
+        ("graphix_string_buf_push_i16", graphix_string_buf_push_i16 as *const u8),
+        ("graphix_string_buf_push_u16", graphix_string_buf_push_u16 as *const u8),
+        ("graphix_string_buf_push_i8", graphix_string_buf_push_i8 as *const u8),
+        ("graphix_string_buf_push_u8", graphix_string_buf_push_u8 as *const u8),
+        ("graphix_string_buf_push_f64", graphix_string_buf_push_f64 as *const u8),
+        ("graphix_string_buf_push_f32", graphix_string_buf_push_f32 as *const u8),
+        ("graphix_string_buf_push_bool", graphix_string_buf_push_bool as *const u8),
         // ─── Debug-build instrumentation ────────────────────────
         // Bumps the per-thread `JIT_INVOCATIONS` counter on every
         // wrapper entry; lets the test harness's `jit` mode assert
         // the JIT actually executed. Excluded from release builds.
         #[cfg(debug_assertions)]
-        ("graphix_record_jit_invocation",
-         graphix_record_jit_invocation as *const u8),
+        ("graphix_record_jit_invocation", graphix_record_jit_invocation as *const u8),
     ]
 }
 
@@ -1494,17 +1480,9 @@ mod tests {
     #[test]
     fn pending_take_is_peek_not_clear() {
         DYNCALL_PENDING.with(|c| c.set(false));
-        assert_eq!(
-            graphix_dyncall_pending_take(),
-            0,
-            "peek on cleared flag returns 0"
-        );
+        assert_eq!(graphix_dyncall_pending_take(), 0, "peek on cleared flag returns 0");
         DYNCALL_PENDING.with(|c| c.set(true));
-        assert_eq!(
-            graphix_dyncall_pending_take(),
-            1,
-            "peek on set flag returns 1"
-        );
+        assert_eq!(graphix_dyncall_pending_take(), 1, "peek on set flag returns 1");
         assert_eq!(
             graphix_dyncall_pending_take(),
             1,

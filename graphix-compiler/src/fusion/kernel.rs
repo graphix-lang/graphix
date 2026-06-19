@@ -18,8 +18,18 @@
 //! needs.
 
 use crate::{
-    fusion::kernel_abi::KernelSig,
-    Apply, Event, ExecCtx, Node, Rt, UserEvent,
+    expr::{Expr, ExprId},
+    fusion::{
+        emit::{pack_value_to_u64, unpack_u64_to_value, WrappedKernel},
+        emit_helpers::{
+            record_fusion_invocation, DynCallRet, DynDispatchHandle,
+            DYNCALL_PENDING, DYN_DISPATCH_HANDLE,
+        },
+        kernel_abi::{self, BuiltinSlot, FnSource, KernelSig},
+    },
+    node::{bind::Ref, compiler::compile, lambda::LambdaDef},
+    typ::FnType,
+    Apply, BindId, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
@@ -42,7 +52,7 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// arg `Value` into `event.variables[bind_ids[i]]`; the matching
     /// `Ref` node in `arg_refs` reads it back inside the inner
     /// Apply's `update`.
-    bind_ids: Vec<crate::BindId>,
+    bind_ids: Vec<BindId>,
     /// Per-arg `Ref` nodes that read from `bind_ids`. Passed as the
     /// `from: &mut [Node<R, E>]` slice to the inner Apply's `update`.
     arg_refs: Vec<Node<R, E>>,
@@ -65,7 +75,7 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// priming step at the inner `compile_default!` call). Empty
     /// for non-builtin slots and for builtin slots whose defaults
     /// are pure literals with no external refs.
-    default_external_refs: Vec<crate::BindId>,
+    default_external_refs: Vec<BindId>,
     /// `false` until the current inner Apply's FIRST dispatch has
     /// run. A freshly-constructed Apply's first update IS its init
     /// (the same contract `CallSite::bind` provides a fresh callee):
@@ -77,9 +87,9 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     fired: bool,
     /// Lexical scope at the kernel's definition site. Re-passed to
     /// the inner Apply's `init` so it sees the right environment.
-    scope: crate::Scope,
+    scope: Scope,
     /// Top-level expression id for the inner Apply's diagnostics.
-    top_id: crate::expr::ExprId,
+    top_id: ExprId,
 }
 
 unsafe impl<R: Rt, E: UserEvent> Send for DynCallSlot<R, E> {}
@@ -97,27 +107,26 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for DynCallSlot<R, E> {
 impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// Allocate a fresh slot for a kernel `FnParam`. `arg_types` gives
     /// the expected types of the callee's args; we allocate one
-    /// BindId + one [`crate::node::bind::Ref`] node per arg.
+    /// BindId + one [`Ref`] node per arg.
     pub fn new(
-        fn_param: &crate::fusion::kernel_abi::FnParam,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
+        fn_param: &kernel_abi::FnParam,
+        scope: Scope,
+        top_id: ExprId,
     ) -> Self {
         let mut bind_ids = Vec::with_capacity(fn_param.arg_types.len());
-        let mut arg_refs: Vec<Node<R, E>> =
-            Vec::with_capacity(fn_param.arg_types.len());
+        let mut arg_refs: Vec<Node<R, E>> = Vec::with_capacity(fn_param.arg_types.len());
         for arg_kty in &fn_param.arg_types {
-            let id = crate::BindId::new();
+            let id = BindId::new();
             bind_ids.push(id);
             // Ref reads `event.variables[id]` (or falls back to
             // `ctx.cached[id]`) on each `update`. `typ` is the
             // FnParam's declared (frozen) netidx `Type`, used directly.
             let typ = arg_kty.clone();
-            let node = crate::node::bind::Ref::new::<R, E>(
+            let node = Ref::new::<R, E>(
                 id,
                 typ,
                 top_id,
-                crate::expr::Expr::default(),
+                Expr::default(),
             );
             arg_refs.push(node);
         }
@@ -152,14 +161,14 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     ///   site never changes).
     pub fn pre_bind_builtin(
         &mut self,
-        ctx: &mut crate::ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
         builtin_name: &str,
-        typ: &crate::typ::FnType,
-        layout: &[crate::fusion::kernel_abi::BuiltinSlot],
-        lambda_id: Option<crate::LambdaId>,
+        typ: &FnType,
+        layout: &[BuiltinSlot],
+        lambda_id: Option<LambdaId>,
     ) -> ::anyhow::Result<()> {
+        use BuiltinSlot;
         use ::anyhow::anyhow;
-        use crate::fusion::kernel_abi::BuiltinSlot;
         // Restore the lambda's env + lexical scope so labeled-default
         // expressions that reference free variables visible only in
         // the lambda's original module scope (e.g. `default_escape`
@@ -175,19 +184,14 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // like). If `lambda_id` is None or the lookup fails we keep
         // the kernel's own scope/env — works for defaults that are
         // pure literals (no free vars).
-        let default_env_scope = lambda_id
-            .and_then(|id| ctx.lambda_defs.get(&id).cloned())
-            .and_then(|val| {
-                val.downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
+        let default_env_scope =
+            lambda_id.and_then(|id| ctx.lambda_defs.get(&id).cloned()).and_then(|val| {
+                val.downcast_ref::<LambdaDef<R, E>>()
                     .map(|d| (d.env.clone(), d.scope.lexical.clone()))
             });
-        let init =
-            ctx.builtins.get(builtin_name).copied().ok_or_else(|| {
-                anyhow!(
-                    "DynCallSlot::pre_bind_builtin: unknown builtin `{}`",
-                    builtin_name
-                )
-            })?;
+        let init = ctx.builtins.get(builtin_name).copied().ok_or_else(|| {
+            anyhow!("DynCallSlot::pre_bind_builtin: unknown builtin `{}`", builtin_name)
+        })?;
         // The slot's existing `arg_refs` has one Ref per kernel-
         // marshalled arg (i.e. one per Positional in the layout).
         // Re-shape into a per-formal `from[]` slice in
@@ -195,16 +199,12 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // matching Ref from the existing arg_refs; LabeledDefault
         // slots compile the captured default expression and use
         // the resulting Node.
-        let mut new_arg_refs: Vec<Node<R, E>> =
-            Vec::with_capacity(layout.len());
+        let mut new_arg_refs: Vec<Node<R, E>> = Vec::with_capacity(layout.len());
         // Drain self.arg_refs (one per positional) so we can move
         // each Ref into the right formal slot. Indexed by
         // BuiltinSlot::Positional(call_idx).
-        let mut positional_refs: Vec<Option<Node<R, E>>> = self
-            .arg_refs
-            .drain(..)
-            .map(Some)
-            .collect();
+        let mut positional_refs: Vec<Option<Node<R, E>>> =
+            self.arg_refs.drain(..).map(Some).collect();
         for slot in layout {
             match slot {
                 BuiltinSlot::Positional(call_idx) => {
@@ -230,23 +230,20 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     // module-scope env to resolve. Pure-literal defaults
                     // (rand's `0.0` / `1.0`) work either way.
                     let node = match &default_env_scope {
-                        Some((env, lex)) => ctx.with_restored(
-                            env.clone(),
-                            |ctx| {
-                                let scope = crate::Scope {
-                                    dynamic: self.scope.dynamic.clone(),
-                                    lexical: lex.clone(),
-                                };
-                                crate::node::compiler::compile(
-                                    ctx,
-                                    enumflags2::BitFlags::empty(),
-                                    expr.clone(),
-                                    &scope,
-                                    self.top_id,
-                                )
-                            },
-                        )?,
-                        None => crate::node::compiler::compile(
+                        Some((env, lex)) => ctx.with_restored(env.clone(), |ctx| {
+                            let scope = Scope {
+                                dynamic: self.scope.dynamic.clone(),
+                                lexical: lex.clone(),
+                            };
+                            compile(
+                                ctx,
+                                enumflags2::BitFlags::empty(),
+                                expr.clone(),
+                                &scope,
+                                self.top_id,
+                            )
+                        })?,
+                        None => compile(
                             ctx,
                             enumflags2::BitFlags::empty(),
                             expr.clone(),
@@ -262,7 +259,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     // a module-level binding) reads None on the first
                     // dispatch — the binding's value is in ctx.cached
                     // but never copied into the per-cycle event.
-                    let mut refs = crate::Refs::default();
+                    let mut refs = Refs::default();
                     node.refs(&mut refs);
                     refs.with_external_refs(|id| {
                         self.default_external_refs.push(id);
@@ -297,14 +294,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
         }
         self.arg_refs = new_arg_refs;
-        let apply = init(
-            ctx,
-            typ,
-            Some(typ),
-            &self.scope,
-            &self.arg_refs,
-            self.top_id,
-        )?;
+        let apply = init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id)?;
         // Use the slot's own address as a stable sentinel pointer —
         // dispatch checks `pre_bound` first and never reads this.
         let sentinel = self as *const Self as *const u8;
@@ -328,22 +318,15 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     pub fn pre_init(
         &mut self,
         lambda_value: &Value,
-        ctx: &mut crate::ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
         use ::anyhow::anyhow;
         let lambda_def = lambda_value
-            .downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
-            .ok_or_else(|| {
-                anyhow!("DynCallSlot::pre_init: not a LambdaDef")
-            })?;
+            .downcast_ref::<LambdaDef<R, E>>()
+            .ok_or_else(|| anyhow!("DynCallSlot::pre_init: not a LambdaDef"))?;
         let lambda_ptr = lambda_def as *const _ as *const u8;
-        let new_apply = (lambda_def.init)(
-            &self.scope,
-            ctx,
-            &mut self.arg_refs,
-            None,
-            self.top_id,
-        )?;
+        let new_apply =
+            (lambda_def.init)(&self.scope, ctx, &mut self.arg_refs, None, self.top_id)?;
         self.current = Some((lambda_ptr, new_apply));
         Ok(())
     }
@@ -356,7 +339,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     pub fn dispatch(
         &mut self,
         lambda_value: &Value,
-        ctx: &mut crate::ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
         event: &mut crate::Event<E>,
         args: &[Value],
     ) -> Option<Value> {
@@ -371,7 +354,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             // re-invoked" reuses the existing Apply without
             // re-init'ing.
             let lambda_def = lambda_value
-                .downcast_ref::<crate::node::lambda::LambdaDef<R, E>>()
+                .downcast_ref::<LambdaDef<R, E>>()
                 .unwrap_or_else(|| {
                     panic!(
                         "DynCall: fn-arg value isn't a LambdaDef — \
@@ -404,7 +387,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         }
         // Side-channel: stash each arg Value at its BindId so the
         // arg_refs `Ref` nodes read it inside `apply.update`.
-        let mut set: poolshark::local::LPooled<Vec<crate::BindId>> =
+        let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
         for (i, v) in args.iter().enumerate() {
             let id = self.bind_ids[i];
@@ -435,7 +418,6 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         result
     }
 }
-
 
 // ─── DynCall dispatch for JIT'd kernels ──────────────────────────
 //
@@ -475,8 +457,8 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
     ret_kind: u8,
-) -> crate::fusion::emit_helpers::DynCallRet {
-    use crate::fusion::emit_helpers::DynCallRet;
+) -> DynCallRet {
+    use DynCallRet;
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
     let fn_arg_values = unsafe { &*state.fn_arg_values };
@@ -522,8 +504,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                 // local `v`'s Drop from running while we transmute
                 // its bits out; ownership transfers to the caller.
                 let v = std::mem::ManuallyDrop::new(v);
-                let words: [u64; 2] =
-                    unsafe { std::mem::transmute_copy(&*v) };
+                let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*v) };
                 DynCallRet { word0: words[0], word1: words[1] }
             }
             3 => {
@@ -556,7 +537,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
         },
         None => {
-            crate::fusion::emit_helpers::DYNCALL_PENDING.with(|c| c.set(true));
+            DYNCALL_PENDING.with(|c| c.set(true));
             DynCallRet { word0: 0, word1: 0 }
         }
     }
@@ -564,12 +545,12 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
 
 /// Pack a scalar [`Value`]'s bits into a u64 for the DynCall ABI's
 /// scalar return path, deriving the `PrimType` from the value's own
-/// variant. Same encoding as [`crate::fusion::emit::pack_value_to_u64`].
+/// variant. Same encoding as [`pack_value_to_u64`].
 fn dyncall_scalar_return_bits(v: &Value) -> u64 {
-    let prim = crate::fusion::kernel_abi::scalar_prim_of_value(v).unwrap_or_else(|| {
+    let prim = kernel_abi::scalar_prim_of_value(v).unwrap_or_else(|| {
         panic!("DynCall scalar return: callee produced non-scalar {v:?}")
     });
-    crate::fusion::emit::pack_value_to_u64(v, prim)
+    pack_value_to_u64(v, prim)
 }
 
 /// Wraps a [`KernelSig`] as an [`Apply<R, E>`] so the runtime can call
@@ -595,7 +576,7 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// The compiled JIT wrapper this node dispatches into. Required:
     /// a fused node without a JIT cannot exist — JIT failure means
     /// the region was never spliced and the original nodes node-walk.
-    jit: Arc<crate::fusion::emit::WrappedKernel>,
+    jit: Arc<WrappedKernel>,
     /// One slot per `kernel.fn_params` entry. Empty for kernels with
     /// no HOF args. The DynCall dispatcher closure (assembled inside
     /// `Apply<R, E>::update`) borrows this slice mutably to invoke
@@ -631,7 +612,7 @@ enum ArgKind {
 /// params (Binding-source fn params resolve through ctx.cached and
 /// don't count). Equals `arg_layout.len()`.
 pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
-    use crate::fusion::kernel_abi::FnSource;
+    use FnSource;
     let param_source_count = kernel
         .fn_params
         .iter()
@@ -641,7 +622,7 @@ pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
 }
 
 fn build_arg_layout(kernel: &KernelSig) -> Vec<ArgKind> {
-    use crate::fusion::kernel_abi::{FnSource, TailCallSlotKind};
+    use kernel_abi::{FnSource, TailCallSlotKind};
     // `tail_call_slots` is populated for every kernel and lists
     // params in source-declared order. Each slot carries a name
     // matching one of the kernel's *_params lists. Walking this list
@@ -652,9 +633,8 @@ fn build_arg_layout(kernel: &KernelSig) -> Vec<ArgKind> {
     // bails on fn args in tail-call kernels). For non-tail kernels
     // tail_call_slots is also populated for the non-fn params, so we
     // detect fn positions separately by walking fn_params.
-    let mut out = Vec::with_capacity(
-        kernel.tail_call_slots.len() + kernel.fn_params.len(),
-    );
+    let mut out =
+        Vec::with_capacity(kernel.tail_call_slots.len() + kernel.fn_params.len());
     let mut prim_idx: u32 = 0;
     let mut array_idx: u32 = 0;
     let mut tuple_idx: u32 = 0;
@@ -748,7 +728,7 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for Kernel<R, E> {
 
 impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// The compiled kernel IR this node executes. Used by graph
-    /// introspection (`crate::node_shape`) to assert on what a region
+    /// introspection (`node_shape`) to assert on what a region
     /// actually fused into.
     pub fn kernel(&self) -> &Arc<KernelSig> {
         &self.kernel
@@ -762,10 +742,10 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// + `top_id` are the cloned feeders' scope and the region's spec id.
     pub fn clone_shared(
         &self,
-        ctx: &mut crate::ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
         n_args: usize,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
+        scope: Scope,
+        top_id: ExprId,
     ) -> ::anyhow::Result<Self> {
         Self::new(ctx, self.kernel.clone(), n_args, self.jit.clone(), scope, top_id)
     }
@@ -783,12 +763,12 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// `scope` and `top_id` initialize per-DynCall-slot state (the
     /// inner Applies that DynCall dispatches into).
     pub fn new(
-        ctx: &mut crate::ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
         kernel: Arc<KernelSig>,
         n_args: usize,
-        wrapped: Arc<crate::fusion::emit::WrappedKernel>,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
+        wrapped: Arc<WrappedKernel>,
+        scope: Scope,
+        top_id: ExprId,
     ) -> ::anyhow::Result<Self> {
         debug_assert_eq!(
             n_args,
@@ -823,13 +803,9 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// Param-source slots (HOF args) are skipped — the callee value
     /// arrives per dispatch from the kernel's caller, not from a
     /// fixed binding.
-    pub fn pre_init_binding_slots(
-        &mut self,
-        ctx: &mut crate::ExecCtx<R, E>,
-    ) {
+    pub fn pre_init_binding_slots(&mut self, ctx: &mut ExecCtx<R, E>) {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source
-            {
+            if let FnSource::Binding { bind_id } = &fp.source {
                 if let Some(v) = ctx.cached.get(bind_id).cloned() {
                     if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
                         log::warn!(
@@ -856,10 +832,10 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// with the resolved FnType the analyzer captured at fusion time.
     pub fn pre_init_builtin_slots(
         &mut self,
-        ctx: &mut crate::ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::fusion::kernel_abi::FnSource::Builtin {
+            if let FnSource::Builtin {
                 name,
                 typ,
                 layout,
@@ -908,8 +884,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // dispatches. Without this check, a kernel that DynCalls
         // into `helper` never reruns after helper's first publish.
         for fp in self.kernel.fn_params.iter() {
-            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source
-            {
+            if let FnSource::Binding { bind_id } = &fp.source {
                 if event.variables.contains_key(bind_id) {
                     any_updated = true;
                     break;
@@ -935,15 +910,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let has_dynamic_fn_params = self.kernel.fn_params.iter().any(|fp| {
             matches!(
                 fp.source,
-                crate::fusion::kernel_abi::FnSource::Param { .. }
-                    | crate::fusion::kernel_abi::FnSource::Binding { .. }
+                FnSource::Param { .. }
+                    | FnSource::Binding { .. }
             )
         });
-        if !any_updated
-            && from.is_empty()
-            && !has_dynamic_fn_params
-            && event.init
-        {
+        if !any_updated && from.is_empty() && !has_dynamic_fn_params && event.init {
             any_updated = true;
         }
         if !any_updated {
@@ -955,7 +926,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // "fused but ran on interp" from "no fusion". The JIT path
         // additionally bumps `JIT_INVOCATIONS` inside its wrapper.
         #[cfg(debug_assertions)]
-        crate::fusion::emit_helpers::record_fusion_invocation();
+        record_fusion_invocation();
         // Prime per-cycle `event.variables` from `ctx.cached` for
         // every external Ref appearing inside a `BuiltinSlot::
         // LabeledDefault`'s compiled Node. Mirrors `CallSite::bind`'s
@@ -1012,27 +983,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                         fn_arg_values[fn_idx as usize] = v;
                     }
                 }
-                ArgKind::Array(idx) => {
-                    param_opts[base_array + idx as usize] = v
-                }
-                ArgKind::Tuple(idx) => {
-                    param_opts[base_tuple + idx as usize] = v
-                }
-                ArgKind::Struct(idx) => {
-                    param_opts[base_struct + idx as usize] = v
-                }
-                ArgKind::Variant(idx) => {
-                    param_opts[base_variant + idx as usize] = v
-                }
-                ArgKind::Nullable(idx) => {
-                    param_opts[base_nullable + idx as usize] = v
-                }
-                ArgKind::String(idx) => {
-                    param_opts[base_string + idx as usize] = v
-                }
-                ArgKind::Value(idx) => {
-                    param_opts[base_value + idx as usize] = v
-                }
+                ArgKind::Array(idx) => param_opts[base_array + idx as usize] = v,
+                ArgKind::Tuple(idx) => param_opts[base_tuple + idx as usize] = v,
+                ArgKind::Struct(idx) => param_opts[base_struct + idx as usize] = v,
+                ArgKind::Variant(idx) => param_opts[base_variant + idx as usize] = v,
+                ArgKind::Nullable(idx) => param_opts[base_nullable + idx as usize] = v,
+                ArgKind::String(idx) => param_opts[base_string + idx as usize] = v,
+                ArgKind::Value(idx) => param_opts[base_value + idx as usize] = v,
             }
         }
         // Resolve Binding-source fn slots by reading the BindId out
@@ -1041,8 +998,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // neither has a value yet, the kernel can't run — return
         // None and try again next cycle.
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source
-            {
+            if let FnSource::Binding { bind_id } = &fp.source {
                 let v = event
                     .variables
                     .get(bind_id)
@@ -1064,8 +1020,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             smallvec::SmallVec::with_capacity(k.params.len());
         for (i, p) in k.params.iter().enumerate() {
             let v = param_opts[i].as_ref()?;
-            scalar_arg_bits
-                .push(crate::fusion::emit::pack_value_to_u64(v, p.prim));
+            scalar_arg_bits.push(pack_value_to_u64(v, p.prim));
         }
         let composite_arr = |i: usize| -> Option<ValArray> {
             match param_opts[i].as_ref()? {
@@ -1131,9 +1086,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // must outlive the call. They do: the smallvecs live
         // for the rest of `update`.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
-            smallvec::SmallVec::with_capacity(
-                self.kernel.abi_param_wire_slots(),
-            );
+            smallvec::SmallVec::with_capacity(self.kernel.abi_param_wire_slots());
         for bits in &scalar_arg_bits {
             slots.push(*bits);
         }
@@ -1218,23 +1171,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             ctx: ctx as *mut ExecCtx<R, E>,
             event: event as *mut Event<E>,
         };
-        let handle = crate::fusion::emit_helpers::DynDispatchHandle {
+        let handle = DynDispatchHandle {
             dispatch: dispatch_typed::<R, E>,
             state: (&mut state) as *mut _ as *mut u8,
         };
-        let prev_handle = crate::fusion::emit_helpers::DYN_DISPATCH_HANDLE
+        let prev_handle = DYN_DISPATCH_HANDLE
             .with(|c| c.replace(&handle as *const _));
         // Always reset the pending flag before the call so
         // we can distinguish "this kernel pended" from
         // "some earlier kernel left the flag set."
-        crate::fusion::emit_helpers::DYNCALL_PENDING.with(|c| c.set(false));
+        DYNCALL_PENDING.with(|c| c.set(false));
         unsafe {
             f(slots.as_ptr(), out.as_mut_ptr());
         }
-        crate::fusion::emit_helpers::DYN_DISPATCH_HANDLE
-            .with(|c| c.set(prev_handle));
-        let pending = crate::fusion::emit_helpers::DYNCALL_PENDING
-            .with(|c| c.replace(false));
+        DYN_DISPATCH_HANDLE.with(|c| c.set(prev_handle));
+        let pending =
+            DYNCALL_PENDING.with(|c| c.replace(false));
         if pending {
             // The kernel's *out slot is either a garbage
             // scalar (no deref needed) or a null pointer
@@ -1254,13 +1206,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         //   out[1] = payload. Transmute the two u64s back into a
         //   Value (`#[repr(u64)]`, 16 bytes / 8-byte aligned —
         //   layout pinned by `emit_helpers`).
-        use crate::fusion::kernel_abi::AbiKind;
-        let v = match crate::fusion::kernel_abi::abi_kind(
+        use kernel_abi::AbiKind;
+        let v = match kernel_abi::abi_kind(
             &ctx.abstract_registry,
             &self.kernel.return_type,
         ) {
             Some(AbiKind::Scalar(p)) => {
-                crate::fusion::emit::unpack_u64_to_value(out[0], p)
+                unpack_u64_to_value(out[0], p)
             }
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 let ptr = out[0] as *mut ValArray;
@@ -1282,9 +1234,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 // `graphix_arcstr_clone_from_static` or
                 // `graphix_string_buf_finalize`, both returning
                 // owned ArcStr values.
-                let s: arcstr::ArcStr = unsafe {
-                    std::mem::transmute::<u64, arcstr::ArcStr>(raw)
-                };
+                let s: arcstr::ArcStr =
+                    unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(raw) };
                 Value::String(s)
             }
             // Variant / Nullable / value-shape (datetime /
@@ -1309,7 +1260,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         }
     }
 
-    fn refs(&self, refs: &mut crate::Refs) {
+    fn refs(&self, refs: &mut Refs) {
         // Kernel replaces a CallSite for fused lambdas. The
         // CallSite would have walked its inner Apply's refs to
         // build subscription state — when those BindIds fire, the
@@ -1332,18 +1283,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             }
         }
         for fp in &self.kernel.fn_params {
-            if let crate::fusion::kernel_abi::FnSource::Binding { bind_id } = &fp.source {
+            if let FnSource::Binding { bind_id } = &fp.source {
                 refs.refed.insert(*bind_id);
             }
         }
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fusion::kernel_abi::PrimType;
+    use kernel_abi::PrimType;
 
     #[test]
     fn value_boundary_bits_round_trip() {
@@ -1361,8 +1311,8 @@ mod tests {
             (Value::I8(-1), PrimType::I8),
         ];
         for (v, p) in cases {
-            let bits = crate::fusion::emit::pack_value_to_u64(v, *p);
-            assert_eq!(crate::fusion::emit::unpack_u64_to_value(bits, *p), *v);
+            let bits = pack_value_to_u64(v, *p);
+            assert_eq!(unpack_u64_to_value(bits, *p), *v);
         }
     }
 }

@@ -3,8 +3,10 @@ use iced_core::{
     Layout, Length, Point, Rectangle, Shell, Size, Vector, Widget,
 };
 
-use super::menu_bar_widget::{MenuGroupDesc, MenuItemDesc, MenuOverlay};
-use super::{Message, Renderer};
+use super::{
+    menu_bar_widget::{MenuGroupDesc, MenuItemDesc, MenuOverlay},
+    Message, Renderer,
+};
 use crate::theme::GraphixTheme;
 
 #[derive(Default)]

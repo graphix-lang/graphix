@@ -2,8 +2,13 @@ use super::{compiler::compile, Cached};
 use crate::{
     defetyp, err, errf,
     expr::{Expr, ExprId},
+    fusion::emit::{
+        emit_array_ref_node, emit_array_slice_node, emit_tuple_new_node, BodyCx,
+        CompiledExpr,
+    },
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    update_args, wrap, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -208,15 +213,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.i.sleep(ctx);
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::ArrayRef(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::ArrayRef(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_array_ref_node(cx, &self.source.node, &self.i.node)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_array_ref_node(cx, &self.source.node, &self.i.node)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -371,15 +376,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::ArraySlice(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::ArraySlice(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_array_slice_node(
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_array_slice_node(
             cx,
             &self.source.node,
             self.start.as_ref().map(|c| &c.node),
@@ -394,10 +399,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
                 .start
                 .as_ref()
                 .map(|c| Cached::new(c.node.clone_rebind(ctx, scope))),
-            end: self
-                .end
-                .as_ref()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope))),
+            end: self.end.as_ref().map(|c| Cached::new(c.node.clone_rebind(ctx, scope))),
             spec: self.spec.clone(),
             typ: self.typ.clone(),
         })
@@ -488,17 +490,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Array(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Array(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
         // `[a, b, c]` — the runtime shape (a flat ValArray) is
         // identical to a tuple literal's; share the producer relay.
-        crate::fusion::emit::emit_tuple_new_node(cx, &self.n)
+        emit_tuple_new_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

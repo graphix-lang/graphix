@@ -1,7 +1,10 @@
 use crate::ServerState;
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse};
 
-pub fn handle(state: &ServerState, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
+pub fn handle(
+    state: &ServerState,
+    params: GotoDefinitionParams,
+) -> Option<GotoDefinitionResponse> {
     let uri = &params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 

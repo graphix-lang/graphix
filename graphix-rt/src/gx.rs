@@ -80,12 +80,7 @@ fn is_output_kind(kind: &ExprKind) -> bool {
 /// load-execution wrap is purely an execution-time scope to make
 /// fusion see the whole file at once.
 fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
-    Expr {
-        id: ExprId::new(),
-        ori,
-        pos: Default::default(),
-        kind: ExprKind::Do { exprs },
-    }
+    Expr { id: ExprId::new(), ori, pos: Default::default(), kind: ExprKind::Do { exprs } }
 }
 
 async fn or_never(b: bool) {

@@ -51,11 +51,13 @@ impl GenCtx {
     fn new() -> Self {
         GenCtx { vars: Vec::new(), next: 0 }
     }
+
     fn fresh(&mut self) -> String {
         let n = format!("v{}", self.next);
         self.next += 1;
         n
     }
+
     fn vars_of(&self, ty: &GenType) -> Vec<&str> {
         self.vars.iter().filter(|(_, t)| t == ty).map(|(n, _)| n.as_str()).collect()
     }
@@ -108,7 +110,13 @@ fn literal(rng: &mut Rng, ty: &GenType) -> String {
             let v = ["0.0", "1.0", "-1.0", "3.14", "2.5", "0.1"][rng.below(6)];
             format!("f64:{v}")
         }
-        GenType::Bool => if rng.below(2) == 0 { "true".into() } else { "false".into() },
+        GenType::Bool => {
+            if rng.below(2) == 0 {
+                "true".into()
+            } else {
+                "false".into()
+            }
+        }
         GenType::Str => {
             let v = ["a", "hello", "", "xyz", "graphix"][rng.below(5)];
             format!("\"{v}\"")
@@ -144,17 +152,32 @@ fn gen_typed(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> String 
             // bottom (Timeout in all modes), which is slow to check. Div/mod
             // are still ~25% of ops, so the div0/overflow paths get exercised.
             let op = pick(rng, &["+", "+", "-", "-", "*", "*", "/", "%"]);
-            format!("({} {} {})", gen_typed(ctx, rng, ty, d), op, gen_typed(ctx, rng, ty, d))
+            format!(
+                "({} {} {})",
+                gen_typed(ctx, rng, ty, d),
+                op,
+                gen_typed(ctx, rng, ty, d)
+            )
         }
         GenType::Bool => match rng.below(3) {
             0 => {
                 let nt = numeric_type(rng);
                 let op = pick(rng, &["<", ">", "<=", ">=", "==", "!="]);
-                format!("({} {} {})", gen_typed(ctx, rng, &nt, d), op, gen_typed(ctx, rng, &nt, d))
+                format!(
+                    "({} {} {})",
+                    gen_typed(ctx, rng, &nt, d),
+                    op,
+                    gen_typed(ctx, rng, &nt, d)
+                )
             }
             1 => {
                 let op = pick(rng, &["&&", "||"]);
-                format!("({} {} {})", gen_typed(ctx, rng, &GenType::Bool, d), op, gen_typed(ctx, rng, &GenType::Bool, d))
+                format!(
+                    "({} {} {})",
+                    gen_typed(ctx, rng, &GenType::Bool, d),
+                    op,
+                    gen_typed(ctx, rng, &GenType::Bool, d)
+                )
             }
             _ => format!("(!{})", gen_typed(ctx, rng, &GenType::Bool, d)),
         },
@@ -173,7 +196,12 @@ fn gen_typed(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> String 
 
 /// Maybe wrap an expression of `ty` in a `select` over a numeric
 /// scrutinee with a literal arm + catch-all (both arms produce `ty`).
-fn maybe_select(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<String> {
+fn maybe_select(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    ty: &GenType,
+    depth: usize,
+) -> Option<String> {
     if depth == 0 || rng.below(4) != 0 {
         return None;
     }
@@ -193,12 +221,14 @@ pub fn gen_program(rng: &mut Rng) -> String {
     for _ in 0..nlets {
         let ty = random_type(rng, 2);
         let name = ctx.fresh();
-        let val = maybe_select(&ctx, rng, &ty, 3).unwrap_or_else(|| gen_typed(&ctx, rng, &ty, 3));
+        let val = maybe_select(&ctx, rng, &ty, 3)
+            .unwrap_or_else(|| gen_typed(&ctx, rng, &ty, 3));
         stmts.push(format!("let {name} = {val}"));
         ctx.vars.push((name, ty));
     }
     let tail_ty = random_type(rng, 2);
-    let tail = maybe_select(&ctx, rng, &tail_ty, 3).unwrap_or_else(|| gen_typed(&ctx, rng, &tail_ty, 3));
+    let tail = maybe_select(&ctx, rng, &tail_ty, 3)
+        .unwrap_or_else(|| gen_typed(&ctx, rng, &tail_ty, 3));
     if stmts.is_empty() {
         tail
     } else {

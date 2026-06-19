@@ -109,7 +109,8 @@ mod tests {
     #[test]
     fn error_location_from_parser_context() {
         let o = ori("/tmp/bar.gx");
-        let pc = ParserContext { ori: o.clone(), pos: SourcePosition { line: 3, column: 7 } };
+        let pc =
+            ParserContext { ori: o.clone(), pos: SourcePosition { line: 3, column: 7 } };
         let err = anyhow!("unexpected token").context(pc);
         let loc = error_location(&err);
         assert_eq!(loc.position, Some(Position { line: 2, character: 6 }));

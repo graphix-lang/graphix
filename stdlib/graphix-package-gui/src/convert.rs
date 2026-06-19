@@ -5,9 +5,11 @@
 use iced_core::{keyboard, mouse, window, Event, Point, Size};
 use keyboard::key::NativeCode;
 use poolshark::local::LPooled;
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey, NativeKeyCode};
-use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+use winit::{
+    event::{ElementState, MouseButton, WindowEvent},
+    keyboard::{Key, NamedKey, NativeKeyCode},
+    platform::modifier_supplement::KeyEventExtModifierSupplement,
+};
 
 /// Convert a winit WindowEvent to zero or more iced Events.
 pub fn window_event(

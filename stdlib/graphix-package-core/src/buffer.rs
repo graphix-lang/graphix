@@ -9,8 +9,8 @@ use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached};
 pub(crate) struct BytesToStringEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
-    const NAME: &str = "core_bytes_to_string";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bytes_to_string";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -27,8 +27,8 @@ pub(crate) type BytesToString = CachedArgs<BytesToStringEv>;
 pub(crate) struct BytesToStringLossyEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
-    const NAME: &str = "core_bytes_to_string_lossy";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bytes_to_string_lossy";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -43,8 +43,8 @@ pub(crate) type BytesToStringLossy = CachedArgs<BytesToStringLossyEv>;
 pub(crate) struct BytesFromStringEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromStringEv {
-    const NAME: &str = "core_bytes_from_string";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bytes_from_string";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let s = from.get::<ArcStr>(0)?;
@@ -66,8 +66,8 @@ impl Default for BytesConcatEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesConcatEv {
-    const NAME: &str = "core_bytes_concat";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bytes_concat";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         self.buf.clear();
@@ -96,8 +96,8 @@ pub(crate) type BytesConcat = CachedArgs<BytesConcatEv>;
 pub(crate) struct BytesToArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToArrayEv {
-    const NAME: &str = "core_bytes_to_array";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bytes_to_array";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -121,8 +121,8 @@ impl Default for BytesFromArrayEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromArrayEv {
-    const NAME: &str = "core_bytes_from_array";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bytes_from_array";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let arr = match from.0.first()?.as_ref()? {
@@ -147,8 +147,8 @@ pub(crate) type BytesFromArray = CachedArgs<BytesFromArrayEv>;
 pub(crate) struct BytesLenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
-    const NAME: &str = "core_bytes_len";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bytes_len";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -224,8 +224,8 @@ impl Default for EncodeEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
-    const NAME: &str = "core_buffer_encode";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_buffer_encode";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let arr = match from.0.first()?.as_ref()? {
@@ -297,8 +297,8 @@ macro_rules! decode_fixed {
 pub(crate) struct DecodeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
-    const NAME: &str = "core_buffer_decode";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_buffer_decode";
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let buf = from.get::<Bytes>(0)?;

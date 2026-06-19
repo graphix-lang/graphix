@@ -1,14 +1,13 @@
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use compact_str::format_compact;
-use graphix_compiler::SourcePosition;
 use graphix_compiler::{
     effects::EffectKind,
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
     Apply, BindId, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    UserEvent,
+    SourcePosition, UserEvent,
 };
 use netidx::subscriber::Value;
 use parking_lot::Mutex;
@@ -164,8 +163,8 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
-    const NAME: &str = "core_queuefn";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "core_queuefn";
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,

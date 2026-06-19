@@ -154,16 +154,23 @@ pub async fn run_program_with_stats(
     let wrapped = format!("let result = {code}");
     let tbl = AHashMap::from_iter([(Path::from("/test.gx"), ArcStr::from(wrapped))]);
     let resolver = ModuleResolver::VFS(tbl);
-    let ctx =
-        match init_with_flags_and_setup(tx, REGISTER, vec![resolver], mode.flags(), |_| {}).await {
-            Ok(c) => c,
-            Err(e) => {
-                return (
-                    Outcome::RuntimeErr(format!("runtime init failed: {e}")),
-                    FusionStats::default(),
-                )
-            }
-        };
+    let ctx = match init_with_flags_and_setup(
+        tx,
+        REGISTER,
+        vec![resolver],
+        mode.flags(),
+        |_| {},
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                Outcome::RuntimeErr(format!("runtime init failed: {e}")),
+                FusionStats::default(),
+            )
+        }
+    };
     let base = ctx.fusion_stats().await.unwrap_or_default();
     let outcome = drive(&ctx, &mut rx, timeout).await;
     let stats = match ctx.fusion_stats().await {
@@ -184,10 +191,11 @@ async fn drive(
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     timeout: Duration,
 ) -> Outcome {
-    let compiled = match ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await {
-        Ok(c) => c,
-        Err(e) => return Outcome::CompileErr(format!("{e}")),
-    };
+    let compiled =
+        match ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await {
+            Ok(c) => c,
+            Err(e) => return Outcome::CompileErr(format!("{e}")),
+        };
     let eid = compiled.exprs[0].id;
     // Drain any `Updated(eid)` already in `batch`; `Some(v)` = the result.
     fn take_result(
@@ -421,8 +429,7 @@ impl Corpus {
                 if let Ok(body) = std::fs::read_to_string(&path) {
                     if let Some(m) = extract_minimized(&body) {
                         seen.insert(m);
-                    } else if let Some((_, p)) = body.split_once("// mutant:\n")
-                    {
+                    } else if let Some((_, p)) = body.split_once("// mutant:\n") {
                         // Crash finding (no minimized form) — dedup by
                         // the program text, same key `record_crash` uses.
                         seen.insert(format!("CRASH:{}", p.trim()));
@@ -432,8 +439,7 @@ impl Corpus {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .and_then(|s| {
-                        s.strip_prefix("divergence_")
-                            .or_else(|| s.strip_prefix("crash_"))
+                        s.strip_prefix("divergence_").or_else(|| s.strip_prefix("crash_"))
                     })
                     .and_then(|s| s.parse::<usize>().ok())
                 {
@@ -470,9 +476,7 @@ impl Corpus {
                 return false;
             }
         }
-        let n = self
-            .counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let body = format!(
             "// bisect: {}\n// interp: {:?}\n// jit:    {:?}\n\
              // mutant: {}\n// minimized:\n{}\n",
@@ -502,9 +506,7 @@ impl Corpus {
                 return false;
             }
         }
-        let n = self
-            .counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let body = format!(
             "// CRASH: child {status}\n\
              // do not promote to findings/ until fixed (regress runs in-process)\n\
@@ -518,8 +520,7 @@ impl Corpus {
 /// Extract the minimized program (the text after the `// minimized:`
 /// marker) from a recorded divergence file, trimmed — the dedup key.
 fn extract_minimized(body: &str) -> Option<String> {
-    body.split_once("// minimized:\n")
-        .map(|(_, m)| m.trim().to_string())
+    body.split_once("// minimized:\n").map(|(_, m)| m.trim().to_string())
 }
 
 /// Source-A campaign: mutate corpus seeds and run each mutant through the
@@ -624,13 +625,12 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
     // catches a wedged child (a compile-time hang, a runaway that dodges
     // the guard page), with margin for pool contention.
     let deadline = timeout * 4 + Duration::from_secs(30);
-    let out =
-        match tokio::time::timeout(deadline, child.wait_with_output()).await {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return PoolResult::Crash(format!("wait: {e}")),
-            // Future dropped → kill_on_drop reaps the child.
-            Err(_) => return PoolResult::Crash("HANG (outer deadline)".into()),
-        };
+    let out = match tokio::time::timeout(deadline, child.wait_with_output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return PoolResult::Crash(format!("wait: {e}")),
+        // Future dropped → kill_on_drop reaps the child.
+        Err(_) => return PoolResult::Crash("HANG (outer deadline)".into()),
+    };
     if !out.status.success() {
         // Include the child's last stderr lines — the std stack-overflow
         // handler / panic hook message is the triage signal that
@@ -688,15 +688,18 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     // per-mode timeout — bound it generously, the minims pool is
     // concurrent and a kill falls back to the unminimized mutant.
     let deadline = timeout * 2 * 80 + Duration::from_secs(60);
-    let out =
-        match tokio::time::timeout(deadline, child.wait_with_output()).await {
-            Ok(Ok(out)) if out.status.success() => out,
-            _ => return None,
-        };
+    let out = match tokio::time::timeout(deadline, child.wait_with_output()).await {
+        Ok(Ok(out)) if out.status.success() => out,
+        _ => return None,
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let (_, min) = stdout.split_once("MINIMIZED\n")?;
     let min = min.trim();
-    if min.is_empty() { None } else { Some(min.to_string()) }
+    if min.is_empty() {
+        None
+    } else {
+        Some(min.to_string())
+    }
 }
 
 /// Worker pool. Keeps `parallelism()` oracle checks in flight over fresh
@@ -920,17 +923,13 @@ mod tests {
         // const + bin region
         agree_fused("{ let x = i64:5; x * i64:3 }").await;
         // multiple scalar lets + nested arithmetic with a Ref read twice
-        agree_fused(
-            "{ let x = i64:5; let y = i64:2; (x + y) * (x - y) }",
-        )
-        .await;
+        agree_fused("{ let x = i64:5; let y = i64:2; (x + y) * (x - y) }").await;
         // div-by-zero → value-bottom (Timeout in all three via the
         // taint/guard → boundary pending → no result emitted). Fuses —
         // the bottom is a RUNTIME outcome of the compiled kernel.
         agree_fused("i64:10 / i64:0").await;
         // comparison + strict bool — `a > 3 && a < 10`
-        agree_fused("{ let a = i64:7; a > i64:3 && a < i64:10 }")
-            .await;
+        agree_fused("{ let a = i64:7; a > i64:3 && a < i64:10 }").await;
         // float arithmetic
         agree_fused("f64:3.0 + f64:1.0").await;
         // cast then float add. The original probe (`cast<f64>(7) +
@@ -949,14 +948,9 @@ mod tests {
         // original probe's inner block had ONE expression — a parse
         // error in every mode that `agree` accepted silently
         // (same hollow-CompileErr class as the cast probe above).
-        agree_fused(
-            "{ let outer = i64:100; { let t = outer - i64:1; t * i64:2 } }",
-        )
-        .await;
-        agree_fused(
-            "{ let a = i64:9; { let b = a * i64:2; b + a } }",
-        )
-        .await;
+        agree_fused("{ let outer = i64:100; { let t = outer - i64:1; t * i64:2 } }")
+            .await;
+        agree_fused("{ let a = i64:9; { let b = a * i64:2; b + a } }").await;
     }
 
     /// Stage C4 probes: `?`/`$` unwrap and builtin DynCall emission on
@@ -968,36 +962,27 @@ mod tests {
     async fn jit_qop_dyncall_probes() {
         // Scalar-success `$` — branchless Scalar2 unwrap of the
         // bounds-checked ArrayRef's Nullable<i64>.
-        agree_fused(
-            "{ let a = [i64:1, i64:2, i64:3]; a[0]$ + a[1]$ }",
-        )
-        .await;
+        agree_fused("{ let a = [i64:1, i64:2, i64:3]; a[0]$ + a[1]$ }").await;
         // Out-of-bounds → error → bottom in every mode (the unwrap's
         // pending path). Fuses — the bottom is a runtime outcome.
         agree_fused("{ let a = [i64:1]; a[5]$ }").await;
         // MapRef result through `$` — map access + scalar unwrap.
-        agree_fused(r#"{ let m = {"a" => i64:7}; m{"a"}$ + i64:1 }"#)
-            .await;
+        agree_fused(r#"{ let m = {"a" => i64:7}; m{"a"}$ + i64:1 }"#).await;
         // Value-shape success `$` (duration element) — the Value
         // unwrap arm + a Value-shape kernel return.
         agree_fused("{ let a = [duration:1.s]; a[0]$ }").await;
         // Builtin DynCall, scalar return, string arg.
         agree_fused(r#"{ let s = "hello"; str::len(s) }"#).await;
         // Builtin DynCall inside arithmetic (scalar return feeds Bin).
-        agree_fused(r#"{ let s = "hello"; str::len(s) + i64:1 }"#)
-            .await;
+        agree_fused(r#"{ let s = "hello"; str::len(s) + i64:1 }"#).await;
         // Builtin DynCall with String return (ret_kind 4) + owned
         // string-return kernel boundary.
         agree_fused(r#"{ let s = "abc"; str::to_upper(s) }"#).await;
         // Composite-success `$` (#199): the unwrap must re-box the
         // Value's inline ValArray bits into the composite ABI's
         // `*mut ValArray` — owned-producer and borrowed-Local inners.
-        agree_fused("{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }")
-            .await;
-        agree_fused(
-            "{ let a = [i64:1, i64:2, i64:3]; let x = a[1..]; x$ }",
-        )
-        .await;
+        agree_fused("{ let a = [i64:1, i64:2, i64:3]; a[1..]$ }").await;
+        agree_fused("{ let a = [i64:1, i64:2, i64:3]; let x = a[1..]; x$ }").await;
         agree_fused("{ let t = [(i64:1, i64:2)]; t[0]$ }").await;
     }
 
@@ -1018,10 +1003,8 @@ mod tests {
         )
         .await;
         // Arm bind with body arithmetic.
-        agree_fused(
-            "{ let x = i64:5; select x { i64:0 => i64:100, n => n * i64:2 } }",
-        )
-        .await;
+        agree_fused("{ let x = i64:5; select x { i64:0 => i64:100, n => n * i64:2 } }")
+            .await;
         // Guard that fails at runtime, then one that passes.
         agree_fused(
             "{ let x = i64:3; select x { n if n > i64:10 => n, \
@@ -1089,25 +1072,15 @@ mod tests {
         .await;
         // Bottom scrutinee with an irrefutable final arm — no value in
         // any mode.
-        agree_fused(
-            "{ let x = i64:0; select (i64:10 / x) { n => n + i64:1 } }",
-        )
-        .await;
+        agree_fused("{ let x = i64:0; select (i64:10 / x) { n => n + i64:1 } }").await;
         // Bool-literal pair (the only typecheckable conditional final
         // arm) — exercises the unreachable miss trap.
-        agree_fused(
-            "{ let b = true; select b { true => i64:1, false => i64:0 } }",
-        )
-        .await;
-        agree_fused(
-            "{ let b = false; select b { true => i64:1, false => i64:0 } }",
-        )
-        .await;
+        agree_fused("{ let b = true; select b { true => i64:1, false => i64:0 } }").await;
+        agree_fused("{ let b = false; select b { true => i64:1, false => i64:0 } }")
+            .await;
         // String result merge.
-        agree_fused(
-            r#"{ let x = i64:1; select x { i64:0 => "zero", _ => "other" } }"#,
-        )
-        .await;
+        agree_fused(r#"{ let x = i64:1; select x { i64:0 => "zero", _ => "other" } }"#)
+            .await;
         // Nested select.
         agree_fused(
             "{ let x = i64:5; select (select x { i64:0 => i64:1, \
@@ -1129,16 +1102,11 @@ mod tests {
         // Interpolation: scalar part rendered via Display.
         agree_fused(r#"{ let x = i64:7; "x is [x]" }"#).await;
         // Mixed string + scalar parts.
-        agree_fused(r#"{ let a = "foo"; let b = i64:2; "[a]-[b]!" }"#)
-            .await;
+        agree_fused(r#"{ let a = "foo"; let b = i64:2; "[a]-[b]!" }"#).await;
         // Pure string concat through interpolation.
-        agree_fused(r#"{ let a = "foo"; let b = "bar"; "[a][b]" }"#)
-            .await;
+        agree_fused(r#"{ let a = "foo"; let b = "bar"; "[a][b]" }"#).await;
         // Float / bool parts (per-prim push helpers).
-        agree_fused(
-            r#"{ let f = f64:1.5; let b = true; "f=[f] b=[b]" }"#,
-        )
-        .await;
+        agree_fused(r#"{ let f = f64:1.5; let b = true; "f=[f] b=[b]" }"#).await;
         // Interpolated literal scalar (const part).
         agree_fused(r#""n=[i64:42]""#).await;
         // A non-scalar part (Nullable from a[i]) — the restriction: the
@@ -1150,15 +1118,11 @@ mod tests {
         agree(r#"{ let a = [i64:1, i64:2]; "e=[a[0]]" }"#).await;
         // Checked add/sub/mul/mod, no overflow — success unwrapped by `$`.
         agree_fused("{ let x = i64:5; (x +? i64:3)$ }").await;
-        agree_fused(
-            "{ let x = i64:10; (x -? i64:3)$ * (i64:2 *? i64:3)$ }",
-        )
-        .await;
+        agree_fused("{ let x = i64:10; (x -? i64:3)$ * (i64:2 *? i64:3)$ }").await;
         agree_fused("{ let x = i64:10; (x %? i64:3)$ }").await;
         // Overflow → the ArithError error VALUE (catchable, not bottom).
         agree_fused("i64:9223372036854775807 +? i64:1").await;
-        agree_fused("is_err(i64:9223372036854775807 +? i64:1)")
-            .await;
+        agree_fused("is_err(i64:9223372036854775807 +? i64:1)").await;
         // `0 /? 0` → error value through is_err — node-walk semantics:
         // checked div0 FLOWS (unlike unchecked div0, which is bottom).
         agree_fused("is_err(i64:0 /? i64:0)").await;
@@ -1193,8 +1157,7 @@ mod tests {
         // A tuple-let + tuple accessors.
         agree_fused("{ let t = (i64:1, i64:2); t.0 + t.1 }").await;
         // A struct-let + field accessors.
-        agree_fused("{ let s = { a: i64:4, b: i64:5 }; s.a + s.b }")
-            .await;
+        agree_fused("{ let s = { a: i64:4, b: i64:5 }; s.a + s.b }").await;
     }
 
     /// Stage D2 probes: inline `array::map` emission on the direct
@@ -1251,16 +1214,12 @@ mod tests {
         )
         .await;
         // string out (push_string)
-        agree_fused_clean(
-            r#"{ let a = [i64:1, i64:2]; array::map(a, |x| "v[x]") }"#,
-        )
-        .await;
+        agree_fused_clean(r#"{ let a = [i64:1, i64:2]; array::map(a, |x| "v[x]") }"#)
+            .await;
         // qop in the body — a may-bottom (Scalar2) field, push_field's
         // RUNTIME bottom-abort seam (no overflow here, so values flow)
-        agree_fused_clean(
-            "{ let a = [i64:1, i64:2]; array::map(a, |x| (x +? i64:1)$) }",
-        )
-        .await;
+        agree_fused_clean("{ let a = [i64:1, i64:2]; array::map(a, |x| (x +? i64:1)$) }")
+            .await;
         // OWNED input array (a fresh slice producer) — the scaffold
         // adopts it (owned_input_stack registration: pending exits
         // free it, the normal path drops it after the loop).
@@ -1270,10 +1229,8 @@ mod tests {
         .await;
         // Destructured `|(k, v)|` callback — D3: per-leaf BindId-bound
         // reads off the composite element.
-        agree_fused_clean(
-            "{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }",
-        )
-        .await;
+        agree_fused_clean("{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }")
+            .await;
     }
 
     /// Stage D2 probes: inline `array::filter` emission on the direct
@@ -1293,10 +1250,8 @@ mod tests {
         )
         .await;
         // bool element, bare-ref predicate
-        agree_fused_clean(
-            "{ let a = [true, false, true]; array::filter(a, |x| x) }",
-        )
-        .await;
+        agree_fused_clean("{ let a = [true, false, true]; array::filter(a, |x| x) }")
+            .await;
         // composite (tuple) element + accessors in the predicate —
         // EXCEEDS classic: its lowering requires a register-scalar element
         // for single-name callbacks, the direct path binds composites
@@ -1341,10 +1296,7 @@ mod tests {
         .await;
         // string element — outside bind_elem's V1 shapes (#150) →
         // Ok(None) → node-walk. Flip when string HOF elements land.
-        agree(
-            r#"{ let a = ["aa", "b"]; array::filter(a, |s| s == "aa") }"#,
-        )
-        .await;
+        agree(r#"{ let a = ["aa", "b"]; array::filter(a, |s| s == "aa") }"#).await;
         // OWNED input array (fresh slice producer) — adopted by the
         // scaffold, same as the map probe.
         agree_fused_clean(
@@ -1448,10 +1400,8 @@ mod tests {
         .await;
         // string accumulator — not a register scalar → Ok(None) →
         // node-walk. Flip if/when value-shape accumulators land.
-        agree(
-            r#"{ let a = [i64:1, i64:2]; array::fold(a, "", |acc, x| "[acc][x]") }"#,
-        )
-        .await;
+        agree(r#"{ let a = [i64:1, i64:2]; array::fold(a, "", |acc, x| "[acc][x]") }"#)
+            .await;
         // OWNED input array (fresh slice producer) — adopted by the
         // scaffold.
         agree_fused_clean(
@@ -1505,10 +1455,7 @@ mod tests {
         .await;
         // bare-element body — the OTHER branch of the callback union;
         // not Array-typed → Ok(None) → node-walk (classic parity)
-        agree(
-            "{ let a = [i64:1, i64:2]; array::flat_map(a, |x| x) }",
-        )
-        .await;
+        agree("{ let a = [i64:1, i64:2]; array::flat_map(a, |x| x) }").await;
         // OWNED input array — adopted by the scaffold
         agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
@@ -1533,26 +1480,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn jit_lambda_call_probes() {
         // simple scalar call
-        agree_fused_clean(
-            "{ let f = |x: i64| x * i64:2; f(i64:21) }",
-        )
-        .await;
+        agree_fused_clean("{ let f = |x: i64| x * i64:2; f(i64:21) }").await;
         // two call sites, one callee kernel
-        agree_fused_clean(
-            "{ let f = |x: i64| x + i64:1; f(i64:1) + f(i64:2) }",
-        )
-        .await;
+        agree_fused_clean("{ let f = |x: i64| x + i64:1; f(i64:1) + f(i64:2) }").await;
         // scalar capture (closure conversion: `k` rides as a trailing
         // kernel arg, marshalled from the calling kernel's env)
-        agree_fused_clean(
-            "{ let k = i64:10; let f = |x: i64| x * k; f(i64:4) }",
-        )
-        .await;
+        agree_fused_clean("{ let k = i64:10; let f = |x: i64| x * k; f(i64:4) }").await;
         // f64 arg + return
-        agree_fused_clean(
-            "{ let f = |x: f64| x * f64:2.5; f(f64:4.0) }",
-        )
-        .await;
+        agree_fused_clean("{ let f = |x: f64| x * f64:2.5; f(f64:4.0) }").await;
         // composite (array) arg — the literal is an OWNED caller-side
         // arg, dropped after the call (the callee clones on entry)
         agree_fused_clean(
@@ -1670,12 +1605,8 @@ mod tests {
         let code = "{ let rec lp = |n: i64, acc: i64| -> i64 \
                      select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) }; \
                      lp(i64:5000000, i64:0) }";
-        let (out, stats) = run_program_with_stats(
-            code,
-            Mode::Jit,
-            Duration::from_secs(30),
-        )
-        .await;
+        let (out, stats) =
+            run_program_with_stats(code, Mode::Jit, Duration::from_secs(30)).await;
         assert!(
             stats.fused > 0,
             "deep tail probe did not fuse (attempted={}): {:?}",
@@ -1779,10 +1710,8 @@ mod tests {
         )
         .await;
         // scalar element, NOT found (null result)
-        agree_fused_clean(
-            "{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }",
-        )
-        .await;
+        agree_fused_clean("{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }")
+            .await;
         // composite (tuple) element + accessor predicate — the found
         // element is consumed into the Nullable result, not-matched
         // ones drop per iteration. EXCEEDS classic for single-name
@@ -1848,10 +1777,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn jit_owned_input_probes() {
         // array literal as the DIRECT argument
-        agree_fused_clean(
-            "array::map([i64:1, i64:2, i64:3], |x| x * i64:2)",
-        )
-        .await;
+        agree_fused_clean("array::map([i64:1, i64:2, i64:3], |x| x * i64:2)").await;
         // PIPELINE: filter over an inlined map — two loops, one kernel
         agree_fused_clean(
             "{ let a = [i64:1, i64:2, i64:3]; \
@@ -1873,10 +1799,7 @@ mod tests {
         )
         .await;
         // PIPELINE feeding init's output into flat_map
-        agree_fused_clean(
-            "array::flat_map(array::init(i64:3, |i| i), |x| [x, x])",
-        )
-        .await;
+        agree_fused_clean("array::flat_map(array::init(i64:3, |i| i), |x| [x, x])").await;
         // PENDING path through an adopted input: the outer map's body
         // bottom-aborts mid-loop (i64::MAX overflow via `+?` then `$`)
         // while the inner map's result is adopted — the pending
@@ -1900,28 +1823,17 @@ mod tests {
         // scalar body
         agree_fused_clean("array::init(i64:4, |i| i * i)").await;
         // composite (tuple) body
-        agree_fused_clean("array::init(i64:3, |i| (i, i + i64:1))")
-            .await;
+        agree_fused_clean("array::init(i64:3, |i| (i, i + i64:1))").await;
         // capture in the body
-        agree_fused_clean(
-            "{ let k = i64:10; array::init(i64:3, |i| i * k) }",
-        )
-        .await;
+        agree_fused_clean("{ let k = i64:10; array::init(i64:3, |i| i * k) }").await;
         // computed n with a capture
-        agree_fused_clean(
-            "{ let n = i64:2; array::init(n + i64:1, |i| i) }",
-        )
-        .await;
+        agree_fused_clean("{ let n = i64:2; array::init(n + i64:1, |i| i) }").await;
         // negative n clamps to the empty array (the scaffold's
         // node-walk-parity clamp)
-        agree_fused_clean("array::init(i64:0 - i64:2, |i| i)")
-            .await;
+        agree_fused_clean("array::init(i64:0 - i64:2, |i| i)").await;
         // may-bottom n (div by a binding) — build-time de-fuse,
         // runtime-clean
-        agree(
-            "{ let d = i64:2; array::init(i64:4 / d, |i| i) }",
-        )
-        .await;
+        agree("{ let d = i64:2; array::init(i64:4 / d, |i| i) }").await;
     }
 
     /// Broad differential sweep: the type-directed generator produces
@@ -1932,8 +1844,7 @@ mod tests {
     /// exercises the fallback. Deterministic seed → reproducible.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn jit_generated_sweep() {
-        use crate::generate::gen_program;
-        use crate::mutate::Rng;
+        use crate::{generate::gen_program, mutate::Rng};
         let t = Duration::from_secs(10);
         let mut rng = Rng::new(0xD17EC7);
         let mut fused = 0usize;

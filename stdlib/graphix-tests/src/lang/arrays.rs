@@ -30,31 +30,51 @@ run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
 // without the check).
 
 // positive index past the end → error
-run!(array_index_oob_pos, r#"{ let a = [10, 20, 30]; a[10] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+run!(
+    array_index_oob_pos,
+    r#"{ let a = [10, 20, 30]; a[10] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+);
 
 // negative index: -1 is the last element
-run!(array_index_neg_last, r#"{ let a = [10, 20, 30]; a[-1] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(30))));
+run!(
+    array_index_neg_last,
+    r#"{ let a = [10, 20, 30]; a[-1] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(30)))
+);
 
 // negative index: -2 is the second-to-last
-run!(array_index_neg_mid, r#"{ let a = [10, 20, 30]; a[-2] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(20))));
+run!(
+    array_index_neg_mid,
+    r#"{ let a = [10, 20, 30]; a[-2] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(20)))
+);
 
 // a[-len] reaches the first element (offset 0). Pinned so all three
 // backends agree on the boundary between the last reachable negative
 // index and underflow.
-run!(array_index_neg_first, r#"{ let a = [10, 20, 30]; a[-3] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(10))));
+run!(
+    array_index_neg_first,
+    r#"{ let a = [10, 20, 30]; a[-3] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(10)))
+);
 
 // negative underflow past the start → error
-run!(array_index_neg_underflow, r#"{ let a = [10, 20, 30]; a[-10] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+run!(array_index_neg_underflow, r#"{ let a = [10, 20, 30]; a[-10] }"#, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::Error(_))
+));
 
 // the error can be recovered with `$` (drop-on-error → never) or `?`;
 // here `is_err` over the option observes the error directly.
-run!(array_index_is_err, r#"{ let a = [10, 20, 30]; is_err(a[10]) }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))));
+run!(array_index_is_err, r#"{ let a = [10, 20, 30]; is_err(a[10]) }"#, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::Bool(true))
+));
 
 const ARRAY_INDEXING1: &str = r#"
 {
@@ -123,20 +143,29 @@ run!(array_indexing4, ARRAY_INDEXING4, |v: Result<&Value>| match v {
 // out-of-bounds slice → error (the `Nullable<Array>` error arm). All
 // three backends route through the shared `array_slice`, so they must
 // agree on the error.
-run!(array_slice_oob, r#"{ let a = [0, 1, 2]; a[1..10] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+run!(
+    array_slice_oob,
+    r#"{ let a = [0, 1, 2]; a[1..10] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+);
 
 // the error flows into `is_err`, which also fuses+JITs.
-run!(array_slice_oob_is_err, r#"{ let a = [0, 1, 2]; is_err(a[1..10]) }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))));
+run!(
+    array_slice_oob_is_err,
+    r#"{ let a = [0, 1, 2]; is_err(a[1..10]) }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
+);
 
 // Negative slice bound → error. The node-walk's `cast_to::<usize>()` wraps
 // a negative i64 to usize::MAX (`i as usize`); `array_slice_i64` now does
 // the same wrap, so all three backends route through the SAME `array_slice`
 // with the SAME usize::MAX bound and produce the identical out-of-bounds
 // error (rather than the fused path's old "expected a non negative number").
-run!(array_slice_negative, r#"{ let a = [0, 1, 2]; let s = -1; a[s..] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_))));
+run!(
+    array_slice_negative,
+    r#"{ let a = [0, 1, 2]; let s = -1; a[s..] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+);
 
 const ARRAY_INDEXING5: &str = r#"
 {

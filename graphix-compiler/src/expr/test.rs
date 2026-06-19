@@ -260,7 +260,12 @@ fn typexp() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {
-                    Type::Ref (TypeRef { scope: ModPath::root(), name, params: Arc::from(params) , ..Default::default()})
+                    Type::Ref(TypeRef {
+                        scope: ModPath::root(),
+                        name,
+                        params: Arc::from(params),
+                        ..Default::default()
+                    })
                 }
             ),
             (
@@ -283,10 +288,9 @@ fn typexp() -> impl Strategy<Value = Type> {
                     let args =
                         args.into_iter().map(|(label, pos_name, optional, typ)| {
                             let kind = match label {
-                                Some(n) => FnArgKind::Labeled {
-                                    name: n,
-                                    has_default: optional,
-                                },
+                                Some(n) => {
+                                    FnArgKind::Labeled { name: n, has_default: optional }
+                                }
                                 None => FnArgKind::Positional { name: Some(pos_name) },
                             };
                             FnArgType { kind, typ }
@@ -1177,8 +1181,16 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
     s0.len() == s1.len()
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
             (
-                SigItem { kind: SigKind::Bind(BindSig { name: n0, typ: t0 }), doc: d0, .. },
-                SigItem { kind: SigKind::Bind(BindSig { name: n1, typ: t1 }), doc: d1, .. },
+                SigItem {
+                    kind: SigKind::Bind(BindSig { name: n0, typ: t0 }),
+                    doc: d0,
+                    ..
+                },
+                SigItem {
+                    kind: SigKind::Bind(BindSig { name: n1, typ: t1 }),
+                    doc: d1,
+                    ..
+                },
             ) => n0 == n1 && check_type(t0, t1) && d0 == d1,
             (
                 SigItem { kind: SigKind::TypeDef(td0), doc: d0, .. },
@@ -1689,9 +1701,7 @@ mod tree_sitter_compat {
 
     fn assert_ts_parses(source: &str) {
         let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_graphix::LANGUAGE.into())
-            .unwrap();
+        parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
         let tree = parser.parse(source, None).unwrap();
         if let Some(err) = find_tree_error(tree.root_node(), source) {
             panic!(

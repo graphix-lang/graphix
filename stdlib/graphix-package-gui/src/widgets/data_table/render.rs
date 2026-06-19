@@ -2,11 +2,11 @@
 //! per-cell rendering, wrapper layers (keyboard, resize drag), and the
 //! sparkline canvas program.
 
-use super::types::{
-    cell_path_matches, col_header_width, col_min_width, row_basename, truncate_to_width,
-    ColumnType, SortDirection,
-};
 use super::{
+    types::{
+        cell_path_matches, col_header_width, col_min_width, row_basename,
+        truncate_to_width, ColumnType, SortDirection,
+    },
     DataTableW, DisplayMode, IcedElement, Message, Renderer, DEFAULT_MAX_COL_WIDTH,
     MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY,
     ROW_NAME_KEY_ARC, ROW_NAME_LABEL, VALUE_COL_KEY,
@@ -556,8 +556,7 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     fn wrap_keyboard<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
-        use crate::widgets::iced_keyboard_area::KeyboardArea;
-        use crate::widgets::TableKeyAction;
+        use crate::widgets::{iced_keyboard_area::KeyboardArea, TableKeyAction};
         use iced_core::keyboard;
 
         KeyboardArea::new(content)

@@ -6,8 +6,10 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    effects::EffectKind, errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope,
-    UserEvent,
+    effects::EffectKind,
+    errf,
+    typ::{FnType, Type},
+    ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -18,7 +20,10 @@ use netidx_core::pack::Pack;
 use netidx_value::{PBytes, Value};
 use poolshark::local::LPooled;
 use std::sync::Arc;
-use tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 
 // ── ReadInput ────────────────────────────────────────────────
 
@@ -36,8 +41,9 @@ struct PackReadEv {
 }
 
 impl EvalCachedAsync for PackReadEv {
-    const NAME: &str = "pack_read";
     type Args = ReadInput;
+
+    const NAME: &str = "pack_read";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -127,8 +133,8 @@ struct PackWriteBytesEv;
 
 // pack::write_bytes is a pure Value→bytes conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
-    const NAME: &str = "pack_write_bytes";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "pack_write_bytes";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.first()?.as_ref()?;
@@ -149,8 +155,9 @@ type PackWriteBytes = CachedArgs<PackWriteBytesEv>;
 struct PackWriteStreamEv;
 
 impl EvalCachedAsync for PackWriteStreamEv {
-    const NAME: &str = "pack_write_stream";
     type Args = (Arc<Mutex<Option<StreamKind>>>, Vec<u8>);
+
+    const NAME: &str = "pack_write_stream";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let stream = get_stream(cached, 0)?;

@@ -12,8 +12,7 @@ use graphix_fuzz::{
     check, fuzz, generate_campaign, minimize, regression_corpus_len, run_regression,
     Corpus, Mode, Outcome,
 };
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 /// Parse an iteration count. `forever`/`inf`/`0` → run forever (`None`);
 /// a number → that many; absent/garbage → a sane default.

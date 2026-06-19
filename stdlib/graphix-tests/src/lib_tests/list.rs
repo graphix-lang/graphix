@@ -453,7 +453,9 @@ const LIST_FILTER: &str = r#"
 run!(list_filter, LIST_FILTER, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(4), Value::I64(5), Value::I64(6), Value::I64(7), Value::I64(8)] => true,
+            [Value::I64(4), Value::I64(5), Value::I64(6), Value::I64(7), Value::I64(8)] => {
+                true
+            }
             _ => false,
         },
         _ => false,

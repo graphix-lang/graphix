@@ -80,7 +80,6 @@ impl<X: GXExt> GuiWidget<X> for GridW<X> {
         Ok(changed)
     }
 
-
     fn view(&self) -> IcedElement<'_> {
         let mut g = widget::Grid::new();
         if let Some(sp) = self.spacing.t {

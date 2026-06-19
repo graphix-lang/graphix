@@ -6,8 +6,7 @@ use crate::{
 };
 use ahash::AHashMap;
 use anyhow::{bail, Result};
-use enumflags2::bitflags;
-use enumflags2::BitFlags;
+use enumflags2::{bitflags, BitFlags};
 use netidx::publisher::Typ;
 use poolshark::local::LPooled;
 use std::fmt::Debug;

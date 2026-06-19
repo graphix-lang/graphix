@@ -253,8 +253,8 @@ pub(crate) struct CreateWatcher {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
-    const NAME: &str = "sys_watch_create";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_watch_create";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -337,8 +337,8 @@ pub(crate) struct WatchApply {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
-    const NAME: &str = "sys_watch_watch";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_watch_watch";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -483,8 +483,8 @@ pub(crate) struct WatchPath {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
-    const NAME: &str = "sys_watch_path";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_watch_path";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -549,8 +549,8 @@ pub(crate) struct WatchEvents {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
-    const NAME: &str = "sys_watch_events";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_watch_events";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,

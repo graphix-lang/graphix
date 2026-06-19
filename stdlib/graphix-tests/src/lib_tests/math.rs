@@ -23,9 +23,7 @@ run!(math_cos_zero, COS_ZERO, |v: Result<&Value>| {
 
 // sin(pi) is near zero (but not exactly, due to fp)
 const SIN_PI: &str = "math::abs(math::sin(math::pi)) < f64:1e-12";
-run!(math_sin_pi, SIN_PI, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+run!(math_sin_pi, SIN_PI, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // sqrt(4) == 2
 const SQRT_FOUR: &str = "math::sqrt(f64:4.0)";
@@ -46,46 +44,32 @@ run!(math_hypot_3_4, HYPOT_3_4, |v: Result<&Value>| {
 });
 
 // floor / ceil / round / trunc
-const ROUNDING: &str =
-    "math::floor(f64:1.7) == f64:1.0 \
+const ROUNDING: &str = "math::floor(f64:1.7) == f64:1.0 \
       && math::ceil(f64:1.2) == f64:2.0 \
       && math::round(f64:0.5) == f64:1.0 \
       && math::trunc(f64:-1.7) == f64:-1.0";
-run!(math_rounding, ROUNDING, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+run!(math_rounding, ROUNDING, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // abs
-const ABS: &str =
-    "math::abs(f64:-3.5) == f64:3.5 && math::abs(f64:2.0) == f64:2.0";
-run!(math_abs, ABS, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+const ABS: &str = "math::abs(f64:-3.5) == f64:3.5 && math::abs(f64:2.0) == f64:2.0";
+run!(math_abs, ABS, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // ln(e) ≈ 1
 const LN_E: &str = "math::abs(math::ln(math::e) - f64:1.0) < f64:1e-12";
-run!(math_ln_e, LN_E, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+run!(math_ln_e, LN_E, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // log2(8) == 3 and log(100, 10) == 2
-const LOGS: &str =
-    "math::log2(f64:8.0) == f64:3.0 \
+const LOGS: &str = "math::log2(f64:8.0) == f64:3.0 \
       && math::abs(math::log(f64:100.0, f64:10.0) - f64:2.0) < f64:1e-12";
-run!(math_logs, LOGS, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+run!(math_logs, LOGS, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // atan2(1, 1) ≈ pi / 4
 const ATAN2: &str =
     "math::abs(math::atan2(f64:1.0, f64:1.0) - math::pi / f64:4.0) < f64:1e-12";
-run!(math_atan2, ATAN2, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+run!(math_atan2, ATAN2, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // Constants sanity: tau > pi, pi > 3.14, pi < 3.15
-const CONSTANT_SANITY: &str =
-    "math::tau > math::pi \
+const CONSTANT_SANITY: &str = "math::tau > math::pi \
       && math::pi > f64:3.14 \
       && math::pi < f64:3.15 \
       && math::e > f64:2.71 \
@@ -97,8 +81,7 @@ run!(math_constant_sanity, CONSTANT_SANITY, |v: Result<&Value>| {
 });
 
 // Predicates
-const PREDICATES: &str =
-    "math::is_nan(math::nan) \
+const PREDICATES: &str = "math::is_nan(math::nan) \
       && !math::is_nan(math::pi) \
       && math::is_infinite(math::infinity) \
       && !math::is_infinite(math::pi) \
@@ -110,17 +93,12 @@ run!(math_predicates, PREDICATES, |v: Result<&Value>| {
 });
 
 // clamp
-const CLAMP: &str =
-    "math::clamp(f64:5.0, f64:0.0, f64:10.0) == f64:5.0 \
+const CLAMP: &str = "math::clamp(f64:5.0, f64:0.0, f64:10.0) == f64:5.0 \
       && math::clamp(f64:-3.0, f64:0.0, f64:10.0) == f64:0.0 \
       && math::clamp(f64:42.0, f64:0.0, f64:10.0) == f64:10.0";
-run!(math_clamp, CLAMP, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+run!(math_clamp, CLAMP, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // to_radians / to_degrees round trip
 const DEG_RAD: &str =
     "math::abs(math::to_degrees(math::to_radians(f64:45.0)) - f64:45.0) < f64:1e-12";
-run!(math_deg_rad, DEG_RAD, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-});
+run!(math_deg_rad, DEG_RAD, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });

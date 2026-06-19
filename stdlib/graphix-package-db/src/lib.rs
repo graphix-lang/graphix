@@ -3,25 +3,24 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 
-mod encoding;
-mod tree;
 mod cursor;
-mod txn;
+mod encoding;
 mod subscribe;
+mod tree;
+mod txn;
 
+use cursor::{DbCursorNew, DbCursorRange, DbCursorRead, DbCursorReadMany};
+use subscribe::{DbOnInsert, DbOnRemove, DbSubscribe};
 use tree::{
-    DbGetType, DbOpen, DbFlush, DbGenerateId, DbTreeNames, DbDropTree, DbTree,
-    DbGet, DbInsert, DbRemove, DbContainsKey, DbGetMany,
-    DbFirst, DbLast, DbPopMin, DbPopMax, DbGetLt, DbGetGt,
-    DbCompareAndSwap, DbBatch, DbLen, DbIsEmpty,
-    DbSizeOnDisk, DbWasRecovered, DbChecksum, DbExport, DbImport,
+    DbBatch, DbChecksum, DbCompareAndSwap, DbContainsKey, DbDropTree, DbExport, DbFirst,
+    DbFlush, DbGenerateId, DbGet, DbGetGt, DbGetLt, DbGetMany, DbGetType, DbImport,
+    DbInsert, DbIsEmpty, DbLast, DbLen, DbOpen, DbPopMax, DbPopMin, DbRemove,
+    DbSizeOnDisk, DbTree, DbTreeNames, DbWasRecovered,
 };
-use cursor::{DbCursorNew, DbCursorRead, DbCursorReadMany, DbCursorRange};
 use txn::{
-    DbTxnBegin, DbTxnTree, DbTxnGet, DbTxnInsert, DbTxnRemove,
-    DbTxnBatch, DbTxnCommit, DbTxnRollback,
+    DbTxnBatch, DbTxnBegin, DbTxnCommit, DbTxnGet, DbTxnInsert, DbTxnRemove,
+    DbTxnRollback, DbTxnTree,
 };
-use subscribe::{DbSubscribe, DbOnInsert, DbOnRemove};
 
 pub use tree::{DbValue, TreeValue};
 

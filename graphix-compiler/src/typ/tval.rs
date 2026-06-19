@@ -1,5 +1,4 @@
-use super::cast::IsAFlags;
-use super::{PrintFlag, Type, TypeRef};
+use super::{cast::IsAFlags, PrintFlag, Type, TypeRef};
 use crate::{env::Env, typ::format_with_flags};
 use ahash::AHashSet;
 use netidx::publisher::Value;

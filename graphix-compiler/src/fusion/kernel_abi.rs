@@ -14,8 +14,10 @@
 //! (`BinOp` / `CmpOp` / `BoolOp`) lives in `node::op` with the node-walk
 //! that defines those operators' semantics; the JIT imports it from there.
 
-use crate::typ::{AbstractId, Type, TypeRef};
-use crate::BindId;
+use crate::{
+    typ::{AbstractId, Type, TypeRef},
+    BindId,
+};
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
@@ -288,11 +290,7 @@ pub fn abi_kind(reg: &AbstractRegistry, t: &Type) -> Option<AbiKind> {
     abi_kind_d(reg, t, None)
 }
 
-fn abi_kind_d(
-    reg: &AbstractRegistry,
-    t: &Type,
-    seen: Option<&Seen>,
-) -> Option<AbiKind> {
+fn abi_kind_d(reg: &AbstractRegistry, t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
     // Clone the deref'd type OUT of `with_deref` so the TVar's read
     // guard is DROPPED before the body runs: the Set/Abstract arms
     // recurse (more TVar guards), and parking_lot's fair, non-reentrant
@@ -323,9 +321,7 @@ fn abi_kind_d(
                 }
                 let concrete = reg.get(id);
                 let node = Seen::push(seen, key);
-                return concrete
-                    .as_ref()
-                    .and_then(|c| abi_kind_d(reg, c, Some(&node)));
+                return concrete.as_ref().and_then(|c| abi_kind_d(reg, c, Some(&node)));
             }
             _ => {}
         }
@@ -571,10 +567,8 @@ fn freeze_for_abi_d(
                 Some(Type::Struct(Arc::from_iter(frozen.drain(..))))
             }
             Type::Variant(tag, payloads) => {
-                let frozen: Option<LPooled<Vec<Type>>> = payloads
-                    .iter()
-                    .map(|p| freeze_for_abi_d(reg, p, seen))
-                    .collect();
+                let frozen: Option<LPooled<Vec<Type>>> =
+                    payloads.iter().map(|p| freeze_for_abi_d(reg, p, seen)).collect();
                 let mut frozen = frozen?;
                 Some(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..))))
             }
@@ -705,10 +699,7 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
 /// merges the set (→ `i64`) without changing the denoted type. The
 /// normalize pass only runs when the direct freeze fails, so the
 /// common path neither pays for it nor rewrites TVar bindings.
-pub fn freeze_for_abi_normalized(
-    reg: &AbstractRegistry,
-    t: &Type,
-) -> Option<Type> {
+pub fn freeze_for_abi_normalized(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
     freeze_for_abi(reg, t).or_else(|| freeze_for_abi(reg, &t.normalize()))
 }
 

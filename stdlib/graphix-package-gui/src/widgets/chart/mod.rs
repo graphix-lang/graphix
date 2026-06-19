@@ -5,8 +5,10 @@ mod plotters_backend;
 pub mod ranges;
 pub mod types;
 
-use crate::types::LengthV;
-use crate::widgets::{GuiW, GuiWidget, IcedElement};
+use crate::{
+    types::LengthV,
+    widgets::{GuiW, GuiWidget, IcedElement},
+};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;

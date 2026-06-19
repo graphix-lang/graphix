@@ -17,8 +17,8 @@
 //! Determinism: a seeded xorshift RNG, so any run replays from its seed.
 
 use graphix_compiler::expr::{
-    parser::parse_one, ApplyExpr, BindExpr, Expr, ExprKind, SelectExpr, StructExpr, StructWithExpr,
-    TryCatchExpr,
+    parser::parse_one, ApplyExpr, BindExpr, Expr, ExprKind, SelectExpr, StructExpr,
+    StructWithExpr, TryCatchExpr,
 };
 use netidx::utils::Either;
 use netidx_value::Value;
@@ -31,6 +31,7 @@ impl Rng {
     pub fn new(seed: u64) -> Self {
         Rng(seed | 1)
     }
+
     pub fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x << 13;
@@ -39,9 +40,15 @@ impl Rng {
         self.0 = x;
         x
     }
+
     pub fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next_u64() % n as u64) as usize }
+        if n == 0 {
+            0
+        } else {
+            (self.next_u64() % n as u64) as usize
+        }
     }
+
     pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
         &xs[self.below(xs.len())]
     }
@@ -66,10 +73,19 @@ fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
     use ExprKind::*;
     match &e.kind {
         NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) | Module { .. } => {}
-        ExplicitParens(x) | Qop(x) | OrNever(x) | ByRef(x) | Deref(x) | Not { expr: x }
+        ExplicitParens(x)
+        | Qop(x)
+        | OrNever(x)
+        | ByRef(x)
+        | Deref(x)
+        | Not { expr: x }
         | TypeCast { expr: x, .. } => f(x),
-        Do { exprs } | StringInterpolate { args: exprs } | Any { args: exprs }
-        | Array { args: exprs } | Tuple { args: exprs } | Variant { args: exprs, .. } => {
+        Do { exprs }
+        | StringInterpolate { args: exprs }
+        | Any { args: exprs }
+        | Array { args: exprs }
+        | Tuple { args: exprs }
+        | Variant { args: exprs, .. } => {
             for c in exprs.iter() {
                 f(c);
             }
@@ -134,11 +150,25 @@ fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
                 f(body);
             }
         }
-        Eq { lhs, rhs } | Ne { lhs, rhs } | Lt { lhs, rhs } | Gt { lhs, rhs } | Lte { lhs, rhs }
-        | Gte { lhs, rhs } | And { lhs, rhs } | Or { lhs, rhs } | Add { lhs, rhs }
-        | CheckedAdd { lhs, rhs } | Sub { lhs, rhs } | CheckedSub { lhs, rhs } | Mul { lhs, rhs }
-        | CheckedMul { lhs, rhs } | Div { lhs, rhs } | CheckedDiv { lhs, rhs } | Mod { lhs, rhs }
-        | CheckedMod { lhs, rhs } | Sample { lhs, rhs } => {
+        Eq { lhs, rhs }
+        | Ne { lhs, rhs }
+        | Lt { lhs, rhs }
+        | Gt { lhs, rhs }
+        | Lte { lhs, rhs }
+        | Gte { lhs, rhs }
+        | And { lhs, rhs }
+        | Or { lhs, rhs }
+        | Add { lhs, rhs }
+        | CheckedAdd { lhs, rhs }
+        | Sub { lhs, rhs }
+        | CheckedSub { lhs, rhs }
+        | Mul { lhs, rhs }
+        | CheckedMul { lhs, rhs }
+        | Div { lhs, rhs }
+        | CheckedDiv { lhs, rhs }
+        | Mod { lhs, rhs }
+        | CheckedMod { lhs, rhs }
+        | Sample { lhs, rhs } => {
             f(lhs);
             f(rhs);
         }
@@ -192,9 +222,10 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         Any { args } => Any { args: aslice(args.iter().map(|c| r!(c)).collect()) },
         Array { args } => Array { args: aslice(args.iter().map(|c| r!(c)).collect()) },
         Tuple { args } => Tuple { args: aslice(args.iter().map(|c| r!(c)).collect()) },
-        Variant { tag, args } => {
-            Variant { tag: tag.clone(), args: aslice(args.iter().map(|c| r!(c)).collect()) }
-        }
+        Variant { tag, args } => Variant {
+            tag: tag.clone(),
+            args: aslice(args.iter().map(|c| r!(c)).collect()),
+        },
         Bind(b) => Bind(Arc::new(BindExpr {
             rec: b.rec,
             pattern: b.pattern.clone(),
@@ -204,7 +235,9 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         Connect { name, value, deref } => {
             Connect { name: name.clone(), value: ra!(value), deref: *deref }
         }
-        StructRef { source, field } => StructRef { source: ra!(source), field: field.clone() },
+        StructRef { source, field } => {
+            StructRef { source: ra!(source), field: field.clone() }
+        }
         TupleRef { source, field } => TupleRef { source: ra!(source), field: *field },
         ArrayRef { source, i } => ArrayRef { source: ra!(source), i: ra!(i) },
         ArraySlice { source, start, end } => ArraySlice {
@@ -217,19 +250,39 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
             args: args.iter().map(|(k, v)| (r!(k), r!(v))).collect::<Vec<_>>().into(),
         },
         Struct(s) => Struct(StructExpr {
-            args: s.args.iter().map(|(n, v)| (n.clone(), r!(v))).collect::<Vec<_>>().into(),
+            args: s
+                .args
+                .iter()
+                .map(|(n, v)| (n.clone(), r!(v)))
+                .collect::<Vec<_>>()
+                .into(),
         }),
         StructWith(sw) => StructWith(StructWithExpr {
             source: ra!(&sw.source),
-            replace: sw.replace.iter().map(|(n, v)| (n.clone(), r!(v))).collect::<Vec<_>>().into(),
+            replace: sw
+                .replace
+                .iter()
+                .map(|(n, v)| (n.clone(), r!(v)))
+                .collect::<Vec<_>>()
+                .into(),
         }),
         Apply(a) => Apply(ApplyExpr {
             function: ra!(&a.function),
-            args: a.args.iter().map(|(n, v)| (n.clone(), r!(v))).collect::<Vec<_>>().into(),
+            args: a
+                .args
+                .iter()
+                .map(|(n, v)| (n.clone(), r!(v)))
+                .collect::<Vec<_>>()
+                .into(),
         }),
         Select(s) => Select(SelectExpr {
             arg: ra!(&s.arg),
-            arms: s.arms.iter().map(|(p, b)| (p.clone(), r!(b))).collect::<Vec<_>>().into(),
+            arms: s
+                .arms
+                .iter()
+                .map(|(p, b)| (p.clone(), r!(b)))
+                .collect::<Vec<_>>()
+                .into(),
         }),
         TryCatch(tc) => TryCatch(Arc::new(TryCatchExpr {
             bind: tc.bind.clone(),
@@ -293,7 +346,8 @@ fn binop_kind(name: &str, lhs: Arc<Expr>, rhs: Arc<Expr>) -> ExprKind {
 }
 
 const ARITH: &[&str] = &["Add", "Sub", "Mul", "Div", "Mod"];
-const CHECKED: &[&str] = &["CheckedAdd", "CheckedSub", "CheckedMul", "CheckedDiv", "CheckedMod"];
+const CHECKED: &[&str] =
+    &["CheckedAdd", "CheckedSub", "CheckedMul", "CheckedDiv", "CheckedMod"];
 const CMP: &[&str] = &["Eq", "Ne", "Lt", "Gt", "Lte", "Gte"];
 const BOOLOP: &[&str] = &["And", "Or"];
 
@@ -301,11 +355,21 @@ const BOOLOP: &[&str] = &["And", "Or"];
 fn try_swap_binop(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     use ExprKind::*;
     let (class, lhs, rhs) = match &e.kind {
-        Add { lhs, rhs } | Sub { lhs, rhs } | Mul { lhs, rhs } | Div { lhs, rhs }
+        Add { lhs, rhs }
+        | Sub { lhs, rhs }
+        | Mul { lhs, rhs }
+        | Div { lhs, rhs }
         | Mod { lhs, rhs } => (ARITH, lhs, rhs),
-        CheckedAdd { lhs, rhs } | CheckedSub { lhs, rhs } | CheckedMul { lhs, rhs }
-        | CheckedDiv { lhs, rhs } | CheckedMod { lhs, rhs } => (CHECKED, lhs, rhs),
-        Eq { lhs, rhs } | Ne { lhs, rhs } | Lt { lhs, rhs } | Gt { lhs, rhs } | Lte { lhs, rhs }
+        CheckedAdd { lhs, rhs }
+        | CheckedSub { lhs, rhs }
+        | CheckedMul { lhs, rhs }
+        | CheckedDiv { lhs, rhs }
+        | CheckedMod { lhs, rhs } => (CHECKED, lhs, rhs),
+        Eq { lhs, rhs }
+        | Ne { lhs, rhs }
+        | Lt { lhs, rhs }
+        | Gt { lhs, rhs }
+        | Lte { lhs, rhs }
         | Gte { lhs, rhs } => (CMP, lhs, rhs),
         And { lhs, rhs } | Or { lhs, rhs } => (BOOLOP, lhs, rhs),
         _ => return None,

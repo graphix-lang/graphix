@@ -5,8 +5,11 @@
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    deref_typ, effects::EffectKind, errf, typ::{FnType, Type}, ExecCtx, PrintFlag, Rt,
-    UserEvent,
+    deref_typ,
+    effects::EffectKind,
+    errf,
+    typ::{FnType, Type},
+    ExecCtx, PrintFlag, Rt, UserEvent,
 };
 use graphix_package_core::{is_struct, CachedArgs, CachedVals, EvalCached};
 use graphix_package_json::value_to_json;
@@ -80,8 +83,8 @@ impl Default for HbsRenderEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
-    const NAME: &str = "hbs_render";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "hbs_render";
 
     fn typecheck0(
         &mut self,

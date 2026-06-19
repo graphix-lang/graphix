@@ -4,7 +4,6 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::publisher::Value;
 
-
 const LAMBDA: &str = r#"
 {
   let y = 10;
@@ -582,7 +581,8 @@ array::push([1, 2], 3, 4, 5)
 
 run!(vargs0, VARGS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
-        [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] => true,
+        [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] =>
+            true,
         _ => false,
     },
     _ => false,

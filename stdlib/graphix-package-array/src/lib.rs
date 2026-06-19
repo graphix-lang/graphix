@@ -4,17 +4,18 @@
 )]
 use ahash::AHashSet;
 use anyhow::{bail, Result};
-use compact_str::format_compact;
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use graphix_compiler::{
     effects::EffectKind,
     expr::ExprId,
-    fusion::kernel_abi::{self, PrimType},
-    fusion::emit::{self, scaffold, BodyCx, CompiledExpr, CompositeSource},
+    fusion::{
+        emit::{self, scaffold, BodyCx, CompiledExpr, CompositeSource},
+        kernel_abi::{self, PrimType},
+    },
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
@@ -24,7 +25,11 @@ use netidx::{publisher::Typ, subscriber::Value, utils::Either};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use smallvec::{smallvec, SmallVec};
-use std::{collections::hash_map::Entry, collections::VecDeque, fmt::Debug, iter};
+use std::{
+    collections::{hash_map::Entry, VecDeque},
+    fmt::Debug,
+    iter,
+};
 use triomphe::Arc as TArc;
 
 /// True if a (frozen) `Type`'s top-level shape is `Unit` (side-effect-
@@ -92,7 +97,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
     ) -> Result<Option<CompiledExpr>> {
         use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem)
+        else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -103,22 +109,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_)
-                | AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct,
+                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
             ) => {}
             _ => return Ok(None),
         }
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = emit::node_composite_source(array_arg)
-            == CompositeSource::Owned;
+        let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
         // Output element type is the body's result — `freeze_for_abi_normalized`
         // because typecheck can leave a select-valued body's type as the
         // un-flattened arm union.
-        let Some(out_typ) = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) else {
+        let Some(out_typ) =
+            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+        else {
             return Ok(None);
         };
         if is_unit_or_null(cx.registry(), &out_typ) {
@@ -189,7 +193,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
     ) -> Result<Option<CompiledExpr>> {
         use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem)
+        else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -200,21 +205,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_)
-                | AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct,
+                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
             ) => {}
             _ => return Ok(None),
         }
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = emit::node_composite_source(array_arg)
-            == CompositeSource::Owned;
+        let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
         match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) {
-            Some(t) if matches!(kernel_abi::scalar_prim(cx.registry(), &t), Some(PrimType::Bool)) => {
-            }
+            Some(t)
+                if matches!(
+                    kernel_abi::scalar_prim(cx.registry(), &t),
+                    Some(PrimType::Bool)
+                ) => {}
             _ => return Ok(None),
         }
         // Gates done — emit. From here a mismatch is a build bug or a
@@ -285,7 +289,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
     ) -> Result<Option<CompiledExpr>> {
         use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem)
+        else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -296,18 +301,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_)
-                | AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct,
+                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
             ) => {}
             _ => return Ok(None),
         }
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = emit::node_composite_source(array_arg)
-            == CompositeSource::Owned;
+        let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
         match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
             .as_ref()
             .and_then(|t| kernel_abi::array_scalar_prim(cx.registry(), t))
@@ -401,16 +402,16 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = emit::node_composite_source(array_arg)
-            == CompositeSource::Owned;
-        let out_prim = match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-            .and_then(|t| kernel_abi::nullable_inner(cx.registry(), &t))
-            .as_ref()
-            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
-        {
-            Some(p) => p,
-            None => return Ok(None),
-        };
+        let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
+        let out_prim =
+            match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+                .and_then(|t| kernel_abi::nullable_inner(cx.registry(), &t))
+                .as_ref()
+                .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
+            {
+                Some(p) => p,
+                None => return Ok(None),
+            };
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
         let arr_ptr = match array_arg.emit_clif(cx)? {
@@ -474,7 +475,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
     ) -> Result<Option<CompiledExpr>> {
         use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem)
+        else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -485,21 +487,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_)
-                | AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct,
+                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
             ) => {}
             _ => return Ok(None),
         }
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = emit::node_composite_source(array_arg)
-            == CompositeSource::Owned;
+        let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
         match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) {
-            Some(t) if matches!(kernel_abi::scalar_prim(cx.registry(), &t), Some(PrimType::Bool)) => {
-            }
+            Some(t)
+                if matches!(
+                    kernel_abi::scalar_prim(cx.registry(), &t),
+                    Some(PrimType::Bool)
+                ) => {}
             _ => return Ok(None),
         }
         // Gates done — emit. From here a mismatch is a build bug or a
@@ -571,7 +572,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
     ) -> Result<Option<CompiledExpr>> {
         use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem)
+        else {
             return Ok(None);
         };
         // A destructured `|(k, v)|` callback binds per-leaf reads off
@@ -582,19 +584,18 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_)
-                | AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct,
+                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
             ) => {}
             _ => return Ok(None),
         }
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = emit::node_composite_source(array_arg)
-            == CompositeSource::Owned;
-        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()).as_ref().map(|t| kernel_abi::abi_kind(cx.registry(), t)) {
+        let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
+        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+            .as_ref()
+            .map(|t| kernel_abi::abi_kind(cx.registry(), t))
+        {
             Some(Some(AbiKind::Nullable)) => {}
             _ => return Ok(None),
         }
@@ -666,7 +667,8 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
     ) -> Result<Option<CompiledExpr>> {
         use kernel_abi::AbiKind;
         // Element shape: only what `scaffold::bind_elem` accepts.
-        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem) else {
+        let Some(in_elem) = kernel_abi::freeze_for_abi_normalized(cx.registry(), in_elem)
+        else {
             return Ok(None);
         };
         // A destructured `|acc, (k, v)|` callback binds per-leaf reads
@@ -677,27 +679,24 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_)
-                | AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct,
+                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
             ) => {}
             _ => return Ok(None),
         }
         // Borrowed inputs are env-owned; an OWNED input (fresh
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
-        let owned = emit::node_composite_source(array_arg)
-            == CompositeSource::Owned;
+        let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
         // The acc threads through the loop as a register Variable —
         // init and body must both freeze to the same register scalar.
-        let acc_prim = match kernel_abi::freeze_for_abi_normalized(cx.registry(), init_arg.typ())
-            .as_ref()
-            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
-        {
-            Some(p) => p,
-            None => return Ok(None),
-        };
+        let acc_prim =
+            match kernel_abi::freeze_for_abi_normalized(cx.registry(), init_arg.typ())
+                .as_ref()
+                .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
+            {
+                Some(p) => p,
+                None => return Ok(None),
+            };
         match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
             .as_ref()
             .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
@@ -746,8 +745,8 @@ type Fold<R, E> = FoldQ<R, E, FoldImpl>;
 struct ConcatEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
-    const NAME: &str = "array_concat";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_concat";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -778,8 +777,8 @@ type Concat = CachedArgs<ConcatEv>;
 struct PushBackEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
-    const NAME: &str = "array_push_back";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_push_back";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -811,8 +810,8 @@ type PushBack = CachedArgs<PushBackEv>;
 struct PushFrontEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
-    const NAME: &str = "array_push_front";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_push_front";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -844,8 +843,8 @@ type PushFront = CachedArgs<PushFrontEv>;
 struct WindowEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
-    const NAME: &str = "array_window";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_window";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut present = true;
@@ -898,8 +897,8 @@ type Window = CachedArgs<WindowEv>;
 struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
-    const NAME: &str = "array_len";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_len";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -920,8 +919,8 @@ type Len = CachedArgs<LenEv>;
 struct FlattenEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
-    const NAME: &str = "array_flatten";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_flatten";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -946,8 +945,8 @@ type Flatten = CachedArgs<FlattenEv>;
 struct SortEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
-    const NAME: &str = "array_sort";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_sort";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fn cn(v: &Value) -> Value {
@@ -988,8 +987,8 @@ type Sort = CachedArgs<SortEv>;
 struct DedupEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
-    const NAME: &str = "array_dedup";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_dedup";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -1014,8 +1013,8 @@ type Dedup = CachedArgs<DedupEv>;
 struct EnumerateEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
-    const NAME: &str = "array_enumerate";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_enumerate";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::Array(a)) = &from.0[0] {
@@ -1034,8 +1033,8 @@ type Enumerate = CachedArgs<EnumerateEv>;
 struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
-    const NAME: &str = "array_zip";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_zip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -1058,8 +1057,8 @@ struct UnzipEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
-    const NAME: &str = "array_unzip";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_unzip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -1098,9 +1097,9 @@ struct Group<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
-    const NAME: &str = "array_group";
     // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_group";
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1345,9 +1344,9 @@ struct Init<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
-    const NAME: &str = "array_init";
     // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "array_init";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1393,19 +1392,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             return Ok(());
         };
         let i_typ = Type::Primitive(Typ::I64.into());
-        let (id, idx_node) = genn::bind(
-            ctx,
-            &self.scope.lexical,
-            "i",
-            i_typ,
-            self.top_id,
-        );
-        let fnode = genn::reference(
-            ctx,
-            self.fid,
-            Type::Fn(self.mftyp.clone()),
-            self.top_id,
-        );
+        let (id, idx_node) =
+            genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
+        let fnode =
+            genn::reference(ctx, self.fid, Type::Fn(self.mftyp.clone()), self.top_id);
         let mut pred = genn::apply(
             fnode,
             self.scope.clone(),
@@ -1418,7 +1408,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             None => return Ok(()),
         };
         let any: &mut dyn std::any::Any = &mut *pred;
-        let Some(cs) = any.downcast_mut::<graphix_compiler::node::callsite::CallSite<R, E>>() else {
+        let Some(cs) =
+            any.downcast_mut::<graphix_compiler::node::callsite::CallSite<R, E>>()
+        else {
             return Ok(());
         };
         cs.resolve_static(ctx, cb.lambda, fv)?;
@@ -1585,13 +1577,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         let Some(n_node) = callsite.arg_positional(0) else {
             return Ok(None);
         };
-        let n_prim = match kernel_abi::freeze_for_abi_normalized(cx.registry(), n_node.typ())
-            .as_ref()
-            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
-        {
-            Some(p) if p.is_integer() => p,
-            _ => return Ok(None),
-        };
+        let n_prim =
+            match kernel_abi::freeze_for_abi_normalized(cx.registry(), n_node.typ())
+                .as_ref()
+                .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
+            {
+                Some(p) if p.is_integer() => p,
+                _ => return Ok(None),
+            };
         // Body Node via the inner CallSite's resolved Apply.
         let inner_cs = match slot.pred.view() {
             graphix_compiler::NodeView::CallSite(cs) => cs,
@@ -1608,17 +1601,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         // Index param's name from the lambda's FnType, its BindId
         // from the arg pattern (Refs resolve BindId-first).
         let idx_name = match g.typ().args.first().map(|a| &a.kind) {
-            Some(graphix_compiler::typ::FnArgKind::Positional {
-                name: Some(n),
-            }) => n.clone(),
-            Some(graphix_compiler::typ::FnArgKind::Labeled {
-                name, ..
-            }) => name.clone(),
+            Some(graphix_compiler::typ::FnArgKind::Positional { name: Some(n) }) => {
+                n.clone()
+            }
+            Some(graphix_compiler::typ::FnArgKind::Labeled { name, .. }) => name.clone(),
             _ => return Ok(None),
         };
         let idx_id = g.args().first().and_then(|p| p.single_bind_id());
         // Output element type is the body's result.
-        let Some(out_typ) = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ()) else {
+        let Some(out_typ) =
+            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+        else {
             return Ok(None);
         };
         if is_unit_or_null(cx.registry(), &out_typ) {
@@ -1647,7 +1640,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         .map(|v| Some(CompiledExpr::Single(v)))
     }
 }
-
 
 graphix_derive::defpackage! {
     builtins => [

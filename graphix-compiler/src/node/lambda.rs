@@ -3,10 +3,11 @@ use crate::{
     effects::EffectKind,
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
-    node::pattern::StructPatternNode,
+    fusion::emit::{BodyCx, CompiledExpr},
+    node::{callsite::CallSite, pattern::StructPatternNode},
     typ::{fntyp::LambdaIds, FnArgKind, FnArgType, FnType, Type},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    Update, UserEvent,
+    wrap, Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn,
+    LambdaId, Node, NodeView, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
@@ -96,7 +97,7 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 /// `CallSite::try_static_resolve` (in `typecheck1`).
 ///
 /// Public surface for fusion: `Apply::view()` on `GXLambda` returns
-/// [`crate::ApplyView::Lambda(&self)`], letting fusion's walker
+/// [`ApplyView::Lambda(&self)`], letting fusion's walker
 /// reach `self.body()` and inline the lambda body into the kernel
 /// being built.
 #[derive(Debug)]
@@ -117,8 +118,8 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 
     /// The compiled body Node — the lambda's expression tree.
-    /// Fusion walks this via [`crate::Update::view`] /
-    /// [`crate::NodeView`].
+    /// Fusion walks this via [`Update::view`] /
+    /// [`NodeView`].
     pub fn body(&self) -> &Node<R, E> {
         &self.body
     }
@@ -146,12 +147,12 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
-    fn view(&self) -> crate::ApplyView<'_, R, E> {
-        crate::ApplyView::Lambda(self)
+    fn view(&self) -> ApplyView<'_, R, E> {
+        ApplyView::Lambda(self)
     }
 
-    fn view_mut(&mut self) -> crate::ApplyViewMut<'_, R, E> {
-        crate::ApplyViewMut::Lambda(self)
+    fn view_mut(&mut self) -> ApplyViewMut<'_, R, E> {
+        ApplyViewMut::Lambda(self)
     }
 
     fn update(
@@ -197,7 +198,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
-        _fn_args: &[crate::StaticFnArg<'_, R, E>],
+        _fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         wrap!(self.body, self.body.typecheck1(ctx))
     }
@@ -291,20 +292,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     /// Pass-through to the inner builtin. `BuiltInLambda` is a
     /// runtime-plumbing wrapper (typecheck/refs); fusion sees the
     /// wrapped builtin's own view as if the wrapper weren't here.
-    fn view(&self) -> crate::ApplyView<'_, R, E> {
+    fn view(&self) -> ApplyView<'_, R, E> {
         self.apply.view()
     }
 
-    fn view_mut(&mut self) -> crate::ApplyViewMut<'_, R, E> {
+    fn view_mut(&mut self) -> ApplyViewMut<'_, R, E> {
         self.apply.view_mut()
     }
 
-
     fn emit_clif(
         &self,
-        callsite: &crate::node::callsite::CallSite<R, E>,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<Option<crate::fusion::emit::CompiledExpr>> {
+        callsite: &CallSite<R, E>,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
         // Without this delegation the trait default's `Ok(None)`
         // silently swallows every builtin's emission hook — the
         // call site falls to DynCall and the builtin "loses fusion"
@@ -359,7 +359,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         args: &mut [Node<R, E>],
         resolved: &FnType,
-        fn_args: &[crate::StaticFnArg<'_, R, E>],
+        fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         self.apply.typecheck1(ctx, args, resolved, fn_args)
     }
@@ -409,7 +409,7 @@ impl Lambda {
     /// to thread the id into `BuiltinBindInfo` so the fusion
     /// pre-binding pass can later look up the lambda's env+scope
     /// for compiling labeled-default expressions.
-    pub fn lambda_id<R: Rt, E: UserEvent>(&self) -> Option<crate::LambdaId> {
+    pub fn lambda_id<R: Rt, E: UserEvent>(&self) -> Option<LambdaId> {
         self.def.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
     }
 
@@ -551,7 +551,7 @@ impl Lambda {
             ctx.with_restored(_env.clone(), |ctx| match body.clone() {
                 Either::Left(body) => {
                     // Always GXLambda for now. The new fusion pipeline
-                    // (`crate::fusion::fuse`) will splice a
+                    // (`fuse`) will splice a
                     // `FusedKernel` Update node into the graph
                     // *before* runtime, so by the time this InitFn
                     // fires we either have no kernel for this lambda
@@ -577,12 +577,13 @@ impl Lambda {
                 }
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
-                    Some(init) => init(ctx, &_typ, resolved, &_scope, args, tid)
-                        .map(|apply| {
+                    Some(init) => {
+                        init(ctx, &_typ, resolved, &_scope, args, tid).map(|apply| {
                             let f: Box<dyn Apply<R, E>> =
                                 Box::new(BuiltInLambda { typ: _typ.clone(), apply });
                             f
-                        }),
+                        })
+                    }
                 },
             })
         });
@@ -649,7 +650,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                     }
                 });
                 for base in names.iter() {
-                    let mp = crate::expr::ModPath::from_iter([base.as_str()]);
+                    let mp = expr::ModPath::from_iter([base.as_str()]);
                     if ctx.env.lookup_bind(&scope.lexical, &mp).is_some() {
                         continue;
                     }
@@ -720,7 +721,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             // (`ApplyView::Lambda`) is discarded — its body is not
             // re-checked per call site. Structural test replacing the
             // old `needs_callsite` flag.
-            if matches!(f.view(), crate::ApplyView::Lambda(_)) {
+            if matches!(f.view(), ApplyView::Lambda(_)) {
                 f.delete(ctx)
             } else {
                 let def = self
@@ -758,7 +759,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Lambda(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Lambda(self)
     }
 }

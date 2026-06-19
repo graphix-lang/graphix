@@ -15,11 +15,7 @@ use tokio::try_join;
 /// instead of on every redraw. `last` carries the previously warned
 /// value's bit pattern so the dedup is reliable across NaN and signed
 /// zero. NaN clamps to 0.0 since ratatui can't draw it either.
-pub(super) fn clamp_ratio(
-    widget: &str,
-    last: &mut Option<u64>,
-    raw: f64,
-) -> f64 {
+pub(super) fn clamp_ratio(widget: &str, last: &mut Option<u64>, raw: f64) -> f64 {
     if (0.0..=1.0).contains(&raw) {
         *last = None;
         return raw;

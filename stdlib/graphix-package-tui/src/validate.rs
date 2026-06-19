@@ -21,7 +21,12 @@ pub(crate) const VISUAL_DIMENSION_CAP: i64 = 1024;
 /// (multiplying group sizes, summing widths and gaps) overflows well
 /// before that. The visual cap keeps the math safe; values larger
 /// than any real terminal width get clamped + warned.
-pub(crate) fn clamp_u16(widget: &str, label: &str, last: &mut Option<i64>, raw: i64) -> u16 {
+pub(crate) fn clamp_u16(
+    widget: &str,
+    label: &str,
+    last: &mut Option<i64>,
+    raw: i64,
+) -> u16 {
     if (0..=VISUAL_DIMENSION_CAP).contains(&raw) {
         *last = None;
         return raw as u16;
@@ -39,7 +44,12 @@ pub(crate) fn clamp_u16(widget: &str, label: &str, last: &mut Option<i64>, raw: 
 
 /// Clamp an `i64` into the `[0, u64::MAX]` range. Negative values
 /// become 0; unsigned overflow isn't reachable from i64.
-pub(crate) fn clamp_u64(widget: &str, label: &str, last: &mut Option<i64>, raw: i64) -> u64 {
+pub(crate) fn clamp_u64(
+    widget: &str,
+    label: &str,
+    last: &mut Option<i64>,
+    raw: i64,
+) -> u64 {
     if raw >= 0 {
         *last = None;
         return raw as u64;
@@ -55,7 +65,12 @@ pub(crate) fn clamp_u64(widget: &str, label: &str, last: &mut Option<i64>, raw: 
 /// become 0. On 64-bit targets `usize::MAX == u64::MAX` so the
 /// positive side is also safe; on 32-bit targets we additionally
 /// truncate to `usize::MAX`.
-pub(crate) fn clamp_usize(widget: &str, label: &str, last: &mut Option<i64>, raw: i64) -> usize {
+pub(crate) fn clamp_usize(
+    widget: &str,
+    label: &str,
+    last: &mut Option<i64>,
+    raw: i64,
+) -> usize {
     if raw < 0 {
         if *last != Some(raw) {
             log::warn!("{widget} {label} {raw} negative; clamping to 0");

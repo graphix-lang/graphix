@@ -49,6 +49,7 @@ struct RefHist<H: IsoPoolable> {
 
 impl<H: IsoPoolable> Deref for RefHist<H> {
     type Target = H;
+
     fn deref(&self) -> &H {
         &*self.inner
     }

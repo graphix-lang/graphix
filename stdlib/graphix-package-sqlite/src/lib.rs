@@ -4,9 +4,11 @@
 )]
 use anyhow::bail;
 use arcstr::ArcStr;
-use graphix_compiler::errf;
-use graphix_compiler::typ::{FnType, Type};
-use graphix_compiler::{ExecCtx, Node, Rt, Scope, UserEvent};
+use graphix_compiler::{
+    errf,
+    typ::{FnType, Type},
+    ExecCtx, Node, Rt, Scope, UserEvent,
+};
 use graphix_package_core::{
     extract_cast_type, CachedArgsAsync, CachedVals, EvalCachedAsync,
 };
@@ -98,8 +100,9 @@ where
 struct SqliteOpenEv;
 
 impl EvalCachedAsync for SqliteOpenEv {
-    const NAME: &str = "sqlite_open";
     type Args = ArcStr;
+
+    const NAME: &str = "sqlite_open";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -127,8 +130,9 @@ type SqliteOpen = CachedArgsAsync<SqliteOpenEv>;
 struct SqliteExecEv;
 
 impl EvalCachedAsync for SqliteExecEv {
-    const NAME: &str = "sqlite_exec";
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
+
+    const NAME: &str = "sqlite_exec";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let conn = get_conn_arc(cached, 0)?;
@@ -164,8 +168,9 @@ type SqliteExec = CachedArgsAsync<SqliteExecEv>;
 struct SqliteExecBatchEv;
 
 impl EvalCachedAsync for SqliteExecBatchEv {
-    const NAME: &str = "sqlite_exec_batch";
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr);
+
+    const NAME: &str = "sqlite_exec_batch";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let conn = get_conn_arc(cached, 0)?;
@@ -194,8 +199,9 @@ struct SqliteQueryEv {
 }
 
 impl EvalCachedAsync for SqliteQueryEv {
-    const NAME: &str = "sqlite_query";
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
+
+    const NAME: &str = "sqlite_query";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -317,8 +323,9 @@ macro_rules! simple_sql_builtin {
         struct $ev_name;
 
         impl EvalCachedAsync for $ev_name {
-            const NAME: &str = $builtin_name;
             type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
+
+            const NAME: &str = $builtin_name;
 
             fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
                 get_conn_arc(cached, 0)
@@ -349,8 +356,9 @@ simple_sql_builtin!(SqliteRollbackEv, SqliteRollback, "sqlite_rollback", "ROLLBA
 struct SqliteCloseEv;
 
 impl EvalCachedAsync for SqliteCloseEv {
-    const NAME: &str = "sqlite_close";
     type Args = Arc<Mutex<Option<rusqlite::Connection>>>;
+
+    const NAME: &str = "sqlite_close";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_conn_arc(cached, 0)

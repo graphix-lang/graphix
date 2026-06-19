@@ -8,14 +8,15 @@
 //! it with the hand-written seeds. This multiplies the transplant
 //! cross-product from ~33 hand seeds to the whole ~470-fixture corpus.
 
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 fn collect_consts(items: &[syn::Item], out: &mut Vec<String>) {
     for item in items {
         match item {
             syn::Item::Const(c) => {
-                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &*c.expr {
+                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) =
+                    &*c.expr
+                {
                     out.push(s.value());
                 }
             }

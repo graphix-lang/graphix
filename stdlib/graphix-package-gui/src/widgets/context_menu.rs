@@ -1,6 +1,9 @@
-use super::context_menu_widget::OwnedContextMenu;
-use super::menu_bar::{compile_menu_items, menu_item_desc, MenuItemKind};
-use super::{compile, GuiW, GuiWidget, IcedElement};
+use super::{
+    compile,
+    context_menu_widget::OwnedContextMenu,
+    menu_bar::{compile_menu_items, menu_item_desc, MenuItemKind},
+    GuiW, GuiWidget, IcedElement,
+};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;

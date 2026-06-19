@@ -11,13 +11,12 @@ use graphix_compiler::{
     expr::{Expr, ExprId},
     node::{callsite::CallSite, genn},
     typ::{FnType, TVal, Type, TypeRef},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    StaticFnArg, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, StaticFnArg,
+    UserEvent,
 };
 use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
-use netidx::path::Path;
-use netidx::subscriber::Value;
+use netidx::{path::Path, subscriber::Value};
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
 use poolshark::local::LPooled;
@@ -44,7 +43,7 @@ pub(crate) mod queuefn;
 pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     let ft = resolved_typ?;
     let typ = match &ft.rtype {
-        Type::Ref (TypeRef { name, params, .. })
+        Type::Ref(TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
         {
             params[0].clone()
@@ -309,8 +308,8 @@ pub struct CachedArgs<T> {
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
-    const NAME: &str = T::NAME;
     const EFFECT: EffectKind = T::EFFECT;
+    const NAME: &str = T::NAME;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -697,12 +696,12 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
-    const NAME: &str = T::NAME;
     // Intrinsically sync: the body iterates and dispatches per-element
     // predicate calls. Slot/cached plumbing is sync scaffolding, not
     // an async-effect operation. The call-site effect joins MapQ's
     // intrinsic Sync with the predicate's effect (M6 HOF inference).
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = T::NAME;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -759,19 +758,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         // its own fresh Slots per element so async callbacks
         // (e.g. `array::map(a, |p| net::publish(p, ...))`) keep
         // independent per-slot state.
-        let (id, x_node) = genn::bind(
-            ctx,
-            &self.scope.lexical,
-            "x",
-            self.etyp.clone(),
-            self.top_id,
-        );
-        let fnode = genn::reference(
-            ctx,
-            self.predid,
-            Type::Fn(self.mftyp.clone()),
-            self.top_id,
-        );
+        let (id, x_node) =
+            genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
+        let fnode =
+            genn::reference(ctx, self.predid, Type::Fn(self.mftyp.clone()), self.top_id);
         let mut pred = genn::apply(
             fnode,
             self.scope.clone(),
@@ -818,146 +808,139 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             ctx.cached.insert(self.predid, v.clone());
             event.variables.insert(self.predid, v);
         }
-        let (up, resized) =
-            match from[0].update(ctx, event).and_then(|v| T::Collection::select(v)) {
-                Some(a) if a.len() == slen => (Some(a), false),
-                Some(a) if a.len() < slen => {
-                    while self.slots.len() > a.len() {
-                        if let Some(mut s) = self.slots.pop() {
-                            s.delete(ctx)
-                        }
+        let (up, resized) = match from[0]
+            .update(ctx, event)
+            .and_then(|v| T::Collection::select(v))
+        {
+            Some(a) if a.len() == slen => (Some(a), false),
+            Some(a) if a.len() < slen => {
+                while self.slots.len() > a.len() {
+                    if let Some(mut s) = self.slots.pop() {
+                        s.delete(ctx)
                     }
-                    (Some(a), true)
                 }
-                Some(a) => {
-                    // Build the per-slot template ONCE, lazily at first use:
-                    // a `clone_rebind`'d COPY of the pristine `analysis_pred`
-                    // with its sync sub-regions fused. We fuse the CLONE so
-                    // the prototype `emit_clif` reads stays untouched — the
-                    // two readers never share a mutable object. Lazy keeps a
-                    // HOF that region-fuses from building this unused
-                    // template. Split (impure): splice each sync sub-region;
-                    // whole-body (pure): replace the body with one FusedKernel.
-                    if self.fused_template.is_none()
-                        && self.analysis_pred.is_some()
+                (Some(a), true)
+            }
+            Some(a) => {
+                // Build the per-slot template ONCE, lazily at first use:
+                // a `clone_rebind`'d COPY of the pristine `analysis_pred`
+                // with its sync sub-regions fused. We fuse the CLONE so
+                // the prototype `emit_clif` reads stays untouched — the
+                // two readers never share a mutable object. Lazy keeps a
+                // HOF that region-fuses from building this unused
+                // template. Split (impure): splice each sync sub-region;
+                // whole-body (pure): replace the body with one FusedKernel.
+                if self.fused_template.is_none() && self.analysis_pred.is_some() {
+                    let scope = self.scope.clone();
+                    let ap = self.analysis_pred.as_ref().unwrap();
+                    let element_id = ap.id;
+                    let mut t = ap.pred.clone_rebind(ctx, &scope);
                     {
-                        let scope = self.scope.clone();
-                        let ap = self.analysis_pred.as_ref().unwrap();
-                        let element_id = ap.id;
-                        let mut t = ap.pred.clone_rebind(ctx, &scope);
-                        {
-                            let any: &mut dyn Any = &mut *t;
-                            if let Some(cs) =
-                                any.downcast_mut::<CallSite<R, E>>()
-                            {
-                                let fc = graphix_compiler::fusion::lowering::fuse_callsite(cs, ctx);
-                                if let Some(fc) = &fc {
-                                    // Whole body fused to one kernel: replace
-                                    // the body with that FusedKernel.
-                                    let element_ref = genn::reference(
-                                        ctx,
-                                        element_id,
-                                        self.etyp.clone(),
-                                        self.top_id,
-                                    );
-                                    if let Ok(fk) = fc.build_slot(
-                                        ctx,
-                                        vec![element_ref],
-                                        self.scope.clone(),
-                                        self.top_id,
-                                    ) {
-                                        if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
-                                            cs.resolved_apply_mut()
-                                        {
-                                            let mut old = std::mem::replace(g.body_mut(), fk);
-                                            old.delete(ctx);
-                                        }
-                                    }
-                                } else if ctx.fusion_enabled {
-                                    // Impure callback (async ops in the body):
-                                    // no whole-body kernel. Fuse the body's
-                                    // maximal sync sub-regions IN PLACE via the
-                                    // canonical walk — the async residue stays
-                                    // node-walked, and each per-slot clone_rebind
-                                    // shares the fused kernels' Arcs. Gated on
-                                    // `fusion_enabled` so `FusionDisabled` (interp
-                                    // mode) node-walks the callback too: `try_fuse`
-                                    // doesn't self-gate, so without this the HOF
-                                    // callback would fuse even with fusion off.
-                                    // (The whole-body branch above is gated the
-                                    // same way — `fuse_callsite` returns None when
-                                    // fusion is disabled.) Formerly
-                                    // build_body_split + splice_into_body.
-                                    if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
-                                        cs.resolved_apply_mut()
-                                    {
-                                        let _ = graphix_compiler::fusion::fuse(
-                                            g.body_mut(),
-                                            ctx,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        self.fused_template = Some(t);
-                    }
-                    while self.slots.len() < a.len() {
-                        // Mint this slot's fresh element binding "x" in scope
-                        // (fresh id, no ref_var). The cloned template's arg[0]
-                        // element ref + the FusedKernel's element feeder
-                        // resolve "x" to THIS slot's id via the env name map.
-                        let id = ctx
-                            .env
-                            .bind_variable(
-                                &self.scope.lexical,
-                                "x",
-                                self.etyp.clone(),
-                                Default::default(),
-                                TArc::new(
-                                    graphix_compiler::expr::Origin::default(),
-                                ),
-                            )
-                            .id;
-                        // Clone the fused template for this slot: a fresh
-                        // independent graph whose sync sub-regions SHARE the
-                        // compiled kernel `Arc` and whose async residue is
-                        // freshly re-bound (fresh BindIds → independent
-                        // per-slot state). Fall back to a fresh interpreted
-                        // CallSite when no template was built (callback never
-                        // analysis-resolved). See design/impure_hof_fusion.md.
-                        let pred = match &self.fused_template {
-                            Some(t) => {
-                                let scope = self.scope.clone();
-                                t.clone_rebind(ctx, &scope)
-                            }
-                            None => {
-                                let node = genn::reference(
+                        let any: &mut dyn Any = &mut *t;
+                        if let Some(cs) = any.downcast_mut::<CallSite<R, E>>() {
+                            let fc = graphix_compiler::fusion::lowering::fuse_callsite(
+                                cs, ctx,
+                            );
+                            if let Some(fc) = &fc {
+                                // Whole body fused to one kernel: replace
+                                // the body with that FusedKernel.
+                                let element_ref = genn::reference(
                                     ctx,
-                                    id,
+                                    element_id,
                                     self.etyp.clone(),
                                     self.top_id,
                                 );
-                                let fnode = genn::reference(
+                                if let Ok(fk) = fc.build_slot(
                                     ctx,
-                                    self.predid,
-                                    Type::Fn(self.mftyp.clone()),
-                                    self.top_id,
-                                );
-                                genn::apply(
-                                    fnode,
+                                    vec![element_ref],
                                     self.scope.clone(),
-                                    vec![node],
-                                    &self.mftyp,
                                     self.top_id,
-                                )
+                                ) {
+                                    if let Some(graphix_compiler::ApplyViewMut::Lambda(
+                                        g,
+                                    )) = cs.resolved_apply_mut()
+                                    {
+                                        let mut old = std::mem::replace(g.body_mut(), fk);
+                                        old.delete(ctx);
+                                    }
+                                }
+                            } else if ctx.fusion_enabled {
+                                // Impure callback (async ops in the body):
+                                // no whole-body kernel. Fuse the body's
+                                // maximal sync sub-regions IN PLACE via the
+                                // canonical walk — the async residue stays
+                                // node-walked, and each per-slot clone_rebind
+                                // shares the fused kernels' Arcs. Gated on
+                                // `fusion_enabled` so `FusionDisabled` (interp
+                                // mode) node-walks the callback too: `try_fuse`
+                                // doesn't self-gate, so without this the HOF
+                                // callback would fuse even with fusion off.
+                                // (The whole-body branch above is gated the
+                                // same way — `fuse_callsite` returns None when
+                                // fusion is disabled.) Formerly
+                                // build_body_split + splice_into_body.
+                                if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
+                                    cs.resolved_apply_mut()
+                                {
+                                    let _ =
+                                        graphix_compiler::fusion::fuse(g.body_mut(), ctx);
+                                }
                             }
-                        };
-                        self.slots.push(Slot { id, pred, cur: None });
+                        }
                     }
-                    (Some(a), true)
+                    self.fused_template = Some(t);
                 }
-                None => (None, false),
-            };
+                while self.slots.len() < a.len() {
+                    // Mint this slot's fresh element binding "x" in scope
+                    // (fresh id, no ref_var). The cloned template's arg[0]
+                    // element ref + the FusedKernel's element feeder
+                    // resolve "x" to THIS slot's id via the env name map.
+                    let id = ctx
+                        .env
+                        .bind_variable(
+                            &self.scope.lexical,
+                            "x",
+                            self.etyp.clone(),
+                            Default::default(),
+                            TArc::new(graphix_compiler::expr::Origin::default()),
+                        )
+                        .id;
+                    // Clone the fused template for this slot: a fresh
+                    // independent graph whose sync sub-regions SHARE the
+                    // compiled kernel `Arc` and whose async residue is
+                    // freshly re-bound (fresh BindIds → independent
+                    // per-slot state). Fall back to a fresh interpreted
+                    // CallSite when no template was built (callback never
+                    // analysis-resolved). See design/impure_hof_fusion.md.
+                    let pred = match &self.fused_template {
+                        Some(t) => {
+                            let scope = self.scope.clone();
+                            t.clone_rebind(ctx, &scope)
+                        }
+                        None => {
+                            let node =
+                                genn::reference(ctx, id, self.etyp.clone(), self.top_id);
+                            let fnode = genn::reference(
+                                ctx,
+                                self.predid,
+                                Type::Fn(self.mftyp.clone()),
+                                self.top_id,
+                            );
+                            genn::apply(
+                                fnode,
+                                self.scope.clone(),
+                                vec![node],
+                                &self.mftyp,
+                                self.top_id,
+                            )
+                        }
+                    };
+                    self.slots.push(Slot { id, pred, cur: None });
+                }
+                (Some(a), true)
+            }
+            None => (None, false),
+        };
         if let Some(a) = up {
             for (s, v) in self.slots.iter().zip(a.iter_values()) {
                 ctx.cached.insert(s.id, v.clone());
@@ -1103,26 +1086,16 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                             name: Some(n),
                         }) => n.clone(),
                         Some(graphix_compiler::typ::FnArgKind::Labeled {
-                            name,
-                            ..
+                            name, ..
                         }) => name.clone(),
                         _ => return Ok(None),
                     };
-                    let id =
-                        g.args().first().and_then(|p| p.single_bind_id());
+                    let id = g.args().first().and_then(|p| p.single_bind_id());
                     (n, id, Vec::new())
                 }
             };
         // Delegate to the per-MapFn codegen.
-        T::emit_clif(
-            cx,
-            array_arg,
-            body,
-            &elem_name,
-            elem_id,
-            &self.etyp,
-            &elem_binds,
-        )
+        T::emit_clif(cx, array_arg, body, &elem_name, elem_id, &self.etyp, &elem_binds)
     }
 }
 
@@ -1201,9 +1174,9 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
-    const NAME: &str = T::NAME;
     // Intrinsically sync. See MapQ above for the rationale.
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = T::NAME;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1259,26 +1232,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         // Apply Node — mirrors what `update()` builds per array
         // element. Analysis-only; runtime continues per-element
         // synthesis for independent state.
-        let (acc_id, acc_node) = genn::bind(
-            ctx,
-            &self.scope.lexical,
-            "acc",
-            self.ityp.clone(),
-            self.top_id,
-        );
-        let (elem_id, elem_node) = genn::bind(
-            ctx,
-            &self.scope.lexical,
-            "x",
-            self.etyp.clone(),
-            self.top_id,
-        );
-        let fnode = genn::reference(
-            ctx,
-            self.fid,
-            Type::Fn(self.mftype.clone()),
-            self.top_id,
-        );
+        let (acc_id, acc_node) =
+            genn::bind(ctx, &self.scope.lexical, "acc", self.ityp.clone(), self.top_id);
+        let (elem_id, elem_node) =
+            genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
+        let fnode =
+            genn::reference(ctx, self.fid, Type::Fn(self.mftype.clone()), self.top_id);
         let mut pred = genn::apply(
             fnode,
             self.scope.clone(),
@@ -1510,12 +1469,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         let mut params = g.typ().args.iter();
         // The accumulator (1st) param is always a single name.
         let acc_name = match params.next().map(|a| &a.kind) {
-            Some(graphix_compiler::typ::FnArgKind::Positional {
-                name: Some(n),
-            }) => n.clone(),
-            Some(graphix_compiler::typ::FnArgKind::Labeled {
-                name, ..
-            }) => name.clone(),
+            Some(graphix_compiler::typ::FnArgKind::Positional { name: Some(n) }) => {
+                n.clone()
+            }
+            Some(graphix_compiler::typ::FnArgKind::Labeled { name, .. }) => name.clone(),
             _ => return Ok(None),
         };
         let acc_id = g.args().first().and_then(|p| p.single_bind_id());
@@ -1530,8 +1487,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                             name: Some(n),
                         }) => n.clone(),
                         Some(graphix_compiler::typ::FnArgKind::Labeled {
-                            name,
-                            ..
+                            name, ..
                         }) => name.clone(),
                         _ => return Ok(None),
                     };
@@ -1560,8 +1516,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
 struct IsErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
-    const NAME: &str = "core_is_err";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_is_err";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1595,8 +1551,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
 struct FilterErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
-    const NAME: &str = "core_filter_err";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_filter_err";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1630,8 +1586,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
 struct ToError;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
-    const NAME: &str = "core_error";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_error";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1664,7 +1620,6 @@ struct Once {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
-    const NAME: &str = "core_once";
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -1674,6 +1629,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     // every cycle and never passed an event). Async = fusion boundary
     // = the node-walk runs it with exact update semantics.
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "core_once";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1718,7 +1674,6 @@ struct Take {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
-    const NAME: &str = "core_take";
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -1728,6 +1683,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     // every cycle and never passed an event). Async = fusion boundary
     // = the node-walk runs it with exact update semantics.
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "core_take";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1777,7 +1733,6 @@ struct Skip {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
-    const NAME: &str = "core_skip";
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -1787,6 +1742,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     // every cycle and never passed an event). Async = fusion boundary
     // = the node-walk runs it with exact update semantics.
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "core_skip";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1834,8 +1790,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
 struct AllEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
-    const NAME: &str = "core_all";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_all";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &*from.0 {
@@ -1868,8 +1824,8 @@ fn add_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 struct SumEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
-    const NAME: &str = "core_sum";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_sum";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1893,8 +1849,8 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
-    const NAME: &str = "core_product";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_product";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1918,8 +1874,8 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
-    const NAME: &str = "core_divide";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_divide";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1935,8 +1891,8 @@ type Divide = CachedArgs<DivideEv>;
 struct MinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
-    const NAME: &str = "core_min";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_min";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1961,8 +1917,8 @@ type Min = CachedArgs<MinEv>;
 struct MaxEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
-    const NAME: &str = "core_max";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_max";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -1987,8 +1943,8 @@ type Max = CachedArgs<MaxEv>;
 struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
-    const NAME: &str = "core_and";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_and";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
@@ -2011,8 +1967,8 @@ type And = CachedArgs<AndEv>;
 struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
-    const NAME: &str = "core_or";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
@@ -2101,8 +2057,8 @@ macro_rules! int_shift {
 struct BitAndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
-    const NAME: &str = "core_bit_and";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bit_and";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, &)
@@ -2115,8 +2071,8 @@ type BitAnd = CachedArgs<BitAndEv>;
 struct BitOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
-    const NAME: &str = "core_bit_or";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bit_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, |)
@@ -2129,8 +2085,8 @@ type BitOr = CachedArgs<BitOrEv>;
 struct BitXorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
-    const NAME: &str = "core_bit_xor";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bit_xor";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, ^)
@@ -2143,8 +2099,8 @@ type BitXor = CachedArgs<BitXorEv>;
 struct BitNotEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
-    const NAME: &str = "core_bit_not";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_bit_not";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -2171,8 +2127,8 @@ type BitNot = CachedArgs<BitNotEv>;
 struct ShlEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
-    const NAME: &str = "core_shl";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_shl";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shl)
@@ -2185,8 +2141,8 @@ type Shl = CachedArgs<ShlEv>;
 struct ShrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
-    const NAME: &str = "core_shr";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_shr";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shr)
@@ -2209,8 +2165,8 @@ struct Filter<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
-    const NAME: &str = "core_filter";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_filter";
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -2357,13 +2313,13 @@ struct Hold {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
-    const NAME: &str = "core_hold";
     // Hold takes (trigger, value); it caches state across cycles
     // (triggered count, latest value) but each emission lands on the
     // same cycle as the most recent input that completed the
     // (trigger-arrived, value-arrived) pairing. State becomes a
     // kernel-local register; no cycle-shifted output.
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_hold";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2570,7 +2526,6 @@ struct Count {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
-    const NAME: &str = "core_count";
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -2580,6 +2535,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     // every cycle and never passed an event). Async = fusion boundary
     // = the node-walk runs it with exact update semantics.
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "core_count";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2617,8 +2573,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
 struct MeanEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
-    const NAME: &str = "core_mean";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_mean";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("MeanError");
@@ -2652,7 +2608,6 @@ type Mean = CachedArgs<MeanEv>;
 struct Uniq(Option<Value>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
-    const NAME: &str = "core_uniq";
     // Async, deliberately (F2 flip): this builtin's semantics are
     // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
     // arg updated on which cycle. The fused DynCall dispatch protocol
@@ -2662,6 +2617,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     // every cycle and never passed an event). Async = fusion boundary
     // = the node-walk runs it with exact update semantics.
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "core_uniq";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2701,7 +2657,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
 struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
-    const NAME: &str = "core_never";
     // Async, deliberately: `Async` means "output may appear on a later
     // cycle, autonomously, or never" — never() is the limiting case of
     // that contract. Marking it Sync let it fuse as a DynCall that
@@ -2713,6 +2668,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     // compile error (callsite.rs `reject_dead_variadic_call`): never()
     // is the sanctioned way to write a value that never arrives.
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "core_never";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2789,8 +2745,8 @@ struct Dbg {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
-    const NAME: &str = "core_dbg";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_dbg";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2870,8 +2826,8 @@ struct Log {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
-    const NAME: &str = "core_log";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_log";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2926,8 +2882,8 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
-            const NAME: &str = $name;
             const EFFECT: EffectKind = EffectKind::Sync;
+            const NAME: &str = $name;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

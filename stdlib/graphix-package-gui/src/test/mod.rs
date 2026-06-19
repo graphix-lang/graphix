@@ -1,7 +1,9 @@
 use ahash::AHashMap;
 use anyhow::{bail, Context, Result};
-use graphix_compiler::expr::{ExprId, ModuleResolver};
-use graphix_compiler::BindId;
+use graphix_compiler::{
+    expr::{ExprId, ModuleResolver},
+    BindId,
+};
 use graphix_package_core::testing::{self, RegisterFn, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -366,8 +368,7 @@ fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> 
 
 use iced_core::{clipboard, mouse, Event, Point, Size};
 use iced_runtime::user_interface::{self, UserInterface};
-use iced_wgpu::graphics::Shell;
-use iced_wgpu::wgpu;
+use iced_wgpu::{graphics::Shell, wgpu};
 use tokio::sync::OnceCell;
 
 /// Shared headless wgpu adapter + device. Creating GPU resources is

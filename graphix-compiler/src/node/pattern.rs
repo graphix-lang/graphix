@@ -93,27 +93,19 @@ impl StructPatternNode {
             },
             Self::SlicePrefix { all, prefix, tail } => Self::SlicePrefix {
                 all: opt(ctx, all),
-                prefix: prefix
-                    .iter()
-                    .map(|b| b.clone_rebind(ctx, scope))
-                    .collect(),
+                prefix: prefix.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
                 tail: opt(ctx, tail),
             },
             Self::SliceSuffix { all, head, suffix } => Self::SliceSuffix {
                 all: opt(ctx, all),
                 head: opt(ctx, head),
-                suffix: suffix
-                    .iter()
-                    .map(|b| b.clone_rebind(ctx, scope))
-                    .collect(),
+                suffix: suffix.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
             },
             Self::Struct { all, binds } => Self::Struct {
                 all: opt(ctx, all),
                 binds: binds
                     .iter()
-                    .map(|(n, i, b)| {
-                        (n.clone(), *i, b.clone_rebind(ctx, scope))
-                    })
+                    .map(|(n, i, b)| (n.clone(), *i, b.clone_rebind(ctx, scope)))
                     .collect(),
             },
             Self::Variant { tag, all, binds } => Self::Variant {
@@ -178,7 +170,9 @@ impl StructPatternNode {
                         });
                         let multi = $multi
                             .iter()
-                            .map(|n| Self::compile_int(ctx, et, n, scope, pos, ori.clone()))
+                            .map(|n| {
+                                Self::compile_int(ctx, et, n, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         (all, single, multi)
                     }
@@ -189,7 +183,7 @@ impl StructPatternNode {
             }};
         }
         let type_predicate = match type_predicate {
-            Type::Ref (TypeRef { .. }) => type_predicate.lookup_ref(&ctx.env)?,
+            Type::Ref(TypeRef { .. }) => type_predicate.lookup_ref(&ctx.env)?,
             t => t.clone(),
         };
         let type_predicate = &type_predicate;
@@ -241,7 +235,9 @@ impl StructPatternNode {
                         });
                         let binds = binds
                             .iter()
-                            .map(|b| Self::compile_int(ctx, et, b, scope, pos, ori.clone()))
+                            .map(|b| {
+                                Self::compile_int(ctx, et, b, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         Self::Slice { tuple: false, all, binds }
                     }
@@ -276,7 +272,9 @@ impl StructPatternNode {
                         let binds = elts
                             .iter()
                             .zip(binds.iter())
-                            .map(|(t, b)| Self::compile_int(ctx, t, b, scope, pos, ori.clone()))
+                            .map(|(t, b)| {
+                                Self::compile_int(ctx, t, b, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         Self::Slice { tuple: true, all, binds }
                     }
@@ -317,7 +315,9 @@ impl StructPatternNode {
                         let binds = elts
                             .iter()
                             .zip(binds.iter())
-                            .map(|(t, b)| Self::compile_int(ctx, t, b, scope, pos, ori.clone()))
+                            .map(|(t, b)| {
+                                Self::compile_int(ctx, t, b, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         Self::Variant { tag: tag.clone(), all, binds }
                     }
@@ -767,17 +767,10 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// Structural clone for [`crate::Update::clone_rebind`]: re-mint the
     /// structure's bound ids first (they enter `scope`'s name map), then
     /// clone the guard so its `Ref`s resolve to the fresh ids.
-    pub(super) fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-    ) -> Self {
-        let structure_predicate =
-            self.structure_predicate.clone_rebind(ctx, scope);
-        let guard = self
-            .guard
-            .as_ref()
-            .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)));
+    pub(super) fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Self {
+        let structure_predicate = self.structure_predicate.clone_rebind(ctx, scope);
+        let guard =
+            self.guard.as_ref().map(|c| Cached::new(c.node.clone_rebind(ctx, scope)));
         Self {
             explicit_type_predicate: self.explicit_type_predicate,
             type_predicate: self.type_predicate.clone(),
@@ -817,7 +810,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Tuple(_)
             | Type::Variant(_, _)
             | Type::Struct(_)
-            | Type::Ref (TypeRef { .. }) => (),
+            | Type::Ref(TypeRef { .. }) => (),
         }
         let structure_predicate = StructPatternNode::compile(
             ctx,

@@ -254,7 +254,8 @@ impl<X: GXExt> TuiWidget for ScrollbarW<X> {
             bar = bar.end_symbol(s.as_ref().map(|s| s.as_str()));
         }
         if let Some(Some(p)) = position.t {
-            let p = validate::clamp_usize("scrollbar", "position", last_warned_position, p);
+            let p =
+                validate::clamp_usize("scrollbar", "position", last_warned_position, p);
             *state = state.position(p);
         }
         if let Some(Some(s)) = style.t {

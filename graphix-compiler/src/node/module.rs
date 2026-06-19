@@ -22,12 +22,7 @@ use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
 
-fn bind_sig(
-    env: &mut Env,
-    mod_env: &mut Env,
-    scope: &Scope,
-    sig: &Sig,
-) -> Result<()> {
+fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
     for si in sig.items.iter() {
         let si_ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
@@ -206,8 +201,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                     // peeks). Stored on the `ExecCtx`, so it drops with
                     // the context (`AbstractId`s are minted fresh per
                     // compile — a global map would leak).
-                    ctx.abstract_registry
-                        .insert(*id, td.typ.scope_refs(&scope.lexical));
+                    ctx.abstract_registry.insert(*id, td.typ.scope_refs(&scope.lexical));
                 }
                 _ => {
                     if sig_td.name != td.name
@@ -528,10 +522,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         crate::NodeView::Module(self)
     }
 
-    fn fuse(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // A module is structure, not computation — recurse into its
         // statement nodes so the contents fuse. (`source` is NOT a
         // child to fuse: for a dynamic module it's the node producing

@@ -45,9 +45,7 @@ pub enum FuseExpect {
 /// FUSION stays 0 and the program node-walks.
 #[cfg(debug_assertions)]
 pub fn check_fuse_expectation(expect: FuseExpect) {
-    use graphix_compiler::fusion::emit_helpers::{
-        fusion_invocations, jit_invocations,
-    };
+    use graphix_compiler::fusion::emit_helpers::{fusion_invocations, jit_invocations};
     let fusion = fusion_invocations();
     let jit = jit_invocations();
     match expect {
@@ -124,8 +122,7 @@ where
         >,
     ),
 {
-    init_with_flags_and_setup(sub, register, resolvers, BitFlags::empty(), setup)
-        .await
+    init_with_flags_and_setup(sub, register, resolvers, BitFlags::empty(), setup).await
 }
 
 /// Like [`init_with_setup`] but lets the caller pin the

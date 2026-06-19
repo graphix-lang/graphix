@@ -1,6 +1,8 @@
-use std::path::Path;
-use std::sync::{Mutex, Once};
-use std::time::Duration;
+use std::{
+    path::Path,
+    sync::{Mutex, Once},
+    time::Duration,
+};
 
 // vendor.py must only run once — concurrent runs would clobber each other.
 static VENDOR_ONCE: Once = Once::new();

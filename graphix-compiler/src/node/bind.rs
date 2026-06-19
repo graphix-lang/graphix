@@ -4,9 +4,14 @@ use crate::{
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
+    fusion::{
+        emit::{emit_ref_node, BodyCx, CompiledExpr},
+        fuse,
+    },
+    ide::ReferenceSite,
     typ::Type,
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    wrap, BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag,
+    Refs, Rt, Scope, Update, UserEvent,
 };
 use anyhow::{bail, Context, Result};
 use enumflags2::BitFlags;
@@ -40,7 +45,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 id = Some(i);
             }
         });
-        if count == 1 { id } else { None }
+        if count == 1 {
+            id
+        } else {
+            None
+        }
     }
 
     /// Build a `Bind` node from an already-compiled RHS node and an
@@ -105,10 +114,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     let ptyp = pattern.infer_type_predicate(&ctx.env)?;
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
-                            bailat!(
-                                spec,
-                                "match error {typ} can't be matched by {ptyp}"
-                            )
+                            bailat!(spec, "match error {typ} can't be matched by {ptyp}")
                         })?
                     }
                     typ
@@ -142,33 +148,25 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // (scope, name) at every `Apply` site, so it doesn't
         // matter that sig and impl get different `BindId`s.
         if let ExprKind::Bind(be) = &spec.kind {
-            if let crate::expr::StructurePattern::Bind(bind_name) =
-                &be.pattern
-            {
+            if let expr::StructurePattern::Bind(bind_name) = &be.pattern {
                 if let ExprKind::Lambda(lam) = &value.kind {
-                    if let netidx::utils::Either::Right(builtin_name) =
-                        &lam.body
-                    {
-                        if let crate::typ::Type::Fn(fn_type) = node.typ() {
+                    if let netidx::utils::Either::Right(builtin_name) = &lam.body {
+                        if let Type::Fn(fn_type) = node.typ() {
                             // Lambda Node's def field holds the
                             // LambdaDef; downcast through NodeView::Lambda
                             // to pull its id. Used at fusion time to
                             // look up the lambda's env+scope when
                             // compiling labeled-default arg expressions.
                             let lambda_id = match node.view() {
-                                crate::NodeView::Lambda(l) => {
-                                    l.lambda_id::<R, E>()
-                                }
+                                NodeView::Lambda(l) => l.lambda_id::<R, E>(),
                                 _ => None,
                             };
                             ctx.builtin_bindings.insert(
                                 (
                                     scope.lexical.clone(),
-                                    compact_str::CompactString::from(
-                                        bind_name.as_str(),
-                                    ),
+                                    compact_str::CompactString::from(bind_name.as_str()),
                                 ),
-                                crate::BuiltinBindInfo {
+                                BuiltinBindInfo {
                                     name: builtin_name.clone(),
                                     argspec: lam.args.clone(),
                                     typ: fn_type.clone(),
@@ -189,7 +187,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// populate `ctx.bind_to_lambda` (the static-resolution index).
     pub(crate) fn lambda_def_value(&self) -> Option<Value> {
         match self.node.view() {
-            crate::NodeView::Lambda(l) => Some(l.def_value().clone()),
+            NodeView::Lambda(l) => Some(l.def_value().clone()),
             _ => None,
         }
     }
@@ -269,28 +267,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Bind(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Bind(self)
     }
 
-    fn fuse(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-    ) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // Fuse the bound VALUE, never the Bind itself: the Bind must
         // stay live to drive the publish of the result to its BindId
         // (the ValueBind splice shape). A whole-Bind fusion can't
         // happen anyway — Bind has no emit_clif, so any try_fuse
         // rooted here fails structurally.
-        crate::fusion::fuse(&mut self.node, ctx)?;
+        fuse(&mut self.node, ctx)?;
         Ok(None)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-    ) -> Node<R, E> {
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // `rec`: pattern bound before value (so the value can reference
         // itself); non-rec: value cloned before the binding is re-minted
         // (the RHS can't see the new binding). Mirrors `Bind::compile`.
@@ -355,7 +346,7 @@ impl Ref {
                 let def_pos = bind.pos;
                 let def_ori = bind.ori.clone();
                 if ctx.env.lsp_mode {
-                    ctx.env.push_reference(crate::ide::ReferenceSite {
+                    ctx.env.push_reference(ReferenceSite {
                         pos: spec.pos,
                         ori: spec.ori.clone(),
                         name: name.clone(),
@@ -407,27 +398,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Ref(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Ref(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_ref_node(
-            cx,
-            self.spec.as_ref(),
-            &self.typ,
-            self.id,
-        )
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_ref_node(cx, self.spec.as_ref(), &self.typ, self.id)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-    ) -> Node<R, E> {
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // Resolve a fresh id by NAME in `scope`. The name comes from the
         // source spec (`ExprKind::Ref`), or — for a synthesized (NOP-spec)
         // feeder ref — from the binding record. An internal binding
@@ -436,16 +418,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         // outer binding; failing to resolve keeps the original id.
         let name: Option<ModPath> = match &self.spec.kind {
             ExprKind::Ref { name } => Some(name.clone()),
-            _ => ctx
-                .env
-                .by_id
-                .get(&self.id)
-                .map(|b| ModPath::from_iter([b.name.as_str()])),
+            _ => {
+                ctx.env.by_id.get(&self.id).map(|b| ModPath::from_iter([b.name.as_str()]))
+            }
         };
         let new_id = name
-            .and_then(|n| {
-                ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id)
-            })
+            .and_then(|n| ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id))
             .unwrap_or(self.id);
         ctx.rt.ref_var(new_id, self.top_id);
         Box::new(Self {
@@ -541,8 +519,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::ByRef(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::ByRef(self)
     }
 }
 
@@ -640,7 +618,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         Ok(())
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Deref(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Deref(self)
     }
 }

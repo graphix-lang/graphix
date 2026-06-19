@@ -14,8 +14,9 @@ use crate::{get_stream, metadata::convert_metadata, wrap_file, StreamKind};
 pub(crate) struct FileOpenEv;
 
 impl EvalCachedAsync for FileOpenEv {
-    const NAME: &str = "sys_fs_open";
     type Args = (ArcStr, ArcStr);
+
+    const NAME: &str = "sys_fs_open";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((cached.get::<ArcStr>(0)?, cached.get::<ArcStr>(1)?))
@@ -61,8 +62,9 @@ pub(crate) type FileOpen = CachedArgsAsync<FileOpenEv>;
 pub(crate) struct FileSeekEv;
 
 impl EvalCachedAsync for FileSeekEv {
-    const NAME: &str = "sys_fs_seek";
     type Args = (Arc<Mutex<Option<StreamKind>>>, SeekFrom);
+
+    const NAME: &str = "sys_fs_seek";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let stream = get_stream(cached, 0)?;
@@ -104,8 +106,9 @@ pub(crate) type FileSeek = CachedArgsAsync<FileSeekEv>;
 pub(crate) struct FileFstatEv;
 
 impl EvalCachedAsync for FileFstatEv {
-    const NAME: &str = "sys_fs_fstat";
     type Args = Arc<Mutex<Option<StreamKind>>>;
+
+    const NAME: &str = "sys_fs_fstat";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -134,8 +137,9 @@ pub(crate) type FileFstat = CachedArgsAsync<FileFstatEv>;
 pub(crate) struct FileTruncateEv;
 
 impl EvalCachedAsync for FileTruncateEv {
-    const NAME: &str = "sys_fs_truncate";
     type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
+
+    const NAME: &str = "sys_fs_truncate";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((get_stream(cached, 0)?, cached.get::<u64>(1)?))
@@ -166,8 +170,9 @@ pub(crate) type FileTruncate = CachedArgsAsync<FileTruncateEv>;
 pub(crate) struct ReadAllOp;
 
 impl EvalCachedAsync for ReadAllOp {
-    const NAME: &str = "sys_fs_read_all";
     type Args = ArcStr;
+
+    const NAME: &str = "sys_fs_read_all";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -189,8 +194,9 @@ pub(crate) type ReadAll = CachedArgsAsync<ReadAllOp>;
 pub(crate) struct ReadAllBinOp;
 
 impl EvalCachedAsync for ReadAllBinOp {
-    const NAME: &str = "sys_fs_read_all_bin";
     type Args = ArcStr;
+
+    const NAME: &str = "sys_fs_read_all_bin";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -212,8 +218,9 @@ pub(crate) type ReadAllBin = CachedArgsAsync<ReadAllBinOp>;
 pub(crate) struct WriteAllOp;
 
 impl EvalCachedAsync for WriteAllOp {
-    const NAME: &str = "sys_fs_write_all";
     type Args = (ArcStr, ArcStr);
+
+    const NAME: &str = "sys_fs_write_all";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((cached.get::<ArcStr>(0)?, cached.get::<ArcStr>(1)?))
@@ -235,8 +242,9 @@ pub(crate) type WriteAll = CachedArgsAsync<WriteAllOp>;
 pub(crate) struct WriteAllBinOp;
 
 impl EvalCachedAsync for WriteAllBinOp {
-    const NAME: &str = "sys_fs_write_all_bin";
     type Args = (ArcStr, Bytes);
+
+    const NAME: &str = "sys_fs_write_all_bin";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((cached.get::<ArcStr>(0)?, cached.get::<Bytes>(1)?))
@@ -258,8 +266,9 @@ pub(crate) type WriteAllBin = CachedArgsAsync<WriteAllBinOp>;
 pub(crate) struct RemoveFileOp;
 
 impl EvalCachedAsync for RemoveFileOp {
-    const NAME: &str = "sys_fs_remove_file";
     type Args = ArcStr;
+
+    const NAME: &str = "sys_fs_remove_file";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)

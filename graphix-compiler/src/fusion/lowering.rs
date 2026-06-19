@@ -6,21 +6,31 @@
 //! analysis those emitters consume.
 
 use crate::{
-    expr::{ExprKind, ModPath},
-    fusion::{self, kernel_abi},
-    node::callsite::CallSite,
-    typ::Type,
-    ExecCtx, Rt, Update, UserEvent,
+    env::Env,
+    expr::{Expr, ExprId, ExprKind, ModPath},
+    fusion::{
+        self,
+        emit::WrappedKernel,
+        kernel_abi::{
+            self, abi_kind, AbiKind, AbstractRegistry, BuiltinSlot, FnParam,
+            FnSource, KernelSig, Seen,
+        },
+        LambdaCallInfo,
+    },
+    node::{callsite::CallSite, genn, lambda::GXLambda, Cached},
+    typ::{FnArgKind, FnType, Type},
+    ApplyView, BindId, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 use arcstr::ArcStr;
 use netidx_value::Value;
 
 // Re-export the canonical kernel-ABI types so existing callers
 // (graphix-shell, in-tree tests) keep compiling. The definitive home
-// is `crate::fusion::kernel_abi`.
-pub use crate::fusion::kernel_abi::{Input, KnownFusedFn, PrimType};
+// is `kernel_abi`.
+pub use kernel_abi::{Input, KnownFusedFn, PrimType};
 
-/// Cached entry in [`crate::ExecCtx::fusion_kernels`]. One per
+/// Cached entry in [`ExecCtx::fusion_kernels`]. One per
 /// `(LambdaId, Arc<FnType>)` monomorphization of a lambda definition.
 ///
 /// `fn_name` is the synthetic kernel name call sites resolve against
@@ -28,7 +38,7 @@ pub use crate::fusion::kernel_abi::{Input, KnownFusedFn, PrimType};
 #[derive(Debug, Clone)]
 pub struct CachedKernel {
     pub fn_name: ArcStr,
-    pub kernel: std::sync::Arc<crate::fusion::kernel_abi::KernelSig>,
+    pub kernel: std::sync::Arc<KernelSig>,
     pub signature: KnownFusedFn,
     /// Captured outer-scope bindings the lambda body references,
     /// lifted to extra positional kernel arguments (closure
@@ -43,7 +53,7 @@ pub struct CachedKernel {
     /// The binding the kernel was built FROM (the call site's fnode
     /// Ref id), when there was one. For a recursive callee the direct
     /// path's Node body emission recognises self-calls by this id.
-    pub self_bind: Option<crate::BindId>,
+    pub self_bind: Option<BindId>,
 }
 
 /// One captured outer-scope binding lifted into a lambda kernel's
@@ -55,7 +65,7 @@ pub struct CaptureSlot {
     /// looking this id up in the parent kernel's input slots
     /// (`lookup_local_by_bind_id`) — BindId-keyed so a same-named
     /// shadow in the parent doesn't mis-route.
-    pub bind_id: crate::BindId,
+    pub bind_id: BindId,
     /// Source-level name of the captured binding. Used as the kernel
     /// input slot name (so the body's `Ref` resolves) and as the
     /// const-fallback lookup key.
@@ -69,7 +79,7 @@ pub struct CaptureSlot {
 /// for `CallSite::emit_clif`'s builtin DynCall arm.
 ///
 /// `fn_index` is the slot index in `KernelSig.fn_params` for this
-/// call site's [`crate::fusion::kernel_abi::FnSource::Builtin`] entry.
+/// call site's [`FnSource::Builtin`] entry.
 ///
 /// `marshal_arg_indices` maps each kernel-level marshalled DynCall
 /// arg position to its index in `Apply.args` (source order). At
@@ -96,20 +106,20 @@ pub struct BuiltinCallSiteInfo {
 pub struct BuiltinCallDiscovery {
     /// `FnParam` slots to install in the kernel sig's `fn_params` —
     /// one per discovered builtin Apply site, in walk order.
-    pub fn_params: Vec<crate::fusion::kernel_abi::FnParam>,
+    pub fn_params: Vec<FnParam>,
     /// `Apply.spec.id → BuiltinCallSiteInfo` lookup so
     /// `CallSite::emit_clif` can recognise the call site at emit
     /// time and lower it to a DynCall.
-    pub apply_sites: nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
+    pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
 
 /// Walk a Node subtree to discover builtin Apply sites: every
 /// `CallSite` whose target resolves to a sync builtin binding
 /// registered in `ctx.builtin_bindings` gets a
-/// [`crate::fusion::kernel_abi::FnParam`] slot ([`crate::fusion::kernel_abi::FnSource::Builtin`])
+/// [`FnParam`] slot ([`FnSource::Builtin`])
 /// and an `apply_sites` entry, capturing the layout `emit_dyncall`
 /// needs to dispatch via the runtime's builtin Apply machinery.
-/// Descent is [`crate::fusion::for_each_node`] — the canonical
+/// Descent is [`fusion::for_each_node`] — the canonical
 /// full-coverage walker, so lambda bodies are NOT descended (they
 /// are separate kernels with their own discovery pass). Each site
 /// reads the CallSite's resolved FnType and its compiled arg/return
@@ -119,14 +129,14 @@ pub struct BuiltinCallDiscovery {
 /// type, async builtin, mismatched arity, …) are simply omitted —
 /// emission then fails on the un-registered site and the region
 /// stays unfused.
-pub fn walk_node_for_builtin_calls<R: crate::Rt, E: crate::UserEvent>(
-    node: &crate::Node<R, E>,
-    ctx: &crate::ExecCtx<R, E>,
-    scope: &crate::expr::ModPath,
+pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+    scope: &ModPath,
     out: &mut BuiltinCallDiscovery,
 ) {
     fusion::for_each_node(node, &mut |n| {
-        if let crate::NodeView::CallSite(cs) = n.view() {
+        if let NodeView::CallSite(cs) = n.view() {
             try_register_builtin_call_from_callsite(cs, ctx, scope, out);
         }
     });
@@ -190,10 +200,10 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // didn't reach this site (e.g. a compile error elsewhere). Fall
     // back to the binding's own (generic) FnType in that case as a
     // last resort — it usually won't freeze, so the site stays unfused.
-    let fn_type: std::sync::Arc<crate::typ::FnType> = match cs.ftype() {
+    let fn_type: std::sync::Arc<FnType> = match cs.ftype() {
         Some(ft) => std::sync::Arc::new(ft.resolve_tvars()),
         None => {
-            let inner: &crate::typ::FnType = &info.typ;
+            let inner: &FnType = &info.typ;
             std::sync::Arc::new(inner.clone())
         }
     };
@@ -208,12 +218,12 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             None => call_positional.push(call_idx),
         }
     }
-    let mut layout: Vec<crate::fusion::kernel_abi::BuiltinSlot> = Vec::new();
+    let mut layout: Vec<BuiltinSlot> = Vec::new();
     let mut arg_types: Vec<Type> = Vec::new();
     let mut marshal_arg_indices: Vec<usize> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
-        use crate::typ::FnArgKind;
+        use FnArgKind;
         match &fa.kind {
             FnArgKind::Positional { .. } => {
                 let (pos_idx, call_idx) = match pos_iter.next() {
@@ -227,12 +237,13 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
-                let kt = match kernel_abi::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
-                    Some(t) => t,
-                    None => return,
-                };
+                let kt =
+                    match kernel_abi::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
+                        Some(t) => t,
+                        None => return,
+                    };
                 let slot_idx = arg_types.len();
-                layout.push(crate::fusion::kernel_abi::BuiltinSlot::Positional(slot_idx));
+                layout.push(BuiltinSlot::Positional(slot_idx));
                 arg_types.push(kt);
                 marshal_arg_indices.push(*call_idx);
             }
@@ -242,12 +253,17 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         .arg_named(name)
                         .map(|n| n.typ().clone())
                         .unwrap_or_else(|| fa.typ.clone());
-                    let kt = match kernel_abi::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
+                    let kt = match kernel_abi::freeze_for_abi(
+                        &ctx.abstract_registry,
+                        &arg_typ,
+                    ) {
                         Some(t) => t,
                         None => return,
                     };
                     let slot_idx = arg_types.len();
-                    layout.push(crate::fusion::kernel_abi::BuiltinSlot::Positional(slot_idx));
+                    layout.push(BuiltinSlot::Positional(
+                        slot_idx,
+                    ));
                     arg_types.push(kt);
                     marshal_arg_indices.push(call_idx);
                 } else if *has_default {
@@ -266,7 +282,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         Some(d) => d,
                         None => return,
                     };
-                    layout.push(crate::fusion::kernel_abi::BuiltinSlot::LabeledDefault(default));
+                    layout.push(BuiltinSlot::LabeledDefault(
+                        default,
+                    ));
                 } else {
                     return;
                 }
@@ -280,11 +298,15 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         }
         let from_call_idx = arg_types.len();
         let count = remaining.len();
-        layout.push(crate::fusion::kernel_abi::BuiltinSlot::Variadic { from_call_idx, count });
+        layout.push(BuiltinSlot::Variadic {
+            from_call_idx,
+            count,
+        });
         for (pos_idx, call_idx) in remaining {
-            let arg_typ = cs.arg_positional(pos_idx).map(|n| n.typ().clone()).or_else(
-                || fn_type.vargs.as_ref().and_then(|t| t.with_deref(|t| t.cloned())),
-            );
+            let arg_typ =
+                cs.arg_positional(pos_idx).map(|n| n.typ().clone()).or_else(|| {
+                    fn_type.vargs.as_ref().and_then(|t| t.with_deref(|t| t.cloned()))
+                });
             let arg_typ = match arg_typ {
                 Some(t) => t,
                 None => return,
@@ -314,9 +336,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         return;
     }
     let fn_index = out.fn_params.len() as u32;
-    out.fn_params.push(crate::fusion::kernel_abi::FnParam {
+    out.fn_params.push(FnParam {
         name: info.name.clone(),
-        source: crate::fusion::kernel_abi::FnSource::Builtin {
+        source: FnSource::Builtin {
             name: info.name.clone(),
             typ: fn_type,
             layout: std::sync::Arc::from(layout),
@@ -347,10 +369,10 @@ pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
 
 /// The constant `Value` of a node, seeing through `ExplicitParens`.
 /// `None` for anything that isn't a compile-time-known literal.
-fn node_const_value<R: crate::Rt, E: crate::UserEvent>(
-    node: &crate::Node<R, E>,
+fn node_const_value<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
 ) -> Option<Value> {
-    use crate::NodeView;
+    use NodeView;
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),
         NodeView::ExplicitParens(ep) => node_const_value(&ep.n),
@@ -369,8 +391,8 @@ fn node_const_value<R: crate::Rt, E: crate::UserEvent>(
 /// Fold a slice of `Cached` element nodes into a constant
 /// `Value::Array` (the flat `ValArray` runtime shape shared by array
 /// and tuple literals), or `None` if any element isn't constant.
-fn const_valarray<R: crate::Rt, E: crate::UserEvent>(
-    elems: &[crate::node::Cached<R, E>],
+fn const_valarray<R: Rt, E: UserEvent>(
+    elems: &[Cached<R, E>],
 ) -> Option<Value> {
     let mut vals: poolshark::local::LPooled<Vec<Value>> =
         poolshark::local::LPooled::take();
@@ -385,9 +407,9 @@ fn const_valarray<R: crate::Rt, E: crate::UserEvent>(
 /// `node_const_value`'s `Map` arm and `emit_map_new`.
 /// (`pub(crate)`: also the direct path's `emit_map_new_node` —
 /// fusion::emit — const-folds through it.)
-pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
-    keys: &[crate::node::Cached<R, E>],
-    vals: &[crate::node::Cached<R, E>],
+pub(crate) fn const_map<R: Rt, E: UserEvent>(
+    keys: &[Cached<R, E>],
+    vals: &[Cached<R, E>],
 ) -> Option<Value> {
     if keys.len() != vals.len() {
         return None;
@@ -410,7 +432,7 @@ pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
 /// concrete rep purely to size kernel slots.
 ///
 /// Recursive types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate
-/// by [`crate::fusion::kernel_abi::Seen`] cycle detection on the expansion arms
+/// by [`Seen`] cycle detection on the expansion arms
 /// (`Ref` and nullary `Abstract`): a re-occurring expansion is left
 /// as-is, `abi_kind` then yields `None`, and the kernel simply doesn't
 /// fuse — correct, since a recursive type has no fixed ABI layout.
@@ -422,20 +444,20 @@ pub(crate) fn const_map<R: crate::Rt, E: crate::UserEvent>(
 /// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
 /// expansion chain (NOT structural depth) guarantees termination there.
 pub(crate) fn resolve_abstract(
-    reg: &crate::fusion::kernel_abi::AbstractRegistry,
+    reg: &AbstractRegistry,
     typ: &Type,
-    env: &crate::env::Env,
+    env: &Env,
 ) -> Type {
     resolve_abstract_d(reg, typ, env, None)
 }
 
 fn resolve_abstract_d<'a>(
-    reg: &crate::fusion::kernel_abi::AbstractRegistry,
+    reg: &AbstractRegistry,
     typ: &Type,
-    env: &crate::env::Env,
-    seen: Option<&'a crate::fusion::kernel_abi::Seen<'a>>,
+    env: &Env,
+    seen: Option<&'a Seen<'a>>,
 ) -> Type {
-    use crate::fusion::kernel_abi::{ExpandKey, Seen};
+    use kernel_abi::{ExpandKey, Seen};
     use triomphe::Arc;
     // Non-regular-recursion backstop (see fn doc). Counts EXPANSIONS, not
     // structural nesting, so finite types of any structural depth are
@@ -497,9 +519,7 @@ fn resolve_abstract_d<'a>(
         Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
             ts.iter().map(|t| resolve_abstract_d(reg, t, env, seen)),
         )),
-        Type::Array(t) => {
-            Type::Array(Arc::new(resolve_abstract_d(reg, t, env, seen)))
-        }
+        Type::Array(t) => Type::Array(Arc::new(resolve_abstract_d(reg, t, env, seen))),
         Type::Set(ts) => Type::Set(Arc::from_iter(
             ts.iter().map(|t| resolve_abstract_d(reg, t, env, seen)),
         )),
@@ -538,11 +558,11 @@ fn resolve_abstract_d<'a>(
 /// which the capture scan can't freeze), (b) self tail-calls lower to
 /// `TailCall` (the rebind-and-jump loop), and (c) `emit_known_fused_call`
 /// can verify a name-resolved call really targets this binding (#206).
-pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
-    g: &crate::node::lambda::GXLambda<R, E>,
+pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
     kernel_name: &ArcStr,
-    self_bind: Option<crate::BindId>,
-    ec: &mut crate::ExecCtx<R, E>,
+    self_bind: Option<BindId>,
+    ec: &mut ExecCtx<R, E>,
 ) -> Option<CachedKernel> {
     // Cache key: (LambdaId, resolved FnType). `resolve_tvars` deep-
     // clones, dereffing every TVar to its bound concrete type, so
@@ -580,12 +600,12 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // is no BindId to key by — name resolution is the contract).
     let typ = g.typ();
     let n_formal = typ.args.len();
-    let mut inputs: Vec<(ArcStr, RegionInputKind, Option<crate::BindId>)> =
+    let mut inputs: Vec<(ArcStr, RegionInputKind, Option<BindId>)> =
         Vec::with_capacity(n_formal);
     for fa in typ.args.iter() {
         let name = match &fa.kind {
-            crate::typ::FnArgKind::Positional { name: Some(n) } => n.clone(),
-            crate::typ::FnArgKind::Labeled { name, .. } => name.clone(),
+            FnArgKind::Positional { name: Some(n) } => n.clone(),
+            FnArgKind::Labeled { name, .. } => name.clone(),
             _ => return None,
         };
         let arg_typ = resolve_abstract(&ec.abstract_registry, &fa.typ, &ec.env);
@@ -605,15 +625,15 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // the body's `Ref(x)` to a formal arg `x` surfaces as "external"
     // here. Exclude the formal-arg ids explicitly so they aren't
     // mistaken for captures.
-    let mut arg_ids: nohash::IntSet<crate::BindId> = nohash::IntSet::default();
+    let mut arg_ids: nohash::IntSet<BindId> = nohash::IntSet::default();
     for pat in g.args() {
         pat.ids(&mut |id| {
             arg_ids.insert(id);
         });
     }
-    let mut refs = crate::Refs::default();
+    let mut refs = Refs::default();
     g.body().refs(&mut refs);
-    let mut external: Vec<crate::BindId> = Vec::new();
+    let mut external: Vec<BindId> = Vec::new();
     refs.with_external_refs(|id| {
         if !arg_ids.contains(&id) {
             external.push(id);
@@ -643,7 +663,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
         // dispatched via DynCall) can't be lifted as a value slot;
         // bail (the lambda stays unfused, runtime takes the interp
         // path). Follow-up: dynamic fn captures via `fn_inputs` slots.
-        if matches!(&cap_typ, crate::typ::Type::Fn(_)) {
+        if matches!(&cap_typ, Type::Fn(_)) {
             // We can't cheaply tell static-vs-dynamic here without the
             // call site; rely on the body emit to lower static calls
             // and to bail on dynamic use. Skipping is safe: if the
@@ -680,7 +700,11 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // stays on the node-walk (via `GXLambda`).
     if matches!(
         kernel_abi::abi_kind(&ec.abstract_registry, &return_typ),
-        Some(kernel_abi::AbiKind::String | kernel_abi::AbiKind::Unit | kernel_abi::AbiKind::Null)
+        Some(
+            kernel_abi::AbiKind::String
+                | kernel_abi::AbiKind::Unit
+                | kernel_abi::AbiKind::Null
+        )
     ) {
         return None;
     }
@@ -710,7 +734,7 @@ pub(crate) fn build_lambda_kernel<R: crate::Rt, E: crate::UserEvent>(
     // "is it fusable IS the compile attempt"). A body that doesn't
     // emit fails the kernel define, and the call site's region
     // node-walks.
-    let (mut sig, arg_types) = crate::fusion::sig_from_inputs(
+    let (mut sig, arg_types) = fusion::sig_from_inputs(
         kernel_name.clone(),
         inputs.iter().map(|(name, kind, bind_id)| (name.clone(), kind, *bind_id)),
         return_typ.clone(),
@@ -745,8 +769,8 @@ pub struct FusedCallback {
     /// the body) instead fuses its maximal sync sub-regions in place via
     /// the canonical `fusion::fuse` walk at the call site (see
     /// `MapQ`'s template build) and never becomes a `FusedCallback`.
-    kernel: std::sync::Arc<crate::fusion::kernel_abi::KernelSig>,
-    wrapped: Option<std::sync::Arc<crate::fusion::emit::WrappedKernel>>,
+    kernel: std::sync::Arc<KernelSig>,
+    wrapped: Option<std::sync::Arc<WrappedKernel>>,
     /// Captured outer bindings (closure conversion), in kernel-input
     /// order *after* the formal args. Each is fed by a shared `Ref`
     /// feeder (to its bind_id) appended after the per-slot element
@@ -756,8 +780,8 @@ pub struct FusedCallback {
     /// supplies. Kernel inputs are `formal args ++ captures`.
     n_formal: usize,
     /// Body spec + result type for the per-slot `FusedKernel` Node.
-    spec: crate::expr::Expr,
-    typ: crate::typ::Type,
+    spec: Expr,
+    typ: Type,
 }
 
 impl std::fmt::Debug for FusedCallback {
@@ -779,12 +803,12 @@ impl std::fmt::Debug for FusedCallback {
 /// `fusion::fuse` (the impure-HOF split), or falls back to the
 /// interpreted per-slot dispatch. JIT-compiles the kernel when
 /// `ec.fusion_enabled` (interp fallback inside `FusedKernel` handles `None`).
-pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
-    cs: &crate::node::callsite::CallSite<R, E>,
-    ec: &mut crate::ExecCtx<R, E>,
+pub fn fuse_callsite<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ec: &mut ExecCtx<R, E>,
 ) -> Option<FusedCallback> {
     let g = match cs.resolved_apply()? {
-        crate::ApplyView::Lambda(g) => g,
+        ApplyView::Lambda(g) => g,
         _ => return None,
     };
     // Unique per-`LambdaId` kernel name. There is no Ref fnode here, so
@@ -800,7 +824,7 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
     // `TailCall`; non-tail self-calls de-fuse on the `__hof_*` /
     // source-name mismatch in `known_fns` — sound, just unfused).
     let self_bind = match cs.fnode().view() {
-        crate::NodeView::Ref(r) => Some(r.id),
+        NodeView::Ref(r) => Some(r.id),
         _ => None,
     };
     let n_formal = g.typ().args.len();
@@ -821,7 +845,7 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
                     "is_rec without self_bind — build_lambda_kernel \
                      derives is_rec FROM self_bind",
                 ),
-                crate::fusion::LambdaCallInfo {
+                LambdaCallInfo {
                     fn_name: cached.fn_name.clone(),
                     kernel: cached.kernel.clone(),
                     arg_types: cached.signature.arg_types.clone(),
@@ -862,17 +886,17 @@ pub fn fuse_callsite<R: crate::Rt, E: crate::UserEvent>(
 /// path). The callee set is always empty: a callback body's own call
 /// sites are #203-unresolved, and a self-recursive body resolves
 /// against the kernel's own declaration.
-fn jit_compile_split_kernel<R: crate::Rt, E: crate::UserEvent>(
-    ec: &mut crate::ExecCtx<R, E>,
-    kernel: &std::sync::Arc<crate::fusion::kernel_abi::KernelSig>,
-    body: &crate::Node<R, E>,
-    self_call: Option<&(crate::BindId, crate::fusion::LambdaCallInfo)>,
-    apply_sites: &nohash::IntMap<crate::expr::ExprId, BuiltinCallSiteInfo>,
-) -> Option<std::sync::Arc<crate::fusion::emit::WrappedKernel>> {
+fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
+    ec: &mut ExecCtx<R, E>,
+    kernel: &std::sync::Arc<KernelSig>,
+    body: &Node<R, E>,
+    self_call: Option<&(BindId, LambdaCallInfo)>,
+    apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
+) -> Option<std::sync::Arc<WrappedKernel>> {
     if !ec.fusion_enabled {
         return None;
     }
-    let r = crate::fusion::emit::compile_kernel_with_callees_direct(
+    let r = fusion::emit::compile_kernel_with_callees_direct(
         &mut ec.jit.lock(),
         kernel,
         &std::collections::BTreeMap::new(),
@@ -902,13 +926,13 @@ impl FusedCallback {
     /// slot's element binding Node); the capture feeders (shared `Ref`s
     /// to the captured bindings) are appended automatically, in the same
     /// `formal args ++ captures` order the kernel inputs were built.
-    pub fn build_slot<R: crate::Rt, E: crate::UserEvent>(
+    pub fn build_slot<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut crate::ExecCtx<R, E>,
-        element_feeders: Vec<crate::Node<R, E>>,
-        scope: crate::Scope,
-        top_id: crate::expr::ExprId,
-    ) -> anyhow::Result<crate::Node<R, E>> {
+        ctx: &mut ExecCtx<R, E>,
+        element_feeders: Vec<Node<R, E>>,
+        scope: Scope,
+        top_id: ExprId,
+    ) -> anyhow::Result<Node<R, E>> {
         if element_feeders.len() != self.n_formal {
             anyhow::bail!(
                 "fused HOF slot: expected {} formal feeder(s), got {}",
@@ -924,10 +948,10 @@ impl FusedCallback {
                 .by_id
                 .get(&cap.bind_id)
                 .map(|b| b.typ.clone())
-                .unwrap_or(crate::typ::Type::Bottom);
-            feeders.push(crate::node::genn::reference(ctx, cap.bind_id, typ, top_id));
+                .unwrap_or(Type::Bottom);
+            feeders.push(genn::reference(ctx, cap.bind_id, typ, top_id));
         }
-        crate::fusion::builder::FusedKernel::<R, E>::new(
+        fusion::builder::FusedKernel::<R, E>::new(
             ctx,
             self.spec.clone(),
             self.typ.clone(),
@@ -951,11 +975,11 @@ impl FusedCallback {
 /// converse over-approximation is harmless: a detected-but-rejected
 /// tail call — e.g. an arg type mismatch at emit time — leaves a
 /// vestigial loop head the body jumps into once.)
-fn body_has_self_tail_call<R: crate::Rt, E: crate::UserEvent>(
-    node: &crate::Node<R, E>,
-    self_bind: crate::BindId,
+fn body_has_self_tail_call<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    self_bind: BindId,
 ) -> bool {
-    use crate::NodeView;
+    use NodeView;
     match node.view() {
         NodeView::Block(b) => {
             b.children.last().is_some_and(|c| body_has_self_tail_call(c, self_bind))
@@ -1019,10 +1043,10 @@ pub enum RegionInputKind {
 /// `value_params` 2-word slot — both with full backend (interp + JIT)
 /// marshalling.
 pub(crate) fn type_to_region_input_kind(
-    reg: &crate::fusion::kernel_abi::AbstractRegistry,
+    reg: &AbstractRegistry,
     t: Type,
 ) -> Option<RegionInputKind> {
-    use crate::fusion::kernel_abi::AbiKind;
+    use AbiKind;
     // FREEZE at the boundary. The Type comes from a binding's declared
     // type, which may still wrap a (bound) TVar or a Ref. `abi_kind`
     // derefs, so it classifies a TVar-bound `Tuple` as `Tuple` — but the
@@ -1030,18 +1054,16 @@ pub(crate) fn type_to_region_input_kind(
     // that `populate_kernel_inputs` later runs on the STORED `Type`
     // would then return `None` and silently produce an empty slot. Store
     // the concrete frozen `Type` so those accessors always succeed.
-    let t = crate::fusion::kernel_abi::freeze_for_abi(reg, &t)?;
-    match crate::fusion::kernel_abi::abi_kind(reg, &t)? {
+    let t = kernel_abi::freeze_for_abi(reg, &t)?;
+    match abi_kind(reg, &t)? {
         AbiKind::Scalar(p) => Some(RegionInputKind::Prim(p)),
-        AbiKind::Array => {
-            crate::fusion::kernel_abi::array_elem(&t).map(|e| RegionInputKind::Array(e.clone()))
-        }
+        AbiKind::Array => kernel_abi::array_elem(&t)
+            .map(|e| RegionInputKind::Array(e.clone())),
         AbiKind::Tuple => Some(RegionInputKind::Tuple(t)),
         AbiKind::Struct => Some(RegionInputKind::Struct(t)),
         AbiKind::Variant => Some(RegionInputKind::Variant(t)),
-        AbiKind::Nullable => {
-            crate::fusion::kernel_abi::nullable_inner(reg, &t).map(RegionInputKind::Nullable)
-        }
+        AbiKind::Nullable => kernel_abi::nullable_inner(reg, &t)
+            .map(RegionInputKind::Nullable),
         AbiKind::String => Some(RegionInputKind::String),
         AbiKind::Value => Some(RegionInputKind::Value(t)),
         AbiKind::Unit | AbiKind::Null => None,
@@ -1052,11 +1074,11 @@ pub(crate) fn type_to_region_input_kind(
 /// shape — every fusable shape except `Unit` (no value to pass) and
 /// bare `Null` (always widened to `Nullable<T>` at construction).
 fn is_dyncall_arg_supported(
-    reg: &crate::fusion::kernel_abi::AbstractRegistry,
+    reg: &AbstractRegistry,
     t: &Type,
 ) -> bool {
-    use crate::fusion::kernel_abi::AbiKind;
-    match crate::fusion::kernel_abi::abi_kind(reg, t) {
+    use AbiKind;
+    match abi_kind(reg, t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array
@@ -1102,11 +1124,11 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
 /// shape — every fusable shape except bare `Null`. `Unit` IS allowed
 /// (side-effect-only sync builtins like `println` return Bottom).
 fn is_dyncall_return_supported(
-    reg: &crate::fusion::kernel_abi::AbstractRegistry,
+    reg: &AbstractRegistry,
     t: &Type,
 ) -> bool {
-    use crate::fusion::kernel_abi::AbiKind;
-    match crate::fusion::kernel_abi::abi_kind(reg, t) {
+    use AbiKind;
+    match abi_kind(reg, t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array

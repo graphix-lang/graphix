@@ -1,5 +1,4 @@
-use super::dataset::DatasetEntry;
-use super::types::*;
+use super::{dataset::DatasetEntry, types::*};
 use chrono::{DateTime, TimeDelta, Utc};
 use graphix_rt::GXExt;
 

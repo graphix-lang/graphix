@@ -10,8 +10,9 @@ use netidx_value::Value;
 pub(crate) struct IsFileEv;
 
 impl EvalCachedAsync for IsFileEv {
-    const NAME: &str = "sys_fs_is_file";
     type Args = ArcStr;
+
+    const NAME: &str = "sys_fs_is_file";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -34,8 +35,9 @@ pub(crate) type IsFile = CachedArgsAsync<IsFileEv>;
 pub(crate) struct IsDirEv;
 
 impl EvalCachedAsync for IsDirEv {
-    const NAME: &str = "sys_fs_is_dir";
     type Args = ArcStr;
+
+    const NAME: &str = "sys_fs_is_dir";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -125,8 +127,9 @@ pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
 pub(crate) struct MetadataEv;
 
 impl EvalCachedAsync for MetadataEv {
-    const NAME: &str = "sys_fs_metadata";
     type Args = (bool, ArcStr);
+
+    const NAME: &str = "sys_fs_metadata";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         Some((cached.get::<bool>(0)?, cached.get::<ArcStr>(1)?))

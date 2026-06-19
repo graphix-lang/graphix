@@ -8,8 +8,8 @@ macro_rules! unary_f64 {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const NAME: &str = $name;
             const EFFECT: EffectKind = EffectKind::Sync;
+            const NAME: &str = $name;
 
             fn eval(
                 &mut self,
@@ -29,8 +29,8 @@ macro_rules! binary_f64 {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const NAME: &str = $name;
             const EFFECT: EffectKind = EffectKind::Sync;
+            const NAME: &str = $name;
 
             fn eval(
                 &mut self,
@@ -51,8 +51,8 @@ macro_rules! unary_f64_pred {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const NAME: &str = $name;
             const EFFECT: EffectKind = EffectKind::Sync;
+            const NAME: &str = $name;
 
             fn eval(
                 &mut self,
@@ -119,8 +119,8 @@ binary_f64!(MathMaxEv, MathMax, "core_math_max", max);
 #[derive(Debug, Default)]
 pub(crate) struct MathClampEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
-    const NAME: &str = "core_math_clamp";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_math_clamp";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let x = from.get::<f64>(0)?;
@@ -134,23 +134,8 @@ pub(crate) type MathClamp = CachedArgs<MathClampEv>;
 // ── Predicates ─────────────────────────────────────────────────────
 unary_f64_pred!(MathIsNanEv, MathIsNan, "core_math_is_nan", is_nan);
 unary_f64_pred!(MathIsFiniteEv, MathIsFinite, "core_math_is_finite", is_finite);
-unary_f64_pred!(
-    MathIsInfiniteEv,
-    MathIsInfinite,
-    "core_math_is_infinite",
-    is_infinite
-);
+unary_f64_pred!(MathIsInfiniteEv, MathIsInfinite, "core_math_is_infinite", is_infinite);
 
 // ── Conversion ─────────────────────────────────────────────────────
-unary_f64!(
-    MathToDegreesEv,
-    MathToDegrees,
-    "core_math_to_degrees",
-    to_degrees
-);
-unary_f64!(
-    MathToRadiansEv,
-    MathToRadians,
-    "core_math_to_radians",
-    to_radians
-);
+unary_f64!(MathToDegreesEv, MathToDegrees, "core_math_to_degrees", to_degrees);
+unary_f64!(MathToRadiansEv, MathToRadians, "core_math_to_radians", to_radians);

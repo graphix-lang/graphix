@@ -7,8 +7,10 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::{
-    effects::EffectKind, errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope,
-    UserEvent,
+    effects::EffectKind,
+    errf,
+    typ::{FnType, Type},
+    ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
@@ -18,7 +20,10 @@ use graphix_package_sys::{get_stream, StreamKind};
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
 use std::sync::Arc;
-use tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 use triomphe::Arc as TArc;
 
 // ── TOML ↔ Value conversion ──────────────────────────────────────
@@ -129,8 +134,9 @@ struct TomlReadEv {
 }
 
 impl EvalCachedAsync for TomlReadEv {
-    const NAME: &str = "toml_read";
     type Args = ReadInput;
+
+    const NAME: &str = "toml_read";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -234,8 +240,8 @@ type TomlRead = CachedArgsAsync<TomlReadEv>;
 struct TomlWriteStrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
-    const NAME: &str = "toml_write_str";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "toml_write_str";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -264,8 +270,8 @@ type TomlWriteStr = CachedArgs<TomlWriteStrEv>;
 struct TomlWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
-    const NAME: &str = "toml_write_bytes";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "toml_write_bytes";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -294,8 +300,9 @@ type TomlWriteBytes = CachedArgs<TomlWriteBytesEv>;
 struct TomlWriteStreamEv;
 
 impl EvalCachedAsync for TomlWriteStreamEv {
-    const NAME: &str = "toml_write_stream";
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, toml::Value);
+
+    const NAME: &str = "toml_write_stream";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let pretty = cached.get::<bool>(0)?;

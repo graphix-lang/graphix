@@ -148,8 +148,7 @@ mod tests {
         }
         gc_now();
         let table = INTERNER.lock().unwrap();
-        let still_present =
-            table.iter().any(|e| e.as_str() == unique);
+        let still_present = table.iter().any(|e| e.as_str() == unique);
         assert!(
             !still_present,
             "GC should have reclaimed entry `{unique}` whose only \

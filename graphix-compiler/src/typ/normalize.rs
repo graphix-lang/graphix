@@ -154,7 +154,7 @@ impl Type {
                     None
                 }
             }
-            (Type::Ref (TypeRef { .. }), _) | (_, Type::Ref (TypeRef { .. })) => None,
+            (Type::Ref(TypeRef { .. }), _) | (_, Type::Ref(TypeRef { .. })) => None,
             (Type::Bottom, t) | (t, Type::Bottom) => Some(t.clone()),
             (Type::Any, _) | (_, Type::Any) => Some(Type::Any),
             (Type::Primitive(s0), Type::Primitive(s1)) => {

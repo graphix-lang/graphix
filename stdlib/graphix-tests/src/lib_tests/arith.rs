@@ -196,7 +196,8 @@ run!(err_as_dyncall_arg, ERR_DYNCALL_ARG, |v: Result<&Value>| {
 // Cluster D: interpolating a non-scalar part (Nullable<string> from an
 // array index) must bail the StringInterpolate to the node-walk, not crash
 // the fused Concat (which only handles String/scalar parts).
-const INTERP_NONSCALAR: &str = "{ let words = [\"alpha\", \"beta\"]; \"first=[words[0]]\" }";
+const INTERP_NONSCALAR: &str =
+    "{ let words = [\"alpha\", \"beta\"]; \"first=[words[0]]\" }";
 run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "first=alpha")
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -250,7 +251,8 @@ run!(dead_let_keeps_live, DEAD_LET_KEEPS_LIVE, |v: Result<&Value>| {
 
 // v feeds only the un-taken arm (scrutinee 5, arm key 2) -> v sinks into
 // arm 2 -> never runs -> 99.
-const SINK_ONE_ARM: &str = "{ let v = i64:1 / i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
+const SINK_ONE_ARM: &str =
+    "{ let v = i64:1 / i64:0; select i64:5 { 2 => v, _ => i64:99 } }";
 run!(sink_one_arm, SINK_ONE_ARM, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))));
 
 // mod-by-zero — operator-agnostic, same mechanism.

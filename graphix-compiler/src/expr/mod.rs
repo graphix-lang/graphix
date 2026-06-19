@@ -289,22 +289,12 @@ pub enum ExprKind {
 
 impl ExprKind {
     pub fn to_expr(self, pos: SourcePosition) -> Expr {
-        Expr {
-            id: ExprId::new(),
-            ori: get_origin(),
-            pos,
-            kind: self,
-        }
+        Expr { id: ExprId::new(), ori: get_origin(), pos, kind: self }
     }
 
     /// does not provide any position information or comment
     pub fn to_expr_nopos(self) -> Expr {
-        Expr {
-            id: ExprId::new(),
-            ori: get_origin(),
-            pos: Default::default(),
-            kind: self,
-        }
+        Expr { id: ExprId::new(), ori: get_origin(), pos: Default::default(), kind: self }
     }
 }
 
@@ -531,12 +521,7 @@ impl<'de> Deserialize<'de> for Expr {
 
 impl Expr {
     pub fn new(kind: ExprKind, pos: SourcePosition) -> Self {
-        Expr {
-            id: ExprId::new(),
-            ori: get_origin(),
-            pos,
-            kind,
-        }
+        Expr { id: ExprId::new(), ori: get_origin(), pos, kind }
     }
 
     /// fold over self and all of self's sub expressions

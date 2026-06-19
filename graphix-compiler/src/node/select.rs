@@ -2,9 +2,11 @@ use super::{compiler::compile, pattern::StructPatternNode, Cached};
 use crate::{
     expr::{Expr, ExprId, Pattern},
     format_with_flags,
+    fusion::emit::{emit_select_node, BodyCx, CompiledExpr},
     node::pattern::PatternNode,
     typ::Type,
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
+    wrap, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
+    Update,
     UserEvent,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -36,10 +38,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         typ: Type,
         spec: Expr,
     ) -> Node<R, E> {
-        let arms = arms
-            .into_iter()
-            .map(|(p, n)| (p, Cached::new(n)))
-            .collect::<Vec<_>>();
+        let arms = arms.into_iter().map(|(p, n)| (p, Cached::new(n))).collect::<Vec<_>>();
         Box::new(Self { spec, typ, arg: Cached::new(arg), arms, selected: None })
     }
 
@@ -281,15 +280,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         &self.spec
     }
 
-    fn view(&self) -> crate::NodeView<'_, R, E> {
-        crate::NodeView::Select(self)
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Select(self)
     }
 
     fn emit_clif(
         &self,
-        cx: &mut crate::fusion::emit::BodyCx,
-    ) -> Result<crate::fusion::emit::CompiledExpr> {
-        crate::fusion::emit::emit_select_node(cx, self)
+        cx: &mut BodyCx,
+    ) -> Result<CompiledExpr> {
+        emit_select_node(cx, self)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

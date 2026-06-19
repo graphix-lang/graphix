@@ -20,8 +20,10 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::encoding::{decode_key, decode_value, encode_key, key_struct, kv_struct};
-use crate::tree::TreeValue;
+use crate::{
+    encoding::{decode_key, decode_value, encode_key, key_struct, kv_struct},
+    tree::TreeValue,
+};
 
 // ── Subscription types ────────────────────────────────────────────
 
@@ -125,8 +127,8 @@ pub(crate) struct DbSubscribe {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
-    const NAME: &str = "db_subscription_new";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "db_subscription_new";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -249,8 +251,8 @@ macro_rules! db_event_accessor {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            const NAME: &str = $builtin_name;
             const EFFECT: EffectKind = EffectKind::Async;
+            const NAME: &str = $builtin_name;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,

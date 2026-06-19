@@ -17,8 +17,8 @@ pub(crate) struct AfterIdle {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
-    const NAME: &str = "sys_time_after_idle";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_time_after_idle";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -136,8 +136,8 @@ pub(crate) struct Timer {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
-    const NAME: &str = "sys_time_timer";
     const EFFECT: EffectKind = EffectKind::Async;
+    const NAME: &str = "sys_time_timer";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -254,9 +254,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
 pub(crate) struct Now;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
-    const NAME: &str = "sys_time_now";
     // When trigger fires, samples the current time and emits same-cycle.
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "sys_time_now";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -285,5 +285,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }

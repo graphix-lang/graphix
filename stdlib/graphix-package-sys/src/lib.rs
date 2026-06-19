@@ -88,9 +88,12 @@ impl AsyncRead for StreamKind {
             StreamKind::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Tls(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Stdin(s) => Pin::new(s).poll_read(cx, buf),
-            StreamKind::Stdout(_) | StreamKind::Stderr(_) => Poll::Ready(Err(
-                std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot read from stdout/stderr"),
-            )),
+            StreamKind::Stdout(_) | StreamKind::Stderr(_) => {
+                Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "cannot read from stdout/stderr",
+                )))
+            }
         }
     }
 }
@@ -107,9 +110,10 @@ impl AsyncWrite for StreamKind {
             StreamKind::Tls(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Stdout(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Stderr(s) => Pin::new(s).poll_write(cx, buf),
-            StreamKind::Stdin(_) => Poll::Ready(Err(
-                std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot write to stdin"),
-            )),
+            StreamKind::Stdin(_) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "cannot write to stdin",
+            ))),
         }
     }
 
@@ -275,8 +279,9 @@ pub(crate) struct TempDirArgs {
 pub(crate) struct GxTempDirEv;
 
 impl EvalCachedAsync for GxTempDirEv {
-    const NAME: &str = "sys_tempdir";
     type Args = TempDirArgs;
+
+    const NAME: &str = "sys_tempdir";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         if cached.0.iter().any(|v| v.is_none()) {
@@ -334,8 +339,8 @@ pub(crate) struct TempDirPathEv;
 // sys::tempdir_path returns a path string from a TempDir handle. Pure
 // transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
-    const NAME: &str = "sys_tempdir_path";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "sys_tempdir_path";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0.first()?.as_ref()?;
@@ -367,8 +372,8 @@ pub(crate) fn convert_path(path: &Path) -> ArcStr {
 pub(crate) struct JoinPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
-    const NAME: &str = "sys_join_path";
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "sys_join_path";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -410,9 +415,9 @@ pub(crate) struct Args {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
-    const NAME: &str = "sys_args";
     // Fires once on init with the cmd-line args. Same-cycle output.
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "sys_args";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -457,10 +462,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
 pub(crate) struct Exit;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
-    const NAME: &str = "sys_exit";
     // exit consumes its arg and terminates the process; no future-cycle
     // output. Sync.
     const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "sys_exit";
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -481,7 +486,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(Value::I64(code)) = from.get_mut(0).and_then(|n| n.update(ctx, event)) {
+        if let Some(Value::I64(code)) = from.get_mut(0).and_then(|n| n.update(ctx, event))
+        {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
