@@ -201,7 +201,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                     // peeks). Stored on the `ExecCtx`, so it drops with
                     // the context (`AbstractId`s are minted fresh per
                     // compile — a global map would leak).
-                    ctx.abstract_registry.insert(*id, td.typ.scope_refs(&scope.lexical));
+                    ctx.fusion.abstract_registry.insert(*id, td.typ.scope_refs(&scope.lexical));
                 }
                 _ => {
                     if sig_td.name != td.name

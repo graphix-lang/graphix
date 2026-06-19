@@ -29,10 +29,7 @@ use crate::{
     effects::EffectKind,
     env::Env,
     expr::{ExprId, ModPath},
-    fusion::{
-        emit::{BodyCx, CompiledExpr},
-        kernel_abi::AbstractRegistry,
-    },
+    fusion::emit::{BodyCx, CompiledExpr},
     node::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
@@ -87,7 +84,7 @@ pub enum CFlag {
     WarningsAreErrors,
     /// Disable fusion entirely — both the compile-time whole-graph
     /// phase AND the runtime per-slot HOF-callback fusion (which gates
-    /// on `ExecCtx::fusion_enabled`, set from this flag). `compile()`
+    /// on `ctx.fusion.enabled`, set from this flag). `compile()`
     /// runs build + typecheck and returns the regular Node graph; no
     /// kernels are built or spliced anywhere. This is the test harness's
     /// `interp` mode: the program executes PURELY through the
@@ -1166,13 +1163,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     // all registered built-in functions
     builtins: AHashMap<&'static str, BuiltInInitFn<R, E>>,
-    /// Sync/async effect of each registered builtin, keyed by name.
-    /// Populated by `register_builtin` from `T::EFFECT`. Read by
-    /// fusion's effect inference (M6) to decide whether a builtin
-    /// call site can be absorbed into a sync kernel. Builtins absent
-    /// from this map are treated as `Async` (the conservative
-    /// default), which is always correct.
-    pub builtin_effects: AHashMap<&'static str, EffectKind>,
     // whether calling built-in functions is allowed in this context, used for
     // sandboxing
     builtins_allowed: bool,
@@ -1231,80 +1221,12 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// no entry here; only builtin lambdas appear.
     pub builtin_bindings:
         ahash::AHashMap<(expr::ModPath, compact_str::CompactString), BuiltinBindInfo>,
-    /// Per-context JIT state — cranelift module + cross-kernel-call
-    /// cache. Lives here so each `ExecCtx` instance has its own
-    /// isolated JIT compile target (no shared global module, no
-    /// races across concurrent in-process runtimes).
-    ///
-    /// Wrapped in a `parking_lot::Mutex` solely to satisfy the
-    /// `Sync` bound the graphix-rt async machinery puts on
-    /// `ExecCtx` (the underlying cranelift `JITModule` uses
-    /// `RefCell` internally so isn't auto-`Sync`). Not an
-    /// `Arc<Mutex>` — there's no shared ownership; the Mutex is
-    /// just interior mutability. Access is exclusively through
-    /// `ctx.jit.lock()` followed by the usual `&mut Jit` API.
-    /// JIT operations are compile-time only (rare, never on hot
-    /// paths), so the lock cost is negligible.
-    ///
-    /// Every kernel compiles into this module via
-    /// [`fusion::emit::compile_kernel_with_callees_direct`] —
-    /// parent + callees declared and defined together so cross-kernel
-    /// calls dispatch as direct CLIF calls.
-    pub jit: parking_lot::Mutex<fusion::emit::Jit>,
-    /// On-demand monomorphized lambda-kernel cache, keyed by
-    /// `(LambdaId, Arc<FnType>)`. Populated by `build_lambda_kernel`
-    /// (callee discovery, per-slot HOF fusion): build the signature
-    /// once, reuse it for every subsequent call to the same (lambda
-    /// definition, monomorphization). The cached `Arc<KernelSig>` IS
-    /// the compiled-callable handle — the JIT's `by_kernel` cache
-    /// keys on its pointer identity.
-    pub fusion_kernels: parking_lot::Mutex<
-        std::collections::BTreeMap<
-            (LambdaId, std::sync::Arc<typ::FnType>),
-            fusion::lowering::CachedKernel,
-        >,
-    >,
-    /// Lambdas whose kernel build is CURRENTLY on the stack —
-    /// `build_lambda_kernel`'s re-entrancy guard. Mutual recursion
-    /// (f's body builds g, whose body re-enters f before f's cache
-    /// entry lands) would otherwise recurse the build forever; the
-    /// guard refuses the inner build so the call chain de-fuses to
-    /// the node-walk instead of hanging the compiler. `Arc` so a
-    /// drop-guard can hold the set without borrowing the `ExecCtx`.
-    pub(crate) fusion_building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
-    /// Whether fusion is enabled for the current compile. Set by
-    /// [`compile`] from `!flags.contains(CFlag::FusionDisabled)`. The
-    /// in-context mirror of the flag, for the per-slot HOF fusion path
-    /// (`fusion::fuse_callsite`, `design/impure_hof_fusion.md`) — which
-    /// runs from a HOF builtin's `typecheck1` callback hook and from
-    /// `MapQ::update`, neither of which receives the compile flags. Gating
-    /// it here (not just the compile-time `fuse()` phase) is what makes
-    /// `FusionDisabled` a TRUE node-walk: without it, HOF callbacks would
-    /// still fuse per-slot. Defaults `true`.
-    pub fusion_enabled: bool,
-    /// Compile-time fusion outcome counters, accumulated across every
-    /// `compile()` this context runs. See [`FusionStats`].
-    pub fusion_stats: FusionStats,
-    /// Fusion-time registry mapping each abstract type's `AbstractId` to
-    /// its concrete implementation type. Written by `check_sig` during
-    /// typecheck; read by the fusion classifiers
-    /// ([`fusion::kernel_abi::freeze_for_abi`] / `abi_kind` /
-    /// `resolve_abstract`) to peek through an abstract type's opacity to
-    /// its wire shape. Owned per-context (not a process-global) so it
-    /// drops with the `ExecCtx` — `AbstractId`s are minted fresh per
-    /// compile, so a global would leak. See
-    /// [`AbstractRegistry`].
-    pub abstract_registry: AbstractRegistry,
-    /// The TOP expression id of the compile currently running — set by
-    /// [`compile`] before the fusion phase. `try_fuse` builds its
-    /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
-    /// `(BindId, top_id)`, and the runtime wakes a top expression on
-    /// `set_var` only while its ref count is nonzero. A feeder
-    /// registered under the REGION's interior ExprId would strand the
-    /// real top expression at count zero once the spliced original's
-    /// Refs unref — a fused region fed by a `<-`-written variable
-    /// would then never see updates past the first cycle.
-    pub(crate) fuse_top_id: Option<ExprId>,
+    /// All state owned by the fusion subsystem — the JIT module,
+    /// kernel caches, abstract-type registry, builtin effects, and the
+    /// compile-time fusion flags/counters. Grouped into one struct so
+    /// `ExecCtx` isn't cluttered with loose fusion fields; reached as
+    /// `ctx.fusion.<x>`. See [`fusion::FusionCtx`].
+    pub fusion: fusion::FusionCtx,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1327,7 +1249,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             lambdawrap: Abstract::register(id)?,
             env: Env::default(),
             builtins: AHashMap::default(),
-            builtin_effects: AHashMap::default(),
             builtins_allowed: true,
             libstate: LibState::default(),
             tags: AHashSet::default(),
@@ -1337,15 +1258,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             bind_to_lambda: IntMap::default(),
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
-            jit: parking_lot::Mutex::new(fusion::emit::Jit::new()?),
-            fusion_kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
-            fusion_building: triomphe::Arc::new(parking_lot::Mutex::new(
-                nohash::IntSet::default(),
-            )),
-            fusion_enabled: true,
-            fusion_stats: FusionStats::default(),
-            abstract_registry: AbstractRegistry::default(),
-            fuse_top_id: None,
+            fusion: fusion::FusionCtx::new()?,
         })
     }
 
@@ -1356,7 +1269,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
-        self.builtin_effects.insert(T::NAME, T::EFFECT);
+        self.fusion.builtin_effects.insert(T::NAME, T::EFFECT);
         Ok(())
     }
 
@@ -1364,7 +1277,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// `EffectKind::Async` (the conservative default) for unknown names
     /// so callers don't need to handle the "missing" case specially.
     pub fn builtin_effect(&self, name: &str) -> EffectKind {
-        self.builtin_effects.get(name).copied().unwrap_or_default()
+        self.fusion.builtin_effects.get(name).copied().unwrap_or_default()
     }
 
     /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin
@@ -1454,9 +1367,9 @@ pub fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<Node<R, E>> {
-    ctx.fusion_enabled = !flags.contains(CFlag::FusionDisabled);
+    ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled);
     let top_id = spec.id;
-    ctx.fuse_top_id = Some(top_id);
+    ctx.fusion.top_id = Some(top_id);
     ctx.bind_to_lambda.clear();
     let env = ctx.env.clone();
     let st = Instant::now();
@@ -1478,7 +1391,7 @@ pub fn compile<R: Rt, E: UserEvent>(
         return Err(e);
     }
     info!("typecheck time {:?}", st.elapsed());
-    if ctx.fusion_enabled {
+    if ctx.fusion.enabled {
         let st = Instant::now();
         if let Err(e) = fusion::fuse(&mut node, ctx) {
             ctx.env = env;

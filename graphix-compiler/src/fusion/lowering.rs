@@ -30,7 +30,7 @@ use netidx_value::Value;
 // is `kernel_abi`.
 pub use kernel_abi::{Input, KnownFusedFn, PrimType};
 
-/// Cached entry in [`ExecCtx::fusion_kernels`]. One per
+/// Cached entry in [`FusionCtx::kernels`]. One per
 /// `(LambdaId, Arc<FnType>)` monomorphization of a lambda definition.
 ///
 /// `fn_name` is the synthetic kernel name call sites resolve against
@@ -183,7 +183,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // Async builtins can't be fused — they may produce values on a
     // later cycle than the trigger.
     use crate::effects::EffectKind;
-    match ctx.builtin_effects.get(info.name.as_str()) {
+    match ctx.fusion.builtin_effects.get(info.name.as_str()) {
         Some(EffectKind::Sync) => {}
         _ => return,
     }
@@ -238,7 +238,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
                 let kt =
-                    match kernel_abi::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
+                    match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &arg_typ) {
                         Some(t) => t,
                         None => return,
                     };
@@ -254,7 +254,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         .map(|n| n.typ().clone())
                         .unwrap_or_else(|| fa.typ.clone());
                     let kt = match kernel_abi::freeze_for_abi(
-                        &ctx.abstract_registry,
+                        &ctx.fusion.abstract_registry,
                         &arg_typ,
                     ) {
                         Some(t) => t,
@@ -311,7 +311,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 Some(t) => t,
                 None => return,
             };
-            let kt = match kernel_abi::freeze_for_abi(&ctx.abstract_registry, &arg_typ) {
+            let kt = match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &arg_typ) {
                 Some(t) => t,
                 None => return,
             };
@@ -325,14 +325,14 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // Return type — the CallSite's own resolved output type (the
     // node-resident value the typechecker propagated for this Apply).
     let ret_typ = cs.typ().clone();
-    let return_type = match kernel_abi::freeze_for_abi(&ctx.abstract_registry, &ret_typ) {
+    let return_type = match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &ret_typ) {
         Some(t) => t,
         None => return,
     };
-    if !arg_types.iter().all(|t| is_dyncall_arg_supported(&ctx.abstract_registry, t)) {
+    if !arg_types.iter().all(|t| is_dyncall_arg_supported(&ctx.fusion.abstract_registry, t)) {
         return;
     }
-    if !is_dyncall_return_supported(&ctx.abstract_registry, &return_type) {
+    if !is_dyncall_return_supported(&ctx.fusion.abstract_registry, &return_type) {
         return;
     }
     let fn_index = out.fn_params.len() as u32;
@@ -570,7 +570,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // structurally-equivalent FnTypes.
     let resolved_typ = std::sync::Arc::new(g.typ().resolve_tvars());
     let key = (g.id(), resolved_typ);
-    if let Some(cached) = ec.fusion_kernels.lock().get(&key).cloned() {
+    if let Some(cached) = ec.fusion.kernels.lock().get(&key).cloned() {
         return Some(cached);
     }
     // Re-entrancy guard: a lambda whose body (transitively) builds a
@@ -589,10 +589,10 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         }
     }
     let lid = g.id().inner();
-    if !ec.fusion_building.lock().insert(lid) {
+    if !ec.fusion.building.lock().insert(lid) {
         return None;
     }
-    let _building = BuildingGuard(ec.fusion_building.clone(), lid);
+    let _building = BuildingGuard(ec.fusion.building.clone(), lid);
     // Translate each lambda formal arg into a kernel input slot. The
     // arg's source-level name (from `FnArgKind`) becomes the kernel
     // input slot name so the body's `Ref` lookups resolve (formals
@@ -608,9 +608,9 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             FnArgKind::Labeled { name, .. } => name.clone(),
             _ => return None,
         };
-        let arg_typ = resolve_abstract(&ec.abstract_registry, &fa.typ, &ec.env);
-        let kt = kernel_abi::freeze_for_abi(&ec.abstract_registry, &arg_typ)?;
-        let kind = type_to_region_input_kind(&ec.abstract_registry, kt)?;
+        let arg_typ = resolve_abstract(&ec.fusion.abstract_registry, &fa.typ, &ec.env);
+        let kt = kernel_abi::freeze_for_abi(&ec.fusion.abstract_registry, &arg_typ)?;
+        let kind = type_to_region_input_kind(&ec.fusion.abstract_registry, kt)?;
         inputs.push((name, kind, None));
     }
     // Closure conversion: every binding the body references but
@@ -672,13 +672,13 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             continue;
         }
         let kt = match kernel_abi::freeze_for_abi(
-            &ec.abstract_registry,
-            &resolve_abstract(&ec.abstract_registry, &cap_typ, &ec.env),
+            &ec.fusion.abstract_registry,
+            &resolve_abstract(&ec.fusion.abstract_registry, &cap_typ, &ec.env),
         ) {
             Some(t) => t,
             None => return None,
         };
-        let kind = match type_to_region_input_kind(&ec.abstract_registry, kt.clone()) {
+        let kind = match type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone()) {
             Some(k) => k,
             None => return None,
         };
@@ -687,8 +687,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
     let return_typ = kernel_abi::freeze_for_abi(
-        &ec.abstract_registry,
-        &resolve_abstract(&ec.abstract_registry, &typ.rtype, &ec.env),
+        &ec.fusion.abstract_registry,
+        &resolve_abstract(&ec.fusion.abstract_registry, &typ.rtype, &ec.env),
     )?;
     // Cross-kernel calls support scalar + composite (array/tuple/
     // struct) + value-shape (variant/nullable) args, captures, and
@@ -699,7 +699,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // the cross-kernel call boundary, so refuse those — the call
     // stays on the node-walk (via `GXLambda`).
     if matches!(
-        kernel_abi::abi_kind(&ec.abstract_registry, &return_typ),
+        kernel_abi::abi_kind(&ec.fusion.abstract_registry, &return_typ),
         Some(
             kernel_abi::AbiKind::String
                 | kernel_abi::AbiKind::Unit
@@ -749,7 +749,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         is_rec,
         self_bind,
     };
-    ec.fusion_kernels.lock().insert(key, cached.clone());
+    ec.fusion.kernels.lock().insert(key, cached.clone());
     Some(cached)
 }
 
@@ -802,7 +802,7 @@ impl std::fmt::Debug for FusedCallback {
 /// fuses the body's maximal sync sub-regions in place via
 /// `fusion::fuse` (the impure-HOF split), or falls back to the
 /// interpreted per-slot dispatch. JIT-compiles the kernel when
-/// `ec.fusion_enabled` (interp fallback inside `FusedKernel` handles `None`).
+/// `ec.fusion.enabled` (interp fallback inside `FusedKernel` handles `None`).
 pub fn fuse_callsite<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     ec: &mut ExecCtx<R, E>,
@@ -877,7 +877,7 @@ pub fn fuse_callsite<R: Rt, E: UserEvent>(
     None
 }
 
-/// JIT-compile the whole-body callback kernel when `ec.fusion_enabled`,
+/// JIT-compile the whole-body callback kernel when `ec.fusion.enabled`,
 /// else `None` (the slot node-walks).
 ///
 /// `body` is the kernel's body Node and `self_call` its self-recursion
@@ -893,11 +893,11 @@ fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
     self_call: Option<&(BindId, LambdaCallInfo)>,
     apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 ) -> Option<std::sync::Arc<WrappedKernel>> {
-    if !ec.fusion_enabled {
+    if !ec.fusion.enabled {
         return None;
     }
     let r = fusion::emit::compile_kernel_with_callees_direct(
-        &mut ec.jit.lock(),
+        &mut ec.fusion.jit.lock(),
         kernel,
         &std::collections::BTreeMap::new(),
         body,
@@ -906,7 +906,7 @@ fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
         &std::collections::BTreeMap::new(),
         self_call,
         &ec.env,
-        &ec.abstract_registry,
+        &ec.fusion.abstract_registry,
     );
     match r {
         Ok(w) => Some(std::sync::Arc::new(w)),

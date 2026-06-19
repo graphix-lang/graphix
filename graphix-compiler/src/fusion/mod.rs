@@ -32,6 +32,7 @@ pub mod lowering;
 pub use builder::FusedKernel;
 
 use crate::{
+    effects::EffectKind,
     env::Env,
     expr::{ExprId, ExprKind, ModPath},
     fusion::{
@@ -39,12 +40,13 @@ use crate::{
         lowering::{resolve_abstract, RegionInputKind},
     },
     node::genn,
-    typ::Type,
-    ApplyView, BindId, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
+    typ::{FnType, Type},
+    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent,
 };
 
 /// Compile-time fusion outcome counters, accumulated on
-/// [`ExecCtx::fusion_stats`] by every `compile()` the context
+/// [`FusionCtx::stats`] by every `compile()` the context
 /// runs. Per-context (the compiler supports many instances per
 /// process and tests run in parallel) — unlike the runtime-side
 /// per-thread `emit_helpers` invocation counters, which can't
@@ -67,6 +69,99 @@ pub struct FusionStats {
     /// Per-failure (region root ExprId, compile error) — the blocker
     /// profile. Compile-time only; bounded by program size.
     pub failed: Vec<(ExprId, compact_str::CompactString)>,
+}
+
+/// Per-[`ExecCtx`] state owned by the fusion subsystem, grouped here
+/// (rather than as loose `ExecCtx` fields) because it's all fusion's
+/// own concern. Non-generic — none of these types depend on `R`/`E` —
+/// so it's a plain `ctx.fusion` field. Reached as `ctx.fusion.<x>`.
+pub struct FusionCtx {
+    /// Per-context JIT state — cranelift module + cross-kernel-call
+    /// cache. Each `ExecCtx` gets its own isolated JIT target (no
+    /// shared global module, no races across concurrent in-process
+    /// runtimes). The `parking_lot::Mutex` is interior mutability only
+    /// (not shared ownership) — it satisfies the `Sync` bound graphix-rt
+    /// puts on `ExecCtx` (cranelift's `JITModule` holds a `RefCell` so
+    /// isn't auto-`Sync`). Access via `ctx.fusion.jit.lock()`. JIT ops
+    /// are compile-time only, so the lock cost is negligible. Kernels
+    /// compile into this module via
+    /// [`emit::compile_kernel_with_callees_direct`] (parent + callees
+    /// declared/defined together → direct CLIF cross-kernel calls).
+    pub jit: parking_lot::Mutex<emit::Jit>,
+    /// On-demand monomorphized lambda-kernel cache, keyed by
+    /// `(LambdaId, Arc<FnType>)`. Populated by `build_lambda_kernel`:
+    /// derive the signature once, reuse it for every later call to the
+    /// same (lambda definition, monomorphization). The cached
+    /// `Arc<KernelSig>` IS the compiled-callable handle — the JIT's
+    /// `by_kernel` cache keys on its pointer identity.
+    pub kernels: parking_lot::Mutex<
+        std::collections::BTreeMap<
+            (LambdaId, std::sync::Arc<FnType>),
+            lowering::CachedKernel,
+        >,
+    >,
+    /// Lambdas whose kernel build is CURRENTLY on the stack —
+    /// `build_lambda_kernel`'s re-entrancy guard. Mutual recursion
+    /// (f's body builds g, whose body re-enters f before f's cache
+    /// entry lands) would otherwise recurse the build forever; the
+    /// guard refuses the inner build so the chain de-fuses to the
+    /// node-walk instead of hanging the compiler. `Arc` so a drop-guard
+    /// can hold the set without borrowing the `ExecCtx`.
+    pub(crate) building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
+    /// Whether fusion is enabled for the current compile. Set by
+    /// [`crate::compile`] from `!flags.contains(CFlag::FusionDisabled)`.
+    /// The in-context mirror of the flag, for the per-slot HOF fusion
+    /// path (`fuse_callsite`, `design/impure_hof_fusion.md`) — which
+    /// runs from a HOF builtin's `typecheck1` callback hook and from
+    /// `MapQ::update`, neither of which receives the compile flags.
+    /// Gating it here (not just the compile-time `fuse()` phase) is what
+    /// makes `FusionDisabled` a TRUE node-walk. Defaults `true`.
+    pub enabled: bool,
+    /// Compile-time fusion outcome counters, accumulated across every
+    /// `compile()` this context runs. See [`FusionStats`].
+    pub stats: FusionStats,
+    /// Fusion-time registry mapping each abstract type's `AbstractId` to
+    /// its concrete implementation type. Written by `check_sig` during
+    /// typecheck; read by the fusion classifiers
+    /// ([`kernel_abi::freeze_for_abi`] / `abi_kind` / `resolve_abstract`)
+    /// to peek through an abstract type's opacity to its wire shape.
+    /// Owned per-context (not a process-global) so it drops with the
+    /// `ExecCtx` — `AbstractId`s are minted fresh per compile, so a
+    /// global would leak.
+    pub abstract_registry: kernel_abi::AbstractRegistry,
+    /// The TOP expression id of the compile currently running — set by
+    /// [`crate::compile`] before the fusion phase. `try_fuse` builds its
+    /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
+    /// `(BindId, top_id)`, and the runtime wakes a top expression on
+    /// `set_var` only while its ref count is nonzero. A feeder
+    /// registered under the REGION's interior ExprId would strand the
+    /// real top expression at count zero once the spliced original's
+    /// Refs unref — a fused region fed by a `<-`-written variable would
+    /// then never see updates past the first cycle.
+    pub(crate) top_id: Option<ExprId>,
+    /// Sync/async effect of each registered builtin, keyed by name.
+    /// Populated by `register_builtin` from `T::EFFECT`. Read by fusion's
+    /// effect inference to decide whether a builtin call site can be
+    /// absorbed into a sync kernel. Builtins absent from this map are
+    /// treated as `Async` (the conservative default), always correct.
+    pub builtin_effects: ahash::AHashMap<&'static str, EffectKind>,
+}
+
+impl FusionCtx {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            jit: parking_lot::Mutex::new(emit::Jit::new()?),
+            kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
+            building: triomphe::Arc::new(parking_lot::Mutex::new(
+                nohash::IntSet::default(),
+            )),
+            enabled: true,
+            stats: FusionStats::default(),
+            abstract_registry: kernel_abi::AbstractRegistry::default(),
+            top_id: None,
+            builtin_effects: ahash::AHashMap::default(),
+        })
+    }
 }
 
 /// One free-var input slot resolved during walker analysis.
@@ -120,13 +215,13 @@ pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
         // below stays UNRESOLVED — the runtime Ref wants the type
         // system's view; only the kernel-slot classification (`kind`,
         // which carries the frozen types) needs the concrete rep.
-        let resolved = resolve_abstract(&ctx.abstract_registry, &b.typ, &ctx.env);
-        let Some(frozen) = kernel_abi::freeze_for_abi(&ctx.abstract_registry, &resolved)
+        let resolved = resolve_abstract(&ctx.fusion.abstract_registry, &b.typ, &ctx.env);
+        let Some(frozen) = kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &resolved)
         else {
             return;
         };
         let Some(kind) =
-            lowering::type_to_region_input_kind(&ctx.abstract_registry, frozen)
+            lowering::type_to_region_input_kind(&ctx.fusion.abstract_registry, frozen)
         else {
             return;
         };
@@ -497,17 +592,17 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     let Some(return_type) =
-        freeze_region_return(&ctx.abstract_registry, node.typ(), &ctx.env)
+        freeze_region_return(&ctx.fusion.abstract_registry, node.typ(), &ctx.env)
     else {
         return Ok(None);
     };
-    ctx.fusion_stats.attempted += 1;
+    ctx.fusion.stats.attempted += 1;
     let inputs = collect_region_inputs(&**node, ctx);
     if let Some(name) = non_scalar_basename_collision(&inputs) {
         // A real blocker, not protocol noise — log it (a silent
         // Ok(None) after `attempted += 1` makes the stats disagree
         // with the failure list).
-        ctx.fusion_stats.failed.push((
+        ctx.fusion.stats.failed.push((
             node.spec().id,
             compact_str::format_compact!(
                 "non-scalar region inputs share basename `{name}` — \
@@ -551,7 +646,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // (a node that doesn't emit) discards the half-built function —
     // the subtree node-walks.
     let wrapped = match emit::compile_kernel_with_callees_direct(
-        &mut ctx.jit.lock(),
+        &mut ctx.fusion.jit.lock(),
         &kernel,
         &lambda_callees,
         node,
@@ -560,12 +655,12 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         &callee_bodies,
         None,
         &ctx.env,
-        &ctx.abstract_registry,
+        &ctx.fusion.abstract_registry,
     ) {
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
-            ctx.fusion_stats
+            ctx.fusion.stats
                 .failed
                 .push((source_id, compact_str::format_compact!("{e:#}")));
             return Ok(None);
@@ -579,7 +674,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // matches would strand the top expression at count zero once the
     // spliced original's Refs unref on delete — a region fed by a
     // `<-`-written variable would never see updates past cycle one.
-    let feeder_top = ctx.fuse_top_id.unwrap_or(source_id);
+    let feeder_top = ctx.fusion.top_id.unwrap_or(source_id);
     let feeders: Box<[Node<R, E>]> = inputs
         .iter()
         .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
@@ -599,7 +694,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                 "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
                 inputs.len()
             );
-            ctx.fusion_stats.fused += 1;
+            ctx.fusion.stats.fused += 1;
             Ok(Some(n))
         }
         Err(e) => {
@@ -607,7 +702,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             // log like any other blocker (a silent Ok(None) here made
             // `attempted` and `failed` disagree, which is exactly the
             // drift FusionStats exists to expose).
-            ctx.fusion_stats.failed.push((
+            ctx.fusion.stats.failed.push((
                 source_id,
                 compact_str::format_compact!("FusedKernel::new: {e:#}"),
             ));

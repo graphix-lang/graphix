@@ -334,7 +334,7 @@ fusion/vocab.rs`, `gir_jit_helpers.rs → fusion/emit_helpers.rs`,
 fusion/scaffold.rs` (still a submodule of `emit`); `Update::jit →
 Update::fuse`, `fusion::jit_node → fusion::fuse` (the old
 flag-checking `fuse` driver was deleted and its skip promoted into
-`compile()` via `ExecCtx::fusion_enabled`, so it's checked once
+`compile()` via `ctx.fusion.enabled`, so it's checked once
 instead of every recursion); `GirMatcher → KernelMatcher`. See
 `design/distributed_jit.md` — "F3 — the delete"
 for what went and the two behavioral seams (fuse_callsite's
@@ -711,6 +711,29 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 `whole_graph_fusion_m7.md`.
 
 ### Major recent changes (newest first; `git log` for detail)
+
+- **Fusion state extracted from `ExecCtx` into `fusion::FusionCtx` (2026-06-19;
+  behavior-neutral, 1431×2 + 29 LSP green).** This session piled fusion
+  machinery onto `ExecCtx` as loose fields; grouped the 8 that are genuinely
+  *fusion's own state* into a non-generic `FusionCtx` struct in `fusion/mod.rs`,
+  reached as **`ctx.fusion.<x>`**. Membership + rename map: `jit`→`fusion.jit`,
+  `fusion_kernels`→`fusion.kernels`, `fusion_building`→`fusion.building`,
+  `fusion_enabled`→`fusion.enabled`, `fusion_stats`→`fusion.stats`,
+  `abstract_registry`→`fusion.abstract_registry`, `fuse_top_id`→`fusion.top_id`,
+  `builtin_effects`→`fusion.builtin_effects` (dropped the now-redundant
+  `fusion_`/`fuse_` prefixes). `FusionCtx::new() -> Result` (the `jit` build is
+  fallible); `ExecCtx::new` calls it. Non-generic because none of the field
+  types depend on `R`/`E` (`Jit`/`CachedKernel` are plain structs). **Left in
+  `ExecCtx`** (Tier 3 — compile-analysis the *node compiler* owns, fusion only a
+  downstream reader): `bind_to_lambda` (not read by fusion at all),
+  `lambda_defs` (general `LambdaId→Value` registry), `unstable_bindings` and
+  `builtin_bindings` (populated by `Connect`/`Bind::compile`, read by
+  `callsite.rs`'s static-resolution). `builtin_effects` moved despite being
+  populated in `register_builtin` because *only* fusion reads it. The
+  `GXHandle::fusion_stats()`/`TestCtx::fusion_stats()` methods keep their names
+  (they read `ctx.fusion.stats`). Rename gotcha avoided: `.jit` is also a field
+  on `Kernel` (`self.jit`) and the graphix-fuzz diff (`d.jit`), so only the
+  `ctx.jit`/`ec.jit` ExecCtx receivers were renamed.
 
 - **rustfmt revived + workspace-wide import hygiene (2026-06-18/19;
   behavior-neutral, 1431×2 + 29 LSP green).** `rustfmt.toml` pinned

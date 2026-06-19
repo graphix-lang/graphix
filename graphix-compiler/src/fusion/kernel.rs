@@ -1208,7 +1208,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         //   layout pinned by `emit_helpers`).
         use kernel_abi::AbiKind;
         let v = match kernel_abi::abi_kind(
-            &ctx.abstract_registry,
+            &ctx.fusion.abstract_registry,
             &self.kernel.return_type,
         ) {
             Some(AbiKind::Scalar(p)) => {

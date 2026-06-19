@@ -864,7 +864,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                                         old.delete(ctx);
                                     }
                                 }
-                            } else if ctx.fusion_enabled {
+                            } else if ctx.fusion.enabled {
                                 // Impure callback (async ops in the body):
                                 // no whole-body kernel. Fuse the body's
                                 // maximal sync sub-regions IN PLACE via the
