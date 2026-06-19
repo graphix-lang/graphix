@@ -18,6 +18,7 @@ pub mod node;
 pub mod node_shape;
 pub mod typ;
 
+use compact_str::CompactString;
 // Re-exported so packages implementing `Apply::emit_clif` get the
 // cranelift types through the compiler — no direct cranelift dep in a
 // package, so version lockstep with the JIT is structural.
@@ -793,10 +794,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// subtree node-walks — the universal fallback. Correctness is
     /// structural: a missing (or not-yet-written) impl can lose
     /// fusion, never produce a wrong answer.
-    fn emit_clif(
-        &self,
-        _cx: &mut BodyCx,
-    ) -> Result<fusion::emit::CompiledExpr> {
+    fn emit_clif(&self, _cx: &mut BodyCx) -> Result<fusion::emit::CompiledExpr> {
         anyhow::bail!(
             "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
              node-walks",
@@ -1197,7 +1195,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// this set to determine whether a Bind's value can be safely
     /// fused (a `<-` target rebinds at runtime, so a static splice
     /// into native code would dispatch into stale state).
-    pub unstable_bindings: nohash::IntSet<BindId>,
+    pub unstable_bindings: IntSet<BindId>,
     /// `(scope, name)` → builtin metadata for bindings whose value
     /// is a builtin lambda (i.e. `let foo = |...| 'builtin_name`).
     /// Keyed by name+scope rather than `BindId` because sig and
@@ -1219,8 +1217,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// value being bound is an `ExprKind::Lambda` with
     /// `body == Either::Right(name)`. User-lambda bindings leave
     /// no entry here; only builtin lambdas appear.
-    pub builtin_bindings:
-        ahash::AHashMap<(expr::ModPath, compact_str::CompactString), BuiltinBindInfo>,
+    pub builtin_bindings: AHashMap<(ModPath, CompactString), BuiltinBindInfo>,
     /// All state owned by the fusion subsystem — the JIT module,
     /// kernel caches, abstract-type registry, builtin effects, and the
     /// compile-time fusion flags/counters. Grouped into one struct so
