@@ -9,6 +9,7 @@ extern crate combine;
 #[macro_use]
 extern crate serde_derive;
 
+pub mod analysis;
 pub mod effects;
 pub mod env;
 pub mod expr;
@@ -463,7 +464,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     ///   `str::parse` reads its target type from `resolved`); a
     ///   `GXLambda` recurses its body.
     /// - HOF call sites ONLY: on the per-call-site BOUND apply
-    ///   (`cs.function`), via `CallSite::try_static_resolve`, with
+    ///   (`cs.callee`), via `CallSite::try_static_resolve`, with
     ///   `fn_args` listing the positional indices and `LambdaDef`s of the
     ///   fn-typed args the compiler proved resolve statically to a single
     ///   known lambda. A HOF builtin (`MapQ`/`FoldQ`/`Init`) uses these to
@@ -1156,6 +1157,22 @@ impl AbstractTypeRegistry {
     }
 }
 
+/// Side channel for the interpreter's sync-tail-recursion loop. A
+/// tail-position self-call (`CallSite::update`, flagged
+/// `is_self_tail_call` by `analysis::analyze`) stashes its rebind args
+/// here and returns without dispatching; the enclosing `GXLambda::update`
+/// loop takes it, rebinds the formals, and re-runs the body — looping in
+/// place instead of recursing on the Rust stack. A single slot suffices:
+/// a tail call is the last thing evaluated, and the owning lambda
+/// consumes it immediately on the way back up.
+pub(crate) struct PendingTailCall {
+    /// The recursive callee's `LambdaId` — the loop key the owning
+    /// `GXLambda::update` matches against `self.id`.
+    pub(crate) lambda: LambdaId,
+    /// The self-call's argument values, in callee-formal order.
+    pub(crate) args: smallvec::SmallVec<[Value; 4]>,
+}
+
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
@@ -1224,6 +1241,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// `ExecCtx` isn't cluttered with loose fusion fields; reached as
     /// `ctx.fusion.<x>`. See [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
+    /// Runtime side channel for the interpreter's tail-call loop. See
+    /// [`PendingTailCall`]. `None` except for the instant between a tail
+    /// self-call stashing its args and the owning lambda consuming them.
+    pub(crate) pending_tail_call: Option<PendingTailCall>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1256,6 +1277,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
             fusion: fusion::FusionCtx::new()?,
+            pending_tail_call: None,
         })
     }
 
@@ -1388,6 +1410,15 @@ pub fn compile<R: Rt, E: UserEvent>(
         return Err(e);
     }
     info!("typecheck time {:?}", st.elapsed());
+    // Function-property analysis (effect + recursion). Runs ALWAYS — the
+    // node-walk interpreter reads its results (the tail-loop facts) too,
+    // not just fusion. Must come after typecheck1 (it needs resolved call
+    // sites + a complete `bind_to_lambda`) and before fusion (which reads
+    // the shared `tail_loop` fact).
+    if let Err(e) = analysis::analyze(&node, ctx) {
+        ctx.env = env;
+        return Err(e);
+    }
     if ctx.fusion.enabled {
         let st = Instant::now();
         if let Err(e) = fusion::fuse(&mut node, ctx) {

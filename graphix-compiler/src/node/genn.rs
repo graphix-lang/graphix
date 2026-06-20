@@ -1,6 +1,6 @@
 use super::{
     bind::Ref,
-    callsite::{Arg, ArgKey, CallSite},
+    callsite::{Arg, ArgKey, Callee, CallSite},
     Constant, Nop, NOP,
 };
 use crate::{
@@ -12,7 +12,9 @@ use ahash::AHashMap;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
 use netidx::publisher::{Typ, Value};
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
+use std::sync::atomic::AtomicBool;
 use triomphe::Arc;
 
 /// generate a no op with the specific type
@@ -95,9 +97,11 @@ pub fn apply<R: Rt, E: UserEvent>(
         scope,
         flags: BitFlags::empty(),
         fnode,
-        function: None,
+        callee: Callee::DynamicUnbound,
         top_id,
-        statically_resolved: false,
-        first_static_update: false,
+        // Synthetic call sites are never recursion sites.
+        is_self_tail_call: AtomicBool::new(false),
+        tail_arg_order: Mutex::new(None),
+        callee_lambda_id: Mutex::new(None),
     })
 }

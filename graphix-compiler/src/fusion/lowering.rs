@@ -718,17 +718,10 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // those kinds; otherwise self-calls stay plain native recursion
     // (correct, native stack depth).
     let is_rec = self_bind.is_some_and(|sb| external.iter().any(|id| *id == sb));
-    let has_tail = is_rec
-        && inputs[..n_formal].iter().all(|(_, kind, _)| {
-            matches!(
-                kind,
-                RegionInputKind::Prim(_)
-                    | RegionInputKind::Array(_)
-                    | RegionInputKind::Tuple(_)
-                    | RegionInputKind::Struct(_)
-            )
-        })
-        && body_has_self_tail_call(g.body(), self_bind.unwrap());
+    // The native-loop gate is the SHARED structural predicate — the same
+    // one `analysis::analyze` uses (sync-gated) for the interpreter's
+    // tail-loop, so the two backends can't disagree on which lambdas loop.
+    let has_tail = self_bind.is_some_and(|sb| structural_tail_loop(g, sb, ec));
     // The build is pure signature derivation — the body is validated
     // by the compile attempt itself (`emit_clif` over the body Node;
     // "is it fusable IS the compile attempt"). A body that doesn't
@@ -964,6 +957,68 @@ impl FusedCallback {
     }
 }
 
+/// The SHARED structural tail-loop predicate, behind both the JIT's
+/// native-loop gate (`build_lambda_kernel`'s `has_tail`) and the
+/// interpreter's per-`GXLambda` `tail_loop` gate (which
+/// `analysis::analyze` additionally sync-gates). ONE seam, so the two
+/// backends can never disagree on WHICH lambdas loop: `g` is
+/// self-recursive w.r.t. `self_bind`, every formal is a register-loopable
+/// kind (`Prim`/`Array`/`Tuple`/`Struct` — what the rebind-and-jump loop
+/// can carry; other kinds keep native / per-cycle recursion), and the
+/// body has a self-call in tail position. NOT sync-gated here — fusion
+/// excludes effect on purpose (a fusable body is sync by construction;
+/// an effect-inference false-negative must never flip a JIT loop to
+/// recursion), and `analyze` applies the sync gate for the interpreter.
+pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    self_bind: BindId,
+    ec: &ExecCtx<R, E>,
+) -> bool {
+    // is_rec: the body references its own binding. (A formal can't be
+    // `self_bind` — formals are pattern-bound, `self_bind` is a `let`.)
+    let mut refs = Refs::default();
+    g.body().refs(&mut refs);
+    let mut is_rec = false;
+    refs.with_external_refs(|id| {
+        if id == self_bind {
+            is_rec = true;
+        }
+    });
+    if !is_rec {
+        return false;
+    }
+    // Simple rebind only: all-positional formals, no vargs. The
+    // interpreter's tail-loop rebinds the self-call's positional args
+    // 1:1 onto the formals (`analysis::analyze`); gating both backends
+    // here keeps them in lockstep (a labeled/varargs self-call stays
+    // native / per-cycle recursion in BOTH).
+    if g.typ().vargs.is_some() {
+        return false;
+    }
+    // Every formal must be positional AND a register-loopable kind (the
+    // same classification `build_lambda_kernel` derives for its slots).
+    for fa in g.typ().args.iter() {
+        if !matches!(fa.kind, FnArgKind::Positional { .. }) {
+            return false;
+        }
+        let arg_typ = resolve_abstract(&ec.fusion.abstract_registry, &fa.typ, &ec.env);
+        let kt = match kernel_abi::freeze_for_abi(&ec.fusion.abstract_registry, &arg_typ) {
+            Some(t) => t,
+            None => return false,
+        };
+        match type_to_region_input_kind(&ec.fusion.abstract_registry, kt) {
+            Some(
+                RegionInputKind::Prim(_)
+                | RegionInputKind::Array(_)
+                | RegionInputKind::Tuple(_)
+                | RegionInputKind::Struct(_),
+            ) => {}
+            _ => return false,
+        }
+    }
+    body_has_self_tail_call(g.body(), self_bind)
+}
+
 /// Pure tail-position pre-scan: does this body contain a self tail
 /// call (a `CallSite` in tail position whose fnode `Ref` carries
 /// `self_bind`)? Mirrors `emit_body_into` / `emit_do` / `emit_tail`'s
@@ -975,7 +1030,7 @@ impl FusedCallback {
 /// converse over-approximation is harmless: a detected-but-rejected
 /// tail call — e.g. an arg type mismatch at emit time — leaves a
 /// vestigial loop head the body jumps into once.)
-fn body_has_self_tail_call<R: Rt, E: UserEvent>(
+pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     self_bind: BindId,
 ) -> bool {

@@ -1,6 +1,6 @@
 use super::{compiler::compile, Nop};
 use crate::{
-    effects::EffectKind,
+    effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     fusion::emit::{BodyCx, CompiledExpr},
@@ -17,7 +17,15 @@ use enumflags2::BitFlags;
 use netidx::{pack::Pack, subscriber::Value, utils::Either};
 use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
-use std::{fmt, hash::Hash, sync::Arc as SArc};
+use std::{
+    fmt,
+    hash::Hash,
+    mem,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc as SArc,
+    },
+};
 use triomphe::Arc;
 
 pub struct LambdaDef<R: Rt, E: UserEvent> {
@@ -37,6 +45,11 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// NOT contribute here — those are handled at the call site via
     /// the lattice join with the resolved fn-arg's effect.
     pub intrinsic_effect: Mutex<EffectKind>,
+    /// How this lambda recurses (none / non-tail / tail). Summary
+    /// computed by `analysis::analyze`; see [`RecursionKind`]. Defaults
+    /// to `NotRecursive` until the pass runs. The operational tail-loop
+    /// gate lives on `GXLambda::tail_loop`, not here.
+    pub recursion: Mutex<RecursionKind>,
 }
 
 impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
@@ -106,6 +119,13 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
     typ: Arc<FnType>,
+    /// The operational tail-loop gate: `true` iff this lambda is sync,
+    /// self-tail-recursive, and has loop-able formals. Set by
+    /// `analysis::analyze` (through `&self`, hence the atomic), read by
+    /// both the interpreter (`Apply::update` loops in place instead of
+    /// recursing) and the JIT (`build_lambda_kernel` emits a native
+    /// loop). `false` until the analysis runs / for non-tail lambdas.
+    tail_loop: AtomicBool,
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -144,6 +164,18 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     pub fn typ(&self) -> &Arc<FnType> {
         &self.typ
     }
+
+    /// The operational tail-loop gate — see the `tail_loop` field. Read
+    /// by both backends; both must agree, so this is the single source.
+    pub fn tail_loop(&self) -> bool {
+        self.tail_loop.load(Ordering::Relaxed)
+    }
+
+    /// Set the tail-loop gate. Takes `&self` (the field is atomic) so the
+    /// analysis pass can mark a lambda it reaches through a shared `&Node`.
+    pub fn set_tail_loop(&self, v: bool) {
+        self.tail_loop.store(v, Ordering::Relaxed)
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
@@ -169,7 +201,39 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 })
             }
         }
-        self.body.update(ctx, event)
+        if !self.tail_loop.load(Ordering::Relaxed) {
+            return self.body.update(ctx, event);
+        }
+        // Sync self-tail-recursion: loop in place instead of recursing on
+        // the Rust stack (which overflows; the JIT compiles this to a
+        // native loop). A tail-position self-call in the body stashes its
+        // rebind args in `ctx.pending_tail_call` and returns without
+        // dispatching (`CallSite::update`); we take them, rebind the
+        // formals, and re-run the body. `event.init = true` each iteration
+        // makes every pass a "fresh call" — init-gated nodes (Constants)
+        // re-fire, matching both the old fresh-body-per-level node-walk and
+        // the JIT's per-iteration re-execution.
+        loop {
+            let prev = mem::replace(&mut event.init, true);
+            let res = self.body.update(ctx, event);
+            event.init = prev;
+            let mine = matches!(
+                &ctx.pending_tail_call,
+                Some(p) if p.lambda == self.id
+            );
+            if !mine {
+                return res;
+            }
+            let p = ctx.pending_tail_call.take().unwrap();
+            let prev = mem::replace(&mut event.init, true);
+            for (v, pat) in p.args.iter().zip(self.args.iter()) {
+                pat.bind(v, &mut |id, v| {
+                    ctx.cached.insert(id, v.clone());
+                    event.variables.insert(id, v);
+                })
+            }
+            event.init = prev;
+        }
     }
 
     fn typecheck0(
@@ -240,7 +304,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         let args: Box<[StructPatternNode]> =
             self.args.iter().map(|p| p.clone_rebind(ctx, scope)).collect();
         let body = self.body.clone_rebind(ctx, scope);
-        Box::new(Self { id: self.id, args, body, typ: self.typ.clone() })
+        // Same LambdaId ⇒ same recursion property: a per-slot HOF clone
+        // inherits the template's analysis-set tail_loop bit (the clone
+        // itself isn't visited by the analysis pass).
+        Box::new(Self {
+            id: self.id,
+            args,
+            body,
+            typ: self.typ.clone(),
+            tail_loop: AtomicBool::new(self.tail_loop.load(Ordering::Relaxed)),
+        })
     }
 }
 
@@ -278,7 +351,13 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             argpats.push(pattern);
         }
         let body = compile(ctx, flags, body, &scope, tid)?;
-        Ok(Self { id, args: Box::from(argpats), typ, body })
+        Ok(Self {
+            id,
+            args: Box::from(argpats),
+            typ,
+            body,
+            tail_loop: AtomicBool::new(false),
+        })
     }
 }
 
@@ -596,6 +675,7 @@ impl Lambda {
             scope: original_scope,
             check: Mutex::new(None),
             intrinsic_effect: Mutex::new(EffectKind::Sync),
+            recursion: Mutex::new(RecursionKind::NotRecursive),
         });
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))

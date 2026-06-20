@@ -6,15 +6,22 @@ use crate::{
     node::lambda::LambdaDef,
     typ::{FnArgKind, FnType, Type},
     wrap, Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId,
-    Node, NodeView, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
+    Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update,
+    UserEvent,
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::subscriber::Value;
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
-use std::{collections::hash_map::Entry, mem};
+use smallvec::SmallVec;
+use std::{
+    collections::hash_map::Entry,
+    mem,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use triomphe::Arc as TArc;
 
 /// Reject a direct call to a same-cycle (`EffectKind::Sync`) variadic
@@ -148,6 +155,66 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
     Ok(res)
 }
 
+/// What a [`CallSite`] knows about its callee. Folds the former
+/// (`function: Option<(Value, Box<dyn Apply>)>`, `statically_resolved`,
+/// `first_static_update`) trio into one enum so the previously
+/// representable invalid state (`statically_resolved && function.is_none()`)
+/// cannot occur.
+#[derive(Debug)]
+pub(crate) enum Callee<R: Rt, E: UserEvent> {
+    /// No callee bound yet — the just-compiled state. `fnode` is
+    /// re-evaluated every cycle; the first cycle it yields a `LambdaDef`
+    /// Value, `update()` transitions to `DynamicBound` via `bind()`. Also
+    /// the state a *builtin* callee resets to in `clone_rebind`, so the
+    /// clone re-inits a fresh instance on its first update.
+    DynamicUnbound,
+    /// Bound to a callee that may still change cycle-to-cycle. `def` is the
+    /// `LambdaDef`-wrapped Value, kept for the per-cycle IDENTITY check
+    /// against `fnode.update()`; when it differs we re-`bind()`.
+    DynamicBound { def: Value, apply: Box<dyn Apply<R, E>> },
+    /// Pre-bound at compile time by [`CallSite::try_static_resolve`]:
+    /// `fnode` provably resolves to one `LambdaDef`, so the per-cycle
+    /// identity check + lazy bind is skipped (`fnode.update()` still runs
+    /// for side effects, value discarded). `def` is the held LambdaDef the
+    /// read-through accessors recover typed; `first_update` primes the
+    /// body's external refs exactly once.
+    Static { def: Value, apply: Box<dyn Apply<R, E>>, first_update: bool },
+}
+
+impl<R: Rt, E: UserEvent> Callee<R, E> {
+    fn is_bound(&self) -> bool {
+        !matches!(self, Callee::DynamicUnbound)
+    }
+
+    fn apply(&self) -> Option<&dyn Apply<R, E>> {
+        match self {
+            Callee::DynamicUnbound => None,
+            Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
+                Some(&**apply)
+            }
+        }
+    }
+
+    fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R, E> + 'static)> {
+        match self {
+            Callee::DynamicUnbound => None,
+            Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
+                Some(&mut **apply)
+            }
+        }
+    }
+
+    /// Reset to `DynamicUnbound`, returning the bound apply for deletion.
+    fn take_apply(&mut self) -> Option<Box<dyn Apply<R, E>>> {
+        match mem::replace(self, Callee::DynamicUnbound) {
+            Callee::DynamicUnbound => None,
+            Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
+                Some(apply)
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) spec: TArc<Expr>,
@@ -157,26 +224,29 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(crate) fnode: Node<R, E>,
     pub(crate) args: AHashMap<ArgKey, Arg<R, E>>,
     pub(super) arg_refs: Vec<Node<R, E>>,
-    pub(crate) function: Option<(Value, Box<dyn Apply<R, E>>)>,
+    /// The callee — static/dynamic-bound/unbound. See [`Callee`]. Replaces
+    /// the former `function` + `statically_resolved` + `first_static_update`
+    /// trio (the `Static` tag carries `first_update`; the old invalid
+    /// `statically_resolved && function == None` state is unrepresentable).
+    pub(crate) callee: Callee<R, E>,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
-    /// Set by [`Self::try_static_resolve`] (at the end of `typecheck1`)
-    /// when the function expression can be proven to always resolve to a
-    /// single known `LambdaDef`. When `true`, `update()` skips the lazy
-    /// `(fnode_value, function_value)`-equality + downcast +
-    /// `bind()` arm — `self.function` is already bound and won't
-    /// change. `fnode.update(ctx, event)` is still called every
-    /// cycle (so the function expression's side effects fire) but
-    /// its returned `Value` is discarded.
-    pub(crate) statically_resolved: bool,
-    /// True on the first runtime update of a statically-resolved
-    /// CallSite. Mirrors the priming step the dynamic `bind=true` arm
-    /// runs once when the function first binds: emulates `event.init =
-    /// true` and primes `event.variables` from `ctx.cached` for every
-    /// external Ref the function's body reads. Cleared after the first
-    /// update.
-    pub(super) first_static_update: bool,
+    /// Set by `analysis::analyze` when THIS call site is a tail-position
+    /// self-call inside a sync, tail-recursive lambda body. At runtime
+    /// the interpreter (`CallSite::update`) reads it to loop in place
+    /// (stash args in `ctx.pending_tail_call`, return without dispatch)
+    /// instead of recursing on the Rust stack. Atomic because the
+    /// analysis writes it through a shared `&CallSite`.
+    pub(crate) is_self_tail_call: AtomicBool,
+    /// The recursive call's arg `BindId`s in callee-signature order —
+    /// what the tail-loop rebinds each iteration. `Some` iff
+    /// `is_self_tail_call`. Written once by the analysis.
+    pub(crate) tail_arg_order: Mutex<Option<Box<[BindId]>>>,
+    /// The `LambdaId` of the tail-recursive callee — the loop key the
+    /// owning `GXLambda::update` matches `ctx.pending_tail_call` against.
+    /// `Some` iff `is_self_tail_call`.
+    pub(crate) callee_lambda_id: Mutex<Option<LambdaId>>,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
@@ -224,18 +294,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &self.fnode
     }
 
+    /// The lexical+dynamic scope this call site was compiled in — used by
+    /// `analysis::analyze` to resolve a builtin callee's `(scope, name)`
+    /// key for its declared effect.
+    pub(crate) fn scope(&self) -> &Scope {
+        &self.scope
+    }
+
     /// View the [`Apply`] this CallSite is currently bound to. Returns
     /// `None` if the CallSite hasn't bound yet (the typical
     /// just-compiled state — runtime `bind()` fires lazily on the
     /// first cycle the `fnode` produces a LambdaDef Value).
     /// `Some(view)` after either the runtime dynamic bind or the
     /// `try_static_resolve` step in `typecheck1` has populated
-    /// `self.function`.
+    /// `self.callee`.
     ///
     /// Used by fusion to descend through a resolved call site into a
     /// user lambda's body. See [`ApplyView`] for the variants.
     pub fn resolved_apply(&self) -> Option<ApplyView<'_, R, E>> {
-        self.function.as_ref().map(|(_, a)| a.view())
+        self.callee.apply().map(|a| a.view())
     }
 
     /// Mutable counterpart to [`Self::resolved_apply`]. Fusion uses
@@ -243,7 +320,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// reachable through the resolved Apply — e.g. a
     /// [`ApplyViewMut::Lambda`]'s body Node.
     pub fn resolved_apply_mut(&mut self) -> Option<ApplyViewMut<'_, R, E>> {
-        self.function.as_mut().map(|(_, a)| a.view_mut())
+        self.callee.apply_mut().map(|a| a.view_mut())
     }
 
     /// Signature-order `Ref` Nodes — one per formal argument in the
@@ -256,7 +333,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// this gives [`crate::Apply::emit_clif`] impls both views of
     /// the arg list.
     pub fn arg_refs(&self) -> Option<&[Node<R, E>]> {
-        if self.function.is_some() {
+        if self.callee.is_bound() {
             Some(&self.arg_refs)
         } else {
             None
@@ -284,12 +361,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             fnode,
             args,
             arg_refs: Vec::new(),
-            function: None,
+            callee: Callee::DynamicUnbound,
             flags,
             top_id,
             scope: scope.clone(),
-            statically_resolved: false,
-            first_static_update: false,
+            is_self_tail_call: AtomicBool::new(false),
+            tail_arg_order: Mutex::new(None),
+            callee_lambda_id: Mutex::new(None),
         };
         Ok(Box::new(site))
     }
@@ -312,10 +390,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
-        fv: Value,
         f: &LambdaDef<R, E>,
         mut prime_default_refs: F,
-    ) -> Result<()>
+    ) -> Result<Box<dyn Apply<R, E>>>
     where
         F: FnMut(&mut ExecCtx<R, E>, &Refs),
     {
@@ -328,7 +405,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // we already warned about this
         flags.remove(CFlag::WarnUnhandled);
         // Clean up previous binding (no-op on a fresh CallSite).
-        if let Some((_, mut old_f)) = self.function.take() {
+        if let Some(mut old_f) = self.callee.take_apply() {
             old_f.delete(ctx);
         }
         for mut n in self.arg_refs.drain(..) {
@@ -459,8 +536,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.top_id,
         )?;
         let _ = rf.typecheck0(ctx, &mut self.arg_refs);
-        self.function = Some((fv, rf));
-        Ok(())
+        Ok(rf)
     }
 
     fn bind(
@@ -478,7 +554,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // `event.variables` from `ctx.cached`, so the bound function
         // sees outer-binding values on its first update inside this
         // same cycle.
-        self.setup_bind(ctx, &scope, flags, fv, f, |ctx, refs| {
+        let apply = self.setup_bind(ctx, &scope, flags, f, |ctx, refs| {
             refs.with_external_refs(|id| {
                 if let Some(v) = ctx.cached.get(&id) {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
@@ -488,6 +564,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             });
         })?;
+        self.callee = Callee::DynamicBound { def: fv, apply };
         // Ensure all arg values are available for the init cycle.
         // Defaults need to be updated for the first time (with init=true
         // since Constant only fires on init); existing args may not have
@@ -532,14 +609,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         def: &LambdaDef<R, E>,
         fv: Value,
     ) -> Result<()> {
-        if self.statically_resolved {
+        if matches!(self.callee, Callee::Static { .. }) {
             // Idempotent.
             return Ok(());
         }
         let scope = self.scope.clone();
-        self.setup_bind(ctx, &scope, self.flags, fv, def, |_, _| {})?;
-        self.statically_resolved = true;
-        self.first_static_update = true;
+        let apply = self.setup_bind(ctx, &scope, self.flags, def, |_, _| {})?;
+        self.callee = Callee::Static { def: fv, apply, first_update: true };
         Ok(())
     }
 
@@ -559,7 +635,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// map kept distinct from runtime `cached`; the `.or_else(cached)`
     /// only READS stdlib lambdas already legitimately there.)
     fn try_static_resolve(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        if self.statically_resolved {
+        if matches!(self.callee, Callee::Static { .. }) {
             return Ok(());
         }
         // Determine the target without holding a borrow on `self.fnode`
@@ -615,7 +691,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if fn_arg_targets.is_empty() {
             return Ok(());
         }
-        let Some((_, apply)) = self.function.as_mut() else {
+        let Some(apply) = self.callee.apply_mut() else {
             return Ok(());
         };
         let mut fn_args: Vec<StaticFnArg<'_, R, E>> =
@@ -650,9 +726,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
+        // Tail-call interception. When `analysis::analyze` flagged this
+        // call as a tail-position self-call inside a sync tail-recursive
+        // body, don't bind/dispatch (which would recurse on the Rust stack
+        // and overflow). Instead stash the just-evaluated rebind args and
+        // return — the enclosing `GXLambda::update` loop rebinds the
+        // formals and re-runs the body, looping in place. The args were
+        // cached above this cycle; if any didn't fire we fall through to
+        // the normal (recursive) path rather than loop on a stale value.
+        if self.is_self_tail_call.load(Ordering::Relaxed) {
+            let order = self.tail_arg_order.lock();
+            let lambda = *self.callee_lambda_id.lock();
+            if let (Some(order), Some(lambda)) = (order.as_ref(), lambda) {
+                let args: SmallVec<[Value; 4]> =
+                    order.iter().filter_map(|id| ctx.cached.get(id).cloned()).collect();
+                if args.len() == order.len() {
+                    debug_assert!(ctx.pending_tail_call.is_none());
+                    ctx.pending_tail_call = Some(PendingTailCall { lambda, args });
+                    for id in set.drain(..) {
+                        event.variables.remove(&id);
+                    }
+                    return None;
+                }
+            }
+        }
         // Statically resolved fast path. The `try_static_resolve` step
         // in `typecheck1` already invoked `(def.init)(...)` and stored
-        // the Apply on `self.function`. We still run
+        // the Apply on `self.callee`. We still run
         // `fnode.update` for its side effects (Ref unref-counts,
         // downstream `ctx.cached` writes by other nodes that share
         // the binding's update path) but ignore the value. On the
@@ -665,39 +765,57 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // call site at compile time. Re-using `bound=true` on the
         // first statically-resolved cycle drives the existing
         // priming arm below.
-        let bound = match (&self.function, self.fnode.update(ctx, event)) {
-            _ if self.statically_resolved => {
-                let first = self.first_static_update;
-                self.first_static_update = false;
-                first
-            }
-            (_, None) => false,
-            (Some((fv, _)), Some(v)) if fv == &v => false,
-            (_, Some(v)) => match v.downcast_ref::<LambdaDef<R, E>>() {
-                None => panic!("value {v:?} is not a function"),
-                Some(lb) => {
-                    let scope = self.scope.clone();
-                    self.bind(ctx, scope, self.flags, v.clone(), lb, event, &mut set)
-                        .expect("failed to bind to lambda");
-                    true
+        // `fnode.update` runs every cycle for its side effects, regardless
+        // of variant — evaluate it before the `Static` arm that discards
+        // its value (mirrors the old tuple scrutinee's eager evaluation).
+        let fv_new = self.fnode.update(ctx, event);
+        let bound = if let Callee::Static { first_update, .. } = &mut self.callee {
+            let first = *first_update;
+            *first_update = false;
+            first
+        } else {
+            match fv_new {
+                None => false,
+                Some(v) => {
+                    // The immutable `matches!` borrow ends before `self.bind`'s
+                    // `&mut self` below.
+                    let same = matches!(
+                        &self.callee,
+                        Callee::DynamicBound { def, .. } if def == &v
+                    );
+                    if same {
+                        false
+                    } else {
+                        match v.downcast_ref::<LambdaDef<R, E>>() {
+                            None => panic!("value {v:?} is not a function"),
+                            Some(lb) => {
+                                let scope = self.scope.clone();
+                                self.bind(
+                                    ctx, scope, self.flags, v.clone(), lb, event, &mut set,
+                                )
+                                .expect("failed to bind to lambda");
+                                true
+                            }
+                        }
+                    }
                 }
-            },
+            }
         };
-        match &mut self.function {
+        match self.callee.apply_mut() {
             None => {
                 for id in set.drain(..) {
                     event.variables.remove(&id);
                 }
                 None
             }
-            Some((_, f)) if !bound => {
+            Some(f) if !bound => {
                 let res = f.update(ctx, &mut self.arg_refs, event);
                 for id in set.drain(..) {
                     event.variables.remove(&id);
                 }
                 res
             }
-            Some((_, f)) => {
+            Some(f) => {
                 let init = mem::replace(&mut event.init, true);
                 let mut refs = Refs::default();
                 f.refs(&mut refs);
@@ -720,7 +838,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some((_, mut f)) = self.function.take() {
+        if let Some(mut f) = self.callee.take_apply() {
             f.delete(ctx)
         }
         self.fnode.delete(ctx);
@@ -735,7 +853,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some((_, f)) = &mut self.function {
+        if let Some(f) = self.callee.apply_mut() {
             f.sleep(ctx)
         }
         self.fnode.sleep(ctx);
@@ -971,7 +1089,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        if let Some((_, fun)) = &self.function {
+        if let Some(fun) = self.callee.apply() {
             fun.refs(refs)
         }
         self.fnode.refs(refs);
@@ -994,7 +1112,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         &self,
         cx: &mut BodyCx,
     ) -> Result<CompiledExpr> {
-        if let Some((_, f)) = &self.function {
+        if let Some(f) = self.callee.apply() {
             // A resolved user-lambda callee is a cross-kernel call:
             // `try_fuse`'s analysis discovered the site and built (or
             // cache-hit) the callee kernel — emit a CLIF `call`
@@ -1021,9 +1139,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // A VALUE-position self-call inside a recursive callee body
         // (tail-position self-calls were intercepted by
         // `emit_body_tail`): call the kernel's own FuncRef. The inner
-        // site is #203-UNRESOLVED — `self.function` is None — so this
-        // check lives OUTSIDE the resolved-Apply block. Matched by the
-        // self BindId (names shadow, #206; ids don't); captures
+        // site is #203-UNRESOLVED — `self.callee` is `DynamicUnbound` —
+        // so this check lives OUTSIDE the resolved-Apply block. Matched
+        // by the self BindId (names shadow, #206; ids don't); captures
         // forward from this kernel's own params (bound with their
         // BindIds).
         if let Some((sb, info)) = cx.self_call_info() {
@@ -1116,22 +1234,45 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             .collect();
         let fnode = self.fnode.clone_rebind(ctx, scope);
         // A `GXLambda` callee is cloned STRUCTURALLY — preserving its fused
-        // body. A builtin callee is instead left UNBOUND (`function: None`,
-        // `statically_resolved: false`) so the clone re-binds it on its
-        // first update, re-running the builtin's own `init` to produce a
-        // FRESH independent instance (its own subscription, counter, timer,
-        // …). Re-bind is correct for builtins precisely because they don't
-        // fuse their body, so nothing is lost by rebuilding from `init` —
-        // and it needs zero per-builtin clone code. (A `GXLambda` must NOT
-        // be re-bound that way: re-init would recompile its body from spec,
-        // discarding the spliced FusedKernels.)
-        let (function, statically_resolved) = match &self.function {
-            Some((v, apply)) if matches!(apply.view(), ApplyView::Lambda(_)) => (
-                Some((v.clone(), apply.clone_rebind(ctx, scope))),
-                self.statically_resolved,
-            ),
-            _ => (None, false),
+        // body AND its variant (`Static` re-primes on first update). A
+        // builtin callee (or unbound) instead resets to `DynamicUnbound` so
+        // the clone re-binds it on its first update, re-running the builtin's
+        // own `init` to produce a FRESH independent instance (its own
+        // subscription, counter, timer, …). Re-bind is correct for builtins
+        // precisely because they don't fuse their body, so nothing is lost by
+        // rebuilding from `init` — and it needs zero per-builtin clone code.
+        // (A `GXLambda` must NOT be re-bound that way: re-init would recompile
+        // its body from spec, discarding the spliced FusedKernels.)
+        let callee = match &self.callee {
+            Callee::Static { def, apply, .. }
+                if matches!(apply.view(), ApplyView::Lambda(_)) =>
+            {
+                Callee::Static {
+                    def: def.clone(),
+                    apply: apply.clone_rebind(ctx, scope),
+                    // Re-prime on the clone's first update (like a fresh bind).
+                    first_update: true,
+                }
+            }
+            Callee::DynamicBound { def, apply }
+                if matches!(apply.view(), ApplyView::Lambda(_)) =>
+            {
+                Callee::DynamicBound {
+                    def: def.clone(),
+                    apply: apply.clone_rebind(ctx, scope),
+                }
+            }
+            _ => Callee::DynamicUnbound,
         };
+        // A cloned recursion-site stays a recursion site. `tail_arg_order`
+        // names this call's own arg BindIds, which `id_remap` just
+        // re-minted, so remap them too (callee_lambda_id is id-independent).
+        let tail_arg_order = self.tail_arg_order.lock().as_ref().map(|order| {
+            order
+                .iter()
+                .map(|id| id_remap.get(id).copied().unwrap_or(*id))
+                .collect::<Box<[BindId]>>()
+        });
         Box::new(Self {
             spec: self.spec.clone(),
             ftype: self.ftype.clone(),
@@ -1140,13 +1281,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             fnode,
             args: new_args,
             arg_refs,
-            function,
+            callee,
             flags: self.flags,
             scope: self.scope.clone(),
             top_id: self.top_id,
-            statically_resolved,
-            // Re-prime on the clone's first update (like a fresh bind).
-            first_static_update: true,
+            is_self_tail_call: AtomicBool::new(
+                self.is_self_tail_call.load(Ordering::Relaxed),
+            ),
+            tail_arg_order: Mutex::new(tail_arg_order),
+            callee_lambda_id: Mutex::new(*self.callee_lambda_id.lock()),
         })
     }
 }

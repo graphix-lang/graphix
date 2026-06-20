@@ -1,0 +1,4 @@
+// CRASH: child HANG (outer deadline)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let rec sum_to = |n, acc| select n {i64:0 => acc, _ => sum_to(n - i64:-9223372036854775808, acc + i64:9223372036854775807)}; sum_to(i64:100, i64:0)}

@@ -266,6 +266,46 @@ run!(fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// Deep sync tail recursion. 500k levels overflows the OLD node-walk's
+// native stack (~50k frames) — the bug this whole change fixes. With the
+// shared tail-loop facts the interpreter loops in place (constant stack),
+// matching the JIT's native loop; the differential `run!` asserts both
+// modes reach the same value without overflowing.
+const TAIL_LOOP_DEEP: &str = r#"
+{
+    let rec count = |n: i64, acc: i64| -> i64
+        select n {
+            0 => acc,
+            _ => count(n - 1, acc + 1)
+        };
+    count(500000, 0)
+}
+"#;
+
+run!(tail_loop_deep, TAIL_LOOP_DEEP, |v: Result<&Value>| match v {
+    Ok(Value::I64(500000)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A self-call in OPERAND (not tail) position — `n * fact(n - 1)` — must
+// NOT be looped: the tail position is the `*`, not the call. Both backends
+// recurse normally (shallow here, so no overflow); guards against the
+// tail-loop firing for non-tail recursion.
+const FACT_VALUE_POSITION: &str = r#"
+{
+    let rec fact = |n: i64| -> i64 select n {
+        0 => 1,
+        _ => n * fact(n - 1)
+    };
+    fact(5)
+}
+"#;
+
+run!(fact_value_position, FACT_VALUE_POSITION, |v: Result<&Value>| match v {
+    Ok(Value::I64(120)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // Fusion smoke test: a mandelbrot-shape kernel. Same iterate as the
 // unit tests, exercised through the runtime's Apply path.
 const KIR_FUSED_MANDELBROT: &str = r#"

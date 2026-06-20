@@ -67,3 +67,24 @@ impl Default for EffectKind {
         Self::Async
     }
 }
+
+/// How a lambda recurses with respect to its own `LambdaId`. A summary
+/// computed by the analysis pass (`analysis::analyze`) alongside the
+/// per-call-site tail facts. This is a human/diagnostic summary — the
+/// OPERATIONAL gate that makes the interpreter loop (and the JIT emit a
+/// native loop) is the per-`GXLambda` `tail_loop` bit + the per-call-site
+/// `is_self_tail_call` flag, not this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum RecursionKind {
+    /// No call in the body can reach this lambda's own `LambdaId`. Also
+    /// the default for a lambda the analysis never reached (dynamic-only
+    /// callees) — safe, since the operational gate is independent.
+    #[default]
+    NotRecursive,
+    /// Self-recursive, but the recursive call is not in tail position
+    /// (both backends recurse on the native stack).
+    Recursive,
+    /// Self-recursive in tail position with loop-able formals — the
+    /// interpreter loops in place and the JIT emits a native loop.
+    TailRecursive,
+}

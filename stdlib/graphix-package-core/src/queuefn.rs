@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
-    effects::EffectKind,
+    effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
@@ -250,6 +250,9 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             // call queues the predicate and dispatches across cycles.
             // The wrapper lambda is intrinsically async.
             intrinsic_effect: Mutex::new(EffectKind::Async),
+            // A queuefn wrapper is never self-recursive (it dispatches a
+            // foreign predicate), so the analysis pass never marks it.
+            recursion: Mutex::new(RecursionKind::NotRecursive),
         };
         Ok(ctx.wrap_lambda(def))
     }
