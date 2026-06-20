@@ -264,37 +264,62 @@ impl<X: GXExt> GX<X> {
         if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.event) {
             error!("could not marshall user events {e:?}")
         }
-        for (id, n) in self.nodes.iter_mut() {
-            if let Some(init) = self.ctx.rt.updated.get(id) {
-                let mut clear: LPooled<Vec<BindId>> = LPooled::take();
-                self.event.init = *init;
-                if self.event.init {
-                    let mut refs = Refs::default();
-                    n.refs(&mut refs);
-                    refs.with_external_refs(|id| {
-                        if let Some(v) = self.ctx.cached.get(&id) {
-                            if let Entry::Vacant(e) = self.event.variables.entry(id) {
-                                e.insert(v.clone());
-                                clear.push(id);
+        // Point the JIT interrupt helper at this runtime's control on the
+        // current worker (the cycle may run on a migrated thread).
+        graphix_compiler::fusion::emit_helpers::set_interrupt_ptr(&self.ctx.control);
+        // Run the synchronous node updates inside `block_in_place` so a
+        // wedged node (a runaway loop) doesn't starve the rest of the
+        // tokio runtime — the IO tasks and the caller that would
+        // `interrupt()`/`abort()` it. `block_in_place` only isolates on a
+        // multi-threaded runtime; on `current_thread` there's nowhere to
+        // migrate, so run inline (the abort flag still breaks the loop;
+        // IO just stalls until it does).
+        let mut run_nodes = || {
+            for (id, n) in self.nodes.iter_mut() {
+                if let Some(init) = self.ctx.rt.updated.get(id) {
+                    let mut clear: LPooled<Vec<BindId>> = LPooled::take();
+                    self.event.init = *init;
+                    if self.event.init {
+                        let mut refs = Refs::default();
+                        n.refs(&mut refs);
+                        refs.with_external_refs(|id| {
+                            if let Some(v) = self.ctx.cached.get(&id) {
+                                if let Entry::Vacant(e) = self.event.variables.entry(id) {
+                                    e.insert(v.clone());
+                                    clear.push(id);
+                                }
+                            }
+                        });
+                    }
+                    if let Some(v) = n.update(&mut self.ctx, &mut self.event) {
+                        let watched = matches!(
+                            self.result_watch.as_ref(),
+                            Some((wid, _)) if wid == id
+                        );
+                        if watched {
+                            if let Some((_, tx)) = self.result_watch.take() {
+                                let _ = tx.send(Some(v.clone()));
                             }
                         }
-                    });
-                }
-                if let Some(v) = n.update(&mut self.ctx, &mut self.event) {
-                    let watched =
-                        matches!(self.result_watch.as_ref(), Some((wid, _)) if wid == id);
-                    if watched {
-                        if let Some((_, tx)) = self.result_watch.take() {
-                            let _ = tx.send(Some(v.clone()));
-                        }
+                        batch.push(GXEvent::Updated(*id, v))
                     }
-                    batch.push(GXEvent::Updated(*id, v))
-                }
-                for id in clear.drain(..) {
-                    self.event.variables.remove(&id);
+                    for id in clear.drain(..) {
+                        self.event.variables.remove(&id);
+                    }
                 }
             }
+        };
+        if matches!(
+            tokio::runtime::Handle::current().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::CurrentThread
+        ) {
+            run_nodes();
+        } else {
+            tokio::task::block_in_place(run_nodes);
         }
+        // The one-shot interrupt is consumed; abort stays sticky for the
+        // run loop's pre-cycle shutdown check.
+        self.ctx.control.clear_interrupt();
         loop {
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
                 Ok(()) => break,
@@ -753,6 +778,14 @@ impl<X: GXExt> GX<X> {
         let mut rpcs = vec![];
         let onemin = Duration::from_secs(60);
         'main: loop {
+            // Abort/shutdown: if the handle was dropped or `abort()` was
+            // called, exit before doing any more work. A wedged
+            // `do_cycle` loop also breaks on this (the in-loop poll), then
+            // returns here. Pending commands' response channels drop on
+            // return, so blocked callers get an error instead of hanging.
+            if self.ctx.control.aborted() {
+                return Ok(());
+            }
             let now = Instant::now();
             let ready = self.cycle_ready();
             // A `WaitResultOrIdle` watcher whose expr didn't emit during the

@@ -214,6 +214,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // re-fire, matching both the old fresh-body-per-level node-walk and
         // the JIT's per-iteration re-execution.
         loop {
+            // Cooperative interrupt: a wedged tail loop aborts to bottom
+            // when `interrupt()`/`abort()` is requested (`do_cycle` clears
+            // the one-shot Interrupt; Abort additionally shuts down).
+            if ctx.interrupted() {
+                return None;
+            }
             let prev = mem::replace(&mut event.init, true);
             let res = self.body.update(ctx, event);
             event.init = prev;

@@ -68,7 +68,7 @@ use std::{
     mem,
     sync::{
         self,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         LazyLock,
     },
     time::Duration,
@@ -94,6 +94,70 @@ pub enum CFlag {
     /// control knob — fusion is JIT-only (no interpreter), so there is
     /// no meaningful "fuse but don't JIT" state to represent.
     FusionDisabled,
+}
+
+/// Runtime control signals shared between a runtime handle and the
+/// running `ExecCtx`. `Interrupt` makes in-flight loops abort to bottom
+/// (no value this cycle) while the runtime keeps going; `Abort`
+/// additionally shuts the runtime down (its run loop returns before the
+/// next cycle). Both are set from the handle side and polled lock-free
+/// from the loop side — the tail loop and opt-in builtins via
+/// [`ExecCtx::interrupted`], and the JIT kernels via `graphix_interrupted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[bitflags]
+#[repr(u32)]
+pub enum CtlFlag {
+    Interrupt = 1,
+    Abort = 2,
+}
+
+/// Lock-free [`CtlFlag`] set over an `AtomicU32`. A loop polls
+/// [`Control::interrupted`] (any flag ⇒ abort); the run loop polls
+/// [`Control::aborted`] (Abort ⇒ shut down). See [`CtlFlag`].
+#[derive(Debug)]
+pub struct Control(AtomicU32);
+
+impl Default for Control {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Control {
+    pub fn new() -> Self {
+        Control(AtomicU32::new(0))
+    }
+
+    /// Request that in-flight loops abort this cycle; the runtime keeps
+    /// running and `do_cycle` clears this at the end of the cycle.
+    pub fn interrupt(&self) {
+        self.0.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
+    }
+
+    /// Request shutdown: in-flight loops abort AND the run loop returns
+    /// before the next cycle. Sticky — never cleared.
+    pub fn abort(&self) {
+        self.0.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
+    }
+
+    /// True if any control flag is set — the signal a loop polls to
+    /// decide whether to abort (both flags break loops).
+    pub fn interrupted(&self) -> bool {
+        self.0.load(Ordering::Acquire) != 0
+    }
+
+    /// True if `Abort` is set — the signal the run loop polls before each
+    /// cycle to decide whether to shut down.
+    pub fn aborted(&self) -> bool {
+        self.0.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
+    }
+
+    /// Clear the `Interrupt` bit, leaving `Abort` sticky. Called by
+    /// `do_cycle` at the end of each cycle so a one-shot `interrupt()`
+    /// doesn't persist into the next cycle.
+    pub fn clear_interrupt(&self) {
+        self.0.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
+    }
 }
 
 #[allow(dead_code)]
@@ -1245,6 +1309,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// [`PendingTailCall`]. `None` except for the instant between a tail
     /// self-call stashing its args and the owning lambda consuming them.
     pub(crate) pending_tail_call: Option<PendingTailCall>,
+    /// Interrupt/abort control, shared (cloned `Arc`) with the runtime
+    /// handle. Loops poll it via [`Self::interrupted`] to abort a wedge;
+    /// the runtime polls `control.aborted()` to shut down. See [`Control`].
+    pub control: Arc<Control>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1278,7 +1346,15 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             builtin_bindings: ahash::AHashMap::default(),
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
+            control: Arc::new(Control::new()),
         })
+    }
+
+    /// True if an `interrupt()` or `abort()` is pending on this context's
+    /// [`Control`]. Loopy builtins (and the interpreter's tail loop)
+    /// poll this at their loop head and `return None` to abort a wedge.
+    pub fn interrupted(&self) -> bool {
+        self.control.interrupted()
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {

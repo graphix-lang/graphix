@@ -1021,6 +1021,13 @@ fn compile_into_function(
         type_env: body_emitter.type_env(),
         registry: body_emitter.registry(),
     };
+    // Cooperative-interrupt poll at the tail-loop head, before the body:
+    // a wedged native rebind-and-jump loop aborts to bottom on
+    // `interrupt()`/`abort()` (env holds only the owned params here, all
+    // freed by the abort path's cleanup).
+    if loop_head.is_some() {
+        emit_interrupt_check(b, &mut env, &lower)?;
+    }
     // Body codegen: the `NodeBodyEmitter` walks the region-root Node
     // via `emit_clif` recursion.
     body_emitter.emit(b, &mut env, &lower)?;
@@ -1653,6 +1660,10 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         }
         "graphix_dyncall_set_pending" => {
             // no args, no return — just flips the thread-local flag
+        }
+        "graphix_interrupted" => {
+            // no args; returns i8 (1 = abort the loop, 0 = continue)
+            sig.returns.push(AbiParam::new(types::I8));
         }
         "graphix_value_buf_push_array_borrowed" => {
             sig.params.push(AbiParam::new(types::I64));
@@ -2382,6 +2393,60 @@ fn emit_bottom_abort(
         }
     };
     b.ins().brif(valid, continue_block, &[], pre_pending, &[]);
+    b.switch_to_block(pre_pending);
+    b.seal_block(pre_pending);
+    b.ins().call(pending_set, &[]);
+    emit_pending_cleanup(b, env, ctx)?;
+    b.ins().jump(pending_exit, &[]);
+    b.switch_to_block(continue_block);
+    b.seal_block(continue_block);
+    Ok(())
+}
+
+/// Emit a cooperative-interrupt poll at a loop head: call
+/// `graphix_interrupted`, and if it returns nonzero take the kernel's
+/// abort path — set the pending flag, drop in-flight owned
+/// buffers/composites (`emit_pending_cleanup`, which drains the HOF
+/// result buffer off `dyncall_buf_stack` and drops owned params), and
+/// jump to `pending_exit` so `Kernel::update` yields `None`. Falls
+/// through to a fresh `continue_block` otherwise. Reused at the tail-loop
+/// head and every HOF scaffold loop head so a wedged native loop honours
+/// `interrupt()`/`abort()`. This is [`emit_bottom_abort`] with the branch
+/// reversed — abort on the interrupted bit instead of on an invalid bit.
+///
+/// First cut polls every iteration; amortizing the helper call to every K
+/// iterations is a future optimization (the poll roughly doubles the
+/// tightest native loops).
+fn emit_interrupt_check(
+    b: &mut FunctionBuilder,
+    env: &mut JitEnv,
+    ctx: &LowerCtx,
+) -> Result<()> {
+    let interrupted = ctx
+        .helper_refs
+        .get("graphix_interrupted")
+        .ok_or_else(|| anyhow!("missing graphix_interrupted"))?;
+    let pending_set = ctx
+        .helper_refs
+        .get("graphix_dyncall_set_pending")
+        .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+    let call = b.ins().call(interrupted, &[]);
+    let intr = b.inst_results(call)[0];
+    let pre_pending = b.create_block();
+    let continue_block = b.create_block();
+    let pending_exit = {
+        let mut slot = ctx.pending_exit.borrow_mut();
+        match *slot {
+            Some(blk) => blk,
+            None => {
+                let blk = b.create_block();
+                *slot = Some(blk);
+                blk
+            }
+        }
+    };
+    // nonzero (interrupted) ⇒ abort; zero ⇒ continue the loop body.
+    b.ins().brif(intr, pre_pending, &[], continue_block, &[]);
     b.switch_to_block(pre_pending);
     b.seal_block(pre_pending);
     b.ins().call(pending_set, &[]);

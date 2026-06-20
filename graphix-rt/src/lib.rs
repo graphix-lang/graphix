@@ -18,7 +18,8 @@ use graphix_compiler::{
     expr::{ExprId, ModPath, ModuleResolver, Source},
     ide::Ide,
     typ::{FnType, Type},
-    BindId, CFlag, Event, ExecCtx, FusionStats, NoUserEvent, Scope, UserEvent,
+    BindId, CFlag, Control, Event, ExecCtx, FusionStats, NoUserEvent, Scope,
+    UserEvent,
 };
 use log::error;
 use netidx::{
@@ -534,10 +535,17 @@ struct GXHandleInner<X: GXExt> {
     tx: tmpsc::UnboundedSender<ToGX<X>>,
     task: JoinHandle<()>,
     subscriber: netidx::subscriber::Subscriber,
+    /// Shared (cloned from `ctx.control`) interrupt/abort control. See
+    /// [`GXHandle::interrupt`] / [`GXHandle::abort`].
+    control: triomphe::Arc<Control>,
 }
 
 impl<X: GXExt> Drop for GXHandleInner<X> {
     fn drop(&mut self) {
+        // Signal abort first so a wedged `do_cycle` loop breaks and the
+        // run loop returns before its next cycle; `task.abort()` alone
+        // can't interrupt a wedged *sync* loop (no `.await` to fire at).
+        self.control.abort();
         self.task.abort()
     }
 }
@@ -563,6 +571,23 @@ impl<X: GXExt> GXHandle<X> {
     /// Get a clone of the netidx subscriber used by this runtime.
     pub fn subscriber(&self) -> netidx::subscriber::Subscriber {
         self.0.subscriber.clone()
+    }
+
+    /// Request that in-flight loops in the runtime abort to bottom this
+    /// cycle — a runaway sync tail-loop or a `map`/`fold`/… over a huge
+    /// array won't wedge the runtime thread. The runtime keeps running.
+    pub fn interrupt(&self) {
+        self.0.control.interrupt()
+    }
+
+    /// Shut the runtime down, breaking any wedged loop first. Unlike
+    /// dropping the handle, this can be called *while commands are in
+    /// flight* (it borrows `&self`, rather than consuming the last
+    /// handle), so pending commands resolve to errors instead of
+    /// deadlocking against a wedged runtime. Dropping the last handle
+    /// also triggers this.
+    pub fn abort(&self) {
+        self.0.control.abort()
     }
 
     async fn exec<R, F: FnOnce(oneshot::Sender<R>) -> ToGX<X>>(&self, f: F) -> Result<R> {
@@ -890,6 +915,9 @@ impl<X: GXExt> GXConfig<X> {
     /// else simply pass the output of `graphix_stdlib::register` to start.
     pub async fn start(self) -> Result<GXHandle<X>> {
         let subscriber = self.ctx.rt.subscriber.clone();
+        // Clone the interrupt/abort control before `self` moves into the
+        // spawned task, so the handle and the running `ExecCtx` share it.
+        let control = self.ctx.control.clone();
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();
         let task = task::spawn(async move {
@@ -906,6 +934,6 @@ impl<X: GXExt> GXConfig<X> {
             };
         });
         init_rx.await??;
-        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, subscriber })))
+        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, subscriber, control })))
     }
 }

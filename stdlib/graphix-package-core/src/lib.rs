@@ -954,6 +954,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         let init = event.init;
         let mut up = resized;
         for (i, s) in self.slots.iter_mut().enumerate() {
+            // Cooperative interrupt: abort a wedged map/filter/… loop;
+            // restore the loop-mutated `event.init` first.
+            if ctx.interrupted() {
+                event.init = init;
+                return None;
+            }
             if i == slen {
                 // new nodes were added starting here
                 event.init = true;
@@ -1340,6 +1346,11 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         }
         let old_init = event.init;
         for i in 0..self.nodes.len() {
+            // Cooperative interrupt: abort a wedged fold; restore init.
+            if ctx.interrupted() {
+                event.init = old_init;
+                return None;
+            }
             if i == init {
                 event.init = true;
                 if let Some(v) = ctx.cached.get(&self.fid)

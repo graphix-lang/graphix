@@ -415,6 +415,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, n_val, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let mark = cx.env.mark();
     cx.env.bind_with_id(idx_name.clone(), i_var, PrimType::I64, idx_id);
     let cv = body(cx)?;
@@ -453,6 +457,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
@@ -504,6 +512,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
@@ -568,6 +580,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let call = cx.b.ins().call(get_helper, &[arr.ptr, i_now]);
     let elem_val = cx.b.inst_results(call)[0];
@@ -631,6 +647,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
@@ -689,6 +709,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     cx.env.bind_with_id(acc_name.clone(), acc_var, acc_prim, acc_id);
@@ -738,6 +762,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, not_found);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
@@ -818,6 +846,10 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, not_found);
     cx.b.switch_to_block(loop_body);
+    // Cooperative interrupt poll at the scaffold loop head: a wedged
+    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
+    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;

@@ -42,3 +42,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+enumflags2 = { workspace = true }

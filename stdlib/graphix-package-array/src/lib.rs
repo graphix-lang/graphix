@@ -1171,6 +1171,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             set!(v);
         }
         loop {
+            // Cooperative interrupt: abort a wedged grouping loop.
+            if ctx.interrupted() {
+                break None;
+            }
             match self.pred.update(ctx, event) {
                 None => break None,
                 Some(v) => {
@@ -1245,6 +1249,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
     ) -> Option<Value> {
         if let Some(Value::Array(a)) = from[0].update(ctx, event) {
             for v in a.iter() {
+                // Cooperative interrupt: abort a wedged iter over a huge
+                // array (partial emit is accepted for a deliberate kill).
+                if ctx.interrupted() {
+                    return None;
+                }
                 ctx.rt.set_var(self.0, v.clone());
             }
         }
@@ -1305,6 +1314,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         while self.triggered > 0 && self.queue.len() > 0 {
             let (i, a) = self.queue.front_mut().unwrap();
             while self.triggered > 0 && *i < a.len() {
+                if ctx.interrupted() {
+                    return None;
+                }
                 ctx.rt.set_var(self.id, a[*i].clone());
                 *i += 1;
                 self.triggered -= 1;
@@ -1486,6 +1498,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         let init = event.init;
         let mut up = resized;
         for (i, s) in self.slots.iter_mut().enumerate() {
+            // Cooperative interrupt: abort a wedged init; restore init.
+            if ctx.interrupted() {
+                event.init = init;
+                return None;
+            }
             if i == slen {
                 event.init = true;
                 if let Entry::Vacant(e) = event.variables.entry(self.fid)

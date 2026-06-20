@@ -712,6 +712,59 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **`interrupt()` / `abort()` — recover & shut down a wedged runtime (2026-06-20;
+  behavior-neutral when idle, 1438×2 + 29 LSP green, fuzz regress 22/0).** An
+  unbounded loop within one reactive cycle (sync tail-loop `let rec f = |v| f(v+1)`,
+  or a HOF over a giant collection) wedges the runtime thread — the runtime is
+  batch-atomic, so yielding mid-cycle can't preserve consistency (rejected); a
+  *kill* has no resume, so it can. One mechanism, two needs: a `BitFlags`
+  control flag (`CtlFlag::{Interrupt,Abort}` over `AtomicU32`, wrapped in the
+  abstract `Control` type in `graphix-compiler/src/lib.rs`), held as
+  `Arc<Control>` on `ExecCtx` (so generic node code reads it via
+  `ctx.interrupted()` with no `Rt` method) and cloned into `GXHandleInner`.
+  **`GXHandle::interrupt()`** = direct atomic store (NEVER a `ToGX` command — a
+  wedged runtime can't drain its channel) → in-flight loops abort to bottom
+  (`None`, a legal reactive state = a cancelled async node), runtime keeps
+  running. **`GXHandle::abort()`** = the explicit shutdown; needed because the
+  command methods are `async fn(&self)` borrowing the handle across `.await`, so
+  you *can't drop the handle while commands are pending* — `abort()` is a
+  `&self` store that fires anyway, and `GXHandleInner::drop` also sets `Abort`
+  (fixing a real leak: dropping a wedged runtime's handle spun forever — both
+  `task.abort()` and channel-close need the runtime to reach an `.await`/`select!`
+  a wedged sync loop never does). The run loop checks `aborted()` at the top of
+  `'main` (before `process_input_batch`), so a runtime that broke out of a wedged
+  `do_cycle` exits next iteration; on return its `to_rt` receiver drops →
+  pending commands' oneshots drop → blocked callers get errors instead of
+  deadlocking. **Loop polls:** interp opt-in per builtin
+  (`if ctx.interrupted() { return None }` at the loop head — tail-loop
+  `GXLambda::update`, array HOFs MapQ/FoldQ/Init/Group/Iter/IterQ); fused via one
+  shared `emit_interrupt_check` (calls `graphix_interrupted()` — reads the
+  per-cycle thread-local `INTERRUPT_PTR`, set in `do_cycle` to handle task
+  migration — and reuses the existing `emit_pending_cleanup` + `pending_exit`
+  abort path, so a partial HOF result buffer on `dyncall_buf_stack` frees for
+  free) at the tail-loop head + all 8 HOF scaffold loop heads. **`do_cycle`**
+  clears `Interrupt` each cycle (Abort is **sticky** so the pre-cycle check sees
+  it — this reverses the request's "do_cycle only clears abort", read as a slip),
+  and wraps the node loop in `tokio::task::block_in_place` so a wedge doesn't
+  starve IO/the interrupting caller — **flavor-guarded** (`block_in_place` only
+  isolates on `multi_thread`; `current_thread` runs inline, the existing
+  `run!`/`TestCtx` harness flavor). Integration tests in
+  `stdlib/graphix-tests/src/lib_tests/interrupt.rs` (multi_thread, so the test
+  thread fires the flag while a worker wedges): tail-loop interrupt-recovers
+  (interp + fused) + abort-unblocks-pending-commands. Coverage limit noted in
+  the file: the *only* constant-stack, bounded-memory wedge is the tail loop —
+  the array-HOF eval-loop polls can't be driven to a real timeout without
+  materializing millions of per-slot nodes (the slot *build* phase is itself the
+  slow, un-polled part), and fused is too fast to wedge within any memory-safe
+  N; those polls are behavior-neutral (1438×2) and the fused scaffolds share the
+  tail loop's `emit_interrupt_check`. A nested recursive lambda inside an HOF
+  callback (`array::map([1], |x| { let rec f...; f(x) })`) stack-OVERFLOWS rather
+  than wedging (#203: it node-walks as deep recursion, ~50k frames, before any
+  interrupt lands) — so it's not a usable interrupt probe. The 3000-program fuzz
+  soak surfaced 1 divergence + 1 crash, both the documented pre-existing
+  dead-bottom/div0 class (`findings/flip-jun2026/*_dead_bottom_stmt.gx`) —
+  loop-free, so outside the loop-head-only codegen change; not interrupt-caused.
+
 - **Fusion state extracted from `ExecCtx` into `fusion::FusionCtx` (2026-06-19;
   behavior-neutral, 1431×2 + 29 LSP green).** This session piled fusion
   machinery onto `ExecCtx` as loose fields; grouped the 8 that are genuinely

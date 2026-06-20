@@ -306,6 +306,35 @@ pub extern "C" fn graphix_dyncall_set_pending() {
     DYNCALL_PENDING.with(|c| c.set(true))
 }
 
+/// Read the active runtime's interrupt/abort control (set in
+/// `INTERRUPT_PTR` by `do_cycle`). Returns 1 if a wedged loop should
+/// abort (an `interrupt()` or `abort()` is pending), else 0. Emitted at
+/// every JIT loop head; on 1 the kernel jumps to its pending-exit (drops
+/// in-flight buffers, returns the sentinel) so `Kernel::update` yields
+/// `None`.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_interrupted() -> i8 {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        if p.is_null() {
+            0
+        } else {
+            // SAFETY: `do_cycle` sets `p` to its `ExecCtx.control`, which
+            // outlives the cycle; null when no cycle is running.
+            i8::from(unsafe { (*p).interrupted() })
+        }
+    })
+}
+
+/// Point `graphix_interrupted` at `control` on the CURRENT thread. The
+/// runtime calls this at the start of each cycle (on whatever worker the
+/// cycle runs on, since the task may migrate) so JIT kernels poll the
+/// right runtime's control. The pointer stays valid because `control`
+/// lives in the runtime's `ExecCtx` for its whole lifetime.
+pub fn set_interrupt_ptr(control: &crate::Control) {
+    INTERRUPT_PTR.with(|c| c.set(control as *const crate::Control));
+}
+
 /// Push a `Value::String(s)` slot. The string is identified by an
 /// `ArcStr` already interned somewhere; we pass the raw pointer
 /// (which is `Arc<str>` data — see `ArcStr::as_ptr`) plus length.
@@ -882,6 +911,15 @@ thread_local! {
     /// discarded and `update` itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
 
+    /// Raw pointer to the active runtime's [`crate::Control`], set per
+    /// cycle by `do_cycle` on the thread running the node loop. Read by
+    /// `graphix_interrupted` (emitted at every JIT loop head) so a wedged
+    /// kernel aborts on `interrupt()`/`abort()`. Null when no cycle is in
+    /// flight; valid for the runtime's lifetime when set (the `Control`
+    /// lives inside the runtime's `ExecCtx`).
+    pub static INTERRUPT_PTR: Cell<*const crate::Control> =
+        const { Cell::new(std::ptr::null()) };
+
     /// Per-thread JIT invocation counter, debug-build only.
     /// Bumped by `graphix_record_jit_invocation` (called inline
     /// at the start of every JIT'd wrapper). Read by the test
@@ -1417,6 +1455,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_dyncall", graphix_dyncall as *const u8),
         ("graphix_dyncall_pending_take", graphix_dyncall_pending_take as *const u8),
         ("graphix_dyncall_set_pending", graphix_dyncall_set_pending as *const u8),
+        ("graphix_interrupted", graphix_interrupted as *const u8),
         (
             "graphix_value_buf_push_array_borrowed",
             graphix_value_buf_push_array_borrowed as *const u8,

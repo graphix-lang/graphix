@@ -9,6 +9,7 @@ mod dirs;
 mod fs;
 mod hbs;
 mod http;
+mod interrupt;
 mod json;
 mod list;
 mod map;
