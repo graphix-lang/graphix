@@ -1260,6 +1260,12 @@ pub struct KernelSig {
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
     /// (CLIF) accordingly.
     pub has_tail_loop: bool,
+    /// Maps each region-input `BindId` to its bit index in the
+    /// per-cycle validity bitmask (the trailing kernel ABI param).
+    /// Bit `i` mirrors `self.args[i]` at dispatch (collect / feeder
+    /// order). Inputs without a `BindId` (lambda formals) get no
+    /// entry — they're passed afresh each call, never "missing".
+    pub input_bits: nohash::IntMap<BindId, u32>,
 }
 
 impl KernelSig {
@@ -1317,6 +1323,14 @@ impl KernelSig {
             + 2 * (self.variant_params.len()
                 + self.nullable_params.len()
                 + self.value_params.len())
+    }
+
+    /// Total wire slots including the trailing validity bitmask — one
+    /// `u64`, one bit per region input (`#219`). This is the length of
+    /// the buffer the dispatch packs and the wrapper unpacks; the
+    /// bitmask lives at slot index [`Self::abi_param_wire_slots`].
+    pub fn abi_wire_slots_total(&self) -> usize {
+        self.abi_param_wire_slots() + 1
     }
 
     /// The wire shape of this kernel's return value, or `None` for the

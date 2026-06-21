@@ -598,6 +598,20 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     };
     ctx.fusion.stats.attempted += 1;
     let inputs = collect_region_inputs(&**node, ctx);
+    // #219: the validity bitmask is one u64 — one bit per region input
+    // (collect order). A region with >64 inputs can't be represented,
+    // so it de-fuses to the node-walk rather than silently dropping
+    // bits. Pathological in practice; logged, never silent.
+    if inputs.len() > 64 {
+        ctx.fusion.stats.failed.push((
+            node.spec().id,
+            compact_str::format_compact!(
+                "region has {} inputs (>64) — exceeds validity-bitmask width",
+                inputs.len()
+            ),
+        ));
+        return Ok(None);
+    }
     if let Some(name) = non_scalar_basename_collision(&inputs) {
         // A real blocker, not protocol noise — log it (a silent
         // Ok(None) after `attempted += 1` makes the stats disagree
@@ -821,9 +835,16 @@ pub(crate) fn sig_from_inputs<'k>(
         tail_call_slots: Vec::new(),
         return_type,
         has_tail_loop: false,
+        input_bits: nohash::IntMap::default(),
     };
     let mut arg_types: Vec<Type> = Vec::new();
-    for (name, kind, bind_id) in inputs {
+    for (i, (name, kind, bind_id)) in inputs.into_iter().enumerate() {
+        // #219 validity: bit `i` (collect / feeder order) tracks this
+        // input's presence at dispatch. Lambda formals (bind_id None)
+        // are passed afresh each call, so they carry no validity bit.
+        if let Some(bid) = bind_id {
+            sig.input_bits.insert(bid, i as u32);
+        }
         let slot_kind = match kind {
             RegionInputKind::Prim(prim) => {
                 sig.params.push(Input { name: name.clone(), prim: *prim, bind_id });

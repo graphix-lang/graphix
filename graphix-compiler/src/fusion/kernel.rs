@@ -22,8 +22,7 @@ use crate::{
     fusion::{
         emit::{pack_value_to_u64, unpack_u64_to_value, WrappedKernel},
         emit_helpers::{
-            record_fusion_invocation, DynCallRet, DynDispatchHandle,
-            DYNCALL_PENDING, DYN_DISPATCH_HANDLE,
+            DynCallRet, DynDispatchHandle, DYNCALL_PENDING, DYN_DISPATCH_HANDLE,
         },
         kernel_abi::{self, BuiltinSlot, FnSource, KernelSig},
     },
@@ -31,6 +30,8 @@ use crate::{
     typ::FnType,
     Apply, BindId, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
+#[cfg(debug_assertions)]
+use crate::fusion::emit_helpers::record_fusion_invocation;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::sync::Arc;
@@ -914,7 +915,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                     | FnSource::Binding { .. }
             )
         });
-        if !any_updated && from.is_empty() && !has_dynamic_fn_params && event.init {
+        // #219: fire at init even WITH dynamic `from` inputs. A kernel
+        // whose missing inputs the output doesn't consume must still
+        // produce at init — the node-walk evaluates every binding once at
+        // init (sleeping arms keep an un-taken arm's missing input out of
+        // the result), and the validity taint reproduces that here:
+        // missing inputs are tainted, and the kernel bottoms only if the
+        // taken path consumes one. Without this, a kernel whose only
+        // dynamic input never fires never runs at all (interp produces a
+        // value via the constant arm; jit times out). `has_dynamic_fn_params`
+        // kernels keep the stricter gate — their first-dispatch init view
+        // is driven by the DynCall protocol, not a plain init fire.
+        if !any_updated && !has_dynamic_fn_params && event.init {
             any_updated = true;
         }
         if !any_updated {
@@ -1019,8 +1031,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let mut scalar_arg_bits: smallvec::SmallVec<[u64; 8]> =
             smallvec::SmallVec::with_capacity(k.params.len());
         for (i, p) in k.params.iter().enumerate() {
-            let v = param_opts[i].as_ref()?;
-            scalar_arg_bits.push(pack_value_to_u64(v, p.prim));
+            // #219: a missing scalar input no longer aborts dispatch —
+            // pass a placeholder; the validity bitmask marks it absent
+            // and the body taints the read, bottoming the kernel only if
+            // the taken path consumes it.
+            let bits = match param_opts[i].as_ref() {
+                Some(v) => pack_value_to_u64(v, p.prim),
+                None => 0,
+            };
+            scalar_arg_bits.push(bits);
         }
         let composite_arr = |i: usize| -> Option<ValArray> {
             match param_opts[i].as_ref()? {
@@ -1086,7 +1105,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // must outlive the call. They do: the smallvecs live
         // for the rest of `update`.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
-            smallvec::SmallVec::with_capacity(self.kernel.abi_param_wire_slots());
+            smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
         for bits in &scalar_arg_bits {
             slots.push(*bits);
         }
@@ -1142,6 +1161,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 slots.push(*p.add(1));
             }
         }
+        // #219: trailing validity bitmask — bit `i` set iff region
+        // input `i` currently has a value. `self.args` persists across
+        // cycles, so this is "has ever fired" = the node-walk's
+        // combineLatest validity. The kernel body tests these bits at
+        // region-input reads and bottoms only when the taken path
+        // consumes a missing input.
+        let mut validity: u64 = 0;
+        for (i, a) in self.args.iter().enumerate() {
+            if i < 64 && a.is_some() {
+                validity |= 1u64 << i;
+            }
+        }
+        slots.push(validity);
         // Drift guard: the packed slot count must equal the
         // kernel's declared ABI footprint. A mismatch means the
         // per-kind arg vectors disagree with `abi_params` —
@@ -1149,7 +1181,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // JIT wrapper.
         debug_assert_eq!(
             slots.len(),
-            self.kernel.abi_param_wire_slots(),
+            self.kernel.abi_wire_slots_total(),
             "packed slot count must match the kernel ABI layout"
         );
         let mut out: [u64; 2] = [0, 0];

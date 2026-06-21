@@ -679,7 +679,11 @@ run!(
         let unwrap = |v: Val| -> i64 v.inner
     "#);
 
-// Abstract types as both Map key and value
+// Abstract types as both Map key and value.
+// #219: temporarily `FuseExpect::None` — a tainted scalar region input
+// flows into a non-scalar-return dyncall / cross-kernel call here, which
+// de-fuses to the node-walk (value still correct) until increment 3
+// (non-scalar + cross-kernel taint) lands. Restore to the default (Jit) then.
 run!(
     abstract_type_map_key_and_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(100))),
@@ -706,7 +710,7 @@ run!(
         let make_map = |k: K, n: i64| -> KVMap {k => n};
         let lookup = |m: KVMap, k: K| -> V m{k}?;
         let get_val = |v: V| -> i64 v
-    "#);
+    "#; graphix_package_core::testing::FuseExpect::None);
 
 // =============================================================================
 // Abstract Types in Throws Clause

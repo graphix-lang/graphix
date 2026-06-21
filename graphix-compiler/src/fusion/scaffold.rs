@@ -369,7 +369,7 @@ pub fn push_field(
                 emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
                 cx.b.ins().call(push, &[buf, value]);
             }
-            CompiledExpr::Value { .. } => {
+            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
                 return Err(anyhow!(
                     "scalar producer field compiled to Value-shape — \
                      compile_expr dispatch is broken"

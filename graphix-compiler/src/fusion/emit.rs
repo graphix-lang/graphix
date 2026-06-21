@@ -174,6 +174,11 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
             }
         }
     }
+    // #219: trailing per-cycle validity bitmask (one u64, one bit per
+    // region input). Always appended; the body tests a bit at each
+    // region-input read and bottoms only if the taken path consumes a
+    // missing input.
+    sig.params.push(AbiParam::new(types::I64));
 }
 
 /// Push the kernel's return `AbiParam`s onto `sig` (one value for
@@ -739,7 +744,7 @@ fn define_wrapper(
         // one `I64` (a `*ValArray` the caller stored as u64); variant /
         // nullable params load two `I64`s (disc, payload).
         // `d.wire_slot` is the param's starting 8-byte slot offset.
-        let mut typed_args = Vec::with_capacity(kernel.abi_param_wire_slots());
+        let mut typed_args = Vec::with_capacity(kernel.abi_param_wire_slots() + 1);
         for d in kernel.abi_params() {
             let base = (d.wire_slot as i32) * 8;
             match d.kind {
@@ -765,6 +770,11 @@ fn define_wrapper(
                 }
             }
         }
+        // #219: load the trailing validity bitmask (the slot after all
+        // params) and forward it as the kernel's last argument.
+        let mask_base = (kernel.abi_param_wire_slots() as i32) * 8;
+        let mask = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, mask_base);
+        typed_args.push(mask);
 
         let call = b.ins().call(typed_ref, &typed_args);
         // Two-word return shape comes from the same single source as
@@ -981,6 +991,15 @@ fn compile_into_function(
         }
     }
     b.seal_block(entry);
+    // #219: bind the trailing validity-bitmask param (the block param
+    // after all real params) to a Variable for the body's per-region-
+    // input validity checks. It rides in `LowerCtx`, read by
+    // `emit_ref_node` when a `Ref` resolves to a possibly-missing input.
+    let validity_bitmask = {
+        let v = b.declare_var(types::I64);
+        b.def_var(v, initial_vals[kernel.abi_param_wire_slots()]);
+        Some(v)
+    };
     // Snapshot the env now that every param (scalar, composite,
     // variant) is bound. A TailCall rebind truncates back to exactly
     // this — per-iteration block/select-arm locals are dropped, the
@@ -1020,6 +1039,8 @@ fn compile_into_function(
         self_call: body_emitter.self_call(),
         type_env: body_emitter.type_env(),
         registry: body_emitter.registry(),
+        validity_bitmask,
+        input_bits: &kernel.input_bits,
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -1257,6 +1278,15 @@ pub(crate) struct LowerCtx<'a> {
     /// is individually boxed so its address survives Vec growth.
     lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
+    /// #219: the trailing validity-bitmask param Variable (one bit per
+    /// region input). `Some` for every kernel built by
+    /// `compile_into_function`.
+    validity_bitmask: Option<Variable>,
+    /// #219: region-input `BindId` → validity bit index (collect order,
+    /// mirrors `self.args[i]` at dispatch). A `Ref` whose BindId is in
+    /// this map reads a possibly-missing input — the read tests bit `i`
+    /// of `validity_bitmask` and taints the value.
+    input_bits: &'a nohash::IntMap<BindId, u32>,
     /// Lazily-created single `pending_exit` block. Created on the
     /// first composite-return DynCall site; its body (sentinel +
     /// `return`) is emitted at the end of `compile_into_function`.
@@ -1874,6 +1904,19 @@ pub enum CompiledExpr {
         disc: ClifValue,
         payload: ClifValue,
     },
+    /// A two-word Value (variant / nullable / value-shape) that MAY be a
+    /// bottom — the 2-word analog of [`Scalar2`]. `valid` is an I8 0/1
+    /// (1 = has a value, 0 = bottom). Produced by a possibly-missing
+    /// non-scalar region-input read (#219); propagates through moves
+    /// (let / select-arm merge) and is resolved at the kernel OUTPUT or
+    /// a destructuring consumer. A Value that can't be bottom stays
+    /// [`Value`] (the taint optimization — zero codegen for the common
+    /// case).
+    Value2 {
+        disc: ClifValue,
+        payload: ClifValue,
+        valid: ClifValue,
+    },
 }
 
 impl CompiledExpr {
@@ -1892,7 +1935,7 @@ impl CompiledExpr {
                 "JIT: scalar consumer reached a possibly-bottom (Scalar2) \
                  value but doesn't propagate validity — bail to interp"
             )),
-            CompiledExpr::Value { .. } => Err(anyhow!(
+            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => Err(anyhow!(
                 "JIT: expected single CLIF value, got Value-shaped (disc, \
                  payload) pair — emission is malformed or consumer is wrong"
             )),
@@ -1914,7 +1957,7 @@ impl CompiledExpr {
                 Ok((v, valid))
             }
             CompiledExpr::Scalar2 { value, valid } => Ok((value, valid)),
-            CompiledExpr::Value { .. } => Err(anyhow!(
+            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => Err(anyhow!(
                 "JIT: expected scalar, got Value-shaped (disc, payload) \
                  pair — emission is malformed or consumer is wrong"
             )),
@@ -1924,9 +1967,29 @@ impl CompiledExpr {
     fn value(self) -> Result<(ClifValue, ClifValue)> {
         match self {
             CompiledExpr::Value { disc, payload } => Ok((disc, payload)),
+            CompiledExpr::Value2 { .. } => Err(anyhow!(
+                "JIT: 2-word consumer reached a possibly-bottom (Value2) \
+                 value but doesn't propagate validity — bail to interp"
+            )),
             CompiledExpr::Single(_) | CompiledExpr::Scalar2 { .. } => Err(anyhow!(
                 "JIT: expected Value-shaped (disc, payload), got single \
                      — emission is malformed or consumer is wrong"
+            )),
+        }
+    }
+
+    /// Extract a 2-word Value together with its optional I8 validity
+    /// (`None` = a non-tainted [`Value`], always valid). The 2-word
+    /// analog of [`Self::scalar_with_validity`]. Errors on a scalar shape.
+    fn value_with_validity(self) -> Result<(ClifValue, ClifValue, Option<ClifValue>)> {
+        match self {
+            CompiledExpr::Value { disc, payload } => Ok((disc, payload, None)),
+            CompiledExpr::Value2 { disc, payload, valid } => {
+                Ok((disc, payload, Some(valid)))
+            }
+            CompiledExpr::Single(_) | CompiledExpr::Scalar2 { .. } => Err(anyhow!(
+                "JIT: expected Value-shaped (disc, payload), got single \
+                 — emission is malformed or consumer is wrong"
             )),
         }
     }
@@ -1944,21 +2007,20 @@ fn combine_validity(
     operands: &[CompiledExpr],
 ) -> Option<ClifValue> {
     let mut acc: Option<ClifValue> = None;
-    let mut any_tainted = false;
     for op in operands {
-        if let CompiledExpr::Scalar2 { valid, .. } = op {
-            any_tainted = true;
+        let valid = match op {
+            CompiledExpr::Scalar2 { valid, .. } => Some(*valid),
+            CompiledExpr::Value2 { valid, .. } => Some(*valid),
+            CompiledExpr::Single(_) | CompiledExpr::Value { .. } => None,
+        };
+        if let Some(valid) = valid {
             acc = Some(match acc {
-                None => *valid,
-                Some(a) => b.ins().band(a, *valid),
+                None => valid,
+                Some(a) => b.ins().band(a, valid),
             });
         }
     }
-    if any_tainted {
-        Some(acc.unwrap())
-    } else {
-        None
-    }
+    acc
 }
 
 /// Wrap a computed scalar `value` with combined operand validity:
@@ -1967,6 +2029,20 @@ fn scalar_result(value: ClifValue, validity: Option<ClifValue>) -> CompiledExpr 
     match validity {
         None => CompiledExpr::Single(value),
         Some(valid) => CompiledExpr::Scalar2 { value, valid },
+    }
+}
+
+/// Wrap a computed 2-word Value with combined operand validity:
+/// `Value` if no operand was tainted, else `Value2`. The 2-word analog
+/// of [`scalar_result`].
+fn value_result(
+    disc: ClifValue,
+    payload: ClifValue,
+    validity: Option<ClifValue>,
+) -> CompiledExpr {
+    match validity {
+        None => CompiledExpr::Value { disc, payload },
+        Some(valid) => CompiledExpr::Value2 { disc, payload, valid },
     }
 }
 
@@ -2648,6 +2724,21 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing helper {name}"))
     }
 
+    /// #219: the I8 validity bit (0/1) for a region-input read, or
+    /// `None` if `id` isn't a region input (a local, or an input
+    /// always present). Extracts bit `i` of the per-cycle validity
+    /// bitmask, where `i` is the input's collect-order index. A read of
+    /// a possibly-missing input taints with this bit so the kernel
+    /// bottoms only when the taken path consumes the missing value.
+    pub(crate) fn input_validity_bit(&mut self, id: BindId) -> Option<ClifValue> {
+        let i = *self.ctx.input_bits.get(&id)?;
+        let bm = self.ctx.validity_bitmask?;
+        let mask = self.b.use_var(bm);
+        let shifted = self.b.ins().ushr_imm(mask, i64::from(i));
+        let low = self.b.ins().band_imm(shifted, 1);
+        Some(self.b.ins().ireduce(types::I8, low))
+    }
+
     /// Stable `*const ArcStr` for `s` as an `iconst`, interned lazily
     /// at emission (no body prewalk on the direct path — coverage is
     /// exact by construction). The arena entry is individually boxed
@@ -2863,7 +2954,7 @@ fn emit_kernel_return(
                 drop_owned_composites(cx.b, cx.env, cx.ctx)?;
                 cx.b.ins().return_(&[value]);
             }
-            CompiledExpr::Value { .. } => {
+            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
                 return Err(anyhow!(
                     "emit_kernel_return: scalar return got a Value-shape \
                      result"
@@ -2997,12 +3088,19 @@ pub(crate) fn emit_ref_node(
                 }
             };
             let value = cx.b.use_var(var);
+            // #219: a region-input read taints by its validity bit; AND
+            // it with any binding-level taint (e.g. a div0-bound local
+            // read back through `valid`).
+            let slot_bit = valid.map(|vv| cx.b.use_var(vv));
+            let input_bit = cx.input_validity_bit(id);
+            let valid = match (slot_bit, input_bit) {
+                (None, None) => None,
+                (Some(v), None) | (None, Some(v)) => Some(v),
+                (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
+            };
             Ok(match valid {
                 None => CompiledExpr::Single(value),
-                Some(vv) => {
-                    let valid = cx.b.use_var(vv);
-                    CompiledExpr::Scalar2 { value, valid }
-                }
+                Some(valid) => CompiledExpr::Scalar2 { value, valid },
             })
         }
         // String: read the slot and refcount-bump — each consumer gets
@@ -3405,6 +3503,14 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
                     let (disc, payload) = ensure_owned_value_src(cx, src, disc, payload)?;
                     CompiledExpr::Value { disc, payload }
                 }
+                // #219: a tainted 2-word block tail isn't propagated yet
+                // (move-site taint is a later step) — bail to node-walk.
+                CompiledExpr::Value2 { .. } => {
+                    return Err(anyhow!(
+                        "block tail: tainted 2-word (Value2) result — \
+                         non-scalar taint propagation not yet wired, node-walks"
+                    ))
+                }
             };
             emit_scope_drops(cx, &mark)?;
             cx.env.truncate(mark);
@@ -3639,7 +3745,7 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
                 emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
                 value
             }
-            CompiledExpr::Value { .. } => {
+            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
                 return Err(anyhow!(
                     "emit_clif: value-shape self tail-call arg — the \
                      rebind protocol covers scalar/composite slots only"
@@ -3682,7 +3788,7 @@ fn emit_let_node<R: Rt, E: UserEvent>(
                     cx.b.def_var(valid_var, valid);
                     cx.env.bind_tainted_with_id(name.clone(), var, valid_var, p, bind_id);
                 }
-                CompiledExpr::Value { .. } => {
+                CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
                     return Err(anyhow!(
                         "emit_clif: scalar let got a Value-shape result"
                     ));
@@ -3774,7 +3880,10 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
             }
         }
         CompiledExpr::Scalar2 { .. } => {}
-        CompiledExpr::Value { disc, payload } => {
+        // #219: a tainted 2-word value drops its (disc, payload) exactly
+        // like an untainted one — the I8 validity bit isn't owned.
+        CompiledExpr::Value { disc, payload }
+        | CompiledExpr::Value2 { disc, payload, valid: _ } => {
             if owned {
                 let drop = cx.helper("graphix_value_drop")?;
                 cx.b.ins().call(drop, &[disc, payload]);
@@ -3911,7 +4020,7 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
                 emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
                 cx.b.ins().call(push, &[buf, value]);
             }
-            CompiledExpr::Value { .. } => {
+            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
                 return Err(anyhow!(
                     "emit_clif: scalar producer field compiled to \
                      Value-shape — dispatch is broken"
@@ -4386,6 +4495,9 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     let buf_var = cx.b.declare_var(types::I64);
     cx.b.def_var(buf_var, buf);
     cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+    // #219: combined validity of the tainted scalar args (None when no
+    // arg is tainted — the fast path). Propagated into a scalar result.
+    let mut arg_validity: Option<ClifValue> = None;
     for (arg_node, t) in args.iter().zip(info.arg_types.iter()) {
         // Compare by runtime SHAPE (`AbiKind`), not exact `Type` —
         // the direct twin of the lowering-side agreement check. The
@@ -4450,12 +4562,36 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             let (disc, payload) = arg_node.emit_clif(cx)?.value()?;
             cx.b.ins().call(push, &[buf, disc, payload]);
         } else {
-            // `.single()` rejects a possibly-bottom `Scalar2` arg — on
-            // the classic path a may-bottom arg never reaches
-            // marshalling; bailing the kernel here matches it.
-            let v = arg_node.emit_clif(cx)?.single()?;
+            // #219: read the scalar arg with its validity. A tainted
+            // (`Scalar2`) input arg propagates into the dyncall result —
+            // push the (possibly-garbage) value and carry the bit; the
+            // helper is pure, so a garbage operand is harmless (the bit
+            // guards the result downstream).
+            let ce = arg_node.emit_clif(cx)?;
+            let (v, valid) = ce.scalar_with_validity(cx.b)?;
             cx.b.ins().call(push, &[buf, v]);
+            if matches!(ce, CompiledExpr::Scalar2 { .. }) {
+                arg_validity = Some(match arg_validity {
+                    None => valid,
+                    Some(a) => cx.b.ins().band(a, valid),
+                });
+            }
         }
+    }
+    // #219: a tainted scalar arg can only propagate into a SCALAR result
+    // (`Scalar2`). A non-scalar-return dyncall has no taint channel on
+    // its (composite/string/value) result yet — bail to the node-walk
+    // (non-scalar taint is a later increment).
+    if arg_validity.is_some()
+        && !matches!(
+            kernel_abi::abi_kind(cx.registry(), &info.return_type),
+            Some(AbiKind::Scalar(_))
+        )
+    {
+        return Err(anyhow!(
+            "DynCall: tainted scalar arg into non-scalar return — \
+             non-scalar taint not yet supported, node-walks"
+        ));
     }
     let dyncall = cx.helper("graphix_dyncall")?;
     let ret_kind: i64 = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
@@ -4504,7 +4640,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // downstream scalar arithmetic. No branch needed — the
             // wrapper-level DYNCALL_PENDING check in Kernel::update
             // discards the whole kernel result.
-            Ok(CompiledExpr::Single(cast_u64_to_prim(cx.b, raw0, p)))
+            // #219: propagate a tainted scalar arg's validity into the
+            // result (stays `Single` when no arg was tainted).
+            let value = cast_u64_to_prim(cx.b, raw0, p);
+            Ok(scalar_result(value, arg_validity))
         }
         Some(AbiKind::Unit) => {
             // Unit return: dispatcher returned (0, _). The wrapper-
@@ -4732,7 +4871,7 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             CompiledExpr::Scalar2 { value, valid } => {
                 SelectScrut::Scalar { value, valid: Some(valid), prim: p }
             }
-            CompiledExpr::Value { .. } => {
+            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
                 return Err(anyhow!(
                     "emit_clif: scalar select scrutinee produced a \
                      Value-shape result"
@@ -5605,6 +5744,13 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
              discovery/declare drift"
         )
     })?;
+    // #219: the callee's signature carries a trailing validity bitmask
+    // param. The args we pass are values the caller already computed
+    // (formals + captures), so they're all present — pass all-ones.
+    // (Forwarding each arg's real validity across the call boundary is
+    // a later increment; today's eager aborts mean nothing is missing.)
+    let all_valid = cx.b.ins().iconst(types::I64, -1);
+    clif_args.push(all_valid);
     let inst = cx.b.ins().call(*func_ref, &clif_args);
     let ret = &info.kernel.return_type;
     let result = match kernel_abi::abi_kind(reg, ret) {
