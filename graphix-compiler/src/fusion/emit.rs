@@ -978,12 +978,15 @@ fn compile_into_function(
                 b.def_var(payload_var, owned_payload);
                 let vv = ValueVar { disc: disc_var, payload: payload_var };
                 match d.kind {
-                    AbiParamKind::Variant => env.bind_variant(d.name.clone(), vv),
+                    // #219: value inputs bind non-tainted; the taint of a
+                    // missing input comes from the validity bitmask bit at
+                    // the read (`input_validity_bit`), like scalars.
+                    AbiParamKind::Variant => env.bind_variant(d.name.clone(), vv, None),
                     // Nullable and bare value-shape (DateTime/Duration/
                     // Bytes) both ride the `nullables` ValueVar slot;
                     // a `Local` read re-wraps to the declared type.
                     AbiParamKind::Nullable | AbiParamKind::Value => {
-                        env.bind_nullable(d.name.clone(), vv)
+                        env.bind_nullable(d.name.clone(), vv, None)
                     }
                     _ => unreachable!(),
                 }
@@ -2046,6 +2049,21 @@ fn value_result(
     }
 }
 
+/// AND two optional I8 validity bits. `None` = no taint (definitely
+/// valid). Used at a read to fold the binding-level taint together with
+/// the per-cycle validity-bitmask bit (#219).
+fn and_validity(
+    b: &mut FunctionBuilder,
+    a: Option<ClifValue>,
+    c: Option<ClifValue>,
+) -> Option<ClifValue> {
+    match (a, c) {
+        (None, None) => None,
+        (Some(v), None) | (None, Some(v)) => Some(v),
+        (Some(x), Some(y)) => Some(b.ins().band(x, y)),
+    }
+}
+
 // ─── Env: name → Variable lookup ─────────────────────────────────
 
 pub(crate) struct JitEnv {
@@ -2070,14 +2088,18 @@ pub(crate) struct JitEnv {
     /// return both Variables via `b.use_var`; consumer ops
     /// (`VariantTagEq`, `VariantPayload`, `IsNull`) take the pair.
     /// Drop / clone happen via the two-register helpers
-    /// `graphix_value_drop` / `graphix_value_clone`.
-    variants: Vec<(ArcStr, ValueVar)>,
+    /// `graphix_value_drop` / `graphix_value_clone`. The third element
+    /// is the I8 validity Variable for a TAINTED 2-word local (#219) —
+    /// `Some` only when a `let`-bound value may be bottom; `None` is the
+    /// fast path (read back as [`CompiledExpr::Value`]).
+    variants: Vec<(ArcStr, ValueVar, Option<Variable>)>,
     /// Nullable locals — identical storage to `variants` (the Value
     /// is either `Value::Null` or `T`'s runtime form), but kept
     /// semantically distinct so `IsNull` against an `env.nullables`
     /// entry is well-typed even though `VariantTagEq` against the
-    /// same shape would also work.
-    nullables: Vec<(ArcStr, ValueVar)>,
+    /// same shape would also work. Third element: the I8 validity
+    /// Variable for a tainted 2-word local (#219), like `variants`.
+    nullables: Vec<(ArcStr, ValueVar, Option<Variable>)>,
     /// String locals: `(name, var)` where `var` holds an owned
     /// `ArcStr`'s thin pointer as a single `i64`. A local read
     /// of a String-typed Ref reads the slot and
@@ -2144,12 +2166,12 @@ impl JitEnv {
         self.composites.push((name, var, bind_id));
     }
 
-    fn bind_variant(&mut self, name: ArcStr, vv: ValueVar) {
-        self.variants.push((name, vv));
+    fn bind_variant(&mut self, name: ArcStr, vv: ValueVar, valid: Option<Variable>) {
+        self.variants.push((name, vv, valid));
     }
 
-    fn bind_nullable(&mut self, name: ArcStr, vv: ValueVar) {
-        self.nullables.push((name, vv));
+    fn bind_nullable(&mut self, name: ArcStr, vv: ValueVar, valid: Option<Variable>) {
+        self.nullables.push((name, vv, valid));
     }
 
     fn bind_string(&mut self, name: ArcStr, var: Variable) {
@@ -2203,19 +2225,19 @@ impl JitEnv {
         None
     }
 
-    fn lookup_variant(&self, name: &str) -> Option<ValueVar> {
-        for (n, vv) in self.variants.iter().rev() {
+    fn lookup_variant(&self, name: &str) -> Option<(ValueVar, Option<Variable>)> {
+        for (n, vv, valid) in self.variants.iter().rev() {
             if n.as_str() == name {
-                return Some(*vv);
+                return Some((*vv, *valid));
             }
         }
         None
     }
 
-    fn lookup_nullable(&self, name: &str) -> Option<ValueVar> {
-        for (n, vv) in self.nullables.iter().rev() {
+    fn lookup_nullable(&self, name: &str) -> Option<(ValueVar, Option<Variable>)> {
+        for (n, vv, valid) in self.nullables.iter().rev() {
             if n.as_str() == name {
-                return Some(*vv);
+                return Some((*vv, *valid));
             }
         }
         None
@@ -2409,7 +2431,7 @@ fn emit_tail_rebind_jump(
         let ptr = b.use_var(*var);
         b.ins().call(arr_drop, &[ptr]);
     }
-    for (name, vv) in &env.variants[ctx.param_mark.variants..] {
+    for (name, vv, _) in &env.variants[ctx.param_mark.variants..] {
         if slot_names.contains(name.as_str()) {
             continue;
         }
@@ -2417,7 +2439,7 @@ fn emit_tail_rebind_jump(
         let payload = b.use_var(vv.payload);
         b.ins().call(val_drop, &[disc, payload]);
     }
-    for (name, vv) in &env.nullables[ctx.param_mark.nullables..] {
+    for (name, vv, _) in &env.nullables[ctx.param_mark.nullables..] {
         if slot_names.contains(name.as_str()) {
             continue;
         }
@@ -2884,8 +2906,11 @@ fn emit_kernel_return(
 ) -> Result<()> {
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let (disc, payload) = match cv {
-                CompiledExpr::Value { disc, payload } => (disc, payload),
+            let (disc, payload, valid) = match cv {
+                CompiledExpr::Value { disc, payload } => (disc, payload, None),
+                CompiledExpr::Value2 { disc, payload, valid } => {
+                    (disc, payload, Some(valid))
+                }
                 _ => {
                     return Err(anyhow!(
                         "emit_kernel_return: Value-shape return got a \
@@ -2894,6 +2919,37 @@ fn emit_kernel_return(
                 }
             };
             let (disc, payload) = ensure_owned_value_src(cx, src, disc, payload)?;
+            // #219: a tainted (`Value2`) result FORCES at the output — the
+            // node-walk's "bottom iff the output consumes a bottom". Branch
+            // on the validity bit: valid → return; invalid → drop the owned
+            // result and bottom (set pending, jump `pending_exit`). Mirrors
+            // the scalar `Scalar2` return below.
+            if let Some(valid) = valid {
+                let val_drop = cx.helper("graphix_value_drop")?;
+                let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+                let pre_pending = cx.b.create_block();
+                let ret_block = cx.b.create_block();
+                let pending_exit = {
+                    let mut slot = cx.ctx.pending_exit.borrow_mut();
+                    match *slot {
+                        Some(blk) => blk,
+                        None => {
+                            let blk = cx.b.create_block();
+                            *slot = Some(blk);
+                            blk
+                        }
+                    }
+                };
+                cx.b.ins().brif(valid, ret_block, &[], pre_pending, &[]);
+                cx.b.switch_to_block(pre_pending);
+                cx.b.seal_block(pre_pending);
+                cx.b.ins().call(val_drop, &[disc, payload]);
+                cx.b.ins().call(pending_set, &[]);
+                emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+                cx.b.ins().jump(pending_exit, &[]);
+                cx.b.switch_to_block(ret_block);
+                cx.b.seal_block(ret_block);
+            }
             emit_return_pending_check(
                 cx.b,
                 cx.env,
@@ -3124,7 +3180,15 @@ pub(crate) fn emit_ref_node(
         Some(AbiKind::Variant) => {
             let name = ref_local_name(spec)
                 .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
-            let vv = cx
+            // #219: env-validity infra is wired (the slot carries an
+            // Option<Variable>), but a 2-word read STILL produces an
+            // untainted `Value` for now — the value consumers (arith /
+            // cmp / select / return / producer) don't yet propagate
+            // `Value2` through a guarded helper call, so tainting the read
+            // here would only de-fuse. Re-enable by combining
+            // `slot_valid` + `input_validity_bit(id)` via `and_validity`
+            // and returning `value_result(...)` once those consumers land.
+            let (vv, _slot_valid) = cx
                 .env
                 .lookup_variant(name)
                 .ok_or_else(|| anyhow!("emit_clif: undefined variant local `{name}`"))?;
@@ -3136,7 +3200,9 @@ pub(crate) fn emit_ref_node(
         Some(AbiKind::Nullable | AbiKind::Value) => {
             let name = ref_local_name(spec)
                 .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
-            let vv = cx.env.lookup_nullable(name).ok_or_else(|| {
+            // #219: see the Variant arm — read stays untainted until the
+            // value consumers propagate `Value2`.
+            let (vv, _slot_valid) = cx.env.lookup_nullable(name).ok_or_else(|| {
                 anyhow!("emit_clif: undefined value-shape local `{name}`")
             })?;
             Ok(CompiledExpr::Value {
@@ -3182,8 +3248,8 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     if lowering::is_datetime_or_duration(lhs.typ())
         || lowering::is_datetime_or_duration(rhs.typ())
     {
-        let (ld, lp) = emit_owned_value_operand_node(cx, lhs)?;
-        let (rd, rp) = emit_owned_value_operand_node(cx, rhs)?;
+        let (ld, lp, lvalid) = emit_owned_value_operand_node(cx, lhs)?;
+        let (rd, rp, rvalid) = emit_owned_value_operand_node(cx, rhs)?;
         let helper = match op {
             BinOp::Add => "graphix_value_add",
             BinOp::Sub => "graphix_value_sub",
@@ -3193,8 +3259,13 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         };
         let fref = cx.helper(helper)?;
         let call = cx.b.ins().call(fref, &[ld, lp, rd, rp]);
-        let r = cx.b.inst_results(call);
-        return Ok(CompiledExpr::Value { disc: r[0], payload: r[1] });
+        let (rdisc, rpay) = {
+            let r = cx.b.inst_results(call);
+            (r[0], r[1])
+        };
+        // #219: a tainted operand taints the result (the helper ran on a
+        // harmless Null placeholder; the bit guards the garbage result).
+        return Ok(value_result(rdisc, rpay, and_validity(cx.b, lvalid, rvalid)));
     }
     let lcv = lhs.emit_clif(cx)?;
     let rcv = rhs.emit_clif(cx)?;
@@ -3267,8 +3338,8 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let (ld, lp) = emit_owned_value_operand_node(cx, lhs)?;
-    let (rd, rp) = emit_owned_value_operand_node(cx, rhs)?;
+    let (ld, lp, lvalid) = emit_owned_value_operand_node(cx, lhs)?;
+    let (rd, rp, rvalid) = emit_owned_value_operand_node(cx, rhs)?;
     let helper = match op {
         BinOp::Add => "graphix_value_checked_add",
         BinOp::Sub => "graphix_value_checked_sub",
@@ -3278,8 +3349,12 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     };
     let fref = cx.helper(helper)?;
     let call = cx.b.ins().call(fref, &[ld, lp, rd, rp]);
-    let r = cx.b.inst_results(call);
-    Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+    let (rdisc, rpay) = {
+        let r = cx.b.inst_results(call);
+        (r[0], r[1])
+    };
+    // #219: propagate operand taint into the checked-arith result Value.
+    Ok(value_result(rdisc, rpay, and_validity(cx.b, lvalid, rvalid)))
 }
 
 /// Comparison — `compile_cmp` (total-order floats) on scalar operands,
@@ -3331,17 +3406,19 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
             ));
         }
     }
-    let (ld, lp) = emit_owned_value_operand_node(cx, lhs)?;
-    let (rd, rp) = emit_owned_value_operand_node(cx, rhs)?;
+    let (ld, lp, lvalid) = emit_owned_value_operand_node(cx, lhs)?;
+    let (rd, rp, rvalid) = emit_owned_value_operand_node(cx, rhs)?;
     let helper = cx.helper("graphix_value_eq")?;
     let call = cx.b.ins().call(helper, &[ld, lp, rd, rp]);
     let eq = cx.b.inst_results(call)[0]; // I8 bool
-    Ok(CompiledExpr::Single(if ne {
+    let result = if ne {
         let one = cx.b.ins().iconst(types::I8, 1);
         cx.b.ins().bxor(eq, one)
     } else {
         eq
-    }))
+    };
+    // #219: a tainted operand taints the bool result.
+    Ok(scalar_result(result, and_validity(cx.b, lvalid, rvalid)))
 }
 
 /// Logical — STRICT `band`/`bor` (both operands always compiled),
@@ -3803,29 +3880,29 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             cx.env.bind_composite(name.clone(), var);
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let cv = value.emit_clif(cx)?;
-            let (disc, payload) = match cv {
-                CompiledExpr::Value { disc, payload } => (disc, payload),
-                _ => {
-                    return Err(anyhow!(
-                        "emit_clif: value-shape let got a non-Value result"
-                    ));
-                }
-            };
+            let (disc, payload, valid) = value.emit_clif(cx)?.value_with_validity()?;
             let (disc, payload) =
                 ensure_owned_value_src(cx, node_composite_source(value), disc, payload)?;
             let disc_var = cx.b.declare_var(types::I64);
             let payload_var = cx.b.declare_var(types::I64);
             cx.b.def_var(disc_var, disc);
             cx.b.def_var(payload_var, payload);
+            // #219: persist a tainted let's I8 validity into a Variable so
+            // a later read surfaces Value2 (a let-bound bottom flows to
+            // its uses; an unconsumed one is dropped, never bottoming).
+            let valid_var = valid.map(|vbit| {
+                let v = cx.b.declare_var(types::I8);
+                cx.b.def_var(v, vbit);
+                v
+            });
             let vv = ValueVar { disc: disc_var, payload: payload_var };
             if matches!(
                 frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)),
                 Some(AbiKind::Variant)
             ) {
-                cx.env.bind_variant(name.clone(), vv);
+                cx.env.bind_variant(name.clone(), vv, valid_var);
             } else {
-                cx.env.bind_nullable(name.clone(), vv);
+                cx.env.bind_nullable(name.clone(), vv, valid_var);
             }
         }
         Some(AbiKind::String) => {
@@ -3905,12 +3982,12 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: &EnvMark) -> Result<()> {
         let ptr = cx.b.use_var(*var);
         cx.b.ins().call(arr_drop, &[ptr]);
     }
-    for (_, vv) in &cx.env.variants[mark.variants..] {
+    for (_, vv, _) in &cx.env.variants[mark.variants..] {
         let disc = cx.b.use_var(vv.disc);
         let payload = cx.b.use_var(vv.payload);
         cx.b.ins().call(val_drop, &[disc, payload]);
     }
-    for (_, vv) in &cx.env.nullables[mark.nullables..] {
+    for (_, vv, _) in &cx.env.nullables[mark.nullables..] {
         let disc = cx.b.use_var(vv.disc);
         let payload = cx.b.use_var(vv.payload);
         cx.b.ins().call(val_drop, &[disc, payload]);
@@ -3935,26 +4012,44 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: &EnvMark) -> Result<()> {
 fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
-) -> Result<(ClifValue, ClifValue)> {
+) -> Result<(ClifValue, ClifValue, Option<ClifValue>)> {
     match kernel_abi::abi_kind(cx.registry(), node.typ()) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let (disc, payload) = node.emit_clif(cx)?.value()?;
-            ensure_owned_value_src(cx, node_composite_source(node), disc, payload)
+            // #219: carry the operand's validity through. A missing 2-word
+            // input is a `Value::Null` placeholder (nonzero disc), so clone
+            // and the value-arith helpers run harmlessly on it; the bit
+            // taints the result, which the consumer resolves.
+            let (disc, payload, valid) = node.emit_clif(cx)?.value_with_validity()?;
+            let (disc, payload) =
+                ensure_owned_value_src(cx, node_composite_source(node), disc, payload)?;
+            Ok((disc, payload, valid))
         }
         Some(AbiKind::Scalar(p)) => {
-            let s = node.emit_clif(cx)?.single()?;
+            let cv = node.emit_clif(cx)?;
+            // #219: a tainted scalar promoted to a value operand carries
+            // its bit forward (a `Single` is always valid).
+            let (s, valid) = match cv {
+                CompiledExpr::Single(s) => (s, None),
+                CompiledExpr::Scalar2 { value, valid } => (value, Some(valid)),
+                CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
+                    return Err(anyhow!(
+                        "emit_clif: scalar value operand got a Value-shape result"
+                    ));
+                }
+            };
             let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p));
             let payload = scalar_to_payload_i64(cx.b, p, s);
-            Ok((disc, payload))
+            Ok((disc, payload, valid))
         }
         Some(AbiKind::String) => {
             // Const/Ref/Concat reads all produce an owned ArcStr;
             // `graphix_value_new_string` consumes it into a Value.
+            // (String taint lands in a later stage — `valid: None` here.)
             let s = node.emit_clif(cx)?.single()?;
             let helper = cx.helper("graphix_value_new_string")?;
             let call = cx.b.ins().call(helper, &[s]);
             let r = cx.b.inst_results(call);
-            Ok((r[0], r[1]))
+            Ok((r[0], r[1], None))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let ptr = node.emit_clif(cx)?.single()?;
@@ -3962,7 +4057,7 @@ fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
             let helper = cx.helper("graphix_value_new_from_array")?;
             let call = cx.b.ins().call(helper, &[ptr]);
             let r = cx.b.inst_results(call);
-            Ok((r[0], r[1]))
+            Ok((r[0], r[1], None))
         }
         other => Err(anyhow!("emit_clif: value operand has unexpected type {other:?}")),
     }
@@ -4227,12 +4322,16 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     }
     if lowering::is_bytes(source.typ()) {
         // The helper consumes the bytes operand — owned.
-        let (bd, bp) = emit_owned_value_operand_node(cx, source)?;
+        let (bd, bp, bvalid) = emit_owned_value_operand_node(cx, source)?;
         let i = idx.emit_clif(cx)?.single()?;
         let helper = cx.helper("graphix_bytes_index")?;
         let call = cx.b.ins().call(helper, &[bd, bp, i]);
-        let r = cx.b.inst_results(call);
-        return Ok(CompiledExpr::Value { disc: r[0], payload: r[1] });
+        let (rdisc, rpay) = {
+            let r = cx.b.inst_results(call);
+            (r[0], r[1])
+        };
+        // #219: a tainted bytes operand taints the indexed result.
+        return Ok(value_result(rdisc, rpay, bvalid));
     }
     Err(anyhow!(
         "emit_clif: index source of type {:?} isn't an array or bytes",
@@ -4255,12 +4354,16 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
             source.typ()
         ));
     }
-    let (md, mp) = emit_owned_value_operand_node(cx, source)?;
-    let (kd, kp) = emit_owned_value_operand_node(cx, key)?;
+    let (md, mp, mvalid) = emit_owned_value_operand_node(cx, source)?;
+    let (kd, kp, kvalid) = emit_owned_value_operand_node(cx, key)?;
     let helper = cx.helper("graphix_map_ref")?;
     let call = cx.b.ins().call(helper, &[md, mp, kd, kp]);
-    let r = cx.b.inst_results(call);
-    Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+    let (rdisc, rpay) = {
+        let r = cx.b.inst_results(call);
+        (r[0], r[1])
+    };
+    // #219: a tainted map or key taints the lookup result.
+    Ok(value_result(rdisc, rpay, and_validity(cx.b, mvalid, kvalid)))
 }
 
 /// `a[i..j]` — the source as an OWNED Value (the helper consumes it;
@@ -4285,7 +4388,15 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
             source.typ()
         ));
     }
-    let (sd, sp) = emit_owned_value_operand_node(cx, source)?;
+    let (sd, sp, svalid) = emit_owned_value_operand_node(cx, source)?;
+    // #219: a tainted slice source isn't propagated through the slice
+    // result yet — bail to the node-walk (a later stage wires it).
+    if svalid.is_some() {
+        return Err(anyhow!(
+            "emit_clif: slice of a tainted source — Value2 propagation not \
+             yet wired, node-walks"
+        ));
+    }
     let emit_bound = |cx: &mut BodyCx,
                       n: Option<&Node<R, E>>,
                       flag: i64,
@@ -5848,13 +5959,13 @@ fn drop_owned_composites(
     // `VariantNew` or composite-return DynCall). Drop them via the
     // two-register `graphix_value_drop(disc, payload)` ABI — passes
     // the word pair and the helper consumes (drops) it.
-    for (_, vv) in &env.variants {
+    for (_, vv, _) in &env.variants {
         let disc = b.use_var(vv.disc);
         let payload = b.use_var(vv.payload);
         b.ins().call(val_drop, &[disc, payload]);
     }
     // Nullables: same two-register drop discipline as variants.
-    for (_, vv) in &env.nullables {
+    for (_, vv, _) in &env.nullables {
         let disc = b.use_var(vv.disc);
         let payload = b.use_var(vv.payload);
         b.ins().call(val_drop, &[disc, payload]);
