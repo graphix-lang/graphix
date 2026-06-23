@@ -81,6 +81,120 @@ const _: () = {
     );
 };
 
+// ─── TagValue: the tagged Value at the JIT↔runtime boundary ──────────
+//
+// A `TagValue` is bit-identical to `Value` (16 bytes, two integer
+// eightbytes → two registers, so the JIT marshals it exactly like a
+// `Value`), EXCEPT the upper 8 bits of the discriminant word are
+// reserved for a JIT tag. The #219 taint bit lives here; the real
+// `Value` discriminant only uses the low bits (`value_disc` tops out at
+// `0x8000_0000`), so the tag and the discriminant never collide.
+//
+// The point is the BOUNDARY GUARANTEE. A `TagValue` is *uninterpreted*
+// raw words — the only way to recover a `Value` is [`TagValue::value`],
+// which MASKS the tag first. So a tagged (tainted) disc the JIT hands a
+// helper can never be read AS a `Value` discriminant — which is the UB
+// that turned a forgotten `clean_disc` into a process abort (a corrupt
+// disc → `Value::clone`/`drop` → `unreachable_unchecked`). The tag rides
+// through [`Clone`] so taint survives a refcount bump with no manual
+// re-attach. Lives here (not in `netidx-value`): it needs only `Value`'s
+// public `Clone`/`Drop` plus the 16-byte/two-eightbyte layout this
+// module already pins above.
+#[repr(C)]
+pub struct TagValue {
+    disc: u64,
+    payload: u64,
+}
+
+/// The reserved tag byte — the upper 8 bits of the discriminant word.
+const TAG_MASK: u64 = 0xFF00_0000_0000_0000;
+
+impl TagValue {
+    /// Wrap the two raw words the JIT produced (a kernel return's `out`
+    /// slot, a helper result) — the gateway INTO `TagValue` from
+    /// untrusted JIT output. Recover the clean `Value` via
+    /// [`TagValue::value`] (which masks the tag), never a bare
+    /// `transmute`: that's the whole point — a tainted disc the kernel
+    /// leaked can't materialize as a corrupt `Value`.
+    #[inline]
+    pub fn from_raw(disc: u64, payload: u64) -> Self {
+        TagValue { disc, payload }
+    }
+
+    /// Stuff `tag` into the upper 8 bits of `v`'s discriminant.
+    #[inline]
+    pub fn tagged(v: Value, tag: u8) -> Self {
+        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(v) };
+        debug_assert_eq!(disc & TAG_MASK, 0, "Value discriminant overlaps the tag byte");
+        TagValue { disc: disc | ((tag as u64) << 56), payload }
+    }
+
+    /// An untagged `TagValue` (tag = 0).
+    #[inline]
+    pub fn clean(v: Value) -> Self {
+        Self::tagged(v, 0)
+    }
+
+    /// The JIT tag byte (the #219 taint rides in here).
+    #[inline]
+    pub fn tag(&self) -> u8 {
+        (self.disc >> 56) as u8
+    }
+
+    /// Recover the clean `Value`, MASKING the tag. The sole raw-words →
+    /// `Value` gateway; consumes self, transferring payload ownership.
+    #[inline]
+    pub fn value(self) -> Value {
+        let me = std::mem::ManuallyDrop::new(self);
+        unsafe { std::mem::transmute::<[u64; 2], Value>([me.disc & !TAG_MASK, me.payload]) }
+    }
+
+    /// True iff the masked discriminant is zero — the pending-sentinel
+    /// word pair a JIT pending path leaves in the `out` slot, which must
+    /// never reach a clone/drop (it isn't a valid `Value`).
+    #[inline]
+    pub fn is_sentinel(&self) -> bool {
+        self.disc & !TAG_MASK == 0
+    }
+
+    /// Borrow the masked `Value` for a read-only operation WITHOUT
+    /// consuming (no refcount change). For helpers the JIT passes a
+    /// borrowed operand (tag-eq, is-null, payload reads): the JIT keeps
+    /// owning its copy.
+    #[inline]
+    pub fn with_value<T>(&self, f: impl FnOnce(&Value) -> T) -> T {
+        let v = std::mem::ManuallyDrop::new(unsafe {
+            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
+        });
+        f(&v)
+    }
+}
+
+impl Clone for TagValue {
+    #[inline]
+    fn clone(&self) -> Self {
+        // Clone the MASKED Value (refcount bump) and re-apply the tag.
+        // `view` is a borrowed view of our own bits — must not drop it.
+        let view = std::mem::ManuallyDrop::new(unsafe {
+            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
+        });
+        let dup: Value = (*view).clone();
+        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(dup) };
+        TagValue { disc: disc | (self.disc & TAG_MASK), payload }
+    }
+}
+
+impl Drop for TagValue {
+    #[inline]
+    fn drop(&mut self) {
+        // Mask the tag and drop as a clean Value, releasing the payload.
+        let v = unsafe {
+            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
+        };
+        drop(v);
+    }
+}
+
 #[inline]
 unsafe fn arr<'a>(p: *const ValArray) -> &'a ValArray {
     unsafe { &*p }
@@ -248,9 +362,12 @@ pub unsafe extern "C" fn graphix_value_buf_push_array_borrowed(
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_value_buf_push_value_borrowed(
     buf: *mut LPooled<Vec<Value>>,
-    v: Value,
+    v: TagValue,
 ) {
-    let dup = v.clone();
+    // Refcount-bump the MASKED value, push the clean clone, forget the
+    // input (the caller's local keeps its ref). A tainted disc can't
+    // reach the buffer.
+    let dup = v.with_value(|v| v.clone());
     std::mem::forget(v);
     unsafe { (*buf).push(dup) }
 }
@@ -262,8 +379,15 @@ pub extern "C" fn graphix_value_buf_push_value_borrowed(
 /// referenced anywhere else, so a borrow-mode push would leak the
 /// extra ref.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, v: Value) {
-    unsafe { (*buf).push(v) }
+pub extern "C" fn graphix_value_buf_push_value(
+    buf: *mut LPooled<Vec<Value>>,
+    tv: TagValue,
+) {
+    // Strip the tag — the buffer holds clean Values (the builtin that
+    // consumes it must never see a tagged disc). A tainted field is the
+    // JIT-side force's job to bottom; masking here is the net that turns
+    // a forgotten force from UB into a (fuzzer-caught) value divergence.
+    unsafe { (*buf).push(tv.value()) }
 }
 
 /// Drop a partially-built (still-`Box`'d) `LPooled<Vec<Value>>`.
@@ -420,8 +544,8 @@ pub unsafe extern "C" fn graphix_valarray_drop(arr: *mut ValArray) {
 /// `Value::Array([tag, ...])`). Caller relinquishes the ValArray
 /// pointer; helper transfers it into the returned Value.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_new_from_array(arr: *mut ValArray) -> Value {
-    Value::Array(unsafe { *Box::from_raw(arr) })
+pub unsafe extern "C" fn graphix_value_new_from_array(arr: *mut ValArray) -> TagValue {
+    TagValue::clean(Value::Array(unsafe { *Box::from_raw(arr) }))
 }
 
 /// Build a `Value::String(tag)` for nullary variant construction.
@@ -429,8 +553,8 @@ pub unsafe extern "C" fn graphix_value_new_from_array(arr: *mut ValArray) -> Val
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_value_new_string_from_arcstr(
     tag: *const arcstr::ArcStr,
-) -> Value {
-    Value::String(unsafe { (*tag).clone() })
+) -> TagValue {
+    TagValue::clean(Value::String(unsafe { (*tag).clone() }))
 }
 
 /// Unwrap an owned `Value::Array` into the composite ABI's owned
@@ -440,8 +564,8 @@ pub unsafe extern "C" fn graphix_value_new_string_from_arcstr(
 /// `Box::from_raw` the Arc's data pointer). Consumes the Value;
 /// ownership of the inner ValArray transfers into the box.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_into_array(v: Value) -> *mut ValArray {
-    match v {
+pub unsafe extern "C" fn graphix_value_into_array(v: TagValue) -> *mut ValArray {
+    match v.value() {
         Value::Array(a) => Box::into_raw(Box::new(a)),
         _ => unsafe { std::hint::unreachable_unchecked() },
     }
@@ -451,12 +575,12 @@ pub unsafe extern "C" fn graphix_value_into_array(v: Value) -> *mut ValArray {
 /// inner ValArray (refcount bump) and forgets the input so the
 /// caller's bits stay valid.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_into_array_borrowed(v: Value) -> *mut ValArray {
-    let ptr = match &v {
+pub unsafe extern "C" fn graphix_value_into_array_borrowed(v: TagValue) -> *mut ValArray {
+    let ptr = v.with_value(|v| match v {
         Value::Array(a) => Box::into_raw(Box::new(a.clone())),
         _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    std::mem::forget(v);
+    });
+    std::mem::forget(v); // borrowed read — the caller keeps owning it
     ptr
 }
 
@@ -474,17 +598,15 @@ pub unsafe extern "C" fn graphix_value_into_array_borrowed(v: Value) -> *mut Val
 /// pending sentinel leaked into a drop); the panic aborts at the
 /// `extern "C"` boundary with the message printed, instead of UB.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_value_drop(disc: u64, payload: u64) {
+pub extern "C" fn graphix_value_drop(tv: TagValue) {
     assert!(
-        disc != 0,
+        !tv.is_sentinel(),
         "graphix_value_drop: zero discriminant — JIT codegen bug \
          (a pending sentinel leaked into a drop)"
     );
-    // SAFETY: disc is nonzero and JIT'd code only ever passes word
-    // pairs it received from a Value-producing helper, so the bits
-    // are a valid `Value` (same decode as `Kernel::update`'s
-    // value-shape return path).
-    drop(unsafe { std::mem::transmute::<[u64; 2], Value>([disc, payload]) })
+    // `tv` drops here: TagValue::Drop masks the tag and drops the clean
+    // `Value`, so a tagged (tainted) disc can't corrupt the drop.
+    drop(tv)
 }
 
 /// "Borrowed clone": bump the inner refcount and return a fresh
@@ -493,9 +615,11 @@ pub extern "C" fn graphix_value_drop(disc: u64, payload: u64) {
 /// caller now has two valid refs (original + returned clone) and the
 /// inner refcount has incremented by one.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_value_clone(v: Value) -> Value {
-    let dup = v.clone();
-    std::mem::forget(v);
+pub extern "C" fn graphix_value_clone(tv: TagValue) -> TagValue {
+    // Refcount-bump (preserving the tag); the input stays owned by the
+    // caller (forget, don't run our Drop which would decrement).
+    let dup = tv.clone();
+    std::mem::forget(tv);
     dup
 }
 
@@ -508,8 +632,8 @@ pub extern "C" fn graphix_value_clone(v: Value) -> Value {
 /// `ptr` must point to a live `Value` that outlives the JIT'd code.
 /// The per-kernel `KernelValues` table owns it (like `KernelStrings`
 /// for `ArcStr`), kept alive on the `CachedKernel`.
-pub unsafe extern "C" fn graphix_value_clone_from_static(ptr: *const Value) -> Value {
-    unsafe { (*ptr).clone() }
+pub unsafe extern "C" fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
+    TagValue::clean(unsafe { (*ptr).clone() })
 }
 
 // ─── Value arithmetic (datetime/duration `ValueArith`) ────────────
@@ -523,8 +647,10 @@ pub unsafe extern "C" fn graphix_value_clone_from_static(ptr: *const Value) -> V
 // leak or double-free.
 macro_rules! value_arith_helper {
     ($name:ident, $op:tt) => {
-        pub extern "C" fn $name(l: Value, r: Value) -> Value {
-            l $op r
+        pub extern "C" fn $name(l: TagValue, r: TagValue) -> TagValue {
+            // Mask both operands (a tainted disc is not a clean tag); the
+            // result is a clean netidx Value, the JIT re-applies taint.
+            TagValue::clean(l.value() $op r.value())
         }
     };
 }
@@ -542,8 +668,8 @@ value_arith_helper!(graphix_value_rem, %);
 // CONSUMES both args, same contract as the unchecked family above.
 macro_rules! value_checked_arith_helper {
     ($name:ident, $method:ident) => {
-        pub extern "C" fn $name(l: Value, r: Value) -> Value {
-            wrap_arith_error(l.$method(r))
+        pub extern "C" fn $name(l: TagValue, r: TagValue) -> TagValue {
+            TagValue::clean(wrap_arith_error(l.value().$method(r.value())))
         }
     };
 }
@@ -557,8 +683,8 @@ value_checked_arith_helper!(graphix_value_checked_rem, checked_rem);
 /// `impl PartialEq for Value` — byte-identical to the non-fused `==`
 /// node. CONSUMES both args (they're dropped at function end), matching
 /// the owned-operand contract `compile_owned_value_operand` produces.
-pub extern "C" fn graphix_value_eq(l: Value, r: Value) -> u8 {
-    (l == r) as u8
+pub extern "C" fn graphix_value_eq(l: TagValue, r: TagValue) -> u8 {
+    (l.value() == r.value()) as u8
 }
 
 /// `bytes[i]` indexing. Extracts the `PBytes` from a
@@ -566,11 +692,11 @@ pub extern "C" fn graphix_value_eq(l: Value, r: Value) -> u8 {
 /// (bounds-checked, negative-from-end), and returns `Nullable<u8>`'s
 /// `Value` (the `u8` or the out-of-bounds error). CONSUMES the bytes
 /// Value (passed owned by `compile_owned_value_operand`).
-pub extern "C" fn graphix_bytes_index(v: Value, i: i64) -> Value {
-    match &v {
-        Value::Bytes(b) => bytes_index(b, i),
+pub extern "C" fn graphix_bytes_index(v: TagValue, i: i64) -> TagValue {
+    TagValue::clean(match v.value() {
+        Value::Bytes(b) => bytes_index(&b, i),
         _ => Value::error("ArrayIndexError: expected bytes"),
-    }
+    })
 }
 
 /// Map access `m{key}`. Looks up `key` in the
@@ -578,8 +704,8 @@ pub extern "C" fn graphix_bytes_index(v: Value, i: i64) -> Value {
 /// value or the `map key not found` error (`Nullable<V>`'s `Value`).
 /// CONSUMES both operands (passed owned by
 /// `compile_owned_value_operand`).
-pub extern "C" fn graphix_map_ref(map: Value, key: Value) -> Value {
-    map_get(&map, &key)
+pub extern "C" fn graphix_map_ref(map: TagValue, key: TagValue) -> TagValue {
+    TagValue::clean(map_get(&map.value(), &key.value()))
 }
 
 /// Array/bytes slice `a[i..j]`. `flags` bit0 =
@@ -589,14 +715,14 @@ pub extern "C" fn graphix_map_ref(map: Value, key: Value) -> Value {
 /// CONSUMES the source Value (passed owned by
 /// `compile_owned_value_operand`).
 pub extern "C" fn graphix_array_slice(
-    src: Value,
+    src: TagValue,
     start: i64,
     end: i64,
     flags: i64,
-) -> Value {
+) -> TagValue {
     let s = if flags & 1 != 0 { Some(start) } else { None };
     let e = if flags & 2 != 0 { Some(end) } else { None };
-    array_slice_i64(&src, s, e)
+    TagValue::clean(array_slice_i64(&src.value(), s, e))
 }
 
 // ─── String / ArcStr helpers ──────────────────────────────────────
@@ -665,8 +791,8 @@ pub extern "C" fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
 /// marshaling for kernel-return-type `Type::String`. Consumes the
 /// ArcStr (transfers ownership into the Value).
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_value_new_string(s: arcstr::ArcStr) -> Value {
-    Value::String(s)
+pub extern "C" fn graphix_value_new_string(s: arcstr::ArcStr) -> TagValue {
+    TagValue::clean(Value::String(s))
 }
 
 /// Start a fresh string-buffer for interpolation/concat. Returns a heap-
@@ -744,9 +870,9 @@ pub unsafe extern "C" fn graphix_string_buf_push_bool(buf: *mut String, v: u8) {
 /// remains registered so out-of-tree code and direct interp tests
 /// keep working.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_value_is_null(v: Value) -> u8 {
-    let r = matches!(v, Value::Null) as u8;
-    std::mem::forget(v);
+pub extern "C" fn graphix_value_is_null(v: TagValue) -> u8 {
+    let r = v.with_value(|v| matches!(v, Value::Null) as u8);
+    std::mem::forget(v); // borrowed read — caller keeps owning it
     r
 }
 
@@ -765,12 +891,12 @@ pub extern "C" fn graphix_value_is_null(v: Value) -> u8 {
 /// exit via the dedicated drop helper.
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_variant_tag_eq(
-    v: Value,
+    v: TagValue,
     expected: *const arcstr::ArcStr,
 ) -> u8 {
-    let r = {
+    let r = v.with_value(|v| {
         let exp = unsafe { &*expected };
-        match &v {
+        match v {
             Value::String(s) => (s.as_str() == exp.as_str()) as u8,
             Value::Array(a) => unsafe {
                 let tag = a.get_ref_unchecked::<arcstr::ArcStr>(0);
@@ -778,8 +904,8 @@ pub extern "C" fn graphix_variant_tag_eq(
             },
             _ => 0,
         }
-    };
-    std::mem::forget(v);
+    });
+    std::mem::forget(v); // borrowed read — caller keeps owning it
     r
 }
 
@@ -791,12 +917,12 @@ macro_rules! variant_payload_impl {
         /// and we add 1. Borrowed read — the input `Value` is
         /// `mem::forget`ed so the caller retains ownership.
         #[unsafe(no_mangle)]
-        pub extern "C" fn $name(v: Value, payload_idx: usize) -> $ty {
-            let r = match &v {
+        pub extern "C" fn $name(v: TagValue, payload_idx: usize) -> $ty {
+            let r = v.with_value(|v| match v {
                 Value::Array(a) => unsafe { a.get_unchecked::<$ty>(payload_idx + 1) },
                 _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            std::mem::forget(v);
+            });
+            std::mem::forget(v); // borrowed read — caller keeps owning it
             r
         }
     };
@@ -818,12 +944,12 @@ variant_payload_impl!(graphix_variant_payload_u64, u64);
 /// `ValArray::get_unchecked` doesn't support `bool` directly. Kept
 /// as a separate impl to avoid teaching the macro a special case.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_variant_payload_bool(v: Value, payload_idx: usize) -> u8 {
-    let r = match &v {
+pub extern "C" fn graphix_variant_payload_bool(v: TagValue, payload_idx: usize) -> u8 {
+    let r = v.with_value(|v| match v {
         Value::Array(a) => unsafe { a.get_unchecked::<bool>(payload_idx + 1) as u8 },
         _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    std::mem::forget(v);
+    });
+    std::mem::forget(v); // borrowed read — caller keeps owning it
     r
 }
 
@@ -1260,8 +1386,8 @@ struct_get_impl!(graphix_struct_get_u64, u64);
 /// success or the error Value otherwise, as a two-register `Value`.
 /// `idx` is a signed `i64` (negatives index from the end).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_index(p: *const ValArray, idx: i64) -> Value {
-    array_index(unsafe { arr(p) }, idx)
+pub unsafe extern "C" fn graphix_valarray_index(p: *const ValArray, idx: i64) -> TagValue {
+    TagValue::clean(array_index(unsafe { arr(p) }, idx))
 }
 
 /// `arr[idx]` as an owned `*mut ValArray` (Array/Tuple/Struct elem).
@@ -1297,8 +1423,8 @@ pub unsafe extern "C" fn graphix_valarray_get_arcstr(
 pub unsafe extern "C" fn graphix_valarray_get_value(
     p: *const ValArray,
     idx: usize,
-) -> Value {
-    unsafe { arr(p)[idx].clone() }
+) -> TagValue {
+    TagValue::clean(unsafe { arr(p)[idx].clone() })
 }
 
 /// Struct field read (two-level: `arr[sorted_idx]` is a `[name,
@@ -1341,14 +1467,14 @@ pub unsafe extern "C" fn graphix_struct_get_arcstr(
 pub unsafe extern "C" fn graphix_struct_get_value(
     p: *const ValArray,
     sorted_idx: usize,
-) -> Value {
-    unsafe {
+) -> TagValue {
+    TagValue::clean(unsafe {
         let kv = match &arr(p)[sorted_idx] {
             Value::Array(a) => a,
             _ => std::hint::unreachable_unchecked(),
         };
         kv[1].clone()
-    }
+    })
 }
 
 /// Build the list of (name, fn pointer) pairs to register with the

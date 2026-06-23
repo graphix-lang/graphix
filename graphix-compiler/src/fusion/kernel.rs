@@ -22,7 +22,7 @@ use crate::{
     fusion::{
         emit::{pack_value_to_u64, prim_to_value_disc, unpack_u64_to_value, WrappedKernel, TAINT},
         emit_helpers::{
-            DynCallRet, DynDispatchHandle, DYNCALL_PENDING, DYN_DISPATCH_HANDLE,
+            DynCallRet, DynDispatchHandle, TagValue, DYNCALL_PENDING, DYN_DISPATCH_HANDLE,
         },
         kernel_abi::{self, BuiltinSlot, FnSource, KernelSig},
     },
@@ -1212,13 +1212,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                     unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(raw) };
                 Value::String(s)
             }
-            // Variant / Nullable / value-shape (datetime /
-            // duration / bytes / map / error): out[0] = disc,
-            // out[1] = payload. Transmute the two u64s back into
-            // a Value.
-            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => unsafe {
-                std::mem::transmute(out)
-            },
+            // Variant / Nullable / value-shape (datetime / duration /
+            // bytes / map / error): out[0] = disc, out[1] = payload.
+            // Route through `TagValue` (the sole raw-words → Value
+            // gateway) so a tainted disc the kernel leaked is MASKED, not
+            // materialized as a corrupt `Value` (the UB class).
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                TagValue::from_raw(out[0], out[1]).value()
+            }
             Some(AbiKind::Null) | None => unreachable!(
                 "JIT decode for a non-fusable / bare-Null kernel \
                  return — JIT should have bailed out before \

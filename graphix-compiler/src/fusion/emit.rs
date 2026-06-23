@@ -936,8 +936,7 @@ fn compile_into_function(
             AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
                 // Clean the disc for the clone helper (a tainted disc is
                 // an invalid tag); keep the tainted disc for the slot.
-                let clean = clean_disc(b, disc);
-                let call = b.ins().call(value_clone_helper, &[clean, payload_in]);
+                let call = b.ins().call(value_clone_helper, &[disc, payload_in]);
                 let owned_payload = b.inst_results(call)[1];
                 let kind = match d.kind {
                     AbiParamKind::Variant => LocalKind::Variant,
@@ -2240,7 +2239,6 @@ fn emit_tail_rebind_jump(
             }
             LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
                 let disc = b.use_var(vv.disc);
-                let disc = clean_disc(b, disc);
                 let payload = b.use_var(vv.payload);
                 b.ins().call(val_drop, &[disc, payload]);
             }
@@ -2659,16 +2657,14 @@ pub fn ensure_owned_value_src(
     match src {
         CompositeSource::Owned => Ok((disc, payload)),
         CompositeSource::Borrowed => {
-            // Clean the disc for the clone helper (a tainted disc is an
-            // invalid tag — a missing input arrives as `Value::Null`),
-            // then re-attach the taint to the owned result (#219).
+            // `graphix_value_clone` takes a `TagValue`: it masks the disc
+            // to refcount correctly but PRESERVES the tag, so #219 taint
+            // rides straight through the clone — no clean-before /
+            // re-propagate-after needed.
             let clone = cx.helper("graphix_value_clone")?;
-            let clean = clean_disc(cx.b, disc);
-            let call = cx.b.ins().call(clone, &[clean, payload]);
-            let owned_payload = cx.b.inst_results(call)[1];
-            let owned_disc = cx.b.inst_results(call)[0];
-            let disc = propagate_taint(cx.b, owned_disc, &[disc]);
-            Ok((disc, owned_payload))
+            let call = cx.b.ins().call(clone, &[disc, payload]);
+            let r = cx.b.inst_results(call);
+            Ok((r[0], r[1]))
         }
     }
 }
@@ -2759,8 +2755,7 @@ fn emit_kernel_return(
             cx.b.ins().brif(tainted, pre_pending, &[], ret_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
-            let clean = clean_disc(cx.b, disc);
-            cx.b.ins().call(val_drop, &[clean, payload]);
+            cx.b.ins().call(val_drop, &[disc, payload]);
             cx.b.ins().call(pending_set, &[]);
             emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().jump(pending_exit, &[]);
@@ -3006,9 +3001,8 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         // tainted disc is an invalid tag); the helper ran on the value
         // bits regardless. #219: the result disc re-absorbs the operands'
         // taint, guarding a garbage result a missing input produced.
-        let ld = clean_disc(cx.b, lcv.disc);
-        let rd = clean_disc(cx.b, rcv.disc);
-        let call = cx.b.ins().call(fref, &[ld, lcv.payload, rd, rcv.payload]);
+
+        let call = cx.b.ins().call(fref, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
         let (rdisc, rpay) = {
             let r = cx.b.inst_results(call);
             (r[0], r[1])
@@ -3093,9 +3087,8 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
         BinOp::Mod => "graphix_value_checked_rem",
     };
     let fref = cx.helper(helper)?;
-    let ld = clean_disc(cx.b, lcv.disc);
-    let rd = clean_disc(cx.b, rcv.disc);
-    let call = cx.b.ins().call(fref, &[ld, lcv.payload, rd, rcv.payload]);
+
+    let call = cx.b.ins().call(fref, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
     let (rdisc, rpay) = {
         let r = cx.b.inst_results(call);
         (r[0], r[1])
@@ -3156,9 +3149,8 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     let lcv = emit_owned_value_operand_node(cx, lhs)?;
     let rcv = emit_owned_value_operand_node(cx, rhs)?;
     let helper = cx.helper("graphix_value_eq")?;
-    let ld = clean_disc(cx.b, lcv.disc);
-    let rd = clean_disc(cx.b, rcv.disc);
-    let call = cx.b.ins().call(helper, &[ld, lcv.payload, rd, rcv.payload]);
+
+    let call = cx.b.ins().call(helper, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
     let eq = cx.b.inst_results(call)[0]; // I8 bool
     let result = if ne {
         let one = cx.b.ins().iconst(types::I8, 1);
@@ -3659,8 +3651,7 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
         // untainted one — clean the disc so the helper sees a valid tag.
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) if owned => {
             let drop = cx.helper("graphix_value_drop")?;
-            let clean = clean_disc(cx.b, cv.disc);
-            cx.b.ins().call(drop, &[clean, cv.payload]);
+            cx.b.ins().call(drop, &[cv.disc, cv.payload]);
         }
         _ => {}
     }
@@ -3692,7 +3683,6 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
             }
             LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
                 let disc = cx.b.use_var(vv.disc);
-                let disc = clean_disc(cx.b, disc);
                 let payload = cx.b.use_var(vv.payload);
                 cx.b.ins().call(val_drop, &[disc, payload]);
             }
@@ -4020,9 +4010,8 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         // The helper consumes the bytes operand — owned.
         let bcv = emit_owned_value_operand_node(cx, source)?;
         let idx_cv = idx.emit_clif(cx)?;
-        let bd = clean_disc(cx.b, bcv.disc);
         let helper = cx.helper("graphix_bytes_index")?;
-        let call = cx.b.ins().call(helper, &[bd, bcv.payload, idx_cv.payload]);
+        let call = cx.b.ins().call(helper, &[bcv.disc, bcv.payload, idx_cv.payload]);
         let (rdisc, rpay) = {
             let r = cx.b.inst_results(call);
             (r[0], r[1])
@@ -4055,9 +4044,8 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
     let mcv = emit_owned_value_operand_node(cx, source)?;
     let kcv = emit_owned_value_operand_node(cx, key)?;
     let helper = cx.helper("graphix_map_ref")?;
-    let md = clean_disc(cx.b, mcv.disc);
-    let kd = clean_disc(cx.b, kcv.disc);
-    let call = cx.b.ins().call(helper, &[md, mcv.payload, kd, kcv.payload]);
+
+    let call = cx.b.ins().call(helper, &[mcv.disc, mcv.payload, kcv.disc, kcv.payload]);
     let (rdisc, rpay) = {
         let r = cx.b.inst_results(call);
         (r[0], r[1])
@@ -4122,8 +4110,7 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     let end_v = emit_bound(cx, end, 2, &mut flags, &mut taint_discs)?;
     let flags_v = cx.b.ins().iconst(types::I64, flags);
     let helper = cx.helper("graphix_array_slice")?;
-    let sd = clean_disc(cx.b, scv.disc);
-    let call = cx.b.ins().call(helper, &[sd, scv.payload, start_v, end_v, flags_v]);
+    let call = cx.b.ins().call(helper, &[scv.disc, scv.payload, start_v, end_v, flags_v]);
     let r = cx.b.inst_results(call);
     let (rdisc, rpay) = (r[0], r[1]);
     let disc = propagate_taint(cx.b, rdisc, &taint_discs);
@@ -4397,8 +4384,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let cv = arg_node.emit_clif(cx)?;
         arg_taint_discs.push(cv.disc);
         if kernel_abi::is_value_shape(cx.registry(), t) {
-            let clean = clean_disc(cx.b, cv.disc);
-            cx.b.ins().call(push, &[buf, clean, cv.payload]);
+            cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
         } else {
             cx.b.ins().call(push, &[buf, cv.payload]);
         }
@@ -4966,8 +4952,7 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                 let tag_ptr = cx.interned_str(tag);
                 let helper = cx.helper("graphix_variant_tag_eq")?;
                 // Mask taint — the helper reads the disc as a clean tag.
-                let cd = clean_disc(cx.b, disc);
-                let call = cx.b.ins().call(helper, &[cd, payload, tag_ptr]);
+                let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr]);
                 Some(cx.b.inst_results(call)[0])
             }
             StructPatternNode::Slice { .. }
@@ -5042,8 +5027,7 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                     // Clean the scrutinee disc for the payload read; the
                     // payload inherits the variant's taint.
-                    let cd = clean_disc(cx.b, disc);
-                    let call = cx.b.ins().call(helper, &[cd, payload, idx_c]);
+                    let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
                     let v = cx.b.inst_results(call)[0];
                     let name: ArcStr =
                         compact_str::format_compact!("__pat{}", id.inner())
@@ -5603,8 +5587,7 @@ fn emit_call_arg_drops(
                 b.ins().call(arr_drop, &[*ptr]);
             }
             CallArgDrop::Value { disc, payload } => {
-                let clean = clean_disc(b, *disc);
-                b.ins().call(val_drop, &[clean, *payload]);
+                b.ins().call(val_drop, &[*disc, *payload]);
             }
         }
     }
@@ -5654,7 +5637,6 @@ fn drop_owned_composites(
             }
             LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
                 let disc = b.use_var(vv.disc);
-                let disc = clean_disc(b, disc);
                 let payload = b.use_var(vv.payload);
                 b.ins().call(val_drop, &[disc, payload]);
             }
