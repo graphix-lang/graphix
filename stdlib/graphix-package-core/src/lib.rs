@@ -1173,6 +1173,12 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     etyp: Type,
     ityp: Type,
     init: Option<Value>,
+    /// True once the input array has produced a value (any length). A
+    /// fold over an EMPTY but present array is `init` (foldl identity);
+    /// a fold over a never-fired (bottom) array is bottom. This flag
+    /// distinguishes the two — both have zero element nodes. Sticky
+    /// (combineLatest: an input keeps its value across no-update cycles).
+    arr_present: bool,
     /// Analysis-only pre-materialized callback Apply. See
     /// [`MapQ::analysis_pred`] for semantics.
     pub analysis_pred: Option<FoldAnalysisPred<R, E>>,
@@ -1211,6 +1217,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
                         t => bail!("expected a function not {t}"),
                     },
                     init: None,
+                    arr_present: false,
                     analysis_pred: None,
                     t: PhantomData,
                 }))
@@ -1274,6 +1281,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         {
             None => self.nodes.len(),
             Some(a) if a.len() == self.binds.len() => {
+                self.arr_present = true;
                 for (id, v) in self.binds.iter().zip(a.iter_values()) {
                     ctx.cached.insert(*id, v.clone());
                     event.variables.insert(*id, v.clone());
@@ -1281,6 +1289,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 self.nodes.len()
             }
             Some(a) => {
+                self.arr_present = true;
                 let vals = a.iter_values().collect::<LPooled<Vec<Value>>>();
                 while self.binds.len() < a.len() {
                     self.binds.push(BindId::new());
@@ -1384,7 +1393,16 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             }
         }
         event.init = old_init;
-        self.inits.last().and_then(|v| v.clone())
+        // A fold over an EMPTY but present array is the init (foldl
+        // identity) — there are no element nodes, so `inits.last()` is
+        // None; fall back to `init`. A never-fired (bottom) array keeps
+        // `arr_present == false` and stays bottom. The JIT fold loop
+        // agrees (acc starts at init, zero iterations → init).
+        if self.nodes.is_empty() && self.arr_present {
+            self.init.clone()
+        } else {
+            self.inits.last().and_then(|v| v.clone())
+        }
     }
 
     fn typecheck0(

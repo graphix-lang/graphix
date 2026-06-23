@@ -305,3 +305,29 @@ run!(array_match2, ARRAY_MATCH2, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// fold over an EMPTY but present array is the init (foldl identity), NOT
+// bottom — a latent node-walk bug (only reachable via a reactively-empty
+// array; `init(0)` / a fully-removing `filter`). Both modes must agree.
+const FOLD_EMPTY: &str = r#"
+{
+    let xs = array::init(i64:0, |idx: i64| idx);
+    array::fold(xs, i64:42, |acc, x| acc + x)
+}
+"#;
+
+run!(fold_empty, FOLD_EMPTY, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
+
+// fold that REMOVES every element via filter then reduces — also empty,
+// also the init.
+const FOLD_FILTERED_EMPTY: &str = r#"
+{
+    let xs = array::filter(array::init(i64:5, |idx: i64| idx), |x| x > i64:99);
+    array::fold(xs, i64:7, |acc, x| acc + x)
+}
+"#;
+
+run!(fold_filtered_empty, FOLD_FILTERED_EMPTY, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(7))
+));
