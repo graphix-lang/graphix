@@ -161,24 +161,17 @@ impl JitCtx {
 /// [`KernelSig::abi_params`] — the single source of truth — so this
 /// and [`ensure_declared`] can't drift.
 fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
+    // Every param is two words: a disc (`I64`, carrying #219 taint) and
+    // a payload at its natural CLIF type (a scalar's prim, else `I64`
+    // for a pointer / value word).
     for d in kernel.abi_params() {
-        match d.kind {
-            AbiParamKind::Scalar(p) => sig.params.push(AbiParam::new(prim_to_clif(p))),
-            AbiParamKind::Array
-            | AbiParamKind::Tuple
-            | AbiParamKind::Struct
-            | AbiParamKind::String => sig.params.push(AbiParam::new(types::I64)),
-            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
-                sig.params.push(AbiParam::new(types::I64)); // disc
-                sig.params.push(AbiParam::new(types::I64)); // payload
-            }
-        }
+        sig.params.push(AbiParam::new(types::I64)); // disc
+        let payload_ty = match d.kind {
+            AbiParamKind::Scalar(p) => prim_to_clif(p),
+            _ => types::I64,
+        };
+        sig.params.push(AbiParam::new(payload_ty));
     }
-    // #219: trailing per-cycle validity bitmask (one u64, one bit per
-    // region input). Always appended; the body tests a bit at each
-    // region-input read and bottoms only if the taken path consumes a
-    // missing input.
-    sig.params.push(AbiParam::new(types::I64));
 }
 
 /// Push the kernel's return `AbiParam`s onto `sig` (one value for
@@ -744,37 +737,22 @@ fn define_wrapper(
         // one `I64` (a `*ValArray` the caller stored as u64); variant /
         // nullable params load two `I64`s (disc, payload).
         // `d.wire_slot` is the param's starting 8-byte slot offset.
-        let mut typed_args = Vec::with_capacity(kernel.abi_param_wire_slots() + 1);
+        let mut typed_args = Vec::with_capacity(kernel.abi_param_wire_slots());
         for d in kernel.abi_params() {
+            // Every param is two slots: disc (`I64`) then payload at its
+            // narrow CLIF type (a scalar's prim, else `I64`). #219 taint
+            // rides in the disc word.
             let base = (d.wire_slot as i32) * 8;
-            match d.kind {
-                AbiParamKind::Scalar(p) => {
-                    let cty = prim_to_clif(p);
-                    let v = b.ins().load(cty, MemFlags::trusted(), args_ptr, base);
-                    typed_args.push(v);
-                }
-                AbiParamKind::Array
-                | AbiParamKind::Tuple
-                | AbiParamKind::Struct
-                | AbiParamKind::String => {
-                    let v = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, base);
-                    typed_args.push(v);
-                }
-                AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
-                    let disc =
-                        b.ins().load(types::I64, MemFlags::trusted(), args_ptr, base);
-                    let payload =
-                        b.ins().load(types::I64, MemFlags::trusted(), args_ptr, base + 8);
-                    typed_args.push(disc);
-                    typed_args.push(payload);
-                }
-            }
+            let disc = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, base);
+            let payload_ty = match d.kind {
+                AbiParamKind::Scalar(p) => prim_to_clif(p),
+                _ => types::I64,
+            };
+            let payload =
+                b.ins().load(payload_ty, MemFlags::trusted(), args_ptr, base + 8);
+            typed_args.push(disc);
+            typed_args.push(payload);
         }
-        // #219: load the trailing validity bitmask (the slot after all
-        // params) and forward it as the kernel's last argument.
-        let mask_base = (kernel.abi_param_wire_slots() as i32) * 8;
-        let mask = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, mask_base);
-        typed_args.push(mask);
 
         let call = b.ins().call(typed_ref, &typed_args);
         // Two-word return shape comes from the same single source as
@@ -933,80 +911,57 @@ fn compile_into_function(
     let value_clone_helper = helper_refs
         .get("graphix_value_clone")
         .expect("graphix_value_clone helper must be registered");
+    let arcstr_clone_helper = helper_refs
+        .get("graphix_arcstr_clone")
+        .expect("graphix_arcstr_clone helper must be registered");
     for d in kernel.abi_params() {
-        match d.kind {
-            AbiParamKind::Scalar(prim) => {
-                let cty = prim_to_clif(prim);
-                let var = b.declare_var(cty);
-                b.def_var(var, initial_vals[d.wire_slot]);
-                env.bind_with_id(d.name.clone(), var, prim, d.bind_id);
-            }
+        // Two block params per kernel param: disc (carrying #219 taint
+        // from the dispatch) then payload. Composite / String / Value
+        // params clone (refcount-bump) on entry so the body owns them
+        // outright — a missing input arrives as a helper-safe placeholder
+        // (empty ValArray / empty ArcStr / `Value::Null`) so the clone
+        // runs harmlessly; the disc's TAINT guards it.
+        let disc = initial_vals[d.wire_slot];
+        let payload_in = initial_vals[d.wire_slot + 1];
+        let (payload, kind) = match d.kind {
+            AbiParamKind::Scalar(p) => (payload_in, LocalKind::Scalar(p)),
             AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
-                let borrowed = initial_vals[d.wire_slot];
-                let call = b.ins().call(clone_helper, &[borrowed]);
-                let owned = b.inst_results(call)[0];
-                let var = b.declare_var(types::I64);
-                b.def_var(var, owned);
-                env.bind_composite(d.name.clone(), var);
+                let call = b.ins().call(clone_helper, &[payload_in]);
+                (b.inst_results(call)[0], LocalKind::Composite)
             }
             AbiParamKind::String => {
-                // String param: borrowed ArcStr thin pointer at one
-                // slot; clone (refcount-bump) into an owned local so
-                // scope-exit drop discipline is uniform with locals.
-                let borrowed = initial_vals[d.wire_slot];
-                let clone = helper_refs
-                    .get("graphix_arcstr_clone")
-                    .expect("graphix_arcstr_clone helper must be registered");
-                let call = b.ins().call(clone, &[borrowed]);
-                let owned = b.inst_results(call)[0];
-                let var = b.declare_var(types::I64);
-                b.def_var(var, owned);
-                env.bind_string(d.name.clone(), var);
+                let call = b.ins().call(arcstr_clone_helper, &[payload_in]);
+                (b.inst_results(call)[0], LocalKind::String)
             }
             AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
-                let borrowed_disc = initial_vals[d.wire_slot];
-                let borrowed_payload = initial_vals[d.wire_slot + 1];
-                let call =
-                    b.ins().call(value_clone_helper, &[borrowed_disc, borrowed_payload]);
-                let (owned_disc, owned_payload) = {
-                    let r = b.inst_results(call);
-                    (r[0], r[1])
+                // Clean the disc for the clone helper (a tainted disc is
+                // an invalid tag); keep the tainted disc for the slot.
+                let clean = clean_disc(b, disc);
+                let call = b.ins().call(value_clone_helper, &[clean, payload_in]);
+                let owned_payload = b.inst_results(call)[1];
+                let kind = match d.kind {
+                    AbiParamKind::Variant => LocalKind::Variant,
+                    AbiParamKind::Nullable => LocalKind::Nullable,
+                    _ => LocalKind::Value,
                 };
-                let disc_var = b.declare_var(types::I64);
-                let payload_var = b.declare_var(types::I64);
-                b.def_var(disc_var, owned_disc);
-                b.def_var(payload_var, owned_payload);
-                let vv = ValueVar { disc: disc_var, payload: payload_var };
-                match d.kind {
-                    // #219: value inputs bind non-tainted; the taint of a
-                    // missing input comes from the validity bitmask bit at
-                    // the read (`input_validity_bit`), like scalars.
-                    AbiParamKind::Variant => env.bind_variant(d.name.clone(), vv, None),
-                    // Nullable and bare value-shape (DateTime/Duration/
-                    // Bytes) both ride the `nullables` ValueVar slot;
-                    // a `Local` read re-wraps to the declared type.
-                    AbiParamKind::Nullable | AbiParamKind::Value => {
-                        env.bind_nullable(d.name.clone(), vv, None)
-                    }
-                    _ => unreachable!(),
-                }
+                (owned_payload, kind)
             }
-        }
+        };
+        let disc_var = b.declare_var(types::I64);
+        b.def_var(disc_var, disc);
+        let payload_var = b.declare_var(local_payload_ty(kind));
+        b.def_var(payload_var, payload);
+        env.bind(
+            d.name.clone(),
+            ValueVar { disc: disc_var, payload: payload_var },
+            kind,
+            d.bind_id,
+        );
     }
     b.seal_block(entry);
-    // #219: bind the trailing validity-bitmask param (the block param
-    // after all real params) to a Variable for the body's per-region-
-    // input validity checks. It rides in `LowerCtx`, read by
-    // `emit_ref_node` when a `Ref` resolves to a possibly-missing input.
-    let validity_bitmask = {
-        let v = b.declare_var(types::I64);
-        b.def_var(v, initial_vals[kernel.abi_param_wire_slots()]);
-        Some(v)
-    };
-    // Snapshot the env now that every param (scalar, composite,
-    // variant) is bound. A TailCall rebind truncates back to exactly
-    // this — per-iteration block/select-arm locals are dropped, the
-    // params stay.
+    // Snapshot the env now that every param is bound. A TailCall rebind
+    // truncates back to exactly this — per-iteration block / select-arm
+    // locals are dropped, the params stay.
     let param_mark = env.mark();
 
     let loop_head = if kernel.has_tail_loop {
@@ -1042,8 +997,6 @@ fn compile_into_function(
         self_call: body_emitter.self_call(),
         type_env: body_emitter.type_env(),
         registry: body_emitter.registry(),
-        validity_bitmask,
-        input_bits: &kernel.input_bits,
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -1231,7 +1184,7 @@ pub(crate) struct LowerCtx<'a> {
     /// tail-call rebind truncates `env` back to this so per-iteration
     /// block / select-arm locals (scalar, composite, and variant)
     /// don't leak across iterations.
-    param_mark: EnvMark,
+    param_mark: usize,
     /// Cross-kernel call sites resolve their callee's `fn_name`
     /// through this map to a CLIF `FuncRef`. The caller must
     /// `declare_func_in_func` each callee's `FuncId` against the
@@ -1281,15 +1234,6 @@ pub(crate) struct LowerCtx<'a> {
     /// is individually boxed so its address survives Vec growth.
     lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
-    /// #219: the trailing validity-bitmask param Variable (one bit per
-    /// region input). `Some` for every kernel built by
-    /// `compile_into_function`.
-    validity_bitmask: Option<Variable>,
-    /// #219: region-input `BindId` → validity bit index (collect order,
-    /// mirrors `self.args[i]` at dispatch). A `Ref` whose BindId is in
-    /// this map reads a possibly-missing input — the read tests bit `i`
-    /// of `validity_bitmask` and taints the value.
-    input_bits: &'a nohash::IntMap<BindId, u32>,
     /// Lazily-created single `pending_exit` block. Created on the
     /// first composite-return DynCall site; its body (sentinel +
     /// `return`) is emitted at the end of `compile_into_function`.
@@ -1853,7 +1797,7 @@ mod value_disc {
 /// scalar into a `Value::T(x)`. Used by `IfChain` widening to
 /// `Nullable<T>` — the arm packs `(prim_to_value_disc(T), scalar)`
 /// inline rather than calling a helper.
-fn prim_to_value_disc(p: PrimType) -> i64 {
+pub(crate) fn prim_to_value_disc(p: PrimType) -> i64 {
     match p {
         PrimType::I8 => value_disc::I8,
         PrimType::I16 => value_disc::I16,
@@ -1879,417 +1823,262 @@ struct ValueVar {
     payload: Variable,
 }
 
-/// Result of emitting one expression node: either a single CLIF value
-/// (for scalar/composite/pointer-shaped exprs) or a Value-shaped
-/// `(disc, payload)` pair (for variant/nullable exprs). Consumers
-/// dispatch on the expression's `AbiKind`; the helpers `single()` /
-/// `value()` assert the expected variant and bail loudly if a site
-/// mishandles a Value-shaped result.
+/// Result of emitting one expression node: a `Value`-shaped
+/// `(disc, payload)` register pair, mirroring netidx's `#[repr(u64)]`
+/// `Value` layout. `disc` is always an `I64` discriminant word;
+/// `payload` keeps its NATURAL cranelift type within a kernel (`F64`
+/// for floats, `I8` for bools, `I64` for ints / pointers / the value
+/// word of a two-word Value).
+///
+/// `disc` doubles as the **taint channel** (#219). A real discriminant
+/// only occupies bits 0..31 (a bitmask — see [`value_disc`]), so bit 62
+/// ([`TAINT`]) is reserved to mark a value that MAY be a bottom (a div0,
+/// a `?`-error, a missing region input the taken path never consumes).
+/// Pure ops OR their operands' taint into the result disc
+/// ([`propagate_taint`]); the kernel FORCES at the output (and at
+/// destructuring consumers) via [`is_tainted`] — a tainted output makes
+/// `Kernel::update` return `None`, moving the abort from the producing
+/// site to the output so an intermediate bottom an un-taken arm never
+/// consumes can't abort the whole kernel (`design/representable_bottom.md`).
+///
+/// For a non-tainted value the disc is a compile-time constant cranelift
+/// folds out, so the uniform two-register shape costs nothing on the hot
+/// path while letting every consumer treat every value identically.
 #[derive(Debug, Clone, Copy)]
-pub enum CompiledExpr {
-    Single(ClifValue),
-    /// A scalar that MAY be a value-bottom (div/mod-by-zero, signed
-    /// MIN/-1, scalar `?` on an error). `valid` is an I8 0/1 bool —
-    /// 1 = has a value, 0 = bottom. A scalar that can't be bottom
-    /// stays [`CompiledExpr::Single`] (the taint optimization — zero
-    /// codegen cost for the common case). Taint propagates through
-    /// pure scalar ops (Bin/Cmp/BoolBin/Not/Cast/IfChain) and is
-    /// resolved at the kernel OUTPUT: an invalid output makes
-    /// `Kernel::update` return `None` (the boundary moves the abort
-    /// from the producing site to the output, so an intermediate
-    /// bottom an un-taken arm never consumes no longer aborts the
-    /// whole kernel — see `design/representable_bottom.md`).
-    Scalar2 {
-        value: ClifValue,
-        valid: ClifValue,
-    },
-    Value {
-        disc: ClifValue,
-        payload: ClifValue,
-    },
-    /// A two-word Value (variant / nullable / value-shape) that MAY be a
-    /// bottom — the 2-word analog of [`Scalar2`]. `valid` is an I8 0/1
-    /// (1 = has a value, 0 = bottom). Produced by a possibly-missing
-    /// non-scalar region-input read (#219); propagates through moves
-    /// (let / select-arm merge) and is resolved at the kernel OUTPUT or
-    /// a destructuring consumer. A Value that can't be bottom stays
-    /// [`Value`] (the taint optimization — zero codegen for the common
-    /// case).
-    Value2 {
-        disc: ClifValue,
-        payload: ClifValue,
-        valid: ClifValue,
-    },
+pub struct CompiledExpr {
+    pub disc: ClifValue,
+    pub payload: ClifValue,
 }
+
+/// The reserved taint bit of a [`CompiledExpr`]'s `disc`. Outside the
+/// [`value_disc`] bitmask range (bits 0..31) so it never collides with a
+/// real discriminant; set = "this value MAY be a bottom" (#219). Shared
+/// with the runtime dispatch (`kernel.rs`), which sets it for a missing
+/// input's disc word.
+pub(crate) const TAINT: i64 = 0x4000_0000_0000_0000;
 
 impl CompiledExpr {
-    /// Extract a definitely-valid scalar. A [`CompiledExpr::Scalar2`]
-    /// (a possibly-bottom scalar) errors — the caller doesn't handle
-    /// taint, so the kernel must fall back to the interpreter (which
-    /// represents bottom faithfully). This is the safe default: any
-    /// scalar consumer that hasn't been taught taint-propagation bails
-    /// the whole kernel to interp rather than silently dropping a
-    /// bottom. Consumers that DO propagate taint use
-    /// [`CompiledExpr::scalar_with_validity`].
-    fn single(self) -> Result<ClifValue> {
-        match self {
-            CompiledExpr::Single(v) => Ok(v),
-            CompiledExpr::Scalar2 { .. } => Err(anyhow!(
-                "JIT: scalar consumer reached a possibly-bottom (Scalar2) \
-                 value but doesn't propagate validity — bail to interp"
-            )),
-            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => Err(anyhow!(
-                "JIT: expected single CLIF value, got Value-shaped (disc, \
-                 payload) pair — emission is malformed or consumer is wrong"
-            )),
-        }
-    }
-
-    /// Extract a scalar value together with its I8 validity bit. A
-    /// non-tainted [`CompiledExpr::Single`] is always valid (validity
-    /// = `iconst.I8 1`). Used by the taint-propagating consumers
-    /// (Bin/Cmp/BoolBin/Not/Cast/IfChain/Return). Errors on a
-    /// Value-shape result (consumer in scalar position).
-    fn scalar_with_validity(
-        self,
-        b: &mut FunctionBuilder,
-    ) -> Result<(ClifValue, ClifValue)> {
-        match self {
-            CompiledExpr::Single(v) => {
-                let valid = b.ins().iconst(types::I8, 1);
-                Ok((v, valid))
-            }
-            CompiledExpr::Scalar2 { value, valid } => Ok((value, valid)),
-            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => Err(anyhow!(
-                "JIT: expected scalar, got Value-shaped (disc, payload) \
-                 pair — emission is malformed or consumer is wrong"
-            )),
-        }
-    }
-
-    fn value(self) -> Result<(ClifValue, ClifValue)> {
-        match self {
-            CompiledExpr::Value { disc, payload } => Ok((disc, payload)),
-            CompiledExpr::Value2 { .. } => Err(anyhow!(
-                "JIT: 2-word consumer reached a possibly-bottom (Value2) \
-                 value but doesn't propagate validity — bail to interp"
-            )),
-            CompiledExpr::Single(_) | CompiledExpr::Scalar2 { .. } => Err(anyhow!(
-                "JIT: expected Value-shaped (disc, payload), got single \
-                     — emission is malformed or consumer is wrong"
-            )),
-        }
-    }
-
-    /// Extract a 2-word Value together with its optional I8 validity
-    /// (`None` = a non-tainted [`Value`], always valid). The 2-word
-    /// analog of [`Self::scalar_with_validity`]. Errors on a scalar shape.
-    fn value_with_validity(self) -> Result<(ClifValue, ClifValue, Option<ClifValue>)> {
-        match self {
-            CompiledExpr::Value { disc, payload } => Ok((disc, payload, None)),
-            CompiledExpr::Value2 { disc, payload, valid } => {
-                Ok((disc, payload, Some(valid)))
-            }
-            CompiledExpr::Single(_) | CompiledExpr::Scalar2 { .. } => Err(anyhow!(
-                "JIT: expected Value-shaped (disc, payload), got single \
-                 — emission is malformed or consumer is wrong"
-            )),
-        }
+    pub fn new(disc: ClifValue, payload: ClifValue) -> Self {
+        Self { disc, payload }
     }
 }
 
-/// Combine the validity bits of several operands into the result
-/// validity. Returns `None` when every operand is non-tainted
-/// (`Single`) — the result should stay `Single` (the fast path, zero
-/// codegen). Returns `Some(band(...))` when at least one operand is
-/// tainted (`Scalar2`) — the result must be `Scalar2`. A bottom in any
-/// consumed operand taints the result (`valid = AND of operand
-/// validities`), mirroring the interp's `?`-absorb.
-fn combine_validity(
+/// An `I64` discriminant constant for a scalar of `prim` (taint clear).
+fn scalar_disc(b: &mut FunctionBuilder, prim: PrimType) -> ClifValue {
+    b.ins().iconst(types::I64, prim_to_value_disc(prim))
+}
+
+/// OR the [`TAINT`] bit of each operand disc into `base`, yielding the
+/// result disc. The fast path (every operand a non-tainted const disc)
+/// folds back to `base`. Mirrors the interp's `?`-absorb: any consumed
+/// bottom taints the result.
+fn propagate_taint(
     b: &mut FunctionBuilder,
-    operands: &[CompiledExpr],
-) -> Option<ClifValue> {
-    let mut acc: Option<ClifValue> = None;
+    base: ClifValue,
+    operands: &[ClifValue],
+) -> ClifValue {
+    let mut disc = base;
     for op in operands {
-        let valid = match op {
-            CompiledExpr::Scalar2 { valid, .. } => Some(*valid),
-            CompiledExpr::Value2 { valid, .. } => Some(*valid),
-            CompiledExpr::Single(_) | CompiledExpr::Value { .. } => None,
-        };
-        if let Some(valid) = valid {
-            acc = Some(match acc {
-                None => valid,
-                Some(a) => b.ins().band(a, valid),
-            });
-        }
+        let t = b.ins().band_imm(*op, TAINT);
+        disc = b.ins().bor(disc, t);
     }
-    acc
+    disc
 }
 
-/// Wrap a computed scalar `value` with combined operand validity:
-/// `Single` if no operand was tainted, else `Scalar2`.
-fn scalar_result(value: ClifValue, validity: Option<ClifValue>) -> CompiledExpr {
-    match validity {
-        None => CompiledExpr::Single(value),
-        Some(valid) => CompiledExpr::Scalar2 { value, valid },
-    }
+/// Fold `base` with a conditional taint: when `cond` (an I8 0/1) is
+/// true, OR [`TAINT`] into the disc. Used where a computed condition
+/// signals bottom (a div0, a `?`-error).
+fn taint_if(b: &mut FunctionBuilder, base: ClifValue, cond: ClifValue) -> ClifValue {
+    let tainted = b.ins().bor_imm(base, TAINT);
+    b.ins().select(cond, tainted, base)
 }
 
-/// Wrap a computed 2-word Value with combined operand validity:
-/// `Value` if no operand was tainted, else `Value2`. The 2-word analog
-/// of [`scalar_result`].
-fn value_result(
-    disc: ClifValue,
-    payload: ClifValue,
-    validity: Option<ClifValue>,
-) -> CompiledExpr {
-    match validity {
-        None => CompiledExpr::Value { disc, payload },
-        Some(valid) => CompiledExpr::Value2 { disc, payload, valid },
-    }
+/// True (I8 bool) iff the disc's [`TAINT`] bit is set.
+fn is_tainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
+    let t = b.ins().band_imm(disc, TAINT);
+    b.ins().icmp_imm(IntCC::NotEqual, t, 0)
 }
 
-/// AND two optional I8 validity bits. `None` = no taint (definitely
-/// valid). Used at a read to fold the binding-level taint together with
-/// the per-cycle validity-bitmask bit (#219).
-fn and_validity(
-    b: &mut FunctionBuilder,
-    a: Option<ClifValue>,
-    c: Option<ClifValue>,
-) -> Option<ClifValue> {
-    match (a, c) {
-        (None, None) => None,
-        (Some(v), None) | (None, Some(v)) => Some(v),
-        (Some(x), Some(y)) => Some(b.ins().band(x, y)),
-    }
+/// True (I8 bool) iff the disc's [`TAINT`] bit is CLEAR — the
+/// "continue / has-a-value" bit consumed by [`emit_bottom_abort`].
+fn is_untainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
+    let t = b.ins().band_imm(disc, TAINT);
+    b.ins().icmp_imm(IntCC::Equal, t, 0)
+}
+
+/// Strip the [`TAINT`] bit, yielding the real netidx discriminant. Used
+/// before a disc crosses into a netidx-`Value` helper (a tainted disc is
+/// an invalid tag) and before a structural disc compare.
+fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
+    b.ins().band_imm(disc, !TAINT)
 }
 
 // ─── Env: name → Variable lookup ─────────────────────────────────
 
+/// What a [`Local`]'s `payload` word means and how it is owned/dropped
+/// at scope exit. The `disc` word always carries the netidx
+/// discriminant (and #219 taint); `kind` says how to read and free the
+/// `payload`.
+#[derive(Debug, Clone, Copy)]
+enum LocalKind {
+    /// `payload` is the scalar value at its natural CLIF type; nothing
+    /// to drop.
+    Scalar(PrimType),
+    /// `payload` is an owned `*mut ValArray` (array / tuple / struct);
+    /// dropped via `graphix_valarray_drop`. Reads are BORROWED (the env
+    /// keeps owning); consumers clone when they need ownership.
+    Composite,
+    /// `payload` is an owned `ArcStr` thin pointer; dropped via
+    /// `graphix_arcstr_drop`. Reads CLONE (refcount bump) so each
+    /// consumer gets an independently-owned ArcStr.
+    String,
+    /// `payload` is the value word of a two-word `repr(u64)` Value;
+    /// dropped via `graphix_value_drop(disc, payload)`; reads BORROWED.
+    /// Variant / Nullable / bare value-shape stay distinct for
+    /// consumer-op well-typedness (`IsNull` vs `VariantTagEq`).
+    Variant,
+    Nullable,
+    Value,
+}
+
+/// One in-scope kernel local. Every local is a two-register Value
+/// (`vv` = disc + payload Variables) tagged by `kind`; the disc carries
+/// #219 taint uniformly, so there is no separate validity slot. The
+/// `payload` Variable's CLIF type follows `kind` (a scalar's natural
+/// type, else `I64` for a pointer / value word).
+struct Local {
+    name: ArcStr,
+    vv: ValueVar,
+    kind: LocalKind,
+    /// `Some` for params and lets carrying a source BindId, so a `Ref`
+    /// resolves BindId-first (exact under shadowing — the #162/#167 bug
+    /// class). `None` for synthetic locals (e.g. an HOF loop element
+    /// bound only by name).
+    bind_id: Option<BindId>,
+}
+
 pub(crate) struct JitEnv {
-    /// Scalar locals: `(name, var, valid, prim)`. Lookups walk
-    /// back-to-front for proper shadowing. `valid` is `Some(var)`
-    /// only for a TAINTED local (`let v = 1/0`) — its I8 validity bit
-    /// rides alongside the value so `let`-bound bottoms flow through a
-    /// later read; a non-tainted local has `valid: None` (the fast
-    /// path, read back as `CompiledExpr::Single`).
-    locals: Vec<(ArcStr, Variable, Option<Variable>, PrimType, Option<BindId>)>,
-    /// Composite parameter pointer Variables: `(name, var, bind_id)`.
-    /// The var holds a `*const ValArray` (CLIF i64 on 64-bit targets).
-    /// Array, tuple, and struct params share this table — they differ
-    /// only in how the kernel reads slots, not in the pointer layout.
-    /// `bind_id` is `Some` only for slots bound via
-    /// [`Self::bind_composite_with_id`] (currently the HOF loop
-    /// element); lookups resolve BindId-first with name fallback,
-    /// mirroring `locals`.
-    composites: Vec<(ArcStr, Variable, Option<BindId>)>,
-    /// Variant locals — each entry holds a [`ValueVar`] (`disc`,
-    /// `payload`) representing the two-word `repr(u64)` Value. Reads
-    /// return both Variables via `b.use_var`; consumer ops
-    /// (`VariantTagEq`, `VariantPayload`, `IsNull`) take the pair.
-    /// Drop / clone happen via the two-register helpers
-    /// `graphix_value_drop` / `graphix_value_clone`. The third element
-    /// is the I8 validity Variable for a TAINTED 2-word local (#219) —
-    /// `Some` only when a `let`-bound value may be bottom; `None` is the
-    /// fast path (read back as [`CompiledExpr::Value`]).
-    variants: Vec<(ArcStr, ValueVar, Option<Variable>)>,
-    /// Nullable locals — identical storage to `variants` (the Value
-    /// is either `Value::Null` or `T`'s runtime form), but kept
-    /// semantically distinct so `IsNull` against an `env.nullables`
-    /// entry is well-typed even though `VariantTagEq` against the
-    /// same shape would also work. Third element: the I8 validity
-    /// Variable for a tainted 2-word local (#219), like `variants`.
-    nullables: Vec<(ArcStr, ValueVar, Option<Variable>)>,
-    /// String locals: `(name, var)` where `var` holds an owned
-    /// `ArcStr`'s thin pointer as a single `i64`. A local read
-    /// of a String-typed Ref reads the slot and
-    /// `graphix_arcstr_clone`s it (refcount bump) so each consumer
-    /// gets an independently-owned ArcStr — the slot keeps its
-    /// own ref until scope exit where it drops via
-    /// `graphix_arcstr_drop`. Mirrors the variant/nullable
-    /// ownership discipline.
-    strings: Vec<(ArcStr, Variable)>,
+    /// All in-scope locals in binding order. Lookups walk back-to-front
+    /// so an inner binding shadows an outer one. `mark`/`truncate` track
+    /// the single Vec length — a block / select-arm / loop-body scope
+    /// pops back to its entry length on exit.
+    locals: Vec<Local>,
 }
 
 impl JitEnv {
     fn new() -> Self {
-        Self {
-            locals: Vec::with_capacity(8),
-            composites: Vec::new(),
-            variants: Vec::new(),
-            nullables: Vec::new(),
-            strings: Vec::new(),
-        }
+        Self { locals: Vec::with_capacity(8) }
     }
 
-    /// Bind a non-tainted scalar local carrying its source BindId —
-    /// the direct path's params and lets, so `Ref` emission resolves
-    /// BindId-first (exact under shadowing, where basenames alias —
-    /// the #162/#167 bug class).
-    fn bind_with_id(
+    fn bind(
         &mut self,
         name: ArcStr,
-        var: Variable,
-        prim: PrimType,
+        vv: ValueVar,
+        kind: LocalKind,
         bind_id: Option<BindId>,
     ) {
-        self.locals.push((name, var, None, prim, bind_id));
+        self.locals.push(Local { name, vv, kind, bind_id });
     }
 
-    /// Bind a possibly-tainted scalar local — `valid` is its I8
-    /// validity Variable — carrying its source BindId. A later local
-    /// read returns `CompiledExpr::Scalar2 { value, valid }`.
-    fn bind_tainted_with_id(
-        &mut self,
-        name: ArcStr,
-        var: Variable,
-        valid: Variable,
-        prim: PrimType,
-        bind_id: Option<BindId>,
-    ) {
-        self.locals.push((name, var, Some(valid), prim, bind_id));
-    }
-
-    fn bind_composite(&mut self, name: ArcStr, var: Variable) {
-        self.composites.push((name, var, None));
-    }
-
-    /// [`Self::bind_composite`] carrying its source BindId — the
-    /// composite analogue of [`Self::bind_with_id`], so a composite
-    /// `Ref` resolves BindId-first (exact under shadowing).
-    fn bind_composite_with_id(
-        &mut self,
-        name: ArcStr,
-        var: Variable,
-        bind_id: Option<BindId>,
-    ) {
-        self.composites.push((name, var, bind_id));
-    }
-
-    fn bind_variant(&mut self, name: ArcStr, vv: ValueVar, valid: Option<Variable>) {
-        self.variants.push((name, vv, valid));
-    }
-
-    fn bind_nullable(&mut self, name: ArcStr, vv: ValueVar, valid: Option<Variable>) {
-        self.nullables.push((name, vv, valid));
-    }
-
-    fn bind_string(&mut self, name: ArcStr, var: Variable) {
-        self.strings.push((name, var));
-    }
-
-    fn lookup(&self, name: &str) -> Option<(Variable, Option<Variable>, PrimType)> {
-        for (n, v, valid, p, _) in self.locals.iter().rev() {
-            if n.as_str() == name {
-                return Some((*v, *valid, *p));
-            }
+    /// Resolve a local BindId-first (exact under shadowing), then by
+    /// name (id-less synthetic locals). Walks back-to-front.
+    fn lookup(&self, id: BindId, name: &str) -> Option<&Local> {
+        if let Some(l) = self.locals.iter().rev().find(|l| l.bind_id == Some(id)) {
+            return Some(l);
         }
-        None
+        self.lookup_name(name)
     }
 
-    /// Resolve a scalar slot by its source BindId — exact (no
-    /// shadowing ambiguity). Only slots bound via the `_with_id`
-    /// variants are found here; callers fall back to the name lookup
-    /// for id-less slots.
-    fn lookup_bind_id(
-        &self,
-        id: BindId,
-    ) -> Option<(Variable, Option<Variable>, PrimType)> {
-        for (_, v, valid, p, bid) in self.locals.iter().rev() {
-            if *bid == Some(id) {
-                return Some((*v, *valid, *p));
-            }
-        }
-        None
+    /// Resolve a local by name only — for sites with no BindId (string /
+    /// variant / nullable / value reads via `ref_local_name`).
+    fn lookup_name(&self, name: &str) -> Option<&Local> {
+        self.locals.iter().rev().find(|l| l.name.as_str() == name)
     }
 
-    fn lookup_composite(&self, name: &str) -> Option<Variable> {
-        for (n, v, _) in self.composites.iter().rev() {
-            if n.as_str() == name {
-                return Some(*v);
-            }
-        }
-        None
-    }
-
-    /// Resolve a composite slot by its source BindId — see
-    /// [`Self::lookup_bind_id`]. Only slots bound via
-    /// [`Self::bind_composite_with_id`] are found here; callers fall
-    /// back to the name lookup for id-less slots.
-    fn lookup_composite_bind_id(&self, id: BindId) -> Option<Variable> {
-        for (_, v, bid) in self.composites.iter().rev() {
-            if *bid == Some(id) {
-                return Some(*v);
-            }
-        }
-        None
-    }
-
-    fn lookup_variant(&self, name: &str) -> Option<(ValueVar, Option<Variable>)> {
-        for (n, vv, valid) in self.variants.iter().rev() {
-            if n.as_str() == name {
-                return Some((*vv, *valid));
-            }
-        }
-        None
-    }
-
-    fn lookup_nullable(&self, name: &str) -> Option<(ValueVar, Option<Variable>)> {
-        for (n, vv, valid) in self.nullables.iter().rev() {
-            if n.as_str() == name {
-                return Some((*vv, *valid));
-            }
-        }
-        None
-    }
-
-    fn lookup_string(&self, name: &str) -> Option<Variable> {
-        for (n, v) in self.strings.iter().rev() {
-            if n.as_str() == name {
-                return Some(*v);
-            }
-        }
-        None
-    }
-
-    /// Snapshot the lengths of all three binding lists. Pair with
-    /// `truncate` to pop every binding introduced since the mark —
-    /// composite/variant bindings included, so a block / select-arm /
-    /// loop-body scope doesn't leak names into its enclosing scope.
+    /// Snapshot the binding list length. Pair with [`Self::truncate`] to
+    /// pop every binding introduced since the mark, so a block /
+    /// select-arm / loop-body scope doesn't leak names into its
+    /// enclosing scope.
     ///
     /// `truncate` does NOT emit any runtime drops. Dropping owned
-    /// composite/variant locals is the responsibility of the
-    /// scope-exit code (block emission) or the terminating return
-    /// (`drop_owned_composites`); `truncate` is
-    /// purely compile-time `env`-Vec hygiene.
-    fn mark(&self) -> EnvMark {
-        EnvMark {
-            locals: self.locals.len(),
-            composites: self.composites.len(),
-            variants: self.variants.len(),
-            nullables: self.nullables.len(),
-            strings: self.strings.len(),
-        }
+    /// composite / string / value locals is the scope-exit code's job
+    /// (`emit_scope_drops`) or the terminating return
+    /// (`drop_owned_composites`); `truncate` is purely compile-time env
+    /// hygiene.
+    fn mark(&self) -> usize {
+        self.locals.len()
     }
 
-    fn truncate(&mut self, m: EnvMark) {
-        self.locals.truncate(m.locals);
-        self.composites.truncate(m.composites);
-        self.variants.truncate(m.variants);
-        self.nullables.truncate(m.nullables);
-        self.strings.truncate(m.strings);
+    fn truncate(&mut self, mark: usize) {
+        self.locals.truncate(mark);
     }
 }
 
-/// A snapshot of a [`JitEnv`]'s binding-list lengths — see
-/// [`JitEnv::mark`].
-#[derive(Debug, Clone, Copy)]
-struct EnvMark {
-    locals: usize,
-    composites: usize,
-    variants: usize,
-    nullables: usize,
-    strings: usize,
+/// The CLIF payload type for a local of `kind` — a scalar's natural
+/// type, else `I64` (pointer / value word).
+fn local_payload_ty(kind: LocalKind) -> ClifType {
+    match kind {
+        LocalKind::Scalar(p) => prim_to_clif(p),
+        _ => types::I64,
+    }
+}
+
+/// Declare fresh disc + payload Variables holding `disc`/`payload`, then
+/// bind them as a [`Local`] of `kind`. The single end-state bind path —
+/// every local is a two-register Value carrying its own taint in the
+/// disc.
+fn bind_local(
+    cx: &mut BodyCx,
+    name: ArcStr,
+    disc: ClifValue,
+    payload: ClifValue,
+    kind: LocalKind,
+    bind_id: Option<BindId>,
+) {
+    let dv = cx.b.declare_var(types::I64);
+    cx.b.def_var(dv, disc);
+    let pv = cx.b.declare_var(local_payload_ty(kind));
+    cx.b.def_var(pv, payload);
+    cx.env.bind(name, ValueVar { disc: dv, payload: pv }, kind, bind_id);
+}
+
+/// Emit an HOF operand and FORCE its #219 taint (a tainted operand
+/// bottoms the whole HOF), returning the payload word. Used by the
+/// stdlib array HOF `emit_clif` impls for operands whose scaffold has no
+/// per-value taint channel — the source array, a scalar predicate /
+/// body, a composite flat_map body, the `init` count. Folds to no branch
+/// for an untainted operand.
+pub fn emit_forced<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    node: &Node<R, E>,
+) -> Result<ClifValue> {
+    let cv = node.emit_clif(cx)?;
+    let valid = is_untainted(cx.b, cv.disc);
+    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    Ok(cv.payload)
+}
+
+/// Wrap an owned `*mut ValArray` pointer as a composite [`CompiledExpr`]
+/// (const `ARRAY` disc). The result of an HOF that produces an array.
+pub fn array_result(cx: &mut BodyCx, ptr: ClifValue) -> CompiledExpr {
+    let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    CompiledExpr::new(disc, ptr)
+}
+
+/// Bind an EXISTING scalar Variable as a local (a loop counter /
+/// accumulator the scaffold rebinds in place — `bind_local` would
+/// declare a fresh one). Synthesizes a const untainted disc Variable.
+pub(crate) fn bind_scalar_var(
+    cx: &mut BodyCx,
+    name: ArcStr,
+    prim: PrimType,
+    payload_var: Variable,
+    bind_id: Option<BindId>,
+) {
+    let disc = scalar_disc(cx.b, prim);
+    let dv = cx.b.declare_var(types::I64);
+    cx.b.def_var(dv, disc);
+    cx.env.bind(name, ValueVar { disc: dv, payload: payload_var }, LocalKind::Scalar(prim), bind_id);
 }
 
 // ─── Body / statement compilation ────────────────────────────────
@@ -2316,12 +2105,13 @@ fn emit_tail_rebind_jump(
     })?;
     // Back-compat: hand-built test kernels leave `tail_call_slots`
     // empty and assume all params are scalar in declaration order.
-    // Drive the rebind positionally in that case.
+    // Drive the rebind positionally in that case. Payload only — the
+    // formals' discs stay (valid by the arg force in
+    // `emit_self_tail_call`).
     if ctx.tail_call_slots.is_none() {
-        debug_assert_eq!(new_vals.len(), ctx.param_mark.locals);
+        debug_assert_eq!(new_vals.len(), ctx.param_mark);
         for (i, v) in new_vals.iter().enumerate() {
-            let (var, _) = (env.locals[i].1, env.locals[i].2);
-            b.def_var(var, *v);
+            b.def_var(env.locals[i].vv.payload, *v);
         }
         env.truncate(ctx.param_mark);
         b.ins().jump(head, &[]);
@@ -2355,22 +2145,30 @@ fn emit_tail_rebind_jump(
     for (slot, v) in slots.iter().zip(new_vals.iter()) {
         match slot.kind {
             TailCallSlotKind::Scalar(_) => {
-                let (var, _, _) = env.lookup(&slot.name).ok_or_else(|| {
-                    anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
-                })?;
-                b.def_var(var, *v);
+                let pv = env
+                    .lookup_name(&slot.name)
+                    .ok_or_else(|| {
+                        anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
+                    })?
+                    .vv
+                    .payload;
+                b.def_var(pv, *v);
             }
             TailCallSlotKind::ValArray => {
                 // Composite rebind: drop the previously-owned pointer
                 // in the slot, then store the new owned
                 // `*mut ValArray`. This closes the leak we had in
                 // Phase 2.
-                let var = env.lookup_composite(&slot.name).ok_or_else(|| {
-                    anyhow!("TailCall: composite slot `{}` not in env", slot.name)
-                })?;
-                let old = b.use_var(var);
+                let pv = env
+                    .lookup_name(&slot.name)
+                    .ok_or_else(|| {
+                        anyhow!("TailCall: composite slot `{}` not in env", slot.name)
+                    })?
+                    .vv
+                    .payload;
+                let old = b.use_var(pv);
                 b.ins().call(drop_helper, &[old]);
-                b.def_var(var, *v);
+                b.def_var(pv, *v);
             }
             TailCallSlotKind::Variant => {
                 return Err(anyhow!("JIT: variant tail-call rebind not yet supported"));
@@ -2419,40 +2217,34 @@ fn emit_tail_rebind_jump(
         .get("graphix_arcstr_drop")
         .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
     // Composite slot rebinds already drop their old value (above);
-    // skip any entry whose name matches a `TailCallSlotKind::ValArray`
-    // slot. Same for future variant/nullable rebind slots once
-    // they're supported.
+    // skip any entry whose name matches a rebind slot. Drop every other
+    // owned non-slot local above the param mark, by kind.
     let slot_names: std::collections::HashSet<&str> =
         slots.iter().map(|s| s.name.as_str()).collect();
-    for (name, var, _) in &env.composites[ctx.param_mark.composites..] {
-        if slot_names.contains(name.as_str()) {
-            continue;
+    let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> = env.locals
+        [ctx.param_mark..]
+        .iter()
+        .filter(|l| !slot_names.contains(l.name.as_str()))
+        .map(|l| (l.kind, l.vv))
+        .collect();
+    for (kind, vv) in drops {
+        match kind {
+            LocalKind::Scalar(_) => {}
+            LocalKind::Composite => {
+                let ptr = b.use_var(vv.payload);
+                b.ins().call(arr_drop, &[ptr]);
+            }
+            LocalKind::String => {
+                let ptr = b.use_var(vv.payload);
+                b.ins().call(str_drop, &[ptr]);
+            }
+            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                let disc = b.use_var(vv.disc);
+                let disc = clean_disc(b, disc);
+                let payload = b.use_var(vv.payload);
+                b.ins().call(val_drop, &[disc, payload]);
+            }
         }
-        let ptr = b.use_var(*var);
-        b.ins().call(arr_drop, &[ptr]);
-    }
-    for (name, vv, _) in &env.variants[ctx.param_mark.variants..] {
-        if slot_names.contains(name.as_str()) {
-            continue;
-        }
-        let disc = b.use_var(vv.disc);
-        let payload = b.use_var(vv.payload);
-        b.ins().call(val_drop, &[disc, payload]);
-    }
-    for (name, vv, _) in &env.nullables[ctx.param_mark.nullables..] {
-        if slot_names.contains(name.as_str()) {
-            continue;
-        }
-        let disc = b.use_var(vv.disc);
-        let payload = b.use_var(vv.payload);
-        b.ins().call(val_drop, &[disc, payload]);
-    }
-    for (name, var) in &env.strings[ctx.param_mark.strings..] {
-        if slot_names.contains(name.as_str()) {
-            continue;
-        }
-        let ptr = b.use_var(*var);
-        b.ins().call(str_drop, &[ptr]);
     }
     // Compile-time env-Vec hygiene: pop everything above the param
     // mark so the next iteration starts with a clean lexical state.
@@ -2746,21 +2538,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing helper {name}"))
     }
 
-    /// #219: the I8 validity bit (0/1) for a region-input read, or
-    /// `None` if `id` isn't a region input (a local, or an input
-    /// always present). Extracts bit `i` of the per-cycle validity
-    /// bitmask, where `i` is the input's collect-order index. A read of
-    /// a possibly-missing input taints with this bit so the kernel
-    /// bottoms only when the taken path consumes the missing value.
-    pub(crate) fn input_validity_bit(&mut self, id: BindId) -> Option<ClifValue> {
-        let i = *self.ctx.input_bits.get(&id)?;
-        let bm = self.ctx.validity_bitmask?;
-        let mask = self.b.use_var(bm);
-        let shifted = self.b.ins().ushr_imm(mask, i64::from(i));
-        let low = self.b.ins().band_imm(shifted, 1);
-        Some(self.b.ins().ireduce(types::I8, low))
-    }
-
     /// Stable `*const ArcStr` for `s` as an `iconst`, interned lazily
     /// at emission (no body prewalk on the direct path — coverage is
     /// exact by construction). The arena entry is individually boxed
@@ -2882,10 +2659,16 @@ pub fn ensure_owned_value_src(
     match src {
         CompositeSource::Owned => Ok((disc, payload)),
         CompositeSource::Borrowed => {
+            // Clean the disc for the clone helper (a tainted disc is an
+            // invalid tag — a missing input arrives as `Value::Null`),
+            // then re-attach the taint to the owned result (#219).
             let clone = cx.helper("graphix_value_clone")?;
-            let call = cx.b.ins().call(clone, &[disc, payload]);
-            let r = cx.b.inst_results(call);
-            Ok((r[0], r[1]))
+            let clean = clean_disc(cx.b, disc);
+            let call = cx.b.ins().call(clone, &[clean, payload]);
+            let owned_payload = cx.b.inst_results(call)[1];
+            let owned_disc = cx.b.inst_results(call)[0];
+            let disc = propagate_taint(cx.b, owned_disc, &[disc]);
+            Ok((disc, owned_payload))
         }
     }
 }
@@ -2898,6 +2681,62 @@ pub fn ensure_owned_value_src(
 /// pended means the caller discards the result — drop it instead of
 /// leaking); a possibly-bottom scalar routes its validity through the
 /// pending exit (the OUTPUT-consumes-bottom rule).
+/// Get (or lazily create) the kernel's single `pending_exit` block —
+/// where every forced-bottom path jumps after dropping the owned set.
+/// Its body (sentinel + `return`) is emitted at the end of
+/// `compile_into_function`.
+fn pending_exit_block(cx: &mut BodyCx) -> Block {
+    let mut slot = cx.ctx.pending_exit.borrow_mut();
+    match *slot {
+        Some(blk) => blk,
+        None => {
+            let blk = cx.b.create_block();
+            *slot = Some(blk);
+            blk
+        }
+    }
+}
+
+/// #219 FORCE: if `disc` is tainted, drop the owned result (`drop_fn`),
+/// set pending, run the owned-set cleanup, and jump `pending_exit`;
+/// otherwise fall through. On return the builder is positioned in the
+/// untainted (valid) block. Folds to no branch for an untainted const
+/// disc.
+fn emit_force(
+    cx: &mut BodyCx,
+    disc: ClifValue,
+    drop_fn: impl FnOnce(&mut BodyCx) -> Result<()>,
+) -> Result<()> {
+    let tainted = is_tainted(cx.b, disc);
+    let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+    let pre = cx.b.create_block();
+    let ret = cx.b.create_block();
+    let exit = pending_exit_block(cx);
+    cx.b.ins().brif(tainted, pre, &[], ret, &[]);
+    cx.b.switch_to_block(pre);
+    cx.b.seal_block(pre);
+    drop_fn(cx)?;
+    cx.b.ins().call(pending_set, &[]);
+    emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+    cx.b.ins().jump(exit, &[]);
+    cx.b.switch_to_block(ret);
+    cx.b.seal_block(ret);
+    Ok(())
+}
+
+/// Unconditionally bottom the kernel from the current block: set the
+/// pending flag, drop the in-flight owned set, and jump to
+/// `pending_exit` (so `Kernel::update` returns `None`). Terminates the
+/// block.
+fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
+    let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+    let exit = pending_exit_block(cx);
+    cx.b.ins().call(pending_set, &[]);
+    emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+    cx.b.ins().jump(exit, &[]);
+    Ok(())
+}
+
 fn emit_kernel_return(
     cx: &mut BodyCx,
     return_type: &Type,
@@ -2906,50 +2745,27 @@ fn emit_kernel_return(
 ) -> Result<()> {
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let (disc, payload, valid) = match cv {
-                CompiledExpr::Value { disc, payload } => (disc, payload, None),
-                CompiledExpr::Value2 { disc, payload, valid } => {
-                    (disc, payload, Some(valid))
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "emit_kernel_return: Value-shape return got a \
-                         non-Value result"
-                    ));
-                }
-            };
-            let (disc, payload) = ensure_owned_value_src(cx, src, disc, payload)?;
-            // #219: a tainted (`Value2`) result FORCES at the output — the
-            // node-walk's "bottom iff the output consumes a bottom". Branch
-            // on the validity bit: valid → return; invalid → drop the owned
-            // result and bottom (set pending, jump `pending_exit`). Mirrors
-            // the scalar `Scalar2` return below.
-            if let Some(valid) = valid {
-                let val_drop = cx.helper("graphix_value_drop")?;
-                let pending_set = cx.helper("graphix_dyncall_set_pending")?;
-                let pre_pending = cx.b.create_block();
-                let ret_block = cx.b.create_block();
-                let pending_exit = {
-                    let mut slot = cx.ctx.pending_exit.borrow_mut();
-                    match *slot {
-                        Some(blk) => blk,
-                        None => {
-                            let blk = cx.b.create_block();
-                            *slot = Some(blk);
-                            blk
-                        }
-                    }
-                };
-                cx.b.ins().brif(valid, ret_block, &[], pre_pending, &[]);
-                cx.b.switch_to_block(pre_pending);
-                cx.b.seal_block(pre_pending);
-                cx.b.ins().call(val_drop, &[disc, payload]);
-                cx.b.ins().call(pending_set, &[]);
-                emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-                cx.b.ins().jump(pending_exit, &[]);
-                cx.b.switch_to_block(ret_block);
-                cx.b.seal_block(ret_block);
-            }
+            let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
+            // #219: FORCE at the output — a tainted result bottoms (drop the
+            // owned value, set pending, jump `pending_exit`); else fall
+            // through and return. `is_tainted` folds to const-false for an
+            // untainted disc, so a non-bottom return emits no branch.
+            let tainted = is_tainted(cx.b, disc);
+            let val_drop = cx.helper("graphix_value_drop")?;
+            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+            let pre_pending = cx.b.create_block();
+            let ret_block = cx.b.create_block();
+            let pending_exit = pending_exit_block(cx);
+            cx.b.ins().brif(tainted, pre_pending, &[], ret_block, &[]);
+            cx.b.switch_to_block(pre_pending);
+            cx.b.seal_block(pre_pending);
+            let clean = clean_disc(cx.b, disc);
+            cx.b.ins().call(val_drop, &[clean, payload]);
+            cx.b.ins().call(pending_set, &[]);
+            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().jump(pending_exit, &[]);
+            cx.b.switch_to_block(ret_block);
+            cx.b.seal_block(ret_block);
             emit_return_pending_check(
                 cx.b,
                 cx.env,
@@ -2960,8 +2776,14 @@ fn emit_kernel_return(
             cx.b.ins().return_(&[disc, payload]);
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let v = cv.single()?;
-            let v = ensure_owned_composite_src(cx, src, v)?;
+            let v = ensure_owned_composite_src(cx, src, cv.payload)?;
+            // #219: a tainted composite output bottoms — drop the owned
+            // array on the tainted path (folds away when untainted).
+            emit_force(cx, cv.disc, |cx| {
+                let d = cx.helper("graphix_valarray_drop")?;
+                cx.b.ins().call(d, &[v]);
+                Ok(())
+            })?;
             emit_return_pending_check(
                 cx.b,
                 cx.env,
@@ -2974,49 +2796,39 @@ fn emit_kernel_return(
         Some(AbiKind::String) => {
             // String results are owned at production (reads clone);
             // no ensure needed.
-            let v = cv.single()?;
-            emit_return_pending_check(cx.b, cx.env, cx.ctx, ReturnDropShape::String(v))?;
+            emit_force(cx, cv.disc, |cx| {
+                let d = cx.helper("graphix_arcstr_drop")?;
+                cx.b.ins().call(d, &[cv.payload]);
+                Ok(())
+            })?;
+            emit_return_pending_check(
+                cx.b,
+                cx.env,
+                cx.ctx,
+                ReturnDropShape::String(cv.payload),
+            )?;
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().return_(&[v]);
+            cx.b.ins().return_(&[cv.payload]);
         }
-        Some(AbiKind::Scalar(_)) => match cv {
-            CompiledExpr::Single(v) => {
-                drop_owned_composites(cx.b, cx.env, cx.ctx)?;
-                cx.b.ins().return_(&[v]);
-            }
-            CompiledExpr::Scalar2 { value, valid } => {
-                let pending_set = cx.helper("graphix_dyncall_set_pending")?;
-                let pre_pending = cx.b.create_block();
-                let ret_block = cx.b.create_block();
-                let pending_exit = {
-                    let mut slot = cx.ctx.pending_exit.borrow_mut();
-                    match *slot {
-                        Some(blk) => blk,
-                        None => {
-                            let blk = cx.b.create_block();
-                            *slot = Some(blk);
-                            blk
-                        }
-                    }
-                };
-                cx.b.ins().brif(valid, ret_block, &[], pre_pending, &[]);
-                cx.b.switch_to_block(pre_pending);
-                cx.b.seal_block(pre_pending);
-                cx.b.ins().call(pending_set, &[]);
-                emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-                cx.b.ins().jump(pending_exit, &[]);
-                cx.b.switch_to_block(ret_block);
-                cx.b.seal_block(ret_block);
-                drop_owned_composites(cx.b, cx.env, cx.ctx)?;
-                cx.b.ins().return_(&[value]);
-            }
-            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
-                return Err(anyhow!(
-                    "emit_kernel_return: scalar return got a Value-shape \
-                     result"
-                ));
-            }
-        },
+        Some(AbiKind::Scalar(_)) => {
+            // #219: FORCE — a tainted scalar bottoms; else return. Folds to
+            // an unconditional return when the disc is an untainted const.
+            let tainted = is_tainted(cx.b, cv.disc);
+            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+            let pre_pending = cx.b.create_block();
+            let ret_block = cx.b.create_block();
+            let pending_exit = pending_exit_block(cx);
+            cx.b.ins().brif(tainted, pre_pending, &[], ret_block, &[]);
+            cx.b.switch_to_block(pre_pending);
+            cx.b.seal_block(pre_pending);
+            cx.b.ins().call(pending_set, &[]);
+            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().jump(pending_exit, &[]);
+            cx.b.switch_to_block(ret_block);
+            cx.b.seal_block(ret_block);
+            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            cx.b.ins().return_(&[cv.payload]);
+        }
         other => {
             return Err(anyhow!(
                 "emit_kernel_return: kernel return shape {other:?} not \
@@ -3063,7 +2875,8 @@ pub(crate) fn emit_const_node(
 ) -> Result<CompiledExpr> {
     match kernel_abi::abi_kind(cx.registry(), typ) {
         Some(AbiKind::Scalar(prim)) => {
-            Ok(CompiledExpr::Single(compile_const(cx.b, value, prim)))
+            let disc = scalar_disc(cx.b, prim);
+            Ok(CompiledExpr::new(disc, compile_const(cx.b, value, prim)))
         }
         Some(AbiKind::String) => {
             let s = match value {
@@ -3075,14 +2888,16 @@ pub(crate) fn emit_const_node(
             let ptr = cx.interned_str(s);
             let clone = cx.helper("graphix_arcstr_clone_from_static")?;
             let call = cx.b.ins().call(clone, &[ptr]);
-            Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+            let payload = cx.b.inst_results(call)[0];
+            let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Value) => {
             let ptr = cx.interned_value(value);
             let clone = cx.helper("graphix_value_clone_from_static")?;
             let call = cx.b.ins().call(clone, &[ptr]);
             let r = cx.b.inst_results(call);
-            Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+            Ok(CompiledExpr::new(r[0], r[1]))
         }
         other => {
             Err(anyhow!("emit_clif: Constant of shape {other:?} — not yet supported"))
@@ -3125,111 +2940,40 @@ pub(crate) fn emit_ref_node(
     typ: &Type,
     id: BindId,
 ) -> Result<CompiledExpr> {
-    match kernel_abi::abi_kind(cx.registry(), typ) {
-        // Scalar: BindId-first — exact under shadowing (an outer
-        // capture and an inner let sharing a basename resolve to
-        // different slots). Name fallback covers id-less slots
-        // (synthetic locals that carry no BindId). Surfaces a tainted
-        // local's validity bit.
-        Some(AbiKind::Scalar(_)) => {
-            let (var, valid, _) = match cx.env.lookup_bind_id(id) {
-                Some(slot) => slot,
-                None => {
-                    let name = ref_local_name(spec).ok_or_else(|| {
-                        anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
-                    })?;
-                    cx.env.lookup(name).ok_or_else(|| {
-                        anyhow!("emit_clif: undefined scalar local `{name}`")
-                    })?
-                }
-            };
-            let value = cx.b.use_var(var);
-            // #219: a region-input read taints by its validity bit; AND
-            // it with any binding-level taint (e.g. a div0-bound local
-            // read back through `valid`).
-            let slot_bit = valid.map(|vv| cx.b.use_var(vv));
-            let input_bit = cx.input_validity_bit(id);
-            let valid = match (slot_bit, input_bit) {
-                (None, None) => None,
-                (Some(v), None) | (None, Some(v)) => Some(v),
-                (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
-            };
-            Ok(match valid {
-                None => CompiledExpr::Single(value),
-                Some(valid) => CompiledExpr::Scalar2 { value, valid },
-            })
-        }
+    // Resolve BindId-first (exact under shadowing — an outer capture
+    // and an inner let sharing a basename resolve to different slots,
+    // the #162/#167 bug class), then by name (id-less synthetic
+    // locals). The disc already carries the binding's #219 taint (a
+    // tainted param disc from the ABI, or a let's computed disc).
+    let _ = typ;
+    let name = ref_local_name(spec)
+        .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
+    let (vv, kind) = {
+        let l = cx
+            .env
+            .lookup(id, name)
+            .ok_or_else(|| anyhow!("emit_clif: undefined local `{name}`"))?;
+        (l.vv, l.kind)
+    };
+    let disc = cx.b.use_var(vv.disc);
+    match kind {
         // String: read the slot and refcount-bump — each consumer gets
         // an independently-owned ArcStr; the slot keeps its own ref
         // until scope exit.
-        Some(AbiKind::String) => {
-            let name = ref_local_name(spec)
-                .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
-            let var = cx
-                .env
-                .lookup_string(name)
-                .ok_or_else(|| anyhow!("emit_clif: undefined string local `{name}`"))?;
-            let s = cx.b.use_var(var);
+        LocalKind::String => {
+            let s = cx.b.use_var(vv.payload);
             let clone = cx.helper("graphix_arcstr_clone")?;
             let call = cx.b.ins().call(clone, &[s]);
-            Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+            Ok(CompiledExpr::new(disc, cx.b.inst_results(call)[0]))
         }
-        // Variant / Nullable / value-shape: BORROWED two-word read —
-        // the env still owns the ref; consumers clone via
-        // `ensure_owned_value_src` when they need ownership.
-        Some(AbiKind::Variant) => {
-            let name = ref_local_name(spec)
-                .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
-            // #219: env-validity infra is wired (the slot carries an
-            // Option<Variable>), but a 2-word read STILL produces an
-            // untainted `Value` for now — the value consumers (arith /
-            // cmp / select / return / producer) don't yet propagate
-            // `Value2` through a guarded helper call, so tainting the read
-            // here would only de-fuse. Re-enable by combining
-            // `slot_valid` + `input_validity_bit(id)` via `and_validity`
-            // and returning `value_result(...)` once those consumers land.
-            let (vv, _slot_valid) = cx
-                .env
-                .lookup_variant(name)
-                .ok_or_else(|| anyhow!("emit_clif: undefined variant local `{name}`"))?;
-            Ok(CompiledExpr::Value {
-                disc: cx.b.use_var(vv.disc),
-                payload: cx.b.use_var(vv.payload),
-            })
-        }
-        Some(AbiKind::Nullable | AbiKind::Value) => {
-            let name = ref_local_name(spec)
-                .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
-            // #219: see the Variant arm — read stays untainted until the
-            // value consumers propagate `Value2`.
-            let (vv, _slot_valid) = cx.env.lookup_nullable(name).ok_or_else(|| {
-                anyhow!("emit_clif: undefined value-shape local `{name}`")
-            })?;
-            Ok(CompiledExpr::Value {
-                disc: cx.b.use_var(vv.disc),
-                payload: cx.b.use_var(vv.payload),
-            })
-        }
-        // Composite: BORROWED pointer read — consumers clone via
-        // `ensure_owned_composite_src` when they need ownership.
-        // BindId-first like the scalar arm (exact under shadowing);
-        // name fallback covers the id-less slots (params, lets,
-        // synthetic locals).
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let var = match cx.env.lookup_composite_bind_id(id) {
-                Some(var) => var,
-                None => {
-                    let name = ref_local_name(spec).ok_or_else(|| {
-                        anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref")
-                    })?;
-                    cx.env.lookup_composite(name).ok_or_else(|| {
-                        anyhow!("emit_clif: undefined composite local `{name}`")
-                    })?
-                }
-            };
-            Ok(CompiledExpr::Single(cx.b.use_var(var)))
-        }
-        other => Err(anyhow!("emit_clif: Ref of shape {other:?} — not yet supported")),
+        // Scalar: read both words. Composite / Variant / Nullable /
+        // Value: BORROWED read — the env still owns the slot; consumers
+        // clone via `ensure_owned_*_src` when they need ownership.
+        LocalKind::Scalar(_)
+        | LocalKind::Composite
+        | LocalKind::Variant
+        | LocalKind::Nullable
+        | LocalKind::Value => Ok(CompiledExpr::new(disc, cx.b.use_var(vv.payload))),
     }
 }
 
@@ -3248,8 +2992,8 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     if lowering::is_datetime_or_duration(lhs.typ())
         || lowering::is_datetime_or_duration(rhs.typ())
     {
-        let (ld, lp, lvalid) = emit_owned_value_operand_node(cx, lhs)?;
-        let (rd, rp, rvalid) = emit_owned_value_operand_node(cx, rhs)?;
+        let lcv = emit_owned_value_operand_node(cx, lhs)?;
+        let rcv = emit_owned_value_operand_node(cx, rhs)?;
         let helper = match op {
             BinOp::Add => "graphix_value_add",
             BinOp::Sub => "graphix_value_sub",
@@ -3258,19 +3002,24 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             BinOp::Mod => "graphix_value_rem",
         };
         let fref = cx.helper(helper)?;
-        let call = cx.b.ins().call(fref, &[ld, lp, rd, rp]);
+        // Clean the operand discs before the netidx-Value helper (a
+        // tainted disc is an invalid tag); the helper ran on the value
+        // bits regardless. #219: the result disc re-absorbs the operands'
+        // taint, guarding a garbage result a missing input produced.
+        let ld = clean_disc(cx.b, lcv.disc);
+        let rd = clean_disc(cx.b, rcv.disc);
+        let call = cx.b.ins().call(fref, &[ld, lcv.payload, rd, rcv.payload]);
         let (rdisc, rpay) = {
             let r = cx.b.inst_results(call);
             (r[0], r[1])
         };
-        // #219: a tainted operand taints the result (the helper ran on a
-        // harmless Null placeholder; the bit guards the garbage result).
-        return Ok(value_result(rdisc, rpay, and_validity(cx.b, lvalid, rvalid)));
+        let disc = propagate_taint(cx.b, rdisc, &[lcv.disc, rcv.disc]);
+        return Ok(CompiledExpr::new(disc, rpay));
     }
     let lcv = lhs.emit_clif(cx)?;
     let rcv = rhs.emit_clif(cx)?;
-    let (l, _) = lcv.scalar_with_validity(cx.b)?;
-    let (r, _) = rcv.scalar_with_validity(cx.b)?;
+    let l = lcv.payload;
+    let r = rcv.payload;
     // Fallible prim derivation (not `prim_of`, which panics): an
     // operand's type may be typecheck's un-normalized union (a select
     // result) — scalar after `freeze_for_abi_normalized` (with the abstract-
@@ -3281,13 +3030,13 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         .ok_or_else(|| {
             anyhow!("emit_clif: arith operand of non-scalar type {:?}", lhs.typ())
         })?;
+    let base = scalar_disc(cx.b, prim);
     // Integer div/mod taint/guard.
     if matches!(op, BinOp::Div | BinOp::Mod)
         && prim.is_integer()
         && node_int_div_may_bottom(lhs, rhs)
     {
-        let b = &mut *cx.b;
-        let is_zero = b.ins().icmp_imm(IntCC::Equal, r, 0);
+        let is_zero = cx.b.ins().icmp_imm(IntCC::Equal, r, 0);
         let bad = if prim.is_signed() {
             let min: i64 = match prim {
                 PrimType::I8 => i8::MIN as i64,
@@ -3295,32 +3044,28 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
                 PrimType::I32 => i32::MIN as i64,
                 _ => i64::MIN,
             };
-            let is_min = b.ins().icmp_imm(IntCC::Equal, l, min);
-            let is_neg1 = b.ins().icmp_imm(IntCC::Equal, r, -1);
-            let overflow = b.ins().band(is_min, is_neg1);
-            b.ins().bor(is_zero, overflow)
+            let is_min = cx.b.ins().icmp_imm(IntCC::Equal, l, min);
+            let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
+            let overflow = cx.b.ins().band(is_min, is_neg1);
+            cx.b.ins().bor(is_zero, overflow)
         } else {
             is_zero
         };
-        let one = b.ins().iconst(prim_to_clif(prim), 1);
-        let safe_r = b.ins().select(bad, one, r);
-        let value = compile_bin(b, op, prim, l, safe_r)?;
-        let not_bad = {
-            let one_i8 = b.ins().iconst(types::I8, 1);
-            b.ins().bxor(bad, one_i8)
-        };
-        let mut valid = not_bad;
-        if let CompiledExpr::Scalar2 { valid: lv, .. } = lcv {
-            valid = b.ins().band(valid, lv);
-        }
-        if let CompiledExpr::Scalar2 { valid: rv, .. } = rcv {
-            valid = b.ins().band(valid, rv);
-        }
-        return Ok(CompiledExpr::Scalar2 { value, valid });
+        let one = cx.b.ins().iconst(prim_to_clif(prim), 1);
+        let safe_r = cx.b.ins().select(bad, one, r);
+        let value = compile_bin(cx.b, op, prim, l, safe_r)?;
+        // #219: a div0 / signed-MIN÷-1 taints the result; so does a
+        // tainted operand. `is_tainted` resolves at the output.
+        let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+        let taint_word = cx.b.ins().iconst(types::I64, TAINT);
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        let bad_taint = cx.b.ins().select(bad, taint_word, zero);
+        let disc = cx.b.ins().bor(disc, bad_taint);
+        return Ok(CompiledExpr::new(disc, value));
     }
     let value = compile_bin(cx.b, op, prim, l, r)?;
-    let valid = combine_validity(cx.b, &[lcv, rcv]);
-    Ok(scalar_result(value, valid))
+    let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+    Ok(CompiledExpr::new(disc, value))
 }
 
 /// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
@@ -3338,8 +3083,8 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let (ld, lp, lvalid) = emit_owned_value_operand_node(cx, lhs)?;
-    let (rd, rp, rvalid) = emit_owned_value_operand_node(cx, rhs)?;
+    let lcv = emit_owned_value_operand_node(cx, lhs)?;
+    let rcv = emit_owned_value_operand_node(cx, rhs)?;
     let helper = match op {
         BinOp::Add => "graphix_value_checked_add",
         BinOp::Sub => "graphix_value_checked_sub",
@@ -3348,13 +3093,16 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
         BinOp::Mod => "graphix_value_checked_rem",
     };
     let fref = cx.helper(helper)?;
-    let call = cx.b.ins().call(fref, &[ld, lp, rd, rp]);
+    let ld = clean_disc(cx.b, lcv.disc);
+    let rd = clean_disc(cx.b, rcv.disc);
+    let call = cx.b.ins().call(fref, &[ld, lcv.payload, rd, rcv.payload]);
     let (rdisc, rpay) = {
         let r = cx.b.inst_results(call);
         (r[0], r[1])
     };
     // #219: propagate operand taint into the checked-arith result Value.
-    Ok(value_result(rdisc, rpay, and_validity(cx.b, lvalid, rvalid)))
+    let disc = propagate_taint(cx.b, rdisc, &[lcv.disc, rcv.disc]);
+    Ok(CompiledExpr::new(disc, rpay))
 }
 
 /// Comparison — `compile_cmp` (total-order floats) on scalar operands,
@@ -3379,11 +3127,10 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     if let (Some(lp), Some(_)) = (lprim, rprim) {
         let lcv = lhs.emit_clif(cx)?;
         let rcv = rhs.emit_clif(cx)?;
-        let (l, _) = lcv.scalar_with_validity(cx.b)?;
-        let (r, _) = rcv.scalar_with_validity(cx.b)?;
-        let value = compile_cmp(cx.b, op, lp, l, r);
-        let valid = combine_validity(cx.b, &[lcv, rcv]);
-        return Ok(scalar_result(value, valid));
+        let value = compile_cmp(cx.b, op, lp, lcv.payload, rcv.payload);
+        let base = scalar_disc(cx.b, PrimType::Bool);
+        let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+        return Ok(CompiledExpr::new(disc, value));
     }
     let ne = match op {
         CmpOp::Eq => false,
@@ -3406,10 +3153,12 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
             ));
         }
     }
-    let (ld, lp, lvalid) = emit_owned_value_operand_node(cx, lhs)?;
-    let (rd, rp, rvalid) = emit_owned_value_operand_node(cx, rhs)?;
+    let lcv = emit_owned_value_operand_node(cx, lhs)?;
+    let rcv = emit_owned_value_operand_node(cx, rhs)?;
     let helper = cx.helper("graphix_value_eq")?;
-    let call = cx.b.ins().call(helper, &[ld, lp, rd, rp]);
+    let ld = clean_disc(cx.b, lcv.disc);
+    let rd = clean_disc(cx.b, rcv.disc);
+    let call = cx.b.ins().call(helper, &[ld, lcv.payload, rd, rcv.payload]);
     let eq = cx.b.inst_results(call)[0]; // I8 bool
     let result = if ne {
         let one = cx.b.ins().iconst(types::I8, 1);
@@ -3418,7 +3167,9 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         eq
     };
     // #219: a tainted operand taints the bool result.
-    Ok(scalar_result(result, and_validity(cx.b, lvalid, rvalid)))
+    let base = scalar_disc(cx.b, PrimType::Bool);
+    let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+    Ok(CompiledExpr::new(disc, result))
 }
 
 /// Logical — STRICT `band`/`bor` (both operands always compiled),
@@ -3431,14 +3182,13 @@ pub(crate) fn emit_bool_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let lcv = lhs.emit_clif(cx)?;
     let rcv = rhs.emit_clif(cx)?;
-    let (l, _) = lcv.scalar_with_validity(cx.b)?;
-    let (r, _) = rcv.scalar_with_validity(cx.b)?;
     let value = match op {
-        BoolOp::And => cx.b.ins().band(l, r),
-        BoolOp::Or => cx.b.ins().bor(l, r),
+        BoolOp::And => cx.b.ins().band(lcv.payload, rcv.payload),
+        BoolOp::Or => cx.b.ins().bor(lcv.payload, rcv.payload),
     };
-    let valid = combine_validity(cx.b, &[lcv, rcv]);
-    Ok(scalar_result(value, valid))
+    let base = scalar_disc(cx.b, PrimType::Bool);
+    let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+    Ok(CompiledExpr::new(disc, value))
 }
 
 /// Logical NOT — taint-propagating.
@@ -3447,11 +3197,11 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
     inner: &Node<R, E>,
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
-    let (v, _) = cv.scalar_with_validity(cx.b)?;
     let one = cx.b.ins().iconst(types::I8, 1);
-    let value = cx.b.ins().bxor(v, one);
-    let valid = combine_validity(cx.b, &[cv]);
-    Ok(scalar_result(value, valid))
+    let value = cx.b.ins().bxor(cv.payload, one);
+    let base = scalar_disc(cx.b, PrimType::Bool);
+    let disc = propagate_taint(cx.b, base, &[cv.disc]);
+    Ok(CompiledExpr::new(disc, value))
 }
 
 /// `cast<T>(x)` — `compile_cast`, taint-propagating.
@@ -3466,10 +3216,10 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
         anyhow!("emit_clif: cast source of non-scalar typ {:?}", inner.typ())
     })?;
     let cv = inner.emit_clif(cx)?;
-    let (v, _) = cv.scalar_with_validity(cx.b)?;
-    let value = compile_cast(cx.b, v, src, target);
-    let valid = combine_validity(cx.b, &[cv]);
-    Ok(scalar_result(value, valid))
+    let value = compile_cast(cx.b, cv.payload, src, target);
+    let base = scalar_disc(cx.b, target);
+    let disc = propagate_taint(cx.b, base, &[cv.disc]);
+    Ok(CompiledExpr::new(disc, value))
 }
 
 /// String interpolation `"x is [x]"` — build a heap-owned
@@ -3488,6 +3238,10 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     let new_buf = cx.helper("graphix_string_buf_new")?;
     let call = cx.b.ins().call(new_buf, &[]);
     let buf = cx.b.inst_results(call)[0];
+    // #219: a tainted part (a div0 inside `[..]`) renders harmlessly into
+    // the buffer; its taint accumulates and forces the result at the
+    // output. Collect part discs and fold them into the result disc.
+    let mut part_discs: Vec<ClifValue> = Vec::with_capacity(args.len());
     for a in args {
         let part = &a.node;
         // `freeze_for_abi_normalized` so a select-valued part (whose type is
@@ -3495,14 +3249,16 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
         let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), part.typ());
         match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)) {
             Some(AbiKind::String) => {
-                let s = part.emit_clif(cx)?.single()?;
+                let cv = part.emit_clif(cx)?;
+                part_discs.push(cv.disc);
                 let push = cx.helper("graphix_string_buf_push_arcstr")?;
-                cx.b.ins().call(push, &[buf, s]);
+                cx.b.ins().call(push, &[buf, cv.payload]);
             }
             Some(AbiKind::Scalar(p)) => {
-                let v = part.emit_clif(cx)?.single()?;
+                let cv = part.emit_clif(cx)?;
+                part_discs.push(cv.disc);
                 let push = cx.helper(string_buf_push_helper(p))?;
-                cx.b.ins().call(push, &[buf, v]);
+                cx.b.ins().call(push, &[buf, cv.payload]);
             }
             other => {
                 return Err(anyhow!(
@@ -3514,7 +3270,10 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     }
     let finalize = cx.helper("graphix_string_buf_finalize")?;
     let call = cx.b.ins().call(finalize, &[buf]);
-    Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+    let payload = cx.b.inst_results(call)[0];
+    let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
+    let disc = propagate_taint(cx.b, base, &part_discs);
+    Ok(CompiledExpr::new(disc, payload))
 }
 
 /// A `do` / `{ ... }` block — let prefix then a tail expression.
@@ -3561,35 +3320,23 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
             let tail_cv = child.emit_clif(cx)?;
             // The tail may alias a block-scoped local we're about to
             // drop — clone borrowed results so they outlive the block.
+            // Taint rides in the disc through the clone.
             let src = node_composite_source(child);
-            let result = match tail_cv {
-                CompiledExpr::Single(v) => {
-                    match kernel_abi::abi_kind(cx.registry(), child.typ()) {
-                        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                            CompiledExpr::Single(ensure_owned_composite_src(cx, src, v)?)
-                        }
-                        // Scalars need no clone; a String read is
-                        // already an owned clone (the Ref/Const arms
-                        // bump the refcount at read).
-                        _ => CompiledExpr::Single(v),
-                    }
+            let result = match kernel_abi::abi_kind(cx.registry(), child.typ()) {
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                    let v = ensure_owned_composite_src(cx, src, tail_cv.payload)?;
+                    CompiledExpr::new(tail_cv.disc, v)
                 }
-                // A tainted tail is always a scalar — no clone.
-                cv @ CompiledExpr::Scalar2 { .. } => cv,
-                CompiledExpr::Value { disc, payload } => {
-                    let (disc, payload) = ensure_owned_value_src(cx, src, disc, payload)?;
-                    CompiledExpr::Value { disc, payload }
+                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                    let (disc, payload) =
+                        ensure_owned_value_src(cx, src, tail_cv.disc, tail_cv.payload)?;
+                    CompiledExpr::new(disc, payload)
                 }
-                // #219: a tainted 2-word block tail isn't propagated yet
-                // (move-site taint is a later step) — bail to node-walk.
-                CompiledExpr::Value2 { .. } => {
-                    return Err(anyhow!(
-                        "block tail: tainted 2-word (Value2) result — \
-                         non-scalar taint propagation not yet wired, node-walks"
-                    ))
-                }
+                // Scalars need no clone; a String read is already an
+                // owned clone (the Ref/Const arms bump the refcount).
+                _ => tail_cv,
             };
-            emit_scope_drops(cx, &mark)?;
+            emit_scope_drops(cx, mark)?;
             cx.env.truncate(mark);
             return Ok(result);
         }
@@ -3757,26 +3504,20 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         return Err(anyhow!("emit_clif: select with no arms"));
     }
     let (scrut, scrut_kind, scrut_typ) = classify_select_scrutinee(cx, sel)?;
-    let scrut_valid = match scrut {
-        SelectScrut::Scalar { valid, .. } => valid,
-        SelectScrut::Value { .. } | SelectScrut::Opaque => None,
-    };
-    if scrut_valid.is_some() {
-        // Terminating arms have no merge validity phi to poison — a
-        // possibly-bottom scrutinee can't propagate its bottom through
-        // a `return`. De-fuse (the node-walk handles it).
-        return Err(anyhow!(
-            "emit_clif: possibly-bottom scrutinee in a tail-position \
-             select"
-        ));
-    }
+    // Tail position: FORCE the scrutinee up front — a missing scrutinee
+    // bottoms the whole kernel (the tail select IS the kernel result, so
+    // there's no dead-select hazard, unlike value position). The arms
+    // then run on a known-valid scrutinee, so the final-arm miss is
+    // unreachable. `is_untainted` folds to const-true for an untainted
+    // scrutinee, emitting no branch (#219).
+    let valid = is_untainted(cx.b, scrut.disc());
+    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
     emit_select_arms(
         cx,
         sel,
         scrut,
         scrut_kind,
         &scrut_typ,
-        scrut_valid,
         &mut |cx, body, mark| {
             emit_body_tail(cx, &body.node, ret)?;
             // The arm terminated; pop its binds for the next arm's
@@ -3784,6 +3525,9 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
             cx.env.truncate(mark);
             Ok(())
         },
+        // Unreachable (scrutinee forced valid → exhaustive matches); a
+        // terminator is still required.
+        &mut |cx| emit_kernel_bottom(cx),
     )
 }
 
@@ -3813,23 +3557,15 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
         let cv = arg.emit_clif(cx)?;
-        let v = match cv {
-            CompiledExpr::Single(v) => v,
-            // A possibly-bottom arg: no value this cycle means no
-            // call — kernel-wide bottom (the node-walk's CallSite
-            // wouldn't fire). Same seam as every other eager consumer.
-            CompiledExpr::Scalar2 { value, valid } => {
-                emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-                value
-            }
-            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
-                return Err(anyhow!(
-                    "emit_clif: value-shape self tail-call arg — the \
-                     rebind protocol covers scalar/composite slots only"
-                ));
-            }
-        };
-        new_vals.push(v);
+        // A possibly-bottom arg: no value this cycle means no call —
+        // kernel-wide bottom (the node-walk's CallSite wouldn't fire).
+        // `is_untainted` folds to const-true for an untainted disc, so a
+        // normal arg emits no branch. The rebind protocol covers
+        // scalar/composite slots (payload word) only — a value-shape
+        // formal is refused by the tail-loop gate at build.
+        let valid = is_untainted(cx.b, cv.disc);
+        emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+        new_vals.push(cv.payload);
         sources.push(node_composite_source(arg));
     }
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, new_vals, &sources)
@@ -3849,68 +3585,36 @@ fn emit_let_node<R: Rt, E: UserEvent>(
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
     let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());
-    match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)) {
+    let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
+    match ak {
         Some(AbiKind::Scalar(p)) => {
+            // The disc carries the binding's taint — a `let`-bound bottom
+            // flows to its uses; an unconsumed one is dropped, never
+            // bottoming (#219).
             let cv = value.emit_clif(cx)?;
-            match cv {
-                CompiledExpr::Single(v) => {
-                    let var = cx.b.declare_var(prim_to_clif(p));
-                    cx.b.def_var(var, v);
-                    cx.env.bind_with_id(name.clone(), var, p, bind_id);
-                }
-                CompiledExpr::Scalar2 { value, valid } => {
-                    let var = cx.b.declare_var(prim_to_clif(p));
-                    cx.b.def_var(var, value);
-                    let valid_var = cx.b.declare_var(types::I8);
-                    cx.b.def_var(valid_var, valid);
-                    cx.env.bind_tainted_with_id(name.clone(), var, valid_var, p, bind_id);
-                }
-                CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
-                    return Err(anyhow!(
-                        "emit_clif: scalar let got a Value-shape result"
-                    ));
-                }
-            }
+            bind_local(cx, name.clone(), cv.disc, cv.payload, LocalKind::Scalar(p), bind_id);
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let v = value.emit_clif(cx)?.single()?;
-            let owned = ensure_owned_composite_src(cx, node_composite_source(value), v)?;
-            let var = cx.b.declare_var(types::I64);
-            cx.b.def_var(var, owned);
-            cx.env.bind_composite(name.clone(), var);
+            let cv = value.emit_clif(cx)?;
+            let owned =
+                ensure_owned_composite_src(cx, node_composite_source(value), cv.payload)?;
+            bind_local(cx, name.clone(), cv.disc, owned, LocalKind::Composite, bind_id);
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let (disc, payload, valid) = value.emit_clif(cx)?.value_with_validity()?;
+            let cv = value.emit_clif(cx)?;
             let (disc, payload) =
-                ensure_owned_value_src(cx, node_composite_source(value), disc, payload)?;
-            let disc_var = cx.b.declare_var(types::I64);
-            let payload_var = cx.b.declare_var(types::I64);
-            cx.b.def_var(disc_var, disc);
-            cx.b.def_var(payload_var, payload);
-            // #219: persist a tainted let's I8 validity into a Variable so
-            // a later read surfaces Value2 (a let-bound bottom flows to
-            // its uses; an unconsumed one is dropped, never bottoming).
-            let valid_var = valid.map(|vbit| {
-                let v = cx.b.declare_var(types::I8);
-                cx.b.def_var(v, vbit);
-                v
-            });
-            let vv = ValueVar { disc: disc_var, payload: payload_var };
-            if matches!(
-                frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)),
-                Some(AbiKind::Variant)
-            ) {
-                cx.env.bind_variant(name.clone(), vv, valid_var);
-            } else {
-                cx.env.bind_nullable(name.clone(), vv, valid_var);
-            }
+                ensure_owned_value_src(cx, node_composite_source(value), cv.disc, cv.payload)?;
+            let kind = match ak {
+                Some(AbiKind::Variant) => LocalKind::Variant,
+                Some(AbiKind::Nullable) => LocalKind::Nullable,
+                _ => LocalKind::Value,
+            };
+            bind_local(cx, name.clone(), disc, payload, kind, bind_id);
         }
         Some(AbiKind::String) => {
             // String reads/consts are already owned clones.
-            let v = value.emit_clif(cx)?.single()?;
-            let var = cx.b.declare_var(types::I64);
-            cx.b.def_var(var, v);
-            cx.env.bind_string(name.clone(), var);
+            let cv = value.emit_clif(cx)?;
+            bind_local(cx, name.clone(), cv.disc, cv.payload, LocalKind::String, bind_id);
         }
         other => {
             // A function-valued let can NEVER emit by design — a
@@ -3942,30 +3646,23 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
     cv: CompiledExpr,
 ) -> Result<()> {
     let owned = matches!(node_composite_source(node), CompositeSource::Owned);
-    match cv {
-        CompiledExpr::Single(v) => {
-            match kernel_abi::abi_kind(cx.registry(), node.typ()) {
-                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) if owned => {
-                    let drop = cx.helper("graphix_valarray_drop")?;
-                    cx.b.ins().call(drop, &[v]);
-                }
-                Some(AbiKind::String) => {
-                    let drop = cx.helper("graphix_arcstr_drop")?;
-                    cx.b.ins().call(drop, &[v]);
-                }
-                _ => {}
-            }
+    match kernel_abi::abi_kind(cx.registry(), node.typ()) {
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) if owned => {
+            let drop = cx.helper("graphix_valarray_drop")?;
+            cx.b.ins().call(drop, &[cv.payload]);
         }
-        CompiledExpr::Scalar2 { .. } => {}
-        // #219: a tainted 2-word value drops its (disc, payload) exactly
-        // like an untainted one — the I8 validity bit isn't owned.
-        CompiledExpr::Value { disc, payload }
-        | CompiledExpr::Value2 { disc, payload, valid: _ } => {
-            if owned {
-                let drop = cx.helper("graphix_value_drop")?;
-                cx.b.ins().call(drop, &[disc, payload]);
-            }
+        Some(AbiKind::String) => {
+            let drop = cx.helper("graphix_arcstr_drop")?;
+            cx.b.ins().call(drop, &[cv.payload]);
         }
+        // #219: a tainted 2-word value drops its (disc, payload) like an
+        // untainted one — clean the disc so the helper sees a valid tag.
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) if owned => {
+            let drop = cx.helper("graphix_value_drop")?;
+            let clean = clean_disc(cx.b, cv.disc);
+            cx.b.ins().call(drop, &[clean, cv.payload]);
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -3974,27 +3671,32 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
 /// string local this scope introduced above `mark` — the direct-path
 /// mirror of `compile_block_scalar`'s scope-exit drop block. Scalars
 /// need no drop.
-fn emit_scope_drops(cx: &mut BodyCx, mark: &EnvMark) -> Result<()> {
+fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
     let arr_drop = cx.helper("graphix_valarray_drop")?;
     let val_drop = cx.helper("graphix_value_drop")?;
     let str_drop = cx.helper("graphix_arcstr_drop")?;
-    for (_, var, _) in &cx.env.composites[mark.composites..] {
-        let ptr = cx.b.use_var(*var);
-        cx.b.ins().call(arr_drop, &[ptr]);
-    }
-    for (_, vv, _) in &cx.env.variants[mark.variants..] {
-        let disc = cx.b.use_var(vv.disc);
-        let payload = cx.b.use_var(vv.payload);
-        cx.b.ins().call(val_drop, &[disc, payload]);
-    }
-    for (_, vv, _) in &cx.env.nullables[mark.nullables..] {
-        let disc = cx.b.use_var(vv.disc);
-        let payload = cx.b.use_var(vv.payload);
-        cx.b.ins().call(val_drop, &[disc, payload]);
-    }
-    for (_, var) in &cx.env.strings[mark.strings..] {
-        let ptr = cx.b.use_var(*var);
-        cx.b.ins().call(str_drop, &[ptr]);
+    // Snapshot the (kind, vv) of every local above the mark so the
+    // `cx.env` borrow ends before we drive `cx.b`.
+    let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
+        cx.env.locals[mark..].iter().map(|l| (l.kind, l.vv)).collect();
+    for (kind, vv) in drops {
+        match kind {
+            LocalKind::Scalar(_) => {}
+            LocalKind::Composite => {
+                let ptr = cx.b.use_var(vv.payload);
+                cx.b.ins().call(arr_drop, &[ptr]);
+            }
+            LocalKind::String => {
+                let ptr = cx.b.use_var(vv.payload);
+                cx.b.ins().call(str_drop, &[ptr]);
+            }
+            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                let disc = cx.b.use_var(vv.disc);
+                let disc = clean_disc(cx.b, disc);
+                let payload = cx.b.use_var(vv.payload);
+                cx.b.ins().call(val_drop, &[disc, payload]);
+            }
+        }
     }
     Ok(())
 }
@@ -4012,52 +3714,44 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: &EnvMark) -> Result<()> {
 fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
-) -> Result<(ClifValue, ClifValue, Option<ClifValue>)> {
+) -> Result<CompiledExpr> {
     match kernel_abi::abi_kind(cx.registry(), node.typ()) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            // #219: carry the operand's validity through. A missing 2-word
-            // input is a `Value::Null` placeholder (nonzero disc), so clone
-            // and the value-arith helpers run harmlessly on it; the bit
-            // taints the result, which the consumer resolves.
-            let (disc, payload, valid) = node.emit_clif(cx)?.value_with_validity()?;
+            // #219: the disc carries the operand's taint through. A missing
+            // 2-word input is a `Value::Null` placeholder (nonzero disc), so
+            // clone and the value-arith helpers run harmlessly on it; the
+            // taint guards the garbage result, which the consumer resolves.
+            let cv = node.emit_clif(cx)?;
             let (disc, payload) =
-                ensure_owned_value_src(cx, node_composite_source(node), disc, payload)?;
-            Ok((disc, payload, valid))
+                ensure_owned_value_src(cx, node_composite_source(node), cv.disc, cv.payload)?;
+            Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Scalar(p)) => {
+            // A scalar's disc IS its value disc (`scalar_disc` ==
+            // `prim_to_value_disc`), so taint carries forward unchanged;
+            // only the payload is widened to the 8-byte Value word.
             let cv = node.emit_clif(cx)?;
-            // #219: a tainted scalar promoted to a value operand carries
-            // its bit forward (a `Single` is always valid).
-            let (s, valid) = match cv {
-                CompiledExpr::Single(s) => (s, None),
-                CompiledExpr::Scalar2 { value, valid } => (value, Some(valid)),
-                CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
-                    return Err(anyhow!(
-                        "emit_clif: scalar value operand got a Value-shape result"
-                    ));
-                }
-            };
-            let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p));
-            let payload = scalar_to_payload_i64(cx.b, p, s);
-            Ok((disc, payload, valid))
+            let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
+            Ok(CompiledExpr::new(cv.disc, payload))
         }
         Some(AbiKind::String) => {
             // Const/Ref/Concat reads all produce an owned ArcStr;
             // `graphix_value_new_string` consumes it into a Value.
-            // (String taint lands in a later stage — `valid: None` here.)
-            let s = node.emit_clif(cx)?.single()?;
+            // (String taint lands in a later stage.)
+            let cv = node.emit_clif(cx)?;
             let helper = cx.helper("graphix_value_new_string")?;
-            let call = cx.b.ins().call(helper, &[s]);
+            let call = cx.b.ins().call(helper, &[cv.payload]);
             let r = cx.b.inst_results(call);
-            Ok((r[0], r[1], None))
+            Ok(CompiledExpr::new(r[0], r[1]))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let ptr = node.emit_clif(cx)?.single()?;
-            let ptr = ensure_owned_composite_src(cx, node_composite_source(node), ptr)?;
+            let cv = node.emit_clif(cx)?;
+            let ptr =
+                ensure_owned_composite_src(cx, node_composite_source(node), cv.payload)?;
             let helper = cx.helper("graphix_value_new_from_array")?;
             let call = cx.b.ins().call(helper, &[ptr]);
             let r = cx.b.inst_results(call);
-            Ok((r[0], r[1], None))
+            Ok(CompiledExpr::new(r[0], r[1]))
         }
         other => Err(anyhow!("emit_clif: value operand has unexpected type {other:?}")),
     }
@@ -4099,29 +3793,19 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
         }
     };
     let push = cx.helper(helper_name)?;
+    let cv = field.emit_clif(cx)?;
+    // A composite producer has no per-field validity channel, so a
+    // tainted (bottom) field must propagate to the kernel OUTPUT: abort
+    // to `pending_exit` when invalid, then push the now-valid value.
+    // Pushing a tainted disc would store a corrupt Value (the TAINT bit
+    // is not a clean tag) — UB on a later clone/drop. `is_untainted`
+    // folds to const-true (no branch) for an untainted field.
+    let valid = is_untainted(cx.b, cv.disc);
+    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
     if kernel_abi::is_value_shape(cx.registry(), field.typ()) {
-        let (disc, payload) = field.emit_clif(cx)?.value()?;
-        cx.b.ins().call(push, &[buf, disc, payload]);
+        cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
-        // A composite producer has no per-field validity channel, so a
-        // bottom (`Scalar2`) field must propagate to the kernel
-        // OUTPUT: abort to `pending_exit` when the field is invalid,
-        // then push the (now-known-valid) value.
-        match field.emit_clif(cx)? {
-            CompiledExpr::Single(v) => {
-                cx.b.ins().call(push, &[buf, v]);
-            }
-            CompiledExpr::Scalar2 { value, valid } => {
-                emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-                cx.b.ins().call(push, &[buf, value]);
-            }
-            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
-                return Err(anyhow!(
-                    "emit_clif: scalar producer field compiled to \
-                     Value-shape — dispatch is broken"
-                ));
-            }
-        }
+        cx.b.ins().call(push, &[buf, cv.payload]);
     }
     Ok(())
 }
@@ -4143,7 +3827,9 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
         emit_push_field_node(cx, buf, &f.node)?;
     }
     let call = cx.b.ins().call(finalize, &[buf]);
-    Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+    let payload = cx.b.inst_results(call)[0];
+    let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    Ok(CompiledExpr::new(disc, payload))
 }
 
 /// Struct literal — an outer ValArray of inner `[name, value]` pairs,
@@ -4180,7 +3866,9 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
         cx.b.ins().call(push_array, &[outer, inner_arr]);
     }
     let call = cx.b.ins().call(finalize, &[outer]);
-    Ok(CompiledExpr::Single(cx.b.inst_results(call)[0]))
+    let payload = cx.b.inst_results(call)[0];
+    let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    Ok(CompiledExpr::new(disc, payload))
 }
 
 /// Variant constructor. Nullary →
@@ -4200,7 +3888,7 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let new_str = cx.helper("graphix_value_new_string_from_arcstr")?;
         let call = cx.b.ins().call(new_str, &[tag_ptr]);
         let r = cx.b.inst_results(call);
-        Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+        Ok(CompiledExpr::new(r[0], r[1]))
     } else {
         let buf_new = cx.helper("graphix_value_buf_new")?;
         let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
@@ -4217,7 +3905,7 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let arr = cx.b.inst_results(call)[0];
         let call = cx.b.ins().call(wrap_array, &[arr]);
         let r = cx.b.inst_results(call);
-        Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+        Ok(CompiledExpr::new(r[0], r[1]))
     }
 }
 
@@ -4239,8 +3927,14 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
         ));
     }
     let src = node_composite_source(source);
-    let ptr = source.emit_clif(cx)?.single()?;
-    Ok((ptr, src))
+    // #219: FORCE the source taint — `t.0` / `s.field` / `a[i]` over a
+    // missing composite bottoms the kernel (folds away for an untainted
+    // source; only a Borrowed missing input can be tainted, and it owns
+    // nothing to leak on the abort path).
+    let cv = source.emit_clif(cx)?;
+    let valid = is_untainted(cx.b, cv.disc);
+    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    Ok((cv.payload, src))
 }
 
 /// Drop an accessor's temporary Owned source after the element read.
@@ -4311,27 +4005,31 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
     if matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
         let (arr_ptr, src) = emit_accessor_source_node(cx, source, AbiKind::Array)?;
-        let idx_val = idx.emit_clif(cx)?.single()?;
-        let idx_i64 = widen_to_i64(cx.b, idx_val, idx_prim);
+        let idx_cv = idx.emit_clif(cx)?;
+        let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim);
         let helper = cx.helper("graphix_valarray_index")?;
         let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);
         let r = cx.b.inst_results(call);
-        let (disc, payload) = (r[0], r[1]);
+        let (rdisc, rpay) = (r[0], r[1]);
         emit_accessor_source_drop(cx, arr_ptr, src)?;
-        return Ok(CompiledExpr::Value { disc, payload });
+        // #219: a tainted index taints the result.
+        let disc = propagate_taint(cx.b, rdisc, &[idx_cv.disc]);
+        return Ok(CompiledExpr::new(disc, rpay));
     }
     if lowering::is_bytes(source.typ()) {
         // The helper consumes the bytes operand — owned.
-        let (bd, bp, bvalid) = emit_owned_value_operand_node(cx, source)?;
-        let i = idx.emit_clif(cx)?.single()?;
+        let bcv = emit_owned_value_operand_node(cx, source)?;
+        let idx_cv = idx.emit_clif(cx)?;
+        let bd = clean_disc(cx.b, bcv.disc);
         let helper = cx.helper("graphix_bytes_index")?;
-        let call = cx.b.ins().call(helper, &[bd, bp, i]);
+        let call = cx.b.ins().call(helper, &[bd, bcv.payload, idx_cv.payload]);
         let (rdisc, rpay) = {
             let r = cx.b.inst_results(call);
             (r[0], r[1])
         };
-        // #219: a tainted bytes operand taints the indexed result.
-        return Ok(value_result(rdisc, rpay, bvalid));
+        // #219: a tainted bytes operand or index taints the result.
+        let disc = propagate_taint(cx.b, rdisc, &[bcv.disc, idx_cv.disc]);
+        return Ok(CompiledExpr::new(disc, rpay));
     }
     Err(anyhow!(
         "emit_clif: index source of type {:?} isn't an array or bytes",
@@ -4354,16 +4052,19 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
             source.typ()
         ));
     }
-    let (md, mp, mvalid) = emit_owned_value_operand_node(cx, source)?;
-    let (kd, kp, kvalid) = emit_owned_value_operand_node(cx, key)?;
+    let mcv = emit_owned_value_operand_node(cx, source)?;
+    let kcv = emit_owned_value_operand_node(cx, key)?;
     let helper = cx.helper("graphix_map_ref")?;
-    let call = cx.b.ins().call(helper, &[md, mp, kd, kp]);
+    let md = clean_disc(cx.b, mcv.disc);
+    let kd = clean_disc(cx.b, kcv.disc);
+    let call = cx.b.ins().call(helper, &[md, mcv.payload, kd, kcv.payload]);
     let (rdisc, rpay) = {
         let r = cx.b.inst_results(call);
         (r[0], r[1])
     };
     // #219: a tainted map or key taints the lookup result.
-    Ok(value_result(rdisc, rpay, and_validity(cx.b, mvalid, kvalid)))
+    let disc = propagate_taint(cx.b, rdisc, &[mcv.disc, kcv.disc]);
+    Ok(CompiledExpr::new(disc, rpay))
 }
 
 /// `a[i..j]` — the source as an OWNED Value (the helper consumes it;
@@ -4388,19 +4089,15 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
             source.typ()
         ));
     }
-    let (sd, sp, svalid) = emit_owned_value_operand_node(cx, source)?;
-    // #219: a tainted slice source isn't propagated through the slice
-    // result yet — bail to the node-walk (a later stage wires it).
-    if svalid.is_some() {
-        return Err(anyhow!(
-            "emit_clif: slice of a tainted source — Value2 propagation not \
-             yet wired, node-walks"
-        ));
-    }
+    let scv = emit_owned_value_operand_node(cx, source)?;
+    // #219: source + present-bound taint propagates into the slice
+    // result (forced at the output).
+    let mut taint_discs: Vec<ClifValue> = vec![scv.disc];
     let emit_bound = |cx: &mut BodyCx,
                       n: Option<&Node<R, E>>,
                       flag: i64,
-                      flags: &mut i64|
+                      flags: &mut i64,
+                      taint: &mut Vec<ClifValue>|
      -> Result<ClifValue> {
         match n {
             None => Ok(cx.b.ins().iconst(types::I64, 0)),
@@ -4414,18 +4111,23 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
                     ));
                 }
                 *flags |= flag;
-                n.emit_clif(cx)?.single()
+                let cv = n.emit_clif(cx)?;
+                taint.push(cv.disc);
+                Ok(cv.payload)
             }
         }
     };
     let mut flags = 0i64;
-    let start_v = emit_bound(cx, start, 1, &mut flags)?;
-    let end_v = emit_bound(cx, end, 2, &mut flags)?;
+    let start_v = emit_bound(cx, start, 1, &mut flags, &mut taint_discs)?;
+    let end_v = emit_bound(cx, end, 2, &mut flags, &mut taint_discs)?;
     let flags_v = cx.b.ins().iconst(types::I64, flags);
     let helper = cx.helper("graphix_array_slice")?;
-    let call = cx.b.ins().call(helper, &[sd, sp, start_v, end_v, flags_v]);
+    let sd = clean_disc(cx.b, scv.disc);
+    let call = cx.b.ins().call(helper, &[sd, scv.payload, start_v, end_v, flags_v]);
     let r = cx.b.inst_results(call);
-    Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+    let (rdisc, rpay) = (r[0], r[1]);
+    let disc = propagate_taint(cx.b, rdisc, &taint_discs);
+    Ok(CompiledExpr::new(disc, rpay))
 }
 
 /// `?` / `$` — both unwrap a Nullable<T> to T (else pass the value
@@ -4447,50 +4149,41 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         return inner.emit_clif(cx);
     };
     let cv = inner.emit_clif(cx)?;
-    let (disc, payload) = match cv {
-        CompiledExpr::Value { disc, payload } => (disc, payload),
-        _ => {
-            return Err(anyhow!(
-                "emit_clif: `?` inner not Value-shape — a Nullable inner \
-                 must compile to (disc, payload)"
-            ));
-        }
-    };
-    // `disc == Typ::Error` (`0x2000_0000`) means bottom.
-    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, disc, 0x2000_0000_i64);
+    let (disc, payload) = (cv.disc, cv.payload);
+    // `clean(disc) == Typ::Error` (`0x2000_0000`) means bottom (mask
+    // taint first — a tainted disc is not a structural Error).
+    let clean = clean_disc(cx.b, disc);
+    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, 0x2000_0000_i64);
     match kernel_abi::abi_kind(cx.registry(), &success_typ) {
-        // Prim success — BRANCHLESS per-value validity. The payload
-        // word holds the success bits when !is_err; on the error path
-        // the bits are garbage but `valid=0` means they're never used.
-        // The error Value isn't dropped here: a `Value::Error` carries
-        // an `Arc<Value>` payload, but a scalar `Nullable` inner is a
-        // by-value scalar (no heap), so nothing leaks. (A Local-read
-        // Borrowed inner is owned by its env slot and dropped at scope
-        // exit either way.)
+        // Prim success — BRANCHLESS per-value taint. The payload word
+        // holds the success bits when !is_err; on the error path the
+        // bits are garbage but the disc's TAINT means they're never
+        // used (forced at the output). The error Value isn't dropped
+        // here: a scalar `Nullable` inner is a by-value scalar (no
+        // heap). #219: the inner's own taint also flows through.
         Some(AbiKind::Scalar(p)) => {
             let value = cast_u64_to_prim(cx.b, payload, p);
-            let one = cx.b.ins().iconst(types::I8, 1);
-            let valid = cx.b.ins().bxor(is_err, one); // !is_err
-            Ok(CompiledExpr::Scalar2 { value, valid })
+            let base = scalar_disc(cx.b, p);
+            let disc = propagate_taint(cx.b, base, &[cv.disc]);
+            let disc = taint_if(cx.b, disc, is_err);
+            Ok(CompiledExpr::new(disc, value))
         }
         // String / composite success — keep the branch-abort path.
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let base_disc = if matches!(
+                kernel_abi::abi_kind(cx.registry(), &success_typ),
+                Some(AbiKind::String)
+            ) {
+                value_disc::STRING
+            } else {
+                value_disc::ARRAY
+            };
             let pending_set = cx.helper("graphix_dyncall_set_pending")?;
             let value_drop = cx.helper("graphix_value_drop")?;
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
             let pre_pending = cx.b.create_block();
             let continue_block = cx.b.create_block();
-            let pending_exit = {
-                let mut slot = cx.ctx.pending_exit.borrow_mut();
-                match *slot {
-                    Some(blk) => blk,
-                    None => {
-                        let blk = cx.b.create_block();
-                        *slot = Some(blk);
-                        blk
-                    }
-                }
-            };
+            let pending_exit = pending_exit_block(cx);
             cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
@@ -4499,7 +4192,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // `emit_pending_cleanup` drops — dropping here too would
             // double-free).
             if inner_owned {
-                cx.b.ins().call(value_drop, &[disc, payload]);
+                cx.b.ins().call(value_drop, &[clean, payload]);
             }
             cx.b.ins().call(pending_set, &[]);
             emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
@@ -4531,11 +4224,13 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                         "graphix_value_into_array_borrowed"
                     };
                     let unbox = cx.helper(helper_name)?;
-                    let call = cx.b.ins().call(unbox, &[disc, payload]);
+                    let call = cx.b.ins().call(unbox, &[clean, payload]);
                     cx.b.inst_results(call)[0]
                 }
             };
-            Ok(CompiledExpr::Single(v))
+            let base = cx.b.ins().iconst(types::I64, base_disc);
+            let disc = propagate_taint(cx.b, base, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, v))
         }
         // Value-shape success. On `Error` disc, drop the owned inner,
         // signal pending, jump to `pending_exit`; otherwise the
@@ -4547,17 +4242,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let src = node_composite_source(inner);
             let pre_pending = cx.b.create_block();
             let continue_block = cx.b.create_block();
-            let pending_exit = {
-                let mut slot = cx.ctx.pending_exit.borrow_mut();
-                match *slot {
-                    Some(blk) => blk,
-                    None => {
-                        let blk = cx.b.create_block();
-                        *slot = Some(blk);
-                        blk
-                    }
-                }
-            };
+            let pending_exit = pending_exit_block(cx);
             cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
@@ -4567,7 +4252,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // `drop_owned_composites` already drops; dropping it here too
             // would double-free (Arc double-decrement / use-after-free).
             if src == CompositeSource::Owned {
-                cx.b.ins().call(value_drop, &[disc, payload]);
+                cx.b.ins().call(value_drop, &[clean, payload]);
             }
             cx.b.ins().call(pending_set, &[]);
             emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
@@ -4578,14 +4263,47 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // Borrowed (Ref) inner aliases its env slot, which is also
             // dropped at scope exit — handing those bits to the consumer
             // (the unwrap result is Owned) would double-free. An Owned
-            // inner passes through unchanged.
-            let (od, op) = ensure_owned_value_src(cx, src, disc, payload)?;
-            Ok(CompiledExpr::Value { disc: od, payload: op })
+            // inner passes through unchanged. Clean for the clone; the
+            // inner's taint re-attaches to the result.
+            let (od, op) = ensure_owned_value_src(cx, src, clean, payload)?;
+            let disc = propagate_taint(cx.b, od, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, op))
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             Err(anyhow!("emit_clif: `?` with unsupported success type {:?}", success_typ))
         }
     }
+}
+
+/// #219: force-bottom the kernel when any dyncall arg was tainted —
+/// drop the owned non-scalar result (via `drop_result`), set pending,
+/// run the owned-set cleanup, jump `pending_exit`. Folds to no branch
+/// when every arg disc is an untainted const. A non-scalar dyncall
+/// result can't carry taint past a `let` (composite/string env slots
+/// hold only the value word), so the taint must resolve HERE rather
+/// than deferring to the kernel output.
+fn emit_dyncall_arg_taint_abort(
+    cx: &mut BodyCx,
+    arg_discs: &[ClifValue],
+    drop_result: impl FnOnce(&mut BodyCx) -> Result<()>,
+) -> Result<()> {
+    let zero = cx.b.ins().iconst(types::I64, 0);
+    let acc = propagate_taint(cx.b, zero, arg_discs);
+    let tainted = is_tainted(cx.b, acc);
+    let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+    let pre = cx.b.create_block();
+    let cont = cx.b.create_block();
+    let exit = pending_exit_block(cx);
+    cx.b.ins().brif(tainted, pre, &[], cont, &[]);
+    cx.b.switch_to_block(pre);
+    cx.b.seal_block(pre);
+    drop_result(cx)?;
+    cx.b.ins().call(pending_set, &[]);
+    emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+    cx.b.ins().jump(exit, &[]);
+    cx.b.switch_to_block(cont);
+    cx.b.seal_block(cont);
+    Ok(())
 }
 
 /// Builtin DynCall — marshal the (marshal-ordered) `args` into a
@@ -4606,9 +4324,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     let buf_var = cx.b.declare_var(types::I64);
     cx.b.def_var(buf_var, buf);
     cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
-    // #219: combined validity of the tainted scalar args (None when no
-    // arg is tainted — the fast path). Propagated into a scalar result.
-    let mut arg_validity: Option<ClifValue> = None;
+    // #219: each arg's disc — its TAINT bit propagates into a scalar
+    // result and force-bottoms a non-scalar result (folds away when no
+    // arg is tainted, the fast path).
+    let mut arg_taint_discs: Vec<ClifValue> = Vec::with_capacity(args.len());
     for (arg_node, t) in args.iter().zip(info.arg_types.iter()) {
         // Compare by runtime SHAPE (`AbiKind`), not exact `Type` —
         // the direct twin of the lowering-side agreement check. The
@@ -4669,40 +4388,20 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             }
         };
         let push = cx.helper(helper_name)?;
+        // #219: the helper is pure, so a garbage operand (from a missing
+        // input / div0) is harmless — push the (possibly-garbage) value
+        // and carry the arg's disc; its taint guards the result at the
+        // dyncall site. The pushed disc must be CLEAN (a tainted disc is
+        // an invalid tag — storing it builds a corrupt Value the builtin
+        // would clone/drop, UB).
+        let cv = arg_node.emit_clif(cx)?;
+        arg_taint_discs.push(cv.disc);
         if kernel_abi::is_value_shape(cx.registry(), t) {
-            let (disc, payload) = arg_node.emit_clif(cx)?.value()?;
-            cx.b.ins().call(push, &[buf, disc, payload]);
+            let clean = clean_disc(cx.b, cv.disc);
+            cx.b.ins().call(push, &[buf, clean, cv.payload]);
         } else {
-            // #219: read the scalar arg with its validity. A tainted
-            // (`Scalar2`) input arg propagates into the dyncall result —
-            // push the (possibly-garbage) value and carry the bit; the
-            // helper is pure, so a garbage operand is harmless (the bit
-            // guards the result downstream).
-            let ce = arg_node.emit_clif(cx)?;
-            let (v, valid) = ce.scalar_with_validity(cx.b)?;
-            cx.b.ins().call(push, &[buf, v]);
-            if matches!(ce, CompiledExpr::Scalar2 { .. }) {
-                arg_validity = Some(match arg_validity {
-                    None => valid,
-                    Some(a) => cx.b.ins().band(a, valid),
-                });
-            }
+            cx.b.ins().call(push, &[buf, cv.payload]);
         }
-    }
-    // #219: a tainted scalar arg can only propagate into a SCALAR result
-    // (`Scalar2`). A non-scalar-return dyncall has no taint channel on
-    // its (composite/string/value) result yet — bail to the node-walk
-    // (non-scalar taint is a later increment).
-    if arg_validity.is_some()
-        && !matches!(
-            kernel_abi::abi_kind(cx.registry(), &info.return_type),
-            Some(AbiKind::Scalar(_))
-        )
-    {
-        return Err(anyhow!(
-            "DynCall: tainted scalar arg into non-scalar return — \
-             non-scalar taint not yet supported, node-walks"
-        ));
     }
     let dyncall = cx.helper("graphix_dyncall")?;
     let ret_kind: i64 = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
@@ -4751,15 +4450,19 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // downstream scalar arithmetic. No branch needed — the
             // wrapper-level DYNCALL_PENDING check in Kernel::update
             // discards the whole kernel result.
-            // #219: propagate a tainted scalar arg's validity into the
-            // result (stays `Single` when no arg was tainted).
+            // #219: propagate the args' taint into the result disc
+            // (folds to the const scalar disc when no arg was tainted),
+            // resolved at the kernel output.
             let value = cast_u64_to_prim(cx.b, raw0, p);
-            Ok(scalar_result(value, arg_validity))
+            let base = scalar_disc(cx.b, p);
+            let disc = propagate_taint(cx.b, base, &arg_taint_discs);
+            Ok(CompiledExpr::new(disc, value))
         }
         Some(AbiKind::Unit) => {
             // Unit return: dispatcher returned (0, _). The wrapper-
             // level DYNCALL_PENDING check still fires.
-            Ok(CompiledExpr::Single(raw0))
+            let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
+            Ok(CompiledExpr::new(disc, raw0))
         }
         Some(AbiKind::String) => {
             // String return: `raw0` is the ArcStr's raw thin-pointer
@@ -4770,7 +4473,14 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // `drop_owned_strings` would null-drop it; #214) — so
             // branch exactly like the composite arm.
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            Ok(CompiledExpr::Single(raw0))
+            // #219: a tainted arg bottoms the call — drop the owned ArcStr.
+            emit_dyncall_arg_taint_abort(cx, &arg_taint_discs, |cx| {
+                let drop = cx.helper("graphix_arcstr_drop")?;
+                cx.b.ins().call(drop, &[raw0]);
+                Ok(())
+            })?;
+            let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            Ok(CompiledExpr::new(disc, raw0))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             // Composite return: `raw0` is an owned `*mut ValArray`,
@@ -4780,14 +4490,27 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // `pending_exit`. (`pending_take` READS without clearing,
             // so no re-set is needed.)
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            Ok(CompiledExpr::Single(raw0))
+            // #219: a tainted arg bottoms the call — drop the owned array.
+            emit_dyncall_arg_taint_abort(cx, &arg_taint_discs, |cx| {
+                let drop = cx.helper("graphix_valarray_drop")?;
+                cx.b.ins().call(drop, &[raw0]);
+                Ok(())
+            })?;
+            let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            Ok(CompiledExpr::new(disc, raw0))
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             // Value-shape return: both register-words, same pending
             // branch as the composite arm (the boxed Value sentinel is
             // null on pending).
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            Ok(CompiledExpr::Value { disc: raw0, payload: raw1 })
+            // #219: a tainted arg bottoms the call — drop the owned Value.
+            emit_dyncall_arg_taint_abort(cx, &arg_taint_discs, |cx| {
+                let drop = cx.helper("graphix_value_drop")?;
+                cx.b.ins().call(drop, &[raw0, raw1]);
+                Ok(())
+            })?;
+            Ok(CompiledExpr::new(raw0, raw1))
         }
         Some(AbiKind::Null) | None => Err(anyhow!(
             "DynCall with bare Null / non-fusable return — \
@@ -4814,12 +4537,24 @@ enum SelectMerge {
 /// The select scrutinee, emitted exactly ONCE up front; every arm
 /// condition and pattern bind reuses these SSA values (SSA reuse
 /// gives eval-once for free). `Opaque` (string / composite) supports
-/// only Ignore / guard arms, none of which can test the value.
+/// only Ignore / guard arms, none of which can test the value. The
+/// `disc` always carries the scrutinee's #219 taint — OR-ed into every
+/// arm's result so a bottom (missing) scrutinee bottoms the select.
 #[derive(Clone, Copy)]
 enum SelectScrut {
-    Scalar { value: ClifValue, valid: Option<ClifValue>, prim: PrimType },
+    Scalar { disc: ClifValue, value: ClifValue, prim: PrimType },
     Value { disc: ClifValue, payload: ClifValue },
-    Opaque,
+    Opaque { disc: ClifValue },
+}
+
+impl SelectScrut {
+    fn disc(&self) -> ClifValue {
+        match self {
+            SelectScrut::Scalar { disc, .. }
+            | SelectScrut::Value { disc, .. }
+            | SelectScrut::Opaque { disc } => *disc,
+        }
+    }
 }
 
 /// A pattern binding to install in the arm's matched region, under the
@@ -4883,78 +4618,79 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         }
     };
     let (scrut, scrut_kind, scrut_typ) = classify_select_scrutinee(cx, sel)?;
-    let scrut_valid = match scrut {
-        SelectScrut::Scalar { valid, .. } => valid,
-        SelectScrut::Value { .. } | SelectScrut::Opaque => None,
-    };
-    if scrut_valid.is_some() && !matches!(merge_shape, SelectMerge::Scalar(_)) {
-        // Only the scalar merge has a validity phi to poison; the
-        // node-walk's "bottom scrutinee → no select value" can't be
-        // expressed through the other merge shapes here.
-        return Err(anyhow!(
-            "emit_clif: possibly-bottom scrutinee with a non-scalar \
-             select result"
-        ));
-    }
+    // Every merge shape phis (disc, payload) — the scrutinee's taint
+    // rides the disc into every arm result, so there's no separate
+    // validity phi and no possibly-bottom-scrutinee gate (#219).
     let merge = cx.b.create_block();
-    match merge_shape {
-        SelectMerge::Scalar(p) => {
-            cx.b.append_block_param(merge, prim_to_clif(p));
-            cx.b.append_block_param(merge, types::I8); // validity
-        }
-        SelectMerge::Value => {
-            cx.b.append_block_param(merge, types::I64); // disc
-            cx.b.append_block_param(merge, types::I64); // payload
-        }
-        SelectMerge::Composite | SelectMerge::String => {
-            cx.b.append_block_param(merge, types::I64);
-        }
-    }
-    let mut any_taint = scrut_valid.is_some();
+    cx.b.append_block_param(merge, types::I64); // disc
+    let payload_ty = match merge_shape {
+        SelectMerge::Scalar(p) => prim_to_clif(p),
+        _ => types::I64,
+    };
+    cx.b.append_block_param(merge, payload_ty); // payload
+    let scrut_disc = scrut.disc();
     emit_select_arms(
         cx,
         sel,
         scrut,
         scrut_kind,
         &scrut_typ,
-        scrut_valid,
         &mut |cx, body, mark| {
-            emit_select_value_arm(
-                cx,
-                body,
-                mark,
-                merge_shape,
-                merge,
-                scrut_valid,
-                &mut any_taint,
-            )
+            emit_select_value_arm(cx, body, mark, merge_shape, merge, scrut_disc)
         },
+        &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
     )?;
     cx.b.switch_to_block(merge);
     cx.b.seal_block(merge);
-    match merge_shape {
-        SelectMerge::Scalar(_) => {
-            let params = cx.b.block_params(merge);
-            let (value, valid) = (params[0], params[1]);
-            Ok(if any_taint {
-                CompiledExpr::Scalar2 { value, valid }
-            } else {
-                // Nothing tainted: every arm passed `iconst 1` — the
-                // validity phi is dead and the result composes as a
-                // clean scalar (parity with the classic taint
-                // optimization).
-                CompiledExpr::Single(value)
-            })
+    let params = cx.b.block_params(merge);
+    Ok(CompiledExpr::new(params[0], params[1]))
+}
+
+/// The final-arm fail block of a VALUE-position select: reached only
+/// when a tainted (missing) scrutinee misses every conditional arm.
+/// Jump to the merge with a drop-safe tainted bottom — the disc's TAINT
+/// forces a bottom at the output, and the payload is a valid empty
+/// allocation so a scope-exit drop is null-safe.
+fn emit_select_miss_value(
+    cx: &mut BodyCx,
+    merge_shape: SelectMerge,
+    merge: Block,
+) -> Result<()> {
+    let (disc, payload) = match merge_shape {
+        SelectMerge::Scalar(p) => {
+            let d = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
+            let z = cx.b.ins().iconst(prim_to_clif(p), 0);
+            (d, z)
         }
         SelectMerge::Value => {
-            let params = cx.b.block_params(merge);
-            Ok(CompiledExpr::Value { disc: params[0], payload: params[1] })
+            let d = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
+            let z = cx.b.ins().iconst(types::I64, 0);
+            (d, z)
         }
-        SelectMerge::Composite | SelectMerge::String => {
-            let params = cx.b.block_params(merge);
-            Ok(CompiledExpr::Single(params[0]))
+        SelectMerge::Composite => {
+            let buf_new = cx.helper("graphix_value_buf_new")?;
+            let zero = cx.b.ins().iconst(types::I64, 0);
+            let call = cx.b.ins().call(buf_new, &[zero]);
+            let buf = cx.b.inst_results(call)[0];
+            let fin = cx.helper("graphix_valarray_finalize")?;
+            let call = cx.b.ins().call(fin, &[buf]);
+            let arr = cx.b.inst_results(call)[0];
+            let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
+            (d, arr)
         }
-    }
+        SelectMerge::String => {
+            let buf_new = cx.helper("graphix_string_buf_new")?;
+            let call = cx.b.ins().call(buf_new, &[]);
+            let buf = cx.b.inst_results(call)[0];
+            let fin = cx.helper("graphix_string_buf_finalize")?;
+            let call = cx.b.ins().call(fin, &[buf]);
+            let s = cx.b.inst_results(call)[0];
+            let d = cx.b.ins().iconst(types::I64, value_disc::STRING | TAINT);
+            (d, s)
+        }
+    };
+    cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
+    Ok(())
 }
 
 /// Classify (and emit the read of) a select scrutinee: the shared
@@ -4975,20 +4711,10 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     let scrut_kind = kernel_abi::abi_kind(cx.registry(), &scrut_typ)
         .ok_or_else(|| anyhow!("emit_clif: select scrutinee shape not classifiable"))?;
     let scrut = match scrut_kind {
-        AbiKind::Scalar(p) => match sel.arg.node.emit_clif(cx)? {
-            CompiledExpr::Single(value) => {
-                SelectScrut::Scalar { value, valid: None, prim: p }
-            }
-            CompiledExpr::Scalar2 { value, valid } => {
-                SelectScrut::Scalar { value, valid: Some(valid), prim: p }
-            }
-            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
-                return Err(anyhow!(
-                    "emit_clif: scalar select scrutinee produced a \
-                     Value-shape result"
-                ));
-            }
-        },
+        AbiKind::Scalar(p) => {
+            let cv = sel.arg.node.emit_clif(cx)?;
+            SelectScrut::Scalar { disc: cv.disc, value: cv.payload, prim: p }
+        }
         AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
             // The (disc, payload) pair stays live across the whole arm
             // chain with no drop path, so it must be a borrowed env
@@ -5000,13 +4726,14 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
                      drop path across the arm chain"
                 ));
             }
-            let (disc, payload) = sel.arg.node.emit_clif(cx)?.value()?;
-            SelectScrut::Value { disc, payload }
+            let cv = sel.arg.node.emit_clif(cx)?;
+            SelectScrut::Value { disc: cv.disc, payload: cv.payload }
         }
         // String / composite scrutinees support only Ignore / guard
-        // arms (no condition can test them); a borrowed read has no
-        // effects to evaluate, so nothing is emitted. (A string Ref
-        // read CLONES — emitting it here would leak the clone.)
+        // arms (no condition can test them); we read the scrutinee only
+        // for its disc (#219 taint), borrowed so there's no drop path
+        // across the arm chain — except a String read CLONES, so drop
+        // that clone immediately (we keep only the disc).
         AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
             if node_composite_source(&sel.arg.node) != CompositeSource::Borrowed {
                 return Err(anyhow!(
@@ -5014,7 +4741,12 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
                      path across the arm chain"
                 ));
             }
-            SelectScrut::Opaque
+            let cv = sel.arg.node.emit_clif(cx)?;
+            if matches!(scrut_kind, AbiKind::String) {
+                let drop = cx.helper("graphix_arcstr_drop")?;
+                cx.b.ins().call(drop, &[cv.payload]);
+            }
+            SelectScrut::Opaque { disc: cv.disc }
         }
         AbiKind::Unit | AbiKind::Null => {
             return Err(anyhow!("emit_clif: select scrutinee of shape {scrut_kind:?}"));
@@ -5037,12 +4769,15 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    scrut_valid: Option<ClifValue>,
     emit_arm: &mut dyn FnMut(
         &mut BodyCx,
         &Cached<R, E>,
-        EnvMark,
+        usize,
     ) -> Result<()>,
+    // The final-arm miss handler (reached only under a tainted
+    // scrutinee): value position jumps to the merge with a tainted
+    // bottom; tail position sets pending and exits.
+    emit_miss: &mut dyn FnMut(&mut BodyCx) -> Result<()>,
 ) -> Result<()> {
     use StructPatternNode;
     let n = sel.arms.len();
@@ -5070,11 +4805,10 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                         SelectScrut::Value { disc, .. }
                             if matches!(scrut_kind, AbiKind::Nullable) =>
                         {
-                            Some(cx.b.ins().icmp_imm(
-                                IntCC::Equal,
-                                disc,
-                                value_disc::NULL,
-                            ))
+                            // Mask taint before the structural compare —
+                            // a tainted disc is not a clean tag (#219).
+                            let cd = clean_disc(cx.b, disc);
+                            Some(cx.b.ins().icmp_imm(IntCC::Equal, cd, value_disc::NULL))
                         }
                         _ => {
                             return Err(anyhow!(
@@ -5107,12 +4841,10 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                         {
                             // `[T, null]` runtime value is T or null,
                             // so "is a T" ≡ "is not null" — tested,
-                            // not assumed (order-sound).
-                            Some(cx.b.ins().icmp_imm(
-                                IntCC::NotEqual,
-                                disc,
-                                value_disc::NULL,
-                            ))
+                            // not assumed (order-sound). Mask taint
+                            // before the structural compare (#219).
+                            let cd = clean_disc(cx.b, disc);
+                            Some(cx.b.ins().icmp_imm(IntCC::NotEqual, cd, value_disc::NULL))
                         }
                         _ => {
                             return Err(anyhow!(
@@ -5138,7 +4870,7 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     binds.push(SelectArmBind::Scrut(*id));
                     None
                 }
-                SelectScrut::Value { .. } | SelectScrut::Opaque => {
+                SelectScrut::Value { .. } | SelectScrut::Opaque { .. } => {
                     return Err(anyhow!(
                         "emit_clif: non-scalar scrutinee bind pattern not \
                          yet lowerable"
@@ -5233,7 +4965,9 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
                 let tag_ptr = cx.interned_str(tag);
                 let helper = cx.helper("graphix_variant_tag_eq")?;
-                let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr]);
+                // Mask taint — the helper reads the disc as a clean tag.
+                let cd = clean_disc(cx.b, disc);
+                let call = cx.b.ins().call(helper, &[cd, payload, tag_ptr]);
                 Some(cx.b.inst_results(call)[0])
             }
             StructPatternNode::Slice { .. }
@@ -5262,12 +4996,10 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                  could miss every arm"
             ));
         }
-        if is_last && pcond.is_some() && scrut_valid.is_some() {
-            return Err(anyhow!(
-                "emit_clif: possibly-bottom scrutinee with a conditional \
-                 final arm — the chain could miss every arm"
-            ));
-        }
+        // #219: a conditional final arm CAN miss every arm under a
+        // tainted (missing) scrutinee. That's no longer a refusal — the
+        // final fail block runs `emit_miss` (a tainted bottom), which is
+        // dead code for an exhaustive non-tainted scrutinee.
         let matched = cx.b.create_block();
         let fail: Option<Block> =
             if pcond.is_some() || has_guard { Some(cx.b.create_block()) } else { None };
@@ -5285,7 +5017,7 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
         for bind in &binds {
             match bind {
                 SelectArmBind::Scrut(id) => {
-                    let SelectScrut::Scalar { value, valid, prim } = scrut else {
+                    let SelectScrut::Scalar { disc, value, prim } = scrut else {
                         return Err(anyhow!(
                             "emit_clif: scrutinee bind without a scalar \
                              scrutinee"
@@ -5295,22 +5027,9 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                         compact_str::format_compact!("__pat{}", id.inner())
                             .as_str()
                             .into();
-                    let var = cx.b.declare_var(prim_to_clif(prim));
-                    cx.b.def_var(var, value);
-                    match valid {
-                        None => cx.env.bind_with_id(name, var, prim, Some(*id)),
-                        Some(v) => {
-                            let valid_var = cx.b.declare_var(types::I8);
-                            cx.b.def_var(valid_var, v);
-                            cx.env.bind_tainted_with_id(
-                                name,
-                                var,
-                                valid_var,
-                                prim,
-                                Some(*id),
-                            );
-                        }
-                    }
+                    // The bound local carries the scrutinee's taint in its
+                    // disc (#219).
+                    bind_local(cx, name, disc, value, LocalKind::Scalar(prim), Some(*id));
                 }
                 SelectArmBind::Payload { id, idx, prim } => {
                     let SelectScrut::Value { disc, payload } = scrut else {
@@ -5321,15 +5040,18 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     };
                     let helper = cx.helper(variant_payload_helper(*prim)?)?;
                     let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                    let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
+                    // Clean the scrutinee disc for the payload read; the
+                    // payload inherits the variant's taint.
+                    let cd = clean_disc(cx.b, disc);
+                    let call = cx.b.ins().call(helper, &[cd, payload, idx_c]);
                     let v = cx.b.inst_results(call)[0];
-                    let var = cx.b.declare_var(prim_to_clif(*prim));
-                    cx.b.def_var(var, v);
                     let name: ArcStr =
                         compact_str::format_compact!("__pat{}", id.inner())
                             .as_str()
                             .into();
-                    cx.env.bind_with_id(name, var, *prim, Some(*id));
+                    let base = scalar_disc(cx.b, *prim);
+                    let pdisc = propagate_taint(cx.b, base, &[disc]);
+                    bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
                 }
             }
         }
@@ -5337,8 +5059,10 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
             // Canonical guard semantics: evaluated only after the
             // pattern matched, with the binds in scope; a bottom guard
             // (`valid` = 0) means the arm does NOT match.
-            let (gv, gvalid) = g.node.emit_clif(cx)?.scalar_with_validity(cx.b)?;
-            let eff = cx.b.ins().band(gv, gvalid);
+            let gcv = g.node.emit_clif(cx)?;
+            // A bottom guard (tainted disc) means the arm does NOT match.
+            let valid = is_untainted(cx.b, gcv.disc);
+            let eff = cx.b.ins().band(gcv.payload, valid);
             let body_blk = cx.b.create_block();
             cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
             cx.b.switch_to_block(body_blk);
@@ -5350,9 +5074,10 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                 cx.b.switch_to_block(f);
                 cx.b.seal_block(f);
                 if is_last {
-                    // Unreachable by construction (see the refusals
-                    // above); CLIF still requires a terminator.
-                    cx.b.ins().trap(cranelift_codegen::ir::TrapCode::user(2).unwrap());
+                    // Reached only under a tainted (missing) scrutinee —
+                    // produce a tainted bottom (#219). Dead code for an
+                    // exhaustive non-tainted scrutinee.
+                    emit_miss(cx)?;
                 }
             }
             // An unconditional arm consumed control flow; any
@@ -5370,11 +5095,10 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
 fn emit_select_value_arm<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     body: &Cached<R, E>,
-    mark: EnvMark,
+    mark: usize,
     merge_shape: SelectMerge,
     merge: Block,
-    scrut_valid: Option<ClifValue>,
-    any_taint: &mut bool,
+    scrut_disc: ClifValue,
 ) -> Result<()> {
     use NodeView;
     let body_frozen =
@@ -5385,7 +5109,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                     body.node.typ()
                 )
             })?;
-    match merge_shape {
+    let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(rp) => {
             if kernel_abi::scalar_prim(cx.registry(), &body_frozen) != Some(rp) {
                 return Err(anyhow!(
@@ -5394,21 +5118,12 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                 ));
             }
             let cv = body.node.emit_clif(cx)?;
-            if matches!(cv, CompiledExpr::Scalar2 { .. }) {
-                *any_taint = true;
-            }
-            let (v, valid) = cv.scalar_with_validity(cx.b)?;
-            let valid = match scrut_valid {
-                Some(sv) => cx.b.ins().band(valid, sv),
-                None => valid,
-            };
-            cx.env.truncate(mark);
-            cx.b.ins().jump(merge, &[BlockArg::Value(v), BlockArg::Value(valid)]);
+            (cv.disc, cv.payload)
         }
         SelectMerge::Value => {
             // Node twin of `widen_arm_to_value`, keyed on the arm
             // BODY's frozen type.
-            let (d, p) = match kernel_abi::abi_kind(cx.registry(), &body_frozen) {
+            match kernel_abi::abi_kind(cx.registry(), &body_frozen) {
                 Some(AbiKind::Null) => {
                     // A bare-null arm body has nothing to emit (and a
                     // Null-shaped node can't emit anyway); only the
@@ -5427,13 +5142,17 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                     (d, p)
                 }
                 Some(AbiKind::Scalar(p)) => {
-                    let v = body.node.emit_clif(cx)?.single()?;
-                    let d = cx.b.ins().iconst(types::I64, prim_to_value_disc(p));
-                    (d, scalar_to_payload_i64(cx.b, p, v))
+                    let cv = body.node.emit_clif(cx)?;
+                    (cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload))
                 }
                 Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                    let (d, p) = body.node.emit_clif(cx)?.value()?;
-                    ensure_owned_value_src(cx, node_composite_source(&body.node), d, p)?
+                    let cv = body.node.emit_clif(cx)?;
+                    ensure_owned_value_src(
+                        cx,
+                        node_composite_source(&body.node),
+                        cv.disc,
+                        cv.payload,
+                    )?
                 }
                 other => {
                     return Err(anyhow!(
@@ -5441,9 +5160,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                          widen to the Value merge"
                     ));
                 }
-            };
-            cx.env.truncate(mark);
-            cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(p)]);
+            }
         }
         SelectMerge::Composite => {
             if !matches!(
@@ -5455,10 +5172,10 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                      match the composite merge"
                 ));
             }
-            let v = body.node.emit_clif(cx)?.single()?;
-            let v = ensure_owned_composite_src(cx, node_composite_source(&body.node), v)?;
-            cx.env.truncate(mark);
-            cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
+            let cv = body.node.emit_clif(cx)?;
+            let v =
+                ensure_owned_composite_src(cx, node_composite_source(&body.node), cv.payload)?;
+            (cv.disc, v)
         }
         SelectMerge::String => {
             if !matches!(
@@ -5471,11 +5188,15 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                 ));
             }
             // String reads/produces are owned at production.
-            let v = body.node.emit_clif(cx)?.single()?;
-            cx.env.truncate(mark);
-            cx.b.ins().jump(merge, &[BlockArg::Value(v)]);
+            let cv = body.node.emit_clif(cx)?;
+            (cv.disc, cv.payload)
         }
-    }
+    };
+    // #219: OR the scrutinee's taint into the arm result — a missing
+    // scrutinee bottoms the select regardless of which arm "matched".
+    let disc = propagate_taint(cx.b, disc, &[scrut_disc]);
+    cx.env.truncate(mark);
+    cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
     Ok(())
 }
 
@@ -5740,114 +5461,65 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             }
         }
     }
-    let emit_arg_single = |cx: &mut BodyCx, n: &Node<R, E>| -> Result<ClifValue> {
-        match n.emit_clif(cx)? {
-            CompiledExpr::Single(v) => Ok(v),
-            cv => Err(anyhow!(
-                "lambda call `{fn_name}`: arg compiled to a \
-                 possibly-bottom or non-single value ({cv:?}) — \
-                 subtree node-walks"
-            )),
+    // Emit one slot to a two-register Value. An `Arg` compiles its node;
+    // a `Cap` reads the capture from the calling kernel's env (disc
+    // carries any #219 taint, forwarded to the callee — which bottoms if
+    // it consumes it).
+    let emit_slot = |cx: &mut BodyCx, s: &LambdaCallSlot<R, E>| -> Result<CompiledExpr> {
+        match s {
+            LambdaCallSlot::Arg(n, _) => n.emit_clif(cx),
+            LambdaCallSlot::Cap(c) => {
+                let vv = {
+                    let l = cx.env.lookup(c.bind_id, c.name.as_str()).ok_or_else(|| {
+                        anyhow!(
+                            "lambda call `{fn_name}`: capture `{}` not in the \
+                             calling kernel's env",
+                            c.name
+                        )
+                    })?;
+                    l.vv
+                };
+                Ok(CompiledExpr::new(cx.b.use_var(vv.disc), cx.b.use_var(vv.payload)))
+            }
         }
-    };
-    let cap_scalar = |cx: &mut BodyCx,
-                      cap: &CaptureSlot|
-     -> Result<ClifValue> {
-        let (var, valid, _) = cx
-            .env
-            .lookup_bind_id(cap.bind_id)
-            .or_else(|| cx.env.lookup(cap.name.as_str()))
-            .ok_or_else(|| {
-                anyhow!(
-                    "lambda call `{fn_name}`: capture `{}` not in the \
-                     calling kernel's env",
-                    cap.name
-                )
-            })?;
-        if valid.is_some() {
-            return Err(anyhow!(
-                "lambda call `{fn_name}`: capture `{}` is possibly-bottom \
-                 — subtree node-walks",
-                cap.name
-            ));
-        }
-        Ok(cx.b.use_var(var))
-    };
-    let cap_composite = |cx: &mut BodyCx,
-                         cap: &CaptureSlot|
-     -> Result<ClifValue> {
-        let var = cx
-            .env
-            .lookup_composite_bind_id(cap.bind_id)
-            .or_else(|| cx.env.lookup_composite(cap.name.as_str()))
-            .ok_or_else(|| {
-                anyhow!(
-                    "lambda call `{fn_name}`: composite capture `{}` not \
-                     in the calling kernel's env",
-                    cap.name
-                )
-            })?;
-        Ok(cx.b.use_var(var))
     };
     let is_kind = |s: &&LambdaCallSlot<R, E>, k: AbiKind| {
         kernel_abi::abi_kind(reg, s.typ()) == Some(k)
     };
-    let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len());
+    let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len() * 2);
     let mut drops: Vec<CallArgDrop> = Vec::new();
-    // Scalars first.
-    for s in slots.iter().filter(|s| {
-        matches!(kernel_abi::abi_kind(reg, s.typ()), Some(AbiKind::Scalar(_)))
-    }) {
-        let v = match s {
-            LambdaCallSlot::Arg(n, _) => emit_arg_single(cx, n)?,
-            LambdaCallSlot::Cap(c) => cap_scalar(cx, c)?,
-        };
-        clif_args.push(v);
-    }
-    // Composite pointers: array, then tuple, then struct.
-    let composite = slots
+    // Marshal in canonical `abi_params` order — scalars, then composites
+    // (array/tuple/struct), then value-shape (variant/nullable) — two
+    // words (disc, payload) each. An Owned composite/value Arg is dropped
+    // after the call (the callee refcount-bumps on entry).
+    let order = slots
         .iter()
-        .filter(|s| is_kind(s, AbiKind::Array))
+        .filter(|s| matches!(kernel_abi::abi_kind(reg, s.typ()), Some(AbiKind::Scalar(_))))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Array)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Tuple)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)));
-    for s in composite {
-        let ptr = match s {
-            LambdaCallSlot::Arg(n, _) => {
-                let p = emit_arg_single(cx, n)?;
-                if node_composite_source(n) == CompositeSource::Owned {
-                    drops.push(CallArgDrop::Composite(p));
-                }
-                p
-            }
-            LambdaCallSlot::Cap(c) => cap_composite(cx, c)?,
-        };
-        clif_args.push(ptr);
-    }
-    // Value-shape: variant, then nullable — two words each.
-    let value = slots
-        .iter()
-        .filter(|s| is_kind(s, AbiKind::Variant))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Variant)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)));
-    for s in value {
-        let (disc, payload) = match s {
-            LambdaCallSlot::Arg(n, _) => {
-                let (d, p) = n.emit_clif(cx)?.value()?;
-                if node_composite_source(n) == CompositeSource::Owned {
-                    drops.push(CallArgDrop::Value { disc: d, payload: p });
+    for s in order {
+        let cv = emit_slot(cx, s)?;
+        if let LambdaCallSlot::Arg(n, _) = s {
+            if node_composite_source(n) == CompositeSource::Owned {
+                match kernel_abi::abi_kind(reg, s.typ()) {
+                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                        drops.push(CallArgDrop::Composite(cv.payload));
+                    }
+                    Some(AbiKind::Variant | AbiKind::Nullable) => {
+                        drops.push(CallArgDrop::Value {
+                            disc: cv.disc,
+                            payload: cv.payload,
+                        });
+                    }
+                    _ => {}
                 }
-                (d, p)
             }
-            LambdaCallSlot::Cap(c) => {
-                return Err(anyhow!(
-                    "lambda call `{fn_name}`: value-shape capture `{}` — \
-                     not yet lowered (name-keyed env table), subtree \
-                     node-walks",
-                    c.name
-                ));
-            }
-        };
-        clif_args.push(disc);
-        clif_args.push(payload);
+        }
+        clif_args.push(cv.disc);
+        clif_args.push(cv.payload);
     }
     let func_ref = cx.ctx.callee_refs.get(fn_name).ok_or_else(|| {
         anyhow!(
@@ -5855,37 +5527,45 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
              discovery/declare drift"
         )
     })?;
-    // #219: the callee's signature carries a trailing validity bitmask
-    // param. The args we pass are values the caller already computed
-    // (formals + captures), so they're all present — pass all-ones.
-    // (Forwarding each arg's real validity across the call boundary is
-    // a later increment; today's eager aborts mean nothing is missing.)
-    let all_valid = cx.b.ins().iconst(types::I64, -1);
-    clif_args.push(all_valid);
     let inst = cx.b.ins().call(*func_ref, &clif_args);
+    // The callee RETURN ABI is unchanged (params went 2-word, returns
+    // didn't): scalar/composite return one word, value-shape two. The
+    // callee already forced any taint before returning, so a scalar /
+    // composite result is untainted — synthesize its const disc.
+    let one_result = |cx: &mut BodyCx| -> Result<ClifValue> {
+        let results = cx.b.inst_results(inst);
+        if results.len() != 1 {
+            return Err(anyhow!(
+                "lambda call `{fn_name}`: callee returned {} values, expected 1",
+                results.len()
+            ));
+        }
+        Ok(results[0])
+    };
     let ret = &info.kernel.return_type;
     let result = match kernel_abi::abi_kind(reg, ret) {
-        Some(AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let results = cx.b.inst_results(inst);
-            if results.len() != 1 {
-                return Err(anyhow!(
-                    "lambda call `{fn_name}`: callee returned {} values, \
-                     expected 1",
-                    results.len()
-                ));
-            }
-            CompiledExpr::Single(results[0])
+        Some(AbiKind::Scalar(p)) => {
+            let r0 = one_result(cx)?;
+            CompiledExpr::new(scalar_disc(cx.b, p), r0)
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let r0 = one_result(cx)?;
+            let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            CompiledExpr::new(disc, r0)
         }
         Some(AbiKind::Variant | AbiKind::Nullable) => {
-            let results = cx.b.inst_results(inst);
-            if results.len() != 2 {
-                return Err(anyhow!(
-                    "lambda call `{fn_name}`: value-shape callee returned \
-                     {} values, expected 2",
-                    results.len()
-                ));
-            }
-            CompiledExpr::Value { disc: results[0], payload: results[1] }
+            let (r0, r1) = {
+                let results = cx.b.inst_results(inst);
+                if results.len() != 2 {
+                    return Err(anyhow!(
+                        "lambda call `{fn_name}`: value-shape callee returned \
+                         {} values, expected 2",
+                        results.len()
+                    ));
+                }
+                (results[0], results[1])
+            };
+            CompiledExpr::new(r0, r1)
         }
         other => {
             return Err(anyhow!(
@@ -5923,7 +5603,8 @@ fn emit_call_arg_drops(
                 b.ins().call(arr_drop, &[*ptr]);
             }
             CallArgDrop::Value { disc, payload } => {
-                b.ins().call(val_drop, &[*disc, *payload]);
+                let clean = clean_disc(b, *disc);
+                b.ins().call(val_drop, &[clean, *payload]);
             }
         }
     }
@@ -5950,34 +5631,34 @@ fn drop_owned_composites(
         .helper_refs
         .get("graphix_value_drop")
         .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-    for (_, var, _) in &env.composites {
-        let ptr = b.use_var(*var);
-        b.ins().call(arr_drop, &[ptr]);
-    }
-    // Variant params + locals are owned (params are refcount-cloned
-    // on kernel entry via `graphix_value_clone`, locals come from
-    // `VariantNew` or composite-return DynCall). Drop them via the
-    // two-register `graphix_value_drop(disc, payload)` ABI — passes
-    // the word pair and the helper consumes (drops) it.
-    for (_, vv, _) in &env.variants {
-        let disc = b.use_var(vv.disc);
-        let payload = b.use_var(vv.payload);
-        b.ins().call(val_drop, &[disc, payload]);
-    }
-    // Nullables: same two-register drop discipline as variants.
-    for (_, vv, _) in &env.nullables {
-        let disc = b.use_var(vv.disc);
-        let payload = b.use_var(vv.payload);
-        b.ins().call(val_drop, &[disc, payload]);
-    }
-    // String locals: refcount decrement.
     let str_drop = ctx
         .helper_refs
         .get("graphix_arcstr_drop")
         .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
-    for (_, var) in &env.strings {
-        let ptr = b.use_var(*var);
-        b.ins().call(str_drop, &[ptr]);
+    // Every owned local is dropped by `kind`. Composite params/locals
+    // are refcount-cloned on kernel entry; Variant/Nullable/Value locals
+    // come from entry clones / `VariantNew` / composite-return DynCall;
+    // String locals carry an owned refcount. Scalars own nothing.
+    let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
+        env.locals.iter().map(|l| (l.kind, l.vv)).collect();
+    for (kind, vv) in drops {
+        match kind {
+            LocalKind::Scalar(_) => {}
+            LocalKind::Composite => {
+                let ptr = b.use_var(vv.payload);
+                b.ins().call(arr_drop, &[ptr]);
+            }
+            LocalKind::String => {
+                let ptr = b.use_var(vv.payload);
+                b.ins().call(str_drop, &[ptr]);
+            }
+            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                let disc = b.use_var(vv.disc);
+                let disc = clean_disc(b, disc);
+                let payload = b.use_var(vv.payload);
+                b.ins().call(val_drop, &[disc, payload]);
+            }
+        }
     }
     Ok(())
 }
@@ -6284,11 +5965,24 @@ fn compile_element_read(
         .get(helper_name)
         .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
     let call = b.ins().call(helper, &[arr_ptr, idx_val]);
-    let r = b.inst_results(call);
-    if kernel_abi::is_value_shape(ctx.registry, &elem) {
-        Ok(CompiledExpr::Value { disc: r[0], payload: r[1] })
+    if kernel_abi::is_value_shape(ctx.registry, elem) {
+        // Value-shape element read returns two words (disc, payload).
+        let (r0, r1) = {
+            let r = b.inst_results(call);
+            (r[0], r[1])
+        };
+        Ok(CompiledExpr::new(r0, r1))
     } else {
-        Ok(CompiledExpr::Single(r[0]))
+        // Scalar / string / composite element read returns one word.
+        let r0 = b.inst_results(call)[0];
+        // The element read is untainted (a valid array element); the disc
+        // is a const taint-carrier matching the element kind.
+        let disc = match kernel_abi::abi_kind(ctx.registry, elem) {
+            Some(AbiKind::Scalar(p)) => scalar_disc(b, p),
+            Some(AbiKind::String) => b.ins().iconst(types::I64, value_disc::STRING),
+            _ => b.ins().iconst(types::I64, value_disc::ARRAY),
+        };
+        Ok(CompiledExpr::new(disc, r0))
     }
 }
 

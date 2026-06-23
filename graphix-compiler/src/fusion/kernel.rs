@@ -20,7 +20,7 @@
 use crate::{
     expr::{Expr, ExprId},
     fusion::{
-        emit::{pack_value_to_u64, unpack_u64_to_value, WrappedKernel},
+        emit::{pack_value_to_u64, prim_to_value_disc, unpack_u64_to_value, WrappedKernel, TAINT},
         emit_helpers::{
             DynCallRet, DynDispatchHandle, DYNCALL_PENDING, DYN_DISPATCH_HANDLE,
         },
@@ -1019,166 +1019,108 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 fn_arg_values[fn_idx] = v;
             }
         }
-        // JIT dispatch. The JIT supports kernels with
-        // array/tuple/struct/variant INPUTS (each composite param is a
-        // pointer in the wrapper's arg slot — `*const ValArray` for
-        // array/tuple/struct, `*const Value` for variant). Re-derive
-        // the typed per-kind args from `param_opts`, aborting (`?`) on
-        // any missing input, pack each scalar arg's bits into a raw
-        // u64 slot, composite args as `*const ValArray`, etc., call
-        // through the wrapper, and unpack the result.
+        // JIT dispatch. Every param is two wire words: a disc (carrying
+        // #219 taint) then a payload. A MISSING input is NOT an abort —
+        // it's a helper-safe placeholder (`Value::Null` / empty ValArray
+        // / empty ArcStr) with `TAINT` set in its disc, so the kernel
+        // runs and bottoms only if the taken path consumes it. The
+        // ValArray / ArcStr placeholders must be non-null so the entry
+        // clone (`graphix_valarray_clone` / `graphix_arcstr_clone`) is
+        // harmless.
         let wrapped = &self.jit;
-        let mut scalar_arg_bits: smallvec::SmallVec<[u64; 8]> =
-            smallvec::SmallVec::with_capacity(k.params.len());
-        for (i, p) in k.params.iter().enumerate() {
-            // #219: a missing scalar input no longer aborts dispatch —
-            // pass a placeholder; the validity bitmask marks it absent
-            // and the body taints the read, bottoming the kernel only if
-            // the taken path consumes it.
-            let bits = match param_opts[i].as_ref() {
-                Some(v) => pack_value_to_u64(v, p.prim),
-                None => 0,
-            };
-            scalar_arg_bits.push(bits);
-        }
-        let composite_arr = |i: usize| -> Option<ValArray> {
-            match param_opts[i].as_ref()? {
-                Value::Array(a) => Some(a.clone()),
-                v => panic!(
-                    "Kernel: composite param expected Value::Array, \
-                     got {v:?}"
-                ),
+        let taint = TAINT as u64;
+        // (disc, payload) words of a `repr(u64)` Value (16 bytes,
+        // layout pinned by the const_assert in `emit_helpers`).
+        let bits = |v: &Value| -> (u64, u64) {
+            let p = v as *const Value as *const u64;
+            unsafe { (*p, *p.add(1)) }
+        };
+        let null_disc = bits(&Value::Null).0;
+        let empty_arr = ValArray::from([]);
+        let empty_str = arcstr::ArcStr::new();
+        let arr_disc = bits(&Value::Array(empty_arr.clone())).0;
+        let str_disc = bits(&Value::String(empty_str.clone())).0;
+        // Composite args: present clone or the empty placeholder, tagged
+        // with the disc (`ARRAY`, plus TAINT when absent). The ValArray
+        // must outlive the wrapper call (the JIT'd helpers dereference
+        // the pointer), so these smallvecs live for the rest of `update`.
+        let composite = |i: usize| -> (u64, ValArray) {
+            match param_opts[i].as_ref() {
+                Some(Value::Array(a)) => (arr_disc, a.clone()),
+                None => (arr_disc | taint, empty_arr.clone()),
+                Some(v) => {
+                    panic!("Kernel: composite param expected Value::Array, got {v:?}")
+                }
             }
         };
-        let mut array_args: smallvec::SmallVec<[ValArray; 4]> =
-            smallvec::SmallVec::with_capacity(k.array_params.len());
-        for j in 0..k.array_params.len() {
-            array_args.push(composite_arr(base_array + j)?);
-        }
-        let mut tuple_args: smallvec::SmallVec<[ValArray; 4]> =
-            smallvec::SmallVec::with_capacity(k.tuple_params.len());
-        for j in 0..k.tuple_params.len() {
-            tuple_args.push(composite_arr(base_tuple + j)?);
-        }
-        let mut struct_args: smallvec::SmallVec<[ValArray; 4]> =
-            smallvec::SmallVec::with_capacity(k.struct_params.len());
-        for j in 0..k.struct_params.len() {
-            struct_args.push(composite_arr(base_struct + j)?);
-        }
-        let mut variant_args: smallvec::SmallVec<[Value; 4]> =
-            smallvec::SmallVec::with_capacity(k.variant_params.len());
-        for j in 0..k.variant_params.len() {
-            variant_args.push(param_opts[base_variant + j].clone()?);
-        }
-        let mut nullable_args: smallvec::SmallVec<[Value; 4]> =
-            smallvec::SmallVec::with_capacity(k.nullable_params.len());
-        for j in 0..k.nullable_params.len() {
-            nullable_args.push(param_opts[base_nullable + j].clone()?);
-        }
-        let mut string_args: smallvec::SmallVec<[arcstr::ArcStr; 4]> =
-            smallvec::SmallVec::with_capacity(k.string_params.len());
-        for j in 0..k.string_params.len() {
-            match param_opts[base_string + j].as_ref()? {
-                Value::String(s) => string_args.push(s.clone()),
-                v => panic!(
-                    "Kernel: string param expected Value::String, \
-                     got {v:?}"
-                ),
+        let array_args: smallvec::SmallVec<[(u64, ValArray); 4]> =
+            (0..k.array_params.len()).map(|j| composite(base_array + j)).collect();
+        let tuple_args: smallvec::SmallVec<[(u64, ValArray); 4]> =
+            (0..k.tuple_params.len()).map(|j| composite(base_tuple + j)).collect();
+        let struct_args: smallvec::SmallVec<[(u64, ValArray); 4]> =
+            (0..k.struct_params.len()).map(|j| composite(base_struct + j)).collect();
+        // String args: present clone or empty placeholder.
+        let string_args: smallvec::SmallVec<[(u64, arcstr::ArcStr); 4]> = (0..k
+            .string_params
+            .len())
+            .map(|j| match param_opts[base_string + j].as_ref() {
+                Some(Value::String(s)) => (str_disc, s.clone()),
+                None => (str_disc | taint, empty_str.clone()),
+                Some(v) => {
+                    panic!("Kernel: string param expected Value::String, got {v:?}")
+                }
+            })
+            .collect();
+        // Value-shape args (variant / nullable / bare value): present
+        // clone with its real disc, or `Value::Null` + TAINT.
+        let value_arg = |i: usize| -> (u64, Value) {
+            match param_opts[i].as_ref() {
+                Some(v) => (bits(v).0, v.clone()),
+                None => (null_disc | taint, Value::Null),
             }
-        }
-        let mut value_args: smallvec::SmallVec<[Value; 4]> =
-            smallvec::SmallVec::with_capacity(k.value_params.len());
-        for j in 0..k.value_params.len() {
-            value_args.push(param_opts[base_value + j].clone()?);
-        }
-        //
-        // Slot order is the canonical kind-grouped ABI layout
-        // (`KernelSig::abi_params`): scalar params first, then
-        // array/tuple/struct pointers, then variant/nullable
-        // (disc, payload) pairs — exactly what the JIT wrapper
-        // unpacks.
-        //
-        // The ValArray references stay borrowed by `array_args`
-        // / `tuple_args` / `struct_args` (`SmallVec<ValArray>`)
-        // for the duration of the wrapper call — the JIT'd
-        // helpers dereference these pointers, so the originals
-        // must outlive the call. They do: the smallvecs live
-        // for the rest of `update`.
+        };
+        let variant_args: smallvec::SmallVec<[(u64, Value); 4]> =
+            (0..k.variant_params.len()).map(|j| value_arg(base_variant + j)).collect();
+        let nullable_args: smallvec::SmallVec<[(u64, Value); 4]> =
+            (0..k.nullable_params.len()).map(|j| value_arg(base_nullable + j)).collect();
+        let value_args: smallvec::SmallVec<[(u64, Value); 4]> =
+            (0..k.value_params.len()).map(|j| value_arg(base_value + j)).collect();
+        // Pack the slots in canonical `abi_params` order — scalars,
+        // arrays, tuples, structs, strings, variants, nullables, values —
+        // two words (disc, payload) each.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
-        for bits in &scalar_arg_bits {
-            slots.push(*bits);
+        for (i, p) in k.params.iter().enumerate() {
+            let disc = prim_to_value_disc(p.prim) as u64;
+            let (disc, payload) = match param_opts[i].as_ref() {
+                Some(v) => (disc, pack_value_to_u64(v, p.prim)),
+                None => (disc | taint, 0),
+            };
+            slots.push(disc);
+            slots.push(payload);
         }
-        for a in &array_args {
+        for (disc, a) in array_args.iter().chain(&tuple_args).chain(&struct_args) {
+            slots.push(*disc);
             slots.push(a as *const ValArray as u64);
         }
-        for a in &tuple_args {
-            slots.push(a as *const ValArray as u64);
-        }
-        for a in &struct_args {
-            slots.push(a as *const ValArray as u64);
-        }
-        // String boundary: pack the borrowed `ArcStr` as its
-        // thin pointer (one word). `ArcStr` is
-        // `repr(transparent)` over `NonNull<ThinInner>`, so the
-        // pointer word IS the value. The kernel refcount-bumps
-        // on entry via `graphix_arcstr_clone`; we keep the
-        // `string_args` smallvec alive for the call's duration.
-        for s in &string_args {
+        // String boundary: the `ArcStr` is `repr(transparent)` over
+        // `NonNull<ThinInner>`, so the pointer word IS the value. The
+        // kernel refcount-bumps on entry; `string_args` keeps it alive.
+        for (disc, s) in &string_args {
             let p = s as *const arcstr::ArcStr as *const u64;
-            unsafe {
-                slots.push(*p);
-            }
+            slots.push(*disc);
+            unsafe { slots.push(*p) };
         }
-        // Variant / Nullable boundary: pack the borrowed
-        // `Value` as its two `repr(u64)` words (disc, payload).
-        // Safe: Value is `#[repr(u64)]`, 16 bytes / 8-byte
-        // aligned, layout pinned by the const_assert in
-        // `emit_helpers`. We don't transfer ownership —
-        // the kernel refcount-bumps on entry via
-        // `graphix_value_clone`.
-        for v in &variant_args {
+        // Variant / Nullable / bare value boundary: the (disc, payload)
+        // words; the disc carries TAINT for a missing input. The kernel
+        // clones on entry; the smallvecs keep the Values alive.
+        for (disc, v) in variant_args.iter().chain(&nullable_args).chain(&value_args) {
             let p = v as *const Value as *const u64;
-            unsafe {
-                slots.push(*p);
-                slots.push(*p.add(1));
-            }
+            slots.push(*disc);
+            unsafe { slots.push(*p.add(1)) };
         }
-        for v in &nullable_args {
-            let p = v as *const Value as *const u64;
-            unsafe {
-                slots.push(*p);
-                slots.push(*p.add(1));
-            }
-        }
-        // Bare value-shape (DateTime/Duration/Bytes) boundary:
-        // two-word `Value` pack, same as variant/nullable. The
-        // kernel clones on entry; we keep `value_args` alive.
-        for v in &value_args {
-            let p = v as *const Value as *const u64;
-            unsafe {
-                slots.push(*p);
-                slots.push(*p.add(1));
-            }
-        }
-        // #219: trailing validity bitmask — bit `i` set iff region
-        // input `i` currently has a value. `self.args` persists across
-        // cycles, so this is "has ever fired" = the node-walk's
-        // combineLatest validity. The kernel body tests these bits at
-        // region-input reads and bottoms only when the taken path
-        // consumes a missing input.
-        let mut validity: u64 = 0;
-        for (i, a) in self.args.iter().enumerate() {
-            if i < 64 && a.is_some() {
-                validity |= 1u64 << i;
-            }
-        }
-        slots.push(validity);
-        // Drift guard: the packed slot count must equal the
-        // kernel's declared ABI footprint. A mismatch means the
-        // per-kind arg vectors disagree with `abi_params` —
-        // catch it here rather than as a silent misread in the
-        // JIT wrapper.
+        // Drift guard: the packed slot count must equal the kernel's
+        // declared ABI footprint.
         debug_assert_eq!(
             slots.len(),
             self.kernel.abi_wire_slots_total(),

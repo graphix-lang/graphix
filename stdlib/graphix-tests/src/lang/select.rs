@@ -150,3 +150,27 @@ run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// =============================================================================
+// #219 — a MISSING region input consumed only on a DEAD arm must yield a real
+// value, not bottom. The scrutinee picks a live arm; the missing input (`x`,
+// fed by `never()`) is referenced only on the un-taken arm. Pre-#219 the fused
+// kernel bottomed on ANY missing input; now taint rides each input's disc and
+// is forced only where the taken path consumes it. (The composite case is
+// value-correct too but currently de-fuses — covered by the differential
+// suite; these two fuse and exercise the in-kernel taint path.)
+const MISSING_ON_DEAD_ARM_SCALAR: &str = r#"
+{ let x: i64 = never(); select i64:0 { i64:0 => i64:5, _ => x } }
+"#;
+
+run!(missing_on_dead_arm_scalar, MISSING_ON_DEAD_ARM_SCALAR, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(5)))
+});
+
+const MISSING_ON_DEAD_ARM_STRING: &str = r#"
+{ let x: string = never(); select i64:0 { i64:0 => "live", _ => x } }
+"#;
+
+run!(missing_on_dead_arm_string, MISSING_ON_DEAD_ARM_STRING, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "live")
+});

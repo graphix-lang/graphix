@@ -115,18 +115,26 @@ fn bind_elem(
             let get_helper = cx.helper(valarray_get_helper(prim)?)?;
             let call = cx.b.ins().call(get_helper, &[arr_ptr, i_now]);
             let elem_val = cx.b.inst_results(call)[0];
+            // The element of a valid array is untainted (a tainted source
+            // array bottoms the whole HOF separately).
+            let disc = scalar_disc(cx.b, prim);
             let var = cx.b.declare_var(prim_to_clif(prim));
             cx.b.def_var(var, elem_val);
-            cx.env.bind_with_id(elem.name.clone(), var, prim, elem.id);
+            let dv = cx.b.declare_var(types::I64);
+            cx.b.def_var(dv, disc);
+            cx.env.bind(elem.name.clone(), ValueVar { disc: dv, payload: var }, LocalKind::Scalar(prim), elem.id);
             Ok(BoundElem::Scalar { var, prim })
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let get_helper = cx.helper("graphix_valarray_get_array")?;
             let call = cx.b.ins().call(get_helper, &[arr_ptr, i_now]);
             let elem_ptr = cx.b.inst_results(call)[0];
+            let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
             let var = cx.b.declare_var(types::I64);
             cx.b.def_var(var, elem_ptr);
-            cx.env.bind_composite_with_id(elem.name.clone(), var, elem.id);
+            let dv = cx.b.declare_var(types::I64);
+            cx.b.def_var(dv, disc);
+            cx.env.bind(elem.name.clone(), ValueVar { disc: dv, payload: var }, LocalKind::Composite, elem.id);
             // Destructure leaves: scalar reads off the owned element,
             // bound under their pattern BindIds (the body's leaf Refs
             // resolve BindId-first; the synthetic name is never looked
@@ -137,11 +145,10 @@ fn bind_elem(
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                 let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
                 let v = cx.b.inst_results(call)[0];
-                let lvar = cx.b.declare_var(prim_to_clif(*prim));
-                cx.b.def_var(lvar, v);
                 let name: ArcStr =
                     compact_str::format_compact!("__leaf{}", id.inner()).as_str().into();
-                cx.env.bind_with_id(name, lvar, *prim, Some(*id));
+                let d = scalar_disc(cx.b, *prim);
+                bind_local(cx, name, d, v, LocalKind::Scalar(*prim), Some(*id));
             }
             Ok(BoundElem::Composite { var })
         }
@@ -342,40 +349,19 @@ pub fn push_field(
         }
     };
     let push = cx.helper(helper_name)?;
+    // A field's #219 taint forces the kernel to bottom at the producer
+    // (no per-field validity channel) before the push — pushing a
+    // tainted disc would store a corrupt Value (UB on clone/drop).
+    // `is_untainted` folds to const-true for an untainted field.
+    let valid = is_untainted(cx.b, cv.disc);
+    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
     // Value-shape fields (Variant/Nullable/DateTime/Duration/Bytes/Map)
-    // need both `(disc, payload)` registers from the typed Value ABI;
-    // everything else is a single ClifValue. This dispatch MUST match
-    // the helper-selection above — both key on the full value-shape set
-    // (`is_value_shape()`). When it only listed Variant|Nullable, a
-    // DateTime/Duration/Bytes/Map field fell to the `_` arm and
-    // `.single()` Err'd, silently de-fusing the whole kernel.
+    // push both `(disc, payload)` registers; everything else pushes the
+    // payload word.
     if kernel_abi::is_value_shape(cx.registry(), typ) {
-        let (disc, payload) = match cv {
-            CompiledExpr::Value { disc, payload } => (disc, payload),
-            _ => {
-                return Err(anyhow!(
-                    "Value-shape field compiled to Single — \
-                     compile_expr dispatch is broken"
-                ));
-            }
-        };
-        cx.b.ins().call(push, &[buf, disc, payload]);
+        cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
-        match cv {
-            CompiledExpr::Single(v) => {
-                cx.b.ins().call(push, &[buf, v]);
-            }
-            CompiledExpr::Scalar2 { value, valid } => {
-                emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-                cx.b.ins().call(push, &[buf, value]);
-            }
-            CompiledExpr::Value { .. } | CompiledExpr::Value2 { .. } => {
-                return Err(anyhow!(
-                    "scalar producer field compiled to Value-shape — \
-                     compile_expr dispatch is broken"
-                ));
-            }
-        }
+        cx.b.ins().call(push, &[buf, cv.payload]);
     }
     Ok(())
 }
@@ -420,7 +406,7 @@ where
     // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let mark = cx.env.mark();
-    cx.env.bind_with_id(idx_name.clone(), i_var, PrimType::I64, idx_id);
+    bind_scalar_var(cx, idx_name.clone(), PrimType::I64, i_var, idx_id);
     let cv = body(cx)?;
     push_field(cx, buf, cv, out_typ, out_src)?;
     cx.env.truncate(mark);
@@ -590,18 +576,15 @@ where
     let elem_var = cx.b.declare_var(prim_to_clif(in_elem));
     cx.b.def_var(elem_var, elem_val);
     let mark = cx.env.mark();
-    cx.env.bind_with_id(elem_name.clone(), elem_var, in_elem, elem_id);
+    bind_scalar_var(cx, elem_name.clone(), in_elem, elem_var, elem_id);
     let cv = body(cx)?;
     cx.env.truncate(mark);
-    let (disc, payload) = match cv {
-        CompiledExpr::Value { disc, payload } => (disc, payload),
-        _ => {
-            return Err(anyhow!(
-                "ArrayFilterMap body not Value-shape — expected \
-                 a Nullable result"
-            ))
-        }
-    };
+    // A tainted body (e.g. `elem / 0`) bottoms the whole HOF (#219);
+    // folds to no branch for an untainted body.
+    let valid = is_untainted(cx.b, cv.disc);
+    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    let disc = clean_disc(cx.b, cv.disc);
+    let payload = cv.payload;
     let is_null = cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
     cx.b.ins().brif(is_null, advance, &[], push_block, &[]);
     cx.b.switch_to_block(push_block);
@@ -715,7 +698,7 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    cx.env.bind_with_id(acc_name.clone(), acc_var, acc_prim, acc_id);
+    bind_scalar_var(cx, acc_name.clone(), acc_prim, acc_var, acc_id);
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
     let new_acc = body(cx)?;
     drop_composite_elem(cx, &bound)?;
@@ -856,6 +839,10 @@ where
     let (bdisc, bpayload) = body(cx)?;
     drop_composite_elem(cx, &bound)?;
     cx.env.truncate(mark);
+    // A tainted body bottoms the whole HOF (#219); `bdisc` is then clean
+    // on the continue path, so the `== NULL` compare is exact.
+    let valid = is_untainted(cx.b, bdisc);
+    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
     let is_null = cx.b.ins().icmp_imm(IntCC::Equal, bdisc, value_disc::NULL);
     // not-null → found; null → advance. `bdisc`/`bpayload`
     // dominate `found` (computed before the branch).

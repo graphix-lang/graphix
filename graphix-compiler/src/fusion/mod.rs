@@ -835,16 +835,9 @@ pub(crate) fn sig_from_inputs<'k>(
         tail_call_slots: Vec::new(),
         return_type,
         has_tail_loop: false,
-        input_bits: nohash::IntMap::default(),
     };
     let mut arg_types: Vec<Type> = Vec::new();
-    for (i, (name, kind, bind_id)) in inputs.into_iter().enumerate() {
-        // #219 validity: bit `i` (collect / feeder order) tracks this
-        // input's presence at dispatch. Lambda formals (bind_id None)
-        // are passed afresh each call, so they carry no validity bit.
-        if let Some(bid) = bind_id {
-            sig.input_bits.insert(bid, i as u32);
-        }
+    for (name, kind, bind_id) in inputs.into_iter() {
         let slot_kind = match kind {
             RegionInputKind::Prim(prim) => {
                 sig.params.push(Input { name: name.clone(), prim: *prim, bind_id });

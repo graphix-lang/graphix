@@ -1162,13 +1162,12 @@ pub enum AbiParamKind {
 
 impl AbiParamKind {
     /// Number of machine-word (`u64`) slots this param occupies on the
-    /// wire. The single home of the "Variant/Nullable/Value are two
-    /// words, everything else is one" rule.
+    /// wire. Every kind is now two words — `(disc, payload)` — so the
+    /// disc carries #219 taint uniformly across the kernel boundary
+    /// (scalars/composites/strings gained a leading disc word that the
+    /// dispatch sets to `value.disc | TAINT?`).
     pub fn wire_words(self) -> usize {
-        match self {
-            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => 2,
-            _ => 1,
-        }
+        2
     }
 }
 
@@ -1260,12 +1259,6 @@ pub struct KernelSig {
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
     /// (CLIF) accordingly.
     pub has_tail_loop: bool,
-    /// Maps each region-input `BindId` to its bit index in the
-    /// per-cycle validity bitmask (the trailing kernel ABI param).
-    /// Bit `i` mirrors `self.args[i]` at dispatch (collect / feeder
-    /// order). Inputs without a `BindId` (lambda formals) get no
-    /// entry — they're passed afresh each call, never "missing".
-    pub input_bits: nohash::IntMap<BindId, u32>,
 }
 
 impl KernelSig {
@@ -1311,26 +1304,25 @@ impl KernelSig {
             })
     }
 
-    /// Total number of `u64` wire slots the parameter list occupies.
-    /// The single home for the `n_pointer_slots + n_value_slots`
-    /// arithmetic that used to be copy-pasted at every ABI site.
+    /// Total number of `u64` wire slots the parameter list occupies —
+    /// two per param (`disc`, `payload`) now that every kind carries a
+    /// disc word for #219 taint.
     pub fn abi_param_wire_slots(&self) -> usize {
-        self.params.len()
+        2 * (self.params.len()
             + self.array_params.len()
             + self.tuple_params.len()
             + self.struct_params.len()
             + self.string_params.len()
-            + 2 * (self.variant_params.len()
-                + self.nullable_params.len()
-                + self.value_params.len())
+            + self.variant_params.len()
+            + self.nullable_params.len()
+            + self.value_params.len())
     }
 
-    /// Total wire slots including the trailing validity bitmask — one
-    /// `u64`, one bit per region input (`#219`). This is the length of
-    /// the buffer the dispatch packs and the wrapper unpacks; the
-    /// bitmask lives at slot index [`Self::abi_param_wire_slots`].
+    /// Total wire slots the dispatch packs and the wrapper unpacks.
+    /// Equals [`Self::abi_param_wire_slots`] — the validity bitmask is
+    /// gone (taint rides in each param's disc word, #219).
     pub fn abi_wire_slots_total(&self) -> usize {
-        self.abi_param_wire_slots() + 1
+        self.abi_param_wire_slots()
     }
 
     /// The wire shape of this kernel's return value, or `None` for the

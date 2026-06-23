@@ -1,0 +1,4 @@
+// CRASH: child HANG (outer deadline)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let rec countdown = |n: i64, acc: i64| -> i64 select n {i64:0 => i64:1, _ => countdown(n + i64:1, acc + n)}; countdown(i64:100, i64:0)}

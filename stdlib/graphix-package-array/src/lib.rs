@@ -130,13 +130,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug, so
         // Err (abort the kernel), never Ok(None).
-        let arr_ptr = match array_arg.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::map emit_clif: array arg compiled to \
-                 non-Single {cv:?}"
-            ),
-        };
+        let arr_ptr = emit::emit_forced(cx, array_arg)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_map_loop(
             cx,
@@ -151,7 +145,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| Some(CompiledExpr::Single(v)))
+        .map(|v| Some(emit::array_result(cx, v)))
     }
 }
 
@@ -223,13 +217,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = match array_arg.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::filter emit_clif: array arg compiled to \
-                 non-Single {cv:?}"
-            ),
-        };
+        let arr_ptr = emit::emit_forced(cx, array_arg)?;
         scaffold::emit_filter_loop(
             cx,
             scaffold::ArraySrc { ptr: arr_ptr, owned },
@@ -239,15 +227,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
                 typ: &in_elem,
                 leaves: &leaves,
             },
-            |cx| match body.emit_clif(cx)? {
-                CompiledExpr::Single(v) => Ok(v),
-                cv => bail!(
-                    "array::filter predicate compiled to a possibly-bottom \
-                     or non-scalar value ({cv:?}) — de-fuse to node-walk"
-                ),
-            },
+            |cx| emit::emit_forced(cx, body),
         )
-        .map(|v| Some(CompiledExpr::Single(v)))
+        .map(|v| Some(emit::array_result(cx, v)))
     }
 }
 
@@ -318,13 +300,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = match array_arg.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::flat_map emit_clif: array arg compiled \
-                 to non-Single {cv:?}"
-            ),
-        };
+        let arr_ptr = emit::emit_forced(cx, array_arg)?;
         let body_src = emit::node_composite_source(body);
         scaffold::emit_flat_map_loop(
             cx,
@@ -336,17 +312,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                 leaves: &leaves,
             },
             |cx| {
-                let p = match body.emit_clif(cx)? {
-                    CompiledExpr::Single(v) => v,
-                    cv => bail!(
-                        "array::flat_map body compiled to a non-Single \
-                         value ({cv:?}) — de-fuse to node-walk"
-                    ),
-                };
+                let p = emit::emit_forced(cx, body)?;
                 emit::ensure_owned_composite_src(cx, body_src, p)
             },
         )
-        .map(|v| Some(CompiledExpr::Single(v)))
+        .map(|v| Some(emit::array_result(cx, v)))
     }
 }
 
@@ -414,13 +384,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             };
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = match array_arg.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::filter_map emit_clif: array arg \
-                 compiled to non-Single {cv:?}"
-            ),
-        };
+        let arr_ptr = emit::emit_forced(cx, array_arg)?;
         scaffold::emit_filter_map_loop(
             cx,
             scaffold::ArraySrc { ptr: arr_ptr, owned },
@@ -430,7 +394,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             out_prim,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| Some(CompiledExpr::Single(v)))
+        .map(|v| Some(emit::array_result(cx, v)))
     }
 }
 
@@ -505,13 +469,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = match array_arg.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::find emit_clif: array arg compiled to \
-                 non-Single {cv:?}"
-            ),
-        };
+        let arr_ptr = emit::emit_forced(cx, array_arg)?;
         scaffold::emit_find_loop(
             cx,
             scaffold::ArraySrc { ptr: arr_ptr, owned },
@@ -521,15 +479,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
                 typ: &in_elem,
                 leaves: &leaves,
             },
-            |cx| match body.emit_clif(cx)? {
-                CompiledExpr::Single(v) => Ok(v),
-                cv => bail!(
-                    "array::find predicate compiled to a possibly-bottom \
-                     or non-scalar value ({cv:?}) — de-fuse to node-walk"
-                ),
-            },
+            |cx| emit::emit_forced(cx, body),
         )
-        .map(|(disc, payload)| Some(CompiledExpr::Value { disc, payload }))
+        .map(|(disc, payload)| Some(CompiledExpr::new(disc, payload)))
     }
 }
 
@@ -601,13 +553,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = match array_arg.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::find_map emit_clif: array arg compiled \
-                 to non-Single {cv:?}"
-            ),
-        };
+        let arr_ptr = emit::emit_forced(cx, array_arg)?;
         let body_src = emit::node_composite_source(body);
         let (disc, payload) = scaffold::emit_find_map_loop(
             cx,
@@ -619,17 +565,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
                 leaves: &leaves,
             },
             |cx| {
-                let (d, p) = match body.emit_clif(cx)? {
-                    CompiledExpr::Value { disc, payload } => (disc, payload),
-                    cv => bail!(
-                        "array::find_map body compiled to a non-Value \
-                         shape ({cv:?}) — de-fuse to node-walk"
-                    ),
-                };
-                emit::ensure_owned_value_src(cx, body_src, d, p)
+                let cv = body.emit_clif(cx)?;
+                emit::ensure_owned_value_src(cx, body_src, cv.disc, cv.payload)
             },
         )?;
-        Ok(Some(CompiledExpr::Value { disc, payload }))
+        Ok(Some(CompiledExpr::new(disc, payload)))
     }
 }
 
@@ -706,20 +646,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = match array_arg.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::fold emit_clif: array arg compiled to \
-                 non-Single {cv:?}"
-            ),
-        };
-        let valid_scalar = |what: &str, cv: CompiledExpr| match cv {
-            CompiledExpr::Single(v) => Ok(v),
-            cv => Err(anyhow::anyhow!(
-                "array::fold {what} compiled to a possibly-bottom or \
-                 non-scalar value ({cv:?}) — de-fuse to node-walk"
-            )),
-        };
+        let arr_ptr = emit::emit_forced(cx, array_arg)?;
         scaffold::emit_fold_loop(
             cx,
             scaffold::ArraySrc { ptr: arr_ptr, owned },
@@ -732,10 +659,12 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
                 typ: &in_elem,
                 leaves: &leaves,
             },
-            |cx| valid_scalar("init", init_arg.emit_clif(cx)?),
-            |cx| valid_scalar("body", body.emit_clif(cx)?),
+            // #219: a tainted init / body bottoms the whole fold (a
+            // bottom acc poisons all later iterations).
+            |cx| emit::emit_forced(cx, init_arg),
+            |cx| emit::emit_forced(cx, body),
         )
-        .map(|v| Some(CompiledExpr::Single(v)))
+        .map(|v| Some(emit::array_result(cx, v)))
     }
 }
 
@@ -1636,13 +1565,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let n_raw = match n_node.emit_clif(cx)? {
-            CompiledExpr::Single(v) => v,
-            cv => bail!(
-                "array::init `n` compiled to a possibly-bottom or \
-                 non-scalar value ({cv:?}) — de-fuse to node-walk"
-            ),
-        };
+        let n_raw = emit::emit_forced(cx, n_node)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_init_loop(
             cx,
@@ -1654,7 +1577,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| Some(CompiledExpr::Single(v)))
+        .map(|v| Some(emit::array_result(cx, v)))
     }
 }
 
