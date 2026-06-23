@@ -171,6 +171,13 @@ struct Params {
     /// do not attempt to run the init module
     #[arg(short = 'i', long)]
     no_init: bool,
+    /// disable JIT fusion — run the canonical node-walk interpreter
+    /// only. The fused JIT and the node-walk always agree on values
+    /// (the differential test/fuzz oracle enforces it); this is for
+    /// benchmarking the two evaluators and for debugging a suspected
+    /// fusion issue.
+    #[arg(long = "no-fusion")]
+    no_fusion: bool,
     /// do not execute the program, just veryify that it compiles and
     /// type checks.
     #[arg(long = "check")]
@@ -365,7 +372,10 @@ fn tokio_main(
             let mode = if p.check { Mode::Check(source) } else { Mode::Script(source) };
             shell = shell.mode(mode);
         }
-        let (enable, disable) = RawFlag::as_flags(&p.warn);
+        let (mut enable, disable) = RawFlag::as_flags(&p.warn);
+        if p.no_fusion {
+            enable.insert(CFlag::FusionDisabled);
+        }
         shell
             .publisher(publisher)
             .subscriber(subscriber)
