@@ -110,6 +110,29 @@ impl PartialOrd for Arg {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct Doc(pub Option<ArcStr>);
 
+/// A single `#[name(args, ...)]` / `#[name]` attribute attached above an
+/// expression. (Parsed and acted on by a later change; the field exists
+/// now so the `Decorations` shape is stable.)
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct Attr {
+    pub name: ArcStr,
+    pub args: Arc<[Expr]>,
+}
+
+/// Source decorations attached to the `Expr` they sit above — the `//`
+/// comment lines and `#[..]` attributes on their own line directly above
+/// the expression, plus any `trailing` comments dangling after the last
+/// expression of a block/file (the one position with no expression below
+/// to attach to). `None` for the overwhelming majority of expressions, so
+/// it costs one word and no allocation. Invisible to `Expr` equality
+/// (comments don't affect semantics — see `PartialEq for Expr`).
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub struct Decorations {
+    pub comments: Box<[ArcStr]>,
+    pub attrs: Box<[Attr]>,
+    pub trailing: Box<[ArcStr]>,
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct TypeDefExpr {
     pub name: ArcStr,
@@ -290,12 +313,18 @@ pub enum ExprKind {
 
 impl ExprKind {
     pub fn to_expr(self, pos: SourcePosition) -> Expr {
-        Expr { id: ExprId::new(), ori: get_origin(), pos, kind: self }
+        Expr { id: ExprId::new(), ori: get_origin(), pos, kind: self, dec: None }
     }
 
     /// does not provide any position information or comment
     pub fn to_expr_nopos(self) -> Expr {
-        Expr { id: ExprId::new(), ori: get_origin(), pos: Default::default(), kind: self }
+        Expr {
+            id: ExprId::new(),
+            ori: get_origin(),
+            pos: Default::default(),
+            kind: self,
+            dec: None,
+        }
     }
 }
 
@@ -422,6 +451,10 @@ pub struct Expr {
     pub ori: Arc<Origin>,
     pub pos: SourcePosition,
     pub kind: ExprKind,
+    /// Comments/attributes on their own line directly above this
+    /// expression (and trailing dangling comments). `None` unless the
+    /// expression was decorated; not compared by equality.
+    pub dec: Option<Box<Decorations>>,
 }
 
 impl fmt::Debug for Expr {
@@ -432,12 +465,23 @@ impl fmt::Debug for Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Some(dec) = &self.dec {
+            for c in dec.comments.iter() {
+                writeln!(f, "//{c}")?;
+            }
+        }
         write!(f, "{}", self.kind)
     }
 }
 
 impl PrettyDisplay for Expr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        use std::fmt::Write;
+        if let Some(dec) = &self.dec {
+            for c in dec.comments.iter() {
+                writeln!(buf, "//{c}")?;
+            }
+        }
         self.kind.fmt_pretty(buf)
     }
 }
@@ -522,7 +566,7 @@ impl<'de> Deserialize<'de> for Expr {
 
 impl Expr {
     pub fn new(kind: ExprKind, pos: SourcePosition) -> Self {
-        Expr { id: ExprId::new(), ori: get_origin(), pos, kind }
+        Expr { id: ExprId::new(), ori: get_origin(), pos, kind, dec: None }
     }
 
     /// fold over self and all of self's sub expressions

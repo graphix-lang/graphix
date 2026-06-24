@@ -252,7 +252,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 ItemKind::Use(m) => ExprKind::Use { name: m.clone() },
             };
             let ori = self.ori.cloned().unwrap_or_else(crate::expr::get_origin);
-            Expr { id: ExprId::new(), ori, pos: self.pos, kind }
+            Expr { id: ExprId::new(), ori, pos: self.pos, kind, dec: None }
         }
     }
     let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
@@ -465,7 +465,7 @@ async fn resolve(
             )
         });
         let _ = implementation; // implementation lives on the inner exprs
-        return Ok(Expr { id, ori: parent, pos, kind });
+        return Ok(Expr { id, ori: parent, pos, kind, dec: None });
     }
     let mut msg = format_compact!("module {name} could not be found");
     use std::fmt::Write as _;
@@ -554,6 +554,9 @@ impl Expr {
                     ori: self.ori.clone(),
                     pos: self.pos,
                     kind: $kind,
+                    // Preserve decorations (comments/attrs) through module
+                    // resolution so they survive into the resolved tree.
+                    dec: self.dec.clone(),
                 })
             };
         }

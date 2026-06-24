@@ -716,28 +716,7 @@ macro_rules! neg {
 macro_rules! deref {
     ($inner:expr) => {
         $inner
-            .prop_map(|e| match &e.kind {
-                ExprKind::Qop(e) => ExprKind::Deref(Arc::new(
-                    ExprKind::ExplicitParens(Arc::new(
-                        ExprKind::Qop(e.clone()).to_expr_nopos(),
-                    ))
-                    .to_expr_nopos(),
-                ))
-                .to_expr_nopos(),
-                ExprKind::Connect { name, value, deref } => ExprKind::Deref(Arc::new(
-                    ExprKind::ExplicitParens(Arc::new(
-                        ExprKind::Connect {
-                            name: name.clone(),
-                            value: value.clone(),
-                            deref: *deref,
-                        }
-                        .to_expr_nopos(),
-                    ))
-                    .to_expr_nopos(),
-                ))
-                .to_expr_nopos(),
-                _ => ExprKind::Deref(Arc::new(e)).to_expr_nopos(),
-            })
+            .prop_map(|e| ExprKind::Deref(Arc::new(e)).to_expr_nopos())
             .prop_map(add_parens)
     };
 }
@@ -844,26 +823,42 @@ fn binop_precedence(e: &ExprKind) -> Option<u8> {
     Some(precedence(op).0)
 }
 
+/// Prefix-unary operators (`!`, `*`, `&`, `-`) bind tighter than every binary
+/// operator; this is the `parent_prec` they pass to `maybe_paren_lhs`.
+const UNARY_PREC: u8 = 255;
+
+fn paren(child: Expr) -> Expr {
+    ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
+}
+
+/// Some children need parens regardless of left/right position. `Connect`
+/// (`name <- value`) binds looser than every operator, so it always needs them
+/// as an operand. Postfix `Qop` (`e?`) re-binds onto a prefix-unary parent's
+/// result (`*x?` is `(*x)?`, not `*(x?)`), so it needs them under a prefix
+/// unary only — under a binary operator it re-parses correctly without them.
+/// Returns `None` to defer to ordinary binary-operator precedence.
+fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
+    match child {
+        ExprKind::Connect { .. } => Some(true),
+        ExprKind::Qop(_) => Some(parent_prec == UNARY_PREC),
+        _ => None,
+    }
+}
+
 /// Wraps a left child in ExplicitParens if it has lower precedence than the parent.
 fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
-    match binop_precedence(&child.kind) {
-        Some(child_prec) if child_prec < parent_prec => {
-            ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
-        }
-        _ => child,
-    }
+    let needs = loose_needs_parens(&child.kind, parent_prec)
+        .unwrap_or_else(|| binop_precedence(&child.kind).is_some_and(|p| p < parent_prec));
+    if needs { paren(child) } else { child }
 }
 
 /// Wraps a right child in ExplicitParens if it has lower or equal precedence than the parent.
 /// Equal precedence needs parens on the right because all operators are left-associative:
 /// `a - b - c` parses as `(a - b) - c`, so `Sub(a, Sub(b, c))` must print as `a - (b - c)`.
 fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
-    match binop_precedence(&child.kind) {
-        Some(child_prec) if child_prec <= parent_prec => {
-            ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
-        }
-        _ => child,
-    }
+    let needs = loose_needs_parens(&child.kind, parent_prec)
+        .unwrap_or_else(|| binop_precedence(&child.kind).is_some_and(|p| p <= parent_prec));
+    if needs { paren(child) } else { child }
 }
 
 /// Recursively adds ExplicitParens where needed to make the expression tree

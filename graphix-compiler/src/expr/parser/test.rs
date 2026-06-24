@@ -78,6 +78,55 @@ fn raw_string() {
     assert_eq!(ExprKind::Constant(p).to_expr_nopos(), parse_one(&s).unwrap());
 }
 
+// ── retained comments ──
+// A comment is legal only on its own line directly above an expression,
+// where it is captured into that expression's `dec`. Every other position
+// is a parse error, so "every comment is preserved in the AST" holds.
+
+#[test]
+fn comment_above_expr_captured() {
+    let e = parse_one("// hello\n42").unwrap();
+    let dec = e.dec.as_ref().expect("comment should attach to the expr below");
+    assert_eq!(&dec.comments[..], &[literal!(" hello")]);
+}
+
+#[test]
+fn comment_block_round_trips() {
+    // A run of `//` lines above an expr survives print -> parse, verbatim.
+    let e = parse_one("// first\n// second\n42").unwrap();
+    let e2 = parse_one(&e.to_string()).unwrap();
+    let c = e2.dec.as_ref().expect("comments lost on round-trip");
+    assert_eq!(&c.comments[..], &[literal!(" first"), literal!(" second")]);
+}
+
+#[test]
+fn comment_above_block_item() {
+    // A comment above an item inside a do block attaches to that item.
+    let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
+    match &e.kind {
+        ExprKind::Do { exprs } => {
+            let last = exprs.last().unwrap();
+            assert_eq!(
+                &last.dec.as_ref().expect("comment lost").comments[..],
+                &[literal!(" note")],
+            );
+        }
+        other => panic!("expected a do block, got {other:?}"),
+    }
+}
+
+#[test]
+fn interior_comment_is_error() {
+    // Between an operator and its operand — not above an expression.
+    assert!(parse_one("1 +\n// nope\n2").is_err());
+}
+
+#[test]
+fn trailing_block_comment_is_error() {
+    // Dangling after the last item of a block (nothing below to attach to).
+    assert!(parse_one("{ let x = 1; x\n// nope\n}").is_err());
+}
+
 #[test]
 fn interpolated0() {
     let p = ExprKind::Apply(ApplyExpr {
@@ -1405,4 +1454,30 @@ fn checked_associativity() {
     }
     .to_expr_nopos();
     assert_eq!(e, parse_one("1 -? 2 -? 3").unwrap());
+}
+
+// ── `<-` connect vs `< -` (less-than of a negation) ──
+// Unary minus (`Neg`) made `<-` ambiguous with `< -`. `<` must not swallow
+// the `-` of a connect.
+
+#[test]
+fn connect_not_lt_neg() {
+    let e = parse_one("a <- b").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Connect { .. }), "got {:?}", e.kind);
+}
+
+#[test]
+fn lt_neg_with_space() {
+    let e = parse_one("a < -b").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Lt { .. }), "got {:?}", e.kind);
+}
+
+#[test]
+fn parenthesized_connect_round_trips() {
+    // The regression the round-trip proptest caught: a (derefed)
+    // parenthesized connect must survive print -> parse as a connect,
+    // not collapse to `< -`.
+    let e = parse_one("*(a <- b)").unwrap();
+    let e2 = parse_one(&e.to_string()).unwrap();
+    assert_eq!(e.kind, e2.kind);
 }

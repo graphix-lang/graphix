@@ -13,17 +13,20 @@ let make_cpu_cell = |cpu| {
 
 let row1 = row([
     cell(line("process-1")),
-    make_cpu_cell(85)  // Red
+    // Red
+    make_cpu_cell(85)
 ]);
 
 let row2 = row([
     cell(line("process-2")),
-    make_cpu_cell(60)  // Yellow
+    // Yellow
+    make_cpu_cell(60)
 ]);
 
 let row3 = row([
     cell(line("process-3")),
-    make_cpu_cell(30)  // Green
+    // Green
+    make_cpu_cell(30)
 ]);
 
 let header = row([

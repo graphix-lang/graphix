@@ -7,7 +7,7 @@ use crate::expr::{
     Expr, ExprKind,
 };
 use combine::{
-    attempt, between, choice, many,
+    attempt, between, choice, many, not_followed_by,
     parser::char::string,
     position,
     stream::{position::SourcePosition, Range},
@@ -180,7 +180,10 @@ parser! {
                     attempt(string("&&")),
                     attempt(string("||")),
                     string(">"),
-                    string("<"),
+                    // `<` must not swallow the `<-` of a connect: with unary
+                    // minus, `a <- b` would otherwise read as `a < (-b)`.
+                    // `a < -b` (space before `-`) still parses as less-than.
+                    attempt(string("<").skip(not_followed_by(token('-')))),
                     attempt(string("+?")),
                     attempt(string("+")),
                     attempt(string("-?")),

@@ -27,6 +27,7 @@ parser! {
                         ori: get_origin(),
                         pos,
                         kind: ExprKind::Constant(Value::from(s)),
+                        dec: None,
                     },
                     Intp::Expr(s) => s,
                 }

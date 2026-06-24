@@ -1,7 +1,8 @@
 use crate::{
     expr::{
-        set_origin, BindExpr, Doc, Expr, ExprKind, ModPath, Origin, ParserContext,
-        Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr, TryCatchExpr,
+        set_origin, BindExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
+        ParserContext, Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr,
+        TryCatchExpr,
     },
     typ::{FnType, Type},
 };
@@ -14,7 +15,7 @@ use combine::{
         combinator::recognize,
         range::{take_while, take_while1},
     },
-    position, sep_by1, skip_many,
+    position, sep_by1,
     stream::{
         position::{self, SourcePosition},
         Range,
@@ -108,16 +109,38 @@ where
         })
 }
 
+// Whitespace ONLY — `//` comments are no longer skipped here. They are
+// captured exclusively by `leading_comments()` at the `expr()` entry, so a
+// comment anywhere else (interior, trailing, dangling) is a parse error:
+// a comment is legal only on its own line directly above an expression,
+// which makes "every comment is preserved in the AST" structural.
 fn spaces<I>() -> impl Parser<I, Output = ()>
 where
     I: RangeStream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    combine::parser::char::spaces().with(skip_many(
-        attempt(string("//").with(not_followed_by(token('/'))))
-            .with(skip_many(none_of(['\n'])))
-            .with(combine::parser::char::spaces()),
+    combine::parser::char::spaces()
+}
+
+// Capture the run of own-line `//` comment lines directly above an
+// expression. Each line's text (everything after `//` up to the newline)
+// is kept verbatim so it round-trips. `///` is left untouched (handled by
+// `doc_comment` in interface files; a syntax error in `.gx`).
+fn leading_comments<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    combine::parser::char::spaces().with(many(
+        attempt(
+            string("//")
+                .with(not_followed_by(token('/')))
+                .with(many::<String, _, _>(none_of(['\n']))),
+        )
+        .skip(combine::parser::char::spaces())
+        .map(|s: String| ArcStr::from(s.as_str())),
     ))
 }
 
@@ -719,23 +742,36 @@ parser! {
     fn expr[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        spaces().with(choice((
-            module(),
-            use_module(),
-            try_catch(),
-            typedef(),
-            letbind(),
-            attempt(lambda()),
-            attempt(connect()),
-            attempt(arith()),
-            byref(),
-            qop(deref()),
-            qop((position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
-                ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
-            })),
-            attempt(literal()),
-            qop(reference())
-        )))
+        (
+            leading_comments(),
+            choice((
+                module(),
+                use_module(),
+                try_catch(),
+                typedef(),
+                letbind(),
+                attempt(lambda()),
+                attempt(connect()),
+                attempt(arith()),
+                byref(),
+                qop(deref()),
+                qop((position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
+                    ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
+                })),
+                attempt(literal()),
+                qop(reference()),
+            )),
+        )
+            .map(|(comments, mut e): (LPooled<Vec<ArcStr>>, Expr)| {
+                if !comments.is_empty() {
+                    e.dec = Some(Box::new(Decorations {
+                        comments: comments.iter().cloned().collect(),
+                        attrs: Box::new([]),
+                        trailing: Box::new([]),
+                    }));
+                }
+                e
+            })
     }
 }
 

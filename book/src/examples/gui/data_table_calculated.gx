@@ -51,7 +51,8 @@ let tbl: Table = {
 // on_update is called on updates to netidx subscriptions by the table.
 let on_update = |#path: string, #value: Primitive| {
     let v = cast<i64>(value)$;
-    let d = v ~ data; // run only when v updates
+    // run only when v updates
+    let d = v ~ data;
     let (row, col) = opt::or_never(str::row_col(path));
     let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
     let sum = map::fold(d, 0, |sum, (col, rows)| select col {
