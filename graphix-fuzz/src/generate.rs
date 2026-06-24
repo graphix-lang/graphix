@@ -148,6 +148,14 @@ fn gen_typed(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> String 
     let d = depth - 1;
     match ty {
         GenType::I64 | GenType::F64 | GenType::U8 => {
+            // Unary minus (a real `Neg` node, exercising `ineg`/`fneg`). Only
+            // for signed/float — `-u8` is a compile error (Part B's
+            // signed/float/decimal constraint). Parenthesize the operand so
+            // `-(i64:5)` stays a `Neg` rather than re-parsing as a negative
+            // literal.
+            if !matches!(ty, GenType::U8) && rng.below(6) == 0 {
+                return format!("(-({}))", gen_typed(ctx, rng, ty, d));
+            }
             // Bias toward +/-/* over //% — a generated `/0` or `%0` drops to
             // bottom (Timeout in all modes), which is slow to check. Div/mod
             // are still ~25% of ops, so the div0/overflow paths get exercised.

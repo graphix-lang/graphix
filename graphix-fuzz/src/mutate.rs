@@ -78,6 +78,7 @@ fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         | OrNever(x)
         | ByRef(x)
         | Deref(x)
+        | Neg(x)
         | Not { expr: x }
         | TypeCast { expr: x, .. } => f(x),
         Do { exprs }
@@ -213,6 +214,7 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         OrNever(x) => OrNever(ra!(x)),
         ByRef(x) => ByRef(ra!(x)),
         Deref(x) => Deref(ra!(x)),
+        Neg(x) => Neg(ra!(x)),
         Not { expr } => Not { expr: ra!(expr) },
         TypeCast { expr, typ } => TypeCast { expr: ra!(expr), typ: typ.clone() },
         Do { exprs } => Do { exprs: aslice(exprs.iter().map(|c| r!(c)).collect()) },
