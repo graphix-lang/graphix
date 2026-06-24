@@ -110,3 +110,6 @@ no_llvm_build
 /ide/editors/vscode/out
 /ide/editors/vscode/package-lock.json
 .claude/scheduled_tasks.lock
+# graphix-fuzz working scratch (crash recordings); the committed gate is
+# graphix-fuzz/findings/, not these.
+/fuzz/crashes/
