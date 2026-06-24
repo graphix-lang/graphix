@@ -6,7 +6,7 @@ use super::{
     error::{Qop, TryCatch},
     lambda::Lambda,
     module::Module,
-    op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Not, Or, Sub},
+    op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
     select::Select,
     Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
     TypeDef, Use,
@@ -168,6 +168,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         }
         ExprKind::ByRef(e) => ByRef::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
+        ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Ref { name } => Ref::compile(ctx, spec.clone(), scope, top_id, name),
         ExprKind::TupleRef { source, field } => {
             TupleRef::compile(ctx, flags, spec.clone(), scope, top_id, source, field)

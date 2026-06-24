@@ -751,6 +751,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     And(&'a node::op::And<R, E>),
     Or(&'a node::op::Or<R, E>),
     Not(&'a node::op::Not<R, E>),
+    Neg(&'a node::op::Neg<R, E>),
     // Leaves and declarations
     Constant(&'a node::Constant),
     Use(&'a node::Use),

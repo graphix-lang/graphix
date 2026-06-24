@@ -194,6 +194,7 @@ fn node_effect<R: Rt, E: UserEvent>(
         | NodeView::ExplicitParens(_)
         | NodeView::TypeCast(_)
         | NodeView::Not(_)
+        | NodeView::Neg(_)
         | NodeView::StringInterpolate(_)
         | NodeView::Struct(_)
         | NodeView::StructWith(_)

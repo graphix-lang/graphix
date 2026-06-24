@@ -15,6 +15,7 @@ mod list;
 mod lsp_fusion;
 mod map;
 mod math;
+mod neg;
 mod net;
 mod pack;
 mod sqlite;

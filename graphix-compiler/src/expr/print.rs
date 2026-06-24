@@ -871,6 +871,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "*")?;
                 buf.with_indent(2, |buf| e.fmt_pretty(buf))
             }
+            ExprKind::Neg(e) => {
+                write!(buf, "-")?;
+                e.fmt_pretty(buf)
+            }
             ExprKind::Select(se) => se.fmt_pretty(buf),
         }
     }
@@ -1044,6 +1048,7 @@ impl fmt::Display for ExprKind {
             ExprKind::Sample { lhs, rhs } => write!(f, "{lhs} ~ {rhs}"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
             ExprKind::Deref(e) => write!(f, "*{e}"),
+            ExprKind::Neg(e) => write!(f, "-{e}"),
             ExprKind::Not { expr } => write!(f, "!{expr}"),
         }
     }

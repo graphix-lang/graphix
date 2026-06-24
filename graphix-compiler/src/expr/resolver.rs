@@ -860,6 +860,10 @@ impl Expr {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Not { expr: Arc::new(e) })
             }),
+            ExprKind::Neg(e) => Box::pin(async move {
+                let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
+                expr!(ExprKind::Neg(Arc::new(e)))
+            }),
             ExprKind::Add { lhs, rhs } => bin_op!(Add, lhs, rhs),
             ExprKind::CheckedAdd { lhs, rhs } => bin_op!(CheckedAdd, lhs, rhs),
             ExprKind::Sub { lhs, rhs } => bin_op!(Sub, lhs, rhs),

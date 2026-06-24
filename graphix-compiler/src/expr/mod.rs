@@ -265,6 +265,7 @@ pub enum ExprKind {
     TryCatch(Arc<TryCatchExpr>),
     ByRef(Arc<Expr>),
     Deref(Arc<Expr>),
+    Neg(Arc<Expr>),
     Eq { lhs: Arc<Expr>, rhs: Arc<Expr> },
     Ne { lhs: Arc<Expr>, rhs: Arc<Expr> },
     Lt { lhs: Arc<Expr>, rhs: Arc<Expr> },
@@ -625,6 +626,7 @@ impl Expr {
             | ExprKind::OrNever(e)
             | ExprKind::ByRef(e)
             | ExprKind::Deref(e)
+            | ExprKind::Neg(e)
             | ExprKind::Not { expr: e } => e.fold(init, f),
             ExprKind::Add { lhs, rhs }
             | ExprKind::CheckedAdd { lhs, rhs }

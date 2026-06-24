@@ -36,6 +36,19 @@ where
         .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
 }
 
+// Unary minus. Tried AFTER `literal()` in the `arith_term` choice so a
+// signed numeric literal (`-2.5`, `-2`) is consumed as a `Constant`; only
+// a non-literal operand (`-x`, `-(a + b)`, `-f(x)`) becomes a `Neg` node.
+fn neg_arith<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), token('-').with(arith_term()))
+        .map(|(pos, expr)| ExprKind::Neg(Arc::new(expr)).to_expr(pos))
+}
+
 parser! {
     pub(crate) fn arith_term[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
@@ -69,6 +82,7 @@ parser! {
                     ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
                 })),
                 attempt(literal()),
+                neg_arith(),
                 qop(reference()),
             )))
             .skip(spaces())

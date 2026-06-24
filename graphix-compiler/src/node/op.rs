@@ -2,7 +2,7 @@ use super::{compiler::compile, CFlag, Cached};
 use crate::{
     defetyp,
     expr::{Expr, ExprId},
-    fusion::emit::{emit_not_node, BodyCx, CompiledExpr},
+    fusion::emit::{emit_neg_node, emit_not_node, BodyCx, CompiledExpr},
     typ::Type,
     wrap, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
 };
@@ -387,6 +387,104 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         cx: &mut BodyCx,
     ) -> Result<CompiledExpr> {
         emit_not_node(cx, &self.n)
+    }
+
+    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            n: self.n.clone_rebind(ctx, scope),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Neg<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Node<R, E>,
+}
+
+impl<R: Rt, E: UserEvent> Neg<R, E> {
+    #[allow(dead_code)]
+    pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
+        Box::new(Self { spec, typ: Type::empty_tvar(), n })
+    }
+
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        n: &Expr,
+    ) -> Result<Node<R, E>> {
+        let n = compile(ctx, flags, n.clone(), scope, top_id)?;
+        Ok(Box::new(Self { spec, typ: Type::empty_tvar(), n }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+        // Unchecked negation: integers wrap (two's-complement, matching the
+        // JIT's `ineg`); floats/decimal negate directly. `Value` equality
+        // collapses Z32/I32 and Z64/I64, so producing the operand's own
+        // variant agrees with the JIT's I32/I64-discriminated result.
+        self.n.update(ctx, event).and_then(|v| match v {
+            Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
+            Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
+            Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
+            Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
+            Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
+            Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
+            Value::F32(x) => Some(Value::F32(-x)),
+            Value::F64(x) => Some(Value::F64(-x)),
+            Value::Decimal(x) => Some(Value::Decimal(triomphe::Arc::new(-*x))),
+            _ => None,
+        })
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.refs(refs);
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.sleep(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck0(ctx))?;
+        // The operand must be a signed-negatable number, so `-x` on an
+        // unsigned type is a compile-time error rather than a silent
+        // runtime underflow. Output type = operand type.
+        let negatable =
+            Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal);
+        wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))?;
+        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck1(ctx))
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Neg(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_neg_node(cx, &self.n)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

@@ -330,6 +330,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Qop(n) => kids.push(&n.n),
         V::OrNever(n) => kids.push(&n.n),
         V::Not(n) => kids.push(&n.n),
+        V::Neg(n) => kids.push(&n.n),
         V::Connect(n) => kids.push(&n.node),
         V::ConnectDeref(n) => kids.push(&n.rhs.node),
         V::Sample(n) => {

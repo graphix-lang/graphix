@@ -705,6 +705,14 @@ macro_rules! byref {
     };
 }
 
+macro_rules! neg {
+    ($inner:expr) => {
+        $inner
+            .prop_map(|e| ExprKind::Neg(Arc::new(e)).to_expr_nopos())
+            .prop_map(add_parens)
+    };
+}
+
 macro_rules! deref {
     ($inner:expr) => {
         $inner
@@ -902,6 +910,17 @@ fn add_parens(e: Expr) -> Expr {
         ExprKind::ByRef(e) => {
             ExprKind::ByRef(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
         }
+        ExprKind::Neg(e) => {
+            let inner = Arc::unwrap_or_clone(e);
+            match &inner.kind {
+                // `-5` re-parses as the literal Constant(-5), not Neg(5), so
+                // a constant operand must be parenthesized to stay a Neg.
+                ExprKind::Constant(_) => ExprKind::Neg(Arc::new(
+                    ExprKind::ExplicitParens(Arc::new(inner)).to_expr_nopos(),
+                )),
+                _ => ExprKind::Neg(Arc::new(maybe_paren_lhs(inner, 255))),
+            }
+        }
         // For non-binop expressions, just return as-is
         other => other,
     };
@@ -928,6 +947,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             variant!(inner.clone().prop_map(add_parens)),
             byref!(inner.clone().prop_map(add_parens)),
             deref!(inner.clone().prop_map(add_parens)),
+            neg!(inner.clone().prop_map(add_parens)),
             binop!(inner.clone().prop_map(add_parens), Eq),
             binop!(inner.clone().prop_map(add_parens), Ne),
             binop!(inner.clone().prop_map(add_parens), Lt),
@@ -1531,6 +1551,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         }
         (ExprKind::ByRef(e0), ExprKind::ByRef(e1)) => check(e0, e1),
         (ExprKind::Deref(e0), ExprKind::Deref(e1)) => check(e0, e1),
+        (ExprKind::Neg(e0), ExprKind::Neg(e1)) => check(e0, e1),
         (
             ExprKind::Sample { lhs: l0, rhs: r0 },
             ExprKind::Sample { lhs: l1, rhs: r1 },

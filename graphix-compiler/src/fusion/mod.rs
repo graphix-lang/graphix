@@ -291,6 +291,7 @@ pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
         NodeView::ExplicitParens(p) => rec!(&p.n),
         NodeView::TypeCast(t) => rec!(&t.n),
         NodeView::Not(n) => rec!(&n.n),
+        NodeView::Neg(n) => rec!(&n.n),
         NodeView::Connect(c) => rec!(&c.node),
         NodeView::ConnectDeref(c) => rec!(&c.rhs.node),
         NodeView::StringInterpolate(s) => {

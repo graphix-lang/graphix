@@ -3196,6 +3196,30 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, value))
 }
 
+/// `-x` — integer `ineg` / float `fneg`, taint-propagating. The operand's
+/// PrimType drives int-vs-float; a non-register-scalar operand (e.g.
+/// `decimal`) has no `scalar_prim` and Errs, de-fusing to the node-walk.
+pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    inner: &Node<R, E>,
+) -> Result<CompiledExpr> {
+    let cv = inner.emit_clif(cx)?;
+    let prim = freeze_node_typ(cx.ctx, inner.typ())
+        .as_ref()
+        .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
+        .ok_or_else(|| {
+            anyhow!("emit_neg: operand of non-scalar type {:?}", inner.typ())
+        })?;
+    let value = if prim.is_integer() {
+        cx.b.ins().ineg(cv.payload)
+    } else {
+        cx.b.ins().fneg(cv.payload)
+    };
+    let base = scalar_disc(cx.b, prim);
+    let disc = propagate_taint(cx.b, base, &[cv.disc]);
+    Ok(CompiledExpr::new(disc, value))
+}
+
 /// `cast<T>(x)` — `compile_cast`, taint-propagating.
 pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
