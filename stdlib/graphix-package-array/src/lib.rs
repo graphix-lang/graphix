@@ -1319,6 +1319,19 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
+    fn for_each_hof_callback_body<'a>(
+        &'a self,
+        f: &mut dyn FnMut(&'a Node<R, E>),
+    ) {
+        if let Some(slot) = self.analysis_pred.as_ref() {
+            if let Some(body) =
+                graphix_compiler::fusion::lowering::hof_callback_body(&slot.pred)
+            {
+                f(body);
+            }
+        }
+    }
+
     fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

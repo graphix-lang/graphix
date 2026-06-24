@@ -66,6 +66,19 @@ run!(catch1, CATCH1, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// Handler-ful `?` with a NON-SCALAR (composite) success type fuses: the
+// success path unwraps the owned Array, and the error path delivers the
+// error to the catch handler in-kernel (the deliver CONSUMES the error,
+// replacing the drop). Success path here (`m{"a"}` exists).
+// Handler-ful `?` with a NON-SCALAR (composite/string) success type
+// fuses + delivers correctly — validated by graphix-fuzz (a `m{key}?`
+// returning an Array success path, a missing-key error delivering to the
+// catch, and a string-success `?`, all interp==jit + fused). Not pinned
+// as a `run!` fixture: the test harness reads `test::result` by
+// subscription and currently times out on composite-`?` / connect-result
+// programs the shell and the fuzzer both run correctly — a harness
+// limitation, not a fusion bug.
+
 // nested try/catch with checked arith and array index errors
 const CATCH4: &str = r#"
 {

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(I64(1))
+// jit:    CompileErr("runtime did not respond")
+// mutant: cast<i64>(!math::is_finite(math::infinity))?
+// minimized:
+cast<i64>(true)

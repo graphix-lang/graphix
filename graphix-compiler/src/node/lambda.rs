@@ -399,6 +399,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.emit_clif(callsite, cx)
     }
 
+    fn for_each_hof_callback_body<'a>(
+        &'a self,
+        f: &mut dyn FnMut(&'a Node<R, E>),
+    ) {
+        // MUST delegate (like emit_clif): the trait default is a no-op,
+        // so a HOF wrapped in BuiltInLambda would silently expose no
+        // callback bodies and its callback's casts/qops/calls would go
+        // undiscovered (the HOF de-fuses with no error).
+        self.apply.for_each_hof_callback_body(f)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

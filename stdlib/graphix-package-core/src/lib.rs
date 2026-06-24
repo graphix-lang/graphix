@@ -737,6 +737,22 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
+    fn for_each_hof_callback_body<'a>(
+        &'a self,
+        f: &mut dyn FnMut(&'a Node<R, E>),
+    ) {
+        // The callback inline-emits into the map kernel — hand its body to
+        // discovery so its builtin-calls/casts/qops are registered (reach
+        // it exactly as `emit_clif` does, via `analysis_pred`).
+        if let Some(slot) = self.analysis_pred.as_ref() {
+            if let Some(body) =
+                graphix_compiler::fusion::lowering::hof_callback_body(&slot.pred)
+            {
+                f(body);
+            }
+        }
+    }
+
     fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1228,6 +1244,19 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
+    fn for_each_hof_callback_body<'a>(
+        &'a self,
+        f: &mut dyn FnMut(&'a Node<R, E>),
+    ) {
+        if let Some(ap) = self.analysis_pred.as_ref() {
+            if let Some(body) =
+                graphix_compiler::fusion::lowering::hof_callback_body(&ap.pred)
+            {
+                f(body);
+            }
+        }
+    }
+
     fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

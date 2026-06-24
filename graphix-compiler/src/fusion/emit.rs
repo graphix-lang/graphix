@@ -3211,15 +3211,20 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Scalar→scalar fast path: pure register arithmetic, branchless,
     // infallible — a cast in a hot loop (e.g. `cast<f64>(2*n-1)`) must
-    // stay inline, not pay a runtime call per iteration.
+    // stay inline, not pay a runtime call per iteration. Restricted to
+    // NUMERIC prims: `compile_cast` can't lower a `bool` cast (it
+    // `unreachable!`s), so a bool source/target falls through to the
+    // machinery DynCall below, which casts via `Value::cast`.
     if let (Some(src), Some(tgt)) =
         (kernel_abi::scalar_prim(cx.registry(), inner.typ()), PrimType::from_type(target))
     {
-        let cv = inner.emit_clif(cx)?;
-        let value = compile_cast(cx.b, cv.payload, src, tgt);
-        let base = scalar_disc(cx.b, tgt);
-        let disc = propagate_taint(cx.b, base, &[cv.disc]);
-        return Ok(CompiledExpr::new(disc, value));
+        if src.is_numeric() && tgt.is_numeric() {
+            let cv = inner.emit_clif(cx)?;
+            let value = compile_cast(cx.b, cv.payload, src, tgt);
+            let base = scalar_disc(cx.b, tgt);
+            let disc = propagate_taint(cx.b, base, &[cv.disc]);
+            return Ok(CompiledExpr::new(disc, value));
+        }
     }
     // Any other cast (non-scalar source like `datetime`, or non-scalar
     // target): the discovery pass registered a `FnSource::Cast` slot —
@@ -4302,15 +4307,6 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         }
         // String / composite success — keep the branch-abort path.
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            // Handler-ful `?` with a non-scalar success type isn't lowered
-            // yet — the error-path delivery + the owned-success unwrap
-            // interleave; node-walk it (correct). (Scalar is the common
-            // hot-loop case: `a +? b`, `arr[i]?`, `cast<i64>(x)?`.)
-            if handler_site.is_some() {
-                return Err(anyhow!(
-                    "emit_clif: handler-ful `?` with non-scalar success — node-walks (TODO)"
-                ));
-            }
             let base_disc = if matches!(
                 kernel_abi::abi_kind(cx.registry(), &success_typ),
                 Some(AbiKind::String)
@@ -4328,11 +4324,16 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
-            // Drop the owned error Value only when `inner` is an owned
-            // producer (a Borrowed Local is owned by its env slot, which
-            // `emit_pending_cleanup` drops — dropping here too would
-            // double-free).
-            if inner_owned {
+            // Error path. Handler-ful `?`: deliver the error to the catch
+            // handler — the deliver CONSUMES the owned error (or clones a
+            // borrowed one), so it replaces the `value_drop` (dropping AND
+            // delivering an owned error would double-free). Handler-less:
+            // drop the owned error (a Borrowed Local is owned by its env
+            // slot, which `emit_pending_cleanup` drops — dropping here too
+            // would double-free).
+            if let Some(site) = handler_site {
+                emit_qop_deliver(cx, site, &cv, inner_owned)?;
+            } else if inner_owned {
                 cx.b.ins().call(value_drop, &[clean, payload]);
             }
             cx.b.ins().call(pending_set, &[]);
@@ -4378,28 +4379,26 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // non-error Value IS the result T (its own `(disc, payload)`,
         // passed through to the consumer which takes ownership).
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            // Handler-ful `?` with a Value-shape success isn't lowered yet
-            // (see the String/composite arm) — node-walk it.
-            if handler_site.is_some() {
-                return Err(anyhow!(
-                    "emit_clif: handler-ful `?` with value-shape success — node-walks (TODO)"
-                ));
-            }
             let pending_set = cx.helper("graphix_dyncall_set_pending")?;
             let value_drop = cx.helper("graphix_value_drop")?;
             let src = node_composite_source(inner);
+            let inner_owned = src == CompositeSource::Owned;
             let pre_pending = cx.b.create_block();
             let continue_block = cx.b.create_block();
             let pending_exit = pending_exit_block(cx);
             cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
-            // Drop the owned error Value before aborting — but ONLY when
-            // `inner` is an owned producer. A Borrowed (Ref) inner is
-            // owned by its env slot, which `emit_pending_cleanup` ->
-            // `drop_owned_composites` already drops; dropping it here too
-            // would double-free (Arc double-decrement / use-after-free).
-            if src == CompositeSource::Owned {
+            // Error path. Handler-ful `?`: deliver the error to the catch
+            // handler (consumes the owned error / clones a borrowed one),
+            // so it replaces the `value_drop`. Handler-less: drop the
+            // owned error before aborting — but ONLY when `inner` is an
+            // owned producer. A Borrowed (Ref) inner is owned by its env
+            // slot, which `emit_pending_cleanup` -> `drop_owned_composites`
+            // already drops; dropping it here too would double-free.
+            if let Some(site) = handler_site {
+                emit_qop_deliver(cx, site, &cv, inner_owned)?;
+            } else if inner_owned {
                 cx.b.ins().call(value_drop, &[clean, payload]);
             }
             cx.b.ins().call(pending_set, &[]);

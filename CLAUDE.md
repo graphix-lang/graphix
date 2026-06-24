@@ -712,6 +712,63 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **qop/cast/connect fusion + bench naturalization + LSP fusion-off
+  (2026-06-24).** Three fusion gaps closed so that *natural user code* fuses
+  (the bench corpus is the live witness), plus an LSP fix. **(1)
+  Variable-write-in-kernel** (`graphix_set_var` helper → `DynDispatchHandle.set_var`
+  → `set_var_typed::<R,E>` → `ctx.set_var`): a `connect` (`x <- e`) and a
+  **handler-ful `?`** (a `?` whose error is caught by an enclosing `try`) both
+  deliver via a variable write, which is *sync* (schedules next cycle); the real
+  fusion boundary is the **read** side (already handled by feeders keyed to
+  `fusion.top_id`), not the write. So both now fuse — `Connect::emit_clif`,
+  `Qop::emit_clif` (handler error branch does `wrap_error` + set_var via
+  `QopDeliverApply`/`emit_qop_deliver`, removing the `id.is_some()` bail),
+  `TryCatch::fuse` recurses into try/catch bodies. Conservative guard: a connect
+  whose LOCAL target is read in the same kernel de-fuses (read-after-write-same-var
+  reads the stale let-local — `cx.env.lookup(bind_id).is_some()` check; full
+  local-counter fix deferred). **(2) cast machinery-DynCall** (`CastApply<R,E>` +
+  `FnSource::Cast`): any non-scalar-fast-path cast lowers to a one-arg dyncall whose
+  callee is `target.cast_value(&ctx.env, v)` — the SAME machinery the node-walk uses,
+  so interp/jit agree by construction; the scalar→scalar inline fast path
+  (`compile_cast`) is preserved but now gated on `is_numeric()` on BOTH src+tgt (bool
+  excluded → dyncall, fixing a `cast<i64>(true)` `unreachable!`). An inline cast in a
+  HOF arg no longer de-fuses the HOF. **(3) qop/connect EffectKind → Sync**
+  (`analysis.rs` `node_effect`: `Qop`/`OrNever`/`Connect`/`ConnectDeref` moved to
+  `Sync`; `Sample`/`TryCatch`/`Any`/`FusedKernel` stay `Async`). Double duty: enables
+  the above fusion AND **fixes the node-walk tail-loop overflow** (a qop in a
+  tail-call argument made the lambda `Async` → `mark_recursion` skipped → real
+  recursion → stack overflow; now `lambda_is_sync` → tail-loop engages, verified
+  2M-int + 10M-float deep, both modes agree). `stmt_subtree_effect_free` (dead-stmt
+  pruning) is left UNCHANGED — orthogonal: a connect is *sync* yet *not effect-free*.
+  **(4) inline-HOF-callback discovery gap** (`Apply::for_each_hof_callback_body` +
+  `hof_callback_body` helper, overridden by MapQ/FoldQ/Init): `for_each_node` skips
+  lambda bodies, so a cast/builtin call *inside* an inline HOF callback was never
+  discovered for slot registration → de-fuse; now descended.
+  **Bench corpus naturalized** (`bench/`, per "judge by what a user would write"):
+  dropped the outer `{ }` block wrapper (file scope is an implicit block), all
+  `i64:` literal prefixes (i64 is default), and the redundant `~` self-gate on
+  `sys::time::now(x)` (already triggered by its arg) — kept only the load-bearing
+  `sys::exit(elapsed ~ 0)` gate; `leibniz_pi` reverted to the natural in-loop
+  `cast<f64>(2*n-1)$` (the qop-in-tail-arg fix made the `d`-accumulator workaround
+  unnecessary). **LSP "runtime is dead" fixed** — STRUCTURAL: `lsp_mode` now forces
+  `ctx.fusion.enabled = false` at the single derivation point in `compile()`
+  (`lib.rs`, `&& !ctx.env.lsp_mode`), so a check-only runtime CAN'T fuse and no
+  caller can opt back in (a call-site `FusionDisabled` flag was tried then reverted —
+  DRY, invalid state unrepresentable). The LSP shares ONE runtime that only
+  typechecks (compiles → deletes nodes, never executes) but had fusion ON; its
+  `lsp_mode` check continues past type errors and fed fusion partially-typed mid-edit
+  exprs (violating fusion's well-typed invariant) → panic → bricked the shared runtime
+  (no panic isolation) → every later check "runtime is dead", a `(0,0)` file-wide
+  diagnostic (cached IDE data masked it). NOT the interrupt/abort change (those paths
+  only run during node execution the LSP never does). Fusion-emit proven solid on
+  valid programs (212 repo `.gx` + 3000-prog fuzzer soaks, 0 panics); fusion for a
+  never-executing runtime was pure waste regardless. Validation: 1446×2 + 29 LSP
+  green, fuzz regress 22/0, mutation soak clean (only the documented #219
+  missing-input gap + accepted runaway-recursion). Open follow-ups: general
+  panic-isolation in the shared check runtime (catch_unwind); and `graphix --check`
+  (`Mode::Check`) still fuses-then-discards (a smaller one-shot waste — no crash,
+  since `--check` bails on type errors before fusion).
+
 - **Self-timed exec-throughput bench corpus `bench/selftimed/` (2026-06-23).** Six
   `.gx` programs + `run.sh` + README comparing JIT (fusion on, default) vs
   node-walk (`--no-fusion`) on pure computation. Each program brackets ONLY its

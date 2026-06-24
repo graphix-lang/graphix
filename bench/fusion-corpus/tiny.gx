@@ -1,4 +1,0 @@
-// Minimal program for end-to-end --build smoke test.
-let double = |x: i64| -> i64 x * 2;
-println("double(21) = [double(21)]");
-sys::exit(0)

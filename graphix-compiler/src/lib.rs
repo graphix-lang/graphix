@@ -574,6 +574,24 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// nodes, such as call sites.
     fn refs<'a>(&self, _refs: &mut Refs) {}
 
+    /// Walk this Apply's INLINE-EMITTED HOF callback bodies for fusion
+    /// discovery. A HOF builtin (`map`/`fold`/`filter`/…) inline-emits
+    /// its callback into the enclosing kernel (the loop scaffold), but
+    /// the callback body is NOT in the node graph reachable by
+    /// `fusion::for_each_node` (it skips lambda bodies) — so a
+    /// builtin-call / cast / qop inside the callback would never be
+    /// discovered and the HOF would de-fuse. A HOF overrides this to hand
+    /// each callback body Node to `f`, reached the SAME way `emit_clif`
+    /// reaches it (the `analysis_pred` chain) so the ExprIds discovery
+    /// registers match what emit looks up. Default: no callbacks. The
+    /// `'a` ties each body's borrow to `self`, so the discovery can
+    /// collect the bodies and walk them after the main pass.
+    fn for_each_hof_callback_body<'a>(
+        &'a self,
+        _f: &mut dyn FnMut(&'a Node<R, E>),
+    ) {
+    }
+
     /// put the node to sleep, used in conditions like select for branches that
     /// are not selected. Any cached values should be cleared on sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
@@ -1462,7 +1480,14 @@ pub fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<Node<R, E>> {
-    ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled);
+    // A check-only (lsp_mode) runtime compiles to verify types and then
+    // deletes the nodes without ever executing them, so fusion — a JIT for
+    // fast EXECUTION — is pure wasted work. Worse, the lsp check path keeps
+    // going past type errors to collect every diagnostic, so it would hand
+    // fusion ill-typed exprs that break its well-typed invariant. A runtime
+    // that never executes must never fuse; enforce it at the one point where
+    // `fusion.enabled` is derived, so no caller can opt back in.
+    ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled) && !ctx.env.lsp_mode;
     let top_id = spec.id;
     ctx.fusion.top_id = Some(top_id);
     ctx.bind_to_lambda.clear();

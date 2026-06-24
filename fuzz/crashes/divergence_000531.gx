@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(I64(6))
+// jit:    Value(I64(1))
+// mutant: {let x = [i64:1, i64:2, i64:1, i64:100, i64:5, i64:6]; product(array::iter(x))}
+// minimized:
+{let x = [i64:1, i64:2, i64:1, i64:100, i64:5, i64:6]; product(array::iter(x))}

@@ -135,23 +135,54 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     scope: &ModPath,
     out: &mut BuiltinCallDiscovery,
 ) {
+    // Collect the inline-emitted HOF callback bodies encountered this
+    // pass; recurse into them afterward (a closure can't re-enter this
+    // fn while it holds `out`). Each body's borrow ties to `node`.
+    let mut hof_bodies: Vec<&Node<R, E>> = Vec::new();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
-            try_register_builtin_call_from_callsite(cs, ctx, scope, out)
+            try_register_builtin_call_from_callsite(cs, ctx, scope, out);
+            // A HOF builtin inline-emits its callback into the kernel, but
+            // `for_each_node` skips lambda bodies — descend explicitly so
+            // the callback's builtin-calls/casts/qops are discovered.
+            if let Some(apply) = cs.callee_apply() {
+                apply.for_each_hof_callback_body(&mut |body| hof_bodies.push(body));
+            }
         }
         NodeView::TypeCast(tc) => try_register_cast(tc, ctx, out),
         NodeView::Qop(q) => try_register_qop_deliver(q, ctx, out),
         _ => {}
     });
+    for body in hof_bodies {
+        walk_node_for_builtin_calls(body, ctx, scope, out);
+    }
+}
+
+/// Given the synthesized callback-CallSite Node a HOF holds in its
+/// `analysis_pred` (a resolved CallSite to the callback lambda), reach
+/// the callback's BODY node — the SAME chain `MapQ::emit_clif` &c. use,
+/// so the ExprIds match what discovery registers. `None` if the callback
+/// isn't a statically-resolved lambda (then the HOF won't fuse anyway).
+pub fn hof_callback_body<'a, R: Rt, E: UserEvent>(
+    pred: &'a Node<R, E>,
+) -> Option<&'a Node<R, E>> {
+    let NodeView::CallSite(inner_cs) = pred.view() else {
+        return None;
+    };
+    let crate::ApplyView::Lambda(g) = inner_cs.resolved_apply()? else {
+        return None;
+    };
+    Some(g.body())
 }
 
 /// Register the error-delivery DynCall for a handler-ful `?` (a `?`
 /// caught by an enclosing `try`), if `emit_qop_node` will lower it
 /// in-kernel. A handler-LESS `?` needs nothing (its error path is just
-/// bottom). Only a SCALAR success type is delivered in kernel today (the
-/// common hot-loop case); a non-scalar handler-ful `?` de-fuses inside
-/// `emit_qop_node`, so don't register a slot for it (the decision MUST
-/// mirror emit, or the site (de)registers out of step).
+/// bottom). The error value delivered is always a 2-word `Value::Error`,
+/// independent of the `?`'s SUCCESS type — so this registers for any
+/// success type `emit_qop_node` lowers (scalar OR string/composite/
+/// value-shape). A `Unit`/`Null` success would Err in emit (the region
+/// de-fuses, the slot goes unused — harmless).
 fn try_register_qop_deliver<R: Rt, E: UserEvent>(
     q: &crate::node::error::Qop<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -160,8 +191,7 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
     let Some(handler_id) = q.id else { return };
     let reg = &ctx.fusion.abstract_registry;
     let Some(inner_typ) = freeze_for_abi(reg, q.n.typ()) else { return };
-    let Some(success_typ) = kernel_abi::nullable_inner(reg, &inner_typ) else { return };
-    if scalar_prim(reg, &success_typ).is_none() {
+    if kernel_abi::nullable_inner(reg, &inner_typ).is_none() {
         return;
     }
     // The delivered arg is the inner's full Nullable value (the `Error` on
@@ -203,8 +233,12 @@ fn try_register_cast<R: Rt, E: UserEvent>(
 ) {
     let reg = &ctx.fusion.abstract_registry;
     let source = tc.n.typ();
-    // Inline-able scalar→scalar cast: no slot (matches emit_cast_node).
-    if scalar_prim(reg, source).is_some() && PrimType::from_type(&tc.target).is_some() {
+    // Inline-able scalar→scalar cast: no slot (matches emit_cast_node's
+    // fast path — NUMERIC prims only; a bool cast needs the machinery
+    // DynCall, so it registers a slot like any non-inline cast).
+    if scalar_prim(reg, source).is_some_and(|p| p.is_numeric())
+        && PrimType::from_type(&tc.target).is_some_and(|p| p.is_numeric())
+    {
         return;
     }
     // The source must marshal across the DynCall ABI, and the cast's

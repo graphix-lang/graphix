@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [I64(3)] }) })))))
+// jit:    Value(Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [I64(2)] }) })))))
+// mutant: {let x = [i64:1, i64:2, i64:3]; array::group(skip(#n: i64:1, array::iter(x)), |n, _| n < i64:3)}
+// minimized:
+{let x = [i64:1, i64:2, i64:3]; array::group(skip(#n: i64:1, array::iter(x)), |n, _| n < i64:3)}

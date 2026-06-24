@@ -57,6 +57,8 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     for root in roots {
         resolvers.push(ModuleResolver::Files { base: root, overrides: None });
     }
+    // lsp_mode (set below) forces fusion off in compile() — a check-only
+    // runtime never executes, so it must never fuse. No flag needed here.
     let flags = CFlag::WarnUnhandled | CFlag::WarnUnused;
     // We don't consume runtime events in the LSP — drain them on a task
     // so the channel doesn't fill and stall the runtime.

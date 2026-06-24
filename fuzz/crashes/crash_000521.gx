@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace | fatal runtime error: failed to initiate panic, error 5, aborting
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let a = array::init(i64:9223372036854775807, |i| i + i64:1); array::fold(a, i64:0, |acc, x| acc + x)}

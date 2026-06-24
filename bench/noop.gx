@@ -1,3 +1,0 @@
-// Measures graphix startup overhead: parse stdlib, typecheck, exit.
-use sys;
-sys::exit(once(null) ~ 0)

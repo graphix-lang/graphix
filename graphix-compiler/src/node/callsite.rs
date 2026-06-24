@@ -315,6 +315,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee.apply().map(|a| a.view())
     }
 
+    /// The resolved callee as a raw `&dyn Apply` (vs the typed
+    /// [`ApplyView`] of [`Self::resolved_apply`]). Fusion discovery uses
+    /// it to call [`crate::Apply::for_each_hof_callback_body`] — reaching
+    /// a HOF builtin's inline-emitted callback body, which the opaque
+    /// `ApplyView::BuiltIn` doesn't expose.
+    pub fn callee_apply(&self) -> Option<&dyn Apply<R, E>> {
+        self.callee.apply()
+    }
+
     /// Mutable counterpart to [`Self::resolved_apply`]. Fusion uses
     /// this when it needs to splice an inner sub-kernel into a Node
     /// reachable through the resolved Apply — e.g. a

@@ -1,0 +1,4 @@
+// CRASH: child HANG (outer deadline)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let rec f = |v: i64| -> i64 f(i64:6); f(i64:0)}
