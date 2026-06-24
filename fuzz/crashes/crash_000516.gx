@@ -1,0 +1,4 @@
+// CRASH: child HANG (outer deadline)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let rec count = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => count(n + i64:1, acc - i64:-9223372036854775808)}; count(i64:500000, i64:0)}

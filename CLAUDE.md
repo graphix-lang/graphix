@@ -712,6 +712,29 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Self-timed exec-throughput bench corpus `bench/selftimed/` (2026-06-23).** Six
+  `.gx` programs + `run.sh` + README comparing JIT (fusion on, default) vs
+  node-walk (`--no-fusion`) on pure computation. Each program brackets ONLY its
+  computation with `sys::time::now` (parse/typecheck/kernel-compile happen
+  before cycle 1, so they're excluded). Release best-of-4 on a quiet machine:
+  HOF benches (fold/map/filter over 100k) **~1200–2700x** (node-walk's
+  per-element node graph is its worst case); scalar tail loops (tail_sum/leibniz,
+  10M) **~130–160x** (node-walk loops these iteratively via the GXLambda
+  tail-loop — its *best* case). Self-timing structure + its hard-won gotchas live
+  in the README and the `project_selftimed_bench_corpus` memory: trigger `now`
+  with a constant (`i64:0`, NOT `once(null)` — that never fires); seed the
+  compute with a separate-`let` `cast<i64>(t0)` (inlining the `$`-cast in a HOF
+  arg de-fuses it — a fusion gap, not a correctness bug); gate `sys::exit` on
+  `elapsed`, not on `println`'s return. **Two findings surfaced**: (1) a qop
+  (`$`/`?`) inside a TAIL-CALL ARGUMENT defeats the node-walk's tail-loop
+  optimization → real recursion → stack overflow, where the JIT loops fine (a
+  mode divergence the differential fuzzer won't catch — overflow ≠ wrong value);
+  (2) the `netidx-value` `datetime -> f64` cast returned `2*whole_seconds` with
+  the sub-second part discarded (integer-div bug) — fixed (Eric committed it +
+  hardened the other cast arms), which is what unblocked sub-second self-timing.
+  Language note: graphix has NO unary minus on a variable (`-x` is a parse error;
+  negative literals like `-2.5` are fine) — flip a sign with `(0.0 - x)`.
+
 - **`interrupt()` / `abort()` — recover & shut down a wedged runtime (2026-06-20;
   behavior-neutral when idle, 1438×2 + 29 LSP green, fuzz regress 22/0).** An
   unbounded loop within one reactive cycle (sync tail-loop `let rec f = |v| f(v+1)`,

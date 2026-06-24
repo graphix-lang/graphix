@@ -332,6 +332,32 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         Ok(())
     }
 
+    /// Pre-bind a `FnSource::Cast` slot: stash a `CastApply` carrying
+    /// the destination `Type`. The slot was allocated with one arg
+    /// (the cast source) by `DynCallSlot::new`, so its single
+    /// `arg_refs[0]` already reads the side-channeled input — no layout
+    /// reshaping (unlike `pre_bind_builtin`). Pre-bound, so dispatch
+    /// runs `CastApply::update` directly and never re-binds.
+    pub fn pre_bind_cast(&mut self, target: crate::typ::Type) {
+        let apply: Box<dyn Apply<R, E>> =
+            Box::new(CastApply { target, _p: std::marker::PhantomData });
+        let sentinel = self as *const Self as *const u8;
+        self.current = Some((sentinel, apply));
+        self.pre_bound = true;
+    }
+
+    /// Pre-bind a `FnSource::QopDeliver` slot: a `QopDeliverApply`
+    /// carrying the catch handler's BindId + the `?`'s spec. The single
+    /// `arg_refs[0]` from `DynCallSlot::new` reads the side-channeled
+    /// error value the kernel marshals on the qop's error path.
+    pub fn pre_bind_qop_deliver(&mut self, handler_id: BindId, spec: Expr) {
+        let apply: Box<dyn Apply<R, E>> =
+            Box::new(crate::node::error::QopDeliverApply { handler_id, spec });
+        let sentinel = self as *const Self as *const u8;
+        self.current = Some((sentinel, apply));
+        self.pre_bound = true;
+    }
+
     /// Dispatch the DynCall: look up (or initialize) the inner Apply,
     /// side-channel each arg through its BindId, run `apply.update`,
     /// clean up the BindIds, and return whatever Value the Apply
@@ -418,6 +444,41 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         }
         result
     }
+}
+
+/// The `cast<T>(x)` operator as an `Apply`, so a non-inline cast can be
+/// dispatched through the same DynCall machinery as a builtin call (see
+/// [`FnSource::Cast`]). `update` reads the single side-channeled source
+/// value from `from[0]` and runs `target.cast_value(&ctx.env, v)` — the
+/// EXACT function `TypeCast::update` (the node-walk) calls, so the two
+/// evaluators agree by construction. Returns `None` (bottom) only when
+/// the source itself produced no value this cycle.
+pub(crate) struct CastApply<R: Rt, E: UserEvent> {
+    target: crate::typ::Type,
+    _p: std::marker::PhantomData<fn() -> (R, E)>,
+}
+
+impl<R: Rt, E: UserEvent> std::fmt::Debug for CastApply<R, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CastApply").field("target", &self.target).finish()
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Value> {
+        from.get_mut(0)?
+            .update(ctx, event)
+            .map(|v| self.target.cast_value(&ctx.env, v))
+    }
+
+    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 // ─── DynCall dispatch for JIT'd kernels ──────────────────────────
@@ -542,6 +603,30 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             DynCallRet { word0: 0, word1: 0 }
         }
     }
+}
+
+/// Monomorphized variable-write for a fused `connect` / handler-ful
+/// `?`. Reaches `ctx` through the same `DispatcherState` the DynCall
+/// dispatcher uses and calls `ctx.set_var` — the exact write the
+/// node-walk `Connect::update` / `Qop::update` perform. A `#219`-tainted
+/// disc is skipped (the RHS produced no value this cycle). Never touches
+/// the pending flag — a write is a side effect, not an abort.
+///
+/// SAFETY: same contract as `dispatch_typed` — `state_ptr` is a live
+/// `DispatcherState<R, E>` for THIS R, E for the duration of the call.
+pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
+    state_ptr: *mut u8,
+    bind_id: u64,
+    disc: u64,
+    payload: u64,
+) {
+    if disc & (TAINT as u64) != 0 {
+        return;
+    }
+    let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
+    let ctx = unsafe { &mut *state.ctx };
+    let value = TagValue::from_raw(disc, payload).value();
+    ctx.set_var(BindId::from_inner(bind_id), value);
 }
 
 /// Pack a scalar [`Value`]'s bits into a u64 for the DynCall ABI's
@@ -855,6 +940,12 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
                     lambda_id,
                 )?;
             }
+            if let FnSource::Cast { target } = &fp.source {
+                self.dyn_slots[fn_idx].pre_bind_cast(target.clone());
+            }
+            if let FnSource::QopDeliver { handler_id, spec } = &fp.source {
+                self.dyn_slots[fn_idx].pre_bind_qop_deliver(*handler_id, spec.clone());
+            }
         }
         Ok(())
     }
@@ -1147,6 +1238,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         };
         let handle = DynDispatchHandle {
             dispatch: dispatch_typed::<R, E>,
+            set_var: set_var_typed::<R, E>,
             state: (&mut state) as *mut _ as *mut u8,
         };
         let prev_handle = DYN_DISPATCH_HANDLE

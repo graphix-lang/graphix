@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(I64(6))
+// jit:    Value(I64(2))
+// mutant: select i64:5 {i64:0 => i64:100, n => array::iter([i64:1, i64:2, i64:3]) * i64:2}
+// minimized:
+select i64:5 {i64:0 => i64:100, n => array::iter([i64:1, i64:2, i64:3]) * i64:2}

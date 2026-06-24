@@ -1018,6 +1018,19 @@ pub struct DynDispatchHandle {
         args: *mut LPooled<Vec<Value>>,
         ret_kind: u8,
     ) -> DynCallRet,
+    /// Function pointer to a monomorphized `set_var_typed::<R, E>`. A
+    /// fused `connect` (or a handler-ful `?`'s error delivery) writes a
+    /// reactive variable mid-kernel: `(bind_id, disc, payload)` →
+    /// `ctx.set_var`. A `#219`-tainted disc means "no value this cycle"
+    /// and is skipped (the node-walk's `if let Some(v) = ..` guard).
+    /// Unlike `dispatch` this does NOT touch the pending flag — a
+    /// variable write is a side effect that mustn't abort the kernel.
+    pub set_var: unsafe extern "C" fn(
+        state: *mut u8,
+        bind_id: u64,
+        disc: u64,
+        payload: u64,
+    ),
     /// Type-erased pointer to the per-call state struct that holds
     /// `&mut [DynCallSlot<R, E>]`, `&[Value]` (fn_arg_values),
     /// `&mut ExecCtx<R, E>`, `&mut Event<E>`.
@@ -1194,6 +1207,30 @@ pub unsafe extern "C" fn graphix_dyncall(
     unsafe {
         let h = &*handle;
         (h.dispatch)(h.state, fn_index, args, ret_kind)
+    }
+}
+
+/// Write a reactive variable from inside a JIT'd kernel — the fused
+/// form of `connect` (`x <- expr`) and a handler-ful `?`'s error
+/// delivery. Indirects through the per-call dispatch handle to a
+/// monomorphized `set_var_typed::<R, E>` (which reaches `ctx`). A
+/// `#219`-tainted `disc` (high TAINT bit) means the RHS produced no
+/// value this cycle — the write is skipped, mirroring the node-walk's
+/// `if let Some(v) = ..` guard. Does NOT set the pending flag: a
+/// variable write is a side effect, not a reason to abort the kernel.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_set_var(bind_id: u64, disc: u64, payload: u64) {
+    let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
+    if handle.is_null() {
+        panic!(
+            "graphix_set_var: no DynDispatchHandle set — Kernel::update \
+             must populate the thread-local before invoking JIT'd code \
+             that writes variables"
+        );
+    }
+    unsafe {
+        let h = &*handle;
+        (h.set_var)(h.state, bind_id, disc, payload)
     }
 }
 
@@ -1579,6 +1616,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_variant_payload_u16", graphix_variant_payload_u16 as *const u8),
         ("graphix_variant_payload_u64", graphix_variant_payload_u64 as *const u8),
         ("graphix_dyncall", graphix_dyncall as *const u8),
+        ("graphix_set_var", graphix_set_var as *const u8),
         ("graphix_dyncall_pending_take", graphix_dyncall_pending_take as *const u8),
         ("graphix_dyncall_set_pending", graphix_dyncall_set_pending as *const u8),
         ("graphix_interrupted", graphix_interrupted as *const u8),

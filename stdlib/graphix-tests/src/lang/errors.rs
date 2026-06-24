@@ -45,7 +45,7 @@ const CHECKED_DIV0: &str = r#"
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // try/catch with array index errors still works
 const CATCH1: &str = r#"
@@ -57,13 +57,14 @@ catch(e) => select (e.0).error {
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Fuses now: the handler-ful `?` (a[0]?, a[1]?) delivers its error to
+// the catch handler's variable in-kernel (variable-write-in-kernel), and
+// `TryCatch::fuse` descends into the try body. The catch handler that
+// reads the error variable is the separate kernel (next cycle).
 run!(catch1, CATCH1, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // nested try/catch with checked arith and array index errors
 const CATCH4: &str = r#"

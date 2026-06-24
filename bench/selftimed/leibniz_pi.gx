@@ -1,0 +1,31 @@
+// Scalar float tail loop: 10M terms of the Leibniz series for pi/4,
+// summed. Float division + alternating sign per iteration — a tight
+// numeric kernel the JIT runs as a native loop. Like tail_sum, the
+// node-walk handles the tail self-call iteratively and completes (the
+// scalar-loop case where the interpreter does best relative to the JIT).
+//
+// acc is seeded with cast<f64>(t0) (epoch seconds), so the printed
+// result is offset by that constant; the bench cares about throughput,
+// not the numeric answer. Sign is flipped with (0.0 - sign) because
+// graphix has no unary minus on a variable (only negative literals).
+{
+  // The odd denominator (1, 3, 5, ...) is carried as a float accumulator
+  // `d` rather than computed via cast<f64>(2*n-1) inside the loop. A qop
+  // (`$`/`?`) in a tail-call argument defeats the node-walk's tail-loop
+  // optimization (it recurses for real and overflows the stack), so the
+  // cast is kept out of the recursive call to keep this comparable in
+  // both modes. The JIT loops fine either way.
+  let rec leib = |n: i64, acc: f64, sign: f64, d: f64| -> f64
+    select n {
+      0 => acc,
+      _ => leib(n - 1, acc + sign / d, 0.0 - sign, d + 2.0)
+    };
+  let n = i64:10000000;
+  let t0 = sys::time::now(i64:0);
+  let seed = cast<f64>(t0)$;
+  let result = leib(n, seed, 1.0, 1.0);
+  let t1 = result ~ sys::time::now(result);
+  let elapsed = t1 ~ (cast<f64>(t1)$ - cast<f64>(t0)$);
+  println("leibniz_pi n=[n] result=[result] elapsed_s=[elapsed]");
+  sys::exit(elapsed ~ i64:0)
+}

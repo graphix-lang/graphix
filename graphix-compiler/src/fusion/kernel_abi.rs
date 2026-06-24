@@ -1057,6 +1057,25 @@ pub enum FnSource {
         /// to compiling defaults in the kernel's own scope.
         lambda_id: Option<crate::LambdaId>,
     },
+    /// The `cast<T>(x)` operator, lowered as a one-argument DynCall to
+    /// the cast machinery (it's an operator, not a callable, but the
+    /// dispatch path is the same). `target` is the full structured
+    /// destination `Type`; `Kernel::new` constructs a `CastApply` that
+    /// runs `target.cast_value(&ctx.env, v)` — the SAME function the
+    /// node-walk uses, so interp/jit agree by construction. Pre-bound:
+    /// dispatch ignores the (Null placeholder) fn-arg value. Only
+    /// casts the inline emitter can't handle (a non-scalar source or
+    /// target) are registered here; scalar→scalar casts stay inline.
+    Cast { target: crate::typ::Type },
+    /// A handler-ful `?` (a `?` caught by an enclosing `try`). On the
+    /// error path the operator delivers its error by WRITING the catch
+    /// handler's variable — `wrap_error(&ctx.env, spec, e)` then
+    /// `set_var(handler_id, ..)` — exactly what `Qop::update` does. The
+    /// catch handler that READS that variable is always a separate
+    /// kernel (next cycle), so there's no read-after-write hazard.
+    /// `Kernel::new` constructs a `QopDeliverApply` carrying the handler
+    /// BindId + the `?`'s spec (for the error's position/origin).
+    QopDeliver { handler_id: crate::BindId, spec: crate::expr::Expr },
 }
 
 /// Per-formal-arg routing for a [`FnSource::Builtin`] slot —

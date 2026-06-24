@@ -6,9 +6,8 @@ use crate::{
     format_with_flags,
     fusion::emit::{emit_qop_node, BodyCx, CompiledExpr},
     typ::{Type, TypeRef},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
-    Update,
-    UserEvent,
+    wrap, Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
+    Scope, Update, UserEvent,
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::{literal, ArcStr};
@@ -31,7 +30,7 @@ fn typ_echain(param: Type) -> Type {
     })
 }
 
-pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
+pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     static ERRCHAIN: LazyLock<Type> = LazyLock::new(|| typ_echain(Type::empty_tvar()));
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
@@ -54,6 +53,45 @@ pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
         ]
         .into()
     }
+}
+
+/// The error-delivery side of a handler-ful `?` as an `Apply`, so a fused
+/// kernel can perform it through the DynCall machinery (see
+/// [`crate::fusion::kernel_abi::FnSource::QopDeliver`]). `update` receives
+/// the operator's value in `from[0]`; on an `Error` it replicates
+/// `Qop::update`'s handler path EXACTLY — `wrap_error` with this `?`'s
+/// position/origin, then write the catch handler's variable (vacant →
+/// insert into `event.variables`, occupied → `set_var`). Returns
+/// `Value::Null` (a completed side effect); the kernel's error branch
+/// separately aborts the cycle to bottom, matching `Qop::update`'s `None`.
+#[derive(Debug)]
+pub(crate) struct QopDeliverApply {
+    pub(crate) handler_id: BindId,
+    pub(crate) spec: Expr,
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Value> {
+        let v = from.get_mut(0)?.update(ctx, event)?;
+        if let Value::Error(e) = v {
+            let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
+            let v = Value::Error(Arc::new(e));
+            match event.variables.entry(self.handler_id) {
+                Entry::Vacant(slot) => {
+                    slot.insert(v);
+                }
+                Entry::Occupied(_) => ctx.set_var(self.handler_id, v),
+            }
+        }
+        Some(Value::Null)
+    }
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -162,6 +200,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::TryCatch(self)
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // The TryCatch itself is a fusion boundary (no `emit_clif`): the
+        // catch handler reads the error variable a handler-ful `?` writes,
+        // and that read is necessarily a separate kernel (next cycle). But
+        // its CHILDREN fuse — each try-body statement and the catch handler
+        // fuse their own maximal subtrees. Without this recursion the whole
+        // try body node-walks, so wrapping a hot loop in `try`/`catch`
+        // would kill its fusion (the `?` inside fuses via the QopDeliver
+        // site once the body is reached).
+        for n in self.nodes.iter_mut() {
+            crate::fusion::fuse(n, ctx)?;
+        }
+        crate::fusion::fuse(&mut self.handler, ctx)?;
+        Ok(None)
     }
 }
 
@@ -343,21 +397,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         &self,
         cx: &mut BodyCx,
     ) -> Result<CompiledExpr> {
-        // A `?` with an enclosing catch handler delivers its error by
-        // WRITING the handler's variable (`update` above: set_var /
-        // event.variables on `self.id`) — an effect a fused kernel
-        // cannot perform; fusing it would swallow the error (the
-        // kernel pends) and the catch would never fire. Refuse —
-        // the subtree node-walks. A handler-LESS `?` (id: None,
-        // unhandled-error warn + drop) fuses: its error path is the
-        // same bottom the kernel's pending machinery produces.
-        if self.id.is_some() {
-            anyhow::bail!(
-                "emit_clif: `?` under an enclosing catch — error \
-                 delivery is a variable write; subtree node-walks"
-            );
-        }
-        emit_qop_node(cx, &self.n)
+        // A handler-ful `?` (`id: Some` — caught by an enclosing `try`)
+        // delivers its error by WRITING the handler's variable. The fused
+        // kernel now performs that write in-kernel via the discovered
+        // `QopDeliver` site (scalar success type only — non-scalar
+        // handler-ful `?` de-fuses inside `emit_qop_node`). The catch
+        // handler that READS the variable is always a separate kernel
+        // (next cycle), so there's no read-after-write hazard. A
+        // handler-LESS `?` (`id: None`) passes `None` — its error path is
+        // the bottom the kernel produces with no delivery.
+        emit_qop_node(cx, &self.n, self.id.map(|_| self.spec.id))
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
@@ -455,7 +504,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         &self,
         cx: &mut BodyCx,
     ) -> Result<CompiledExpr> {
-        emit_qop_node(cx, &self.n)
+        // `$` never has a catch handler (log + drop on error) — no delivery.
+        emit_qop_node(cx, &self.n, None)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

@@ -712,10 +712,9 @@ run!(
 // Abstract Types in Throws Clause
 // =============================================================================
 
-// Abstract type as error payload in throws clause
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Abstract type as error payload in throws clause. Fuses now: the
+// try body fuses (TryCatch::fuse descends) and the handler-ful `?` in
+// `try inner::risky(42)` delivers in-kernel (variable-write-in-kernel).
 run!(
     abstract_type_in_throws,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -736,7 +735,7 @@ run!(
     "/test/inner.gx" => r#"
         type ErrPayload = { code: i64, msg: string };
         let risky = |x: i64| -> i64 x
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type used with a function that has throws clause
 // This tests that functions returning abstract types can be declared with throws

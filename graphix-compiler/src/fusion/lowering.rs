@@ -12,8 +12,8 @@ use crate::{
         self,
         emit::WrappedKernel,
         kernel_abi::{
-            self, abi_kind, AbiKind, AbstractRegistry, BuiltinSlot, FnParam,
-            FnSource, KernelSig, Seen,
+            self, abi_kind, freeze_for_abi, freeze_for_abi_normalized, scalar_prim,
+            AbiKind, AbstractRegistry, BuiltinSlot, FnParam, FnSource, KernelSig, Seen,
         },
         LambdaCallInfo,
     },
@@ -135,11 +135,100 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     scope: &ModPath,
     out: &mut BuiltinCallDiscovery,
 ) {
-    fusion::for_each_node(node, &mut |n| {
-        if let NodeView::CallSite(cs) = n.view() {
-            try_register_builtin_call_from_callsite(cs, ctx, scope, out);
+    fusion::for_each_node(node, &mut |n| match n.view() {
+        NodeView::CallSite(cs) => {
+            try_register_builtin_call_from_callsite(cs, ctx, scope, out)
         }
+        NodeView::TypeCast(tc) => try_register_cast(tc, ctx, out),
+        NodeView::Qop(q) => try_register_qop_deliver(q, ctx, out),
+        _ => {}
     });
+}
+
+/// Register the error-delivery DynCall for a handler-ful `?` (a `?`
+/// caught by an enclosing `try`), if `emit_qop_node` will lower it
+/// in-kernel. A handler-LESS `?` needs nothing (its error path is just
+/// bottom). Only a SCALAR success type is delivered in kernel today (the
+/// common hot-loop case); a non-scalar handler-ful `?` de-fuses inside
+/// `emit_qop_node`, so don't register a slot for it (the decision MUST
+/// mirror emit, or the site (de)registers out of step).
+fn try_register_qop_deliver<R: Rt, E: UserEvent>(
+    q: &crate::node::error::Qop<R, E>,
+    ctx: &ExecCtx<R, E>,
+    out: &mut BuiltinCallDiscovery,
+) {
+    let Some(handler_id) = q.id else { return };
+    let reg = &ctx.fusion.abstract_registry;
+    let Some(inner_typ) = freeze_for_abi(reg, q.n.typ()) else { return };
+    let Some(success_typ) = kernel_abi::nullable_inner(reg, &inner_typ) else { return };
+    if scalar_prim(reg, &success_typ).is_none() {
+        return;
+    }
+    // The delivered arg is the inner's full Nullable value (the `Error` on
+    // the error path) — Value-shape (2-word). `return_type` is unused: the
+    // emitter hardcodes the Unit DynCall ret_kind and `QopDeliverApply`
+    // returns `Null`; carry the arg type as a harmless placeholder.
+    let fn_index = out.fn_params.len() as u32;
+    out.fn_params.push(FnParam {
+        name: arcstr::literal!("<qop_deliver>"),
+        source: FnSource::QopDeliver { handler_id, spec: q.spec.clone() },
+        arg_types: vec![inner_typ.clone()],
+        return_type: inner_typ.clone(),
+    });
+    out.apply_sites.insert(
+        q.spec.id,
+        BuiltinCallSiteInfo {
+            fn_index,
+            marshal_arg_indices: vec![0],
+            arg_types: vec![inner_typ.clone()],
+            return_type: inner_typ,
+        },
+    );
+}
+
+/// Register a `cast<T>(x)` site as a one-argument DynCall to the cast
+/// machinery, if it can't be emitted inline. A scalar→scalar cast stays
+/// inline (`emit_cast_node`'s `compile_cast` fast path — pure register
+/// arithmetic); ONLY a cast with a non-scalar source (e.g. a `datetime`)
+/// or non-scalar target needs the machinery call. Registers a
+/// `FnSource::Cast` slot + an `apply_sites` entry exactly like a builtin
+/// call, so `emit_cast_node` lowers it through the shared
+/// `emit_dyncall_node` path. The decision here MUST mirror
+/// `emit_cast_node`'s inline test, or the site would (de)register out of
+/// step with emission.
+fn try_register_cast<R: Rt, E: UserEvent>(
+    tc: &crate::node::TypeCast<R, E>,
+    ctx: &ExecCtx<R, E>,
+    out: &mut BuiltinCallDiscovery,
+) {
+    let reg = &ctx.fusion.abstract_registry;
+    let source = tc.n.typ();
+    // Inline-able scalar→scalar cast: no slot (matches emit_cast_node).
+    if scalar_prim(reg, source).is_some() && PrimType::from_type(&tc.target).is_some() {
+        return;
+    }
+    // The source must marshal across the DynCall ABI, and the cast's
+    // fallible result type (`[T, Error]`) must decode — otherwise the
+    // site can't be lowered and emission fails on the un-registered
+    // node (the region stays unfused).
+    let Some(arg_frozen) = freeze_for_abi(reg, source) else { return };
+    let Some(ret_frozen) = freeze_for_abi_normalized(reg, &tc.typ) else { return };
+    let fn_index = out.fn_params.len() as u32;
+    out.fn_params.push(FnParam {
+        name: arcstr::literal!("<cast>"),
+        source: FnSource::Cast { target: tc.target.clone() },
+        arg_types: vec![arg_frozen.clone()],
+        return_type: ret_frozen.clone(),
+    });
+    out.apply_sites.insert(
+        tc.spec.id,
+        BuiltinCallSiteInfo {
+            fn_index,
+            marshal_arg_indices: vec![0],
+            arg_types: vec![arg_frozen],
+            return_type: ret_frozen,
+        },
+    );
 }
 
 /// Register one CallSite as a builtin DynCall site, if it qualifies.

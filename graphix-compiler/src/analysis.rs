@@ -143,14 +143,21 @@ fn body_effect<R: Rt, E: UserEvent>(
     acc
 }
 
-/// The intrinsic effect of a single node. Only a call can be async; every
-/// other variant is either pure same-cycle compute, or a reactive /
-/// cross-cycle / error-delivery construct that we treat as `Async`
-/// CONSERVATIVELY so the interpreter never tight-loops a recursion that
-/// depends on it (refining any of these to `Sync` is a future
-/// optimization, gated by the differential fuzzer). The match is
+/// The intrinsic effect of a single node. `Async` means "delivers a
+/// value on a LATER cycle than its trigger" — a call into an async
+/// callee, a sample/`any`, a TryCatch (its catch reads an error variable
+/// next cycle), a fused kernel that may pend. A variable WRITE
+/// (`connect`, a handler-ful `?`'s error delivery) is NOT async: the
+/// write happens this cycle, and the cross-cycle boundary is the READ of
+/// the written variable (a feeder, a separate kernel). So those, and
+/// same-cycle error handling (`$`, handler-less `?`), are `Sync` — which
+/// lets them fuse (their `emit_clif` performs the write) and lets the
+/// interpreter tail-loop a recursion containing them. The match is
 /// exhaustive on purpose — a new node variant is a compile error here,
-/// forcing a sync/async decision rather than a silent default.
+/// forcing a sync/async decision rather than a silent default. (Note:
+/// EffectKind is orthogonal to `stmt_subtree_effect_free` — a connect is
+/// *sync* yet NOT effect-free; dead-statement elimination must still keep
+/// it.)
 fn node_effect<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     eff: &IntMap<LambdaId, EffectKind>,
@@ -158,15 +165,27 @@ fn node_effect<R: Rt, E: UserEvent>(
 ) -> EffectKind {
     match n.view() {
         NodeView::CallSite(cs) => callee_effect(cs, eff, ctx),
-        // Reactive / cross-cycle / error-delivery: conservatively async.
-        NodeView::Connect(_)
-        | NodeView::ConnectDeref(_)
-        | NodeView::Sample(_)
-        | NodeView::Qop(_)
-        | NodeView::OrNever(_)
+        // Genuinely cross-cycle: a sample (`~`) or `any` delivers on a
+        // later cycle than its trigger; a TryCatch's catch handler reads
+        // an error variable a cycle after the `?` writes it; a fused
+        // kernel may pend. These stay async.
+        NodeView::Sample(_)
         | NodeView::TryCatch(_)
         | NodeView::Any(_)
         | NodeView::FusedKernel(_) => EffectKind::Async,
+        // Variable WRITES (`connect`, a handler-ful `?`'s error delivery)
+        // and same-cycle error handling (`$`, a handler-less `?`) are
+        // SYNC: the write/log happens this cycle; the genuine boundary is
+        // the READ of a written variable (handled by feeders, a separate
+        // kernel). Classifying them sync lets them fuse and lets the
+        // interpreter tail-loop a recursion that contains them. (The
+        // *write itself* fusing is gated structurally by `emit_clif`:
+        // connect/qop-deliver emit the write; an unfusable case de-fuses
+        // gracefully.)
+        NodeView::Connect(_)
+        | NodeView::ConnectDeref(_)
+        | NodeView::Qop(_)
+        | NodeView::OrNever(_) => EffectKind::Sync,
         // Pure same-cycle compute / construction / access / control flow.
         NodeView::Bind(_)
         | NodeView::Module(_)

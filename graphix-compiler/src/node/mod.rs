@@ -2,7 +2,7 @@ use crate::{
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         emit::{
-            emit_block_node, emit_cast_node, emit_const_node,
+            emit_block_node, emit_cast_node, emit_connect_node, emit_const_node,
             emit_string_interpolate_node, BodyCx, CompiledExpr,
         },
         fuse,
@@ -856,6 +856,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         NodeView::Connect(self)
     }
 
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_connect_node(cx, &self.node, self.id)
+    }
+
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
         // Re-resolve the `<-` target by name: an outer Connect target
         // (e.g. `counter`, shared across slots) resolves to the unchanged
@@ -1058,7 +1062,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         &self,
         cx: &mut BodyCx,
     ) -> Result<CompiledExpr> {
-        emit_cast_node(cx, &self.n, &self.target)
+        emit_cast_node(cx, &self.n, &self.target, self.spec.id)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

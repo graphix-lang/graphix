@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) | thread 'tokio-rt-worker' (2346593) has overflowed its stack | fatal runtime error: stack overflow, aborting
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let rec fact = |n: i64| -> i64 select n {i64:0 => i64:-100, _ => n * fact(n - i64:100)}; fact(i64:5)}

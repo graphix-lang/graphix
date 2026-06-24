@@ -1631,6 +1631,12 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
+        "graphix_set_var" => {
+            // (bind_id, disc, payload) → void
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
         "graphix_dyncall_pending_take" => {
             sig.returns.push(AbiParam::new(types::I8));
         }
@@ -3201,17 +3207,92 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
     target: &Type,
+    expr_id: ExprId,
 ) -> Result<CompiledExpr> {
-    let target = PrimType::from_type(target)
-        .ok_or_else(|| anyhow!("emit_clif: TypeCast to non-scalar target {target:?}"))?;
-    let src = kernel_abi::scalar_prim(cx.registry(), inner.typ()).ok_or_else(|| {
-        anyhow!("emit_clif: cast source of non-scalar typ {:?}", inner.typ())
-    })?;
-    let cv = inner.emit_clif(cx)?;
-    let value = compile_cast(cx.b, cv.payload, src, target);
-    let base = scalar_disc(cx.b, target);
-    let disc = propagate_taint(cx.b, base, &[cv.disc]);
-    Ok(CompiledExpr::new(disc, value))
+    // Scalar→scalar fast path: pure register arithmetic, branchless,
+    // infallible — a cast in a hot loop (e.g. `cast<f64>(2*n-1)`) must
+    // stay inline, not pay a runtime call per iteration.
+    if let (Some(src), Some(tgt)) =
+        (kernel_abi::scalar_prim(cx.registry(), inner.typ()), PrimType::from_type(target))
+    {
+        let cv = inner.emit_clif(cx)?;
+        let value = compile_cast(cx.b, cv.payload, src, tgt);
+        let base = scalar_disc(cx.b, tgt);
+        let disc = propagate_taint(cx.b, base, &[cv.disc]);
+        return Ok(CompiledExpr::new(disc, value));
+    }
+    // Any other cast (non-scalar source like `datetime`, or non-scalar
+    // target): the discovery pass registered a `FnSource::Cast` slot —
+    // lower it as a one-argument DynCall to the cast machinery
+    // (`CastApply` → `target.cast_value`, the SAME fn the node-walk
+    // uses). The fallible `[T, Error]` result rides the 2-word Value
+    // wire shape; a surrounding `$`/`?` unwraps it via `emit_qop_node`.
+    let info = match cx.builtin_site(expr_id) {
+        Some(i) => i.clone(),
+        None => {
+            return Err(anyhow!(
+                "emit_clif: cast site {expr_id:?} not discovered — doesn't fuse"
+            ))
+        }
+    };
+    emit_dyncall_node(cx, &info, &[inner])
+}
+
+/// `connect` (`x <- expr`) fused: compute the RHS and write the reactive
+/// variable mid-kernel via `graphix_set_var`. The write is a side
+/// effect (the node returns bottom — `Connect::update` returns `None`),
+/// and the read side is unchanged: a downstream region reading the
+/// written variable already sees it next cycle through its feeder Ref
+/// (keyed to `fusion.top_id`). A `#219`-tainted RHS is skipped by the
+/// helper (no value this cycle = no write), mirroring the node-walk's
+/// `if let Some(v) = ..` guard.
+///
+/// First cut: scalar RHS only. A composite/string/value RHS needs an
+/// OWNED payload handed to `set_var` (clone if borrowed) — until that's
+/// wired, a non-scalar RHS de-fuses (the block node-walks, still
+/// correct).
+pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    rhs: &Node<R, E>,
+    bind_id: BindId,
+) -> Result<CompiledExpr> {
+    // Read-after-write-same-var guard: if the connect TARGET is a
+    // kernel-local (let-bound inside this region), a read of it in the
+    // same kernel resolves to the stale local value, not the written
+    // one (the write schedules next cycle; the read should see the
+    // variable through a feeder). Fusing that diverges from the
+    // node-walk (the self-referential counter `{ let x=0; x<-..; x }`).
+    // De-fuse — the block node-walks (correct), while the RHS still
+    // fuses as a sub-region. A connect to an EXTERNAL variable (read
+    // only in OTHER kernels, via feeders) is safe and fuses. (Full
+    // local-counter fusion needs unstable bindings routed as
+    // feeders+seeds — a follow-up.)
+    if cx.env.lookup(bind_id, "").is_some() {
+        return Err(anyhow!(
+            "emit_clif: connect target is a kernel-local — read-after-write \
+             unsafe, node-walks"
+        ));
+    }
+    let Some(p) = kernel_abi::scalar_prim(cx.registry(), rhs.typ()) else {
+        return Err(anyhow!(
+            "emit_clif: connect RHS non-scalar — node-walks (TODO owned marshal)"
+        ));
+    };
+    let cv = rhs.emit_clif(cx)?;
+    // A scalar's (disc, payload) IS the Value wire form; widen the
+    // payload to the i64 the helper expects (f64 bitcast / small-int
+    // uextend). `cv.disc` carries any #219 taint, which the helper
+    // honors (tainted → skip the write).
+    let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
+    let id_const = cx.b.ins().iconst(types::I64, bind_id.inner() as i64);
+    let set_var = cx.helper("graphix_set_var")?;
+    cx.b.ins().call(set_var, &[id_const, cv.disc, payload]);
+    // `connect` produces no value — a tainted-null bottom. Discarded as a
+    // block statement (a connect is never a kernel's published result;
+    // its `typ()` is `Bottom`).
+    let disc = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
+    let zero = cx.b.ins().iconst(types::I64, 0);
+    Ok(CompiledExpr::new(disc, zero))
 }
 
 /// String interpolation `"x is [x]"` — build a heap-owned
@@ -4117,6 +4198,51 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
+/// Emit the error-delivery DynCall for a handler-ful `?` (a `?` caught
+/// by an enclosing `try` — `FnSource::QopDeliver`). Marshals the error
+/// value `cv` as the single Value-shape argument and dispatches the
+/// pre-bound `QopDeliverApply`, which runs `wrap_error` + writes the
+/// catch handler's variable (exactly `Qop::update`'s handler path). Unit
+/// return, discarded — the caller's error branch bottoms the result
+/// separately (the scalar taint). `inner_owned` selects owned vs
+/// borrowed push: the error rides the inner's ownership, and the owned
+/// push hands it to `QopDeliverApply` to drop (no separate drop here).
+fn emit_qop_deliver(
+    cx: &mut BodyCx,
+    site_id: ExprId,
+    cv: &CompiledExpr,
+    inner_owned: bool,
+) -> Result<()> {
+    let info = cx
+        .builtin_site(site_id)
+        .ok_or_else(|| anyhow!("emit_clif: qop-deliver site {site_id:?} not discovered"))?
+        .clone();
+    let buf_new = cx.helper("graphix_value_buf_new")?;
+    let cap = cx.b.ins().iconst(types::I64, 1);
+    let call = cx.b.ins().call(buf_new, &[cap]);
+    let buf = cx.b.inst_results(call)[0];
+    let buf_var = cx.b.declare_var(types::I64);
+    cx.b.def_var(buf_var, buf);
+    cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+    // The error rides the 2-word Value wire shape; the pushed disc must be
+    // CLEAN (a tainted disc is an invalid tag).
+    let clean = clean_disc(cx.b, cv.disc);
+    let push_name = if inner_owned {
+        "graphix_value_buf_push_value"
+    } else {
+        "graphix_value_buf_push_value_borrowed"
+    };
+    let push = cx.helper(push_name)?;
+    cx.b.ins().call(push, &[buf, clean, cv.payload]);
+    let dyncall = cx.helper("graphix_dyncall")?;
+    let fn_idx = cx.b.ins().iconst(types::I32, info.fn_index as i64);
+    // ret_kind=3 (Unit): QopDeliverApply returns Value::Null; discarded.
+    let ret_kind = cx.b.ins().iconst(types::I8, 3);
+    cx.b.ins().call(dyncall, &[fn_idx, buf, ret_kind]);
+    cx.ctx.dyncall_buf_stack.borrow_mut().pop();
+    Ok(())
+}
+
 /// `?` / `$` — both unwrap a Nullable<T> to T (else pass the value
 /// through unchanged for a non-Nullable inner, mirroring `wrap_qop`'s
 /// None branch). Scalar / string / composite success returns the
@@ -4125,6 +4251,7 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
+    handler_site: Option<ExprId>,
 ) -> Result<CompiledExpr> {
     let Some(inner_typ) = kernel_abi::freeze_for_abi(cx.registry(), inner.typ()) else {
         return Err(anyhow!(
@@ -4133,6 +4260,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         ));
     };
     let Some(success_typ) = kernel_abi::nullable_inner(cx.registry(), &inner_typ) else {
+        // No error possible — passthrough; the handler (if any) never fires.
         return inner.emit_clif(cx);
     };
     let cv = inner.emit_clif(cx)?;
@@ -4149,6 +4277,23 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // here: a scalar `Nullable` inner is a by-value scalar (no
         // heap). #219: the inner's own taint also flows through.
         Some(AbiKind::Scalar(p)) => {
+            // Handler-ful `?` (a `?` caught by an enclosing `try`): on the
+            // error path, deliver the error to the catch handler's
+            // variable before bottoming (mirrors `Qop::update`'s handler
+            // path). The catch handler reading that variable is a separate
+            // kernel (next cycle), so no read-after-write hazard.
+            if let Some(site) = handler_site {
+                let deliver_block = cx.b.create_block();
+                let after = cx.b.create_block();
+                cx.b.ins().brif(is_err, deliver_block, &[], after, &[]);
+                cx.b.switch_to_block(deliver_block);
+                cx.b.seal_block(deliver_block);
+                let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
+                emit_qop_deliver(cx, site, &cv, inner_owned)?;
+                cx.b.ins().jump(after, &[]);
+                cx.b.switch_to_block(after);
+                cx.b.seal_block(after);
+            }
             let value = cast_u64_to_prim(cx.b, payload, p);
             let base = scalar_disc(cx.b, p);
             let disc = propagate_taint(cx.b, base, &[cv.disc]);
@@ -4157,6 +4302,15 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         }
         // String / composite success — keep the branch-abort path.
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            // Handler-ful `?` with a non-scalar success type isn't lowered
+            // yet — the error-path delivery + the owned-success unwrap
+            // interleave; node-walk it (correct). (Scalar is the common
+            // hot-loop case: `a +? b`, `arr[i]?`, `cast<i64>(x)?`.)
+            if handler_site.is_some() {
+                return Err(anyhow!(
+                    "emit_clif: handler-ful `?` with non-scalar success — node-walks (TODO)"
+                ));
+            }
             let base_disc = if matches!(
                 kernel_abi::abi_kind(cx.registry(), &success_typ),
                 Some(AbiKind::String)
@@ -4224,6 +4378,13 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // non-error Value IS the result T (its own `(disc, payload)`,
         // passed through to the consumer which takes ownership).
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            // Handler-ful `?` with a Value-shape success isn't lowered yet
+            // (see the String/composite arm) — node-walk it.
+            if handler_site.is_some() {
+                return Err(anyhow!(
+                    "emit_clif: handler-ful `?` with value-shape success — node-walks (TODO)"
+                ));
+            }
             let pending_set = cx.helper("graphix_dyncall_set_pending")?;
             let value_drop = cx.helper("graphix_value_drop")?;
             let src = node_composite_source(inner);
