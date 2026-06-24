@@ -627,6 +627,9 @@ module.exports = grammar({
 
     unary_expression: $ => prec('unary', choice(
       seq('!', $._expression),
+      // Unary minus. `<-` is a distinct (longer) token, so this does not
+      // collide with connect; `a < -b` (space) stays a comparison.
+      seq('-', $._expression),
     )),
 
     // Apply (function call)
