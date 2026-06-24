@@ -850,11 +850,19 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // "is it fusable IS the compile attempt"). A body that doesn't
     // emit fails the kernel define, and the call site's region
     // node-walks.
-    let (mut sig, arg_types) = fusion::sig_from_inputs(
+    let (mut sig, arg_types) = match fusion::sig_from_inputs(
         kernel_name.clone(),
         inputs.iter().map(|(name, kind, bind_id)| (name.clone(), kind, *bind_id)),
         return_typ.clone(),
-    );
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            // Malformed frozen input — the callee kernel can't be built,
+            // so the call site node-walks (de-fuse, never panic).
+            log::trace!("build_lambda_kernel: sig_from_inputs failed: {e:#}");
+            return None;
+        }
+    };
     sig.has_tail_loop = has_tail;
     let signature = KnownFusedFn { arg_types, return_type: return_typ, self_bind };
     let cached = CachedKernel {

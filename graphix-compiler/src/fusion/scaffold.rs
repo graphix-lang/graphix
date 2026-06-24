@@ -386,7 +386,7 @@ where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
     let buf_new = cx.helper("graphix_value_buf_new")?;
-    let n_widened = widen_to_i64(cx.b, n_raw, n_prim);
+    let n_widened = widen_to_i64(cx.b, n_raw, n_prim)?;
     let zero_clamp = cx.b.ins().iconst(types::I64, 0);
     let is_neg = cx.b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
     let n_val = cx.b.ins().select(is_neg, zero_clamp, n_widened);

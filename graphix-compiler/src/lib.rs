@@ -1480,14 +1480,17 @@ pub fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<Node<R, E>> {
-    // A check-only (lsp_mode) runtime compiles to verify types and then
-    // deletes the nodes without ever executing them, so fusion — a JIT for
-    // fast EXECUTION — is pure wasted work. Worse, the lsp check path keeps
-    // going past type errors to collect every diagnostic, so it would hand
-    // fusion ill-typed exprs that break its well-typed invariant. A runtime
-    // that never executes must never fuse; enforce it at the one point where
-    // `fusion.enabled` is derived, so no caller can opt back in.
-    ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled) && !ctx.env.lsp_mode;
+    // Fusion runs whenever the program typechecks — including in check/lsp
+    // runtimes, which it makes safe two ways: (1) fusion's emit path never
+    // panics; on any malformed input it returns Err and de-fuses to the
+    // node-walk (the universal correct fallback), so an ill-typed expr that
+    // slips past lsp's keep-going typecheck can at worst lose fusion, never
+    // crash; and (2) `#[native]` needs fusion to actually run during a check
+    // to verify its contract. The one real precondition — that the program
+    // typechecked — is already enforced structurally: typecheck0/1 + analyze
+    // (below) early-return on any error before the fusion call, so fusion is
+    // reached iff this expr is well-typed.
+    ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled);
     let top_id = spec.id;
     ctx.fusion.top_id = Some(top_id);
     ctx.bind_to_lambda.clear();

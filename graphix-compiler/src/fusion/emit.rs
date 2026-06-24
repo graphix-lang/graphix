@@ -1125,17 +1125,13 @@ impl KernelStrings {
         self
     }
 
-    /// Get the stable `*const ArcStr` for `s`. Panics if `s` wasn't
-    /// in the pre-walk (i.e. a string-using op was missed).
-    pub fn get(&self, s: &ArcStr) -> *const ArcStr {
-        let i = *self.index.get(s).unwrap_or_else(|| {
-            panic!(
-                "KernelStrings: lookup miss for `{}` — pre-walk must \
-                 have missed a string-using op",
-                s
-            )
-        });
-        &self.slots[i] as *const ArcStr
+    /// Stable `*const ArcStr` for `s`, or `None` on a lookup miss
+    /// (de-fuses rather than panicking). Unused on the direct path,
+    /// which interns at emission via `interned_str`; retained for the
+    /// pre-walk pointer-baking path.
+    pub fn get(&self, s: &ArcStr) -> Option<*const ArcStr> {
+        let i = *self.index.get(s)?;
+        Some(&self.slots[i] as *const ArcStr)
     }
 }
 
@@ -1164,12 +1160,10 @@ impl KernelValues {
         self
     }
 
-    /// Stable `*const Value` for `v`. Panics on a pre-walk miss (a
-    /// value-shape `Const`-using op the walk didn't cover).
-    pub fn get(&self, v: &Value) -> *const Value {
-        self.slots.iter().find(|s| *s == v).map(|s| s as *const Value).unwrap_or_else(
-            || panic!("KernelValues: lookup miss for a value-shape Const literal"),
-        )
+    /// Stable `*const Value` for `v`, or `None` on a miss (de-fuses
+    /// rather than panicking). See [`KernelStrings::get`].
+    pub fn get(&self, v: &Value) -> Option<*const Value> {
+        self.slots.iter().find(|s| *s == v).map(|s| s as *const Value)
     }
 }
 
@@ -2877,7 +2871,7 @@ pub(crate) fn emit_const_node(
     match kernel_abi::abi_kind(cx.registry(), typ) {
         Some(AbiKind::Scalar(prim)) => {
             let disc = scalar_disc(cx.b, prim);
-            Ok(CompiledExpr::new(disc, compile_const(cx.b, value, prim)))
+            Ok(CompiledExpr::new(disc, compile_const(cx.b, value, prim)?))
         }
         Some(AbiKind::String) => {
             let s = match value {
@@ -4082,7 +4076,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     if matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
         let (arr_ptr, src) = emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
-        let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim);
+        let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;
         let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);
         let r = cx.b.inst_results(call);
@@ -5029,7 +5023,7 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                 })?;
                 match scrut {
                     SelectScrut::Scalar { value, prim, .. } if prim == lit_prim => {
-                        let lit = compile_const(cx.b, v, lit_prim);
+                        let lit = compile_const(cx.b, v, lit_prim)?;
                         Some(compile_cmp(cx.b, CmpOp::Eq, lit_prim, value, lit))
                     }
                     _ => {
@@ -6131,17 +6125,17 @@ fn compile_element_read(
 /// Widen a CLIF value to i64. Helpers expect a usize index; if the
 /// caller's index expression was narrower (e.g. `i32` from a
 /// `cast`), we zero/sign extend here.
-fn widen_to_i64(b: &mut FunctionBuilder, v: ClifValue, p: PrimType) -> ClifValue {
-    match p {
+fn widen_to_i64(b: &mut FunctionBuilder, v: ClifValue, p: PrimType) -> Result<ClifValue> {
+    Ok(match p {
         PrimType::I64 | PrimType::U64 => v,
         PrimType::I8 | PrimType::I16 | PrimType::I32 => b.ins().sextend(types::I64, v),
         PrimType::U8 | PrimType::U16 | PrimType::U32 | PrimType::Bool => {
             b.ins().uextend(types::I64, v)
         }
         PrimType::F32 | PrimType::F64 => {
-            panic!("widen_to_i64: float index — emission malformed")
+            return Err(anyhow::anyhow!("widen_to_i64: float index — emission malformed"));
         }
-    }
+    })
 }
 
 /// Promote a scalar CLIF value to the 8-byte payload word of a
@@ -6219,15 +6213,15 @@ fn string_buf_push_helper(p: PrimType) -> &'static str {
 /// Lower a scalar [`Value`] constant of the given `prim` to a CLIF
 /// `iconst`/`f32const`/`f64const`. `prim` comes from the constant's
 /// frozen type; `v` must be the matching scalar (`Z*`/`V*`
-/// accepted for their fixed-width prim). Panics otherwise — a malformed
-/// kernel.
-fn compile_const(b: &mut FunctionBuilder, v: &Value, prim: PrimType) -> ClifValue {
+/// accepted for their fixed-width prim). Returns `Err` otherwise (a
+/// malformed kernel — de-fuses to the node-walk instead of panicking).
+fn compile_const(b: &mut FunctionBuilder, v: &Value, prim: PrimType) -> Result<ClifValue> {
     macro_rules! bad {
         () => {
-            panic!("compile_const: {v:?} isn't a {prim:?} scalar")
+            return Err(anyhow::anyhow!("compile_const: {v:?} isn't a {prim:?} scalar"))
         };
     }
-    match prim {
+    Ok(match prim {
         PrimType::I8 => match v {
             Value::I8(x) => b.ins().iconst(types::I8, *x as i64),
             _ => bad!(),
@@ -6273,7 +6267,7 @@ fn compile_const(b: &mut FunctionBuilder, v: &Value, prim: PrimType) -> ClifValu
             Value::Bool(false) => b.ins().iconst(types::I8, 0),
             _ => bad!(),
         },
-    }
+    })
 }
 
 /// A zero / false constant of the given prim type. Used for the

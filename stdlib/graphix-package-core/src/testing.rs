@@ -145,6 +145,48 @@ where
         >,
     ),
 {
+    init_inner(sub, register, resolvers, flags, false, setup).await
+}
+
+/// Like [`init_with_flags_and_setup`] but builds an **lsp_mode** runtime —
+/// the `check` path, which compiles to verify types and then deletes the
+/// nodes without ever executing them. Used to test that fusion runs, and
+/// never panics, in the check/LSP path (fusion is a compile-time pass, so
+/// it runs during a check even though no kernel is ever executed).
+pub async fn init_lsp_mode<F>(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[RegisterFn],
+    resolvers: Vec<ModuleResolver>,
+    flags: BitFlags<CFlag>,
+    setup: F,
+) -> Result<TestCtx>
+where
+    F: FnOnce(
+        &mut graphix_compiler::ExecCtx<
+            GXRt<NoExt>,
+            <NoExt as graphix_rt::GXExt>::UserEvent,
+        >,
+    ),
+{
+    init_inner(sub, register, resolvers, flags, true, setup).await
+}
+
+async fn init_inner<F>(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[RegisterFn],
+    resolvers: Vec<ModuleResolver>,
+    flags: BitFlags<CFlag>,
+    lsp_mode: bool,
+    setup: F,
+) -> Result<TestCtx>
+where
+    F: FnOnce(
+        &mut graphix_compiler::ExecCtx<
+            GXRt<NoExt>,
+            <NoExt as graphix_rt::GXExt>::UserEvent,
+        >,
+    ),
+{
     let _ = env_logger::try_init();
     let env = netidx::InternalOnly::new().await?;
     let mut ctx = graphix_compiler::ExecCtx::new(GXRt::<NoExt>::new(
@@ -174,6 +216,7 @@ where
             .root(root)
             .resolvers(all_resolvers)
             .flags(flags)
+            .lsp_mode(lsp_mode)
             .build()?
             .start()
             .await?,

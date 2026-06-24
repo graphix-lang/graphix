@@ -646,13 +646,25 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // parent's call sites emit CLIF `call`s against them.
     let (lambda_sites, lambda_callees, callee_bodies) = discover_lambda_calls(node, ctx);
     let source_id = node.spec().id;
-    let (mut sig, _arg_types) = sig_from_inputs(
+    let (mut sig, _arg_types) = match sig_from_inputs(
         arcstr::ArcStr::from(
             compact_str::format_compact!("region_{:?}", source_id).as_str(),
         ),
         inputs.iter().map(|fv| (fv.name.clone(), &fv.kind, Some(fv.bind_id))),
         return_type,
-    );
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            // A frozen region input whose ABI kind doesn't match its
+            // Type — a freeze invariant that should hold for well-typed
+            // input, but de-fuse rather than panic if it ever doesn't.
+            ctx.fusion.stats.failed.push((
+                source_id,
+                compact_str::format_compact!("sig_from_inputs: {e:#}"),
+            ));
+            return Ok(None);
+        }
+    };
     sig.fn_params = discovery.fn_params;
     let kernel = std::sync::Arc::new(sig);
     // The compile attempt: entry binds the declared params, then the
@@ -816,7 +828,7 @@ pub(crate) fn sig_from_inputs<'k>(
     fn_name: arcstr::ArcStr,
     inputs: impl IntoIterator<Item = (arcstr::ArcStr, &'k RegionInputKind, Option<BindId>)>,
     return_type: Type,
-) -> (KernelSig, Vec<Type>) {
+) -> anyhow::Result<(KernelSig, Vec<Type>)> {
     use kernel_abi::{
         ArrayInput, Input, NullableInput, StringInput, StructInput, TailCallSlot,
         TailCallSlotKind, TupleInput, ValueInput, VariantInput,
@@ -854,10 +866,14 @@ pub(crate) fn sig_from_inputs<'k>(
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Tuple(t) => {
-                let elems = kernel_abi::tuple_slots(t).map(<[Type]>::to_vec).expect(
-                    "RegionInputKind::Tuple must carry a frozen \
-                         Type::Tuple (freeze invariant)",
-                );
+                let elems = kernel_abi::tuple_slots(t).map(<[Type]>::to_vec).ok_or_else(
+                    || {
+                        anyhow::anyhow!(
+                            "RegionInputKind::Tuple must carry a frozen \
+                             Type::Tuple (freeze invariant)"
+                        )
+                    },
+                )?;
                 sig.tuple_params.push(TupleInput { name: name.clone(), elems, bind_id });
                 arg_types.push(t.clone());
                 TailCallSlotKind::ValArray
@@ -865,10 +881,12 @@ pub(crate) fn sig_from_inputs<'k>(
             RegionInputKind::Struct(t) => {
                 let fields = kernel_abi::struct_fields(t)
                     .map(<[(arcstr::ArcStr, Type)]>::to_vec)
-                    .expect(
-                        "RegionInputKind::Struct must carry a frozen \
-                         Type::Struct (freeze invariant)",
-                    );
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "RegionInputKind::Struct must carry a frozen \
+                             Type::Struct (freeze invariant)"
+                        )
+                    })?;
                 sig.struct_params.push(StructInput {
                     name: name.clone(),
                     fields,
@@ -878,10 +896,12 @@ pub(crate) fn sig_from_inputs<'k>(
                 TailCallSlotKind::ValArray
             }
             RegionInputKind::Variant(t) => {
-                let cases = kernel_abi::variant_cases(t).expect(
-                    "RegionInputKind::Variant must carry a frozen variant \
-                     Type (freeze invariant)",
-                );
+                let cases = kernel_abi::variant_cases(t).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "RegionInputKind::Variant must carry a frozen variant \
+                         Type (freeze invariant)"
+                    )
+                })?;
                 sig.variant_params.push(VariantInput {
                     name: name.clone(),
                     cases,
@@ -916,5 +936,5 @@ pub(crate) fn sig_from_inputs<'k>(
         };
         sig.tail_call_slots.push(TailCallSlot { name, kind: slot_kind });
     }
-    (sig, arg_types)
+    Ok((sig, arg_types))
 }
