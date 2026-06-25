@@ -1,8 +1,8 @@
 use crate::{
     expr::{
-        parser, read_to_arcstr, ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId,
-        ExprKind, LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig,
-        SigItem, SigKind, Source, StructExpr, StructWithExpr, StructurePattern,
+        parser, read_to_arcstr, serialize, ApplyExpr, BindExpr, CouldNotResolve, Expr,
+        ExprId, ExprKind, LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr,
+        Sig, SigItem, SigKind, Source, StructExpr, StructWithExpr, StructurePattern,
         TryCatchExpr, TypeDefExpr,
     },
     format_with_flags, PrintFlag,
@@ -10,6 +10,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{anyhow, bail, Context, Result};
 use arcstr::ArcStr;
+use bytes::Bytes;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use futures::future::try_join_all;
@@ -29,9 +30,27 @@ use triomphe::Arc;
 
 pub type BufferOverrides = Arc<Mutex<AHashMap<PathBuf, ArcStr>>>;
 
+/// A VFS module entry: its `.gx`/`.gxi` source text, plus optionally the
+/// pre-parsed AST as a packed blob (see [`super::serialize`]). When `packed`
+/// is present the resolver decodes it instead of re-parsing `source` — the
+/// startup win for stdlib packages. `source` is always kept (for `Origin`
+/// reconstruction and error-message snippets). Loose-source entries (tests,
+/// `eval`, the REPL) leave `packed` `None` and parse as before.
+#[derive(Debug, Clone)]
+pub struct VfsEntry {
+    pub source: ArcStr,
+    pub packed: Option<Bytes>,
+}
+
+impl From<ArcStr> for VfsEntry {
+    fn from(source: ArcStr) -> Self {
+        VfsEntry { source, packed: None }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ModuleResolver {
-    VFS(AHashMap<Path, ArcStr>),
+    VFS(AHashMap<Path, VfsEntry>),
     Files { base: PathBuf, overrides: Option<BufferOverrides> },
     Netidx { subscriber: Subscriber, base: Path, timeout: Option<Duration> },
 }
@@ -62,7 +81,15 @@ impl ModuleResolver {
 }
 
 enum Resolution {
-    Resolved { interface: Option<Origin>, implementation: Origin },
+    Resolved {
+        interface: Option<Origin>,
+        implementation: Origin,
+        // Packed pre-parsed AST for impl/interface, when the VFS entry carried
+        // one. `None` for loose source and for the file/netidx resolvers (which
+        // always parse). The decode happens at the parse splice in `resolve`.
+        impl_packed: Option<Bytes>,
+        intf_packed: Option<Bytes>,
+    },
     TryNextMethod,
 }
 
@@ -70,38 +97,38 @@ fn resolve_from_vfs(
     scope: &ModPath,
     parent: &Arc<Origin>,
     name: &Path,
-    vfs: &AHashMap<Path, ArcStr>,
+    vfs: &AHashMap<Path, VfsEntry>,
 ) -> Resolution {
     macro_rules! ori {
-        ($s:expr) => {
+        ($e:expr) => {
             Origin {
                 parent: Some(parent.clone()),
                 source: Source::Internal(name.clone().into()),
-                text: $s.clone(),
+                text: $e.source.clone(),
             }
         };
     }
     let scoped_intf = scope.append(&format_compact!("{name}.gxi"));
     let scoped_impl = scope.append(&format_compact!("{name}.gx"));
-    let implementation = match vfs.get(&scoped_impl) {
-        Some(s) => ori!(s),
+    let (implementation, impl_packed) = match vfs.get(&scoped_impl) {
+        Some(e) => (ori!(e), e.packed.clone()),
         None => {
             // try {name}/mod.gx fallback (consistent with file resolver)
             let mod_impl = scope.append(&format_compact!("{name}/mod.gx"));
             match vfs.get(&mod_impl) {
-                Some(s) => ori!(s),
+                Some(e) => (ori!(e), e.packed.clone()),
                 None => return Resolution::TryNextMethod,
             }
         }
     };
-    let interface = vfs
-        .get(&scoped_intf)
-        .or_else(|| {
-            let mod_intf = scope.append(&format_compact!("{name}/mod.gxi"));
-            vfs.get(&mod_intf)
-        })
-        .map(|s| ori!(s));
-    Resolution::Resolved { interface, implementation }
+    let (interface, intf_packed) = match vfs.get(&scoped_intf).or_else(|| {
+        let mod_intf = scope.append(&format_compact!("{name}/mod.gxi"));
+        vfs.get(&mod_intf)
+    }) {
+        Some(e) => (Some(ori!(e)), e.packed.clone()),
+        None => (None, None),
+    };
+    Resolution::Resolved { interface, implementation, impl_packed, intf_packed }
 }
 
 async fn resolve_from_files(
@@ -152,7 +179,13 @@ async fn resolve_from_files(
         Ok(s) => Some(ori!(s, intf_path)),
         Err(_) => None,
     };
-    Resolution::Resolved { interface, implementation }
+    // file/netidx resolvers always parse — never packed.
+    Resolution::Resolved {
+        interface,
+        implementation,
+        impl_packed: None,
+        intf_packed: None,
+    }
 }
 
 async fn resolve_from_netidx(
@@ -194,7 +227,13 @@ async fn resolve_from_netidx(
         Ok(v) => Some(ori!(v, intf_path)),
         Err(_) => None,
     };
-    Resolution::Resolved { interface, implementation }
+    // file/netidx resolvers always parse — never packed.
+    Resolution::Resolved {
+        interface,
+        implementation,
+        impl_packed: None,
+        intf_packed: None,
+    }
 }
 
 // add modules that are only mentioned in the interface to the implementation
@@ -397,9 +436,12 @@ async fn resolve(
         ($res:expr) => {
             match $res {
                 Resolution::TryNextMethod => continue,
-                Resolution::Resolved { interface, implementation } => {
-                    (interface, implementation)
-                }
+                Resolution::Resolved {
+                    interface,
+                    implementation,
+                    impl_packed,
+                    intf_packed,
+                } => (interface, implementation, impl_packed, intf_packed),
             }
         };
     }
@@ -407,7 +449,7 @@ async fn resolve(
     let name = Path::from(name);
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
     for r in prepend.iter().map(|r| r.as_ref()).chain(resolvers.iter()) {
-        let (interface, implementation) = match r {
+        let (interface, implementation, impl_packed, intf_packed) = match r {
             ModuleResolver::VFS(vfs) => {
                 check!(resolve_from_vfs(&scope, &parent, &name, vfs))
             }
@@ -436,17 +478,32 @@ async fn resolve(
                 check!(r)
             }
         };
-        let exprs = task::spawn_blocking({
+        // Decode the pre-parsed AST if the VFS entry shipped one, else parse
+        // the source. Both run on a blocking thread (decode and parse are CPU
+        // work, and `serialize::unpack_module` sets the per-module `Origin` +
+        // AbstractId-remap thread-locals on the thread that decodes — mirroring
+        // how `parser::parse` sets `set_origin` inside its own closure).
+        let exprs = {
             let ori = implementation.clone();
-            move || parser::parse(ori)
-        });
+            match impl_packed {
+                Some(bytes) => task::spawn_blocking(move || {
+                    serialize::unpack_module(&bytes, Arc::new(ori))
+                }),
+                None => task::spawn_blocking(move || parser::parse(ori)),
+            }
+        };
         let sig = match &interface {
             None => None,
             Some(ori) => {
                 let ori = ori.clone();
-                let sig = task::spawn_blocking(move || parser::parse_sig(ori))
-                    .await?
-                    .with_context(|| format!("parsing file {interface:?}"))?;
+                let sig = match intf_packed {
+                    Some(bytes) => task::spawn_blocking(move || {
+                        serialize::unpack_sig(&bytes, Arc::new(ori))
+                    }),
+                    None => task::spawn_blocking(move || parser::parse_sig(ori)),
+                }
+                .await?
+                .with_context(|| format!("parsing file {interface:?}"))?;
                 Some(sig)
             }
         };

@@ -59,7 +59,7 @@ impl GuiTestHarness {
         let (tx, mut rx) = mpsc::channel(100);
         let tbl = AHashMap::from_iter([(
             netidx_core::path::Path::from("/test.gx"),
-            arcstr::ArcStr::from(code),
+            graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(code)),
         )]);
         let resolver = ModuleResolver::VFS(tbl);
         let ctx = testing::init_with_resolvers(tx, TEST_REGISTER, vec![resolver]).await?;

@@ -19,6 +19,7 @@ mod native;
 mod neg;
 mod net;
 mod pack;
+mod packed_ast;
 mod sqlite;
 #[path = "str.rs"]
 mod str_tests;

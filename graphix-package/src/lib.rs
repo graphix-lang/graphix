@@ -10,7 +10,11 @@ use chrono::Local;
 use compact_str::{format_compact, CompactString};
 use crates_io_api::AsyncClient;
 use flate2::bufread::MultiGzDecoder;
-use graphix_compiler::{env::Env, expr::ExprId, ExecCtx};
+use graphix_compiler::{
+    env::Env,
+    expr::{ExprId, VfsEntry},
+    ExecCtx,
+};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use handlebars::Handlebars;
 pub use indexmap::IndexSet;
@@ -85,7 +89,7 @@ pub trait Package<X: GXExt> {
     /// Normally this is handled by the defpackage macro.
     fn register(
         ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
-        modules: &mut AHashMap<netidx_core::path::Path, ArcStr>,
+        modules: &mut AHashMap<netidx_core::path::Path, VfsEntry>,
         root_mods: &mut IndexSet<ArcStr>,
     ) -> Result<()>;
 

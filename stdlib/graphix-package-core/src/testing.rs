@@ -89,7 +89,7 @@ impl TestCtx {
 
 pub type RegisterFn = fn(
     &mut graphix_compiler::ExecCtx<GXRt<NoExt>, <NoExt as graphix_rt::GXExt>::UserEvent>,
-    &mut ahash::AHashMap<netidx_core::path::Path, arcstr::ArcStr>,
+    &mut ahash::AHashMap<netidx_core::path::Path, graphix_compiler::expr::VfsEntry>,
     &mut graphix_package::IndexSet<arcstr::ArcStr>,
 ) -> Result<()>;
 
@@ -249,10 +249,53 @@ where
     let gx_code = format!("let result = {code}");
     let tbl = ahash::AHashMap::from_iter([(
         netidx_core::path::Path::from("/test.gx"),
-        arcstr::ArcStr::from(gx_code),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(gx_code)),
     )]);
     let resolver = ModuleResolver::VFS(tbl);
     let ctx = init_with_setup(tx, register, vec![resolver], setup).await?;
+    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let eid = compiled.exprs[0].id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => bail!("timeout waiting for graphix result"),
+            batch = rx.recv() => match batch {
+                None => bail!("graphix runtime died"),
+                Some(mut batch) => {
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e {
+                            if id == eid {
+                                return Ok((v, ctx));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Like [`eval`], but ships the `/test.gx` module as a PACKED pre-parsed AST
+/// (`serialize::pack_module`) rather than source, so the resolver takes its
+/// `unpack_module` path instead of parsing. The result must match [`eval`] —
+/// packed-load and parse-load are the same program.
+pub async fn eval_packed(code: &str, register: &[RegisterFn]) -> Result<(Value, TestCtx)> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let gx_code = format!("let result = {code}");
+    let source = arcstr::ArcStr::from(gx_code);
+    let ori = graphix_compiler::expr::Origin {
+        parent: None,
+        source: graphix_compiler::expr::Source::Internal(arcstr::literal!("test")),
+        text: source.clone(),
+    };
+    let exprs = graphix_compiler::expr::parser::parse(ori)?;
+    let packed = graphix_compiler::expr::serialize::pack_module(&exprs)?;
+    let entry = graphix_compiler::expr::VfsEntry { source, packed: Some(packed) };
+    let tbl =
+        ahash::AHashMap::from_iter([(netidx_core::path::Path::from("/test.gx"), entry)]);
+    let resolver = ModuleResolver::VFS(tbl);
+    let ctx = init_with_resolvers(tx, register, vec![resolver]).await?;
     let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let eid = compiled.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -366,7 +409,10 @@ macro_rules! run {
                 let pred = $pred;
                 let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
                 let tbl = ::ahash::AHashMap::from_iter([
-                    $((::netidx_core::path::Path::from($path), ::arcstr::ArcStr::from($code))),+
+                    $((
+                        ::netidx_core::path::Path::from($path),
+                        ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from($code)),
+                    )),+
                 ]);
                 let resolver = ::graphix_compiler::expr::ModuleResolver::VFS(tbl);
                 let ctx = $crate::testing::init_with_flags_and_setup(

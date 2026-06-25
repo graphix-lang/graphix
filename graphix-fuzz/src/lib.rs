@@ -152,7 +152,10 @@ pub async fn run_program_with_stats(
 ) -> (Outcome, FusionStats) {
     let (tx, mut rx) = mpsc::channel(64);
     let wrapped = format!("let result = {code}");
-    let tbl = AHashMap::from_iter([(Path::from("/test.gx"), ArcStr::from(wrapped))]);
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
+    )]);
     let resolver = ModuleResolver::VFS(tbl);
     let ctx = match init_with_flags_and_setup(
         tx,

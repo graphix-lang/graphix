@@ -259,7 +259,12 @@ fn graphix_files() -> Vec<TokenStream> {
             if modules.contains_key(&path) {
                 ::anyhow::bail!("duplicate graphix module {path}")
             }
-            modules.insert(path, ::arcstr::literal!(include_str!(#compiler_path)))
+            modules.insert(
+                path,
+                ::graphix_compiler::expr::VfsEntry::from(
+                    ::arcstr::literal!(include_str!(#compiler_path)),
+                ),
+            )
         })
     }
     res
@@ -394,7 +399,10 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
                 ctx: &mut ::graphix_compiler::ExecCtx<::graphix_rt::GXRt<X>, X::UserEvent>,
-                modules: &mut ::ahash::AHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
+                modules: &mut ::ahash::AHashMap<
+                    ::netidx_core::path::Path,
+                    ::graphix_compiler::expr::VfsEntry,
+                >,
                 root_mods: &mut ::graphix_package::IndexSet<::arcstr::ArcStr>,
             ) -> ::anyhow::Result<()> {
                 if root_mods.contains(#package_name) {
