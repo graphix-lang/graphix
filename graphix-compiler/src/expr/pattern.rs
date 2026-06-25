@@ -2,12 +2,14 @@ use super::Expr;
 use crate::{env::Env, typ::Type};
 use anyhow::Result;
 use arcstr::ArcStr;
+use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
 use smallvec::{smallvec, SmallVec};
 use std::fmt;
 use triomphe::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Pack)]
+#[pack(unwrapped)]
 pub enum StructurePattern {
     Ignore,
     Literal(Value),
@@ -262,7 +264,8 @@ impl fmt::Display for StructurePattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct Pattern {
     pub type_predicate: Option<Type>,
     pub structure_predicate: StructurePattern,

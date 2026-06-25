@@ -846,7 +846,7 @@ parser! {
                         e.dec = Some(Box::new(Decorations {
                             comments: comments.iter().cloned().collect(),
                             attrs: attrs.iter().cloned().collect(),
-                            trailing: Box::new([]),
+                            trailing: Arc::from_iter(std::iter::empty::<ArcStr>()),
                         }));
                     }
                     e

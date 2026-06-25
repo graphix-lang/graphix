@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::{publisher::Typ, utils::Either};
+use netidx_derive::Pack;
 use nohash::IntMap;
 use poolshark::{local::LPooled, IsoPoolable};
 use smallvec::SmallVec;
@@ -94,19 +95,56 @@ impl<H: IsoPoolable> RefHist<H> {
     }
 }
 
-atomic_id!(AbstractId);
+/// A unique id for an abstract type. Like the `atomic_id!` types, but with a
+/// custom `Pack` impl (in [`crate::expr::serialize`]) that remaps a packed id
+/// to a fresh one per decode unit — abstract ids from different packed modules
+/// are each numbered from 0, so raw decode would collide. The rest of the API
+/// mirrors `atomic_id!`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct AbstractId(u64);
+
+impl nohash::IsEnabled for AbstractId {}
+
+impl AbstractId {
+    pub fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        AbstractId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn inner(&self) -> u64 {
+        self.0
+    }
+
+    pub fn from_inner(i: u64) -> Self {
+        AbstractId(i)
+    }
+}
+
+impl Default for AbstractId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A reference to a named typedef, e.g. `Foo` or `Result<i64, string>`.
 /// `pos` and `ori` are IDE metadata recording where this reference
 /// was written in source — they're populated by the parser and
 /// ignored for type-system equality, ordering and hashing so they
 /// don't affect type identity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub struct TypeRef {
     pub scope: ModPath,
     pub name: ModPath,
     pub params: Arc<[Type]>,
+    // pos/ori are IDE metadata, excluded from type identity and dropped from
+    // the packed form (decode to None).
+    #[pack(skip)]
     pub pos: Option<crate::SourcePosition>,
+    #[pack(skip)]
     pub ori: Option<Arc<crate::expr::Origin>>,
 }
 
@@ -166,7 +204,8 @@ impl Ord for TypeRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Pack)]
+#[pack(unwrapped)]
 pub enum Type {
     Bottom,
     Any,

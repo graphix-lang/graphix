@@ -38,6 +38,7 @@ immutable-chunkmap = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }
 netidx-core = { workspace = true }
+netidx-derive = { workspace = true }
 netidx-protocols = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }

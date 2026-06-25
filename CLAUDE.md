@@ -712,6 +712,46 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Packed (pre-parsed) AST codec — Part D1 (2026-06-24).** A netidx `Pack`
+  binary codec for the module AST (`graphix-compiler/src/expr/serialize.rs`:
+  `pack_module`/`unpack_module`/`pack_sig`/`unpack_sig`, `b"GXAS"` magic), so a
+  package can ship its pre-parsed AST and skip re-parsing its `.gx` source at
+  load (the ~450 ms stdlib parse is the dominant startup cost). No version field
+  / no parse fallback: the same in-tree compiler builds the package AND
+  regenerates the blob, so a decode error is a hard internal bug. **Codec is
+  DEAD CODE until D2/D3 wire it** — pure new code, zero behavior change.
+  **Design (Eric): derive everywhere plausible, fix the upstream gaps.** Most
+  AST types `#[derive(Pack)]`; only **4** manual impls remain (`Expr`,
+  `AbstractId`, `TVar`, `FnType`). Two upstream points: added `Pack for
+  Either<T,U>` in **netidx** (`netidx-core/src/pack.rs` — the sibling repo, an
+  additive change REQUIRED for the build, so `LambdaExpr.body` derives); and
+  `atomic_id! Default` was tried but conflicts with an existing manual `Default
+  for WriteId` AND wasn't needed (`Expr` is manual anyway), so reverted. The 4
+  manual impls: `Expr` (id fresh via `ExprId::new()`, `ori` restored from a
+  decode-unit thread-local via `swap_origin`/`get_origin`, `pos` inline as 2×i32
+  — `SourcePosition` is a foreign orphan), `AbstractId` (replaced `atomic_id!`
+  with a manual newtype whose `decode` remaps old→fresh per decode-unit via an
+  `ABSTRACT_REMAP` thread-local — raw ids collide across modules each packed
+  from 0, which would corrupt `Type` identity), `TVar` (encode name + bound
+  type, decode mints a fresh `TVarId` via `empty_named`/`named` — the
+  typechecker re-aliases same-named tvars by name, so a fresh id is sound),
+  `FnType` (snapshot `constraints` out of the `Arc<RwLock<LPooled<…>>>`, drop
+  the `Weak`-graph `lambda_ids` — both excluded from `FnType` identity).
+  **CRITICAL gotcha:** the derive length-wraps every struct/enum by default,
+  whose `buf.take(len)` produces `Take<&mut Take<…>>` — INFINITE TYPE recursion
+  (E0275 overflow) on recursive AST types (`Expr`↔`ExprKind`, `Type`↔`Type`).
+  Fixed with `#[pack(unwrapped)]` on EVERY derived AST type (the skip-unknown
+  forward-compat that length-wrapping buys is irrelevant here — exact-match
+  codec). `Decorations`'s `Box<[T]>` fields became `Arc<[T]>` (`Box<[T]>` has no
+  Pack impl, only `Box<T>`), preserving `dec` because `#[native]` attrs are
+  semantic (dropping them would silently un-enforce a `#[native]` in a package).
+  `TypeRef`/`Arg`/`SigItem` derive with `#[pack(skip)]` on their IDE-only
+  `pos`/`ori` (decode to the `SourcePosition` `1,1` default / `None`). Validated:
+  graphix-compiler 113 (3 codec tests — full-surface round-trip, type-annotation
+  round-trip, AbstractId-remap invariants), graphix-tests 1459, netidx-core pack
+  5; round-trip is kind-only `PartialEq` (which ignores id/ori/pos), so it
+  verifies the whole tree structurally.
+
 - **Attributes (`#[..]`) + the `#[native]` attribute — Part C2/C3
   (2026-06-24).** Rust-style attributes written on their own line directly
   above an expression — `#[name]` / `#[name(arg, ...)]`, args are full

@@ -12,6 +12,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{bail, Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
+use netidx_derive::Pack;
 use nohash::{IntMap, IntSet};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
@@ -31,7 +32,8 @@ use triomphe::Arc;
 /// identity). Labeled args always carry a name — the label IS the
 /// call-site key — plus a flag for whether the lambda definition
 /// supplied a default value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub enum FnArgKind {
     Positional { name: Option<ArcStr> },
     Labeled { name: ArcStr, has_default: bool },
@@ -123,7 +125,8 @@ impl std::hash::Hash for FnArgKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub struct FnArgType {
     pub kind: FnArgKind,
     pub typ: Type,

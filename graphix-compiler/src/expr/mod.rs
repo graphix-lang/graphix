@@ -8,6 +8,7 @@ use arcstr::{literal, ArcStr};
 use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
+use netidx_derive::Pack;
 pub use pattern::{Pattern, StructurePattern};
 use poolshark::local::LPooled;
 use regex::Regex;
@@ -33,6 +34,7 @@ pub mod parser;
 mod pattern;
 pub mod print;
 mod resolver;
+pub mod serialize;
 #[cfg(test)]
 mod test;
 
@@ -58,6 +60,13 @@ pub(crate) fn get_origin() -> Arc<Origin> {
     })
 }
 
+/// Swap the thread-local origin, returning the previous value. Used by the
+/// AST decoder (`serialize`) to bracket a decode unit so decoded `Expr`s pick
+/// up the right module origin via `get_origin`, then restore on completion.
+pub(crate) fn swap_origin(ori: Option<Arc<Origin>>) -> Option<Arc<Origin>> {
+    ORIGIN.with_borrow_mut(|global| std::mem::replace(global, ori))
+}
+
 /// utility to read a file to an ArcStr with minimal allocation
 pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr> {
     use tokio::io::AsyncReadExt;
@@ -77,11 +86,15 @@ impl fmt::Display for CouldNotResolve {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub struct Arg {
     pub labeled: Option<Option<Expr>>,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
+    // source position is IDE metadata, excluded from `Arg` equality and from
+    // the packed form (restored as the `1,1` default on decode).
+    #[pack(skip)]
     pub pos: SourcePosition,
 }
 
@@ -107,13 +120,15 @@ impl PartialOrd for Arg {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct Doc(pub Option<ArcStr>);
 
 /// A single `#[name(args, ...)]` / `#[name]` attribute attached above an
 /// expression. (Parsed and acted on by a later change; the field exists
 /// now so the `Decorations` shape is stable.)
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct Attr {
     pub name: ArcStr,
     pub args: Arc<[Expr]>,
@@ -126,27 +141,31 @@ pub struct Attr {
 /// to attach to). `None` for the overwhelming majority of expressions, so
 /// it costs one word and no allocation. Invisible to `Expr` equality
 /// (comments don't affect semantics — see `PartialEq for Expr`).
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct Decorations {
-    pub comments: Box<[ArcStr]>,
-    pub attrs: Box<[Attr]>,
-    pub trailing: Box<[ArcStr]>,
+    pub comments: Arc<[ArcStr]>,
+    pub attrs: Arc<[Attr]>,
+    pub trailing: Arc<[ArcStr]>,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct TypeDefExpr {
     pub name: ArcStr,
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct BindSig {
     pub name: ArcStr,
     pub typ: Type,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub enum SigKind {
     TypeDef(TypeDefExpr),
     Bind(BindSig),
@@ -154,11 +173,16 @@ pub enum SigKind {
     Use(ModPath),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub struct SigItem {
     pub doc: Doc,
     pub kind: SigKind,
+    // pos/ori are IDE metadata, excluded from `SigItem` equality and dropped
+    // from the packed form (decode to the default / None).
+    #[pack(skip)]
     pub pos: SourcePosition,
+    #[pack(skip)]
     pub ori: Option<Arc<Origin>>,
 }
 
@@ -177,7 +201,8 @@ impl PartialOrd for SigItem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct Sig {
     pub items: Arc<[SigItem]>,
     pub toplevel: bool,
@@ -191,21 +216,24 @@ impl Deref for Sig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub enum Sandbox {
     Unrestricted,
     Blacklist(Arc<[ModPath]>),
     Whitelist(Arc<[ModPath]>),
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub enum ModuleKind {
     Dynamic { sandbox: Sandbox, sig: Sig, source: Arc<Expr> },
     Resolved { exprs: Arc<[Expr]>, sig: Option<Sig>, from_interface: bool },
     Unresolved { from_interface: bool },
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct BindExpr {
     pub rec: bool,
     pub pattern: StructurePattern,
@@ -213,7 +241,8 @@ pub struct BindExpr {
     pub value: Expr,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct LambdaExpr {
     pub args: Arc<[Arg]>,
     pub vargs: Option<Option<Type>>,
@@ -223,7 +252,8 @@ pub struct LambdaExpr {
     pub body: Either<Expr, ArcStr>,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct TryCatchExpr {
     pub bind: ArcStr,
     pub constraint: Option<Type>,
@@ -231,30 +261,35 @@ pub struct TryCatchExpr {
     pub exprs: Arc<[Expr]>,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct StructWithExpr {
     pub source: Arc<Expr>,
     pub replace: Arc<[(ArcStr, Expr)]>,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct StructExpr {
     pub args: Arc<[(ArcStr, Expr)]>,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct ApplyExpr {
     pub args: Arc<[(Option<ArcStr>, Expr)]>,
     pub function: Arc<Expr>,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub struct SelectExpr {
     pub arg: Arc<Expr>,
     pub arms: Arc<[(Pattern, Expr)]>,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
 pub enum ExprKind {
     NoOp,
     Constant(Value),
