@@ -712,6 +712,43 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Packed AST wired in + activated — Parts D3 + D2 (2026-06-24).** **D3** threads
+  the codec into the load path: the VFS map value `ArcStr` → `VfsEntry { source,
+  packed: Option<Bytes> }`, and `resolve`'s parse splice calls
+  `serialize::unpack_module`/`unpack_sig` (in the same `spawn_blocking`, so the
+  decode thread sets the `Origin`/`AbstractId`-remap thread-locals) when `packed`
+  is present, else `parser::parse`. `Resolution::Resolved` gained
+  `impl_packed`/`intf_packed` (bytes can't ride in `Origin`). Threaded through
+  `Package::register`, the `defpackage!`-generated `register`, shell
+  `deps::register`, `RegisterFn`, the `run!`/`eval` builders, graphix-fuzz, the
+  gui/tui harnesses, and `skel/deps.rs`. **D2** activates it: a new build-dep
+  crate `graphix-ast-pack` whose `emit()` a per-package `build.rs` calls — it
+  walks `src/graphix/*` (skipping `main.gx`), parses each, `pack_module`/
+  `pack_sig`, and writes `OUT_DIR/graphix_ast.pack` as a self-contained index
+  `Vec<(vfs_path, source, ast)>` (`serialize::pack_index`/`unpack_index` — the
+  outer index decodes cheaply at `register` time; the per-module AST stays packed
+  in `VfsEntry.packed` and decodes LAZILY at resolution). `package_name`/
+  `vfs_path` in `graphix-ast-pack` replicate `graphix-derive`'s key scheme
+  (`/{pkg}/{rel-with-ext}`, crate name minus `graphix_package_`). The `defpackage!`
+  macro's file walk is gone — `graphix_files()` is now one stmt:
+  `include_bytes!(OUT_DIR/graphix_ast.pack)` + an `unpack_index` insert loop.
+  Per **Eric's call, packing is MANDATORY (not optional)** — every `defpackage!`
+  user ships a blob (no `include_str!` fallback), so all 20 stdlib packages + the
+  `skel/` new-package template got a `build.rs` + `[build-dependencies]
+  graphix-ast-pack`. `GRAPHIX_DISABLE_PACKED_AST=1` forces the parse path
+  (resolver `.filter(|_| !packed_ast_disabled())` at the splice) for differential
+  testing + as an escape hatch. **CRITICAL design notes:** the per-module AST
+  decode is lazy (only when `mod`-imported), matching the existing lazy-parse
+  model; the blob is self-contained (source + packed), so the macro never
+  computes keys (no key-mismatch risk — only `build.rs` does, stored IN the
+  blob); `Decorations`'s `dec` is preserved end-to-end (D1) so a packaged
+  `#[native]` survives. **Validation — the differential is the proof:** packed
+  graphix-tests **1460 in 18.66s** vs `GRAPHIX_DISABLE_PACKED_AST=1` (parse)
+  **1460 in 41.55s** — identical results, ~2.2× faster stdlib load across the
+  per-test runtime inits; single `graphix --check` startup **0.079s packed vs
+  0.123s parsed (~36% faster, dev build)**; compiler-lib 114, lsp 29 (loads the
+  packed stdlib). The whole stdlib now ships pre-parsed; **Part D is complete.**
+
 - **Packed (pre-parsed) AST codec — Part D1 (2026-06-24).** A netidx `Pack`
   binary codec for the module AST (`graphix-compiler/src/expr/serialize.rs`:
   `pack_module`/`unpack_module`/`pack_sig`/`unpack_sig`, `b"GXAS"` magic), so a

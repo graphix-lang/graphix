@@ -219,55 +219,27 @@ fn test_harness() -> TokenStream {
 
 // walk the graphix files in src/graphix and build the vfs for this package
 fn graphix_files() -> Vec<TokenStream> {
-    let mut res = vec![];
-    for entry in walkdir::WalkDir::new(&*GRAPHIX_SRC) {
-        let entry = entry.expect("could not read");
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let ext = entry.path().extension().and_then(|e| e.to_str());
-        if ext != Some("gx") && ext != Some("gxi") {
-            continue;
-        }
-        let path = match entry.path().strip_prefix(&*GRAPHIX_SRC) {
-            Ok(p) if p == Path::new("main.gx") => continue,
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let mut vfs_path = format!("/{}", PACKAGE_NAME.clone());
-        for c in path.components() {
-            match c {
-                Component::CurDir
-                | Component::ParentDir
-                | Component::RootDir
-                | Component::Prefix(_) => panic!("invalid path component {c:?}"),
-                Component::Normal(p) => match p.to_str() {
-                    None => panic!("invalid path component {c:?}"),
-                    Some(s) => {
-                        vfs_path.push('/');
-                        vfs_path.push_str(s)
-                    }
-                },
-            };
-        }
-        let mut compiler_path = PathBuf::new();
-        compiler_path.push("graphix");
-        compiler_path.push(path);
-        let compiler_path = compiler_path.to_string_lossy().into_owned();
-        res.push(quote! {
-            let path = ::netidx_core::path::Path::from(#vfs_path);
-            if modules.contains_key(&path) {
-                ::anyhow::bail!("duplicate graphix module {path}")
+    // The package's `build.rs` (via `graphix-ast-pack`) parses + packs every
+    // `src/graphix/*` file into `OUT_DIR/graphix_ast.pack`, a self-contained
+    // index of `(vfs_path, source, packed_ast)`. We embed that blob and decode
+    // it into the modules map at `register` time, so module resolution decodes
+    // a pre-parsed AST instead of re-parsing the source (the startup win). The
+    // per-module AST stays packed in `VfsEntry.packed` and is decoded lazily
+    // when the module is actually resolved.
+    vec![quote! {
+        {
+            const GRAPHIX_AST_BLOB: &[u8] =
+                include_bytes!(concat!(env!("OUT_DIR"), "/graphix_ast.pack"));
+            for (path, entry) in
+                ::graphix_compiler::expr::serialize::unpack_index(GRAPHIX_AST_BLOB)?
+            {
+                if modules.contains_key(&path) {
+                    ::anyhow::bail!("duplicate graphix module {path}")
+                }
+                modules.insert(path, entry);
             }
-            modules.insert(
-                path,
-                ::graphix_compiler::expr::VfsEntry::from(
-                    ::arcstr::literal!(include_str!(#compiler_path)),
-                ),
-            )
-        })
-    }
-    res
+        }
+    }]
 }
 
 fn main_program_impl() -> TokenStream {

@@ -34,3 +34,6 @@ netidx = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+
+[build-dependencies]
+graphix-ast-pack = { path = "../../graphix-ast-pack" }

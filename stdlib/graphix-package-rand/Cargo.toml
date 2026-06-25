@@ -32,3 +32,6 @@ netidx = { workspace = true }
 rand = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
+
+[build-dependencies]
+graphix-ast-pack = { path = "../../graphix-ast-pack" }

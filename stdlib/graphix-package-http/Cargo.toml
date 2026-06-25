@@ -44,3 +44,6 @@ tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 triomphe = { workspace = true }
 uuid = { workspace = true }
+
+[build-dependencies]
+graphix-ast-pack = { path = "../../graphix-ast-pack" }

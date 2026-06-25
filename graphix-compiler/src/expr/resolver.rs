@@ -80,6 +80,16 @@ impl ModuleResolver {
     }
 }
 
+/// `GRAPHIX_DISABLE_PACKED_AST=1` forces module resolution to parse source
+/// even when a packed AST is available — for differential testing (packed vs
+/// parsed must compile identically) and as an escape hatch.
+fn packed_ast_disabled() -> bool {
+    use std::sync::LazyLock;
+    static DISABLED: LazyLock<bool> =
+        LazyLock::new(|| std::env::var_os("GRAPHIX_DISABLE_PACKED_AST").is_some());
+    *DISABLED
+}
+
 enum Resolution {
     Resolved {
         interface: Option<Origin>,
@@ -485,7 +495,7 @@ async fn resolve(
         // how `parser::parse` sets `set_origin` inside its own closure).
         let exprs = {
             let ori = implementation.clone();
-            match impl_packed {
+            match impl_packed.filter(|_| !packed_ast_disabled()) {
                 Some(bytes) => task::spawn_blocking(move || {
                     serialize::unpack_module(&bytes, Arc::new(ori))
                 }),
@@ -496,7 +506,7 @@ async fn resolve(
             None => None,
             Some(ori) => {
                 let ori = ori.clone();
-                let sig = match intf_packed {
+                let sig = match intf_packed.filter(|_| !packed_ast_disabled()) {
                     Some(bytes) => task::spawn_blocking(move || {
                         serialize::unpack_sig(&bytes, Arc::new(ori))
                     }),

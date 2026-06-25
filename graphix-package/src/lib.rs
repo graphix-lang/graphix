@@ -128,6 +128,7 @@ struct Skel {
     cargo_toml: &'static str,
     deps_rs: &'static str,
     lib_rs: &'static str,
+    build_rs: &'static str,
     mod_gx: &'static str,
     mod_gxi: &'static str,
     readme_md: &'static str,
@@ -138,6 +139,7 @@ static SKEL: Skel = Skel {
     cargo_toml: include_str!("skel/Cargo.toml.hbs"),
     deps_rs: include_str!("skel/deps.rs"),
     lib_rs: include_str!("skel/lib.rs"),
+    build_rs: include_str!("skel/build.rs"),
     mod_gx: include_str!("skel/mod.gx"),
     mod_gxi: include_str!("skel/mod.gxi"),
     readme_md: include_str!("skel/README.md"),
@@ -172,6 +174,7 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     let params = json!({"name": name, "deps": []});
     fs::write(full_path.join("Cargo.toml"), hb.render("Cargo.toml", &params)?).await?;
     fs::write(full_path.join("README.md"), hb.render("README.md", &params)?).await?;
+    fs::write(full_path.join("build.rs"), SKEL.build_rs).await?;
     let src = full_path.join("src");
     fs::write(src.join("lib.rs"), hb.render("lib.rs", &params)?).await?;
     let graphix_src = src.join("graphix");

@@ -133,6 +133,7 @@ members = [
     "graphix-compiler",
     "graphix-rt",
     "graphix-derive",
+    "graphix-ast-pack",
     "graphix-package",
     "graphix-fuzz",
     "stdlib/graphix-package-core",

@@ -37,3 +37,6 @@ netidx = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+
+[build-dependencies]
+graphix-ast-pack = { path = "../../graphix-ast-pack" }

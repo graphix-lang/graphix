@@ -15,7 +15,10 @@
 //! construction and a decode error is a hard internal bug, not a normal path.
 
 use crate::{
-    expr::{get_origin, swap_origin, Decorations, Expr, ExprId, ExprKind, Origin, Sig},
+    expr::{
+        get_origin, swap_origin, Decorations, Expr, ExprId, ExprKind, Origin, Sig,
+        VfsEntry,
+    },
     typ::{fntyp::LambdaIds, AbstractId, FnArgType, FnType, TVar, Type},
     SourcePosition,
 };
@@ -23,7 +26,10 @@ use ahash::AHashMap;
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use netidx_core::pack::{self, Pack, PackError};
+use netidx_core::{
+    pack::{self, Pack, PackError},
+    path::Path,
+};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use std::cell::RefCell;
@@ -239,6 +245,47 @@ pub fn unpack_sig(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Sig> {
     check_magic(&mut bytes)?;
     let _unit = DecodeUnit::new(ori);
     Sig::decode(&mut bytes).map_err(map_err)
+}
+
+/// Serialize a whole package's modules as one self-contained blob — a list of
+/// `(vfs_path_key, source, packed_module_ast)`. Used by a package's `build.rs`
+/// (via `graphix-ast-pack`) to embed the pre-parsed stdlib; the per-module AST
+/// (`ast`) is itself a `pack_module`/`pack_sig` blob, decoded LAZILY at module
+/// resolution. The whole index is small (no AST decode), so the package's
+/// `register` can decode it at startup cheaply.
+pub fn pack_index(entries: &[(ArcStr, ArcStr, Bytes)]) -> Result<Bytes> {
+    let mut buf = BytesMut::new();
+    buf.put_slice(MAGIC);
+    pack::encode_varint(entries.len() as u64, &mut buf);
+    for (path, source, ast) in entries {
+        path.encode(&mut buf).map_err(map_err)?;
+        source.encode(&mut buf).map_err(map_err)?;
+        pack::encode_varint(ast.len() as u64, &mut buf);
+        buf.put_slice(ast);
+    }
+    Ok(buf.freeze())
+}
+
+/// Decode a package index blob (see [`pack_index`]) into `(Path, VfsEntry)`
+/// pairs ready to insert into a VFS modules map. Each entry's per-module AST
+/// stays packed in `VfsEntry.packed` — it is decoded later, when the module is
+/// actually resolved.
+pub fn unpack_index(mut bytes: &[u8]) -> Result<Vec<(Path, VfsEntry)>> {
+    check_magic(&mut bytes)?;
+    let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
+    let mut result = Vec::with_capacity(n);
+    for _ in 0..n {
+        let path = ArcStr::decode(&mut bytes).map_err(map_err)?;
+        let source = ArcStr::decode(&mut bytes).map_err(map_err)?;
+        let ast_len = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
+        if bytes.len() < ast_len {
+            bail!("packed index: truncated module AST");
+        }
+        let ast = Bytes::copy_from_slice(&bytes[..ast_len]);
+        bytes.advance(ast_len);
+        result.push((Path::from(path), VfsEntry { source, packed: Some(ast) }));
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
