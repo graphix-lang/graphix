@@ -12,6 +12,14 @@ static VENDOR_ONCE: Once = Once::new();
 // dir will fight over the lock file.
 static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
+// Acquire BUILD_LOCK, recovering it if a previous holder panicked. The lock
+// guards nothing but mutual exclusion, so a poisoned lock is fine to reuse —
+// without this, a panic in one build test cascades into an opaque PoisonError
+// in the next, masking the original failure.
+fn build_lock() -> std::sync::MutexGuard<'static, ()> {
+    BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Extract the version string from a TOML dependency item.
 /// Handles both `dep = "version"` and `dep = { version = "...", ... }`.
 fn item_version(name: &str, item: &toml_edit::Item) -> String {
@@ -61,15 +69,23 @@ fn skel_cargo_toml_versions_match_workspace() {
     let ws_content = std::fs::read_to_string(ws.join("Cargo.toml")).unwrap();
     let ws_doc: toml_edit::DocumentMut = ws_content.parse().unwrap();
     let skel_doc: toml_edit::DocumentMut = super::SKEL.cargo_toml.parse().unwrap();
-    let skel_deps = skel_doc["dependencies"].as_table().unwrap();
     let mut mismatches = vec![];
-    for (name, item) in skel_deps {
-        let actual = item_version(name, item);
-        let expected = expected_version(ws, name, &ws_doc);
-        if actual != expected {
-            mismatches.push(format!(
-                "  {name}: skel has {actual:?}, workspace has {expected:?}"
-            ));
+    // Check both [dependencies] and [build-dependencies]: graphix-ast-pack
+    // is a build-dependency whose version must track the workspace, else a
+    // created package's build.rs would request a version that isn't vendored
+    // (nor published), breaking the build with no other warning.
+    for section in ["dependencies", "build-dependencies"] {
+        let Some(deps) = skel_doc.get(section).and_then(|t| t.as_table()) else {
+            continue;
+        };
+        for (name, item) in deps {
+            let actual = item_version(name, item);
+            let expected = expected_version(ws, name, &ws_doc);
+            if actual != expected {
+                mismatches.push(format!(
+                    "  [{section}] {name}: skel has {actual:?}, workspace has {expected:?}"
+                ));
+            }
         }
     }
     assert!(
@@ -163,7 +179,7 @@ fn write_vendor_config(dir: &Path, ws: &Path) {
 async fn created_package_compiles() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     vendor(ws);
-    let _lock = BUILD_LOCK.lock().unwrap();
+    let _lock = build_lock();
     let tmp = tempfile::tempdir().unwrap();
     super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
     let pkg_dir = tmp.path().join("graphix-package-testpkg");
@@ -182,15 +198,26 @@ async fn build_standalone_produces_working_binary() {
     use tokio::io::AsyncBufReadExt;
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     vendor(ws);
-    let _lock = BUILD_LOCK.lock().unwrap();
+    let _lock = build_lock();
     // Create package with main.gx
     let tmp = tempfile::tempdir().unwrap();
     super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
     let pkg_dir = tmp.path().join("graphix-package-testpkg");
     let gx_dir = pkg_dir.join("src").join("graphix");
-    tokio::fs::write(gx_dir.join("main.gx"), "println(\"GRAPHIX_STANDALONE_OK\")\n")
-        .await
-        .unwrap();
+    // main.gx imports the package's OWN graphix module (src/graphix/mod.gx,
+    // which the package build.rs parses and packs into the pre-parsed AST
+    // blob). Reaching `testpkg::var` (a pure .gx value = 42) and
+    // `testpkg::example` (the rust builtin bound in mod.gx) proves the
+    // created package's packed AST was decoded and the module resolved at
+    // runtime — the end-to-end build.rs → blob → unpack_index → unpack_module
+    // path, exercised through a freshly created package rather than the
+    // in-tree stdlib.
+    let main_gx = "\
+let v = testpkg::var;
+let ex = testpkg::example(v);
+println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
+";
+    tokio::fs::write(gx_dir.join("main.gx"), main_gx).await.unwrap();
     write_vendor_config(&pkg_dir, ws);
     // Copy vendored graphix-shell source (already has resolved deps)
     let vendored = std::fs::read_dir(ws.join("vendor"))
@@ -209,9 +236,10 @@ async fn build_standalone_produces_working_binary() {
         .copy_tree(&vendored, &source_dir)
         .expect("copy vendored graphix-shell");
     write_vendor_config(&source_dir, ws);
-    // Build standalone
+    // Build standalone. Surface a build_standalone error directly rather than
+    // letting it manifest later as a confusing "binary not found".
     let pm = super::GraphixPM::new().await.unwrap();
-    let _ = pm.build_standalone(&pkg_dir, Some(&source_dir)).await;
+    pm.build_standalone(&pkg_dir, Some(&source_dir)).await.expect("build_standalone");
     // Run the binary
     let bin_name = format!("testpkg{}", std::env::consts::EXE_SUFFIX);
     let bin_path = pkg_dir.join(&bin_name);
@@ -232,15 +260,15 @@ async fn build_standalone_produces_working_binary() {
     let sentinel = "GRAPHIX_STANDALONE_OK";
     let mut captured_stdout = Vec::new();
     let mut captured_stderr = Vec::new();
-    let found = tokio::time::timeout(Duration::from_secs(30), async {
+    let line = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             tokio::select! {
                 line = out_lines.next_line() => match line.unwrap() {
                     Some(l) => {
-                        if l.contains(sentinel) { return true; }
+                        if l.contains(sentinel) { return Some(l); }
                         captured_stdout.push(l);
                     }
-                    None => return false,
+                    None => return None,
                 },
                 line = err_lines.next_line() => match line.unwrap() {
                     Some(l) => captured_stderr.push(l),
@@ -250,11 +278,22 @@ async fn build_standalone_produces_working_binary() {
         }
     })
     .await
-    .unwrap_or(false);
+    .unwrap_or(None);
     child.kill().await.ok();
+    let line = line.unwrap_or_else(|| {
+        panic!(
+            "sentinel not found.\nstdout: {:?}\nstderr: {:?}",
+            captured_stdout, captured_stderr
+        )
+    });
+    // The sentinel line embeds values read from the created package's packed
+    // graphix module: var=42 (a pure .gx value) and ex=false (the rust builtin
+    // `example` applied to 42, a non-error). Their presence proves the packed
+    // AST decoded correctly and the module resolved end-to-end.
     assert!(
-        found,
-        "sentinel not found.\nstdout: {:?}\nstderr: {:?}",
-        captured_stdout, captured_stderr
+        line.contains("var=42") && line.contains("ex=false"),
+        "created package's packed module decoded incorrectly.\n\
+         line: {line:?}\nstderr: {:?}",
+        captured_stderr
     );
 }

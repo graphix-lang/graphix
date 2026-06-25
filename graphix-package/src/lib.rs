@@ -902,9 +902,17 @@ impl GraphixPM {
         let updated = self.update_cargo_toml(&shell_cargo_toml, &packages)?;
         fs::write(&shell_cargo_toml_path, &updated).await?;
         println!("Building standalone binary (this may take a while)...");
+        // Pin the target dir under the source tree so we know exactly where
+        // the binary lands. A user's global build.target-dir (in
+        // ~/.cargo/config.toml) or CARGO_TARGET_DIR would otherwise redirect
+        // the output out from under the copy below, leaving us unable to find
+        // the binary we just built.
+        let target_dir = source_dir.join("target");
         let status = Command::new(&self.cargo)
             .arg("build")
             .arg("--release")
+            .arg("--target-dir")
+            .arg(&target_dir)
             .arg("--features")
             .arg(format!("{crate_name}/standalone"))
             .current_dir(&source_dir)
@@ -915,8 +923,7 @@ impl GraphixPM {
             bail!("cargo build --release failed with status {status}")
         }
         let bin_name = format!("{short_name}{}", std::env::consts::EXE_SUFFIX);
-        let built = source_dir
-            .join("target")
+        let built = target_dir
             .join("release")
             .join(format!("graphix{}", std::env::consts::EXE_SUFFIX));
         let dest = package_dir.join(&bin_name);
