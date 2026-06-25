@@ -712,6 +712,47 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Attributes (`#[..]`) + the `#[native]` attribute — Part C2/C3
+  (2026-06-24).** Rust-style attributes written on their own line directly
+  above an expression — `#[name]` / `#[name(arg, ...)]`, args are full
+  expressions — captured into the existing `Expr.dec.attrs` slot exactly where
+  a `//` comment is captured (every other position is a parse error). Both
+  `Expr` printers emit them, so print->parse round-trips verbatim. New parser
+  combinators `attribute()` + `leading_decorations()` (the latter replaces
+  `leading_comments()` at the `expr()` entry, interleaving comment+attr lines;
+  `leading_comments()` stays for the `.gxi` `sig_item` path). Attribute names
+  are validated against an `ExecCtx` registry (`Attribute<R,E>` trait +
+  `AttributeCheckFn<R,E>` + `register_attribute`, mirroring builtin
+  registration so packages can add their own) — an unregistered name is a
+  compile error at the single `compile()` choke point (`node/compiler.rs`,
+  every Expr re-enters there once). Each known attribute carries a check fn run
+  once per decorated node AFTER fusion, walked via `for_each_node` over the
+  final graph (which stops at fused-kernel interiors — a node absorbed into a
+  larger kernel is correctly NOT re-checked → counts as native). **First
+  attribute `#[native]`** (registered in `ExecCtx::new`, compiler-internal
+  check): the decorated expr must compile to native code — one fused JIT kernel
+  with zero node-walk residue — else a compile error quoting `stats.failed`
+  filtered to the expr's descendant ExprIds (`Expr::fold`). **DESIGN (Eric):
+  function-level `#[native]` was DROPPED.** It may ONLY decorate a
+  value-producing computation or a call; a lambda literal or any function-typed
+  target (`Type::Fn`, which a `let f = |..|` binding reports) is a compile
+  error. A `native` marker carried in `FnType` would make the function
+  second-class (un-storable, un-dispatchable, can't pass to a non-fusing HOF —
+  every non-static call would fail to be native), so a perf requirement belongs
+  at the use site, not the definition. Dropping it deletes the riskiest planned
+  work (no `FnType` field, no contains/eq threading, no static-resolution
+  rule) and collapses the feature to ONE uniform check. `#[native]` is
+  deliberately mode-dependent: under `--no-fusion` it errors ("cannot verify
+  #[native]: fusion is disabled") rather than silently passing (all normal
+  flows — run/`--check`/lsp — keep fusion on and DO enforce it), so it is
+  tested with dedicated `eval` compile assertions in
+  `stdlib/graphix-tests/src/lib_tests/native.rs`, not the `run!` differential
+  harness (whose cross-mode value-agreement `#[native]` intentionally breaks).
+  Validation: graphix-compiler 110, graphix-tests 1459 (+5 native) ×2,
+  graphix-lsp 29, fuzz regress 22/0, generate soak 400/0/0. The
+  `defpackage! attributes => [...]` clause is DEFERRED (no package needs it
+  yet; `register_attribute` already exposes the public interface).
+
 - **qop/cast/connect fusion + bench naturalization + LSP fusion-off
   (2026-06-24).** Three fusion gaps closed so that *natural user code* fuses
   (the bench corpus is the live witness), plus an LSP fix. **(1)

@@ -43,7 +43,7 @@ use anyhow::{bail, Result};
 use arcstr::ArcStr;
 use enumflags2::bitflags;
 pub use enumflags2::BitFlags;
-use expr::Expr;
+use expr::{Attr, Expr};
 use futures::channel::mpsc;
 use log::info;
 use netidx::{
@@ -942,6 +942,81 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     ) -> Result<Box<dyn Apply<R, E>>>;
 }
 
+/// A compile-time check for a `#[..]` attribute. Run once per decorated node
+/// after fusion, with `node` the compiled (possibly fused) node of the
+/// expression the attribute sits above and `attr` the specific attribute.
+/// Returning `Err` turns the attribute into a compile error. Registered on the
+/// `ExecCtx` via [`ExecCtx::register_attribute`], mirroring builtin
+/// registration, so packages can add their own attributes.
+pub type AttributeCheckFn<R, E> = fn(&ExecCtx<R, E>, &Attr, &Node<R, E>) -> Result<()>;
+
+/// Trait implemented by graphix attributes (`#[name]` / `#[name(args)]`).
+pub trait Attribute<R: Rt, E: UserEvent> {
+    /// The bare attribute name as written in source (e.g. `native` for
+    /// `#[native]`). Attribute names are a flat global namespace — they are
+    /// NOT package-prefixed the way builtin names are.
+    const NAME: &str;
+    fn check(ctx: &ExecCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()>;
+}
+
+/// The `#[native]` attribute: the decorated expression must compile to native
+/// code with zero node-walk residue, else it is a compile error. It may only
+/// decorate a value-producing computation or a call — never a function
+/// definition. A `native` requirement on a function value would be infectious
+/// and brittle (such a function could never be stored, dynamically dispatched,
+/// or passed to a non-fusing HOF); a performance requirement belongs at the
+/// use site, so a function-typed target is rejected outright.
+pub struct Native;
+
+impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
+    const NAME: &str = "native";
+
+    fn check(ctx: &ExecCtx<R, E>, _attr: &Attr, node: &Node<R, E>) -> Result<()> {
+        if let Type::Fn(_) = node.typ() {
+            crate::bailat!(
+                node.spec(),
+                "#[native] annotates a computation or a call, not a function — \
+                 put it on the call site, not the definition"
+            );
+        }
+        // Fully fused: the decorated node is itself a native kernel. (If it was
+        // absorbed into a strictly-larger ancestor kernel, `for_each_node`
+        // never reaches it and this check doesn't run — also native, correctly.)
+        if let NodeView::FusedKernel(_) = node.view() {
+            return Ok(());
+        }
+        if !ctx.fusion.enabled {
+            crate::bailat!(node.spec(), "cannot verify #[native]: fusion is disabled");
+        }
+        // The node survived fusion as node-walk residue. Surface the fusion
+        // blockers recorded within this expression's subtree — program ExprIds
+        // are unique, so filtering `stats.failed` by descendant id isolates
+        // this expr's blockers from the cumulative stdlib baseline.
+        let mut ids: AHashSet<ExprId> = AHashSet::default();
+        node.spec().fold(&mut ids, &mut |ids, e| {
+            ids.insert(e.id);
+            ids
+        });
+        let mut reasons = CompactString::new("");
+        for (id, reason) in ctx.fusion.stats.failed.iter() {
+            if ids.contains(id) {
+                use std::fmt::Write;
+                let _ = write!(reasons, "\n  - {reason}");
+            }
+        }
+        if reasons.is_empty() {
+            crate::bailat!(
+                node.spec(),
+                "#[native] expression did not fully fuse to native code"
+            );
+        }
+        crate::bailat!(
+            node.spec(),
+            "#[native] expression did not fully fuse to native code:{reasons}"
+        );
+    }
+}
+
 pub trait Abortable {
     fn abort(&self);
 }
@@ -1261,6 +1336,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     // all registered built-in functions
     builtins: AHashMap<&'static str, BuiltInInitFn<R, E>>,
+    // all registered attributes (`#[name]`), keyed by bare name. An attr whose
+    // name is absent here is an "unknown attribute" compile error; present
+    // names are checked post-fusion via their `AttributeCheckFn`.
+    attributes: AHashMap<&'static str, AttributeCheckFn<R, E>>,
     // whether calling built-in functions is allowed in this context, used for
     // sandboxing
     builtins_allowed: bool,
@@ -1350,10 +1429,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// Most likely you want to use the `rt` module instead.
     pub fn new(user: R) -> Result<Self> {
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
-        Ok(Self {
+        let mut this = Self {
             lambdawrap: Abstract::register(id)?,
             env: Env::default(),
             builtins: AHashMap::default(),
+            attributes: AHashMap::default(),
             builtins_allowed: true,
             libstate: LibState::default(),
             tags: AHashSet::default(),
@@ -1366,7 +1446,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             control: Arc::new(Control::new()),
-        })
+        };
+        // `#[native]` is a language-level attribute (its check is
+        // compiler-internal), so it is registered here rather than by a
+        // package. Other attributes can be registered via `register_attribute`.
+        this.register_attribute::<Native>()?;
+        Ok(this)
     }
 
     /// True if an `interrupt()` or `abort()` is pending on this context's
@@ -1385,6 +1470,25 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         self.fusion.builtin_effects.insert(T::NAME, T::EFFECT);
         Ok(())
+    }
+
+    pub fn register_attribute<T: Attribute<R, E>>(&mut self) -> Result<()> {
+        match self.attributes.entry(T::NAME) {
+            Entry::Vacant(e) => {
+                e.insert(T::check);
+            }
+            Entry::Occupied(_) => {
+                bail!("attribute {} is already registered", T::NAME)
+            }
+        }
+        Ok(())
+    }
+
+    /// The check fn for a registered attribute, or `None` if `name` is not a
+    /// known attribute. Used by the compiler to reject unknown attributes and
+    /// to run each known attribute's post-fusion check.
+    pub fn lookup_attribute(&self, name: &str) -> Option<AttributeCheckFn<R, E>> {
+        self.attributes.get(name).copied()
     }
 
     /// Look up the sync/async effect of a registered builtin. Returns
@@ -1532,5 +1636,40 @@ pub fn compile<R: Rt, E: UserEvent>(
         }
         info!("fusion time {:?}", st.elapsed());
     }
+    // Run each registered attribute's post-fusion check over the final graph.
+    // Runs unconditionally (not gated on `fusion.enabled`) so a `#[native]`
+    // program under `--no-fusion` errors clearly rather than silently passing.
+    if let Err(e) = check_attributes(&node, ctx) {
+        ctx.env = env;
+        return Err(e);
+    }
     Ok(node)
+}
+
+/// Walk the post-fusion graph and run each registered attribute's check on the
+/// node of every decorated expression. `for_each_node` visits every node-walk
+/// survivor and every top-level `FusedKernel`, but stops at kernel interiors
+/// and lambda bodies — so a decorated node that was absorbed into a larger
+/// fused region is (correctly) never re-checked. Returns the first error.
+fn check_attributes<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> Result<()> {
+    let mut err: Option<anyhow::Error> = None;
+    fusion::for_each_node(node, &mut |n| {
+        if err.is_some() {
+            return;
+        }
+        if let Some(dec) = &n.spec().dec {
+            for attr in dec.attrs.iter() {
+                if let Some(check) = ctx.lookup_attribute(&attr.name) {
+                    if let Err(e) = check(ctx, attr, n) {
+                        err = Some(e);
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    err.map_or(Ok(()), Err)
 }

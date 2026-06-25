@@ -1,6 +1,6 @@
 use crate::{
     expr::{
-        set_origin, BindExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
+        set_origin, Attr, BindExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
         ParserContext, Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr,
         TryCatchExpr,
     },
@@ -123,25 +123,100 @@ where
     combine::parser::char::spaces()
 }
 
-// Capture the run of own-line `//` comment lines directly above an
-// expression. Each line's text (everything after `//` up to the newline)
-// is kept verbatim so it round-trips. `///` is left untouched (handled by
-// `doc_comment` in interface files; a syntax error in `.gx`).
+// Parse one own-line `//` comment line: its text (everything after `//` up to
+// the newline) is kept verbatim so it round-trips. `///` is left untouched
+// (handled by `doc_comment` in interface files; a syntax error in `.gx`).
+// Trailing whitespace and blank lines after the line are skipped.
+fn comment_line<I>() -> impl Parser<I, Output = ArcStr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(
+        string("//")
+            .with(not_followed_by(token('/')))
+            .with(many::<String, _, _>(none_of(['\n']))),
+    )
+    .skip(combine::parser::char::spaces())
+    .map(|s: String| ArcStr::from(s.as_str()))
+}
+
+// Capture the run of own-line `//` comment lines directly above an expression.
+// The `.gxi` `sig_item` path uses this to tolerate `//` notes above a
+// declaration; `.gx` expressions capture comments AND attributes via
+// `leading_decorations`.
 fn leading_comments<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    combine::parser::char::spaces().with(many(
-        attempt(
-            string("//")
-                .with(not_followed_by(token('/')))
-                .with(many::<String, _, _>(none_of(['\n']))),
-        )
-        .skip(combine::parser::char::spaces())
-        .map(|s: String| ArcStr::from(s.as_str())),
-    ))
+    combine::parser::char::spaces().with(many(comment_line()))
+}
+
+// Parse a single `#[name]` or `#[name(arg, ...)]` attribute. The args are
+// full expressions (so `#[foo(1 + 2, "x")]` is legal). Like `leading_comments`,
+// an attribute is only ever consumed by `leading_decorations` at the `expr()`
+// entry, so it is legal exactly where a comment is — on its own line directly
+// above an expression. The leading `attempt(string("#["))` makes the branch
+// backtrack cleanly when there is no attribute, so it never collides with a
+// labeled call arg `#name` (which is `#` immediately followed by an ident).
+fn attribute<I>() -> impl Parser<I, Output = Attr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        attempt(string("#[")).with(spaces().with(fname())),
+        spaces().with(optional(between(
+            token('('),
+            sptoken(')'),
+            sep_by_tok(expr(), csep(), token(')')),
+        ))),
+    )
+        .skip(sptoken(']'))
+        .map(|(name, args): (ArcStr, Option<LPooled<Vec<Expr>>>)| {
+            let mut args = args.unwrap_or_else(LPooled::take);
+            Attr { name, args: Arc::from_iter(args.drain(..)) }
+        })
+}
+
+// Capture the run of own-line `//` comments and `#[..]` attributes directly
+// above an expression, returning them as two flat lists (comments, attrs).
+// They may interleave in the source; the relative order between a comment and
+// an attribute is not retained (each printer emits comments then attrs in a
+// fixed order), which is fine because `Decorations` is invisible to `Expr`
+// equality. This replaces `leading_comments` at the `expr()` entry;
+// `leading_comments` itself is kept for the `.gxi` `sig_item` path.
+fn leading_decorations<I>(
+) -> impl Parser<I, Output = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    enum Dec {
+        Comment(ArcStr),
+        Attr(Attr),
+    }
+    combine::parser::char::spaces()
+        .with(many::<LPooled<Vec<Dec>>, _, _>(choice((
+            comment_line().map(Dec::Comment),
+            attribute().skip(combine::parser::char::spaces()).map(Dec::Attr),
+        ))))
+        .map(|mut items: LPooled<Vec<Dec>>| {
+            let mut comments: LPooled<Vec<ArcStr>> = LPooled::take();
+            let mut attrs: LPooled<Vec<Attr>> = LPooled::take();
+            for d in items.drain(..) {
+                match d {
+                    Dec::Comment(c) => comments.push(c),
+                    Dec::Attr(a) => attrs.push(a),
+                }
+            }
+            (comments, attrs)
+        })
 }
 
 fn spaces1<I>() -> impl Parser<I, Output = ()>
@@ -743,7 +818,7 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         (
-            leading_comments(),
+            leading_decorations(),
             choice((
                 module(),
                 use_module(),
@@ -762,16 +837,21 @@ parser! {
                 qop(reference()),
             )),
         )
-            .map(|(comments, mut e): (LPooled<Vec<ArcStr>>, Expr)| {
-                if !comments.is_empty() {
-                    e.dec = Some(Box::new(Decorations {
-                        comments: comments.iter().cloned().collect(),
-                        attrs: Box::new([]),
-                        trailing: Box::new([]),
-                    }));
-                }
-                e
-            })
+            .map(
+                |((comments, attrs), mut e): (
+                    (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>),
+                    Expr,
+                )| {
+                    if !comments.is_empty() || !attrs.is_empty() {
+                        e.dec = Some(Box::new(Decorations {
+                            comments: comments.iter().cloned().collect(),
+                            attrs: attrs.iter().cloned().collect(),
+                            trailing: Box::new([]),
+                        }));
+                    }
+                    e
+                },
+            )
     }
 }
 

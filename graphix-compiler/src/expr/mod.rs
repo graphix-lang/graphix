@@ -469,6 +469,9 @@ impl fmt::Display for Expr {
             for c in dec.comments.iter() {
                 writeln!(f, "//{c}")?;
             }
+            for a in dec.attrs.iter() {
+                writeln!(f, "{a}")?;
+            }
         }
         write!(f, "{}", self.kind)
     }
@@ -480,6 +483,9 @@ impl PrettyDisplay for Expr {
         if let Some(dec) = &self.dec {
             for c in dec.comments.iter() {
                 writeln!(buf, "//{c}")?;
+            }
+            for a in dec.attrs.iter() {
+                writeln!(buf, "{a}")?;
             }
         }
         self.kind.fmt_pretty(buf)

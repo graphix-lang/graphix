@@ -43,6 +43,17 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
             scope: scope.clone(),
         });
     }
+    // Reject unknown attributes. Every Expr re-enters `compile` exactly once
+    // (per-kind `compile`s recurse through here), so this single check covers
+    // the whole tree. The per-attribute semantic check (e.g. `#[native]`) runs
+    // post-fusion; this only validates that the attribute name is registered.
+    if let Some(dec) = &spec.dec {
+        for attr in dec.attrs.iter() {
+            if ctx.lookup_attribute(&attr.name).is_none() {
+                crate::bailat!(spec, "unknown attribute #[{}]", attr.name);
+            }
+        }
+    }
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {

@@ -15,6 +15,7 @@ mod list;
 mod lsp_fusion;
 mod map;
 mod math;
+mod native;
 mod neg;
 mod net;
 mod pack;

@@ -127,6 +127,69 @@ fn trailing_block_comment_is_error() {
     assert!(parse_one("{ let x = 1; x\n// nope\n}").is_err());
 }
 
+// ── attributes ──
+// `#[name]` / `#[name(args)]` on its own line above an expression, captured
+// into `dec.attrs` exactly where a comment would be captured.
+
+#[test]
+fn attr_above_expr_captured() {
+    let e = parse_one("#[native]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("attribute should attach to the expr below");
+    assert_eq!(dec.attrs.len(), 1);
+    assert_eq!(&dec.attrs[0].name, &literal!("native"));
+    assert!(dec.attrs[0].args.is_empty());
+}
+
+#[test]
+fn attr_with_args_captured() {
+    let e = parse_one("#[foo(1, 2)]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("attribute lost");
+    assert_eq!(dec.attrs.len(), 1);
+    assert_eq!(&dec.attrs[0].name, &literal!("foo"));
+    assert_eq!(dec.attrs[0].args.len(), 2);
+}
+
+#[test]
+fn attr_round_trips() {
+    // print -> parse preserves attributes verbatim (args included).
+    let e = parse_one("#[native]\n#[foo(1, 2)]\n42").unwrap();
+    let e2 = parse_one(&e.to_string()).unwrap();
+    let dec = e2.dec.as_ref().expect("attributes lost on round-trip");
+    assert_eq!(dec.attrs.len(), 2);
+    assert_eq!(&dec.attrs[0].name, &literal!("native"));
+    assert_eq!(&dec.attrs[1].name, &literal!("foo"));
+    assert_eq!(dec.attrs[1].args.len(), 2);
+}
+
+#[test]
+fn comment_and_attr_interleave() {
+    // A comment and an attribute above the same expr both land in `dec`.
+    let e = parse_one("// note\n#[native]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("decorations lost");
+    assert_eq!(&dec.comments[..], &[literal!(" note")]);
+    assert_eq!(dec.attrs.len(), 1);
+    assert_eq!(&dec.attrs[0].name, &literal!("native"));
+}
+
+#[test]
+fn attr_above_block_item() {
+    let e = parse_one("{ let x = 1;\n#[native]\nx }").unwrap();
+    match &e.kind {
+        ExprKind::Do { exprs } => {
+            let last = exprs.last().unwrap();
+            let dec = last.dec.as_ref().expect("attribute lost");
+            assert_eq!(&dec.attrs[0].name, &literal!("native"));
+        }
+        other => panic!("expected a do block, got {other:?}"),
+    }
+}
+
+#[test]
+fn interior_attr_is_error() {
+    // Between an operator and its operand — not above an expression.
+    assert!(parse_one("1 +\n#[native]\n2").is_err());
+}
+
 #[test]
 fn interpolated0() {
     let p = ExprKind::Apply(ApplyExpr {

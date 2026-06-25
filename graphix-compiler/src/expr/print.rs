@@ -1,7 +1,7 @@
 use super::Sig;
 use crate::{
     expr::{
-        parser, ApplyExpr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr,
+        parser, ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr,
         ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
         TypeDefExpr,
     },
@@ -145,6 +145,23 @@ impl fmt::Display for Doc {
             }
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Attr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if self.args.is_empty() {
+            write!(f, "#[{}]", self.name)
+        } else {
+            write!(f, "#[{}(", self.name)?;
+            for (i, a) in self.args.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{a}")?;
+            }
+            write!(f, ")]")
+        }
     }
 }
 
