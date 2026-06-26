@@ -1,10 +1,10 @@
 use super::{
-    dataset::{chart_mode, ChartMode, DatasetEntry, XYKind},
-    interact::{draw_tooltip, ChartState, PlotInfo},
-    plotters_backend::{estimate_text, IcedBackend},
+    ChartW,
+    dataset::{ChartMode, DatasetEntry, XYKind, chart_mode},
+    interact::{ChartState, PlotInfo, draw_tooltip},
+    plotters_backend::{IcedBackend, estimate_text},
     ranges::*,
     types::*,
-    ChartW,
 };
 use crate::widgets::Renderer;
 use graphix_rt::GXExt;
@@ -19,7 +19,7 @@ use plotters::{
         IntoSegmentedCoord, LineSeries, SeriesLabelPosition, SurfaceSeries,
     },
     style::{
-        Color as PlotColor, IntoFont, RGBColor, ShapeStyle, TextStyle, BLACK, WHITE,
+        BLACK, Color as PlotColor, IntoFont, RGBColor, ShapeStyle, TextStyle, WHITE,
     },
 };
 

@@ -1,9 +1,9 @@
 use crate::{
     expr::ModPath,
-    typ::{FnType, PrintFlag, Type, TypeRef, PRINT_FLAGS},
+    typ::{FnType, PRINT_FLAGS, PrintFlag, Type, TypeRef},
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};

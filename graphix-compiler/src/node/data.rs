@@ -1,16 +1,16 @@
-use super::{compiler::compile, Cached};
+use super::{Cached, compiler::compile};
 use crate::{
+    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update, UserEvent,
     deref_typ,
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
     fusion::emit::{
-        emit_struct_new_node, emit_struct_ref_node, emit_tuple_new_node,
-        emit_tuple_ref_node, emit_variant_new_node, BodyCx, CompiledExpr,
+        BodyCx, CompiledExpr, emit_struct_new_node, emit_struct_ref_node,
+        emit_tuple_new_node, emit_tuple_ref_node, emit_variant_new_node,
     },
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent,
+    update_args, wrap,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::{ValArray, Value};
@@ -118,10 +118,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         NodeView::Struct(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_struct_new_node(cx, &self.names, &self.n)
     }
 
@@ -272,11 +269,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                 Some(Type::Struct(flds)) => {
                     for (rep, n) in self.replace.iter_mut().zip(fields.iter()) {
                         let r = flds.iter().enumerate().find_map(|(i, (field, typ))| {
-                            if field == n {
-                                Some((i, typ))
-                            } else {
-                                None
-                            }
+                            if field == n { Some((i, typ)) } else { None }
                         });
                         match r {
                             None => bail!("struct has no field named {n}"),
@@ -355,11 +348,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
                 flds.iter()
                     .enumerate()
                     .find_map(|(i, (n, t))| {
-                        if field_name == n {
-                            Some((t.clone(), Some(i)))
-                        } else {
-                            None
-                        }
+                        if field_name == n { Some((t.clone(), Some(i))) } else { None }
                     })
                     .unwrap_or_else(|| (Type::empty_tvar(), None))
             }
@@ -451,10 +440,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         NodeView::StructRef(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `field` is the position in the struct type's canonical
         // (sorted) layout, resolved by typecheck; unresolved → the
         // subtree node-walks.
@@ -563,10 +549,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         NodeView::Tuple(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_tuple_new_node(cx, &self.n)
     }
 
@@ -615,11 +598,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
         if self.n.len() == 0 {
-            if event.init {
-                Some(Value::String(self.tag.clone()))
-            } else {
-                None
-            }
+            if event.init { Some(Value::String(self.tag.clone())) } else { None }
         } else {
             let (updated, determined) = update_args!(self.n, ctx, event);
             if updated && determined {
@@ -684,10 +663,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         NodeView::Variant(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_variant_new_node(cx, &self.tag, &self.n)
     }
 
@@ -789,10 +765,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         NodeView::TupleRef(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
     }
 

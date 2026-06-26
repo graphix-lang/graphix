@@ -1,19 +1,19 @@
 use crate::{
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent,
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         emit::{
-            emit_block_node, emit_cast_node, emit_connect_node, emit_const_node,
-            emit_string_interpolate_node, BodyCx, CompiledExpr,
+            BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_connect_node,
+            emit_const_node, emit_string_interpolate_node,
         },
         fuse,
     },
     ide::{ModuleRefSite, ReferenceSite},
     typ::{TVal, TVar, Type},
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent, CAST_ERR,
 };
-use anyhow::{anyhow, bail, Context, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Context, Result, anyhow, bail};
+use arcstr::{ArcStr, literal};
 use compiler::compile;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
@@ -220,10 +220,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         NodeView::ExplicitParens(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `(x)` — grouping only; transparent recurse.
         self.n.emit_clif(cx)
     }
@@ -448,11 +445,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         _ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if event.init {
-            Some(self.value.clone())
-        } else {
-            None
-        }
+        if event.init { Some(self.value.clone()) } else { None }
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -481,10 +474,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         NodeView::Constant(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_const_node(cx, &self.value, &self.typ)
     }
 
@@ -547,11 +537,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
         let res = self.children.iter_mut().fold(None, |_, n| n.update(ctx, event));
-        if self.module {
-            None
-        } else {
-            res
-        }
+        if self.module { None } else { res }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -606,10 +592,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         NodeView::Block(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_block_node(cx, &self.children)
     }
 
@@ -741,10 +724,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         NodeView::StringInterpolate(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_string_interpolate_node(cx, &self.args)
     }
 
@@ -1058,10 +1038,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         NodeView::TypeCast(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_cast_node(cx, &self.n, &self.target, self.spec.id)
     }
 

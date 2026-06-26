@@ -4,19 +4,19 @@ use super::{
 };
 use crate::{
     expr::{
-        parser::{sep_by_tok, spaces1},
         ApplyExpr, Arg, Expr, ExprKind, LambdaExpr, StructurePattern,
+        parser::{sep_by_tok, spaces1},
     },
     typ::{TVar, Type},
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, not_followed_by, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, not_followed_by, optional,
     parser::char::string,
     position,
-    stream::{position::SourcePosition, Range},
-    token, unexpected_any, value, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token, unexpected_any, value,
 };
 use netidx::utils::Either;
 use poolshark::local::LPooled;
@@ -92,8 +92,8 @@ where
         })
 }
 
-pub(super) fn lambda_args<I>(
-) -> impl Parser<I, Output = (LPooled<Vec<Arg>>, Option<Option<Type>>)>
+pub(super) fn lambda_args<I>()
+-> impl Parser<I, Output = (LPooled<Vec<Arg>>, Option<Option<Type>>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,

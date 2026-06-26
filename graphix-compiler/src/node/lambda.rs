@@ -1,15 +1,16 @@
-use super::{compiler::compile, Nop};
+use super::{Nop, compiler::compile};
 use crate::{
+    Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId,
+    Node, NodeView, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{callsite::CallSite, pattern::StructPatternNode},
-    typ::{fntyp::LambdaIds, FnArgKind, FnArgType, FnType, Type},
-    wrap, Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn,
-    LambdaId, Node, NodeView, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
+    typ::{FnArgKind, FnArgType, FnType, Type, fntyp::LambdaIds},
+    wrap,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
@@ -22,8 +23,8 @@ use std::{
     hash::Hash,
     mem,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc as SArc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 use triomphe::Arc;
@@ -399,10 +400,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.emit_clif(callsite, cx)
     }
 
-    fn for_each_hof_callback_body<'a>(
-        &'a self,
-        f: &mut dyn FnMut(&'a Node<R, E>),
-    ) {
+    fn for_each_hof_callback_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         // MUST delegate (like emit_clif): the trait default is a no-op,
         // so a HOF wrapped in BuiltInLambda would silently expose no
         // callback bodies and its callback's casts/qops/calls would go
@@ -595,7 +593,9 @@ impl Lambda {
             }
             for a in argspec.iter() {
                 if a.constraint.is_none() {
-                    bail!("builtin function {builtin} requires all arguments to have type annotations")
+                    bail!(
+                        "builtin function {builtin} requires all arguments to have type annotations"
+                    )
                 }
             }
             if rtype.is_none() {

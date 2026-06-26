@@ -1,12 +1,12 @@
 use super::{
+    Constant, NOP, Nop,
     bind::Ref,
-    callsite::{Arg, ArgKey, Callee, CallSite},
-    Constant, Nop, NOP,
+    callsite::{Arg, ArgKey, CallSite, Callee},
 };
 use crate::{
+    BindId, ExecCtx, Node, Rt, Scope, UserEvent,
     expr::{ExprId, ModPath, Origin},
     typ::{FnType, Type},
-    BindId, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use ahash::AHashMap;
 use combine::stream::position::SourcePosition;

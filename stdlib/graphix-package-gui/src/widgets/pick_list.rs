@@ -22,8 +22,15 @@ pub(crate) struct PickListW<X: GXExt> {
 
 impl<X: GXExt> PickListW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, disabled), (_, on_select), (_, options), (_, padding), (_, placeholder), (_, selected), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 7]>().context("pick_list flds")?;
+        let [
+            (_, disabled),
+            (_, on_select),
+            (_, options),
+            (_, padding),
+            (_, placeholder),
+            (_, selected),
+            (_, width),
+        ] = source.cast_to::<[(ArcStr, u64); 7]>().context("pick_list flds")?;
         let (disabled, on_select, options, padding, placeholder, selected, width) = try_join! {
             gx.compile_ref(disabled),
             gx.compile_ref(on_select),

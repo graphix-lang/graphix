@@ -1,7 +1,7 @@
 use arcstr::ArcStr;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use netidx_value::{abstract_type::AbstractWrapper, Abstract, Value};
+use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
@@ -12,7 +12,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{get_stream, wrap_tcp, StreamKind};
+use crate::{StreamKind, get_stream, wrap_tcp};
 
 // ── Abstract TcpListenerValue ──────────────────────────────────
 

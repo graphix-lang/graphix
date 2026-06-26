@@ -6,21 +6,19 @@
 //! analysis those emitters consume.
 
 use crate::{
+    ApplyView, BindId, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
     fusion::{
-        self,
+        self, LambdaCallInfo,
         emit::WrappedKernel,
         kernel_abi::{
-            self, abi_kind, freeze_for_abi, freeze_for_abi_normalized, scalar_prim,
-            AbiKind, AbstractRegistry, BuiltinSlot, FnParam, FnSource, KernelSig, Seen,
+            self, AbiKind, AbstractRegistry, BuiltinSlot, FnParam, FnSource, KernelSig,
+            Seen, abi_kind, freeze_for_abi, freeze_for_abi_normalized, scalar_prim,
         },
-        LambdaCallInfo,
     },
-    node::{callsite::CallSite, genn, lambda::GXLambda, Cached},
+    node::{Cached, callsite::CallSite, genn, lambda::GXLambda},
     typ::{FnArgKind, FnType, Type},
-    ApplyView, BindId, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent,
 };
 use arcstr::ArcStr;
 use netidx_value::Value;
@@ -360,11 +358,13 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
-                let kt =
-                    match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &arg_typ) {
-                        Some(t) => t,
-                        None => return,
-                    };
+                let kt = match kernel_abi::freeze_for_abi(
+                    &ctx.fusion.abstract_registry,
+                    &arg_typ,
+                ) {
+                    Some(t) => t,
+                    None => return,
+                };
                 let slot_idx = arg_types.len();
                 layout.push(BuiltinSlot::Positional(slot_idx));
                 arg_types.push(kt);
@@ -384,9 +384,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         None => return,
                     };
                     let slot_idx = arg_types.len();
-                    layout.push(BuiltinSlot::Positional(
-                        slot_idx,
-                    ));
+                    layout.push(BuiltinSlot::Positional(slot_idx));
                     arg_types.push(kt);
                     marshal_arg_indices.push(call_idx);
                 } else if *has_default {
@@ -405,9 +403,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         Some(d) => d,
                         None => return,
                     };
-                    layout.push(BuiltinSlot::LabeledDefault(
-                        default,
-                    ));
+                    layout.push(BuiltinSlot::LabeledDefault(default));
                 } else {
                     return;
                 }
@@ -421,10 +417,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         }
         let from_call_idx = arg_types.len();
         let count = remaining.len();
-        layout.push(BuiltinSlot::Variadic {
-            from_call_idx,
-            count,
-        });
+        layout.push(BuiltinSlot::Variadic { from_call_idx, count });
         for (pos_idx, call_idx) in remaining {
             let arg_typ =
                 cs.arg_positional(pos_idx).map(|n| n.typ().clone()).or_else(|| {
@@ -434,10 +427,12 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 Some(t) => t,
                 None => return,
             };
-            let kt = match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &arg_typ) {
-                Some(t) => t,
-                None => return,
-            };
+            let kt =
+                match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &arg_typ)
+                {
+                    Some(t) => t,
+                    None => return,
+                };
             arg_types.push(kt);
             marshal_arg_indices.push(*call_idx);
         }
@@ -448,11 +443,15 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // Return type — the CallSite's own resolved output type (the
     // node-resident value the typechecker propagated for this Apply).
     let ret_typ = cs.typ().clone();
-    let return_type = match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &ret_typ) {
-        Some(t) => t,
-        None => return,
-    };
-    if !arg_types.iter().all(|t| is_dyncall_arg_supported(&ctx.fusion.abstract_registry, t)) {
+    let return_type =
+        match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &ret_typ) {
+            Some(t) => t,
+            None => return,
+        };
+    if !arg_types
+        .iter()
+        .all(|t| is_dyncall_arg_supported(&ctx.fusion.abstract_registry, t))
+    {
         return;
     }
     if !is_dyncall_return_supported(&ctx.fusion.abstract_registry, &return_type) {
@@ -492,9 +491,7 @@ pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
 
 /// The constant `Value` of a node, seeing through `ExplicitParens`.
 /// `None` for anything that isn't a compile-time-known literal.
-fn node_const_value<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-) -> Option<Value> {
+fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
     use NodeView;
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),
@@ -514,9 +511,7 @@ fn node_const_value<R: Rt, E: UserEvent>(
 /// Fold a slice of `Cached` element nodes into a constant
 /// `Value::Array` (the flat `ValArray` runtime shape shared by array
 /// and tuple literals), or `None` if any element isn't constant.
-fn const_valarray<R: Rt, E: UserEvent>(
-    elems: &[Cached<R, E>],
-) -> Option<Value> {
+fn const_valarray<R: Rt, E: UserEvent>(elems: &[Cached<R, E>]) -> Option<Value> {
     let mut vals: poolshark::local::LPooled<Vec<Value>> =
         poolshark::local::LPooled::take();
     for c in elems.iter() {
@@ -566,11 +561,7 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
 /// can't catch is NON-regular recursion whose params grow each step
 /// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
 /// expansion chain (NOT structural depth) guarantees termination there.
-pub(crate) fn resolve_abstract(
-    reg: &AbstractRegistry,
-    typ: &Type,
-    env: &Env,
-) -> Type {
+pub(crate) fn resolve_abstract(reg: &AbstractRegistry, typ: &Type, env: &Env) -> Type {
     resolve_abstract_d(reg, typ, env, None)
 }
 
@@ -801,10 +792,11 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             Some(t) => t,
             None => return None,
         };
-        let kind = match type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone()) {
-            Some(k) => k,
-            None => return None,
-        };
+        let kind =
+            match type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone()) {
+                Some(k) => k,
+                None => return None,
+            };
         let name = ArcStr::from(b.name.as_str());
         inputs.push((name.clone(), kind, Some(bind_id)));
         captures.push(CaptureSlot { bind_id, name, typ: kt });
@@ -1133,7 +1125,8 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
             return false;
         }
         let arg_typ = resolve_abstract(&ec.fusion.abstract_registry, &fa.typ, &ec.env);
-        let kt = match kernel_abi::freeze_for_abi(&ec.fusion.abstract_registry, &arg_typ) {
+        let kt = match kernel_abi::freeze_for_abi(&ec.fusion.abstract_registry, &arg_typ)
+        {
             Some(t) => t,
             None => return false,
         };
@@ -1243,13 +1236,15 @@ pub(crate) fn type_to_region_input_kind(
     let t = kernel_abi::freeze_for_abi(reg, &t)?;
     match abi_kind(reg, &t)? {
         AbiKind::Scalar(p) => Some(RegionInputKind::Prim(p)),
-        AbiKind::Array => kernel_abi::array_elem(&t)
-            .map(|e| RegionInputKind::Array(e.clone())),
+        AbiKind::Array => {
+            kernel_abi::array_elem(&t).map(|e| RegionInputKind::Array(e.clone()))
+        }
         AbiKind::Tuple => Some(RegionInputKind::Tuple(t)),
         AbiKind::Struct => Some(RegionInputKind::Struct(t)),
         AbiKind::Variant => Some(RegionInputKind::Variant(t)),
-        AbiKind::Nullable => kernel_abi::nullable_inner(reg, &t)
-            .map(RegionInputKind::Nullable),
+        AbiKind::Nullable => {
+            kernel_abi::nullable_inner(reg, &t).map(RegionInputKind::Nullable)
+        }
         AbiKind::String => Some(RegionInputKind::String),
         AbiKind::Value => Some(RegionInputKind::Value(t)),
         AbiKind::Unit | AbiKind::Null => None,
@@ -1259,10 +1254,7 @@ pub(crate) fn type_to_region_input_kind(
 /// True if a (frozen) `Type` is a marshallable `DynCall` **argument**
 /// shape — every fusable shape except `Unit` (no value to pass) and
 /// bare `Null` (always widened to `Nullable<T>` at construction).
-fn is_dyncall_arg_supported(
-    reg: &AbstractRegistry,
-    t: &Type,
-) -> bool {
+fn is_dyncall_arg_supported(reg: &AbstractRegistry, t: &Type) -> bool {
     use AbiKind;
     match abi_kind(reg, t) {
         Some(
@@ -1309,10 +1301,7 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
 /// True if a (frozen) `Type` is a marshallable `DynCall` **return**
 /// shape — every fusable shape except bare `Null`. `Unit` IS allowed
 /// (side-effect-only sync builtins like `println` return Bottom).
-fn is_dyncall_return_supported(
-    reg: &AbstractRegistry,
-    t: &Type,
-) -> bool {
+fn is_dyncall_return_supported(reg: &AbstractRegistry, t: &Type) -> bool {
     use AbiKind;
     match abi_kind(reg, t) {
         Some(

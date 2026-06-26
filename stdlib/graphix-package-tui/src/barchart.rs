@@ -1,4 +1,4 @@
-use super::{into_borrowed_line, validate, DirectionV, LineV, StyleV, TuiW, TuiWidget};
+use super::{DirectionV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line, validate};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -8,11 +8,11 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::Value;
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Bar, BarChart, BarGroup},
-    Frame,
 };
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use tokio::try_join;
 
 struct BarW<X: GXExt> {
@@ -115,8 +115,18 @@ pub(super) struct BarChartW<X: GXExt> {
 impl<X: GXExt> BarChartW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
         let flds = v.cast_to::<[(ArcStr, u64); 10]>().context("barchart fields")?;
-        let [(_, bar_gap), (_, bar_style), (_, bar_width), (_, data), (_, direction), (_, group_gap), (_, label_style), (_, max), (_, style), (_, value_style)] =
-            flds;
+        let [
+            (_, bar_gap),
+            (_, bar_style),
+            (_, bar_width),
+            (_, data),
+            (_, direction),
+            (_, group_gap),
+            (_, label_style),
+            (_, max),
+            (_, style),
+            (_, value_style),
+        ] = flds;
         let (
             bar_gap,
             bar_style,

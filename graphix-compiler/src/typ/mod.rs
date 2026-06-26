@@ -1,16 +1,17 @@
 use crate::{
+    PRINT_FLAGS, PrintFlag,
     env::{Env, TypeDef},
     expr::ModPath,
-    format_with_flags, PrintFlag, PRINT_FLAGS,
+    format_with_flags,
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::{publisher::Typ, utils::Either};
 use netidx_derive::Pack;
 use nohash::IntMap;
-use poolshark::{local::LPooled, IsoPoolable};
+use poolshark::{IsoPoolable, local::LPooled};
 use smallvec::SmallVec;
 use std::{
     cmp::{Eq, PartialEq},
@@ -433,11 +434,7 @@ impl Type {
             Type::Ref(TypeRef { .. }) => {
                 let id = hist.ref_id(self, env);
                 let t = self.lookup_ref(env).ok()?;
-                if hist.insert(id) {
-                    t.strip_error_int(env, hist)
-                } else {
-                    None
-                }
+                if hist.insert(id) { t.strip_error_int(env, hist) } else { None }
             }
             Type::Set(s) => {
                 let r = Self::flatten_set(

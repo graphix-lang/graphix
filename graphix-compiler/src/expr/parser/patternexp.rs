@@ -1,23 +1,23 @@
 use crate::{
     expr::{
+        Expr, Pattern, StructurePattern,
         parser::{
-            csep, expr, fname, sep_by1_tok, sep_by_tok, spaces, spaces1, spstring,
+            csep, expr, fname, sep_by_tok, sep_by1_tok, spaces, spaces1, spstring,
             sptoken, typ, typname,
         },
-        Expr, Pattern, StructurePattern,
     },
     typ::Type,
 };
 use ahash::AHashSet;
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use combine::{
-    attempt, between, choice, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, optional,
     parser::char::string,
-    stream::{position::SourcePosition, Range},
-    token, unexpected_any, value, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token, unexpected_any, value,
 };
 use netidx::utils::Either;
-use netidx_value::parser::{value as parse_value, VAL_ESC, VAL_MUST_ESC};
+use netidx_value::parser::{VAL_ESC, VAL_MUST_ESC, value as parse_value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 

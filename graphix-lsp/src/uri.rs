@@ -10,7 +10,7 @@
 //! spaces, `#`, `%`, `?`, etc. round-trip correctly.
 
 use lsp_types::Uri;
-use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use std::{
     path::{Path, PathBuf},
     str::FromStr,

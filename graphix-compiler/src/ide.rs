@@ -15,7 +15,7 @@
 //! single home for every IDE table while letting reentrant or concurrent
 //! compiles within one check drain into the same buffer.
 
-use crate::{env::Env, expr, BindId, Scope, SourcePosition};
+use crate::{BindId, Scope, SourcePosition, env::Env, expr};
 use compact_str::CompactString;
 use poolshark::global::{GPooled, Pool};
 use std::sync::LazyLock;

@@ -1,11 +1,11 @@
 use crate::{GXExt, UpdateBatch, WriteBatch};
 use ahash::AHashMap;
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use chrono::prelude::*;
 use compact_str::format_compact;
-use futures::{channel::mpsc, stream::SelectAll, FutureExt};
-use graphix_compiler::{expr::ExprId, BindId, CustomBuiltinType, Rt};
+use futures::{FutureExt, channel::mpsc, stream::SelectAll};
+use graphix_compiler::{BindId, CustomBuiltinType, Rt, expr::ExprId};
 use netidx::{
     path::Path,
     protocol::valarray::ValArray,
@@ -20,7 +20,7 @@ use netidx_protocols::rpc::{
 use nohash::IntMap;
 use poolshark::global::GPooled;
 use std::{
-    collections::{hash_map::Entry, VecDeque},
+    collections::{VecDeque, hash_map::Entry},
     fmt::Debug,
     future,
     time::Duration,

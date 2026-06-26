@@ -4,14 +4,14 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    effects::EffectKind, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node,
-    Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
-use rand::{rng, seq::SliceRandom, RngExt};
-use smallvec::{smallvec, SmallVec};
+use rand::{RngExt, rng, seq::SliceRandom};
+use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug)]
 struct Rand {

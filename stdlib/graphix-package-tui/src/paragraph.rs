@@ -1,6 +1,6 @@
 use super::{
-    into_borrowed_lines, validate, AlignmentV, LinesV, ScrollV, StyleV, TRef, TuiW,
-    TuiWidget,
+    AlignmentV, LinesV, ScrollV, StyleV, TRef, TuiW, TuiWidget, into_borrowed_lines,
+    validate,
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -10,9 +10,9 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::Value;
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Paragraph, Wrap},
-    Frame,
 };
 use tokio::try_join;
 
@@ -78,13 +78,13 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
                 "paragraph",
                 "scroll.y",
                 &mut self.last_warned_scroll_y,
-                s.0 .0,
+                s.0.0,
             );
             let x = validate::clamp_u16(
                 "paragraph",
                 "scroll.x",
                 &mut self.last_warned_scroll_x,
-                s.0 .1,
+                s.0.1,
             );
             p = p.scroll((y, x))
         }

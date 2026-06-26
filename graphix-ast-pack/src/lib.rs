@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::expr::{parser, serialize, Origin, Source};
+use graphix_compiler::expr::{Origin, Source, parser, serialize};
 use std::{
     env, fs,
     path::{Component, Path, PathBuf},

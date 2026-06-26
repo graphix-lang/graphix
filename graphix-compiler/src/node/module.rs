@@ -1,20 +1,21 @@
 use crate::{
+    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
     compiler::compile,
     env::Env,
     errf,
     expr::{
-        parser, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig,
-        SigKind, Source, StructurePattern, TypeDefExpr,
+        BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
+        Source, StructurePattern, TypeDefExpr, parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
-    node::{bind::Bind, Nop},
+    node::{Nop, bind::Bind},
     typ::{AbstractId, Type},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    wrap,
 };
 use ahash::AHashSet;
-use anyhow::{bail, Context, Result};
-use arcstr::{literal, ArcStr};
-use compact_str::{format_compact, CompactString};
+use anyhow::{Context, Result, bail};
+use arcstr::{ArcStr, literal};
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use nohash::IntMap;
@@ -183,7 +184,11 @@ fn check_sig<R: Rt, E: UserEvent>(
                                     None => "missing",
                                     Some(t) => &format_compact!("{t}"),
                                 };
-                                bail!("signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}", td.name, tv0.name)
+                                bail!(
+                                    "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
+                                    td.name,
+                                    tv0.name
+                                )
                             }
                             None => bail!(
                                 "signature mismatch in {}, missing parameter {}",
@@ -201,7 +206,9 @@ fn check_sig<R: Rt, E: UserEvent>(
                     // peeks). Stored on the `ExecCtx`, so it drops with
                     // the context (`AbstractId`s are minted fresh per
                     // compile — a global map would leak).
-                    ctx.fusion.abstract_registry.insert(*id, td.typ.scope_refs(&scope.lexical));
+                    ctx.fusion
+                        .abstract_registry
+                        .insert(*id, td.typ.scope_refs(&scope.lexical));
                 }
                 _ => {
                     if sig_td.name != td.name
@@ -226,7 +233,9 @@ fn check_sig<R: Rt, E: UserEvent>(
                 typ: Type::Abstract { id, params: _ },
                 ..
             }) if !abstract_types.contains_key(id) => {
-                bail!("abstract signature types must have a concrete definition in the implementation")
+                bail!(
+                    "abstract signature types must have a concrete definition in the implementation"
+                )
             }
             SigKind::Module(_)
             | SigKind::Use(_)

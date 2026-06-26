@@ -1,15 +1,14 @@
 //! LSP backend that owns a graphix runtime with the stdlib loaded
 //! and exposes a synchronous interface for the LSP server.
 
-use crate::deps;
 use ahash::AHashMap;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::{
+    CFlag, ExecCtx,
     env::Env,
     expr::{BufferOverrides, ModuleResolver, Source},
-    CFlag, ExecCtx,
 };
 use graphix_lsp::{LspBackend, TypecheckResult};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
@@ -31,28 +30,29 @@ use triomphe::Arc;
 /// Build a tokio runtime, stand up a graphix runtime with the
 /// in-process netidx and the full stdlib loaded, and run the LSP
 /// server until it shuts down.
-pub fn run(register_packages: crate::RegisterPackagesPtr<NoExt>) -> Result<()> {
+pub fn run() -> Result<()> {
     let rt = Runtime::new().context("building tokio runtime")?;
     let result = graphix_lsp::serve(|init| {
         let roots = project_roots(init);
-        rt.block_on(build_backend(roots, register_packages))
+        rt.block_on(build_backend(roots))
     });
     drop(rt);
     result
 }
 
-async fn build_backend(
-    roots: Vec<PathBuf>,
-    register_packages: crate::RegisterPackagesPtr<NoExt>,
-) -> Result<StdArc<dyn LspBackend>> {
+async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let netidx = InternalOnly::new().await.context("starting internal netidx")?;
     let publisher = netidx.publisher().clone();
     let subscriber = netidx.subscriber().clone();
     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber))
         .context("creating graphix context")?;
     let mut vfs = AHashMap::default();
-    let res = deps::register::<NoExt>(&mut ctx, &mut vfs, register_packages)
-        .context("registering stdlib modules")?;
+    let mut root_mods = graphix_package::IndexSet::new();
+    for pkg in crate::stdlib_packages::<NoExt>() {
+        pkg.register(&mut ctx, &mut vfs, &mut root_mods)
+            .context("registering stdlib modules")?;
+    }
+    let root = graphix_package::root_module_source(&root_mods);
     let mut resolvers: Vec<ModuleResolver> = vec![ModuleResolver::VFS(vfs)];
     // Cache the stdlib (+ later, GRAPHIX_MODPATH) layer so per-project
     // checks can prepend it under their own BufferOverride resolver.
@@ -69,7 +69,7 @@ async fn build_backend(
     task::spawn(drain(rx));
     let gx = GXConfig::builder(ctx, tx)
         .flags(BitFlags::from(flags))
-        .root(res.root)
+        .root(root)
         .resolvers(resolvers)
         .lsp_mode(true)
         .build()

@@ -3,9 +3,9 @@
 //! pure state math — no rendering, no subscription side effects.
 
 use super::{
-    types::{col_header_width, col_text_width, row_basename, value_to_f64, ColumnType},
     DataTableW, DisplayMode, MIN_COL_WIDTH, ROW_BUFFER, ROW_HEIGHT_CONTROLS,
     ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY, ROW_NAME_KEY_ARC, ROW_NAME_LABEL, VALUE_COL_KEY,
+    types::{ColumnType, col_header_width, col_text_width, row_basename, value_to_f64},
 };
 use arcstr::ArcStr;
 use graphix_rt::GXExt;
@@ -397,10 +397,6 @@ impl<X: GXExt> DataTableW<X> {
                 ColumnType::Combo { .. } | ColumnType::Spin { .. } | ColumnType::Toggle
             )
         });
-        if tall {
-            ROW_HEIGHT_CONTROLS
-        } else {
-            ROW_HEIGHT_ESTIMATE
-        }
+        if tall { ROW_HEIGHT_CONTROLS } else { ROW_HEIGHT_ESTIMATE }
     }
 }

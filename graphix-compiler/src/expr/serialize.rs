@@ -15,15 +15,15 @@
 //! construction and a decode error is a hard internal bug, not a normal path.
 
 use crate::{
-    expr::{
-        get_origin, swap_origin, Decorations, Expr, ExprId, ExprKind, Origin, Sig,
-        VfsEntry,
-    },
-    typ::{fntyp::LambdaIds, AbstractId, FnArgType, FnType, TVar, Type},
     SourcePosition,
+    expr::{
+        Decorations, Expr, ExprId, ExprKind, Origin, Sig, VfsEntry, get_origin,
+        swap_origin,
+    },
+    typ::{AbstractId, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
 };
 use ahash::AHashMap;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use netidx_core::{
@@ -291,7 +291,7 @@ pub fn unpack_index(mut bytes: &[u8]) -> Result<Vec<(Path, VfsEntry)>> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::expr::{parser, Source};
+    use crate::expr::{Source, parser};
 
     fn rt(src: &str) {
         let ori = Origin {

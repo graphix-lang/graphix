@@ -847,8 +847,9 @@ fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
 
 /// Wraps a left child in ExplicitParens if it has lower precedence than the parent.
 fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
-    let needs = loose_needs_parens(&child.kind, parent_prec)
-        .unwrap_or_else(|| binop_precedence(&child.kind).is_some_and(|p| p < parent_prec));
+    let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
+        binop_precedence(&child.kind).is_some_and(|p| p < parent_prec)
+    });
     if needs { paren(child) } else { child }
 }
 
@@ -856,8 +857,9 @@ fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
 /// Equal precedence needs parens on the right because all operators are left-associative:
 /// `a - b - c` parses as `(a - b) - c`, so `Sub(a, Sub(b, c))` must print as `a - (b - c)`.
 fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
-    let needs = loose_needs_parens(&child.kind, parent_prec)
-        .unwrap_or_else(|| binop_precedence(&child.kind).is_some_and(|p| p <= parent_prec));
+    let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
+        binop_precedence(&child.kind).is_some_and(|p| p <= parent_prec)
+    });
     if needs { paren(child) } else { child }
 }
 
@@ -1302,19 +1304,19 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => {
             let srs0 = acc_strings(a0.iter());
             let srs1 = acc_strings(a1.iter());
-            dbg!(srs0
-                .iter()
-                .zip(srs1.iter())
-                .fold(true, |r, (s0, s1)| r && check(s0, s1)))
+            dbg!(
+                srs0.iter().zip(srs1.iter()).fold(true, |r, (s0, s1)| r && check(s0, s1))
+            )
         }
         (
             ExprKind::Apply(ApplyExpr { args: srs0, function: f0 }),
             ExprKind::Apply(ApplyExpr { args: srs1, function: f1 }),
         ) if check(f0, f1) && srs0.len() == srs1.len() => {
-            dbg!(srs0
-                .iter()
-                .zip(srs1.iter())
-                .fold(true, |r, ((n0, s0), (n1, s1))| r && n0 == n1 && check(s0, s1)))
+            dbg!(
+                srs0.iter()
+                    .zip(srs1.iter())
+                    .fold(true, |r, ((n0, s0), (n1, s1))| r && n0 == n1 && check(s0, s1))
+            )
         }
         (
             ExprKind::Add { lhs: lhs0, rhs: rhs0 },
@@ -1479,11 +1481,13 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                         _ => false,
                     })
                     && dbg!(check_type_opt(rtype0, rtype1))
-                    && dbg!(constraints0
-                        .iter()
-                        .zip(constraints1.iter())
-                        .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
-                            && check_type(&tc0, &tc1)))
+                    && dbg!(
+                        constraints0
+                            .iter()
+                            .zip(constraints1.iter())
+                            .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
+                                && check_type(&tc0, &tc1))
+                    )
                     && dbg!(check_type_opt(throws0, throws1))
                     && dbg!(check(body0, body1))
             ),
@@ -1512,11 +1516,13 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                         _ => false,
                     })
                     && dbg!(check_type_opt(rtype0, rtype1))
-                    && dbg!(constraints0
-                        .iter()
-                        .zip(constraints1.iter())
-                        .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
-                            && check_type(&tc0, &tc1)))
+                    && dbg!(
+                        constraints0
+                            .iter()
+                            .zip(constraints1.iter())
+                            .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
+                                && check_type(&tc0, &tc1))
+                    )
                     && dbg!(check_type_opt(throws0, throws1))
                     && dbg!(b0 == b1)
             ),
@@ -1529,11 +1535,13 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(
                 dbg!(check(arg0, arg1))
                     && dbg!(arms0.len() == arms1.len())
-                    && dbg!(arms0
-                        .iter()
-                        .zip(arms1.iter())
-                        .all(|((pat0, b0), (pat1, b1))| check(b0, b1)
-                            && dbg!(check_pattern(pat0, pat1))))
+                    && dbg!(
+                        arms0
+                            .iter()
+                            .zip(arms1.iter())
+                            .all(|((pat0, b0), (pat1, b1))| check(b0, b1)
+                                && dbg!(check_pattern(pat0, pat1)))
+                    )
             )
         }
         (ExprKind::TypeDef(td0), ExprKind::TypeDef(td1)) => check_typedef(td0, td1),

@@ -1,5 +1,5 @@
 use super::{ColorV, LineV, MarkerV, TuiW, TuiWidget};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
@@ -8,12 +8,12 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Color,
     widgets::canvas::{
         Canvas, Circle, Context as CanvasContext, Line, Points, Rectangle,
     },
-    Frame,
 };
 use smallvec::SmallVec;
 use tokio::try_join;
@@ -191,8 +191,13 @@ pub(super) struct CanvasW<X: GXExt> {
 
 impl<X: GXExt> CanvasW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, background_color), (_, marker), (_, shapes), (_, x_bounds), (_, y_bounds)] =
-            v.cast_to::<[(ArcStr, u64); 5]>()?;
+        let [
+            (_, background_color),
+            (_, marker),
+            (_, shapes),
+            (_, x_bounds),
+            (_, y_bounds),
+        ] = v.cast_to::<[(ArcStr, u64); 5]>()?;
         let (background_color, marker, shapes_ref, x_bounds, y_bounds) = try_join! {
             gx.compile_ref(background_color),
             gx.compile_ref(marker),

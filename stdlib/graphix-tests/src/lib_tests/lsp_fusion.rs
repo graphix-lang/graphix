@@ -9,7 +9,7 @@ use anyhow::Result;
 use arcstr::literal;
 use enumflags2::BitFlags;
 use graphix_compiler::expr::Source;
-use graphix_package_core::testing::{init_lsp_mode, TestCtx};
+use graphix_package_core::testing::{TestCtx, init_lsp_mode};
 use graphix_rt::GXEvent;
 use poolshark::global::GPooled;
 use tokio::sync::mpsc;

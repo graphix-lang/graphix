@@ -1,4 +1,4 @@
-use crate::{get_stream_value, StreamKind, StreamValue, STREAM_WRAPPER};
+use crate::{STREAM_WRAPPER, StreamKind, StreamValue, get_stream_value};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::errf;

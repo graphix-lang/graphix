@@ -23,9 +23,9 @@ pub mod mutate;
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use graphix_compiler::{expr::ModuleResolver, CFlag, FusionStats};
+use graphix_compiler::{CFlag, FusionStats, expr::ModuleResolver};
 use graphix_package::Package;
-use graphix_package_core::testing::{init_with_flags_and_setup, RegisterFn, TestCtx};
+use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
 use graphix_rt::{GXEvent, NoExt};
 use netidx::publisher::Value;
 use netidx_core::path::Path;
@@ -35,25 +35,7 @@ use tokio::sync::mpsc;
 /// Every stdlib package, so generated programs can use the whole
 /// language surface. Mirrors `graphix-tests`'s `TEST_REGISTER` (which is
 /// `#[cfg(test)]`-gated and so not importable).
-pub const REGISTER: &[RegisterFn] = &[
-    <graphix_package_core::P as Package<NoExt>>::register,
-    <graphix_package_array::P as Package<NoExt>>::register,
-    <graphix_package_map::P as Package<NoExt>>::register,
-    <graphix_package_str::P as Package<NoExt>>::register,
-    <graphix_package_sys::P as Package<NoExt>>::register,
-    <graphix_package_http::P as Package<NoExt>>::register,
-    <graphix_package_json::P as Package<NoExt>>::register,
-    <graphix_package_toml::P as Package<NoExt>>::register,
-    <graphix_package_re::P as Package<NoExt>>::register,
-    <graphix_package_rand::P as Package<NoExt>>::register,
-    <graphix_package_db::P as Package<NoExt>>::register,
-    <graphix_package_xls::P as Package<NoExt>>::register,
-    <graphix_package_pack::P as Package<NoExt>>::register,
-    <graphix_package_args::P as Package<NoExt>>::register,
-    <graphix_package_list::P as Package<NoExt>>::register,
-    <graphix_package_sqlite::P as Package<NoExt>>::register,
-    <graphix_package_hbs::P as Package<NoExt>>::register,
-];
+pub const REGISTER: &[&dyn Package<NoExt>] = graphix_package::package_refs!();
 
 /// The mode a program was run under.
 ///
@@ -171,7 +153,7 @@ pub async fn run_program_with_stats(
             return (
                 Outcome::RuntimeErr(format!("runtime init failed: {e}")),
                 FusionStats::default(),
-            )
+            );
         }
     };
     let base = ctx.fusion_stats().await.unwrap_or_default();
@@ -698,11 +680,7 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let (_, min) = stdout.split_once("MINIMIZED\n")?;
     let min = min.trim();
-    if min.is_empty() {
-        None
-    } else {
-        Some(min.to_string())
-    }
+    if min.is_empty() { None } else { Some(min.to_string()) }
 }
 
 /// Worker pool. Keeps `parallelism()` oracle checks in flight over fresh

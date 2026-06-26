@@ -1,22 +1,22 @@
 use super::AndAc;
 use crate::{
+    LambdaId,
     env::Env,
     expr::{
-        print::{PrettyBuf, PrettyDisplay},
         ModPath,
+        print::{PrettyBuf, PrettyDisplay},
     },
-    typ::{contains::ContainsFlags, AbstractId, RefHist, TVar, Type},
-    LambdaId,
+    typ::{AbstractId, RefHist, TVar, Type, contains::ContainsFlags},
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_derive::Pack;
 use nohash::{IntMap, IntSet};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::{
     cmp::{Eq, Ordering, PartialEq},
     fmt::{self, Debug, Write},

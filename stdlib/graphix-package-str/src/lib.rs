@@ -2,17 +2,17 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Context, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Context, Result, bail};
+use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
     effects::EffectKind,
     err, errf,
     expr::ExprId,
     typ::{FnType, Type},
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use graphix_package_core::{extract_cast_type, CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, extract_cast_type};
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
@@ -444,7 +444,7 @@ macro_rules! escape_fn {
                     match &self.args.0[0] {
                         Some(esc) => match build_escape(esc.clone()) {
                             Err(e) => {
-                                return Some(errf!(TAG, "escape: invalid argument {e:?}"))
+                                return Some(errf!(TAG, "escape: invalid argument {e:?}"));
                             }
                             Ok(esc) => self.escape = Some(esc),
                         },
@@ -534,7 +534,7 @@ macro_rules! string_splitn {
                 let n = match &from.0[1] {
                     Some(Value::I64(n)) if *n > 0 => *n as usize,
                     Some(v) => {
-                        return Some(errf!(TAG, "splitn: {v} must be a number > 0"))
+                        return Some(errf!(TAG, "splitn: {v} must be a number > 0"));
                     }
                     None => return None,
                 };

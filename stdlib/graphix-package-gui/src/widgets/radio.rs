@@ -23,8 +23,16 @@ pub(crate) struct RadioW<X: GXExt> {
 
 impl<X: GXExt> RadioW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, disabled), (_, label), (_, on_select), (_, selected), (_, size), (_, spacing), (_, value), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 8]>().context("radio flds")?;
+        let [
+            (_, disabled),
+            (_, label),
+            (_, on_select),
+            (_, selected),
+            (_, size),
+            (_, spacing),
+            (_, value),
+            (_, width),
+        ] = source.cast_to::<[(ArcStr, u64); 8]>().context("radio flds")?;
         let (disabled, label, on_select, selected, size, spacing, value, width) = try_join! {
             gx.compile_ref(disabled),
             gx.compile_ref(label),

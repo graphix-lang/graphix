@@ -1,10 +1,10 @@
 use crate::{
+    PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
     typ::{TVar, Type},
-    PrintFlag, PRINT_FLAGS,
 };
 use anyhow::Result;
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
 use netidx::{path::Path, subscriber::Value, utils::Either};
@@ -12,10 +12,10 @@ use netidx_derive::Pack;
 pub use pattern::{Pattern, StructurePattern};
 use poolshark::local::LPooled;
 use regex::Regex;
-pub use resolver::{add_interface_modules, BufferOverrides, ModuleResolver, VfsEntry};
+pub use resolver::{BufferOverrides, ModuleResolver, VfsEntry, add_interface_modules};
 use serde::{
-    de::{self, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
+    de::{self, Visitor},
 };
 use std::{
     cell::RefCell,

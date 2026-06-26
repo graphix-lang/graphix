@@ -4,8 +4,8 @@
 )]
 use arcstr::ArcStr;
 use graphix_compiler::{
-    effects::EffectKind, errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx,
-    Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;

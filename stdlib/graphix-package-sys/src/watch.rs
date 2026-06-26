@@ -1,19 +1,19 @@
 use ahash::AHashMap;
 use anyhow::Result;
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use enumflags2::BitFlags;
 use extended_notify::{
     ArcPath, Event as NEvent, EventBatch, EventHandler, EventKind, Id, Interest, Watcher,
     WatcherConfigBuilder,
 };
-use futures::{channel::mpsc, SinkExt, TryFutureExt};
+use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use graphix_compiler::{
-    effects::EffectKind, errf, expr::ExprId, typ::FnType, Apply, BindId, BuiltIn,
-    CustomBuiltinType, Event, ExecCtx, Node, Rt, Scope, UserEvent, CBATCH_POOL,
+    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
+    Scope, UserEvent, effects::EffectKind, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx_value::{
-    abstract_type::AbstractWrapper, Abstract, FromValue, ValArray, Value,
+    Abstract, FromValue, ValArray, Value, abstract_type::AbstractWrapper,
 };
 use nohash::IntSet;
 use parking_lot::Mutex;
@@ -284,14 +284,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         let trigger = from[2].update(ctx, event);
         match poll_interval {
             Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
-                return Some(errf!("WatchError", "poll_interval must be >= 100ms"))
+                return Some(errf!("WatchError", "poll_interval must be >= 100ms"));
             }
             Some(poll_interval) => self.poll_interval = Some(poll_interval),
             None => (),
         }
         match batch_size {
             Some(batch_size) if batch_size < 0 => {
-                return Some(errf!("WatchError", "batch_size must be >= 0"))
+                return Some(errf!("WatchError", "batch_size must be >= 0"));
             }
             Some(batch_size) => self.batch_size = Some(batch_size),
             None => (),

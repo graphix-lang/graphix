@@ -6,7 +6,7 @@ use netidx_value::Value;
 use std::{io::SeekFrom, sync::Arc};
 use tokio::{io::AsyncSeekExt, sync::Mutex};
 
-use crate::{get_stream, metadata::convert_metadata, wrap_file, StreamKind};
+use crate::{StreamKind, get_stream, metadata::convert_metadata, wrap_file};
 
 // ── FileOpen ───────────────────────────────────────────────────
 

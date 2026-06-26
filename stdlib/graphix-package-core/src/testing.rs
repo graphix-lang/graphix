@@ -1,6 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use enumflags2::BitFlags;
-use graphix_compiler::{expr::ModuleResolver, CFlag};
+use graphix_compiler::{CFlag, expr::ModuleResolver};
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
 use netidx::publisher::Value;
 use poolshark::global::GPooled;
@@ -87,15 +87,14 @@ impl TestCtx {
     }
 }
 
-pub type RegisterFn = fn(
-    &mut graphix_compiler::ExecCtx<GXRt<NoExt>, <NoExt as graphix_rt::GXExt>::UserEvent>,
-    &mut ahash::AHashMap<netidx_core::path::Path, graphix_compiler::expr::VfsEntry>,
-    &mut graphix_package::IndexSet<arcstr::ArcStr>,
-) -> Result<()>;
+/// A package instance to register into a test context. (Packages are ZSTs, so
+/// `&'static dyn` references are free.) Test registries are built by the
+/// `graphix_package::package_refs!()` macro.
+pub type PackageRef = &'static dyn graphix_package::Package<NoExt>;
 
 pub async fn init_with_resolvers(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[RegisterFn],
+    register: &[PackageRef],
     resolvers: Vec<ModuleResolver>,
 ) -> Result<TestCtx> {
     init_with_setup(sub, register, resolvers, |_| {}).await
@@ -103,14 +102,14 @@ pub async fn init_with_resolvers(
 
 pub async fn init(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[RegisterFn],
+    register: &[PackageRef],
 ) -> Result<TestCtx> {
     init_with_setup(sub, register, vec![], |_| {}).await
 }
 
 pub async fn init_with_setup<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[RegisterFn],
+    register: &[PackageRef],
     resolvers: Vec<ModuleResolver>,
     setup: F,
 ) -> Result<TestCtx>
@@ -132,7 +131,7 @@ where
 /// the interp / jit modes.
 pub async fn init_with_flags_and_setup<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[RegisterFn],
+    register: &[PackageRef],
     resolvers: Vec<ModuleResolver>,
     flags: BitFlags<CFlag>,
     setup: F,
@@ -155,7 +154,7 @@ where
 /// it runs during a check even though no kernel is ever executed).
 pub async fn init_lsp_mode<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[RegisterFn],
+    register: &[PackageRef],
     resolvers: Vec<ModuleResolver>,
     flags: BitFlags<CFlag>,
     setup: F,
@@ -173,7 +172,7 @@ where
 
 async fn init_inner<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
-    register: &[RegisterFn],
+    register: &[PackageRef],
     resolvers: Vec<ModuleResolver>,
     flags: BitFlags<CFlag>,
     lsp_mode: bool,
@@ -195,19 +194,11 @@ where
     ))?;
     let mut modules = ahash::AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
-    for f in register {
-        f(&mut ctx, &mut modules, &mut root_mods)?;
+    for p in register {
+        p.register(&mut ctx, &mut modules, &mut root_mods)?;
     }
     setup(&mut ctx);
-    let mut parts = Vec::new();
-    for name in &root_mods {
-        if name == "core" {
-            parts.push(format!("mod core;\nuse core"));
-        } else {
-            parts.push(format!("mod {name}"));
-        }
-    }
-    let root = arcstr::ArcStr::from(parts.join(";\n"));
+    let root = graphix_package::root_module_source(&root_mods);
     let mut all_resolvers = vec![ModuleResolver::VFS(modules)];
     all_resolvers.extend(resolvers);
     Ok(TestCtx {
@@ -228,13 +219,13 @@ where
 /// Compiles `code` as `let result = {code}` in a throwaway module,
 /// waits for the first update, and returns the resulting value along
 /// with the test context (caller must shut it down).
-pub async fn eval(code: &str, register: &[RegisterFn]) -> Result<(Value, TestCtx)> {
+pub async fn eval(code: &str, register: &[PackageRef]) -> Result<(Value, TestCtx)> {
     eval_with_setup(code, register, |_| {}).await
 }
 
 pub async fn eval_with_setup<F>(
     code: &str,
-    register: &[RegisterFn],
+    register: &[PackageRef],
     setup: F,
 ) -> Result<(Value, TestCtx)>
 where
@@ -280,7 +271,10 @@ where
 /// (`serialize::pack_module`) rather than source, so the resolver takes its
 /// `unpack_module` path instead of parsing. The result must match [`eval`] —
 /// packed-load and parse-load are the same program.
-pub async fn eval_packed(code: &str, register: &[RegisterFn]) -> Result<(Value, TestCtx)> {
+pub async fn eval_packed(
+    code: &str,
+    register: &[PackageRef],
+) -> Result<(Value, TestCtx)> {
     let (tx, mut rx) = mpsc::channel(10);
     let gx_code = format!("let result = {code}");
     let source = arcstr::ArcStr::from(gx_code);

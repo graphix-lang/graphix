@@ -4,7 +4,7 @@
 // of zero-input Region kernels in `fusion::fuse`.
 
 use crate::init;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::expr::Source;
 use graphix_rt::GXEvent;
@@ -698,11 +698,7 @@ fn assert_i64s(v: &Value, expected: &[i64]) -> Result<()> {
         .collect();
     let ok = got.len() == expected.len()
         && got.iter().zip(expected).all(|(g, e)| *g == Some(*e));
-    if ok {
-        Ok(())
-    } else {
-        bail!("expected {expected:?}, got {v:?}")
-    }
+    if ok { Ok(()) } else { bail!("expected {expected:?}, got {v:?}") }
 }
 
 fn assert_strs(v: &Value, expected: &[&str]) -> Result<()> {
@@ -711,11 +707,7 @@ fn assert_strs(v: &Value, expected: &[&str]) -> Result<()> {
         && a.iter()
             .zip(expected)
             .all(|(x, e)| matches!(x, Value::String(s) if s.as_str() == *e));
-    if ok {
-        Ok(())
-    } else {
-        bail!("expected {expected:?}, got {v:?}")
-    }
+    if ok { Ok(()) } else { bail!("expected {expected:?}, got {v:?}") }
 }
 
 fn assert_nested_i64s(v: &Value, expected: &[&[i64]]) -> Result<()> {
@@ -1339,7 +1331,7 @@ fn iota(n: i64) -> Value {
 
 #[tokio::test(flavor = "current_thread")]
 async fn env_accounting_grow_shrink() -> Result<()> {
-    use graphix_compiler::{expr::ModPath, Scope};
+    use graphix_compiler::{Scope, expr::ModPath};
 
     let (tx, mut rx) = mpsc::channel(64);
     let ctx = init(tx).await?;
@@ -1356,15 +1348,10 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     // per-slot node-walk residue this test measures disappears.) `once`
     // forces the impure-HOF split: the async residue node-walks per slot
     // (minting per-slot bindings), the `* 2 + 1` fuses via clone_rebind.
-    let _first = ctx
-        .rt
-        .compile(ArcStr::from("let arr: Array<i64> = [];"))
-        .await?;
+    let _first = ctx.rt.compile(ArcStr::from("let arr: Array<i64> = [];")).await?;
     let res = ctx
         .rt
-        .compile(ArcStr::from(
-            "array::map(arr, |x| { let v = once(x) * 2 + 1; v })",
-        ))
+        .compile(ArcStr::from("array::map(arr, |x| { let v = once(x) * 2 + 1; v })"))
         .await?;
     let eid = res.exprs[0].id;
 
@@ -1586,7 +1573,7 @@ proptest::proptest! {
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_external_scalar() -> Result<()> {
     use graphix_compiler::{
-        fusion::kernel_abi::{prim_type, PrimType},
+        fusion::kernel_abi::{PrimType, prim_type},
         node_shape::{KernelMatcher, NodeShape},
     };
 

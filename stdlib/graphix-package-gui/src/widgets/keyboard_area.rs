@@ -1,5 +1,5 @@
 use super::{
-    compile, iced_keyboard_area::KeyboardArea, GuiW, GuiWidget, IcedElement, Message,
+    GuiW, GuiWidget, IcedElement, Message, compile, iced_keyboard_area::KeyboardArea,
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;

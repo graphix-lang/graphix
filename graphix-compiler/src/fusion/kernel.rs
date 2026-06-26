@@ -17,21 +17,24 @@
 //! [`DynCallSlot`] cross-call machinery — everything the JIT boundary
 //! needs.
 
+#[cfg(debug_assertions)]
+use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
+    Apply, BindId, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
     expr::{Expr, ExprId},
     fusion::{
-        emit::{pack_value_to_u64, prim_to_value_disc, unpack_u64_to_value, WrappedKernel, TAINT},
+        emit::{
+            TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
+            unpack_u64_to_value,
+        },
         emit_helpers::{
-            DynCallRet, DynDispatchHandle, TagValue, DYNCALL_PENDING, DYN_DISPATCH_HANDLE,
+            DYN_DISPATCH_HANDLE, DYNCALL_PENDING, DynCallRet, DynDispatchHandle, TagValue,
         },
         kernel_abi::{self, BuiltinSlot, FnSource, KernelSig},
     },
     node::{bind::Ref, compiler::compile, lambda::LambdaDef},
     typ::FnType,
-    Apply, BindId, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
-#[cfg(debug_assertions)]
-use crate::fusion::emit_helpers::record_fusion_invocation;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::sync::Arc;
@@ -109,11 +112,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// Allocate a fresh slot for a kernel `FnParam`. `arg_types` gives
     /// the expected types of the callee's args; we allocate one
     /// BindId + one [`Ref`] node per arg.
-    pub fn new(
-        fn_param: &kernel_abi::FnParam,
-        scope: Scope,
-        top_id: ExprId,
-    ) -> Self {
+    pub fn new(fn_param: &kernel_abi::FnParam, scope: Scope, top_id: ExprId) -> Self {
         let mut bind_ids = Vec::with_capacity(fn_param.arg_types.len());
         let mut arg_refs: Vec<Node<R, E>> = Vec::with_capacity(fn_param.arg_types.len());
         for arg_kty in &fn_param.arg_types {
@@ -123,12 +122,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             // `ctx.cached[id]`) on each `update`. `typ` is the
             // FnParam's declared (frozen) netidx `Type`, used directly.
             let typ = arg_kty.clone();
-            let node = Ref::new::<R, E>(
-                id,
-                typ,
-                top_id,
-                Expr::default(),
-            );
+            let node = Ref::new::<R, E>(id, typ, top_id, Expr::default());
             arg_refs.push(node);
         }
         Self {
@@ -168,8 +162,8 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         layout: &[BuiltinSlot],
         lambda_id: Option<LambdaId>,
     ) -> ::anyhow::Result<()> {
-        use BuiltinSlot;
         use ::anyhow::anyhow;
+        use BuiltinSlot;
         // Restore the lambda's env + lexical scope so labeled-default
         // expressions that reference free variables visible only in
         // the lambda's original module scope (e.g. `default_escape`
@@ -380,9 +374,8 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             // Arc<AbstractInner>), so the hot path of "same callback
             // re-invoked" reuses the existing Apply without
             // re-init'ing.
-            let lambda_def = lambda_value
-                .downcast_ref::<LambdaDef<R, E>>()
-                .unwrap_or_else(|| {
+            let lambda_def =
+                lambda_value.downcast_ref::<LambdaDef<R, E>>().unwrap_or_else(|| {
                     panic!(
                         "DynCall: fn-arg value isn't a LambdaDef — \
                          typecheck should have rejected this"
@@ -471,9 +464,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from.get_mut(0)?
-            .update(ctx, event)
-            .map(|v| self.target.cast_value(&ctx.env, v))
+        from.get_mut(0)?.update(ctx, event).map(|v| self.target.cast_value(&ctx.env, v))
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -921,13 +912,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
-            if let FnSource::Builtin {
-                name,
-                typ,
-                layout,
-                lambda_id,
-            } = &fp.source
-            {
+            if let FnSource::Builtin { name, typ, layout, lambda_id } = &fp.source {
                 let name = name.clone();
                 let typ = typ.clone();
                 let layout = layout.clone();
@@ -1000,11 +985,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // subsequent cycles never re-fire (nothing can change),
         // which is the correct semantics.
         let has_dynamic_fn_params = self.kernel.fn_params.iter().any(|fp| {
-            matches!(
-                fp.source,
-                FnSource::Param { .. }
-                    | FnSource::Binding { .. }
-            )
+            matches!(fp.source, FnSource::Param { .. } | FnSource::Binding { .. })
         });
         // #219: fire at init even WITH dynamic `from` inputs. A kernel
         // whose missing inputs the output doesn't consume must still
@@ -1151,17 +1132,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let struct_args: smallvec::SmallVec<[(u64, ValArray); 4]> =
             (0..k.struct_params.len()).map(|j| composite(base_struct + j)).collect();
         // String args: present clone or empty placeholder.
-        let string_args: smallvec::SmallVec<[(u64, arcstr::ArcStr); 4]> = (0..k
-            .string_params
-            .len())
-            .map(|j| match param_opts[base_string + j].as_ref() {
-                Some(Value::String(s)) => (str_disc, s.clone()),
-                None => (str_disc | taint, empty_str.clone()),
-                Some(v) => {
-                    panic!("Kernel: string param expected Value::String, got {v:?}")
-                }
-            })
-            .collect();
+        let string_args: smallvec::SmallVec<[(u64, arcstr::ArcStr); 4]> =
+            (0..k.string_params.len())
+                .map(|j| match param_opts[base_string + j].as_ref() {
+                    Some(Value::String(s)) => (str_disc, s.clone()),
+                    None => (str_disc | taint, empty_str.clone()),
+                    Some(v) => {
+                        panic!("Kernel: string param expected Value::String, got {v:?}")
+                    }
+                })
+                .collect();
         // Value-shape args (variant / nullable / bare value): present
         // clone with its real disc, or `Value::Null` + TAINT.
         let value_arg = |i: usize| -> (u64, Value) {
@@ -1241,8 +1221,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             set_var: set_var_typed::<R, E>,
             state: (&mut state) as *mut _ as *mut u8,
         };
-        let prev_handle = DYN_DISPATCH_HANDLE
-            .with(|c| c.replace(&handle as *const _));
+        let prev_handle = DYN_DISPATCH_HANDLE.with(|c| c.replace(&handle as *const _));
         // Always reset the pending flag before the call so
         // we can distinguish "this kernel pended" from
         // "some earlier kernel left the flag set."
@@ -1251,8 +1230,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             f(slots.as_ptr(), out.as_mut_ptr());
         }
         DYN_DISPATCH_HANDLE.with(|c| c.set(prev_handle));
-        let pending =
-            DYNCALL_PENDING.with(|c| c.replace(false));
+        let pending = DYNCALL_PENDING.with(|c| c.replace(false));
         if pending {
             // The kernel's *out slot is either a garbage
             // scalar (no deref needed) or a null pointer
@@ -1277,9 +1255,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             &ctx.fusion.abstract_registry,
             &self.kernel.return_type,
         ) {
-            Some(AbiKind::Scalar(p)) => {
-                unpack_u64_to_value(out[0], p)
-            }
+            Some(AbiKind::Scalar(p)) => unpack_u64_to_value(out[0], p),
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 let ptr = out[0] as *mut ValArray;
                 let owned = unsafe { *Box::from_raw(ptr) };

@@ -2,17 +2,17 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, StaticFnArg,
+    UserEvent,
     effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
     node::{callsite::CallSite, genn},
     typ::{FnType, TVal, Type, TypeRef},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, StaticFnArg,
-    UserEvent,
 };
 use graphix_rt::GXRt;
 use immutable_chunkmap::map::Map as CMap;
@@ -22,7 +22,7 @@ use netidx_value::{FromValue, ValArray};
 use poolshark::local::LPooled;
 use std::{
     any::Any,
-    collections::{hash_map::Entry, VecDeque},
+    collections::{VecDeque, hash_map::Entry},
     fmt::Debug,
     iter,
     marker::PhantomData,
@@ -737,10 +737,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
-    fn for_each_hof_callback_body<'a>(
-        &'a self,
-        f: &mut dyn FnMut(&'a Node<R, E>),
-    ) {
+    fn for_each_hof_callback_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         // The callback inline-emits into the map kernel — hand its body to
         // discovery so its builtin-calls/casts/qops are registered (reach
         // it exactly as `emit_clif` does, via `analysis_pred`).
@@ -1244,10 +1241,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
-    fn for_each_hof_callback_body<'a>(
-        &'a self,
-        f: &mut dyn FnMut(&'a Node<R, E>),
-    ) {
+    fn for_each_hof_callback_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         if let Some(ap) = self.analysis_pred.as_ref() {
             if let Some(body) =
                 graphix_compiler::fusion::lowering::hof_callback_body(&ap.pred)

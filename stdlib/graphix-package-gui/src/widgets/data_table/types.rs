@@ -4,10 +4,10 @@
 //! live in the sibling modules. Keeping these in one file avoids
 //! sprinkling `parse_*` helpers across every impl block that calls them.
 
-use super::{Renderer, CELL_H_PADDING, MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH};
+use super::{CELL_H_PADDING, MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH, Renderer};
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
-use compact_str::{format_compact, CompactString};
+use compact_str::{CompactString, format_compact};
 use graphix_rt::{Callable, GXExt, Ref};
 use iced_core::text::Paragraph as _;
 use log::warn;

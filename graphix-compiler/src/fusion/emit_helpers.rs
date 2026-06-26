@@ -146,7 +146,9 @@ impl TagValue {
     #[inline]
     pub fn value(self) -> Value {
         let me = std::mem::ManuallyDrop::new(self);
-        unsafe { std::mem::transmute::<[u64; 2], Value>([me.disc & !TAG_MASK, me.payload]) }
+        unsafe {
+            std::mem::transmute::<[u64; 2], Value>([me.disc & !TAG_MASK, me.payload])
+        }
     }
 
     /// True iff the masked discriminant is zero — the pending-sentinel
@@ -1025,12 +1027,8 @@ pub struct DynDispatchHandle {
     /// and is skipped (the node-walk's `if let Some(v) = ..` guard).
     /// Unlike `dispatch` this does NOT touch the pending flag — a
     /// variable write is a side effect that mustn't abort the kernel.
-    pub set_var: unsafe extern "C" fn(
-        state: *mut u8,
-        bind_id: u64,
-        disc: u64,
-        payload: u64,
-    ),
+    pub set_var:
+        unsafe extern "C" fn(state: *mut u8, bind_id: u64, disc: u64, payload: u64),
     /// Type-erased pointer to the per-call state struct that holds
     /// `&mut [DynCallSlot<R, E>]`, `&[Value]` (fn_arg_values),
     /// `&mut ExecCtx<R, E>`, `&mut Event<E>`.
@@ -1423,7 +1421,10 @@ struct_get_impl!(graphix_struct_get_u64, u64);
 /// success or the error Value otherwise, as a two-register `Value`.
 /// `idx` is a signed `i64` (negatives index from the end).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_index(p: *const ValArray, idx: i64) -> TagValue {
+pub unsafe extern "C" fn graphix_valarray_index(
+    p: *const ValArray,
+    idx: i64,
+) -> TagValue {
     TagValue::clean(array_index(unsafe { arr(p) }, idx))
 }
 

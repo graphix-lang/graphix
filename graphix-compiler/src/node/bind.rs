@@ -1,19 +1,19 @@
 use super::pattern::StructPatternNode;
 use crate::{
-    bailat,
+    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
+    Scope, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::{
-        emit::{emit_ref_node, BodyCx, CompiledExpr},
+        emit::{BodyCx, CompiledExpr, emit_ref_node},
         fuse,
     },
     ide::ReferenceSite,
     typ::Type,
-    wrap, BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag,
-    Refs, Rt, Scope, Update, UserEvent,
+    wrap,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Value;
 use triomphe::Arc;
@@ -45,11 +45,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 id = Some(i);
             }
         });
-        if count == 1 {
-            id
-        } else {
-            None
-        }
+        if count == 1 { id } else { None }
     }
 
     /// Build a `Bind` node from an already-compiled RHS node and an
@@ -202,11 +198,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             }
             n += 1
         });
-        if n == 1 {
-            id
-        } else {
-            None
-        }
+        if n == 1 { id } else { None }
     }
 }
 
@@ -402,10 +394,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         NodeView::Ref(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_ref_node(cx, self.spec.as_ref(), &self.typ, self.id)
     }
 
@@ -480,11 +469,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         if let Some(v) = self.child.update(ctx, event) {
             ctx.set_var(self.id, v);
         }
-        if event.init {
-            Some(Value::U64(self.id.inner()))
-        } else {
-            None
-        }
+        if event.init { Some(Value::U64(self.id.inner())) } else { None }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

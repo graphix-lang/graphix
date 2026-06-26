@@ -78,8 +78,13 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
             return ::std::option::Option::None;
         }
         match &self.args.0[..] {
-            [::std::option::Option::Some(::netidx::subscriber::Value::F64(__a0)), ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a1)), ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a2)), ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a3)), ::std::option::Option::Some(::netidx::subscriber::Value::I64(__a4))] =>
-            {
+            [
+                ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a0)),
+                ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a1)),
+                ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a2)),
+                ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a3)),
+                ::std::option::Option::Some(::netidx::subscriber::Value::I64(__a4)),
+            ] => {
                 let __r = fused_iterate_body(*__a0, *__a1, *__a2, *__a3, *__a4);
                 ::std::option::Option::Some(::netidx::subscriber::Value::I64(__r))
             }

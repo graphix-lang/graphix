@@ -1,17 +1,17 @@
 use crate::expr::{
+    Expr, ExprKind,
     parser::{
         any, apply, array, arrayref, cast, do_block, interpolated, literal, map, mapref,
         qop, raw_string, reference, select, spaces, sptoken, structref, structure,
         structwith, tuple, tupleref, variant,
     },
-    Expr, ExprKind,
 };
 use combine::{
-    attempt, between, choice, many, not_followed_by,
+    ParseError, Parser, RangeStream, attempt, between, choice, many, not_followed_by,
     parser::char::string,
     position,
-    stream::{position::SourcePosition, Range},
-    token, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token,
 };
 use poolshark::local::LPooled;
 use triomphe::Arc;

@@ -36,46 +36,51 @@
 //! (args*, out* — see `define_wrapper`).
 
 use crate::{
+    // `Update` is imported by name (not `as _`) for both its trait
+    // methods (`typ`/`view`/`emit_clif`, called on region-root Nodes)
+    // and the `Update::emit_clif` path form.
+    BindId,
+    Node,
+    NodeView,
+    Refs,
+    Rt,
+    Update,
+    UserEvent,
     env::Env,
     expr::{Expr, ExprId, ExprKind},
     fusion::{
-        self,
+        self, CalleeBody, LambdaCallInfo,
         emit_helpers::all_symbols,
         intern,
         kernel_abi::{
-            self, AbiKind, AbiParamKind, AbiReturn, AbstractRegistry, KernelSig,
-            PrimType,
+            self, AbiKind, AbiParamKind, AbiReturn, AbstractRegistry, KernelSig, PrimType,
         },
         lowering::{self, BuiltinCallSiteInfo, CaptureSlot},
-        CalleeBody, LambdaCallInfo,
     },
     node::{
+        Cached,
         callsite::CallSite,
         op::{BinOp, BoolOp, CmpOp},
         pattern::StructPatternNode,
         select::Select,
-        Cached,
     },
     typ::{FnArgKind, Type},
-    // `Update` is imported by name (not `as _`) for both its trait
-    // methods (`typ`/`view`/`emit_clif`, called on region-root Nodes)
-    // and the `Update::emit_clif` path form.
-    BindId, Node, NodeView, Refs, Rt, Update, UserEvent,
 };
-use anyhow::{anyhow, Context as AnyContext, Result};
+use anyhow::{Context as AnyContext, Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::{
+    Context,
     ir::{
-        condcodes::{FloatCC, IntCC},
-        types, AbiParam, Block, BlockArg, FuncRef, InstBuilder, MemFlags, Signature,
+        AbiParam, Block, BlockArg, FuncRef, InstBuilder, MemFlags, Signature,
         Type as ClifType, Value as ClifValue,
+        condcodes::{FloatCC, IntCC},
+        types,
     },
     settings::{self, Configurable},
-    Context,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
+use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use netidx_value::Value;
 use std::collections::BTreeMap;
 
@@ -197,7 +202,7 @@ fn push_abi_returns(
             return Err(anyhow!(
                 "kernel returns the bare Null type; should have \
                  widened to Nullable<T> at construction"
-            ))
+            ));
         }
     }
     Ok(())
@@ -355,10 +360,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     kernel: &std::sync::Arc<KernelSig>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<KernelSig>>,
     root: &Node<R, E>,
-    apply_sites: &nohash::IntMap<
-        ExprId,
-        BuiltinCallSiteInfo,
-    >,
+    apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     lambda_sites: &nohash::IntMap<ExprId, LambdaCallInfo>,
     callee_bodies: &BTreeMap<usize, CalleeBody<'_, R, E>>,
     parent_self_call: Option<&(BindId, LambdaCallInfo)>,
@@ -1237,18 +1239,12 @@ pub(crate) struct LowerCtx<'a> {
     /// (`Some` only when a [`BodyEmitter`] supplies them) — keyed by
     /// the Apply's spec id, consumed by [`BodyCx::builtin_site`] so
     /// `CallSite::emit_clif` can lower a registered site to a DynCall.
-    builtin_apply_sites: Option<
-        &'a nohash::IntMap<
-            ExprId,
-            BuiltinCallSiteInfo,
-        >,
-    >,
+    builtin_apply_sites: Option<&'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>>,
     /// Discovered statically-resolved lambda call sites — the direct
     /// path's `ExprId → LambdaCallInfo` map (`None` for callee bodies).
     /// `CallSite::emit_clif` resolves a registered site to a CLIF
     /// `call` against `callee_refs[info.fn_name]`.
-    lambda_call_sites:
-        Option<&'a nohash::IntMap<ExprId, LambdaCallInfo>>,
+    lambda_call_sites: Option<&'a nohash::IntMap<ExprId, LambdaCallInfo>>,
     /// `Some` when this kernel is a self-recursive lambda body being
     /// Node-emitted: the self binding + the kernel's own call
     /// descriptor. Tail-position self-calls rebind-and-jump
@@ -2077,7 +2073,12 @@ pub(crate) fn bind_scalar_var(
     let disc = scalar_disc(cx.b, prim);
     let dv = cx.b.declare_var(types::I64);
     cx.b.def_var(dv, disc);
-    cx.env.bind(name, ValueVar { disc: dv, payload: payload_var }, LocalKind::Scalar(prim), bind_id);
+    cx.env.bind(
+        name,
+        ValueVar { disc: dv, payload: payload_var },
+        LocalKind::Scalar(prim),
+        bind_id,
+    );
 }
 
 // ─── Body / statement compilation ────────────────────────────────
@@ -2381,12 +2382,7 @@ trait BodyEmitter {
     /// bodies (their inner sites are #203-unresolved).
     fn builtin_apply_sites(
         &self,
-    ) -> Option<
-        &nohash::IntMap<
-            ExprId,
-            BuiltinCallSiteInfo,
-        >,
-    > {
+    ) -> Option<&nohash::IntMap<ExprId, BuiltinCallSiteInfo>> {
         None
     }
 
@@ -2394,9 +2390,7 @@ trait BodyEmitter {
     /// being emitted (`CallSite::emit_clif` lowers a registered site to
     /// a CLIF `call` via [`BodyCx::lambda_site`]). `None` for callee
     /// bodies (a callee's only cross-kernel reference is itself).
-    fn lambda_call_sites(
-        &self,
-    ) -> Option<&nohash::IntMap<ExprId, LambdaCallInfo>> {
+    fn lambda_call_sites(&self) -> Option<&nohash::IntMap<ExprId, LambdaCallInfo>> {
         None
     }
 
@@ -2436,10 +2430,7 @@ trait BodyEmitter {
 struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
     root: &'a Node<R, E>,
     return_type: &'a Type,
-    apply_sites: &'a nohash::IntMap<
-        ExprId,
-        BuiltinCallSiteInfo,
-    >,
+    apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     lambda_sites: &'a nohash::IntMap<ExprId, LambdaCallInfo>,
     /// `Some` for a self-recursive callee body — see
     /// [`BodyEmitter::self_call`].
@@ -2476,18 +2467,11 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
 
     fn builtin_apply_sites(
         &self,
-    ) -> Option<
-        &nohash::IntMap<
-            ExprId,
-            BuiltinCallSiteInfo,
-        >,
-    > {
+    ) -> Option<&nohash::IntMap<ExprId, BuiltinCallSiteInfo>> {
         Some(self.apply_sites)
     }
 
-    fn lambda_call_sites(
-        &self,
-    ) -> Option<&nohash::IntMap<ExprId, LambdaCallInfo>> {
+    fn lambda_call_sites(&self) -> Option<&nohash::IntMap<ExprId, LambdaCallInfo>> {
         Some(self.lambda_sites)
     }
 
@@ -2557,10 +2541,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// The discovered builtin Apply-site info for `id`, if the
     /// region's pre-build discovery pass registered one (direct path
     /// only — `None` whenever no [`BodyEmitter`] supplied the map).
-    pub(crate) fn builtin_site(
-        &self,
-        id: ExprId,
-    ) -> Option<&BuiltinCallSiteInfo> {
+    pub(crate) fn builtin_site(&self, id: ExprId) -> Option<&BuiltinCallSiteInfo> {
         self.ctx.builtin_apply_sites.and_then(|m| m.get(&id))
     }
 
@@ -2568,10 +2549,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// analysis registered one (direct path only). A `Some` means the
     /// callee kernel is declared in this function's `callee_refs` under
     /// `info.fn_name` and ready to `call`.
-    pub(crate) fn lambda_site(
-        &self,
-        id: ExprId,
-    ) -> Option<&LambdaCallInfo> {
+    pub(crate) fn lambda_site(&self, id: ExprId) -> Option<&LambdaCallInfo> {
         self.ctx.lambda_call_sites.and_then(|m| m.get(&id))
     }
 
@@ -2579,9 +2557,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// self-recursive lambda body: `(the self binding, the kernel's
     /// own LambdaCallInfo)`. A value-position call site whose fnode
     /// Ref carries the binding calls the kernel's own FuncRef.
-    pub(crate) fn self_call_info(
-        &self,
-    ) -> Option<&(BindId, LambdaCallInfo)> {
+    pub(crate) fn self_call_info(&self) -> Option<&(BindId, LambdaCallInfo)> {
         self.ctx.self_call
     }
 
@@ -2606,9 +2582,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 /// producers, calls) hands out an owned ref. Used by the direct path's
 /// let-bind / block-tail / kernel-return sites to decide whether a
 /// clone is needed before the source's scope drops.
-pub fn node_composite_source<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-) -> CompositeSource {
+pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> CompositeSource {
     use NodeView;
     let mut n: &dyn Update<R, E> = &**node;
     loop {
@@ -3255,7 +3229,7 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
         None => {
             return Err(anyhow!(
                 "emit_clif: cast site {expr_id:?} not discovered — doesn't fuse"
-            ))
+            ));
         }
     };
     emit_dyncall_node(cx, &info, &[inner])
@@ -3387,9 +3361,7 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
 /// builtin (we can't consult `builtin_effects` at emit time, so ALL
 /// call sites are conservatively effectful). Everything else the
 /// direct emitter can encounter is value-only.
-fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-) -> bool {
+fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::Connect(_)
@@ -3688,7 +3660,14 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             // flows to its uses; an unconsumed one is dropped, never
             // bottoming (#219).
             let cv = value.emit_clif(cx)?;
-            bind_local(cx, name.clone(), cv.disc, cv.payload, LocalKind::Scalar(p), bind_id);
+            bind_local(
+                cx,
+                name.clone(),
+                cv.disc,
+                cv.payload,
+                LocalKind::Scalar(p),
+                bind_id,
+            );
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let cv = value.emit_clif(cx)?;
@@ -3698,8 +3677,12 @@ fn emit_let_node<R: Rt, E: UserEvent>(
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let cv = value.emit_clif(cx)?;
-            let (disc, payload) =
-                ensure_owned_value_src(cx, node_composite_source(value), cv.disc, cv.payload)?;
+            let (disc, payload) = ensure_owned_value_src(
+                cx,
+                node_composite_source(value),
+                cv.disc,
+                cv.payload,
+            )?;
             let kind = match ak {
                 Some(AbiKind::Variant) => LocalKind::Variant,
                 Some(AbiKind::Nullable) => LocalKind::Nullable,
@@ -3816,8 +3799,12 @@ fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
             // clone and the value-arith helpers run harmlessly on it; the
             // taint guards the garbage result, which the consumer resolves.
             let cv = node.emit_clif(cx)?;
-            let (disc, payload) =
-                ensure_owned_value_src(cx, node_composite_source(node), cv.disc, cv.payload)?;
+            let (disc, payload) = ensure_owned_value_src(
+                cx,
+                node_composite_source(node),
+                cv.disc,
+                cv.payload,
+            )?;
             Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Scalar(p)) => {
@@ -4933,11 +4920,7 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    emit_arm: &mut dyn FnMut(
-        &mut BodyCx,
-        &Cached<R, E>,
-        usize,
-    ) -> Result<()>,
+    emit_arm: &mut dyn FnMut(&mut BodyCx, &Cached<R, E>, usize) -> Result<()>,
     // The final-arm miss handler (reached only under a tainted
     // scrutinee): value position jumps to the merge with a tainted
     // bottom; tail position sets pending and exits.
@@ -5008,7 +4991,11 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                             // not assumed (order-sound). Mask taint
                             // before the structural compare (#219).
                             let cd = clean_disc(cx.b, disc);
-                            Some(cx.b.ins().icmp_imm(IntCC::NotEqual, cd, value_disc::NULL))
+                            Some(cx.b.ins().icmp_imm(
+                                IntCC::NotEqual,
+                                cd,
+                                value_disc::NULL,
+                            ))
                         }
                         _ => {
                             return Err(anyhow!(
@@ -5335,8 +5322,11 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                 ));
             }
             let cv = body.node.emit_clif(cx)?;
-            let v =
-                ensure_owned_composite_src(cx, node_composite_source(&body.node), cv.payload)?;
+            let v = ensure_owned_composite_src(
+                cx,
+                node_composite_source(&body.node),
+                cv.payload,
+            )?;
             (cv.disc, v)
         }
         SelectMerge::String => {
@@ -5371,9 +5361,7 @@ fn node_int_div_may_bottom<R: Rt, E: UserEvent>(
     rhs: &Node<R, E>,
 ) -> bool {
     use NodeView;
-    fn const_value<'a, R: Rt, E: UserEvent>(
-        n: &'a Node<R, E>,
-    ) -> Option<&'a Value> {
+    fn const_value<'a, R: Rt, E: UserEvent>(n: &'a Node<R, E>) -> Option<&'a Value> {
         match n.view() {
             NodeView::Constant(c) => Some(&c.value),
             NodeView::ExplicitParens(p) => const_value(&p.n),
@@ -5632,13 +5620,14 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             LambdaCallSlot::Arg(n, _) => n.emit_clif(cx),
             LambdaCallSlot::Cap(c) => {
                 let vv = {
-                    let l = cx.env.lookup(c.bind_id, c.name.as_str()).ok_or_else(|| {
-                        anyhow!(
-                            "lambda call `{fn_name}`: capture `{}` not in the \
+                    let l =
+                        cx.env.lookup(c.bind_id, c.name.as_str()).ok_or_else(|| {
+                            anyhow!(
+                                "lambda call `{fn_name}`: capture `{}` not in the \
                              calling kernel's env",
-                            c.name
-                        )
-                    })?;
+                                c.name
+                            )
+                        })?;
                     l.vv
                 };
                 Ok(CompiledExpr::new(cx.b.use_var(vv.disc), cx.b.use_var(vv.payload)))
@@ -5656,7 +5645,9 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // after the call (the callee refcount-bumps on entry).
     let order = slots
         .iter()
-        .filter(|s| matches!(kernel_abi::abi_kind(reg, s.typ()), Some(AbiKind::Scalar(_))))
+        .filter(|s| {
+            matches!(kernel_abi::abi_kind(reg, s.typ()), Some(AbiKind::Scalar(_)))
+        })
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Array)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Tuple)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)))
@@ -6157,7 +6148,9 @@ fn widen_to_i64(b: &mut FunctionBuilder, v: ClifValue, p: PrimType) -> Result<Cl
             b.ins().uextend(types::I64, v)
         }
         PrimType::F32 | PrimType::F64 => {
-            return Err(anyhow::anyhow!("widen_to_i64: float index — emission malformed"));
+            return Err(anyhow::anyhow!(
+                "widen_to_i64: float index — emission malformed"
+            ));
         }
     })
 }
@@ -6239,7 +6232,11 @@ fn string_buf_push_helper(p: PrimType) -> &'static str {
 /// frozen type; `v` must be the matching scalar (`Z*`/`V*`
 /// accepted for their fixed-width prim). Returns `Err` otherwise (a
 /// malformed kernel — de-fuses to the node-walk instead of panicking).
-fn compile_const(b: &mut FunctionBuilder, v: &Value, prim: PrimType) -> Result<ClifValue> {
+fn compile_const(
+    b: &mut FunctionBuilder,
+    v: &Value,
+    prim: PrimType,
+) -> Result<ClifValue> {
     macro_rules! bad {
         () => {
             return Err(anyhow::anyhow!("compile_const: {v:?} isn't a {prim:?} scalar"))

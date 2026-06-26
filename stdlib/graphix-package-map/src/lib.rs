@@ -2,13 +2,13 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,

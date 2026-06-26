@@ -1,11 +1,10 @@
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    errf,
+    ExecCtx, Node, Rt, Scope, UserEvent, errf,
     expr::ExprId,
     typ::{FnType, Type, TypeRef},
-    ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::{path::Path, publisher::Typ};
@@ -16,7 +15,7 @@ use poolshark::{global::GPooled, local::LPooled};
 use std::sync::Arc;
 
 use crate::encoding::{
-    decode_key, decode_value, encode_key, encode_value, parse_batch_ops, ENCODE_MANY_POOL,
+    ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
 // ── Abstract types ────────────────────────────────────────────────
@@ -984,7 +983,7 @@ impl EvalCachedAsync for DbCompareAndSwapEv {
                         Some(ivec) => match decode_value(&ivec) {
                             Some(v) => v,
                             None => {
-                                return errf!("DbErr", "failed to decode current value")
+                                return errf!("DbErr", "failed to decode current value");
                             }
                         },
                     };

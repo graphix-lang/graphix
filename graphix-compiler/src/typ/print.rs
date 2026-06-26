@@ -1,7 +1,7 @@
 use crate::{
+    PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
     typ::{Type, TypeRef},
-    PrintFlag, PRINT_FLAGS,
 };
 use netidx::publisher::Typ;
 use std::fmt::{self, Write};

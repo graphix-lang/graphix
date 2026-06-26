@@ -10,9 +10,5 @@ pub fn handle(
 
     let items = state.completions(uri, position);
 
-    if items.is_empty() {
-        None
-    } else {
-        Some(CompletionResponse::Array(items))
-    }
+    if items.is_empty() { None } else { Some(CompletionResponse::Array(items)) }
 }

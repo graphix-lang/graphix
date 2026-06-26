@@ -1,4 +1,4 @@
-use crate::{state::Document, ServerState};
+use crate::{ServerState, state::Document};
 use log::info;
 use std::collections::HashMap;
 

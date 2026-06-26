@@ -5,6 +5,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 use graphix_compiler::{
+    BindId, SourcePosition,
     env::{Bind, Env},
     expr::{BufferOverrides, Expr, ModPath, Origin, Source},
     ide::{
@@ -12,7 +13,6 @@ use graphix_compiler::{
         SigImplLink, TypeRefSite,
     },
     typ::{FnArgKind, FnType, Type},
-    BindId, SourcePosition,
 };
 use lsp_types::Uri;
 use poolshark::local::LPooled;
@@ -1014,11 +1014,7 @@ impl ServerState {
     /// active doc's `sig_links` plus every project's. Sig and impl ids
     /// are minted per compile, so stale lookups across compiles don't
     /// match — but find-references is consulted on the latest check.
-    fn sig_link_impl_for(
-        &self,
-        uri: &Uri,
-        sig_id: BindId,
-    ) -> Option<BindId> {
+    fn sig_link_impl_for(&self, uri: &Uri, sig_id: BindId) -> Option<BindId> {
         if let Some(doc) = self.documents.get(uri) {
             for l in doc.ide.sig_links.iter() {
                 if l.sig_id == sig_id {
@@ -1065,10 +1061,7 @@ impl ServerState {
         let doc = self.documents.get(uri)?;
         for r in doc.ide.references.iter() {
             if position_in_ref(position, r) {
-                return Some((
-                    r.def_pos,
-                    Origin::clone(&r.def_ori),
-                ));
+                return Some((r.def_pos, Origin::clone(&r.def_ori)));
             }
         }
         None
@@ -1170,7 +1163,7 @@ impl ServerState {
     /// Symbols for a `.gxi` interface file. Parses the text as a Sig
     /// and emits one entry per `val`/`type`/`mod`/`use` item.
     fn gxi_document_symbols(&self, text: &str) -> Vec<lsp_types::DocumentSymbol> {
-        use graphix_compiler::expr::{parser, Origin, SigKind, Source};
+        use graphix_compiler::expr::{Origin, SigKind, Source, parser};
         let ori = Origin {
             parent: None,
             source: Source::Unspecified,
@@ -1233,7 +1226,7 @@ impl ServerState {
     /// the file's parse, filtered by `query` (case-insensitive
     /// substring).
     pub fn workspace_symbols(&self, query: &str) -> Vec<lsp_types::SymbolInformation> {
-        use graphix_compiler::expr::{parser, Origin, SigKind, Source};
+        use graphix_compiler::expr::{Origin, SigKind, Source, parser};
         let needle = query.to_ascii_lowercase();
         let matches = |name: &str| -> bool {
             needle.is_empty() || name.to_ascii_lowercase().contains(&needle)
@@ -1361,26 +1354,25 @@ impl ServerState {
         out: &mut Vec<lsp_types::SymbolInformation>,
     ) {
         use graphix_compiler::expr::{ExprKind, StructurePattern};
-        let mut push = |name: String,
-                        kind: lsp_types::SymbolKind,
-                        pos: SourcePosition| {
-            if !matches(&name) {
-                return;
-            }
-            let line = pos.line.saturating_sub(1).max(0) as u32;
-            let char_col = pos.column.saturating_sub(1).max(0) as usize;
-            let p = self.lsp_position_from_char_col(text, line, char_col);
-            let range = lsp_types::Range { start: p, end: p };
-            #[allow(deprecated)]
-            out.push(lsp_types::SymbolInformation {
-                name,
-                kind,
-                tags: None,
-                deprecated: None,
-                location: lsp_types::Location { uri: uri.clone(), range },
-                container_name: None,
-            });
-        };
+        let mut push =
+            |name: String, kind: lsp_types::SymbolKind, pos: SourcePosition| {
+                if !matches(&name) {
+                    return;
+                }
+                let line = pos.line.saturating_sub(1).max(0) as u32;
+                let char_col = pos.column.saturating_sub(1).max(0) as usize;
+                let p = self.lsp_position_from_char_col(text, line, char_col);
+                let range = lsp_types::Range { start: p, end: p };
+                #[allow(deprecated)]
+                out.push(lsp_types::SymbolInformation {
+                    name,
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: lsp_types::Location { uri: uri.clone(), range },
+                    container_name: None,
+                });
+            };
         match &e.kind {
             ExprKind::Bind(b) => {
                 if let StructurePattern::Bind(name) = &b.pattern {
@@ -2007,10 +1999,7 @@ fn bind_at_decl<'a>(
 /// IDE-only mirror still has the type and doc. ide_binds is keyed by
 /// (scope, name) not by BindId, so we have to scan; n is small enough
 /// at IDE speeds that this is fine.
-fn bind_for_id(
-    env: &Env,
-    id: BindId,
-) -> Option<&Bind> {
+fn bind_for_id(env: &Env, id: BindId) -> Option<&Bind> {
     if let Some(b) = env.by_id.get(&id) {
         return Some(b);
     }
@@ -2121,9 +2110,9 @@ fn modpath_from_typed(s: &str) -> ModPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Origin;
     use ahash::AHashMap;
     use arcstr::literal;
-    use Origin;
     use std::str::FromStr;
     use triomphe::Arc;
 
@@ -2239,8 +2228,7 @@ mod tests {
         std::fs::write(&lib_gx, "let widgetize = |n: i64| -> i64 n;\n").unwrap();
 
         let backend: std::sync::Arc<dyn LspBackend> = StubBackend::new();
-        let mut state =
-            ServerState::new(backend, false, PositionEncoding::Utf16);
+        let mut state = ServerState::new(backend, false, PositionEncoding::Utf16);
         state.workspace_roots = vec![root.to_path_buf()];
         state.workspace = scan(&state.workspace_roots);
         // Mark `main.gx` as the active doc so the scope picker

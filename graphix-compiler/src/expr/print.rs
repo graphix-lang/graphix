@@ -1,15 +1,15 @@
 use super::Sig;
 use crate::{
     expr::{
-        parser, ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr,
-        ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
-        TypeDefExpr,
+        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModuleKind,
+        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefExpr,
+        parser,
     },
     typ::Type,
 };
 use compact_str::format_compact;
 use netidx::{path::Path, utils::Either};
-use netidx_value::{parser::VAL_ESC, Value};
+use netidx_value::{Value, parser::VAL_ESC};
 use poolshark::local::LPooled;
 use std::fmt::{self, Formatter, Write};
 

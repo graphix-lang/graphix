@@ -9,17 +9,16 @@
 //! builtins. The graphix interperter is run in a background task, and
 //! can be interacted with via a handle. All features of the standard
 //! library are supported by this runtime.
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
+    BindId, CFlag, Control, Event, ExecCtx, FusionStats, NoUserEvent, Scope, UserEvent,
     env::Env,
     expr::{ExprId, ModPath, ModuleResolver, Source},
     ide::Ide,
     typ::{FnType, Type},
-    BindId, CFlag, Control, Event, ExecCtx, FusionStats, NoUserEvent, Scope,
-    UserEvent,
 };
 use log::error;
 use netidx::{
@@ -314,11 +313,7 @@ impl<X: GXExt> Callable<X> {
 
     /// Return Some(v) if this update is the return value of the callable
     pub fn update<'a>(&self, id: ExprId, v: &'a Value) -> Option<&'a Value> {
-        if self.expr == id {
-            Some(v)
-        } else {
-            None
-        }
+        if self.expr == id { Some(v) } else { None }
     }
 }
 

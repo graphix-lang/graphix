@@ -1,4 +1,4 @@
-use super::{compile, GuiW, GuiWidget, IcedElement, Message};
+use super::{GuiW, GuiWidget, IcedElement, Message, compile};
 use crate::types::{LengthV, ScrollDirectionV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;

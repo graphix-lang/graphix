@@ -39,10 +39,10 @@ use crate::{
     typ::{FnType, Type},
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use enumflags2::bitflags;
 pub use enumflags2::BitFlags;
+use enumflags2::bitflags;
 use expr::{Attr, Expr};
 use futures::channel::mpsc;
 use log::info;
@@ -52,7 +52,7 @@ use netidx::{
     subscriber::{self, Dval, SubId, UpdatesFlags, Value},
 };
 use netidx_protocols::rpc::server::{ArgSpec, RpcCall};
-use netidx_value::{abstract_type::AbstractWrapper, Abstract};
+use netidx_value::{Abstract, abstract_type::AbstractWrapper};
 use node::compiler;
 use nohash::{IntMap, IntSet};
 use parking_lot::{Mutex, RwLock};
@@ -67,9 +67,8 @@ use std::{
     fmt::Debug,
     mem,
     sync::{
-        self,
+        self, LazyLock,
         atomic::{AtomicBool, AtomicU32, Ordering},
-        LazyLock,
     },
     time::Duration,
 };
@@ -205,11 +204,7 @@ pub fn trace() -> bool {
 #[macro_export]
 macro_rules! tdbg {
     ($e:expr) => {
-        if $crate::trace() {
-            dbg!($e)
-        } else {
-            $e
-        }
+        if $crate::trace() { dbg!($e) } else { $e }
     };
 }
 
@@ -586,11 +581,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// registers match what emit looks up. Default: no callbacks. The
     /// `'a` ties each body's borrow to `self`, so the discovery can
     /// collect the bodies and walk them after the main pass.
-    fn for_each_hof_callback_body<'a>(
-        &'a self,
-        _f: &mut dyn FnMut(&'a Node<R, E>),
-    ) {
-    }
+    fn for_each_hof_callback_body<'a>(&'a self, _f: &mut dyn FnMut(&'a Node<R, E>)) {}
 
     /// put the node to sleep, used in conditions like select for branches that
     /// are not selected. Any cached values should be cleared on sleep.

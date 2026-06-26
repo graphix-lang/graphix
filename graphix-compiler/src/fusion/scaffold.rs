@@ -122,7 +122,12 @@ fn bind_elem(
             cx.b.def_var(var, elem_val);
             let dv = cx.b.declare_var(types::I64);
             cx.b.def_var(dv, disc);
-            cx.env.bind(elem.name.clone(), ValueVar { disc: dv, payload: var }, LocalKind::Scalar(prim), elem.id);
+            cx.env.bind(
+                elem.name.clone(),
+                ValueVar { disc: dv, payload: var },
+                LocalKind::Scalar(prim),
+                elem.id,
+            );
             Ok(BoundElem::Scalar { var, prim })
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -134,7 +139,12 @@ fn bind_elem(
             cx.b.def_var(var, elem_ptr);
             let dv = cx.b.declare_var(types::I64);
             cx.b.def_var(dv, disc);
-            cx.env.bind(elem.name.clone(), ValueVar { disc: dv, payload: var }, LocalKind::Composite, elem.id);
+            cx.env.bind(
+                elem.name.clone(),
+                ValueVar { disc: dv, payload: var },
+                LocalKind::Composite,
+                elem.id,
+            );
             // Destructure leaves: scalar reads off the owned element,
             // bound under their pattern BindIds (the body's leaf Refs
             // resolve BindId-first; the synthetic name is never looked

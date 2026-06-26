@@ -1,11 +1,11 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::literal;
 use chrono::Utc;
 use graphix_compiler::{
-    effects::EffectKind, err, expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, Event,
-    ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    effects::EffectKind, err, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::{arity2, CachedVals};
+use graphix_package_core::{CachedVals, arity2};
 use netidx::{publisher::FromValue, subscriber::Value};
 use std::{ops::SubAssign, time::Duration};
 

@@ -1,8 +1,7 @@
 use super::{
-    compile,
+    GuiW, GuiWidget, IcedElement, compile,
     context_menu_widget::OwnedContextMenu,
-    menu_bar::{compile_menu_items, menu_item_desc, MenuItemKind},
-    GuiW, GuiWidget, IcedElement,
+    menu_bar::{MenuItemKind, compile_menu_items, menu_item_desc},
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;

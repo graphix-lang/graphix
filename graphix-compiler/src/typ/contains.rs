@@ -1,12 +1,12 @@
 use crate::{
+    PrintFlag,
     env::Env,
     format_with_flags,
-    typ::{tvar::would_cycle_inner, AndAc, RefHist, Type, TypeRef},
-    PrintFlag,
+    typ::{AndAc, RefHist, Type, TypeRef, tvar::would_cycle_inner},
 };
 use ahash::AHashMap;
-use anyhow::{bail, Result};
-use enumflags2::{bitflags, BitFlags};
+use anyhow::{Result, bail};
+use enumflags2::{BitFlags, bitflags};
 use netidx::publisher::Typ;
 use poolshark::local::LPooled;
 use std::fmt::Debug;
@@ -201,17 +201,13 @@ impl Type {
                     let t1i = t1.typ.read();
                     match (&*t0i, &*t1i) {
                         (Some(t0), Some(t1)) => {
-                            return t0.contains_int(flags, env, hist, &*t1)
+                            return t0.contains_int(flags, env, hist, &*t1);
                         }
                         (None, None) => {
                             if t0.frozen && t1.frozen {
                                 return Ok(true);
                             }
-                            if t0.frozen {
-                                Act::RightAlias
-                            } else {
-                                Act::LeftAlias
-                            }
+                            if t0.frozen { Act::RightAlias } else { Act::LeftAlias }
                         }
                         (Some(_), None) => Act::RightCopy,
                         (None, Some(_)) => Act::LeftCopy,

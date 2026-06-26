@@ -1,16 +1,16 @@
-use super::{bind::Ref, compiler::compile, Nop, NOP};
+use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
-    deref_typ,
+    Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId, Node,
+    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update,
+    UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
-    fusion::emit::{emit_dyncall_node, emit_lambda_call_node, BodyCx, CompiledExpr},
+    fusion::emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
     node::lambda::LambdaDef,
     typ::{FnArgKind, FnType, Type},
-    wrap, Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId,
-    Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update,
-    UserEvent,
+    wrap,
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::subscriber::Value;
@@ -342,11 +342,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// this gives [`crate::Apply::emit_clif`] impls both views of
     /// the arg list.
     pub fn arg_refs(&self) -> Option<&[Node<R, E>]> {
-        if self.callee.is_bound() {
-            Some(&self.arg_refs)
-        } else {
-            None
-        }
+        if self.callee.is_bound() { Some(&self.arg_refs) } else { None }
     }
 
     pub(crate) fn compile(
@@ -800,7 +796,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                             Some(lb) => {
                                 let scope = self.scope.clone();
                                 self.bind(
-                                    ctx, scope, self.flags, v.clone(), lb, event, &mut set,
+                                    ctx,
+                                    scope,
+                                    self.flags,
+                                    v.clone(),
+                                    lb,
+                                    event,
+                                    &mut set,
                                 )
                                 .expect("failed to bind to lambda");
                                 true
@@ -1013,13 +1015,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     {
                         bail!(
                             "ERROR: {} at {} error {} raised from function call {} will not be caught",
-                            self.spec.ori, self.spec.pos, t, self.fnode.spec()
+                            self.spec.ori,
+                            self.spec.pos,
+                            t,
+                            self.fnode.spec()
                         )
                     }
                     if self.flags.contains(CFlag::WarnUnhandled) {
                         eprintln!(
                             "WARNING: {} at {} error {} raised from function call {} will not be caught",
-                            self.spec.ori, self.spec.pos, t, self.fnode.spec()
+                            self.spec.ori,
+                            self.spec.pos,
+                            t,
+                            self.fnode.spec()
                         )
                     }
                 }
@@ -1117,10 +1125,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         NodeView::CallSite(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         if let Some(f) = self.callee.apply() {
             // A resolved user-lambda callee is a cross-kernel call:
             // `try_fuse`'s analysis discovered the site and built (or

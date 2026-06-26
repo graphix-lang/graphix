@@ -1,5 +1,5 @@
 use super::{StyleV, TRef, TuiW, TuiWidget};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
@@ -7,9 +7,9 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{RenderDirection, Sparkline, SparklineBar},
-    Frame,
 };
 use tokio::try_join;
 
@@ -58,8 +58,14 @@ pub(super) struct SparklineW<X: GXExt> {
 
 impl<X: GXExt> SparklineW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, absent_value_style), (_, absent_value_symbol), (_, data), (_, direction), (_, max), (_, style)] =
-            v.cast_to::<[(ArcStr, u64); 6]>()?;
+        let [
+            (_, absent_value_style),
+            (_, absent_value_symbol),
+            (_, data),
+            (_, direction),
+            (_, max),
+            (_, style),
+        ] = v.cast_to::<[(ArcStr, u64); 6]>()?;
         let (absent_value_style, absent_value_symbol, data_ref, direction, max, style) =
             try_join! {
                 gx.compile_ref(absent_value_style),

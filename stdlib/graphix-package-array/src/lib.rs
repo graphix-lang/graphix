@@ -3,19 +3,19 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use ahash::AHashSet;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
     effects::EffectKind,
     expr::ExprId,
     fusion::{
-        emit::{self, scaffold, BodyCx, CompiledExpr, CompositeSource},
+        emit::{self, BodyCx, CompiledExpr, CompositeSource, scaffold},
         kernel_abi::{self, PrimType},
     },
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapFn, MapQ, Slot,
@@ -24,9 +24,9 @@ use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value, utils::Either};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::{
-    collections::{hash_map::Entry, VecDeque},
+    collections::{VecDeque, hash_map::Entry},
     fmt::Debug,
     iter,
 };
@@ -882,29 +882,31 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
             v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
         }
         match &from.0[..] {
-            [Some(Value::String(dir)), Some(Value::Bool(numeric)), Some(Value::Array(a))] => {
-                match &**dir {
-                    "Ascending" => {
-                        self.0.extend(a.iter().cloned());
-                        if *numeric {
-                            self.0.sort_by(|v0, v1| cn(v0).cmp(&cn(v1)))
-                        } else {
-                            self.0.sort();
-                        }
-                        Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
+            [
+                Some(Value::String(dir)),
+                Some(Value::Bool(numeric)),
+                Some(Value::Array(a)),
+            ] => match &**dir {
+                "Ascending" => {
+                    self.0.extend(a.iter().cloned());
+                    if *numeric {
+                        self.0.sort_by(|v0, v1| cn(v0).cmp(&cn(v1)))
+                    } else {
+                        self.0.sort();
                     }
-                    "Descending" => {
-                        self.0.extend(a.iter().cloned());
-                        if *numeric {
-                            self.0.sort_by(|a0, a1| cn(a1).cmp(&cn(a0)))
-                        } else {
-                            self.0.sort_by(|a0, a1| a1.cmp(a0));
-                        }
-                        Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
-                    }
-                    _ => None,
+                    Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
                 }
-            }
+                "Descending" => {
+                    self.0.extend(a.iter().cloned());
+                    if *numeric {
+                        self.0.sort_by(|a0, a1| cn(a1).cmp(&cn(a0)))
+                    } else {
+                        self.0.sort_by(|a0, a1| a1.cmp(a0));
+                    }
+                    Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -1112,7 +1114,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                         Value::Bool(true) => {
                             break Some(Value::Array(ValArray::from_iter_exact(
                                 self.buf.drain(..),
-                            )))
+                            )));
                         }
                         _ => match self.queue.pop_front() {
                             None => break None,
@@ -1319,10 +1321,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
-    fn for_each_hof_callback_body<'a>(
-        &'a self,
-        f: &mut dyn FnMut(&'a Node<R, E>),
-    ) {
+    fn for_each_hof_callback_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
         if let Some(slot) = self.analysis_pred.as_ref() {
             if let Some(body) =
                 graphix_compiler::fusion::lowering::hof_callback_body(&slot.pred)

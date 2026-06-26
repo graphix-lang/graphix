@@ -1,11 +1,11 @@
 use crate::{
+    PrintFlag,
     env::Env,
     format_with_flags,
     typ::{AbstractId, AndAc, RefHist, Type, TypeRef},
-    PrintFlag,
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use nohash::IntMap;
@@ -267,7 +267,9 @@ impl Type {
             },
             (Self::TVar(sig_tv), Self::TVar(impl_tv)) if sig_tv != impl_tv => {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!("signature type variable {sig_tv} does not match implementation {impl_tv}")
+                    bail!(
+                        "signature type variable {sig_tv} does not match implementation {impl_tv}"
+                    )
                 })
             }
             (sig_type, Self::TVar(impl_tv)) => {
@@ -298,11 +300,15 @@ impl Type {
             }
             (Self::TVar(sig_tv), impl_type) => {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!("signature has type variable '{sig_tv} where implementation has {impl_type}")
+                    bail!(
+                        "signature has type variable '{sig_tv} where implementation has {impl_type}"
+                    )
                 })
             }
             (sig_type, impl_type) => format_with_flags(PrintFlag::DerefTVars, || {
-                bail!("type mismatch: signature has {sig_type}, implementation has {impl_type}")
+                bail!(
+                    "type mismatch: signature has {sig_type}, implementation has {impl_type}"
+                )
             }),
         }
     }

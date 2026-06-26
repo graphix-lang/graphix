@@ -1,13 +1,13 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
+    SourcePosition, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    SourcePosition, UserEvent,
 };
 use netidx::subscriber::Value;
 use parking_lot::Mutex;
@@ -335,11 +335,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             }
         }
         self.maybe_write_count(ctx);
-        if event.init {
-            self.lambda.clone()
-        } else {
-            new_lambda
-        }
+        if event.init { self.lambda.clone() } else { new_lambda }
     }
 
     fn typecheck1(

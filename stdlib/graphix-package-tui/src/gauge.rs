@@ -6,7 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::Value;
-use ratatui::{layout::Rect, widgets::Gauge, Frame};
+use ratatui::{Frame, layout::Rect, widgets::Gauge};
 use tokio::try_join;
 
 /// Clamp `raw` into the [0, 1] range ratatui requires (it panics on

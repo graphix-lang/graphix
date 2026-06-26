@@ -1,16 +1,15 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use futures::{channel::mpsc, future::try_join_all, StreamExt};
+use futures::{StreamExt, channel::mpsc, future::try_join_all};
 use graphix_compiler::{
-    compile,
+    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope, compile,
     expr::{
-        self, read_to_arcstr, Expr, ExprId, ExprKind, ModPath, ModuleResolver, Origin,
-        Source,
+        self, Expr, ExprId, ExprKind, ModPath, ModuleResolver, Origin, Source,
+        read_to_arcstr,
     },
     node::{genn, lambda::LambdaDef},
     typ::Type,
-    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope,
 };
 use indexmap::IndexMap;
 use log::{debug, error, info};
@@ -25,16 +24,16 @@ use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
 };
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::{
-    collections::{hash_map::Entry, VecDeque},
+    collections::{VecDeque, hash_map::Entry},
     future, mem, result,
     time::Duration,
 };
 use tokio::{
     fs, select,
     sync::{
-        mpsc::{self as tmpsc, error::SendTimeoutError, UnboundedReceiver},
+        mpsc::{self as tmpsc, UnboundedReceiver, error::SendTimeoutError},
         oneshot,
     },
     task::{JoinError, JoinSet},
@@ -525,11 +524,7 @@ impl<X: GXExt> GX<X> {
                 let file = fs::canonicalize(file).await?;
                 let s = fs::read_to_string(&file).await?;
                 let s = if s.starts_with("#!") {
-                    if let Some(i) = s.find('\n') {
-                        &s[i..]
-                    } else {
-                        s.as_str()
-                    }
+                    if let Some(i) = s.find('\n') { &s[i..] } else { s.as_str() }
                 } else {
                     s.as_str()
                 };

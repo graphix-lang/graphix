@@ -1,15 +1,15 @@
-use super::{compiler::compile, pattern::StructPatternNode, Cached};
+use super::{Cached, compiler::compile, pattern::StructPatternNode};
 use crate::{
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update,
+    UserEvent,
     expr::{Expr, ExprId, Pattern},
     format_with_flags,
-    fusion::emit::{emit_select_node, BodyCx, CompiledExpr},
+    fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     node::pattern::PatternNode,
     typ::Type,
-    wrap, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
-    Update,
-    UserEvent,
+    wrap,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx::subscriber::Value;
@@ -101,21 +101,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
         if !arg_up && !pat_up {
             self.selected.and_then(|i| {
-                if arms[i].1.update(ctx, event) {
-                    arms[i].1.cached.clone()
-                } else {
-                    None
-                }
+                if arms[i].1.update(ctx, event) { arms[i].1.cached.clone() } else { None }
             })
         } else {
             let sel = match arg.cached.as_ref() {
                 None => None,
                 Some(v) => arms.iter().enumerate().find_map(|(i, (pat, _))| {
-                    if pat.is_match(&ctx.env, v) {
-                        Some(i)
-                    } else {
-                        None
-                    }
+                    if pat.is_match(&ctx.env, v) { Some(i) } else { None }
                 }),
             };
             match (sel, *selected) {
@@ -284,10 +276,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         NodeView::Select(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_select_node(cx, self)
     }
 

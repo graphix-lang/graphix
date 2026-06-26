@@ -1,6 +1,6 @@
 use std::fs::FileType;
 
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use chrono::{DateTime, Utc};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};

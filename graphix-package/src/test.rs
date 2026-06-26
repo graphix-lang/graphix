@@ -391,11 +391,11 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
 // ---- Pure-function unit tests (no stdin / network / filesystem) ----
 mod pure {
     use super::super::{
-        apply_selection, compute_update_plan, feature_depends_on, feature_edges,
-        installed_dependents, normalize_selection, parse_packages, parse_toggles,
-        plan_items, selection_from_indices, stdlib_packages_in_cargo_toml,
-        to_toml_string, version_gt, PackageEntry, Packages, Selection, UpdatePlan,
-        DEFAULT_PACKAGES,
+        DEFAULT_PACKAGES, PackageEntry, Packages, Selection, UpdatePlan, apply_selection,
+        compute_update_plan, feature_depends_on, feature_edges, installed_dependents,
+        normalize_selection, parse_packages, parse_toggles, plan_items,
+        selection_from_indices, stdlib_packages_in_cargo_toml, to_toml_string,
+        version_gt,
     };
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -757,7 +757,7 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         assert!(feature_depends_on("tui", "array", &edges));
         assert!(!feature_depends_on("str", "sys", &edges));
         assert!(!feature_depends_on("sys", "json", &edges)); // not the reverse
-                                                             // `?/` weak entries are not edges, so krb5_iov depends on nothing
+        // `?/` weak entries are not edges, so krb5_iov depends on nothing
         assert!(!feature_depends_on("krb5_iov", "sys", &edges));
         let installed = sset(&["str", "sys", "json", "hbs", "tui", "array"]);
         let mut deps = installed_dependents("sys", &installed, &edges);
@@ -809,11 +809,19 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         assert!(!feature_depends_on("krb5_iov", "http", &edges));
     }
 
+    // Registration is now done entirely by the `packages!()` macro scraping
+    // Cargo.toml — the old generated `packages.rs` and static `deps.rs` are gone,
+    // and main.rs no longer declares `mod packages;`.
     #[test]
-    fn shell_ships_packages_rs_and_deps_rs() {
+    fn shell_has_no_generated_registration_files() {
         let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let src = ws.join("graphix-shell").join("src");
-        assert!(src.join("packages.rs").is_file(), "committed src/packages.rs missing");
-        assert!(src.join("deps.rs").is_file(), "src/deps.rs missing");
+        assert!(!src.join("packages.rs").exists(), "src/packages.rs should be gone");
+        assert!(!src.join("deps.rs").exists(), "src/deps.rs should be gone");
+        let main = std::fs::read_to_string(src.join("main.rs")).unwrap();
+        assert!(
+            !main.contains("mod packages;"),
+            "main.rs should not declare `mod packages;`"
+        );
     }
 }

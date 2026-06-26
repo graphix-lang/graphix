@@ -36,6 +36,7 @@ pub enum GenType {
 }
 
 impl GenType {
+    #[allow(dead_code)]
     fn is_numeric(&self) -> bool {
         matches!(self, GenType::I64 | GenType::F64 | GenType::U8)
     }
@@ -237,9 +238,5 @@ pub fn gen_program(rng: &mut Rng) -> String {
     let tail_ty = random_type(rng, 2);
     let tail = maybe_select(&ctx, rng, &tail_ty, 3)
         .unwrap_or_else(|| gen_typed(&ctx, rng, &tail_ty, 3));
-    if stmts.is_empty() {
-        tail
-    } else {
-        format!("{{ {}; {} }}", stmts.join("; "), tail)
-    }
+    if stmts.is_empty() { tail } else { format!("{{ {}; {} }}", stmts.join("; "), tail) }
 }

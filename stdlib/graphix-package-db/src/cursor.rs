@@ -1,6 +1,6 @@
 use crate::{
     encoding::{decode_key, decode_value, encode_key},
-    tree::{get_tree_inner, TreeInner},
+    tree::{TreeInner, get_tree_inner},
 };
 use arcstr::ArcStr;
 use graphix_compiler::errf;
@@ -168,7 +168,7 @@ impl EvalCachedAsync for DbCursorReadManyEv {
                                     results.push(Value::Array(ValArray::from([k, v])));
                                 }
                                 _ => {
-                                    return Err(errf!("DbErr", "failed to decode entry"))
+                                    return Err(errf!("DbErr", "failed to decode entry"));
                                 }
                             }
                         }

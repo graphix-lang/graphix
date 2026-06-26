@@ -8,18 +8,17 @@
 //! Windows are created/destroyed as the root `Array<&Window>` changes.
 
 use crate::{
-    convert,
+    ToGui, convert,
     render::{GpuState, WindowSurface},
     types::SizeV,
     widgets::{Message, MessageShell},
     window::{ResolvedWindow, TrackedWindow},
-    ToGui,
 };
 use ahash::AHashMap;
 use anyhow::{Context, Result};
 use graphix_compiler::BindId;
 use graphix_rt::{CompExp, GXExt, GXHandle};
-use iced_core::{clipboard, mouse, renderer::Style, window, Size};
+use iced_core::{Size, clipboard, mouse, renderer::Style, window};
 use iced_runtime::user_interface::{self, UserInterface};
 use iced_wgpu::wgpu;
 use log::error;
@@ -543,7 +542,7 @@ async fn resize_end_debounce(
     mut rx: mpsc::UnboundedReceiver<(WindowId, SizeV)>,
     proxy: EventLoopProxy<ToGui>,
 ) {
-    use tokio::time::{sleep_until, Duration, Instant};
+    use tokio::time::{Duration, Instant, sleep_until};
     let far = || Instant::now() + Duration::from_secs(86400);
     let timer = sleep_until(far());
     tokio::pin!(timer);

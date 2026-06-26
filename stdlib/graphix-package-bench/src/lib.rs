@@ -4,8 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    effects::EffectKind, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node,
-    Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx::subscriber::Value;
@@ -42,8 +42,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
             return None;
         }
         match &self.args.0[..] {
-            [Some(Value::F64(zr0)), Some(Value::F64(zi0)), Some(Value::F64(cr)), Some(Value::F64(ci)), Some(Value::I64(max_iter))] =>
-            {
+            [
+                Some(Value::F64(zr0)),
+                Some(Value::F64(zi0)),
+                Some(Value::F64(cr)),
+                Some(Value::F64(ci)),
+                Some(Value::I64(max_iter)),
+            ] => {
                 let cr = *cr;
                 let ci = *ci;
                 let mut zr = *zr0;

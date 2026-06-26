@@ -3,16 +3,16 @@ use super::{
     spmodpath, spstring, sptoken, typ, typedef,
 };
 use crate::expr::{
-    parser::{semisep, spaces1},
     BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
+    parser::{semisep, spaces1},
 };
 use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, optional,
     parser::char::{space, string},
     position,
-    stream::{position::SourcePosition, Range},
-    token, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token,
 };
 use triomphe::Arc;
 

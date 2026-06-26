@@ -9,7 +9,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{get_stream, StreamKind, StreamValue, STREAM_WRAPPER};
+use crate::{STREAM_WRAPPER, StreamKind, StreamValue, get_stream};
 
 // ── IoRead ─────────────────────────────────────────────────────
 

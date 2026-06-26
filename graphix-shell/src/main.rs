@@ -1,29 +1,24 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use clap::{Parser, Subcommand};
 use enumflags2::BitFlags;
 use flexi_logger::{FileSpec, Logger};
 use graphix_compiler::{
-    expr::{ModuleResolver, Source},
     CFlag,
+    expr::{ModuleResolver, Source},
 };
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use log::info;
 use netidx::{
+    InternalOnly,
     config::Config,
     path::Path,
     publisher::{BindCfg, DesiredAuth, Publisher, PublisherBuilder},
     subscriber::{Subscriber, SubscriberBuilder},
-    InternalOnly,
 };
 use std::{path::PathBuf, str::FromStr, sync::OnceLock, time::Duration};
-
-/// Registration of additional (external) packages. Rewritten by the package
-/// manager; the committed default is a no-op. Wired into the `ShellBuilder`
-/// hooks below and into the LSP backend.
-mod packages;
 
 #[derive(Debug, Clone, Copy)]
 enum RawFlag {
@@ -390,9 +385,6 @@ fn tokio_main(
             .subscriber(subscriber)
             .enable_flags(enable)
             .disable_flags(disable)
-            .register_packages(packages::register::<NoExt>)
-            .main_program(packages::main_program())
-            .custom_display(packages::custom_display::<NoExt>())
             .build()?
             .run(run_on_main)
             .await
@@ -404,9 +396,7 @@ fn main() -> Result<()> {
     let p = Params::parse();
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
-        Some(Command::Lsp) => {
-            return graphix_shell::lsp_backend::run(packages::register::<NoExt>)
-        }
+        Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
         None => (),
     }
     let cfg = match &p.config {

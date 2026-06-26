@@ -1,4 +1,4 @@
-use super::{compile, GuiW, GuiWidget, IcedElement, Message};
+use super::{GuiW, GuiWidget, IcedElement, Message, compile};
 use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -22,8 +22,14 @@ pub(crate) struct ButtonW<X: GXExt> {
 
 impl<X: GXExt> ButtonW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, child), (_, disabled), (_, height), (_, on_press), (_, padding), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 6]>().context("button flds")?;
+        let [
+            (_, child),
+            (_, disabled),
+            (_, height),
+            (_, on_press),
+            (_, padding),
+            (_, width),
+        ] = source.cast_to::<[(ArcStr, u64); 6]>().context("button flds")?;
         let (child_ref, disabled, height, on_press, padding, width) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(disabled),

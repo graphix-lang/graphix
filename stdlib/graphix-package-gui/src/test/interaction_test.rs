@@ -1,4 +1,4 @@
-use super::{expect_call, expect_call_with_args, InteractionHarness};
+use super::{InteractionHarness, expect_call, expect_call_with_args};
 use anyhow::Result;
 use iced_core::{Point, Size};
 use netidx::publisher::Value;

@@ -1,15 +1,15 @@
 use crate::{
     encoding::{decode_value, encode_key, encode_value, parse_batch_ops},
     tree::{
-        check_or_store_meta, extract_key_typ_from_rtype, extract_type_strings_from_rtype,
-        get_db, read_meta, types_are_concrete, DEFAULT_TREE_META, META_TREE,
+        DEFAULT_TREE_META, META_TREE, check_or_store_meta, extract_key_typ_from_rtype,
+        extract_type_strings_from_rtype, get_db, read_meta, types_are_concrete,
     },
 };
 use ahash::AHashMap;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, UserEvent,
+    ExecCtx, Node, Rt, Scope, UserEvent, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
@@ -19,7 +19,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::hash_map::Entry,
     fmt,
-    sync::{mpsc, Arc, LazyLock},
+    sync::{Arc, LazyLock, mpsc},
 };
 use tokio::sync::oneshot;
 
@@ -321,19 +321,19 @@ impl BeginTxnCtx {
                     );
                 }
             }
-            None => {
-                match self.pending_meta.entry(tree_name.clone()) {
-                    Entry::Vacant(e) => {
-                        e.insert((key_typ_str, val_typ_str));
-                    }
-                    Entry::Occupied(e) => {
-                        let (k, v) = e.get();
-                        if k != &key_typ_str || v != &val_typ_str {
-                            bail!("conflicting types for tree '{tree_name}' within transaction")
-                        }
+            None => match self.pending_meta.entry(tree_name.clone()) {
+                Entry::Vacant(e) => {
+                    e.insert((key_typ_str, val_typ_str));
+                }
+                Entry::Occupied(e) => {
+                    let (k, v) = e.get();
+                    if k != &key_typ_str || v != &val_typ_str {
+                        bail!(
+                            "conflicting types for tree '{tree_name}' within transaction"
+                        )
                     }
                 }
-            }
+            },
         }
         let tree = match &name {
             None => (*self.db).clone(),

@@ -1,4 +1,4 @@
-use super::{compile, GuiW, GuiWidget, IcedElement};
+use super::{GuiW, GuiWidget, IcedElement, compile};
 use crate::types::TooltipPositionV;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;

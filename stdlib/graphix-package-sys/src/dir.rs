@@ -1,6 +1,6 @@
 use super::{convert_path, metadata::convert_filetype};
 use anyhow::Result;
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{ValArray, Value};

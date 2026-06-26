@@ -16,11 +16,11 @@
 //! `emit_interrupt_check` the tail loop exercises. Those polls are
 //! behavior-neutral, verified by the 1435×2 differential suite.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::CFlag;
-use graphix_package_core::testing::{init_with_flags_and_setup, TestCtx};
+use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
 use graphix_rt::GXEvent;
 use poolshark::global::GPooled;
 use tokio::{sync::mpsc, time::Duration};

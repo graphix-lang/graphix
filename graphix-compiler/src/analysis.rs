@@ -29,6 +29,7 @@
 //! can't disagree on which lambdas are loop-able.
 
 use crate::{
+    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::ExprKind,
     fusion::{self, lowering},
@@ -36,7 +37,6 @@ use crate::{
         callsite::{ArgKey, CallSite},
         lambda::{GXLambda, LambdaDef},
     },
-    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, UserEvent,
 };
 use anyhow::Result;
 use nohash::{IntMap, IntSet};
@@ -323,10 +323,9 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
     callee: LambdaId,
 ) -> bool {
     match node.view() {
-        NodeView::Block(b) => b
-            .children
-            .last()
-            .is_some_and(|c| mark_tail_sites(c, self_bind, callee)),
+        NodeView::Block(b) => {
+            b.children.last().is_some_and(|c| mark_tail_sites(c, self_bind, callee))
+        }
         NodeView::ExplicitParens(ep) => mark_tail_sites(&ep.n, self_bind, callee),
         NodeView::Select(s) => {
             let mut any = false;
@@ -371,10 +370,7 @@ fn positional_arg_order<R: Rt, E: UserEvent>(
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-fn is_self_recursive<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
-    self_bind: BindId,
-) -> bool {
+fn is_self_recursive<R: Rt, E: UserEvent>(g: &GXLambda<R, E>, self_bind: BindId) -> bool {
     let mut refs = Refs::default();
     g.body().refs(&mut refs);
     let mut found = false;

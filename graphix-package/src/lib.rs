@@ -3,18 +3,23 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use ahash::AHashMap;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use chrono::Local;
-use compact_str::{format_compact, CompactString};
+use compact_str::{CompactString, format_compact};
 use crates_io_api::AsyncClient;
 use flate2::bufread::MultiGzDecoder;
 use graphix_compiler::{
+    ExecCtx,
     env::Env,
     expr::{ExprId, VfsEntry},
-    ExecCtx,
 };
+/// `packages!()` builds `Vec<Box<dyn Package<X>>>` (owned, feature-gated) and
+/// `package_refs!()` builds `&'static [&'static dyn Package<NoExt>]` (const),
+/// both by scraping the calling crate's `Cargo.toml` for `graphix-package-*`
+/// deps. Re-exported here so callers use `graphix_package::packages!()`.
+pub use graphix_derive::{package_refs, packages};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use handlebars::Handlebars;
 pub use indexmap::IndexSet;
@@ -24,8 +29,10 @@ use serde_json::json;
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     io::IsTerminal,
     path::{Path, PathBuf},
+    pin::Pin,
     process::Stdio,
     sync::mpsc as smpsc,
     time::Duration,
@@ -79,54 +86,75 @@ pub trait CustomDisplay<X: GXExt>: Any {
     async fn process_update(&mut self, env: &Env, id: ExprId, v: Value);
 }
 
-/// Trait implemented by Graphix packages
-#[allow(async_fn_in_trait)]
-pub trait Package<X: GXExt> {
-    /// register builtins and return a resolver containing Graphix
-    /// code contained in the package.
-    ///
-    /// Graphix modules must be registered by path in the modules table
-    /// and the package must be registered by name in the root_mods set.
-    /// Normally this is handled by the defpackage macro.
+/// A live custom display plus the channel the shell watches for it to stop.
+pub struct Cdc<X: GXExt> {
+    pub stop: oneshot::Receiver<()>,
+    pub custom: Box<dyn CustomDisplay<X>>,
+}
+
+/// The result of `Package::maybe_init_custom`: the package either claimed the
+/// value and built a custom display (`Custom`), or passed it through
+/// (`NotCustom`, returning the value for the next package / normal display).
+pub enum CustomResult<X: GXExt> {
+    Custom(Cdc<X>),
+    NotCustom(CompExp<X>),
+}
+
+/// Trait implemented by Graphix packages. Object-safe, so packages can be
+/// collected as `Vec<Box<dyn Package<X>>>` (or `&[&dyn Package<X>]`) and driven
+/// uniformly by the shell and the test harness. `Send + Sync` because the
+/// generated package type `P` is a ZST (the bound is always satisfied) and some
+/// callers share/move the package list across threads. Normally implemented by
+/// the `defpackage!` macro.
+pub trait Package<X: GXExt>: Send + Sync {
+    /// Register this package's builtins and Graphix modules: modules by path in
+    /// `modules`, the package itself by name in `root_mods`. Registration is
+    /// idempotent (guarded by `root_mods`) and transitively registers the
+    /// package's dependency packages.
     fn register(
+        &self,
         ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
         modules: &mut AHashMap<netidx_core::path::Path, VfsEntry>,
         root_mods: &mut IndexSet<ArcStr>,
     ) -> Result<()>;
 
-    /// Return true if the `CompExp` matches the custom display type
-    /// of this package.
-    fn is_custom(gx: &GXHandle<X>, env: &Env, e: &CompExp<X>) -> bool;
-
-    /// Build and return a `CustomDisplay` instance which will be used
-    /// to display the `CompExp` `e`.
-    ///
-    /// If the custom display mode wishes to stop (for example the
-    /// user closed the last gui window), then the stop channel should
-    /// be triggered, and the shell will call `CustomDisplay::clear`
-    /// before dropping the `CustomDisplay`.
-    ///
-    /// `main_thread_rx` is `Some` if this package declared
-    /// `MAIN_THREAD` and the shell has a main-thread channel
-    /// available. The custom display should hold onto it and return
-    /// it from `clear()`.
-    async fn init_custom(
-        gx: &GXHandle<X>,
-        env: &Env,
-        stop: oneshot::Sender<()>,
+    /// If `e` matches this package's custom display type, build and return the
+    /// display (`Custom`); otherwise return `NotCustom(e)` to pass it on. When a
+    /// display wants to stop, it triggers its stop channel and the shell calls
+    /// `CustomDisplay::clear` before dropping it. Most packages have no custom
+    /// display and always return `NotCustom`.
+    fn maybe_init_custom<'a>(
+        &'a self,
+        gx: &'a GXHandle<X>,
+        env: &'a Env,
         e: CompExp<X>,
-        run_on_main: MainThreadHandle,
-    ) -> Result<Box<dyn CustomDisplay<X>>>;
+        run_on_main: &'a MainThreadHandle,
+    ) -> Pin<Box<dyn Future<Output = Result<CustomResult<X>>> + 'a>>;
 
-    /// Return the main program source if this package has one and the
-    /// `standalone` feature is enabled.
-    fn main_program() -> Option<&'static str>;
+    /// The package's main program source, if it has one and the `standalone`
+    /// feature is enabled.
+    fn main_program(&self) -> Option<&'static str>;
 }
 
-// package skeleton and the generated `packages.rs` template
+/// Build the root-module prelude from the registered package names: `mod
+/// core;\nuse core` (core is brought into scope) plus `mod <name>` for each
+/// other package, joined by `;\n`. Shared by the shell, the LSP, and the test
+/// harness.
+pub fn root_module_source(root_mods: &IndexSet<ArcStr>) -> ArcStr {
+    let mut parts = Vec::new();
+    for name in root_mods {
+        if name == "core" {
+            parts.push(format!("mod core;\nuse core"));
+        } else {
+            parts.push(format!("mod {name}"));
+        }
+    }
+    ArcStr::from(parts.join(";\n"))
+}
+
+// new-package skeleton templates
 struct Skel {
     cargo_toml: &'static str,
-    packages_rs: &'static str,
     lib_rs: &'static str,
     build_rs: &'static str,
     mod_gx: &'static str,
@@ -136,7 +164,6 @@ struct Skel {
 
 static SKEL: Skel = Skel {
     cargo_toml: include_str!("skel/Cargo.toml.hbs"),
-    packages_rs: include_str!("skel/packages.rs"),
     lib_rs: include_str!("skel/lib.rs"),
     build_rs: include_str!("skel/build.rs"),
     mod_gx: include_str!("skel/mod.gx"),
@@ -987,7 +1014,9 @@ fn selection_from_indices(items: &[Item], selected: &BTreeSet<usize>) -> Selecti
 /// The interactive `[Y/e/n]` confirmation (the plan is already presented).
 async fn prompt_y_e_n(items: &[Item]) -> Result<Outcome> {
     loop {
-        print!("Apply all changes? [Y/e/n]  (Y = apply all, e = edit selection, n = cancel) ");
+        print!(
+            "Apply all changes? [Y/e/n]  (Y = apply all, e = edit selection, n = cancel) "
+        );
         flush_stdout();
         match prompt_line().await? {
             None => return Ok(Outcome::Cancel),
@@ -1124,32 +1153,6 @@ impl GraphixPM {
         }
     }
 
-    /// Generate deps.rs from the package list
-    /// Render `src/packages.rs`: registration of the given external packages,
-    /// plus an optional standalone main program (the embedded package, for
-    /// `build_standalone`). The stdlib is registered by `graphix_shell::deps`,
-    /// gated by Cargo features, so it never appears here.
-    fn generate_packages_rs(
-        &self,
-        external: &BTreeMap<String, PackageEntry>,
-        standalone: Option<&str>,
-    ) -> Result<String> {
-        let mut hb = Handlebars::new();
-        hb.register_template_string("packages.rs", SKEL.packages_rs)?;
-        let deps: Vec<serde_json::Value> = external
-            .keys()
-            .map(|name| {
-                json!({
-                    "crate_name": format!("graphix_package_{}", name.replace('-', "_")),
-                })
-            })
-            .collect();
-        let standalone_crate =
-            standalone.map(|name| format!("graphix_package_{}", name.replace('-', "_")));
-        let params = json!({ "deps": deps, "standalone_crate": standalone_crate });
-        Ok(hb.render("packages.rs", &params)?)
-    }
-
     /// Update Cargo.toml to include package dependencies
     /// Add the external packages to the shell's `[dependencies]`. Only external
     /// (third-party) packages are managed here — the stdlib packages are
@@ -1205,13 +1208,10 @@ impl GraphixPM {
         source_dir: &Path,
         plan: &BuildPlan,
     ) -> Result<()> {
-        // Write packages.rs (external package registration). The stdlib is
-        // registered statically by graphix_shell::deps, gated by features.
-        println!("Generating packages.rs...");
-        let packages_rs = self.generate_packages_rs(&plan.external, None)?;
-        fs::write(source_dir.join("src").join("packages.rs"), &packages_rs).await?;
         // Add external package deps to Cargo.toml (the permanent stdlib deps and
-        // the [features] table are untouched).
+        // the [features] table are untouched). The shell's `packages!()` macro
+        // reads this Cargo.toml at compile time, so registration needs no
+        // generated source — adding the dep is enough.
         println!("Updating Cargo.toml...");
         let cargo_toml_path = source_dir.join("Cargo.toml");
         let cargo_toml_content = fs::read_to_string(&cargo_toml_path).await?;
@@ -1558,9 +1558,8 @@ impl GraphixPM {
             }
             self.unpack_source(&graphix_version().await?).await?
         };
-        println!("Generating packages.rs...");
-        let packages_rs = self.generate_packages_rs(&external, Some(short_name))?;
-        fs::write(source_dir.join("src").join("packages.rs"), &packages_rs).await?;
+        // Add the embedded package as a dep; the shell's `packages!()` macro
+        // discovers it (and its `main_program`) from this Cargo.toml.
         println!("Updating Cargo.toml...");
         let shell_cargo_toml_path = source_dir.join("Cargo.toml");
         let shell_cargo_toml = fs::read_to_string(&shell_cargo_toml_path).await?;

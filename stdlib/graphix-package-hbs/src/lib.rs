@@ -2,16 +2,15 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    deref_typ,
+    ExecCtx, PrintFlag, Rt, UserEvent, deref_typ,
     effects::EffectKind,
     errf,
     typ::{FnType, Type},
-    ExecCtx, PrintFlag, Rt, UserEvent,
 };
-use graphix_package_core::{is_struct, CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, is_struct};
 use graphix_package_json::value_to_json;
 use handlebars::Handlebars;
 use netidx::publisher::Typ;

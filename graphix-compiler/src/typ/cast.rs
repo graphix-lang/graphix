@@ -1,13 +1,13 @@
 use crate::{
+    AbstractTypeRegistry, CAST_ERR_TAG,
     env::Env,
     errf,
     typ::{RefHist, Type, TypeRef},
-    AbstractTypeRegistry, CAST_ERR_TAG,
 };
 use ahash::AHashSet;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use enumflags2::{bitflags, BitFlags};
+use enumflags2::{BitFlags, bitflags};
 use immutable_chunkmap::map::Map;
 use netidx::publisher::{Typ, Value};
 use netidx_value::ValArray;

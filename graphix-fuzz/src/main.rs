@@ -7,10 +7,10 @@
 //! `check` is the primitive both the mechanical fuzzer (forthcoming) and
 //! the adversarial agent sources depend on. See design/graphix_fuzz.md.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use graphix_fuzz::{
-    check, fuzz, generate_campaign, minimize, regression_corpus_len, run_regression,
-    Corpus, Mode, Outcome,
+    Corpus, Mode, Outcome, check, fuzz, generate_campaign, minimize,
+    regression_corpus_len, run_regression,
 };
 use std::{sync::Arc, time::Duration};
 

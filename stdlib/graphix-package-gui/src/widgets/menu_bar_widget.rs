@@ -1,7 +1,6 @@
 use iced_core::{
-    alignment, keyboard, layout, mouse, overlay, renderer, touch, widget, Clipboard,
-    Element, Event, Layout, Length, Padding, Point, Rectangle, Shell, Size, Vector,
-    Widget,
+    Clipboard, Element, Event, Layout, Length, Padding, Point, Rectangle, Shell, Size,
+    Vector, Widget, alignment, keyboard, layout, mouse, overlay, renderer, touch, widget,
 };
 
 use super::{Message, Renderer};

@@ -51,10 +51,34 @@ macro_rules! slider_widget {
         }
 
         impl<X: GXExt> $name<X> {
-            pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-                let [(_, disabled), (_, $dim1), (_, max), (_, min), (_, on_change), (_, on_release), (_, step), (_, value), (_, $dim2)] =
-                    source.cast_to::<[(ArcStr, u64); 9]>().context(concat!($label, " flds"))?;
-                let (disabled, $dim1, max, min, on_change, on_release, step, value, $dim2) = try_join! {
+            pub(crate) async fn compile(
+                gx: GXHandle<X>,
+                source: Value,
+            ) -> Result<GuiW<X>> {
+                let [
+                    (_, disabled),
+                    (_, $dim1),
+                    (_, max),
+                    (_, min),
+                    (_, on_change),
+                    (_, on_release),
+                    (_, step),
+                    (_, value),
+                    (_, $dim2),
+                ] = source
+                    .cast_to::<[(ArcStr, u64); 9]>()
+                    .context(concat!($label, " flds"))?;
+                let (
+                    disabled,
+                    $dim1,
+                    max,
+                    min,
+                    on_change,
+                    on_release,
+                    step,
+                    value,
+                    $dim2,
+                ) = try_join! {
                     gx.compile_ref(disabled),
                     gx.compile_ref($dim1),
                     gx.compile_ref(max),
@@ -71,7 +95,8 @@ macro_rules! slider_widget {
                     compile_callable!(gx, on_release, concat!($label, " on_release"));
                 Ok(Box::new(Self {
                     gx: gx.clone(),
-                    disabled: TRef::new(disabled).context(concat!($label, " tref disabled"))?,
+                    disabled: TRef::new(disabled)
+                        .context(concat!($label, " tref disabled"))?,
                     value: TRef::new(value).context(concat!($label, " tref value"))?,
                     min: TRef::new(min).context(concat!($label, " tref min"))?,
                     max: TRef::new(max).context(concat!($label, " tref max"))?,
@@ -80,8 +105,16 @@ macro_rules! slider_widget {
                     on_change_callable,
                     on_release,
                     on_release_callable,
-                    $dim1: TRef::new($dim1).context(concat!($label, " tref ", stringify!($dim1)))?,
-                    $dim2: TRef::new($dim2).context(concat!($label, " tref ", stringify!($dim2)))?,
+                    $dim1: TRef::new($dim1).context(concat!(
+                        $label,
+                        " tref ",
+                        stringify!($dim1)
+                    ))?,
+                    $dim2: TRef::new($dim2).context(concat!(
+                        $label,
+                        " tref ",
+                        stringify!($dim2)
+                    ))?,
                 }))
             }
         }
@@ -94,15 +127,59 @@ macro_rules! slider_widget {
                 v: &Value,
             ) -> Result<bool> {
                 let mut changed = false;
-                changed |= self.disabled.update(id, v).context(concat!($label, " update disabled"))?.is_some();
-                changed |= self.value.update(id, v).context(concat!($label, " update value"))?.is_some();
-                changed |= self.min.update(id, v).context(concat!($label, " update min"))?.is_some();
-                changed |= self.max.update(id, v).context(concat!($label, " update max"))?.is_some();
-                changed |= self.step.update(id, v).context(concat!($label, " update step"))?.is_some();
-                changed |= self.$dim1.update(id, v).context(concat!($label, " update ", stringify!($dim1)))?.is_some();
-                changed |= self.$dim2.update(id, v).context(concat!($label, " update ", stringify!($dim2)))?.is_some();
-                update_callable!(self, rt, id, v, on_change, on_change_callable, concat!($label, " on_change recompile"));
-                update_callable!(self, rt, id, v, on_release, on_release_callable, concat!($label, " on_release recompile"));
+                changed |= self
+                    .disabled
+                    .update(id, v)
+                    .context(concat!($label, " update disabled"))?
+                    .is_some();
+                changed |= self
+                    .value
+                    .update(id, v)
+                    .context(concat!($label, " update value"))?
+                    .is_some();
+                changed |= self
+                    .min
+                    .update(id, v)
+                    .context(concat!($label, " update min"))?
+                    .is_some();
+                changed |= self
+                    .max
+                    .update(id, v)
+                    .context(concat!($label, " update max"))?
+                    .is_some();
+                changed |= self
+                    .step
+                    .update(id, v)
+                    .context(concat!($label, " update step"))?
+                    .is_some();
+                changed |= self
+                    .$dim1
+                    .update(id, v)
+                    .context(concat!($label, " update ", stringify!($dim1)))?
+                    .is_some();
+                changed |= self
+                    .$dim2
+                    .update(id, v)
+                    .context(concat!($label, " update ", stringify!($dim2)))?
+                    .is_some();
+                update_callable!(
+                    self,
+                    rt,
+                    id,
+                    v,
+                    on_change,
+                    on_change_callable,
+                    concat!($label, " on_change recompile")
+                );
+                update_callable!(
+                    self,
+                    rt,
+                    id,
+                    v,
+                    on_release,
+                    on_release_callable,
+                    concat!($label, " on_release recompile")
+                );
                 Ok(changed)
             }
 
@@ -117,10 +194,13 @@ macro_rules! slider_widget {
                 } else {
                     self.on_change_callable.as_ref().map(|c| c.id())
                 };
-                let mut sl = widget::$Widget::new(range, val, move |v| match on_change_id {
-                    Some(id) => Message::Call(id, ValArray::from_iter([Value::F64(v as f64)])),
-                    None => Message::Nop,
-                });
+                let mut sl =
+                    widget::$Widget::new(range, val, move |v| match on_change_id {
+                        Some(id) => {
+                            Message::Call(id, ValArray::from_iter([Value::F64(v as f64)]))
+                        }
+                        None => Message::Nop,
+                    });
                 if let Some(Some(step)) = self.step.t {
                     sl = sl.step(step as f32);
                 }

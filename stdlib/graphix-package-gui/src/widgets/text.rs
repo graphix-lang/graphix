@@ -21,8 +21,16 @@ pub(crate) struct TextW<X: GXExt> {
 
 impl<X: GXExt> TextW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, color), (_, content), (_, font), (_, halign), (_, height), (_, size), (_, valign), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 8]>().context("text flds")?;
+        let [
+            (_, color),
+            (_, content),
+            (_, font),
+            (_, halign),
+            (_, height),
+            (_, size),
+            (_, valign),
+            (_, width),
+        ] = source.cast_to::<[(ArcStr, u64); 8]>().context("text flds")?;
         let (color, content, font, halign, height, size, valign, width) = try_join! {
             gx.compile_ref(color),
             gx.compile_ref(content),

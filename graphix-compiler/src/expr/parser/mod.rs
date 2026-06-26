@@ -1,15 +1,16 @@
 use crate::{
     expr::{
-        set_origin, Attr, BindExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
-        ParserContext, Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr,
-        TryCatchExpr,
+        Attr, BindExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin, ParserContext,
+        Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr, TryCatchExpr,
+        set_origin,
     },
     typ::{FnType, Type},
 };
 use ahash::AHashSet;
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use combine::{
-    attempt, between, choice, eof, look_ahead, many, none_of, not_followed_by, optional,
+    EasyParser, ParseError, Parser, RangeStream, attempt, between, choice, eof,
+    look_ahead, many, none_of, not_followed_by, optional,
     parser::{
         char::{space, string},
         combinator::recognize,
@@ -17,17 +18,17 @@ use combine::{
     },
     position, sep_by1,
     stream::{
-        position::{self, SourcePosition},
         Range,
+        position::{self, SourcePosition},
     },
-    token, unexpected_any, value, EasyParser, ParseError, Parser, RangeStream,
+    token, unexpected_any, value,
 };
 use compact_str::CompactString;
 use escaping::Escape;
 use netidx::{path::Path, publisher::Value};
 use netidx_value::parser::{
-    escaped_string, int, not_prefix, sep_by1_tok, sep_by_tok, value as parse_value,
-    VAL_ESC, VAL_MUST_ESC,
+    VAL_ESC, VAL_MUST_ESC, escaped_string, int, not_prefix, sep_by_tok, sep_by1_tok,
+    value as parse_value,
 };
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
@@ -190,8 +191,8 @@ where
 // fixed order), which is fine because `Decorations` is invisible to `Expr`
 // equality. This replaces `leading_comments` at the `expr()` entry;
 // `leading_comments` itself is kept for the `.gxi` `sig_item` path.
-fn leading_decorations<I>(
-) -> impl Parser<I, Output = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>)>
+fn leading_decorations<I>()
+-> impl Parser<I, Output = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,

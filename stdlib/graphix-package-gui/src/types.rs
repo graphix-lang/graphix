@@ -3,12 +3,12 @@ use crate::theme::{
     ProgressBarSpec, RadioSpec, RuleSpec, ScrollableSpec, SliderSpec, StyleOverrides,
     TextEditorSpec, TextInputSpec, TogglerSpec,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use iced_core::{
+    Color, ContentFit, Font, Length, Padding, Size,
     alignment::{Horizontal, Vertical},
     font::{Family, Style, Weight},
-    Color, ContentFit, Font, Length, Padding, Size,
 };
 use iced_widget::{scrollable, tooltip};
 use netidx::publisher::{FromValue, Value};
@@ -223,27 +223,15 @@ impl FromValue for PaletteV {
 pub struct ThemeV(pub GraphixTheme);
 
 pub fn parse_opt_color(v: Value) -> Result<Option<Color>> {
-    if v == Value::Null {
-        Ok(None)
-    } else {
-        Ok(Some(ColorV::from_value(v)?.0))
-    }
+    if v == Value::Null { Ok(None) } else { Ok(Some(ColorV::from_value(v)?.0)) }
 }
 
 fn parse_opt_f32(v: Value) -> Result<Option<f32>> {
-    if v == Value::Null {
-        Ok(None)
-    } else {
-        Ok(Some(v.cast_to::<f64>()? as f32))
-    }
+    if v == Value::Null { Ok(None) } else { Ok(Some(v.cast_to::<f64>()? as f32)) }
 }
 
 fn parse_opt_spec<T>(v: Value, f: impl FnOnce(Value) -> Result<T>) -> Result<Option<T>> {
-    if v == Value::Null {
-        Ok(None)
-    } else {
-        Ok(Some(f(v)?))
-    }
+    if v == Value::Null { Ok(None) } else { Ok(Some(f(v)?)) }
 }
 
 fn parse_button_spec(v: Value) -> Result<ButtonSpec> {
@@ -413,8 +401,22 @@ fn parse_toggler_spec(v: Value) -> Result<TogglerSpec> {
 fn parse_stylesheet(
     v: Value,
 ) -> Result<(iced_core::theme::palette::Palette, StyleOverrides)> {
-    let [(_, button), (_, checkbox), (_, container), (_, menu), (_, palette), (_, pick_list), (_, progress_bar), (_, radio), (_, rule), (_, scrollable), (_, slider), (_, text_editor), (_, text_input), (_, toggler)] =
-        v.cast_to::<[(ArcStr, Value); 14]>()?;
+    let [
+        (_, button),
+        (_, checkbox),
+        (_, container),
+        (_, menu),
+        (_, palette),
+        (_, pick_list),
+        (_, progress_bar),
+        (_, radio),
+        (_, rule),
+        (_, scrollable),
+        (_, slider),
+        (_, text_editor),
+        (_, text_input),
+        (_, toggler),
+    ] = v.cast_to::<[(ArcStr, Value); 14]>()?;
     let palette = PaletteV::from_value(palette)?;
     Ok((
         palette.0,

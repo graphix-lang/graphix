@@ -712,6 +712,46 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Package registration unified onto one object-safe `Package` trait + one
+  `packages!()` macro (2026-06-26).** Refines the same-day stdlib-as-features
+  change (below): the three `ShellBuilder` hooks, the committed
+  `graphix-shell/src/packages.rs`, the static `graphix-shell/src/deps.rs`
+  register list, and the PM's `generate_packages_rs` + `skel/packages.rs`
+  template are ALL DELETED, replaced by one mechanism. **`graphix_package::Package<X>`
+  is now object-safe** — 3 instance methods (`register(&self, …)`,
+  `maybe_init_custom(&self, …) -> Pin<Box<dyn Future<…CustomResult…>>>`,
+  `main_program(&self)`). `defpackage!` generates the impl, keeping its
+  author-facing `is_custom`/`init_custom` clauses but combining them into
+  `maybe_init_custom` via two inherent `__is_custom`/`__init_custom` helpers that
+  preserve the *original* signatures, so author bodies (gui/tui) compile
+  unchanged. `Cdc`/`CustomResult` moved shell→graphix-package; a shared
+  `root_module_source` replaces the triplicated root-string builder. Packages
+  collect as `Vec<Box<dyn Package<X>>>` (owned, shell) or **`const &[&dyn
+  Package<NoExt>]`** (tests — `&P` is a const-promotable ZST ref, validated).
+  **Two proc-macros in graphix-derive, re-exported from graphix-package**
+  (`pub use graphix_derive::{packages, package_refs}`): `packages!()` scrapes the
+  calling crate's `[dependencies]` for `graphix-package-*` (core first), emits
+  `Vec<Box<dyn Package<_>>>` with `#[cfg(feature="<short>")]` on optional deps +
+  an `include_bytes!(Cargo.toml)` change-tracker (so adding a dep re-expands it);
+  `package_refs!()` emits the `const`-compatible `&[&dyn Package<NoExt>]` for the
+  (non-optional-dep) test crates. **`ShellBuilder` collapses to ONE `packages`
+  field** (default `stdlib_packages()` = `packages!()` over the shell's own
+  Cargo.toml → stdlib + any PM-added externals) + `.add_packages()` (append, for
+  embedders) + `.packages()` (replace); `init` `find_map`s `main_program` from
+  the list, `Output::from_expr` iterates it. **The PM only edits Cargo.toml now**
+  — `install_from_source`/`build_standalone` write no `.rs` (the macro reads the
+  modified Cargo.toml at compile time); the feature mechanism, `update_cargo_toml`,
+  `build_plan`, and remove-cascade are unchanged. **Test harness unified**:
+  `graphix-package-core::testing`'s `RegisterFn` fn-pointer → `PackageRef =
+  &'static dyn Package<NoExt>` (the loop calls `p.register`); `graphix-tests`/
+  `graphix-fuzz` auto-discover via `package_refs!()`; gui/tui's curated 6-package
+  local test subsets become hand-written `&[&dyn Package<NoExt>]`. **Embedder UX**:
+  add a `graphix-package-*` dep + `.add_packages(graphix_shell::packages!())` —
+  zero hand-written registration. Object-safety + const-`&dyn`-promotion +
+  boxed-future-`maybe_init_custom` pre-validated with scratch compiles. Verified:
+  graphix-tests harness builds (1400+ tests, all 17 packages on the new trait) +
+  shell (default + reduced `--features` builds) + PM; full test suites green.
+
 - **Stdlib packages as Cargo features + `ShellBuilder` package hooks (2026-06-26).**
   Every stdlib package is now an **optional Cargo dependency of `graphix-shell` behind a
   per-package feature** (`graphix-shell/Cargo.toml`), `default = ["all"]` (the `all`

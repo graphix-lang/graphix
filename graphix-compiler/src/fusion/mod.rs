@@ -32,17 +32,17 @@ pub mod lowering;
 pub use builder::FusedKernel;
 
 use crate::{
+    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent,
     effects::EffectKind,
     env::Env,
     expr::{ExprId, ExprKind, ModPath},
     fusion::{
-        kernel_abi::{freeze_for_abi_normalized, KernelSig},
-        lowering::{resolve_abstract, RegionInputKind},
+        kernel_abi::{KernelSig, freeze_for_abi_normalized},
+        lowering::{RegionInputKind, resolve_abstract},
     },
     node::genn,
     typ::{FnType, Type},
-    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent,
 };
 
 /// Compile-time fusion outcome counters, accumulated on
@@ -216,7 +216,8 @@ pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
         // system's view; only the kernel-slot classification (`kind`,
         // which carries the frozen types) needs the concrete rep.
         let resolved = resolve_abstract(&ctx.fusion.abstract_registry, &b.typ, &ctx.env);
-        let Some(frozen) = kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &resolved)
+        let Some(frozen) =
+            kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &resolved)
         else {
             return;
         };
@@ -687,7 +688,8 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
-            ctx.fusion.stats
+            ctx.fusion
+                .stats
                 .failed
                 .push((source_id, compact_str::format_compact!("{e:#}")));
             return Ok(None);

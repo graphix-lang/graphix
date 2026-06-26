@@ -22,8 +22,14 @@ pub(crate) struct ComboBoxW<X: GXExt> {
 
 impl<X: GXExt> ComboBoxW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, disabled), (_, on_select), (_, options), (_, placeholder), (_, selected), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 6]>().context("combo_box flds")?;
+        let [
+            (_, disabled),
+            (_, on_select),
+            (_, options),
+            (_, placeholder),
+            (_, selected),
+            (_, width),
+        ] = source.cast_to::<[(ArcStr, u64); 6]>().context("combo_box flds")?;
         let (disabled, on_select, options, placeholder, selected, width) = try_join! {
             gx.compile_ref(disabled),
             gx.compile_ref(on_select),

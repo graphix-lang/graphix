@@ -1,6 +1,6 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
-use graphix_compiler::{effects::EffectKind, errf, BindId, ExecCtx, Rt, UserEvent};
+use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
 use netidx_value::{PBytes, ValArray, Value};
 
 use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached};

@@ -1,4 +1,6 @@
 use super::{
+    Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
+    TypeDef, Use,
     array::{Array, ArrayRef, ArraySlice},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
@@ -8,24 +10,22 @@ use super::{
     module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
     select::Select,
-    Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
-    TypeDef, Use,
 };
 use crate::{
+    CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
     expr::{
         self, ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
         StructWithExpr,
     },
     node::{
+        ExplicitParens, Nop,
         error::OrNever,
         map::{Map, MapRef},
         op::{CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub},
-        ExplicitParens, Nop,
     },
     typ::Type,
-    CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 

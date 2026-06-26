@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::expr::ExprId;

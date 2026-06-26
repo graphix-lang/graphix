@@ -3,11 +3,11 @@
 //! by the `on_message` arm of the `GuiWidget` trait impl.
 
 use super::{
-    types::{cell_path_matches, parse_or_quote, ResizeDrag, ViewportMetrics},
-    DataTableW, DisplayMode, DEFAULT_MAX_COL_WIDTH, MIN_COL_WIDTH, ROW_HEIGHT_ESTIMATE,
+    DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, MIN_COL_WIDTH, ROW_HEIGHT_ESTIMATE,
     ROW_NAME_KEY, ROW_NAME_KEY_ARC, ROW_NAME_LABEL,
+    types::{ResizeDrag, ViewportMetrics, cell_path_matches, parse_or_quote},
 };
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use compact_str::CompactString;
 use graphix_rt::GXExt;
 use netidx::{protocol::valarray::ValArray, publisher::Value};

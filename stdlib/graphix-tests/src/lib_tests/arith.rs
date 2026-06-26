@@ -338,8 +338,7 @@ run!(sink_nested_stmt, SINK_NESTED_STMT, |v: Result<&Value>| {
 // An impure NON-bottom let (a bare `rand`) must stay EAGER so its effect
 // can't become arm-conditional — and since rand doesn't bottom, eager eval
 // is harmless and all modes agree at the taken arm's 99.
-const SINK_RAND_STAYS_EAGER: &str =
-    "{ let v = rand::rand(#start: 0, #end: 9, #clock: 1); select i64:5 { 2 => v, _ => i64:99 } }";
+const SINK_RAND_STAYS_EAGER: &str = "{ let v = rand::rand(#start: 0, #end: 9, #clock: 1); select i64:5 { 2 => v, _ => i64:99 } }";
 run!(sink_rand_stays_eager, SINK_RAND_STAYS_EAGER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(99)))
 }; graphix_package_core::testing::FuseExpect::Jit);

@@ -3,18 +3,18 @@
 //! sparkline canvas program.
 
 use super::{
+    DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, IcedElement, MIN_COL_WIDTH, Message,
+    RESIZE_HANDLE_WIDTH, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY, ROW_NAME_KEY_ARC,
+    ROW_NAME_LABEL, Renderer, VALUE_COL_KEY,
     types::{
-        cell_path_matches, col_header_width, col_min_width, row_basename,
-        truncate_to_width, ColumnType, SortDirection,
+        ColumnType, SortDirection, cell_path_matches, col_header_width, col_min_width,
+        row_basename, truncate_to_width,
     },
-    DataTableW, DisplayMode, IcedElement, Message, Renderer, DEFAULT_MAX_COL_WIDTH,
-    MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY,
-    ROW_NAME_KEY_ARC, ROW_NAME_LABEL, VALUE_COL_KEY,
 };
 use crate::theme::GraphixTheme;
 use ahash::AHashMap;
-use arcstr::{literal, ArcStr};
-use compact_str::{format_compact, CompactString};
+use arcstr::{ArcStr, literal};
+use compact_str::{CompactString, format_compact};
 use graphix_rt::GXExt;
 use iced_widget as widget;
 use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
@@ -556,7 +556,7 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     fn wrap_keyboard<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
-        use crate::widgets::{iced_keyboard_area::KeyboardArea, TableKeyAction};
+        use crate::widgets::{TableKeyAction, iced_keyboard_area::KeyboardArea};
         use iced_core::keyboard;
 
         KeyboardArea::new(content)

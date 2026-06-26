@@ -1,16 +1,17 @@
 use crate::{
+    Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
+    Update, UserEvent,
     compiler::compile,
     deref_typ,
     env::Env,
     expr::{self, Expr, ExprId, ModPath},
     format_with_flags,
-    fusion::emit::{emit_qop_node, BodyCx, CompiledExpr},
+    fusion::emit::{BodyCx, CompiledExpr, emit_qop_node},
     typ::{Type, TypeRef},
-    wrap, Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent,
+    wrap,
 };
-use anyhow::{anyhow, bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, anyhow, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
@@ -393,10 +394,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         NodeView::Qop(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // A handler-ful `?` (`id: Some` — caught by an enclosing `try`)
         // delivers its error by WRITING the handler's variable. The fused
         // kernel now performs that write in-kernel via the discovered
@@ -500,10 +498,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         NodeView::OrNever(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `$` never has a catch handler (log + drop on error) — no delivery.
         emit_qop_node(cx, &self.n, None)
     }

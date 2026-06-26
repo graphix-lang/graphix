@@ -1,9 +1,9 @@
 use super::{
-    menu_bar_widget::{MenuGroupDesc, MenuItemDesc, OwnedMenuBar},
     GuiW, IcedElement,
+    menu_bar_widget::{MenuGroupDesc, MenuItemDesc, OwnedMenuBar},
 };
 use crate::types::{LengthV, ShortcutV};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};

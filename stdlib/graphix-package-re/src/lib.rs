@@ -3,8 +3,8 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::Result;
-use arcstr::{literal, ArcStr};
-use graphix_compiler::{effects::EffectKind, errf, ExecCtx, Rt, UserEvent};
+use arcstr::{ArcStr, literal};
+use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;

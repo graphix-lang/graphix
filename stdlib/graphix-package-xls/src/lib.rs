@@ -4,10 +4,10 @@
 )]
 use arcstr::ArcStr;
 use bytes::Bytes;
-use calamine::{open_workbook_auto_from_rs, Data, Reader};
+use calamine::{Data, Reader, open_workbook_auto_from_rs};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use graphix_package_sys::{get_stream, StreamKind};
+use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::{io::Cursor, sync::Arc};

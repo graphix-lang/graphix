@@ -1,5 +1,5 @@
 use super::{
-    compile, into_borrowed_line, LineV, SizeV, SpanV, StyleV, TRef, TuiW, TuiWidget,
+    LineV, SizeV, SpanV, StyleV, TRef, TuiW, TuiWidget, compile, into_borrowed_line,
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -9,7 +9,7 @@ use futures::future;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
-use ratatui::{layout::Rect, widgets::Tabs, Frame};
+use ratatui::{Frame, layout::Rect, widgets::Tabs};
 use smallvec::SmallVec;
 use tokio::try_join;
 
@@ -29,8 +29,16 @@ pub(super) struct TabsW<X: GXExt> {
 
 impl<X: GXExt> TabsW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, divider), (_, highlight_style), (_, padding_left), (_, padding_right), (_, selected), (_, size), (_, style), (_, tabs)] =
-            v.cast_to::<[(ArcStr, u64); 8]>().context("tabs fields")?;
+        let [
+            (_, divider),
+            (_, highlight_style),
+            (_, padding_left),
+            (_, padding_right),
+            (_, selected),
+            (_, size),
+            (_, style),
+            (_, tabs),
+        ] = v.cast_to::<[(ArcStr, u64); 8]>().context("tabs fields")?;
         let (
             divider,
             highlight_style,

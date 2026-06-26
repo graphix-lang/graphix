@@ -17,8 +17,8 @@
 //! Determinism: a seeded xorshift RNG, so any run replays from its seed.
 
 use graphix_compiler::expr::{
-    parser::parse_one, ApplyExpr, BindExpr, Expr, ExprKind, SelectExpr, StructExpr,
-    StructWithExpr, TryCatchExpr,
+    ApplyExpr, BindExpr, Expr, ExprKind, SelectExpr, StructExpr, StructWithExpr,
+    TryCatchExpr, parser::parse_one,
 };
 use netidx::utils::Either;
 use netidx_value::Value;
@@ -42,11 +42,7 @@ impl Rng {
     }
 
     pub fn below(&mut self, n: usize) -> usize {
-        if n == 0 {
-            0
-        } else {
-            (self.next_u64() % n as u64) as usize
-        }
+        if n == 0 { 0 } else { (self.next_u64() % n as u64) as usize }
     }
 
     pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {

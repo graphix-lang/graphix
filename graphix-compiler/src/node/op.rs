@@ -1,12 +1,12 @@
-use super::{compiler::compile, CFlag, Cached};
+use super::{CFlag, Cached, compiler::compile};
 use crate::{
-    defetyp,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
     expr::{Expr, ExprId},
-    fusion::emit::{emit_neg_node, emit_not_node, BodyCx, CompiledExpr},
+    fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
     typ::Type,
-    wrap, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
+    wrap,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
@@ -382,10 +382,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         NodeView::Not(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_not_node(cx, &self.n)
     }
 

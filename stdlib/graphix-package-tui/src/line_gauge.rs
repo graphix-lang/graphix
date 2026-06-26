@@ -1,4 +1,4 @@
-use super::{gauge::clamp_ratio, into_borrowed_line, LineV, StyleV, TuiW, TuiWidget};
+use super::{LineV, StyleV, TuiW, TuiWidget, gauge::clamp_ratio, into_borrowed_line};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -6,7 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::Value;
-use ratatui::{layout::Rect, widgets::LineGauge, Frame};
+use ratatui::{Frame, layout::Rect, widgets::LineGauge};
 use tokio::try_join;
 
 pub(super) struct LineGaugeW<X: GXExt> {
@@ -22,8 +22,15 @@ pub(super) struct LineGaugeW<X: GXExt> {
 
 impl<X: GXExt> LineGaugeW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, filled_style), (_, filled_symbol), (_, label), (_, ratio), (_, style), (_, unfilled_style), (_, unfilled_symbol)] =
-            v.cast_to::<[(ArcStr, u64); 7]>()?;
+        let [
+            (_, filled_style),
+            (_, filled_symbol),
+            (_, label),
+            (_, ratio),
+            (_, style),
+            (_, unfilled_style),
+            (_, unfilled_symbol),
+        ] = v.cast_to::<[(ArcStr, u64); 7]>()?;
         let (
             filled_style,
             filled_symbol,

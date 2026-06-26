@@ -67,8 +67,8 @@ mod tests {
     use anyhow::anyhow;
     use arcstr::literal;
     use graphix_compiler::{
-        expr::{Expr, ExprKind, Origin},
         SourcePosition,
+        expr::{Expr, ExprKind, Origin},
     };
     use std::str::FromStr;
     use triomphe::Arc;

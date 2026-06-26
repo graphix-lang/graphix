@@ -13,9 +13,12 @@ const ARRAY_MAP0: &str = r#"
 run!(array_map0, ARRAY_MAP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::Bool(false), Value::Bool(false), Value::Bool(false), Value::Bool(true)] => {
-                true
-            }
+            [
+                Value::Bool(false),
+                Value::Bool(false),
+                Value::Bool(false),
+                Value::Bool(true),
+            ] => true,
             _ => false,
         },
         _ => false,
@@ -145,9 +148,13 @@ const ARRAY_FILTER: &str = r#"
 run!(array_filter, ARRAY_FILTER, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(4), Value::I64(5), Value::I64(6), Value::I64(7), Value::I64(8)] => {
-                true
-            }
+            [
+                Value::I64(4),
+                Value::I64(5),
+                Value::I64(6),
+                Value::I64(7),
+                Value::I64(8),
+            ] => true,
             _ => false,
         },
         _ => false,
@@ -430,9 +437,14 @@ const ARRAY_CONCAT: &str = r#"
 run!(array_concat, ARRAY_CONCAT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5), Value::I64(6)] => {
-                true
-            }
+            [
+                Value::I64(1),
+                Value::I64(2),
+                Value::I64(3),
+                Value::I64(4),
+                Value::I64(5),
+                Value::I64(6),
+            ] => true,
             _ => false,
         },
         _ => false,

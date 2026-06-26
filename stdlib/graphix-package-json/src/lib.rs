@@ -2,20 +2,20 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
+    ExecCtx, Node, Rt, Scope, UserEvent,
     effects::EffectKind,
     errf,
     typ::{FnType, Type},
-    ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
-    extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
-    EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    extract_cast_type, is_struct,
 };
-use graphix_package_sys::{get_stream, StreamKind};
+use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
 use std::sync::Arc;

@@ -1,6 +1,6 @@
 use crate::{
     types::{ImageSourceV, SizeV, ThemeV},
-    widgets::{compile, EmptyW, GuiW},
+    widgets::{EmptyW, GuiW, compile},
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;

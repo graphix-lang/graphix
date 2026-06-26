@@ -15,8 +15,8 @@
 //! that defines those operators' semantics; the JIT imports it from there.
 
 use crate::{
-    typ::{AbstractId, Type, TypeRef},
     BindId,
+    typ::{AbstractId, Type, TypeRef},
 };
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};

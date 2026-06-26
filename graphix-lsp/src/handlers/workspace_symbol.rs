@@ -6,9 +6,5 @@ pub fn handle(
     params: WorkspaceSymbolParams,
 ) -> Option<Vec<SymbolInformation>> {
     let syms = state.workspace_symbols(&params.query);
-    if syms.is_empty() {
-        None
-    } else {
-        Some(syms)
-    }
+    if syms.is_empty() { None } else { Some(syms) }
 }

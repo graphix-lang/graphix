@@ -6,7 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::Value;
-use ratatui::{layout::Rect, style::Style, text::Text, Frame};
+use ratatui::{Frame, layout::Rect, style::Style, text::Text};
 use std::mem;
 use tokio::try_join;
 

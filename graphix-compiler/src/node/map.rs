@@ -1,11 +1,11 @@
 use crate::{
-    defetyp, err, errf,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
+    err, errf,
     expr::{Expr, ExprId},
-    fusion::emit::{emit_map_new_node, emit_map_ref_node, BodyCx, CompiledExpr},
-    node::{compiler::compile, Cached},
+    fusion::emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
+    node::{Cached, compiler::compile},
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent,
+    update_args, wrap,
 };
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -123,10 +123,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         NodeView::Map(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
     }
 
@@ -253,10 +250,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         NodeView::MapRef(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_map_ref_node(cx, &self.source.node, &self.key.node)
     }
 

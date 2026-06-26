@@ -1,13 +1,14 @@
 use crate::expr::{
-    parser::{csep, expr, ref_pexp, sep_by_tok, spaces, spstring, sptoken},
     Expr, ExprKind,
+    parser::{csep, expr, ref_pexp, sep_by_tok, spaces, spstring, sptoken},
 };
 use combine::{
-    attempt, between, choice, look_ahead, many1, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, look_ahead, many1,
+    optional,
     parser::char::digit,
     position,
-    stream::{position::SourcePosition, Range},
-    token, unexpected_any, value, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token, unexpected_any, value,
 };
 use compact_str::CompactString;
 use netidx::{publisher::Value, utils::Either};

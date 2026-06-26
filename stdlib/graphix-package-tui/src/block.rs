@@ -1,8 +1,8 @@
 use super::{
-    compile, into_borrowed_line, AlignmentV, EmptyW, LineV, SizeV, StyleV,
-    TitlePositionV, TuiW, TuiWidget,
+    AlignmentV, EmptyW, LineV, SizeV, StyleV, TitlePositionV, TuiW, TuiWidget, compile,
+    into_borrowed_line,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
@@ -10,10 +10,10 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
+    Frame,
     layout::Rect,
     symbols::merge::MergeStrategy,
     widgets::{Block, BorderType, Borders, Padding},
-    Frame,
 };
 use smallvec::SmallVec;
 use tokio::try_join;
@@ -113,8 +113,22 @@ pub(super) struct BlockW<X: GXExt> {
 
 impl<X: GXExt> BlockW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, border), (_, border_style), (_, border_type), (_, child), (_, merge_borders), (_, padding), (_, size), (_, style), (_, title), (_, title_alignment), (_, title_bottom), (_, title_position), (_, title_style), (_, title_top)] =
-            v.cast_to::<[(ArcStr, u64); 14]>().context("block flds")?;
+        let [
+            (_, border),
+            (_, border_style),
+            (_, border_type),
+            (_, child),
+            (_, merge_borders),
+            (_, padding),
+            (_, size),
+            (_, style),
+            (_, title),
+            (_, title_alignment),
+            (_, title_bottom),
+            (_, title_position),
+            (_, title_style),
+            (_, title_top),
+        ] = v.cast_to::<[(ArcStr, u64); 14]>().context("block flds")?;
         let (
             border,
             border_style,

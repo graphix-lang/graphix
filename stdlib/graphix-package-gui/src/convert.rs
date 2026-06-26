@@ -2,7 +2,7 @@
 //!
 //! Based on iced_winit/src/conversion.rs but adapted for our event loop.
 
-use iced_core::{keyboard, mouse, window, Event, Point, Size};
+use iced_core::{Event, Point, Size, keyboard, mouse, window};
 use keyboard::key::NativeCode;
 use poolshark::local::LPooled;
 use winit::{

@@ -1,10 +1,10 @@
 use super::{GuiW, GuiWidget, IcedElement, Renderer};
-use crate::types::{parse_opt_color, ColorV, LengthV};
-use anyhow::{bail, Context, Result};
+use crate::types::{ColorV, LengthV, parse_opt_color};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
-use iced_core::{mouse, Color, Point, Rectangle, Size};
+use iced_core::{Color, Point, Rectangle, Size, mouse};
 use netidx::publisher::{FromValue, Value};
 use smallvec::SmallVec;
 use tokio::try_join;
@@ -156,8 +156,13 @@ impl FromValue for CanvasShape {
                 })
             }
             "Arc" => {
-                let [(_, center), (_, end_angle), (_, radius), (_, start_angle), (_, stroke)] =
-                    val.cast_to::<[(ArcStr, Value); 5]>()?;
+                let [
+                    (_, center),
+                    (_, end_angle),
+                    (_, radius),
+                    (_, start_angle),
+                    (_, stroke),
+                ] = val.cast_to::<[(ArcStr, Value); 5]>()?;
                 let (cx, cy) = parse_point(center)?;
                 let radius = radius.cast_to::<f64>()? as f32;
                 let start_angle = start_angle.cast_to::<f64>()? as f32;
@@ -175,8 +180,15 @@ impl FromValue for CanvasShape {
                 })
             }
             "Ellipse" => {
-                let [(_, center), (_, end_angle), (_, fill), (_, radii), (_, rotation), (_, start_angle), (_, stroke)] =
-                    val.cast_to::<[(ArcStr, Value); 7]>()?;
+                let [
+                    (_, center),
+                    (_, end_angle),
+                    (_, fill),
+                    (_, radii),
+                    (_, rotation),
+                    (_, start_angle),
+                    (_, stroke),
+                ] = val.cast_to::<[(ArcStr, Value); 7]>()?;
                 let (cx, cy) = parse_point(center)?;
                 let (rx, ry) = parse_point(radii)?;
                 let rotation = rotation.cast_to::<f64>()? as f32;
@@ -195,8 +207,14 @@ impl FromValue for CanvasShape {
                 })
             }
             "BezierCurve" => {
-                let [(_, color), (_, control_a), (_, control_b), (_, from), (_, to), (_, width)] =
-                    val.cast_to::<[(ArcStr, Value); 6]>()?;
+                let [
+                    (_, color),
+                    (_, control_a),
+                    (_, control_b),
+                    (_, from),
+                    (_, to),
+                    (_, width),
+                ] = val.cast_to::<[(ArcStr, Value); 6]>()?;
                 let ColorV(color) = ColorV::from_value(color)?;
                 let (fx, fy) = parse_point(from)?;
                 let (ax, ay) = parse_point(control_a)?;

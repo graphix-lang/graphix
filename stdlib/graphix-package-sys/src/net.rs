@@ -1,17 +1,16 @@
-use anyhow::{anyhow, bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, anyhow, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    deref_typ,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
+    UserEvent, deref_typ,
     effects::EffectKind,
     err, errf,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
-    UserEvent,
 };
-use graphix_package_core::{arity1, arity2, extract_cast_type, CachedVals};
+use graphix_package_core::{CachedVals, arity1, arity2, extract_cast_type};
 use netidx::{
     path::Path,
     publisher::{Typ, Val},
@@ -20,7 +19,7 @@ use netidx::{
 use netidx_core::utils::Either;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use netidx_value::ValArray;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::collections::VecDeque;
 use triomphe::Arc as TArc;
 
@@ -224,7 +223,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             }
             (Some(Value::String(_)), true) => (),
             (Some(v), true) => {
-                return Some(errf!(ERR_TAG, "invalid path {v}, expected string"))
+                return Some(errf!(ERR_TAG, "invalid path {v}, expected string"));
             }
         }
         self.cur.as_ref().and_then(|(_, dv)| {
@@ -500,11 +499,7 @@ fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
     resolved.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
             let t = &cb_ft.args[0].typ;
-            if format!("{t}").contains('\'') {
-                None
-            } else {
-                Some(t.clone())
-            }
+            if format!("{t}").contains('\'') { None } else { Some(t.clone()) }
         }
         _ => None,
     })

@@ -5,14 +5,14 @@
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::{
-    effects::EffectKind, errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx,
-    Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
 };
 use graphix_rt::GXRt;
-use netidx_value::{abstract_type::AbstractWrapper, Abstract, ValArray, Value};
+use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
 use poolshark::local::LPooled;
 use std::{
     cell::RefCell,

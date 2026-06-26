@@ -1,14 +1,15 @@
 use crate::{
+    PrintFlag,
     expr::{
-        parser, read_to_arcstr, serialize, ApplyExpr, BindExpr, CouldNotResolve, Expr,
-        ExprId, ExprKind, LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr,
-        Sig, SigItem, SigKind, Source, StructExpr, StructWithExpr, StructurePattern,
-        TryCatchExpr, TypeDefExpr,
+        ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
+        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem, SigKind, Source,
+        StructExpr, StructWithExpr, StructurePattern, TryCatchExpr, TypeDefExpr, parser,
+        read_to_arcstr, serialize,
     },
-    format_with_flags, PrintFlag,
+    format_with_flags,
 };
 use ahash::AHashMap;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use combine::stream::position::SourcePosition;

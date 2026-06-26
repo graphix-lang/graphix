@@ -1,5 +1,5 @@
 use super::{
-    csep, fname, ident, not_prefix, sep_by1_tok, sep_by_tok, spaces, spaces1, spfname,
+    csep, fname, ident, not_prefix, sep_by_tok, sep_by1_tok, spaces, spaces1, spfname,
     spstring, sptoken, typname,
 };
 use crate::{
@@ -9,11 +9,12 @@ use crate::{
 use ahash::AHashSet;
 use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, look_ahead, not_followed_by, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, look_ahead,
+    not_followed_by, optional,
     parser::char::{alpha_num, string},
     position, sep_by1,
-    stream::{position::SourcePosition, Range},
-    token, unexpected_any, value, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token, unexpected_any, value,
 };
 use netidx::{publisher::Typ, utils::Either};
 use parking_lot::RwLock;

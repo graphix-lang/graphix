@@ -40,8 +40,8 @@ use arcstr::ArcStr;
 use std::{
     collections::HashSet,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };

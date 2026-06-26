@@ -2,26 +2,26 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use compact_str::format_compact;
-use futures::{channel::mpsc, SinkExt};
+use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, LambdaId,
+    Node, Rt, Scope, UserEvent,
     effects::EffectKind,
     errf,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, LambdaId, Node, Rt, Scope,
-    UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
 use graphix_rt::GXRt;
 use netidx_value::{
-    abstract_type::AbstractWrapper, Abstract, FromValue, PBytes, ValArray, Value,
+    Abstract, FromValue, PBytes, ValArray, Value, abstract_type::AbstractWrapper,
 };
 use std::{
     any::Any,
@@ -781,7 +781,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                         return Some(errf!(
                             "HTTPError",
                             "both cert and key must be provided for TLS"
-                        ))
+                        ));
                     }
                 };
                 let max_conn = match &self.args.0[3] {
@@ -790,14 +790,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                         return Some(errf!(
                             "HTTPError",
                             "max_connections must be > 0, got {n}"
-                        ))
+                        ));
                     }
                     _ => 768,
                 };
                 let std_listener = match std::net::TcpListener::bind(&**addr) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "bind to {addr} failed: {e}"))
+                        return Some(errf!("HTTPError", "bind to {addr} failed: {e}"));
                     }
                 };
                 let bound_addr = match std_listener.local_addr() {
@@ -810,7 +810,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 let listener = match tokio::net::TcpListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "tokio listener failed: {e}"))
+                        return Some(errf!("HTTPError", "tokio listener failed: {e}"));
                     }
                 };
                 let (tx, rx) = mpsc::channel(100);

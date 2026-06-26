@@ -1,12 +1,12 @@
 use crate::{
+    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, UserEvent,
     env::Env,
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
-    node::{compiler, Cached},
+    node::{Cached, compiler},
     typ::{Type, TypeRef},
-    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, UserEvent,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;

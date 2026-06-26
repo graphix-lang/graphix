@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::fmt;
 use triomphe::Arc;
 

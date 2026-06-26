@@ -5,12 +5,12 @@
 //! kernel executor is [`Kernel`].
 
 use crate::{
+    Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
     expr::{Expr, ExprId},
     fusion::{emit::WrappedKernel, kernel::Kernel, kernel_abi::KernelSig},
     typ::Type,
-    Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use netidx_value::Value;
 use std::sync::Arc as StdArc;
 
@@ -66,12 +66,10 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 return Err(anyhow!(
                     "no JIT for kernel `{}` — fused node must node-walk",
                     kernel.fn_name
-                ))
+                ));
             }
         };
-        let inner = Kernel::new(
-            ctx, kernel, n_args, wrapped, scope, top_id,
-        )?;
+        let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
         Ok(Box::new(Self {
             spec,
             typ,

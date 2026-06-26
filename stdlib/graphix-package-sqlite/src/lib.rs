@@ -5,12 +5,11 @@
 use anyhow::bail;
 use arcstr::ArcStr;
 use graphix_compiler::{
-    errf,
+    ExecCtx, Node, Rt, Scope, UserEvent, errf,
     typ::{FnType, Type},
-    ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use graphix_package_core::{
-    extract_cast_type, CachedArgsAsync, CachedVals, EvalCachedAsync,
+    CachedArgsAsync, CachedVals, EvalCachedAsync, extract_cast_type,
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;

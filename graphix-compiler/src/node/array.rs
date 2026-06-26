@@ -1,14 +1,14 @@
-use super::{compiler::compile, Cached};
+use super::{Cached, compiler::compile};
 use crate::{
-    defetyp, err, errf,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
+    err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{
-        emit_array_ref_node, emit_array_slice_node, emit_tuple_new_node, BodyCx,
-        CompiledExpr,
+        BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
+        emit_tuple_new_node,
     },
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent,
+    update_args, wrap,
 };
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -217,10 +217,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         NodeView::ArrayRef(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_array_ref_node(cx, &self.source.node, &self.i.node)
     }
 
@@ -380,10 +377,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         NodeView::ArraySlice(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_array_slice_node(
             cx,
             &self.source.node,
@@ -494,10 +488,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         NodeView::Array(self)
     }
 
-    fn emit_clif(
-        &self,
-        cx: &mut BodyCx,
-    ) -> Result<CompiledExpr> {
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `[a, b, c]` — the runtime shape (a flat ValArray) is
         // identical to a tuple literal's; share the producer relay.
         emit_tuple_new_node(cx, &self.n)

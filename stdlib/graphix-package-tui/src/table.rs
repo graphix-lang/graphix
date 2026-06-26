@@ -1,6 +1,6 @@
 use super::{
-    into_borrowed_line, layout::ConstraintV, FlexV, HighlightSpacingV, LineV, StyleV,
-    TRef, TuiW, TuiWidget,
+    FlexV, HighlightSpacingV, LineV, StyleV, TRef, TuiW, TuiWidget, into_borrowed_line,
+    layout::ConstraintV,
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -11,9 +11,9 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Cell, Row, Table, TableState},
-    Frame,
 };
 use tokio::try_join;
 
@@ -112,8 +112,23 @@ pub(super) struct TableW<X: GXExt> {
 
 impl<X: GXExt> TableW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, cell_highlight_style), (_, column_highlight_style), (_, column_spacing), (_, flex), (_, footer), (_, header), (_, highlight_spacing), (_, highlight_symbol), (_, row_highlight_style), (_, rows), (_, selected), (_, selected_cell), (_, selected_column), (_, style), (_, widths)] =
-            v.cast_to::<[(ArcStr, u64); 15]>().context("table fields")?;
+        let [
+            (_, cell_highlight_style),
+            (_, column_highlight_style),
+            (_, column_spacing),
+            (_, flex),
+            (_, footer),
+            (_, header),
+            (_, highlight_spacing),
+            (_, highlight_symbol),
+            (_, row_highlight_style),
+            (_, rows),
+            (_, selected),
+            (_, selected_cell),
+            (_, selected_column),
+            (_, style),
+            (_, widths),
+        ] = v.cast_to::<[(ArcStr, u64); 15]>().context("table fields")?;
         let (
             cell_highlight_style,
             column_highlight_style,

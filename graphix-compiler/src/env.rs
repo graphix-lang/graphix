@@ -1,14 +1,14 @@
 use crate::{
+    BindId, Scope,
     expr::{ModPath, Origin, Sandbox},
     ide::{
         Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite,
     },
     typ::{TVar, Type},
-    BindId, Scope,
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
@@ -407,11 +407,7 @@ impl Env {
     pub fn canonical_modpath(&self, scope: &ModPath, name: &ModPath) -> Option<ModPath> {
         self.find_visible(scope, name, |scope, name| {
             let p = ModPath(Path::from(ArcStr::from(scope)).append(name));
-            if self.modules.contains(&p) {
-                Some(p)
-            } else {
-                None
-            }
+            if self.modules.contains(&p) { Some(p) } else { None }
         })
     }
 

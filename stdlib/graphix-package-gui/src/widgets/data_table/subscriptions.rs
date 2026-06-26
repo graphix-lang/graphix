@@ -10,13 +10,12 @@
 //! allocate one ArcStr per dropped update.
 
 use super::{
-    compile_callable_opt,
+    DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, VALUE_COL_KEY, compile_callable_opt,
     types::{
-        decimate_sparkline, format_value, numeric_key, parse_selection,
-        parse_table_columns, row_basename, value_to_f64, ColumnState, ColumnType,
-        SortDirection, SourceEntry,
+        ColumnState, ColumnType, SortDirection, SourceEntry, decimate_sparkline,
+        format_value, numeric_key, parse_selection, parse_table_columns, row_basename,
+        value_to_f64,
     },
-    DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, VALUE_COL_KEY,
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
@@ -38,8 +37,8 @@ use smallvec::SmallVec;
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Weak,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
