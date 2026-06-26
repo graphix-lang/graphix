@@ -31,24 +31,27 @@ use triomphe::Arc;
 /// Build a tokio runtime, stand up a graphix runtime with the
 /// in-process netidx and the full stdlib loaded, and run the LSP
 /// server until it shuts down.
-pub fn run() -> Result<()> {
+pub fn run(register_packages: crate::RegisterPackagesPtr<NoExt>) -> Result<()> {
     let rt = Runtime::new().context("building tokio runtime")?;
     let result = graphix_lsp::serve(|init| {
         let roots = project_roots(init);
-        rt.block_on(build_backend(roots))
+        rt.block_on(build_backend(roots, register_packages))
     });
     drop(rt);
     result
 }
 
-async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
+async fn build_backend(
+    roots: Vec<PathBuf>,
+    register_packages: crate::RegisterPackagesPtr<NoExt>,
+) -> Result<StdArc<dyn LspBackend>> {
     let netidx = InternalOnly::new().await.context("starting internal netidx")?;
     let publisher = netidx.publisher().clone();
     let subscriber = netidx.subscriber().clone();
     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber))
         .context("creating graphix context")?;
     let mut vfs = AHashMap::default();
-    let res = deps::register::<NoExt>(&mut ctx, &mut vfs)
+    let res = deps::register::<NoExt>(&mut ctx, &mut vfs, register_packages)
         .context("registering stdlib modules")?;
     let mut resolvers: Vec<ModuleResolver> = vec![ModuleResolver::VFS(vfs)];
     // Cache the stdlib (+ later, GRAPHIX_MODPATH) layer so per-project

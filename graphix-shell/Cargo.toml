@@ -23,15 +23,45 @@ name = "graphix"
 path = "src/main.rs"
 
 [features]
-default = ["gui"]
+default = ["all"]
+# The full stdlib. `all` (and thus `default`) lists every package so a plain
+# `cargo build` / `cargo install graphix-shell` registers the whole stdlib. The
+# package manager instead builds with --no-default-features and an explicit
+# feature set, so removing a stdlib package is purely a build flag — no source
+# edits. Each feature enables its non-core dependency closure (a package's
+# graphix code `use`s the packages its crate depends on), so you can't compile a
+# package without the packages it needs. `core` is not a feature — it is a
+# non-optional dependency, always compiled and registered.
+all = [
+    "array", "str", "map", "sys", "args", "http", "db", "sqlite", "rand", "re",
+    "bench", "json", "toml", "pack", "xls", "list", "gui", "hbs", "tui",
+]
+array = ["dep:graphix-package-array"]
+str = ["dep:graphix-package-str"]
+map = ["dep:graphix-package-map"]
+sys = ["dep:graphix-package-sys"]
+args = ["dep:graphix-package-args"]
+http = ["dep:graphix-package-http"]
+db = ["dep:graphix-package-db"]
+sqlite = ["dep:graphix-package-sqlite"]
+rand = ["dep:graphix-package-rand"]
+re = ["dep:graphix-package-re"]
+bench = ["dep:graphix-package-bench"]
+json = ["dep:graphix-package-json", "sys"]
+toml = ["dep:graphix-package-toml", "sys"]
+pack = ["dep:graphix-package-pack", "sys"]
+xls = ["dep:graphix-package-xls", "sys"]
+list = ["dep:graphix-package-list", "array"]
+gui = ["dep:graphix-package-gui", "str"]
+hbs = ["dep:graphix-package-hbs", "json"]
+tui = ["dep:graphix-package-tui", "array", "sys"]
 krb5_iov = [
     "graphix-compiler/krb5_iov",
     "graphix-rt/krb5_iov",
-    "graphix-package-sys/krb5_iov",
-    "graphix-package-http/krb5_iov",
+    "graphix-package-sys?/krb5_iov",
+    "graphix-package-http?/krb5_iov",
     "netidx/krb5_iov",
 ]
-gui = ["dep:graphix-package-gui"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -45,25 +75,25 @@ nohash = { workspace = true }
 ahash = { workspace = true }
 graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
 graphix-package = { version = "0.9.0", path = "../graphix-package" }
-graphix-package-array = { version = "0.9.0", path = "../stdlib/graphix-package-array" }
-graphix-package-bench = { version = "0.9.0", path = "../stdlib/graphix-package-bench" }
+graphix-package-array = { version = "0.9.0", path = "../stdlib/graphix-package-array", optional = true }
+graphix-package-bench = { version = "0.9.0", path = "../stdlib/graphix-package-bench", optional = true }
 graphix-package-core = { version = "0.9.0", path = "../stdlib/graphix-package-core" }
-graphix-package-args = { version = "0.9.0", path = "../stdlib/graphix-package-args" }
-graphix-package-db = { version = "0.9.0", path = "../stdlib/graphix-package-db" }
-graphix-package-hbs = { version = "0.9.0", path = "../stdlib/graphix-package-hbs" }
-graphix-package-http = { version = "0.9.0", path = "../stdlib/graphix-package-http" }
-graphix-package-json = { version = "0.9.0", path = "../stdlib/graphix-package-json" }
-graphix-package-list = { version = "0.9.0", path = "../stdlib/graphix-package-list" }
-graphix-package-map = { version = "0.9.0", path = "../stdlib/graphix-package-map" }
-graphix-package-pack = { version = "0.9.0", path = "../stdlib/graphix-package-pack" }
-graphix-package-rand = { version = "0.9.0", path = "../stdlib/graphix-package-rand" }
-graphix-package-re = { version = "0.9.0", path = "../stdlib/graphix-package-re" }
-graphix-package-sqlite = { version = "0.9.0", path = "../stdlib/graphix-package-sqlite" }
-graphix-package-str = { version = "0.9.0", path = "../stdlib/graphix-package-str" }
-graphix-package-sys = { version = "0.9.0", path = "../stdlib/graphix-package-sys" }
-graphix-package-toml = { version = "0.9.0", path = "../stdlib/graphix-package-toml" }
-graphix-package-xls = { version = "0.9.0", path = "../stdlib/graphix-package-xls" }
-graphix-package-tui = { version = "0.9.0", path = "../stdlib/graphix-package-tui" }
+graphix-package-args = { version = "0.9.0", path = "../stdlib/graphix-package-args", optional = true }
+graphix-package-db = { version = "0.9.0", path = "../stdlib/graphix-package-db", optional = true }
+graphix-package-hbs = { version = "0.9.0", path = "../stdlib/graphix-package-hbs", optional = true }
+graphix-package-http = { version = "0.9.0", path = "../stdlib/graphix-package-http", optional = true }
+graphix-package-json = { version = "0.9.0", path = "../stdlib/graphix-package-json", optional = true }
+graphix-package-list = { version = "0.9.0", path = "../stdlib/graphix-package-list", optional = true }
+graphix-package-map = { version = "0.9.0", path = "../stdlib/graphix-package-map", optional = true }
+graphix-package-pack = { version = "0.9.0", path = "../stdlib/graphix-package-pack", optional = true }
+graphix-package-rand = { version = "0.9.0", path = "../stdlib/graphix-package-rand", optional = true }
+graphix-package-re = { version = "0.9.0", path = "../stdlib/graphix-package-re", optional = true }
+graphix-package-sqlite = { version = "0.9.0", path = "../stdlib/graphix-package-sqlite", optional = true }
+graphix-package-str = { version = "0.9.0", path = "../stdlib/graphix-package-str", optional = true }
+graphix-package-sys = { version = "0.9.0", path = "../stdlib/graphix-package-sys", optional = true }
+graphix-package-toml = { version = "0.9.0", path = "../stdlib/graphix-package-toml", optional = true }
+graphix-package-xls = { version = "0.9.0", path = "../stdlib/graphix-package-xls", optional = true }
+graphix-package-tui = { version = "0.9.0", path = "../stdlib/graphix-package-tui", optional = true }
 graphix-package-gui = { version = "0.9.0", path = "../stdlib/graphix-package-gui", optional = true }
 graphix-rt = { version = "0.9.0", path = "../graphix-rt" }
 graphix-lsp = { version = "0.9.0", path = "../graphix-lsp" }

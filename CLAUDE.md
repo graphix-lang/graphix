@@ -712,6 +712,44 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Stdlib packages as Cargo features + `ShellBuilder` package hooks (2026-06-26).**
+  Every stdlib package is now an **optional Cargo dependency of `graphix-shell` behind a
+  per-package feature** (`graphix-shell/Cargo.toml`), `default = ["all"]` (the `all`
+  meta-feature lists all 19 incl. the internal `bench`); each feature enables its non-core
+  **dependency closure** (`json = ["dep:graphix-package-json", "sys"]`, `tui = […, "array",
+  "sys"]`, `hbs = […, "json"]`, …) so a package can't compile without the packages its `.gx`
+  code `use`s. `core` stays **non-optional** (always compiled & registered, can't be removed);
+  `krb5_iov` uses weak `pkg?/krb5_iov` activation so it never force-enables sys/http. Two
+  payoffs: **(1) removing a stdlib package is a pure build flag** —
+  `cargo install --no-default-features --features "<set>"`, editing **no source files**; **(2)
+  the shell is embeddable with feature selection.** The committed `src/deps.rs` is now static —
+  each stdlib registration is `#[cfg(feature="<name>")]`-gated (in both `register` and
+  `maybe_init_custom`), and `register` takes a `register_packages` closure it calls after the
+  stdlib. **`ShellBuilder` gained three package hooks** (Eric's design — one uniform mechanism
+  for embedders AND the generated codegen): `register_packages` (FnOnce), `main_program` (the
+  embedded default program, replacing the old `RegisterResult.main_program`), and
+  `custom_display` (a persistent async dispatcher for external custom-display, tried after the
+  stdlib). `main.rs` wires all three from a new committed **`src/packages.rs`** (a no-op
+  default) — **the only file the package manager regenerates**; `lsp_backend` takes the closure
+  as a param so the LSP sees externals. **Package-manager inversion** (`graphix-package/src/lib.rs`):
+  `combined_map` → `BuildPlan` (stdlib → feature list, externals → `packages.rs` + Cargo.toml);
+  `install_from_source` writes `packages.rs` (never `deps.rs`/`main.rs`) and builds
+  `--no-default-features --features`; `update_cargo_toml` shrinks to **external-only** (the
+  permanent stdlib deps + `[features]` are untouched); `generate_deps_rs` → `generate_packages_rs`
+  (new `skel/packages.rs` template; `skel/deps.rs` deleted); `build_standalone` registers the
+  embedded package as an external + builds with its stdlib-dep closure + `<crate>/standalone`.
+  **`remove` cascades**: removing a stdlib package others depend on lists the dependents and
+  removes them too (with confirmation; non-TTY → no cascade), computed from the unpacked shell
+  `[features]` table (`feature_edges`/`feature_depends_on`/`installed_dependents` — the single
+  source of truth; the feature graph would otherwise silently keep a "removed" package compiled
+  in). Tests (`graphix-package/src/test.rs`): pure `BuildPlan`/feature-graph + an
+  `every_stdlib_package_has_a_feature` drift guard, `update_cargo_toml` preservation, a real
+  reduced-feature build asserting `use http`/`use sqlite` fail while `use str`/`use re` pass,
+  and `build_standalone` minimality (`use gui` fails). Verified: shell default build (all
+  packages) + reduced `--features "str re"` build both green; graphix-package 30/30 (incl. the
+  three real-build tests). Test gotcha that bit once: a `--check` probe needs `;` between
+  statements (`use str;\nstr::len(..)`) — a missing `;` is a parse error, not a removal signal.
+
 - **Packed AST wired in + activated — Parts D3 + D2 (2026-06-24).** **D3** threads
   the codec into the load path: the VFS map value `ArcStr` → `VfsEntry { source,
   packed: Option<Bytes> }`, and `resolve`'s parse splice calls

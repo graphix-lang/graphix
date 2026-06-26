@@ -123,11 +123,10 @@ pub trait Package<X: GXExt> {
     fn main_program() -> Option<&'static str>;
 }
 
-// package skeleton, our version, and deps template
+// package skeleton and the generated `packages.rs` template
 struct Skel {
-    version: &'static str,
     cargo_toml: &'static str,
-    deps_rs: &'static str,
+    packages_rs: &'static str,
     lib_rs: &'static str,
     build_rs: &'static str,
     mod_gx: &'static str,
@@ -136,9 +135,8 @@ struct Skel {
 }
 
 static SKEL: Skel = Skel {
-    version: env!("CARGO_PKG_VERSION"),
     cargo_toml: include_str!("skel/Cargo.toml.hbs"),
-    deps_rs: include_str!("skel/deps.rs"),
+    packages_rs: include_str!("skel/packages.rs"),
     lib_rs: include_str!("skel/lib.rs"),
     build_rs: include_str!("skel/build.rs"),
     mod_gx: include_str!("skel/mod.gx"),
@@ -262,20 +260,29 @@ impl Packages {
         stdlib_removed.retain(|n| !stdlib_installed.contains(n));
     }
 
-    /// The flat dependency map fed to the build machinery: each installed
-    /// stdlib package pinned to `build_version`, plus the externals verbatim.
-    /// An external sharing a name with a stdlib package wins (deliberate
-    /// override) — though stdlib names are reserved against externals on `add`.
-    fn combined_map(&self, build_version: &str) -> BTreeMap<String, PackageEntry> {
-        let mut m = BTreeMap::new();
-        for name in &self.stdlib_installed {
-            m.insert(name.clone(), PackageEntry::Version(build_version.to_string()));
-        }
-        for (name, entry) in &self.external {
-            m.insert(name.clone(), entry.clone());
-        }
-        m
+    /// Derive the inputs to a shell build: the stdlib Cargo feature list
+    /// (installed stdlib packages minus `core`, which is always compiled) and
+    /// the external packages (compiled as regular deps and registered via the
+    /// generated `packages.rs`). Stdlib packages are selected by feature, so a
+    /// removed stdlib package is simply absent from the feature list — no files
+    /// are edited for stdlib changes.
+    fn build_plan(&self) -> BuildPlan {
+        let features = self
+            .stdlib_installed
+            .iter()
+            .filter(|n| n.as_str() != "core")
+            .cloned()
+            .collect();
+        BuildPlan { features, external: self.external.clone() }
     }
+}
+
+/// The inputs to a shell build derived from a package set (see
+/// [`Packages::build_plan`]). `features` is sorted (it comes from a `BTreeSet`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuildPlan {
+    features: Vec<String>,
+    external: BTreeMap<String, PackageEntry>,
 }
 
 /// Parse a single external entry value (`"1.2.3"` or `{ path = "..." }`).
@@ -474,6 +481,70 @@ async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<String>
         .await
         .with_context(|| format!("reading {}", cargo_toml.display()))?;
     stdlib_packages_in_cargo_toml(&content)
+}
+
+/// Parse the shell `[features]` table into forward edges: each feature mapped to
+/// the package features it directly enables. Only bare feature references are
+/// edges; `dep:` activations and `crate/feat` / `crate?/feat` entries are
+/// ignored. The dependency closure of a package is the transitive reachability
+/// over these edges — this mirrors the closure the shell's feature graph
+/// compiles, so it is the single source of truth for "what depends on what".
+fn feature_edges(content: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    use toml_edit::DocumentMut;
+    let doc: DocumentMut = content.parse().context("parsing shell Cargo.toml")?;
+    let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let Some(features) = doc.get("features").and_then(|f| f.as_table()) else {
+        return Ok(edges);
+    };
+    for (feat, val) in features.iter() {
+        let Some(arr) = val.as_array() else { continue };
+        let deps = arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|s| !s.contains(':') && !s.contains('/'))
+            .map(|s| s.to_string())
+            .collect();
+        edges.insert(feat.to_string(), deps);
+    }
+    Ok(edges)
+}
+
+/// True if enabling `pkg`'s feature transitively enables `target`'s (i.e. `pkg`
+/// depends on `target`).
+fn feature_depends_on(
+    pkg: &str,
+    target: &str,
+    edges: &BTreeMap<String, BTreeSet<String>>,
+) -> bool {
+    let mut stack = vec![pkg.to_string()];
+    let mut seen = BTreeSet::new();
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur.clone()) {
+            continue;
+        }
+        if let Some(deps) = edges.get(&cur) {
+            if deps.contains(target) {
+                return true;
+            }
+            stack.extend(deps.iter().cloned());
+        }
+    }
+    false
+}
+
+/// The installed stdlib packages that transitively depend on `target` (so
+/// removing `target` would leave them broken, or — because the feature graph
+/// still pulls `target` in — silently un-removed).
+fn installed_dependents(
+    target: &str,
+    installed: &BTreeSet<String>,
+    edges: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<String> {
+    installed
+        .iter()
+        .filter(|p| p.as_str() != target && feature_depends_on(p, target, edges))
+        .cloned()
+        .collect()
 }
 
 /// True if version `a` is strictly newer than `b` by semver. Falls back to
@@ -853,6 +924,23 @@ async fn prompt_line() -> Result<Option<String>> {
     .await?
 }
 
+/// Prompt for a yes/no confirmation, defaulting to no. Returns `false` without
+/// prompting when stdin is not a terminal, so a scripted/CI removal never
+/// cascades silently.
+async fn confirm_yn(prompt: &str) -> Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    print!("{prompt} [y/N] ");
+    flush_stdout();
+    match prompt_line().await? {
+        Some(line) => {
+            Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+        }
+        None => Ok(false),
+    }
+}
+
 /// Parse space/comma-separated 1-based item numbers into 0-based indices,
 /// announcing and skipping anything invalid or out of range.
 fn parse_toggles(line: &str, n_items: usize) -> Vec<usize> {
@@ -1037,13 +1125,18 @@ impl GraphixPM {
     }
 
     /// Generate deps.rs from the package list
-    fn generate_deps_rs(
+    /// Render `src/packages.rs`: registration of the given external packages,
+    /// plus an optional standalone main program (the embedded package, for
+    /// `build_standalone`). The stdlib is registered by `graphix_shell::deps`,
+    /// gated by Cargo features, so it never appears here.
+    fn generate_packages_rs(
         &self,
-        packages: &BTreeMap<String, PackageEntry>,
+        external: &BTreeMap<String, PackageEntry>,
+        standalone: Option<&str>,
     ) -> Result<String> {
         let mut hb = Handlebars::new();
-        hb.register_template_string("deps.rs", SKEL.deps_rs)?;
-        let deps: Vec<serde_json::Value> = packages
+        hb.register_template_string("packages.rs", SKEL.packages_rs)?;
+        let deps: Vec<serde_json::Value> = external
             .keys()
             .map(|name| {
                 json!({
@@ -1051,15 +1144,23 @@ impl GraphixPM {
                 })
             })
             .collect();
-        let params = json!({ "deps": deps });
-        Ok(hb.render("deps.rs", &params)?)
+        let standalone_crate =
+            standalone.map(|name| format!("graphix_package_{}", name.replace('-', "_")));
+        let params = json!({ "deps": deps, "standalone_crate": standalone_crate });
+        Ok(hb.render("packages.rs", &params)?)
     }
 
     /// Update Cargo.toml to include package dependencies
+    /// Add the external packages to the shell's `[dependencies]`. Only external
+    /// (third-party) packages are managed here — the stdlib packages are
+    /// permanent optional dependencies of the shell, selected at build time by
+    /// Cargo feature, and are never touched, nor is the `[features]` table. The
+    /// source tree is freshly unpacked before each build (so it contains only
+    /// the stdlib deps), and this adds the externals on top.
     fn update_cargo_toml(
         &self,
         cargo_toml_content: &str,
-        packages: &BTreeMap<String, PackageEntry>,
+        external: &BTreeMap<String, PackageEntry>,
     ) -> Result<String> {
         use toml_edit::DocumentMut;
         let mut doc: DocumentMut =
@@ -1067,20 +1168,7 @@ impl GraphixPM {
         let deps = doc["dependencies"]
             .as_table_mut()
             .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
-        let to_remove: Vec<String> = deps
-            .iter()
-            .filter_map(|(k, _)| {
-                if k.starts_with("graphix-package-") {
-                    Some(k.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for k in to_remove {
-            deps.remove(&k);
-        }
-        for (name, entry) in packages {
+        for (name, entry) in external {
             let crate_name = format!("graphix-package-{name}");
             match entry {
                 PackageEntry::Version(version) => {
@@ -1094,41 +1182,6 @@ impl GraphixPM {
                     );
                     deps[&crate_name] = toml_edit::Item::Value(tbl.into());
                 }
-            }
-        }
-        // Snapshot dep names so we can release the mutable borrow on doc
-        let dep_names: BTreeSet<String> =
-            deps.iter().map(|(k, _)| k.to_string()).collect();
-        // Clean up [features] that reference removed graphix-package-* deps
-        if let Some(features) = doc.get_mut("features").and_then(|f| f.as_table_mut()) {
-            let mut empty_features = Vec::new();
-            for (feat, val) in features.iter_mut() {
-                if let Some(arr) = val.as_array_mut() {
-                    arr.retain(|v| match v.as_str() {
-                        Some(s) if s.starts_with("dep:graphix-package-") => {
-                            dep_names.contains(&s["dep:".len()..])
-                        }
-                        Some(s) if s.starts_with("graphix-package-") => {
-                            dep_names.contains(s)
-                        }
-                        _ => true,
-                    });
-                    if arr.is_empty() {
-                        empty_features.push(feat.to_string());
-                    }
-                }
-            }
-            for feat in &empty_features {
-                features.remove(feat);
-            }
-            // Clean up default to remove references to deleted features
-            if let Some(default) =
-                features.get_mut("default").and_then(|v| v.as_array_mut())
-            {
-                default.retain(|v| match v.as_str() {
-                    Some(s) => !empty_features.contains(&s.to_string()),
-                    _ => true,
-                });
             }
         }
         Ok(doc.to_string())
@@ -1150,17 +1203,20 @@ impl GraphixPM {
     async fn install_from_source(
         &self,
         source_dir: &Path,
-        packages: &BTreeMap<String, PackageEntry>,
+        plan: &BuildPlan,
     ) -> Result<()> {
-        // Generate deps.rs
-        println!("Generating deps.rs...");
-        let deps_rs = self.generate_deps_rs(packages)?;
-        fs::write(source_dir.join("src").join("deps.rs"), &deps_rs).await?;
-        // Update Cargo.toml with package dependencies
+        // Write packages.rs (external package registration). The stdlib is
+        // registered statically by graphix_shell::deps, gated by features.
+        println!("Generating packages.rs...");
+        let packages_rs = self.generate_packages_rs(&plan.external, None)?;
+        fs::write(source_dir.join("src").join("packages.rs"), &packages_rs).await?;
+        // Add external package deps to Cargo.toml (the permanent stdlib deps and
+        // the [features] table are untouched).
         println!("Updating Cargo.toml...");
         let cargo_toml_path = source_dir.join("Cargo.toml");
         let cargo_toml_content = fs::read_to_string(&cargo_toml_path).await?;
-        let updated_cargo_toml = self.update_cargo_toml(&cargo_toml_content, packages)?;
+        let updated_cargo_toml =
+            self.update_cargo_toml(&cargo_toml_content, &plan.external)?;
         fs::write(&cargo_toml_path, &updated_cargo_toml).await?;
         // Save previous binary
         if let Ok(graphix_path) = which::which("graphix") {
@@ -1175,16 +1231,20 @@ impl GraphixPM {
             let backup_path = graphix_path.with_file_name(&backup_name);
             let _ = fs::copy(&graphix_path, &backup_path).await;
         }
-        // Build and install
+        // Build and install. Stdlib packages are selected by Cargo feature, so a
+        // removed package is simply absent from the feature list — no source
+        // edits. `core` is non-optional and always compiled.
         println!("Building graphix with updated packages (this may take a while)...");
-        let status = Command::new(&self.cargo)
-            .arg("install")
+        let mut cmd = Command::new(&self.cargo);
+        cmd.arg("install")
             .arg("--path")
             .arg(source_dir)
             .arg("--force")
-            .status()
-            .await
-            .context("running cargo install")?;
+            .arg("--no-default-features");
+        if !plan.features.is_empty() {
+            cmd.arg("--features").arg(plan.features.join(" "));
+        }
+        let status = cmd.status().await.context("running cargo install")?;
         if !status.success() {
             bail!("cargo install failed with status {status}")
         }
@@ -1195,13 +1255,9 @@ impl GraphixPM {
     }
 
     /// Rebuild the graphix binary with the given package set
-    async fn rebuild(
-        &self,
-        packages: &BTreeMap<String, PackageEntry>,
-        version: &str,
-    ) -> Result<()> {
+    async fn rebuild(&self, plan: &BuildPlan, version: &str) -> Result<()> {
         let source_dir = self.prepare_source(version).await?;
-        self.install_from_source(&source_dir, packages).await
+        self.install_from_source(&source_dir, plan).await
     }
 
     /// Clean up graphix-previous-* binaries older than 1 week
@@ -1303,7 +1359,7 @@ impl GraphixPM {
         }
         if changed {
             let version = graphix_version().await?;
-            self.rebuild(&installed.combined_map(&version), &version).await?;
+            self.rebuild(&installed.build_plan(), &version).await?;
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -1311,11 +1367,28 @@ impl GraphixPM {
         Ok(())
     }
 
-    /// Remove packages and rebuild
+    /// Remove packages and rebuild. Removing a stdlib package that other
+    /// installed packages depend on cascades (with confirmation) to those
+    /// dependents — otherwise the feature graph would silently keep the
+    /// "removed" package compiled in, contradicting the recorded state.
     pub async fn remove_packages(&self, packages: &[PackageId]) -> Result<()> {
         let mut lock = Self::lock_file()?;
         let _guard = lock.write().context("waiting for package lock")?;
         let mut installed = read_packages().await?;
+        let version = graphix_version().await?;
+        // Removing a stdlib package needs the shell's feature graph to find its
+        // dependents; unpack the source once and reuse it for the build.
+        // External-only removals don't need it (`rebuild` unpacks at the end).
+        let needs_edges =
+            packages.iter().any(|p| p.name() != "core" && is_stdlib_package(p.name()));
+        let prepared = if needs_edges {
+            let source = self.prepare_source(&version).await?;
+            let cargo = fs::read_to_string(source.join("Cargo.toml")).await?;
+            let edges = feature_edges(&cargo)?;
+            Some((source, edges))
+        } else {
+            None
+        };
         let mut changed = false;
         for pkg in packages {
             let name = pkg.name();
@@ -1324,14 +1397,35 @@ impl GraphixPM {
                 continue;
             }
             if is_stdlib_package(name) {
-                if installed.stdlib_removed.contains(name) {
+                if !installed.stdlib_installed.contains(name) {
                     println!("{name} is already removed");
-                } else {
-                    installed.stdlib_installed.remove(name);
-                    installed.stdlib_removed.insert(name.to_string());
-                    println!("Removing stdlib package {name}");
-                    changed = true;
+                    continue;
                 }
+                let edges = prepared
+                    .as_ref()
+                    .map(|(_, e)| e)
+                    .expect("edges are unpacked when a stdlib package is removed");
+                let dependents =
+                    installed_dependents(name, &installed.stdlib_installed, edges);
+                if !dependents.is_empty() {
+                    println!(
+                        "Removing {name} also removes packages that depend on it: {}",
+                        dependents.join(", ")
+                    );
+                    if !confirm_yn("Remove them too?").await? {
+                        println!("Skipping {name} (its dependents are still installed)");
+                        continue;
+                    }
+                    for d in &dependents {
+                        installed.stdlib_installed.remove(d);
+                        installed.stdlib_removed.insert(d.clone());
+                        println!("Removing stdlib package {d}");
+                    }
+                }
+                installed.stdlib_installed.remove(name);
+                installed.stdlib_removed.insert(name.to_string());
+                println!("Removing stdlib package {name}");
+                changed = true;
             } else if installed.external.remove(name).is_some() {
                 println!("Removing {name}");
                 changed = true;
@@ -1340,8 +1434,12 @@ impl GraphixPM {
             }
         }
         if changed {
-            let version = graphix_version().await?;
-            self.rebuild(&installed.combined_map(&version), &version).await?;
+            installed.enforce_invariants();
+            let plan = installed.build_plan();
+            match &prepared {
+                Some((source, _)) => self.install_from_source(source, &plan).await?,
+                None => self.rebuild(&plan, &version).await?,
+            }
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -1374,7 +1472,7 @@ impl GraphixPM {
         let _guard = lock.write().context("waiting for package lock")?;
         let packages = read_packages().await?;
         let version = graphix_version().await?;
-        self.rebuild(&packages.combined_map(&version), &version).await
+        self.rebuild(&packages.build_plan(), &version).await
     }
 
     /// List installed packages
@@ -1434,11 +1532,16 @@ impl GraphixPM {
             crate_name.strip_prefix("graphix-package-").ok_or_else(|| {
                 anyhow!("package name must start with graphix-package-, got {crate_name}")
             })?;
-        let mut packages = BTreeMap::new();
-        packages.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
-        // because shell depends on core
-        packages
-            .insert("core".to_string(), PackageEntry::Version(SKEL.version.to_string()));
+        // The embedded package is registered as an external (path) package, and
+        // the binary auto-runs its standalone main program. Enable the stdlib
+        // features the embedded package directly depends on — the shell feature
+        // graph pulls their transitive closure; `core` is always compiled.
+        let mut external = BTreeMap::new();
+        external.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
+        let features: Vec<String> = stdlib_packages_in_cargo_toml(&contents)?
+            .into_iter()
+            .filter(|n| n != "core")
+            .collect();
         let mut lock_storage =
             if source_override.is_none() { Some(Self::lock_file()?) } else { None };
         let _guard = lock_storage
@@ -1455,13 +1558,13 @@ impl GraphixPM {
             }
             self.unpack_source(&graphix_version().await?).await?
         };
-        println!("Generating deps.rs...");
-        let deps_rs = self.generate_deps_rs(&packages)?;
-        fs::write(source_dir.join("src").join("deps.rs"), &deps_rs).await?;
+        println!("Generating packages.rs...");
+        let packages_rs = self.generate_packages_rs(&external, Some(short_name))?;
+        fs::write(source_dir.join("src").join("packages.rs"), &packages_rs).await?;
         println!("Updating Cargo.toml...");
         let shell_cargo_toml_path = source_dir.join("Cargo.toml");
         let shell_cargo_toml = fs::read_to_string(&shell_cargo_toml_path).await?;
-        let updated = self.update_cargo_toml(&shell_cargo_toml, &packages)?;
+        let updated = self.update_cargo_toml(&shell_cargo_toml, &external)?;
         fs::write(&shell_cargo_toml_path, &updated).await?;
         println!("Building standalone binary (this may take a while)...");
         // Pin the target dir under the source tree so we know exactly where
@@ -1475,8 +1578,13 @@ impl GraphixPM {
             .arg("--release")
             .arg("--target-dir")
             .arg(&target_dir)
+            .arg("--no-default-features")
             .arg("--features")
-            .arg(format!("{crate_name}/standalone"))
+            .arg({
+                let mut f = features.clone();
+                f.push(format!("{crate_name}/standalone"));
+                f.join(" ")
+            })
             .current_dir(&source_dir)
             .status()
             .await
@@ -1598,8 +1706,7 @@ impl GraphixPM {
         effective.stdlib_installed.retain(|n| n == "core" || stdlib_build.contains(n));
         // Build before writing: a failed cargo install leaves packages.toml
         // untouched and the user re-runs to the same choices.
-        self.install_from_source(&build_src, &effective.combined_map(&build_version))
-            .await?;
+        self.install_from_source(&build_src, &effective.build_plan()).await?;
         write_packages(&packages).await?;
         Ok(())
     }

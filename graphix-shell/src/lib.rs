@@ -9,12 +9,12 @@ use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
     env::Env,
-    expr::{CouldNotResolve, ExprId, ModuleResolver, Source},
+    expr::{CouldNotResolve, ExprId, ModuleResolver, Source, VfsEntry},
     format_with_flags,
     typ::TVal,
     CFlag, ExecCtx, PrintFlag,
 };
-use graphix_package::MainThreadHandle;
+use graphix_package::{IndexSet, MainThreadHandle};
 use graphix_package_core::ProgramArgs;
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
 use input::InputReader;
@@ -22,9 +22,10 @@ use netidx::{
     publisher::{Publisher, Value},
     subscriber::Subscriber,
 };
+use netidx_core::path::Path;
 use poolshark::global::GPooled;
 use reedline::Signal;
-use std::{marker::PhantomData, process::exit, time::Duration};
+use std::{future::Future, marker::PhantomData, pin::Pin, process::exit, time::Duration};
 use tokio::{select, sync::mpsc};
 
 mod completion;
@@ -34,6 +35,52 @@ mod completion;
 pub mod deps;
 mod input;
 pub mod lsp_backend;
+
+/// The `ShellBuilder::register_packages` hook: register additional (external or
+/// embedder-supplied) packages into `ctx`/`modules`/`root_mods`, called once
+/// after the stdlib packages have been registered. This is the same contract
+/// the package manager generates for installed external packages.
+pub type RegisterPackagesFn<X> = Box<
+    dyn FnOnce(
+        &mut ExecCtx<GXRt<X>, <X as GXExt>::UserEvent>,
+        &mut AHashMap<Path, VfsEntry>,
+        &mut IndexSet<ArcStr>,
+    ) -> Result<()>,
+>;
+
+/// `register_packages` as a plain function pointer (no captured state). Used by
+/// the LSP backend, where registration may run in a re-invokable context and a
+/// one-shot `FnOnce` won't do. A generated/embedder `packages::register` (a
+/// non-capturing `fn`) coerces to this.
+pub type RegisterPackagesPtr<X> = fn(
+    &mut ExecCtx<GXRt<X>, <X as GXExt>::UserEvent>,
+    &mut AHashMap<Path, VfsEntry>,
+    &mut IndexSet<ArcStr>,
+) -> Result<()>;
+
+/// The `ShellBuilder::custom_display` hook: dispatch a compiled expression to a
+/// custom display for additional packages (the same contract as a package's
+/// `is_custom`/`init_custom`). Return `NotCustom(e)` to pass the expression
+/// through to normal text display.
+pub type CustomDisplayFn<X> = Box<
+    dyn for<'a> Fn(
+        &'a GXHandle<X>,
+        &'a Env,
+        CompExp<X>,
+        &'a MainThreadHandle,
+    )
+        -> Pin<Box<dyn Future<Output = Result<deps::CustomResult<X>>> + 'a>>,
+>;
+
+fn noop_register_packages<X: GXExt>() -> RegisterPackagesFn<X> {
+    Box::new(|_, _, _| Ok(()))
+}
+
+fn passthrough_custom_display<X: GXExt>() -> CustomDisplayFn<X> {
+    Box::new(|_gx, _env, e, _rom| {
+        Box::pin(async move { Ok(deps::CustomResult::NotCustom(e)) })
+    })
+}
 
 enum Output<X: GXExt> {
     None,
@@ -48,8 +95,19 @@ impl<X: GXExt> Output<X> {
         env: &Env,
         e: CompExp<X>,
         run_on_main: &MainThreadHandle,
+        custom: &CustomDisplayFn<X>,
     ) -> Self {
-        match deps::maybe_init_custom(gx, env, e, run_on_main).await {
+        // Try the stdlib custom-display packages first, then fall through to the
+        // additional-packages hook (external / embedder-supplied).
+        let e = match deps::maybe_init_custom(gx, env, e, run_on_main).await {
+            Err(e) => {
+                eprintln!("error initializing custom display: {e:?}");
+                return Self::None;
+            }
+            Ok(deps::CustomResult::Custom(cdc)) => return Self::Custom(cdc),
+            Ok(deps::CustomResult::NotCustom(e)) => e,
+        };
+        match custom(gx, env, e, run_on_main).await {
             Err(e) => {
                 eprintln!("error initializing custom display: {e:?}");
                 Self::None
@@ -141,8 +199,45 @@ pub struct Shell<X: GXExt> {
     /// program arguments to pass to the graphix script
     #[builder(default)]
     program_args: Vec<ArcStr>,
+    /// Register additional (external / embedder-supplied) packages after the
+    /// stdlib packages. Set via the custom `register_packages` setter.
+    #[builder(setter(custom), default = "noop_register_packages()")]
+    register_packages: RegisterPackagesFn<X>,
+    /// A default program to run (e.g. a standalone build's embedded program).
+    /// If set and the mode is Repl, the shell runs this program instead of the
+    /// REPL.
+    #[builder(default)]
+    main_program: Option<&'static str>,
+    /// Custom-display dispatcher for additional packages. Set via the custom
+    /// `custom_display` setter.
+    #[builder(setter(custom), default = "passthrough_custom_display()")]
+    custom_display: CustomDisplayFn<X>,
     #[builder(setter(skip), default)]
     _phantom: PhantomData<X>,
+}
+
+impl<X: GXExt> ShellBuilder<X> {
+    /// Register additional packages (external or embedder-supplied) after the
+    /// stdlib — the same hook the package manager generates for installed
+    /// external packages. Called once during shell init.
+    pub fn register_packages<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(
+                &mut ExecCtx<GXRt<X>, X::UserEvent>,
+                &mut AHashMap<Path, VfsEntry>,
+                &mut IndexSet<ArcStr>,
+            ) -> Result<()>
+            + 'static,
+    {
+        self.register_packages = Some(Box::new(f));
+        self
+    }
+
+    /// Set the custom-display dispatcher for additional packages.
+    pub fn custom_display(mut self, f: CustomDisplayFn<X>) -> Self {
+        self.custom_display = Some(f);
+        self
+    }
 }
 
 impl<X: GXExt> Shell<X> {
@@ -165,9 +260,11 @@ impl<X: GXExt> Shell<X> {
             ctx.libstate.set(ProgramArgs(args));
         }
         let mut vfs_modules = AHashMap::default();
-        let result = deps::register::<X>(&mut ctx, &mut vfs_modules)
+        let register_packages =
+            std::mem::replace(&mut self.register_packages, noop_register_packages());
+        let result = deps::register::<X>(&mut ctx, &mut vfs_modules, register_packages)
             .context("register package modules")?;
-        if let Some(main) = result.main_program {
+        if let Some(main) = self.main_program {
             if matches!(self.mode, Mode::Repl) {
                 self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
             }
@@ -224,7 +321,14 @@ impl<X: GXExt> Shell<X> {
                 exprs.extend(r.exprs);
                 env = gx.get_env().await?;
                 if let Some(e) = exprs.pop() {
-                    *output = Output::from_expr(&gx, &env, e, run_on_main).await;
+                    *output = Output::from_expr(
+                        &gx,
+                        &env,
+                        e,
+                        run_on_main,
+                        &self.custom_display,
+                    )
+                    .await;
                 }
                 *newenv = None
             }
@@ -312,6 +416,7 @@ impl<X: GXExt> Shell<X> {
                                         output.clear().await;
                                         output = Output::from_expr(
                                             &gx, &env, e, &run_on_main,
+                                            &self.custom_display,
                                         ).await;
                                     } else {
                                         output.clear().await;

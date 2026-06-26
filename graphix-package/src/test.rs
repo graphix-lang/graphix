@@ -98,22 +98,21 @@ fn skel_cargo_toml_versions_match_workspace() {
 #[test]
 fn stdlib_package_versions_match_graphix_package() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("workspace root");
+    let pm_version = env!("CARGO_PKG_VERSION");
     let mut mismatches = vec![];
     for &name in super::DEFAULT_PACKAGES {
         let crate_name = format!("graphix-package-{name}");
         let version =
             crate_version(&ws.join("stdlib").join(&crate_name).join("Cargo.toml"));
-        if version != super::SKEL.version {
+        if version != pm_version {
             mismatches.push(format!(
-                "  {crate_name}: {version:?}, graphix-package: {:?}",
-                super::SKEL.version
+                "  {crate_name}: {version:?}, graphix-package: {pm_version:?}"
             ));
         }
     }
     assert!(
         mismatches.is_empty(),
-        "stdlib package versions don't match graphix-package ({}):\n{}",
-        super::SKEL.version,
+        "stdlib package versions don't match graphix-package ({pm_version}):\n{}",
         mismatches.join("\n")
     );
 }
@@ -145,6 +144,82 @@ async fn download_source_extracts_package_at_expected_root() {
         "crate archive was unpacked one level too deep: {}",
         nested.display()
     );
+}
+
+// C2: the package manager only adds external deps to Cargo.toml — the permanent
+// stdlib optional deps and the entire [features] table must survive untouched
+// (regressing this would break feature-selected builds).
+#[tokio::test]
+async fn update_cargo_toml_preserves_stdlib_and_features() {
+    let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let content =
+        std::fs::read_to_string(ws.join("graphix-shell").join("Cargo.toml")).unwrap();
+    let pm = super::GraphixPM::new().await.unwrap();
+    let mut external = std::collections::BTreeMap::new();
+    external
+        .insert("widgets".to_string(), super::PackageEntry::Version("1.2.3".to_string()));
+    let updated = pm.update_cargo_toml(&content, &external).unwrap();
+    let orig: toml_edit::DocumentMut = content.parse().unwrap();
+    let new: toml_edit::DocumentMut = updated.parse().unwrap();
+    // [features] is byte-for-byte untouched
+    assert_eq!(orig["features"].to_string(), new["features"].to_string());
+    // every stdlib graphix-package-* dep survives unchanged
+    let od = orig["dependencies"].as_table().unwrap();
+    let nd = new["dependencies"].as_table().unwrap();
+    for (k, v) in od.iter() {
+        if k.starts_with("graphix-package-") {
+            assert!(nd.contains_key(k), "stdlib dep {k} was dropped");
+            assert_eq!(v.to_string(), nd[k].to_string(), "stdlib dep {k} changed");
+        }
+    }
+    // the external was added
+    assert_eq!(nd["graphix-package-widgets"].as_str(), Some("1.2.3"));
+}
+
+// C3: the marquee "removal really works" test — build the workspace shell with a
+// reduced feature set and confirm dropped packages are genuinely gone from the
+// binary (not just absent from a recorded list). Real build, no stubs.
+#[test]
+fn reduced_feature_build_drops_packages() {
+    let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let _lock = build_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("target");
+    // Headless feature set (no gui/tui): keep str + re, drop http/sqlite/...
+    let status = std::process::Command::new(env!("CARGO"))
+        .current_dir(ws)
+        .args([
+            "build",
+            "-p",
+            "graphix-shell",
+            "--no-default-features",
+            "--features",
+            "str re",
+        ])
+        .arg("--target-dir")
+        .arg(&target)
+        .status()
+        .expect("spawn cargo build");
+    assert!(status.success(), "reduced-feature shell build failed");
+    let bin = target.join("debug").join("graphix");
+    assert!(bin.is_file(), "binary not found at {}", bin.display());
+    let check = |src: &str| -> bool {
+        let f = tmp.path().join("prog.gx");
+        std::fs::write(&f, src).unwrap();
+        std::process::Command::new(&bin)
+            .arg("--check")
+            .arg(&f)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run graphix --check")
+            .success()
+    };
+    // present packages check; dropped packages fail to resolve their module
+    assert!(check("use str;\nstr::len(\"hi\")\n"), "use str should check");
+    assert!(check("use re;\nre::is_match(#pat:\"x\", \"x\")\n"), "use re should check");
+    assert!(!check("use http\n"), "use http should fail (feature dropped)");
+    assert!(!check("use sqlite\n"), "use sqlite should fail (feature dropped)");
 }
 
 fn vendor(ws: &Path) {
@@ -296,19 +371,35 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
          line: {line:?}\nstderr: {:?}",
         captured_stderr
     );
+    // C6: the standalone binary is minimal — built with only the embedded
+    // package's dependency closure (testpkg depends on core only), so a package
+    // it never depended on (gui) is genuinely absent.
+    let gui_prog = tmp.path().join("use_gui.gx");
+    tokio::fs::write(&gui_prog, "use gui\n").await.unwrap();
+    let gui_status = tokio::process::Command::new(&bin_path)
+        .arg("--no-netidx")
+        .arg("--check")
+        .arg(&gui_prog)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .expect("run standalone --check");
+    assert!(!gui_status.success(), "standalone binary should not resolve `use gui`");
 }
 
 // ---- Pure-function unit tests (no stdin / network / filesystem) ----
 mod pure {
     use super::super::{
-        apply_selection, compute_update_plan, normalize_selection, parse_packages,
-        parse_toggles, plan_items, selection_from_indices, stdlib_packages_in_cargo_toml,
+        apply_selection, compute_update_plan, feature_depends_on, feature_edges,
+        installed_dependents, normalize_selection, parse_packages, parse_toggles,
+        plan_items, selection_from_indices, stdlib_packages_in_cargo_toml,
         to_toml_string, version_gt, PackageEntry, Packages, Selection, UpdatePlan,
         DEFAULT_PACKAGES,
     };
     use std::{
         collections::{BTreeMap, BTreeSet},
-        path::PathBuf,
+        path::{Path, PathBuf},
     };
 
     fn sset(names: &[&str]) -> BTreeSet<String> {
@@ -628,5 +719,101 @@ anyhow = \"1\"\n";
         assert!(sel.shell);
         assert!(sel.new_stdlib.is_empty());
         assert_eq!(sel.external, sset(&["widgets"]));
+    }
+
+    // ----- C1: BuildPlan + the feature dependency graph -----
+
+    #[test]
+    fn build_plan_features_exclude_core_sorted() {
+        let pkgs = Packages {
+            stdlib_installed: sset(&["core", "str", "json", "sys"]),
+            external: ext(&[("widgets", ver("1.0.0"))]),
+            ..Default::default()
+        };
+        let plan = pkgs.build_plan();
+        // sorted (from a BTreeSet), core excluded (always compiled, not a feature)
+        assert_eq!(plan.features, ["json", "str", "sys"].map(String::from).to_vec());
+        assert_eq!(plan.external, ext(&[("widgets", ver("1.0.0"))]));
+    }
+
+    const FEATURES_TOML: &str = "\
+[features]
+default = [\"all\"]
+all = [\"str\", \"sys\", \"json\", \"hbs\", \"tui\", \"array\"]
+str = [\"dep:graphix-package-str\"]
+sys = [\"dep:graphix-package-sys\"]
+array = [\"dep:graphix-package-array\"]
+json = [\"dep:graphix-package-json\", \"sys\"]
+hbs = [\"dep:graphix-package-hbs\", \"json\"]
+tui = [\"dep:graphix-package-tui\", \"array\", \"sys\"]
+krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\"]
+";
+
+    #[test]
+    fn feature_graph_transitive_dependents() {
+        let edges = feature_edges(FEATURES_TOML).unwrap();
+        assert!(feature_depends_on("json", "sys", &edges)); // direct
+        assert!(feature_depends_on("hbs", "sys", &edges)); // transitive via json
+        assert!(feature_depends_on("tui", "array", &edges));
+        assert!(!feature_depends_on("str", "sys", &edges));
+        assert!(!feature_depends_on("sys", "json", &edges)); // not the reverse
+                                                             // `?/` weak entries are not edges, so krb5_iov depends on nothing
+        assert!(!feature_depends_on("krb5_iov", "sys", &edges));
+        let installed = sset(&["str", "sys", "json", "hbs", "tui", "array"]);
+        let mut deps = installed_dependents("sys", &installed, &edges);
+        deps.sort();
+        assert_eq!(deps, ["hbs", "json", "tui"].map(String::from).to_vec());
+    }
+
+    // ----- C5/C7: the committed shell's feature wiring + files -----
+
+    fn shell_cargo_toml() -> String {
+        let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        std::fs::read_to_string(ws.join("graphix-shell").join("Cargo.toml")).unwrap()
+    }
+
+    #[test]
+    fn every_stdlib_package_has_a_feature() {
+        let content = shell_cargo_toml();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        let feats = doc["features"].as_table().unwrap();
+        let all: BTreeSet<String> = feats["all"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(String::from)
+            .collect();
+        for &name in DEFAULT_PACKAGES {
+            if name == "core" {
+                continue;
+            }
+            assert!(feats.contains_key(name), "no [features] entry for {name}");
+            assert!(all.contains(name), "`all` is missing stdlib package {name}");
+        }
+        // bench is internal but must still be registered by a default build (M2)
+        assert!(all.contains("bench"), "`all` must include bench");
+        // core is non-optional — never a feature
+        assert!(!feats.contains_key("core"), "core must not be a feature");
+    }
+
+    #[test]
+    fn krb5_iov_uses_weak_dep_syntax() {
+        let content = shell_cargo_toml();
+        // krb5_iov must reference sys/http weakly (`?/`) so enabling it never
+        // force-enables those optional packages, and so it creates no edge.
+        assert!(content.contains("graphix-package-sys?/krb5_iov"));
+        assert!(content.contains("graphix-package-http?/krb5_iov"));
+        let edges = feature_edges(&content).unwrap();
+        assert!(!feature_depends_on("krb5_iov", "sys", &edges));
+        assert!(!feature_depends_on("krb5_iov", "http", &edges));
+    }
+
+    #[test]
+    fn shell_ships_packages_rs_and_deps_rs() {
+        let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let src = ws.join("graphix-shell").join("src");
+        assert!(src.join("packages.rs").is_file(), "committed src/packages.rs missing");
+        assert!(src.join("deps.rs").is_file(), "src/deps.rs missing");
     }
 }

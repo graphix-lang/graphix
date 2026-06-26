@@ -20,6 +20,11 @@ use netidx::{
 };
 use std::{path::PathBuf, str::FromStr, sync::OnceLock, time::Duration};
 
+/// Registration of additional (external) packages. Rewritten by the package
+/// manager; the committed default is a no-op. Wired into the `ShellBuilder`
+/// hooks below and into the LSP backend.
+mod packages;
+
 #[derive(Debug, Clone, Copy)]
 enum RawFlag {
     Unhandled,
@@ -385,6 +390,9 @@ fn tokio_main(
             .subscriber(subscriber)
             .enable_flags(enable)
             .disable_flags(disable)
+            .register_packages(packages::register::<NoExt>)
+            .main_program(packages::main_program())
+            .custom_display(packages::custom_display::<NoExt>())
             .build()?
             .run(run_on_main)
             .await
@@ -396,7 +404,9 @@ fn main() -> Result<()> {
     let p = Params::parse();
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
-        Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
+        Some(Command::Lsp) => {
+            return graphix_shell::lsp_backend::run(packages::register::<NoExt>)
+        }
         None => (),
     }
     let cfg = match &p.config {
