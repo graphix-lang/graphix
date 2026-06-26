@@ -24,6 +24,7 @@ use serde_json::json;
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
+    io::IsTerminal,
     path::{Path, PathBuf},
     process::Stdio,
     sync::mpsc as smpsc,
@@ -193,35 +194,38 @@ fn packages_toml_path() -> Result<PathBuf> {
     Ok(graphix_data_dir()?.join("packages.toml"))
 }
 
-/// The default set of packages shipped with graphix
-const DEFAULT_PACKAGES: &[(&str, &str)] = &[
-    ("core", SKEL.version),
-    ("array", SKEL.version),
-    ("str", SKEL.version),
-    ("map", SKEL.version),
-    ("sys", SKEL.version),
-    ("http", SKEL.version),
-    ("json", SKEL.version),
-    ("toml", SKEL.version),
-    ("pack", SKEL.version),
-    ("xls", SKEL.version),
-    ("sqlite", SKEL.version),
-    ("db", SKEL.version),
-    ("list", SKEL.version),
-    ("args", SKEL.version),
-    ("hbs", SKEL.version),
-    ("re", SKEL.version),
-    ("rand", SKEL.version),
-    ("tui", SKEL.version),
-    ("gui", SKEL.version),
+/// The default set of user-facing stdlib packages shipped with graphix.
+/// Stdlib packages track the shell version and carry no per-package version.
+/// This list seeds a fresh packages.toml and serves as the "known stdlib" set
+/// when migrating an old-format file. The authoritative set at any given shell
+/// version is enumerated from that version's source Cargo.toml
+/// (`stdlib_packages_in_source`); this constant is only a bootstrap heuristic
+/// and may legitimately drift behind the source.
+const DEFAULT_PACKAGES: &[&str] = &[
+    "core", "array", "str", "map", "sys", "http", "json", "toml", "pack", "xls",
+    "sqlite", "db", "list", "args", "hbs", "re", "rand", "tui", "gui",
 ];
 
+/// Stdlib crates the shell depends on but that are not user-facing: never
+/// seeded into a fresh install, never auto-surfaced by `update`. Still
+/// installable on purpose via `graphix package add <name>`.
+const INTERNAL_PACKAGES: &[&str] = &["bench"];
+
+/// Old top-level stdlib packages that were merged into another package. On
+/// migration the dead name is dropped (the crate has no version compatible with
+/// the current shell, so leaving it would break the build) and its replacement
+/// is installed instead, so the user keeps the functionality — `fs`/`net`/`time`
+/// are now submodules of `sys` (`sys::fs`, etc.).
+const LEGACY_REMAP: &[(&str, &str)] = &[("fs", "sys"), ("net", "sys"), ("time", "sys")];
+
+/// True if `name` is a stdlib package (user-facing or internal). Stdlib
+/// packages track the shell version and are recorded by name only.
 fn is_stdlib_package(name: &str) -> bool {
-    DEFAULT_PACKAGES.iter().any(|(n, _)| *n == name)
+    DEFAULT_PACKAGES.contains(&name) || INTERNAL_PACKAGES.contains(&name)
 }
 
 /// A package entry in packages.toml — either a version string or a path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageEntry {
     Version(String),
     Path(PathBuf),
@@ -236,72 +240,249 @@ impl std::fmt::Display for PackageEntry {
     }
 }
 
-/// Read the packages.toml file, creating it with defaults if it doesn't exist.
-async fn read_packages() -> Result<BTreeMap<String, PackageEntry>> {
+/// The in-memory model of packages.toml (format v2).
+///
+/// Stdlib packages track the shell version and are recorded by name only,
+/// split into the set the user wants (`stdlib_installed`) and the set they
+/// explicitly declined or removed (`stdlib_removed`). Third-party packages
+/// live in `external`, keyed by short-name, still carrying a version or path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Packages {
+    stdlib_installed: BTreeSet<String>,
+    stdlib_removed: BTreeSet<String>,
+    external: BTreeMap<String, PackageEntry>,
+}
+
+impl Packages {
+    /// `core` is mandatory and can never be removed; a name can't be both
+    /// installed and removed (installed wins). Call after every load/mutation.
+    fn enforce_invariants(&mut self) {
+        self.stdlib_installed.insert("core".to_string());
+        let Self { stdlib_installed, stdlib_removed, external: _ } = self;
+        stdlib_removed.retain(|n| !stdlib_installed.contains(n));
+    }
+
+    /// The flat dependency map fed to the build machinery: each installed
+    /// stdlib package pinned to `build_version`, plus the externals verbatim.
+    /// An external sharing a name with a stdlib package wins (deliberate
+    /// override) — though stdlib names are reserved against externals on `add`.
+    fn combined_map(&self, build_version: &str) -> BTreeMap<String, PackageEntry> {
+        let mut m = BTreeMap::new();
+        for name in &self.stdlib_installed {
+            m.insert(name.clone(), PackageEntry::Version(build_version.to_string()));
+        }
+        for (name, entry) in &self.external {
+            m.insert(name.clone(), entry.clone());
+        }
+        m
+    }
+}
+
+/// Parse a single external entry value (`"1.2.3"` or `{ path = "..." }`).
+fn parse_entry(k: &str, v: &toml::Value) -> Result<PackageEntry> {
+    match v {
+        toml::Value::String(s) => Ok(PackageEntry::Version(s.clone())),
+        toml::Value::Table(t) => {
+            if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
+                Ok(PackageEntry::Path(PathBuf::from(p)))
+            } else {
+                bail!("package {k}: table entry must have a 'path' key")
+            }
+        }
+        _ => bail!("package {k}: expected a version string or table"),
+    }
+}
+
+fn parse_external_table(
+    tbl: Option<&toml::Value>,
+) -> Result<BTreeMap<String, PackageEntry>> {
+    let mut external = BTreeMap::new();
+    let Some(tbl) = tbl else { return Ok(external) };
+    let tbl = tbl.as_table().ok_or_else(|| anyhow!("[packages] must be a table"))?;
+    for (k, v) in tbl {
+        external.insert(k.clone(), parse_entry(k, v)?);
+    }
+    Ok(external)
+}
+
+/// Parse packages.toml. Returns the model and whether it was migrated from the
+/// old flat format (`true`) or was already v2 (`false`).
+fn parse_packages(contents: &str) -> Result<(Packages, bool)> {
+    let doc: toml::Value = toml::from_str(contents).context("parsing packages.toml")?;
+    if doc.get("stdlib").and_then(|v| v.as_table()).is_some() {
+        Ok((parse_v2(&doc)?, false))
+    } else {
+        Ok((migrate_old(&doc)?, true))
+    }
+}
+
+fn parse_v2(doc: &toml::Value) -> Result<Packages> {
+    let stdlib = doc
+        .get("stdlib")
+        .and_then(|v| v.as_table())
+        .ok_or_else(|| anyhow!("packages.toml missing [stdlib] table"))?;
+    let read_names = |key: &str| -> Result<BTreeSet<String>> {
+        match stdlib.get(key) {
+            None => Ok(BTreeSet::new()),
+            Some(toml::Value::Array(a)) => a
+                .iter()
+                .map(|v| {
+                    v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                        anyhow!("[stdlib].{key} must be an array of strings")
+                    })
+                })
+                .collect(),
+            Some(_) => bail!("[stdlib].{key} must be an array of strings"),
+        }
+    };
+    let mut p = Packages {
+        stdlib_installed: read_names("installed")?,
+        stdlib_removed: read_names("removed")?,
+        external: parse_external_table(doc.get("packages"))?,
+    };
+    p.enforce_invariants();
+    Ok(p)
+}
+
+/// Migrate an old-format file (flat `[packages]` of stdlib + external) to v2.
+fn migrate_old(doc: &toml::Value) -> Result<Packages> {
+    let tbl = doc
+        .get("packages")
+        .and_then(|v| v.as_table())
+        .ok_or_else(|| anyhow!("packages.toml missing [packages] table"))?;
+    let mut stdlib_installed = BTreeSet::new();
+    let mut external = BTreeMap::new();
+    for (k, v) in tbl {
+        if let Some((_, replacement)) = LEGACY_REMAP.iter().find(|(old, _)| old == k) {
+            eprintln!(
+                "warning: package '{k}' is now part of '{replacement}'; installing \
+                 '{replacement}' (use {replacement}::{k} instead of {k})"
+            );
+            stdlib_installed.insert(replacement.to_string());
+            continue;
+        }
+        let entry = parse_entry(k, v)?;
+        if is_stdlib_package(k) {
+            if let PackageEntry::Path(p) = &entry {
+                eprintln!(
+                    "warning: stdlib package '{k}' had a path override ({}); \
+                     stdlib now tracks the shell version, dropping the override",
+                    p.display()
+                );
+            }
+            stdlib_installed.insert(k.clone());
+        } else {
+            external.insert(k.clone(), entry);
+        }
+    }
+    // Stdlib names absent from the old file were removed by the user.
+    let stdlib_removed = DEFAULT_PACKAGES
+        .iter()
+        .filter(|n| !stdlib_installed.contains(**n))
+        .map(|n| n.to_string())
+        .collect();
+    let mut p = Packages { stdlib_installed, stdlib_removed, external };
+    p.enforce_invariants();
+    Ok(p)
+}
+
+/// Serialize a `Packages` to the v2 on-disk format.
+fn to_toml_string(p: &Packages) -> Result<String> {
+    let to_arr = |s: &BTreeSet<String>| -> toml::Value {
+        toml::Value::Array(s.iter().map(|n| toml::Value::String(n.clone())).collect())
+    };
+    let mut stdlib = toml::value::Table::new();
+    stdlib.insert("installed".to_string(), to_arr(&p.stdlib_installed));
+    stdlib.insert("removed".to_string(), to_arr(&p.stdlib_removed));
+    let mut pkgs = toml::value::Table::new();
+    for (k, entry) in &p.external {
+        match entry {
+            PackageEntry::Version(v) => {
+                pkgs.insert(k.clone(), toml::Value::String(v.clone()));
+            }
+            PackageEntry::Path(path) => {
+                let mut t = toml::value::Table::new();
+                t.insert(
+                    "path".to_string(),
+                    toml::Value::String(path.to_string_lossy().into_owned()),
+                );
+                pkgs.insert(k.clone(), toml::Value::Table(t));
+            }
+        }
+    }
+    let mut doc = toml::value::Table::new();
+    doc.insert("stdlib".to_string(), toml::Value::Table(stdlib));
+    doc.insert("packages".to_string(), toml::Value::Table(pkgs));
+    Ok(toml::to_string_pretty(&toml::Value::Table(doc))?)
+}
+
+/// Read packages.toml, creating it with defaults (and migrating if needed).
+/// An old-format file is upgraded to v2 in place on first read (best-effort —
+/// a write failure doesn't fail the read), so migration runs exactly once.
+async fn read_packages() -> Result<Packages> {
     let path = packages_toml_path()?;
     match fs::read_to_string(&path).await {
         Ok(contents) => {
-            let doc: toml::Value =
-                toml::from_str(&contents).context("parsing packages.toml")?;
-            let tbl = doc
-                .get("packages")
-                .and_then(|v| v.as_table())
-                .ok_or_else(|| anyhow!("packages.toml missing [packages] table"))?;
-            let mut packages = BTreeMap::new();
-            for (k, v) in tbl {
-                let entry = match v {
-                    toml::Value::String(s) => PackageEntry::Version(s.clone()),
-                    toml::Value::Table(t) => {
-                        if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
-                            PackageEntry::Path(PathBuf::from(p))
-                        } else {
-                            bail!("package {k}: table entry must have a 'path' key")
-                        }
-                    }
-                    _ => bail!("package {k}: expected a version string or table"),
-                };
-                packages.insert(k.clone(), entry);
+            let (p, migrated) = parse_packages(&contents)?;
+            if migrated {
+                let _ = write_packages(&p).await;
             }
-            Ok(packages)
+            Ok(p)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let packages: BTreeMap<String, PackageEntry> = DEFAULT_PACKAGES
-                .iter()
-                .map(|(k, v)| (k.to_string(), PackageEntry::Version(v.to_string())))
-                .collect();
-            write_packages(&packages).await?;
-            Ok(packages)
+            let mut p = Packages::default();
+            p.stdlib_installed = DEFAULT_PACKAGES.iter().map(|n| n.to_string()).collect();
+            p.enforce_invariants();
+            write_packages(&p).await?;
+            Ok(p)
         }
         Err(e) => Err(e.into()),
     }
 }
 
 /// Write the packages.toml file
-async fn write_packages(packages: &BTreeMap<String, PackageEntry>) -> Result<()> {
+async fn write_packages(p: &Packages) -> Result<()> {
     let path = packages_toml_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let mut doc = toml::value::Table::new();
-    let mut tbl = toml::value::Table::new();
-    for (k, entry) in packages {
-        match entry {
-            PackageEntry::Version(v) => {
-                tbl.insert(k.clone(), toml::Value::String(v.clone()));
-            }
-            PackageEntry::Path(p) => {
-                let mut t = toml::value::Table::new();
-                t.insert(
-                    "path".to_string(),
-                    toml::Value::String(p.to_string_lossy().into_owned()),
-                );
-                tbl.insert(k.clone(), toml::Value::Table(t));
-            }
-        }
-    }
-    doc.insert("packages".to_string(), toml::Value::Table(tbl));
-    fs::write(&path, toml::to_string_pretty(&doc)?).await?;
+    fs::write(&path, to_toml_string(p)?).await?;
     Ok(())
+}
+
+/// Enumerate the stdlib package short-names from a Cargo.toml's
+/// `[dependencies]` — every `graphix-package-<name>` key (the trailing dash
+/// excludes the `graphix-package` crate itself; the value shape is ignored, so
+/// the `optional` gui entry is included).
+fn stdlib_packages_in_cargo_toml(content: &str) -> Result<BTreeSet<String>> {
+    use toml_edit::DocumentMut;
+    let doc: DocumentMut = content.parse().context("parsing shell Cargo.toml")?;
+    let deps = doc
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
+    Ok(deps
+        .iter()
+        .filter_map(|(k, _)| k.strip_prefix("graphix-package-").map(|s| s.to_string()))
+        .collect())
+}
+
+/// The stdlib set shipped by an unpacked graphix-shell source tree.
+async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<String>> {
+    let cargo_toml = source_dir.join("Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml)
+        .await
+        .with_context(|| format!("reading {}", cargo_toml.display()))?;
+    stdlib_packages_in_cargo_toml(&content)
+}
+
+/// True if version `a` is strictly newer than `b` by semver. Falls back to
+/// string inequality if either fails to parse (a degraded "they differ" test).
+fn version_gt(a: &str, b: &str) -> bool {
+    match (semver::Version::parse(a), semver::Version::parse(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => a != b,
+    }
 }
 
 /// Get the graphix version string from the running binary
@@ -471,6 +652,338 @@ impl PackageId {
     }
 }
 
+/// The set of changes `update` discovered as available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdatePlan {
+    /// `Some((current, latest))` iff a newer shell version is available.
+    shell: Option<(String, String)>,
+    /// Newly-shipped stdlib packages not yet seen (installed or removed).
+    new_stdlib: Vec<String>,
+    /// `(name, old, new)` for each external package with a newer version.
+    external_updates: Vec<(String, String, String)>,
+}
+
+impl UpdatePlan {
+    fn is_empty(&self) -> bool {
+        self.shell.is_none()
+            && self.new_stdlib.is_empty()
+            && self.external_updates.is_empty()
+    }
+}
+
+/// Which items of an `UpdatePlan` the user chose to apply.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Selection {
+    shell: bool,
+    new_stdlib: BTreeSet<String>,
+    external: BTreeSet<String>,
+}
+
+impl Selection {
+    /// The "apply everything" selection.
+    fn all(plan: &UpdatePlan) -> Self {
+        Self {
+            shell: plan.shell.is_some(),
+            new_stdlib: plan.new_stdlib.iter().cloned().collect(),
+            external: plan.external_updates.iter().map(|(n, _, _)| n.clone()).collect(),
+        }
+    }
+}
+
+/// Compute the available changes from the current state. Pure.
+fn compute_update_plan(
+    current_shell: &str,
+    latest_shell: &str,
+    stdlib_set_from_source: &BTreeSet<String>,
+    packages: &Packages,
+    external_latest: &BTreeMap<String, String>,
+) -> UpdatePlan {
+    let shell = if version_gt(latest_shell, current_shell) {
+        Some((current_shell.to_string(), latest_shell.to_string()))
+    } else {
+        None
+    };
+    // BTreeSet iterates sorted, so new_stdlib comes out sorted.
+    let new_stdlib = stdlib_set_from_source
+        .iter()
+        .filter(|n| {
+            !packages.stdlib_installed.contains(*n)
+                && !packages.stdlib_removed.contains(*n)
+                && !INTERNAL_PACKAGES.contains(&n.as_str())
+        })
+        .cloned()
+        .collect();
+    let mut external_updates = Vec::new();
+    for (name, entry) in &packages.external {
+        if let PackageEntry::Version(cur) = entry {
+            if let Some(latest) = external_latest.get(name) {
+                if version_gt(latest, cur) {
+                    external_updates.push((name.clone(), cur.clone(), latest.clone()));
+                }
+            }
+        }
+    }
+    UpdatePlan { shell, new_stdlib, external_updates }
+}
+
+/// Apply a selection to `packages`, returning the shell version to build
+/// against. Pure. New stdlib packages can only be built against the latest
+/// shell source, so they are only acted on when the build version is the
+/// latest; a deselected new package is then explicitly recorded in `removed`.
+/// When the shell bump is declined the new packages are left untracked so they
+/// resurface once the user takes the bump.
+fn apply_selection(
+    current_shell: &str,
+    latest_shell: &str,
+    plan: &UpdatePlan,
+    sel: &Selection,
+    packages: &mut Packages,
+) -> String {
+    let build_version = if plan.shell.is_some() && sel.shell {
+        latest_shell.to_string()
+    } else {
+        current_shell.to_string()
+    };
+    if build_version == latest_shell {
+        for name in &plan.new_stdlib {
+            if sel.new_stdlib.contains(name) {
+                packages.stdlib_removed.remove(name);
+                packages.stdlib_installed.insert(name.clone());
+            } else {
+                packages.stdlib_installed.remove(name);
+                packages.stdlib_removed.insert(name.clone());
+            }
+        }
+    }
+    for (name, _old, new) in &plan.external_updates {
+        if sel.external.contains(name) {
+            packages.external.insert(name.clone(), PackageEntry::Version(new.clone()));
+        }
+    }
+    packages.enforce_invariants();
+    build_version
+}
+
+/// A single presentable/selectable line of an `UpdatePlan`.
+enum Item {
+    Shell { current: String, latest: String },
+    NewStdlib(String),
+    External { name: String, old: String, new: String },
+}
+
+impl Item {
+    fn section(&self) -> &'static str {
+        match self {
+            Item::Shell { .. } => "Shell",
+            Item::NewStdlib(_) => "New stdlib packages (require the shell update)",
+            Item::External { .. } => "External package updates",
+        }
+    }
+
+    fn render(&self) -> String {
+        match self {
+            Item::Shell { current, latest } => {
+                format!("graphix-shell   {current} -> {latest}")
+            }
+            Item::NewStdlib(n) => n.clone(),
+            Item::External { name, old, new } => format!("{name}   {old} -> {new}"),
+        }
+    }
+}
+
+/// Flatten a plan into ordered items (shell, then new stdlib, then external).
+/// The 1-based position is the stable index used by the edit prompt.
+fn plan_items(plan: &UpdatePlan) -> Vec<Item> {
+    let mut items = Vec::new();
+    if let Some((current, latest)) = &plan.shell {
+        items.push(Item::Shell { current: current.clone(), latest: latest.clone() });
+    }
+    for n in &plan.new_stdlib {
+        items.push(Item::NewStdlib(n.clone()));
+    }
+    for (name, old, new) in &plan.external_updates {
+        items.push(Item::External {
+            name: name.clone(),
+            old: old.clone(),
+            new: new.clone(),
+        });
+    }
+    items
+}
+
+/// Render items grouped by section. With `selected`, draw checkboxes for edit
+/// mode; without, draw plain `[n]` indices for the summary.
+fn render_items(items: &[Item], selected: Option<&BTreeSet<usize>>) {
+    let mut last_section = "";
+    for (i, item) in items.iter().enumerate() {
+        let sec = item.section();
+        if sec != last_section {
+            println!("  {sec}");
+            last_section = sec;
+        }
+        let num = i + 1;
+        match selected {
+            None => println!("    [{num}]  {}", item.render()),
+            Some(sel) => {
+                let mark = if sel.contains(&i) { "x" } else { " " };
+                println!("    [{mark}] {num}  {}", item.render());
+            }
+        }
+    }
+}
+
+fn present(items: &[Item]) {
+    println!("\ngraphix update — available changes:\n");
+    render_items(items, None);
+    println!();
+}
+
+fn flush_stdout() {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+}
+
+/// Read one line from stdin on the blocking pool. `Ok(None)` is EOF.
+async fn prompt_line() -> Result<Option<String>> {
+    task::spawn_blocking(|| -> Result<Option<String>> {
+        let mut s = String::new();
+        let n = std::io::stdin().read_line(&mut s)?;
+        Ok(if n == 0 { None } else { Some(s) })
+    })
+    .await?
+}
+
+/// Parse space/comma-separated 1-based item numbers into 0-based indices,
+/// announcing and skipping anything invalid or out of range.
+fn parse_toggles(line: &str, n_items: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    for tok in
+        line.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty())
+    {
+        match tok.parse::<usize>() {
+            Ok(num) if num >= 1 && num <= n_items => out.push(num - 1),
+            _ => println!("ignoring invalid entry '{tok}'"),
+        }
+    }
+    out
+}
+
+/// The result of asking the user what to do with a plan.
+enum Outcome {
+    Cancel,
+    Apply(Selection),
+}
+
+/// Build a `Selection` from the set of selected item indices.
+fn selection_from_indices(items: &[Item], selected: &BTreeSet<usize>) -> Selection {
+    let mut sel = Selection::default();
+    for (i, item) in items.iter().enumerate() {
+        let on = selected.contains(&i);
+        match item {
+            Item::Shell { .. } => sel.shell = on,
+            Item::NewStdlib(n) => {
+                if on {
+                    sel.new_stdlib.insert(n.clone());
+                }
+            }
+            Item::External { name, .. } => {
+                if on {
+                    sel.external.insert(name.clone());
+                }
+            }
+        }
+    }
+    sel
+}
+
+/// The interactive `[Y/e/n]` confirmation (the plan is already presented).
+async fn prompt_y_e_n(items: &[Item]) -> Result<Outcome> {
+    loop {
+        print!("Apply all changes? [Y/e/n]  (Y = apply all, e = edit selection, n = cancel) ");
+        flush_stdout();
+        match prompt_line().await? {
+            None => return Ok(Outcome::Cancel),
+            Some(line) => match line.trim().to_ascii_lowercase().as_str() {
+                "" | "y" | "yes" => {
+                    let all: BTreeSet<usize> = (0..items.len()).collect();
+                    return Ok(Outcome::Apply(selection_from_indices(items, &all)));
+                }
+                "n" | "no" => return Ok(Outcome::Cancel),
+                "e" | "edit" => return edit_selection(items).await,
+                other => println!("please answer y, e, or n (got '{other}')"),
+            },
+        }
+    }
+}
+
+/// If the shell item is deselected, force every new-stdlib item off (they can't
+/// build against the current shell). Returns the names that were forced off, so
+/// the caller can note them. Pure.
+fn normalize_selection(items: &[Item], selected: &mut BTreeSet<usize>) -> Vec<String> {
+    let Some(si) = items.iter().position(|it| matches!(it, Item::Shell { .. })) else {
+        return Vec::new();
+    };
+    if selected.contains(&si) {
+        return Vec::new();
+    }
+    let mut off = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if let Item::NewStdlib(n) = item {
+            if selected.remove(&i) {
+                off.push(n.clone());
+            }
+        }
+    }
+    off
+}
+
+/// The numbered toggle list editor. Everything starts selected; numbers toggle;
+/// a blank line confirms. Deselecting the shell forces every new-stdlib item off
+/// (they can't be built against the current shell).
+async fn edit_selection(items: &[Item]) -> Result<Outcome> {
+    let mut selected: BTreeSet<usize> = (0..items.len()).collect();
+    loop {
+        println!(
+            "\nEdit selection — type item numbers to toggle (space/comma separated),"
+        );
+        println!("blank line to confirm.\n");
+        render_items(items, Some(&selected));
+        print!("toggle> ");
+        flush_stdout();
+        match prompt_line().await? {
+            None => {
+                println!("input closed; aborting, no changes made.");
+                return Ok(Outcome::Cancel);
+            }
+            Some(line) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    let sel = selection_from_indices(items, &selected);
+                    if !sel.shell && sel.new_stdlib.is_empty() && sel.external.is_empty()
+                    {
+                        println!("no changes selected.");
+                        return Ok(Outcome::Cancel);
+                    }
+                    return Ok(Outcome::Apply(sel));
+                }
+                for idx in parse_toggles(line, items.len()) {
+                    if !selected.remove(&idx) {
+                        selected.insert(idx);
+                    }
+                }
+                let off = normalize_selection(items, &mut selected);
+                if !off.is_empty() {
+                    println!(
+                        "note: declining the shell update — new stdlib packages \
+                         ({}) were deselected",
+                        off.join(", ")
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The Graphix package manager
 pub struct GraphixPM {
     cratesio: AsyncClient,
@@ -621,29 +1134,33 @@ impl GraphixPM {
         Ok(doc.to_string())
     }
 
-    /// Rebuild the graphix binary with the given package set
-    async fn rebuild(
-        &self,
-        packages: &BTreeMap<String, PackageEntry>,
-        version: &str,
-    ) -> Result<()> {
+    /// Delete the scratch build dir and unpack a fresh graphix-shell source
+    /// tree for `version`.
+    async fn prepare_source(&self, version: &str) -> Result<PathBuf> {
         println!("Unpacking graphix-shell source...");
-        // Delete existing build dir to get a fresh source
         let build_dir = graphix_data_dir()?.join("build");
         if fs::metadata(&build_dir).await.is_ok() {
             fs::remove_dir_all(&build_dir).await?;
         }
-        let source_dir = self.unpack_source(version).await?;
+        self.unpack_source(version).await
+    }
+
+    /// Write deps.rs + Cargo.toml for the given package set into an already
+    /// unpacked source tree, back up the current binary, then build & install.
+    async fn install_from_source(
+        &self,
+        source_dir: &Path,
+        packages: &BTreeMap<String, PackageEntry>,
+    ) -> Result<()> {
         // Generate deps.rs
         println!("Generating deps.rs...");
-        let deps_rs = self.generate_deps_rs(&packages)?;
+        let deps_rs = self.generate_deps_rs(packages)?;
         fs::write(source_dir.join("src").join("deps.rs"), &deps_rs).await?;
         // Update Cargo.toml with package dependencies
         println!("Updating Cargo.toml...");
         let cargo_toml_path = source_dir.join("Cargo.toml");
         let cargo_toml_content = fs::read_to_string(&cargo_toml_path).await?;
-        let updated_cargo_toml =
-            self.update_cargo_toml(&cargo_toml_content, &packages)?;
+        let updated_cargo_toml = self.update_cargo_toml(&cargo_toml_content, packages)?;
         fs::write(&cargo_toml_path, &updated_cargo_toml).await?;
         // Save previous binary
         if let Ok(graphix_path) = which::which("graphix") {
@@ -663,7 +1180,7 @@ impl GraphixPM {
         let status = Command::new(&self.cargo)
             .arg("install")
             .arg("--path")
-            .arg(&source_dir)
+            .arg(source_dir)
             .arg("--force")
             .status()
             .await
@@ -675,6 +1192,16 @@ impl GraphixPM {
         self.cleanup_old_binaries().await;
         println!("Done! Restart graphix to use the updated packages.");
         Ok(())
+    }
+
+    /// Rebuild the graphix binary with the given package set
+    async fn rebuild(
+        &self,
+        packages: &BTreeMap<String, PackageEntry>,
+        version: &str,
+    ) -> Result<()> {
+        let source_dir = self.prepare_source(version).await?;
+        self.install_from_source(&source_dir, packages).await
     }
 
     /// Clean up graphix-previous-* binaries older than 1 week
@@ -726,26 +1253,36 @@ impl GraphixPM {
         let mut installed = read_packages().await?;
         let mut changed = false;
         for pkg in packages {
+            let name = pkg.name();
+            if is_stdlib_package(name) {
+                if pkg.path().is_some() || pkg.version().is_some() {
+                    bail!(
+                        "stdlib package '{name}' tracks the shell version and cannot \
+                         be pinned to a version or path; for local development build \
+                         from the workspace"
+                    )
+                }
+                println!("Adding stdlib package {name}");
+                installed.stdlib_removed.remove(name);
+                installed.stdlib_installed.insert(name.to_string());
+                changed = true;
+                continue;
+            }
             let entry = if let Some(path) = pkg.path() {
                 let path = path
                     .canonicalize()
                     .with_context(|| format!("resolving path {}", path.display()))?;
                 let version = Self::read_package_version(&path).await?;
-                println!(
-                    "Adding {} @ path {} (version {version})",
-                    pkg.name(),
-                    path.display()
-                );
+                println!("Adding {name} @ path {} (version {version})", path.display());
                 PackageEntry::Path(path)
             } else if skip_crates_io_check {
                 match pkg.version() {
                     Some(v) => {
-                        println!("Adding {}@{v}", pkg.name());
+                        println!("Adding {name}@{v}");
                         PackageEntry::Version(v.to_string())
                     }
                     None => bail!(
-                        "version is required for {} when using --skip-crates-io-check",
-                        pkg.name()
+                        "version is required for {name} when using --skip-crates-io-check"
                     ),
                 }
             } else {
@@ -758,15 +1295,15 @@ impl GraphixPM {
                     Some(v) => v.to_string(),
                     None => cr.crate_data.max_version.clone(),
                 };
-                println!("Adding {}@{version}", pkg.name());
+                println!("Adding {name}@{version}");
                 PackageEntry::Version(version)
             };
-            installed.insert(pkg.name().to_string(), entry);
+            installed.external.insert(name.to_string(), entry);
             changed = true;
         }
         if changed {
             let version = graphix_version().await?;
-            self.rebuild(&installed, &version).await?;
+            self.rebuild(&installed.combined_map(&version), &version).await?;
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -781,20 +1318,30 @@ impl GraphixPM {
         let mut installed = read_packages().await?;
         let mut changed = false;
         for pkg in packages {
-            if pkg.name() == "core" {
+            let name = pkg.name();
+            if name == "core" {
                 eprintln!("Cannot remove the core package");
                 continue;
             }
-            if installed.remove(pkg.name()).is_some() {
-                println!("Removing {}", pkg.name());
+            if is_stdlib_package(name) {
+                if installed.stdlib_removed.contains(name) {
+                    println!("{name} is already removed");
+                } else {
+                    installed.stdlib_installed.remove(name);
+                    installed.stdlib_removed.insert(name.to_string());
+                    println!("Removing stdlib package {name}");
+                    changed = true;
+                }
+            } else if installed.external.remove(name).is_some() {
+                println!("Removing {name}");
                 changed = true;
             } else {
-                println!("{} is not installed", pkg.name());
+                println!("{name} is not installed");
             }
         }
         if changed {
             let version = graphix_version().await?;
-            self.rebuild(&installed, &version).await?;
+            self.rebuild(&installed.combined_map(&version), &version).await?;
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -827,17 +1374,32 @@ impl GraphixPM {
         let _guard = lock.write().context("waiting for package lock")?;
         let packages = read_packages().await?;
         let version = graphix_version().await?;
-        self.rebuild(&packages, &version).await
+        self.rebuild(&packages.combined_map(&version), &version).await
     }
 
     /// List installed packages
     pub async fn list(&self) -> Result<()> {
         let packages = read_packages().await?;
-        if packages.is_empty() {
+        if packages.stdlib_installed.is_empty() && packages.external.is_empty() {
             println!("No packages installed");
-        } else {
-            for (name, version) in &packages {
-                println!("{name}: {version}");
+            return Ok(());
+        }
+        if !packages.stdlib_installed.is_empty() {
+            println!("stdlib packages:");
+            for name in &packages.stdlib_installed {
+                println!("  {name}");
+            }
+        }
+        if !packages.stdlib_removed.is_empty() {
+            println!("removed stdlib packages:");
+            for name in &packages.stdlib_removed {
+                println!("  {name}");
+            }
+        }
+        if !packages.external.is_empty() {
+            println!("external packages:");
+            for (name, entry) in &packages.external {
+                println!("  {name}: {entry}");
             }
         }
         Ok(())
@@ -944,29 +1506,100 @@ impl GraphixPM {
         Ok(cr.crate_data.max_version)
     }
 
-    /// Update graphix to the latest version and rebuild with current packages
-    pub async fn update(&self) -> Result<()> {
+    /// Update graphix and its packages: discover the available changes (shell
+    /// bump, newly-shipped stdlib packages, external package updates), confirm
+    /// with the user (unless `assume_yes`), then rebuild against the chosen
+    /// shell version with the chosen package set.
+    pub async fn update(&self, assume_yes: bool) -> Result<()> {
         let mut lock = Self::lock_file()?;
+        // Probe the lock so we can tell the user we're waiting; the probe guard
+        // is dropped immediately, then we (re)acquire and hold for the op.
+        if lock.try_write().is_err() {
+            println!("waiting for another graphix package operation to finish...");
+        }
         let _guard = lock.write().context("waiting for package lock")?;
         let current = graphix_version().await?;
-        let latest_shell = self.latest_version("graphix-shell").await?;
-        if current == latest_shell {
-            println!("graphix is already up to date (version {current})");
-            return Ok(());
-        }
-        println!("Updating graphix from {current} to {latest_shell}...");
+        let latest = self
+            .latest_version("graphix-shell")
+            .await
+            .context("checking crates.io for the latest graphix-shell")?;
         let mut packages = read_packages().await?;
-        for (name, entry) in packages.iter_mut() {
-            if is_stdlib_package(name) {
-                if let PackageEntry::Version(_) = entry {
-                    let crate_name = format!("graphix-package-{name}");
-                    let latest = self.latest_version(&crate_name).await?;
-                    println!("  {name}: {entry} -> {latest}");
-                    *entry = PackageEntry::Version(latest);
+        // New stdlib packages only ship with a shell bump, so only unpack the
+        // latest source to enumerate them when a bump is available.
+        let shell_bump = version_gt(&latest, &current);
+        let (latest_src, stdlib_latest) = if shell_bump {
+            let s = self.prepare_source(&latest).await?;
+            let set = stdlib_packages_in_source(&s).await?;
+            (Some(s), set)
+        } else {
+            (None, BTreeSet::new())
+        };
+        // Check each external (crates.io versioned) package for an update. A
+        // single failing crate must not abort the whole update.
+        let mut external_latest = BTreeMap::new();
+        for (name, entry) in &packages.external {
+            if let PackageEntry::Version(_) = entry {
+                let crate_name = format!("graphix-package-{name}");
+                match self.latest_version(&crate_name).await {
+                    Ok(v) => {
+                        external_latest.insert(name.clone(), v);
+                    }
+                    Err(e) => {
+                        eprintln!("warning: couldn't check updates for {name}: {e}")
+                    }
                 }
             }
         }
-        self.rebuild(&packages, &latest_shell).await?;
+        let plan = compute_update_plan(
+            &current,
+            &latest,
+            &stdlib_latest,
+            &packages,
+            &external_latest,
+        );
+        if plan.is_empty() {
+            println!("graphix is already up to date (version {current})");
+            return Ok(());
+        }
+        let items = plan_items(&plan);
+        present(&items);
+        let outcome = if assume_yes {
+            println!("applying all changes (--yes)");
+            Outcome::Apply(Selection::all(&plan))
+        } else if !std::io::stdin().is_terminal() {
+            bail!(
+                "stdin is not a terminal; re-run with --yes to apply all available changes"
+            )
+        } else {
+            prompt_y_e_n(&items).await?
+        };
+        let sel = match outcome {
+            Outcome::Cancel => {
+                println!("cancelled.");
+                return Ok(());
+            }
+            Outcome::Apply(sel) => sel,
+        };
+        let build_version =
+            apply_selection(&current, &latest, &plan, &sel, &mut packages);
+        // Reuse the latest source if we're building against it; otherwise the
+        // shell bump was declined and we must build against the current source.
+        let (build_src, stdlib_build) = match latest_src {
+            Some(s) if build_version == latest => (s, stdlib_latest),
+            _ => {
+                let s = self.prepare_source(&build_version).await?;
+                let set = stdlib_packages_in_source(&s).await?;
+                (s, set)
+            }
+        };
+        // Don't try to build an installed stdlib package that doesn't exist at
+        // the build version (e.g. removed upstream); keep the recorded intent.
+        let mut effective = packages.clone();
+        effective.stdlib_installed.retain(|n| n == "core" || stdlib_build.contains(n));
+        // Build before writing: a failed cargo install leaves packages.toml
+        // untouched and the user re-runs to the same choices.
+        self.install_from_source(&build_src, &effective.combined_map(&build_version))
+            .await?;
         write_packages(&packages).await?;
         Ok(())
     }

@@ -99,8 +99,12 @@ enum PackageAction {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
-    /// Update graphix to the latest version
-    Update,
+    /// Update graphix and its packages to their latest versions
+    Update {
+        /// Apply all available changes without prompting (for scripts/CI)
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
     /// Build a standalone graphix binary from the package in the
     /// current directory. Pass `--source-override` to reuse a
     /// pre-extracted graphix-shell source tree (e.g. the workspace)
@@ -284,9 +288,9 @@ async fn handle_package(action: PackageAction) -> Result<()> {
             };
             graphix_package::create_package(&dir, &full_name).await
         }
-        PackageAction::Update => {
+        PackageAction::Update { yes } => {
             let pm = GraphixPM::new().await?;
-            pm.update().await
+            pm.update(yes).await
         }
         PackageAction::BuildStandalone { source_override } => {
             let pm = GraphixPM::new().await?;

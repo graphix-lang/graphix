@@ -1272,6 +1272,43 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
   injecting a temp graphix data dir and downloading a fixed released
   `graphix-shell` from crates.io (e.g. `0.5.0`) — avoids mutating the user's
   `~/.local/share/graphix` and regression-tests archive-extraction layout.
+- **Package manager — `packages.toml` v2 + `update` rework (2026-06-25).** The
+  stdlib is special-cased: stdlib packages no longer carry versions (they always
+  track the shell version). `packages.toml` format v2 is a `[stdlib]` table with
+  `installed`/`removed` name arrays plus a `[packages]` table for EXTERNAL
+  (third-party) packages only (still version-or-path). The in-memory model is
+  `Packages { stdlib_installed, stdlib_removed, external }`. `read_packages`
+  detects the old flat `[packages]`-only format by ABSENCE of `[stdlib]` and
+  migrates once (stdlib names present → installed; absent → removed; non-stdlib →
+  external; stdlib path overrides are dropped — stdlib can't be path/version
+  pinned anymore), persisting the upgrade in place (best-effort) on first read.
+  `LEGACY_REMAP` (`fs`/`net`/`time` → `sys`) handles the pre-`sys` reorg: a
+  migrated file with those old top-level packages drops the dead name (its crate
+  has no shell-compatible version, so it would break the build) and installs the
+  replacement `sys` in its place, preserving the user's intent.
+  `combined_map(build_version)` is the single bridge to the unchanged build
+  machinery (`generate_deps_rs`/`update_cargo_toml`): stdlib → `Version(build_version)`
+  plus externals verbatim. `rebuild` was split into `prepare_source` (delete
+  scratch + unpack) + `install_from_source` so `update` can unpack the latest
+  source once (to enumerate new stdlib) and reuse it for the build. The
+  authoritative stdlib set at a version is enumerated from that shell source's
+  `Cargo.toml` `graphix-package-*` deps (`stdlib_packages_in_source`);
+  `DEFAULT_PACKAGES` (now `&[&str]`, 19 user-facing names) is only the
+  fresh-install/migration bootstrap. `INTERNAL_PACKAGES = ["bench"]` is a denylist
+  (shell dep, never auto-surfaced, still `add`-able). `update(assume_yes)` now:
+  discovers a maskable change set — shell bump (current→latest via semver
+  `version_gt`, a new workspace dep), NEW stdlib (source set − installed∪removed −
+  internal; only when a bump exists), and EXTERNAL updates (per installed Version
+  external, one bad crate warns+skips not aborts) — `present`s it, then `[Y/e/n]`
+  prompts (numbered toggle list for `e`; declining the shell auto-deselects new
+  stdlib; deselecting a new stdlib in edit → `removed`, never re-asked; `n`/cancel
+  writes nothing). New stdlib only applies when `build_version == latest`. Builds
+  BEFORE writing `packages.toml` (failed `cargo install` ≠ corrupt manifest).
+  Non-TTY without `--yes` is a HARD ERROR (no silent CI mutation). The pure core
+  (`parse_packages`/`to_toml_string`/`compute_update_plan`/`apply_selection`/
+  `parse_toggles`/`stdlib_packages_in_cargo_toml`) is unit-tested with no
+  stdin/network/fs (`test::pure`); the prompt IO reads via `spawn_blocking` +
+  `std::io::stdin().read_line` and is verified by pty-driven manual runs.
 - **GUI widget tests**: `GuiWidget` has a `#[cfg(test)] as_any`/`as_any_mut`
   (default `unimplemented!()`); widgets needing test-state inspection (e.g.
   `DataTableW`) override it, and `GuiTestHarness::dt()/dt_mut()` downcast. Tests
