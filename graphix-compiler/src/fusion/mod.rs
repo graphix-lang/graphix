@@ -114,6 +114,15 @@ pub struct FusionCtx {
     /// node-walk instead of hanging the compiler. `Arc` so a drop-guard
     /// can hold the set without borrowing the `ExecCtx`.
     pub(crate) building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
+    /// Lambdas whose BODY is CURRENTLY being driven through `typecheck1`
+    /// by `CallSite::resolve_static` (#203 nested-call resolution). A call
+    /// inside a body to a lambda already in this set is a self- or
+    /// mutually-recursive back-edge: `resolve_static` leaves it
+    /// `DynamicUnbound` (the `self_call` emit mechanism handles a self-call;
+    /// a mutual back-edge de-fuses cleanly) instead of recursing the drive
+    /// forever. `Arc` so the insert/remove can straddle the
+    /// `apply.typecheck1(ctx, …)` call without borrowing the `ExecCtx`.
+    pub(crate) resolving: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
     /// Whether fusion is enabled for the current compile. Set by
     /// [`crate::compile`] from `!flags.contains(CFlag::FusionDisabled)`.
     /// The in-context mirror of the flag, for the per-slot HOF fusion
@@ -159,6 +168,9 @@ impl FusionCtx {
             jit: parking_lot::Mutex::new(emit::Jit::new()?),
             kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             building: triomphe::Arc::new(parking_lot::Mutex::new(
+                nohash::IntSet::default(),
+            )),
+            resolving: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
             )),
             enabled: true,
@@ -433,22 +445,36 @@ pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
     /// lambda-call path against the kernel's own FuncRef; tail-position
     /// self-calls become the rebind-and-jump loop.
     pub self_call: Option<(BindId, LambdaCallInfo)>,
+    /// This callee body's OWN statically-resolved lambda call sites
+    /// (#203 Phase C — the transitive closure). The callee's
+    /// `NodeBodyEmitter` consumes these so its body emits its nested
+    /// cross-kernel calls; empty for a leaf callee (one whose body calls
+    /// no other fusable lambda).
+    pub sites: nohash::IntMap<ExprId, LambdaCallInfo>,
 }
 
 /// Walk the region collecting every statically-resolved lambda call
 /// site, building (or cache-hitting) each callee's [`CachedKernel`]
-/// signature. A lambda that fails to build (unsupported arg/return
-/// shape) is simply NOT recorded — its call site bails at emission and
-/// the subtree node-walks. There is no transitive closure: a callee
-/// body's own call sites are #203-unresolved, so a callee's only
-/// cross-kernel reference is itself.
+/// signature — TRANSITIVELY (#203 Phase C). After a callee's kernel is
+/// built its OWN body is scanned for further lambda calls, so the whole
+/// reachable closure of cross-kernel calls is discovered (callback → g →
+/// g2 → …). A lambda that fails to build (unsupported arg/return shape)
+/// is simply NOT recorded — its call site bails at emission and the
+/// subtree node-walks. A callee whose body has a call this discovery
+/// can't record (a non-fusable builtin, a dynamic dispatch) emits no
+/// CLIF for that call and the whole region de-fuses (never a partial
+/// kernel).
 ///
-/// The third return maps each callee kernel (by `Arc::as_ptr`
-/// identity — the define loop's cache key) to its body `Node`, reached
-/// live through this site's resolved `GXLambda`, plus the self-call
-/// emission info for recursive callees. Callee bodies compile by
-/// `emit_clif` over that Node.
-fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
+/// Returns: the ROOT's call sites; the name→`KernelSig` map of EVERY
+/// callee in the closure (the define loop declares them all, so they can
+/// call each other — including mutual recursion); and a `kernel-ptr →
+/// CalleeBody` map giving each callee's body `Node` (reached live
+/// through its resolved `GXLambda`), its self-call info, and its OWN
+/// discovered call sites. Termination: a callee already recorded in
+/// `bodies` is not re-scanned, so self- and mutual-recursion close the
+/// loop (the back-edge's call site is still recorded for emission, but
+/// the body isn't re-enqueued).
+pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     root: &'n Node<R, E>,
     ctx: &mut ExecCtx<R, E>,
 ) -> (
@@ -456,62 +482,72 @@ fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     std::collections::BTreeMap<arcstr::ArcStr, std::sync::Arc<KernelSig>>,
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
 ) {
-    let mut sites: nohash::IntMap<ExprId, LambdaCallInfo> = nohash::IntMap::default();
     let mut callees: std::collections::BTreeMap<
         arcstr::ArcStr,
         std::sync::Arc<KernelSig>,
     > = std::collections::BTreeMap::new();
     let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
         std::collections::BTreeMap::new();
-    for_each_node(root, &mut |n| {
-        let NodeView::CallSite(cs) = n.view() else {
-            return;
-        };
-        let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else {
-            return;
-        };
-        // Kernel name: the call site's SOURCE name, derived exactly
-        // like the classic region path (lowering.rs `emit_expr_node`'s
-        // CallSite arm) — a self-recursive body call resolves to the
-        // same key the build registered before emitting its body, so a
-        // recursive lambda builds ONCE with a coherent cache entry.
-        // (Shadowed same-name lambdas can't collide within one region:
-        // the second `let f` would put a Lambda-valued Bind inside the
-        // region, which doesn't emit — the region splits first.) A
-        // lambda-literal call (`(|x| x)(1)` — fnode isn't a Ref) has no
-        // name and stays on the node-walk, classic parity.
-        let ExprKind::Ref { name } = &cs.fnode.spec().kind else {
-            return;
-        };
-        let name: arcstr::ArcStr = match lowering::ident_of(name) {
-            Some(ident) => arcstr::ArcStr::from(ident),
-            None => {
-                let s: &str = name.0.as_ref();
-                arcstr::ArcStr::from(s)
-            }
-        };
-        // The fnode Ref's BindId identifies the binding being called —
-        // build_lambda_kernel uses it to recognise self-recursion (and
-        // emit_known_fused_call to refuse shadowed same-name targets,
-        // #206).
-        let call_bind = match cs.fnode.view() {
-            NodeView::Ref(r) => Some(r.id),
-            _ => None,
-        };
-        let Some(cached) = lowering::build_lambda_kernel(g, &name, call_bind, ctx) else {
-            return;
-        };
-        callees.entry(cached.fn_name.clone()).or_insert_with(|| cached.kernel.clone());
-        bodies.entry(std::sync::Arc::as_ptr(&cached.kernel) as usize).or_insert_with(
-            || CalleeBody {
-                body: g.body(),
-                // Self-call emission info for a recursive callee: the
-                // binding the body's self-references carry, plus the
-                // kernel's own call descriptor (name in callee_refs /
-                // ABI Arc / capture slots — captures are params of
-                // the kernel itself, so a self-call forwards them
-                // from its own env).
-                self_call: cached.is_rec.then(|| {
+    // Bodies still to scan; the second field says where the body's
+    // discovered sites land — `None` = the root (returned), `Some(ptr)`
+    // = that callee's `CalleeBody.sites`. LIFO; scan order is irrelevant
+    // (every reachable body is scanned exactly once, gated by `bodies`).
+    let mut worklist: Vec<(&'n Node<R, E>, Option<usize>)> = vec![(root, None)];
+    let mut root_sites: nohash::IntMap<ExprId, LambdaCallInfo> =
+        nohash::IntMap::default();
+    while let Some((body, target)) = worklist.pop() {
+        let mut local_sites: nohash::IntMap<ExprId, LambdaCallInfo> =
+            nohash::IntMap::default();
+        let mut enqueue: Vec<(&'n Node<R, E>, usize)> = Vec::new();
+        for_each_node(body, &mut |n| {
+            let NodeView::CallSite(cs) = n.view() else {
+                return;
+            };
+            let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else {
+                return;
+            };
+            // Kernel name: the call site's SOURCE name, derived exactly
+            // like the classic region path (lowering.rs `emit_expr_node`'s
+            // CallSite arm) — a self-recursive body call resolves to the
+            // same key the build registered before emitting its body, so a
+            // recursive lambda builds ONCE with a coherent cache entry.
+            // (Shadowed same-name lambdas can't collide within one region:
+            // the second `let f` would put a Lambda-valued Bind inside the
+            // region, which doesn't emit — the region splits first.) A
+            // lambda-literal call (`(|x| x)(1)` — fnode isn't a Ref) has no
+            // name and stays on the node-walk, classic parity.
+            let ExprKind::Ref { name } = &cs.fnode.spec().kind else {
+                return;
+            };
+            let name: arcstr::ArcStr = match lowering::ident_of(name) {
+                Some(ident) => arcstr::ArcStr::from(ident),
+                None => {
+                    let s: &str = name.0.as_ref();
+                    arcstr::ArcStr::from(s)
+                }
+            };
+            // The fnode Ref's BindId identifies the binding being called —
+            // build_lambda_kernel uses it to recognise self-recursion (and
+            // emit_known_fused_call to refuse shadowed same-name targets,
+            // #206).
+            let call_bind = match cs.fnode.view() {
+                NodeView::Ref(r) => Some(r.id),
+                _ => None,
+            };
+            let Some(cached) = lowering::build_lambda_kernel(g, &name, call_bind, ctx)
+            else {
+                return;
+            };
+            callees
+                .entry(cached.fn_name.clone())
+                .or_insert_with(|| cached.kernel.clone());
+            let ptr = std::sync::Arc::as_ptr(&cached.kernel) as usize;
+            // First time we reach this callee: record its body + self-call
+            // info and enqueue it for transitive scanning. A repeat (its
+            // own self-call, or a mutual back-edge) records the site below
+            // but does NOT re-enqueue — that's the termination guard.
+            if !bodies.contains_key(&ptr) {
+                let self_call = cached.is_rec.then(|| {
                     (
                         cached.self_bind.expect(
                             "is_rec without self_bind — \
@@ -525,20 +561,38 @@ fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                             captures: cached.captures.clone(),
                         },
                     )
-                }),
-            },
-        );
-        sites.insert(
-            n.spec().id,
-            LambdaCallInfo {
-                fn_name: cached.fn_name,
-                kernel: cached.kernel,
-                arg_types: cached.signature.arg_types.clone(),
-                captures: cached.captures,
-            },
-        );
-    });
-    (sites, callees, bodies)
+                });
+                bodies.insert(
+                    ptr,
+                    CalleeBody {
+                        body: g.body(),
+                        self_call,
+                        sites: nohash::IntMap::default(),
+                    },
+                );
+                enqueue.push((g.body(), ptr));
+            }
+            local_sites.insert(
+                n.spec().id,
+                LambdaCallInfo {
+                    fn_name: cached.fn_name,
+                    kernel: cached.kernel,
+                    arg_types: cached.signature.arg_types.clone(),
+                    captures: cached.captures,
+                },
+            );
+        });
+        match target {
+            None => root_sites = local_sites,
+            Some(ptr) => {
+                if let Some(cb) = bodies.get_mut(&ptr) {
+                    cb.sites = local_sites;
+                }
+            }
+        }
+        worklist.extend(enqueue.into_iter().map(|(body, ptr)| (body, Some(ptr))));
+    }
+    (root_sites, callees, bodies)
 }
 
 /// Run the fusion phase on one `Node` — the distributed path's uniform

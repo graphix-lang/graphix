@@ -93,21 +93,24 @@ async fn native_hof_callback_fusable_ok() {
     );
 }
 
-// The teeth, inside a callback: an `array::init` callback that calls a
-// recursive lambda does NOT fully fuse (the call node-walks, #203). The
-// checker now DESCENDS into the callback body, so `#[native]` on it is a
-// compile error — where before the fix it passed vacuously.
+// #203 (now FIXED): an `array::init` callback that calls a recursive
+// lambda defined in an EARLIER top-level statement fully fuses. The callee
+// resolves across statements (batch-scoped `bind_to_lambda`), its kernel is
+// discovered and built (recursive tail-loop), and the callback→callee call
+// lowers to a cross-kernel call — so `#[native]` on the callback body is
+// satisfied. (Before #203 the call node-walked and this was a compile
+// error; this is the miniature of `bench/mandelbrot.gx`.)
 #[tokio::test]
-async fn native_hof_callback_unfusable_is_error() {
+async fn native_hof_callback_recursive_call_fuses_ok() {
     let prog = "{ \
                 let rec f = |n: i64| -> i64 select n { 0 => 0, _ => f(n - 1) }; \
                 array::init(4, |idx| #[native] { let a = idx * 2; f(a) }) \
                 }";
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
-        r.is_err(),
-        "#[native] on a callback body that node-walks a call must be a compile \
-         error (the checker must descend into HOF callback bodies), got {:?}",
+        r.is_ok(),
+        "#[native] on a callback that calls a recursive lambda must compile now \
+         that nested cross-statement calls fuse (#203), got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -144,13 +147,14 @@ async fn native_fold_callback_fusable_ok() {
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")
-// whose values fused — the `fused_ids` filter suppresses those.
+// whose values fused — the `fused_ids` filter suppresses those. `once` is
+// classified async (a permanent fusion boundary), so its call is the
+// stable non-fuser here (a recursive lambda call now fuses, #203, so it
+// can no longer play this role); the `let a` value still fuses, exercising
+// the filter.
 #[tokio::test]
 async fn native_blocker_list_is_filtered() {
-    let prog = "{ \
-                let rec f = |n: i64| -> i64 select n { 0 => 0, _ => f(n - 1) }; \
-                array::init(4, |idx| #[native] { let a = idx * 2; f(a) }) \
-                }";
+    let prog = "array::init(4, |idx| #[native] { let a = idx * 2; once(a) })";
     let e = eval(prog, crate::TEST_REGISTER).await.err().expect("must be a compile error");
     // `{:#}` includes anyhow's full cause chain (the `#[native]` blocker
     // detail is a CAUSE, not the top-level context).

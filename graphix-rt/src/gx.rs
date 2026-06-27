@@ -468,6 +468,7 @@ impl<X: GXExt> GX<X> {
         // `<-` site inserts the resolved BindId, so by the time the
         // fusion passes run, the set reflects all Connect targets.
         self.ctx.unstable_bindings.clear();
+        self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let mut nodes = exprs
             .iter()
             .map(|e| {
@@ -498,6 +499,7 @@ impl<X: GXExt> GX<X> {
         // `<-` site is compiled — clear the carry-over from a
         // previous batch, then let compile populate.
         self.ctx.unstable_bindings.clear();
+        self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let mut nodes = exprs
             .iter()
             .map(|e| compile(&mut self.ctx, self.flags, &scope, e.clone()))
@@ -628,6 +630,12 @@ impl<X: GXExt> GX<X> {
             }))
             .await?;
             info!("resolve time: {:?}", st.elapsed());
+            // Reset the batch-scoped static-resolution index (see its field
+            // doc, #203). Bounds growth on the shared check/lsp runtime and
+            // keeps a `<-`-reassigned lambda from one check from resolving
+            // stalely in the next. (`unstable_bindings` is not reset on this
+            // path — pre-existing; fusion is off under lsp so it's inert.)
+            self.ctx.bind_to_lambda.clear();
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
             for e in exprs.iter() {
                 let res = compile(&mut self.ctx, self.flags, &scope, e.clone())
@@ -683,6 +691,7 @@ impl<X: GXExt> GX<X> {
         // re-populates with resolved BindIds as each `<-` site is
         // compiled below.
         self.ctx.unstable_bindings.clear();
+        self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
             .with_context(|| ori.clone())?;
         let typ = n.typ().clone();

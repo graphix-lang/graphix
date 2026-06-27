@@ -712,6 +712,69 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **#203 RESOLVED — nested/transitive lambda calls fuse (callback→g→g2→…); the
+  real blocker was cross-statement static resolution (2026-06-27).**
+  `bench/mandelbrot.gx`'s per-pixel `iterate` (a recursive lambda CALLED inside
+  `array::init`'s callback) now fully fuses (`#[native]` passes, runs ~0.18s),
+  and the GENERAL case fuses too: any callback/callee body calling a chain of
+  module/outer lambdas. **The blocker was NOT the cross-kernel discovery
+  machinery (which existed) but STATIC RESOLUTION.** `bind_to_lambda` (the
+  `BindId → LambdaDef` index that static call resolution reads) was cleared per
+  `compile()`, yet the RT compiles a program's top-level statements as SEPARATE
+  `compile()` calls (`gx.rs` process_input_batch / check_inner / load). So a
+  lambda bound in `let rec iterate = …` (its own compile) was invisible to the
+  `array::init` callback's `iterate(…)` call (a later, separate compile) —
+  traced to `b2l_len=0` at the call's resolution (backtrace: each statement is
+  its own `graphix_compiler::compile` off process_input_batch). The plan had
+  assumed same-compile resolution; the actual fix is **batch-scoped
+  `bind_to_lambda`**: paired its `.clear()` with `unstable_bindings.clear()` at
+  the RT's batch entry points (gx.rs — 3 sites with the unstable reset, + a 4th
+  bare clear at `check_inner` which has no unstable reset, pre-existing), removed
+  the per-compile clear in `lib.rs`. All statements in one program/REPL-input now
+  share the index; BindIds are globally unique (accumulation is collision-free);
+  the `unstable_bindings` guard still excludes `<-` targets within-batch; the
+  per-batch clear keeps a `<-`-reassigned lambda from resolving stalely next
+  batch (consistent with the already-unbounded `lambda_defs` registry, but
+  bounded). On top of that:
+  - **Phase A** (`callsite.rs` `resolve_static`): drives the resolved callee's
+    body through `typecheck1` so its nested calls resolve (the
+    `GXLambda::typecheck1 → body.typecheck1` cascade — user-lambda bodies are
+    otherwise never `typecheck1`'d), guarded by a `fusion.resolving` in-progress
+    `LambdaId` set that cuts the self-recursion back-edge (a self-call stays
+    `DynamicUnbound`, handled by the `self_call`/tail-loop emit mechanism).
+  - **Phase B/C** (`fusion/mod.rs` `discover_lambda_calls`): rewritten as a
+    TRANSITIVE worklist — after a callee's kernel is built, its OWN body is
+    scanned for further lambda calls, accumulating the whole reachable closure
+    into the shared `callees`/`bodies` maps. `CalleeBody` gained `sites` (each
+    callee's own discovered calls), fed to the callee `NodeBodyEmitter`
+    (`emit.rs`, replacing the old empty map — the bug that left a callee's nested
+    call un-emittable → cranelift `can't resolve symbol g__kir_*` finalize
+    PANIC). Termination: a callee already in `bodies` isn't re-scanned (the
+    back-edge's site is still recorded for emission, the body isn't re-enqueued).
+    The declare-all-then-define-all loop already supported cross-kernel (incl.
+    mutual) calls.
+  - **De-fuse safety**: a callee body with a call discovery can't record (a
+    non-fusable builtin, e.g. `once`) emits no CLIF for it → the whole compile
+    errs → the existing eviction path de-fuses the region to the node-walk
+    (verified: correct values, no declared-but-undefined symbol, no panic).
+  Static MUTUAL recursion isn't expressible (forward `let rec g1 = …g2…` →
+  "g2 not defined"), so the plan's Phase D cut is moot — the worklist would fuse
+  it (two non-recursive kernels cross-calling) if it ever arose, consistent with
+  self-recursion. Verified: mandelbrot + transitive (g→g2→g3) + deep chain +
+  recursive-callee + de-fuse (`once` in callee) all correct, no panics;
+  graphix-tests **1468×2** (3 long-standing "ASPIRE: Jit" fixtures realized —
+  `call_tuple_arg`/`call_struct_arg`/`dyncall_static_nonfusable` re-annotated
+  None→Jit; new `transitive_chain` fixture; 2 obsolete `#[native]` gap-tests
+  updated — the recursive-call-in-callback now FUSES, so the "is_error" test
+  inverted to "fuses_ok" and the blocker-list test re-pointed at `once`, a
+  permanent async non-fuser); compiler 114, lsp 29; fuzz regress 22/0 + generate
+  3000 = **0 divergences**, 0 symbol panics (34 accepted runaway-recursion
+  hangs). Open follow-ups: transitive BUILTIN calls inside callee bodies still
+  de-fuse (callee `apply_sites` stay empty — needs builtin discovery +
+  `fn_params` in `build_lambda_kernel`); `check_inner` doesn't reset
+  `unstable_bindings` (pre-existing asymmetry, inert under lsp where fusion is
+  off).
+
 - **HOF callback fusion made a first-class compile-time activity + `#[native]`
   descends into callbacks + blocker-list filter (2026-06-26).** `#[native]` (and
   any attribute check) used to pass VACUOUSLY for anything inside an HOF callback

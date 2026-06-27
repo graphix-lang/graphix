@@ -348,11 +348,11 @@ unsafe impl Send for Jit {}
 /// The kernel ABI (params / return / wrapper) still comes from each
 /// `KernelSig`; only body codegen changes. The parent emits from
 /// `root`; each callee with an entry in `callee_bodies` (keyed by
-/// `Arc::as_ptr` — non-recursive callees, recorded by
-/// `discover_lambda_calls`) emits from its body Node with EMPTY
-/// apply/lambda site maps (a callee body is a self-contained
-/// expression over its params: inner call sites are #203-unresolved,
-/// so no site of either kind can exist in one today). A callee
+/// `Arc::as_ptr`, recorded by `discover_lambda_calls`) emits from its
+/// body Node with its OWN discovered lambda sites (`CalleeBody.sites` —
+/// #203 Phase C, so a callee's body emits ITS nested cross-kernel calls)
+/// and an empty apply-site map (a callee body's builtin calls aren't
+/// discovered transitively yet, so a callee with one de-fuses). A callee
 /// WITHOUT a recorded body bails (the whole region de-fuses);
 /// discovery records a body for every callee it returns.
 pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
@@ -368,7 +368,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     let empty_apply = nohash::IntMap::default();
-    let empty_lambda = nohash::IntMap::default();
     let parent = NodeBodyEmitter {
         root,
         return_type: &kernel.return_type,
@@ -392,7 +391,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     root: cb.body,
                     return_type: &k.return_type,
                     apply_sites: &empty_apply,
-                    lambda_sites: &empty_lambda,
+                    lambda_sites: &cb.sites,
                     self_call: cb.self_call.as_ref(),
                     type_env,
                     registry,

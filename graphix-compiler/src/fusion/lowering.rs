@@ -1052,14 +1052,23 @@ fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
     if !ec.fusion.enabled {
         return None;
     }
+    // #203: discover lambda calls INSIDE the callback body (e.g. mandelbrot's
+    // `iterate`), build their callee kernels, and thread them into the compile
+    // — instead of the empty maps that forced every nested call to de-fuse.
+    // (Builtin-call discovery for the callback body is intentionally NOT
+    // threaded here: `build_lambda_kernel` cached this kernel's sig without
+    // `fn_params`, so a builtin DynCall slot would mismatch — the #203
+    // deferred limitation. mandelbrot's casts are inline scalar, so lambda
+    // discovery alone suffices.)
+    let (lambda_sites, callees, callee_bodies) = fusion::discover_lambda_calls(body, ec);
     let r = fusion::emit::compile_kernel_with_callees_direct(
         &mut ec.fusion.jit.lock(),
         kernel,
-        &std::collections::BTreeMap::new(),
+        &callees,
         body,
         apply_sites,
-        &nohash::IntMap::default(),
-        &std::collections::BTreeMap::new(),
+        &lambda_sites,
+        &callee_bodies,
         self_call,
         &ec.env,
         &ec.fusion.abstract_registry,

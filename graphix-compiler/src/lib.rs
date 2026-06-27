@@ -1392,15 +1392,27 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// LambdaDefs indexed by LambdaId, used by `CallSite::typecheck1` to
     /// reach each callee/callback's retained check `Apply` (`def.check`).
     pub lambda_defs: IntMap<LambdaId, Value>,
-    /// `BindId → LambdaDef Value` for every lambda binding in the program
-    /// currently compiling. Populated during `typecheck0` (each
+    /// `BindId → LambdaDef Value` for every lambda binding in the current
+    /// compile BATCH. Populated during `typecheck0` (each
     /// `Bind::typecheck0` records its own binding, `Module::typecheck0`
     /// adds the signature→impl proxy entries) so it is globally complete
     /// before `typecheck1` runs the static-resolution it feeds: a
     /// `CallSite` whose `fnode` is a `Ref` looks its `BindId` up here to
     /// pre-bind to a known lambda. This is a compile-time ANALYSIS map,
     /// deliberately kept out of `cached` (runtime state) — see
-    /// `CallSite::typecheck1`. Cleared at the top of every `compile`.
+    /// `CallSite::typecheck1`.
+    ///
+    /// Scoped to the BATCH, not the individual `compile` call: the RT
+    /// compiles a program's top-level statements as SEPARATE `compile`
+    /// calls, so clearing per-`compile` would hide a lambda defined in
+    /// one statement (`let rec f = …`) from a call in a later statement
+    /// (e.g. inside an HOF callback — #203). Cleared once per batch
+    /// alongside `unstable_bindings` (its sibling batch-scoped resolution
+    /// state) at each RT batch entry point. BindIds are globally unique,
+    /// so accumulating across a batch's statements is collision-free; the
+    /// `unstable_bindings` guard still excludes `<-` targets, and the
+    /// per-batch clear keeps a `<-`-reassigned lambda in one batch from
+    /// resolving stalely in the next.
     pub bind_to_lambda: IntMap<BindId, Value>,
     /// BindIds of bindings that are the target of a `<-` (Connect)
     /// somewhere in the program. Populated lazily by
@@ -1634,7 +1646,6 @@ pub fn compile<R: Rt, E: UserEvent>(
     ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled);
     let top_id = spec.id;
     ctx.fusion.top_id = Some(top_id);
-    ctx.bind_to_lambda.clear();
     let env = ctx.env.clone();
     let st = Instant::now();
     let mut node = match compiler::compile(ctx, flags, spec, scope, top_id) {

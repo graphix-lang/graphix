@@ -290,13 +290,11 @@ run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
 // with a non-scalar arg/return, the call must sit inside ANOTHER
 // lambda's body: `g`'s kernel then contains the call to `h`.
 //
-// The interpreter routes each Call arg into the callee's per-kind
-// slot (`eval_kernel_full`). The callee `h` is itself eagerly fused
-// and JITs, so the observed state is `Jit` even though `g`'s kernel
-// currently falls back to interp for the composite Call (the JIT
-// cross-kernel-call arm is the #131-JIT follow-up — it would let `g`'s
-// kernel JIT the call too, which the FUSION/JIT counters can't
-// distinguish from the callee JIT-ing).
+// `g`'s body calls `h` with a composite (tuple) arg. #203 Phase C
+// (transitive cross-kernel discovery) builds `h`'s kernel and lowers
+// `g`'s `h((a,b),c)` call to a CLIF cross-kernel call, so the whole
+// thing JITs — the realized #131-JIT follow-up the prior annotation
+// aspired to.
 
 const CALL_TUPLE_ARG: &str = r#"
 {
@@ -306,13 +304,10 @@ const CALL_TUPLE_ARG: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(call_tuple_arg, CALL_TUPLE_ARG, |v: Result<&Value>| match v {
     Ok(Value::I64(35)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const CALL_STRUCT_ARG: &str = r#"
 {
@@ -322,13 +317,12 @@ const CALL_STRUCT_ARG: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// `g` calls `h` with a struct arg; #203 Phase C builds `h`'s kernel and
+// lowers the cross-kernel call, so the whole body JITs.
 run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
     Ok(Value::I64(7)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // A value-shape (nullable) RETURN from a lambda, end-to-end: `f`
 // returns `[i64, null]` via a `select` with a `null` arm, and is

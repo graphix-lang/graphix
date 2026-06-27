@@ -426,14 +426,13 @@ run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Static-but-non-fusable callee. `helper` is a let-bound stable
-// lambda whose body uses a non-primitive intermediate (Array<i64>),
-// so its kernel build returns None and the lazy-fusion path
-// registers it as a `FnSource::Binding` DynCall slot. `outer`
-// fuses, lowering `helper(x)` to a DynCall against the
-// binding's BindId; at runtime Kernel reads ctx.cached[bind_id]
-// for the LambdaDef and dispatches via `Apply::update`. Result is
-// helper(5) + 1 = (5*5+5*5) + 1 = 51.
+// A let-bound `helper` whose body is `array::fold` over a literal
+// (scalar i64 -> i64), called by `outer`. #203 Phase C discovers the
+// `outer` -> `helper` call transitively and builds `helper`'s kernel
+// (its `array::fold`-over-literal body fuses), so the region JITs
+// instead of falling back to the `FnSource::Binding` DynCall slot the
+// older non-transitive path used. Result is helper(5) + 1 =
+// (5*5 + 5*5) + 1 = 51.
 const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 {
     use array;
@@ -443,16 +442,31 @@ const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     dyncall_static_nonfusable,
     KIR_DYNCALL_STATIC_NONFUSABLE,
     |v: Result<&Value>| match v {
         Ok(Value::I64(51)) => true,
         _ => false,
-    }; graphix_package_core::testing::FuseExpect::None);
+    }; graphix_package_core::testing::FuseExpect::Jit);
+
+// #203 Phase C — a deep TRANSITIVE chain g1 -> g2 -> g3. Discovery walks
+// each callee's body in turn, builds every kernel in the closure, and the
+// define loop declares them all so each can CLIF-call the next. The whole
+// chain JITs (interp == jit). g1(10) = g2(10)-1 = g3(10)*2-1 = 11*2-1 = 21.
+const TRANSITIVE_CHAIN: &str = r#"
+{
+    let g3 = |n: i64| -> i64 n + 1;
+    let g2 = |n: i64| -> i64 g3(n) * 2;
+    let g1 = |n: i64| -> i64 g2(n) - 1;
+    g1(10)
+}
+"#;
+
+run!(transitive_chain, TRANSITIVE_CHAIN, |v: Result<&Value>| match v {
+    Ok(Value::I64(21)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LAMBDAMATCH0: &str = r#"
 {

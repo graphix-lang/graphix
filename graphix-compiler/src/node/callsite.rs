@@ -618,9 +618,41 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             // Idempotent.
             return Ok(());
         }
+        // #203 self/mutual-recursion cut: if `def`'s body is CURRENTLY being
+        // driven through typecheck1 (below), this call is a recursive
+        // back-edge. Leave it `DynamicUnbound` — a self-call is handled by
+        // the `self_call` emit mechanism, a mutual back-edge de-fuses cleanly
+        // — and don't recurse the drive.
+        if ctx.fusion.enabled && ctx.fusion.resolving.lock().contains(&def.id.inner()) {
+            return Ok(());
+        }
         let scope = self.scope.clone();
         let apply = self.setup_bind(ctx, &scope, self.flags, def, |_, _| {})?;
         self.callee = Callee::Static { def: fv, apply, first_update: true };
+        // #203: drive the resolved callee's BODY through typecheck1 so its OWN
+        // nested call sites resolve (the cascade `GXLambda::typecheck1 →
+        // body.typecheck1`). `setup_bind` ran only `typecheck0`, so without
+        // this a call inside the body stays `DynamicUnbound` and can't fuse —
+        // the gap that made an HOF callback's `iterate(..)` (and any nested
+        // call) un-fusable. Guarded by the in-progress `LambdaId` set (the
+        // back-edge skip above) so recursion terminates; gated on
+        // `fusion.enabled` so node-walk/lsp are unaffected. Errors are
+        // swallowed — a body that fails its first typecheck1 stays
+        // partly-resolved and its calls de-fuse (the interp lazy-binds them);
+        // never a NEW compile failure.
+        if ctx.fusion.enabled
+            && let Some(apply) = self.callee.apply_mut()
+            && matches!(apply.view(), ApplyView::Lambda(_))
+        {
+            let lid = def.id.inner();
+            let resolving = ctx.fusion.resolving.clone();
+            resolving.lock().insert(lid);
+            let ftype = def.typ.clone();
+            if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype, &[]) {
+                log::trace!("#203: callee body typecheck1 failed (de-fuse): {e:#}");
+            }
+            resolving.lock().remove(&lid);
+        }
         Ok(())
     }
 
