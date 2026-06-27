@@ -36,7 +36,7 @@ use crate::{
     UserEvent,
     effects::EffectKind,
     env::Env,
-    expr::{ExprId, ExprKind, ModPath},
+    expr::{ExprId, ExprKind},
     fusion::{
         kernel_abi::{KernelSig, freeze_for_abi_normalized},
         lowering::{RegionInputKind, resolve_abstract},
@@ -451,6 +451,12 @@ pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
     /// cross-kernel calls; empty for a leaf callee (one whose body calls
     /// no other fusable lambda).
     pub sites: nohash::IntMap<ExprId, LambdaCallInfo>,
+    /// This callee body's OWN sync builtin/cast/qop Apply sites
+    /// (`CachedKernel.apply_sites`, mirrored here so the callee's
+    /// `NodeBodyEmitter` can emit them). Consumed by Stage 2's
+    /// combined-slot runtime delivery; until then the callee emitter
+    /// ignores it and a callee-with-a-builtin de-fuses.
+    pub apply_sites: nohash::IntMap<ExprId, lowering::BuiltinCallSiteInfo>,
 }
 
 /// Walk the region collecting every statically-resolved lambda call
@@ -568,6 +574,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                         body: g.body(),
                         self_call,
                         sites: nohash::IntMap::default(),
+                        apply_sites: cached.apply_sites.clone(),
                     },
                 );
                 enqueue.push((g.body(), ptr));
@@ -695,12 +702,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // `CallSite::emit_clif` recognise a registered site and lower it
     // to a DynCall.
     let mut discovery = lowering::BuiltinCallDiscovery::default();
-    lowering::walk_node_for_builtin_calls::<R, E>(
-        node,
-        ctx,
-        &ModPath::root(),
-        &mut discovery,
-    );
+    lowering::walk_node_for_builtin_calls::<R, E>(node, ctx, &mut discovery);
     // Statically-resolved lambda call sites: build (or cache-hit) each
     // callee's kernel NOW — `build_lambda_kernel` needs `&mut ExecCtx`,
     // which emission (under the jit lock) can't have. The callees

@@ -513,15 +513,37 @@ const ARRAY_LEN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Builtins called by their UNQUALIFIED imported names (`use array; len(…)`)
+// now fuse: builtin-call discovery resolves the name in the CALL SITE's own
+// lexical scope (which carries the `use array`), not the region root's — so
+// `len`/`concat` register as DynCall sites and the whole body fuses. Before
+// the scope fix, root-scope lookup couldn't see the unqualified name and the
+// region de-fused.
 run!(array_len, ARRAY_LEN, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A per-slot HOF callback whose body is a non-numeric `cast` (bool → i64,
+// excluded from the inline scalar fast path, so it lowers to a cast-machinery
+// DynCall). `build_lambda_kernel` discovers the cast in the callback body and
+// installs its slot, so the WHOLE callback fuses to one per-slot kernel that
+// dispatches the cast in-kernel — instead of splitting around it. Values agree
+// across modes.
+const CAST_CALLBACK_PER_SLOT: &str = r#"
+  array::map([true, false, true], |b| cast<i64>(b))
+"#;
+
+run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            matches!(&a[..], [Value::I64(1), Value::I64(0), Value::I64(1)])
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FLATTEN: &str = r#"
   array::flatten([[1, 2, 3], [4, 5], [6]])

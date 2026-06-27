@@ -52,6 +52,13 @@ pub struct CachedKernel {
     /// Ref id), when there was one. For a recursive callee the direct
     /// path's Node body emission recognises self-calls by this id.
     pub self_bind: Option<BindId>,
+    /// Sync builtin/cast/qop Apply sites discovered in this kernel's
+    /// BODY (`walk_node_for_builtin_calls`), parallel to the
+    /// `fn_params` slots installed on `kernel`. The body emitter
+    /// (`CallSite::emit_clif` via `BodyCx::builtin_site`) lowers each
+    /// registered site to a DynCall against its slot. Empty for a body
+    /// with no fusable builtin calls.
+    pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
 
 /// One captured outer-scope binding lifted into a lambda kernel's
@@ -130,7 +137,6 @@ pub struct BuiltinCallDiscovery {
 pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
-    scope: &ModPath,
     out: &mut BuiltinCallDiscovery,
 ) {
     // Collect the inline-emitted HOF callback bodies encountered this
@@ -139,7 +145,7 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     let mut hof_bodies: Vec<&Node<R, E>> = Vec::new();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
-            try_register_builtin_call_from_callsite(cs, ctx, scope, out);
+            try_register_builtin_call_from_callsite(cs, ctx, out);
             // A HOF builtin inline-emits its callback into the kernel, but
             // `for_each_node` skips lambda bodies — descend explicitly so
             // the callback's builtin-calls/casts/qops are discovered.
@@ -152,7 +158,7 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
         _ => {}
     });
     for body in hof_bodies {
-        walk_node_for_builtin_calls(body, ctx, scope, out);
+        walk_node_for_builtin_calls(body, ctx, out);
     }
 }
 
@@ -275,7 +281,6 @@ fn try_register_cast<R: Rt, E: UserEvent>(
 fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     ctx: &ExecCtx<R, E>,
-    scope: &ModPath,
     out: &mut BuiltinCallDiscovery,
 ) {
     // Need the source Apply Expr (for ExprKind::Ref-vs-other check
@@ -292,7 +297,12 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         ExprKind::Ref { name } => name,
         _ => return,
     };
-    let (_, bind) = match ctx.env.lookup_bind(scope, path) {
+    // Scope comes from the CallSite node itself — so a builtin called
+    // inside a nested-scope lambda body (a callee/callback whose
+    // discovery runs from `build_lambda_kernel`) resolves in its own
+    // module scope, not the region root's. Behaviour-preserving at the
+    // root (root call sites carry root scope).
+    let (_, bind) = match ctx.env.lookup_bind(&cs.scope().lexical, path) {
         Some(b) => b,
         None => return,
     };
@@ -856,6 +866,16 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         }
     };
     sig.has_tail_loop = has_tail;
+    // Discover sync builtin/cast/qop Apply sites in the body so they
+    // fuse as DynCalls (the same prepass `try_fuse` runs on a region
+    // root). `fn_params` installs the slots on the sig; `apply_sites`
+    // lets the body emitter recognise each call site. The per-slot HOF
+    // path consumes these directly (the callback body's own builtins);
+    // the cross-kernel callee path consumes them via `CalleeBody`
+    // (Stage 2 — the runtime combined-slot delivery).
+    let mut discovery = BuiltinCallDiscovery::default();
+    walk_node_for_builtin_calls(g.body(), ec, &mut discovery);
+    sig.fn_params = discovery.fn_params;
     let signature = KnownFusedFn { arg_types, return_type: return_typ, self_bind };
     let cached = CachedKernel {
         fn_name: kernel_name.clone(),
@@ -864,6 +884,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         captures,
         is_rec,
         self_bind,
+        apply_sites: discovery.apply_sites,
     };
     ec.fusion.kernels.lock().insert(key, cached.clone());
     Some(cached)
@@ -974,7 +995,7 @@ pub fn fuse_callsite<R: Rt, E: UserEvent>(
             &cached.kernel,
             g.body(),
             self_call.as_ref(),
-            &nohash::IntMap::default(),
+            &cached.apply_sites,
         ) {
             return Some(FusedCallback {
                 kernel: cached.kernel,
@@ -1055,11 +1076,12 @@ fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
     // #203: discover lambda calls INSIDE the callback body (e.g. mandelbrot's
     // `iterate`), build their callee kernels, and thread them into the compile
     // — instead of the empty maps that forced every nested call to de-fuse.
-    // (Builtin-call discovery for the callback body is intentionally NOT
-    // threaded here: `build_lambda_kernel` cached this kernel's sig without
-    // `fn_params`, so a builtin DynCall slot would mismatch — the #203
-    // deferred limitation. mandelbrot's casts are inline scalar, so lambda
-    // discovery alone suffices.)
+    // `apply_sites` (the callback body's own sync builtin/cast/qop sites) is
+    // passed by the caller: `build_lambda_kernel` now installs the matching
+    // `fn_params` on this kernel's sig, so the per-slot `FusedKernel` pre-binds
+    // those slots and the body's DynCalls dispatch in-kernel (offset 0 — the
+    // callback IS the parent). A callee body's OWN builtins still need Stage 2's
+    // combined-slot delivery; until then a callee-with-a-builtin de-fuses.
     let (lambda_sites, callees, callee_bodies) = fusion::discover_lambda_calls(body, ec);
     let r = fusion::emit::compile_kernel_with_callees_direct(
         &mut ec.fusion.jit.lock(),
