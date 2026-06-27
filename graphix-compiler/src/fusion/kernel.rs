@@ -852,8 +852,13 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             total_kernel_arity(&kernel),
             "Kernel arity = sum of all slot kinds"
         );
-        let dyn_slots = kernel
-            .fn_params
+        // `dyn_slots` follows the REGION-WIDE combined table on the
+        // WrappedKernel (parent `fn_params` ++ each callee's), not just
+        // this kernel's own `fn_params` — so a callee body's DynCall
+        // (`fn_index = base + local`) lands on the right pre-bound slot.
+        // Equal to `kernel.fn_params` when there are no callee DynCalls.
+        let dyn_slots = wrapped
+            .dyn_fn_params
             .iter()
             .map(|fp| DynCallSlot::new(fp, scope.clone(), top_id))
             .collect();
@@ -881,7 +886,14 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// arrives per dispatch from the kernel's caller, not from a
     /// fixed binding.
     pub fn pre_init_binding_slots(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
+        // Iterate the COMBINED slot table (parent ++ callees), parallel to
+        // `dyn_slots`; clone the `Arc` out first so the loop doesn't hold
+        // `self.jit` borrowed while it mutates `self.dyn_slots`. Only the
+        // parent contributes Binding-source slots (callee slots are all
+        // pre-bound builtin/cast/qop), but iterating the full table keeps
+        // `fn_idx` aligned with `dyn_slots`.
+        let fps = self.jit.dyn_fn_params.clone();
+        for (fn_idx, fp) in fps.iter().enumerate() {
             if let FnSource::Binding { bind_id } = &fp.source {
                 if let Some(v) = ctx.cached.get(bind_id).cloned() {
                     if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
@@ -911,7 +923,13 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
     ) -> ::anyhow::Result<()> {
-        for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
+        // The COMBINED slot table: the parent's builtin/cast/qop slots AND
+        // every callee's (a callee body's DynCalls dispatch through its own
+        // pre-bound slots in this same `dyn_slots` array). Clone the `Arc`
+        // out so the loop doesn't hold `self.jit` borrowed while mutating
+        // `self.dyn_slots`.
+        let fps = self.jit.dyn_fn_params.clone();
+        for (fn_idx, fp) in fps.iter().enumerate() {
             if let FnSource::Builtin { name, typ, layout, lambda_id } = &fp.source {
                 let name = name.clone();
                 let typ = typ.clone();
@@ -1053,9 +1071,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let base_value = base_string + k.string_params.len();
         let n_params = base_value + k.value_params.len();
         let mut param_opts: Vec<Option<Value>> = vec![None; n_params];
+        // Sized to the COMBINED slot table (`dyn_slots.len()`), not just
+        // the parent's `fn_params`: `dispatch_typed` reads
+        // `fn_arg_values[fn_index]` for EVERY slot, and a callee DynCall's
+        // `fn_index` (base + local) can exceed `k.fn_params.len()`. The
+        // parent's Param/Binding slots (always at the front) get their
+        // values set below; callee slots are pre-bound (their value is
+        // ignored) and keep their `Null`.
         let mut fn_arg_values: smallvec::SmallVec<[Value; 4]> =
-            smallvec::SmallVec::with_capacity(k.fn_params.len());
-        for _ in 0..k.fn_params.len() {
+            smallvec::SmallVec::with_capacity(self.dyn_slots.len());
+        for _ in 0..self.dyn_slots.len() {
             fn_arg_values.push(Value::Null);
         }
         for (i, kind) in self.arg_layout.iter().enumerate() {

@@ -238,18 +238,31 @@ fn maybe_dump_clif(func: &cranelift_codegen::ir::Function, label: &str) {
 /// handle the Rust-side bit-fiddling.
 ///
 /// Owns its `JitCtx` (for the local-module path) or holds `None` (for
-/// the shared-module path, where a static [`SHARED_JIT`] keeps the
-/// mmap'd code alive forever).
+/// the per-context cross-kernel-call path, where the owning `ExecCtx`'s
+/// [`Jit`] module keeps the mmap'd code alive for the program's lifetime).
 pub struct WrappedKernel {
     /// Type-erased entry point. Cast via transmute to the
     /// canonical `WrapperFn` signature for invocation.
     pub wrapper_fn_ptr: *const u8,
     /// `Some(_)` for kernels compiled into a private JIT module (no
     /// cross-kernel calls); the ctx keeps the mmap'd code alive. `None`
-    /// for kernels compiled into [`SHARED_JIT`] — that static keeps
-    /// them mapped for the program's lifetime, so no per-kernel
-    /// ownership is needed.
+    /// for kernels compiled into the per-context [`Jit`] module — that
+    /// module (owned by the `ExecCtx`) keeps them mapped for the
+    /// program's lifetime, so no per-kernel ownership is needed.
     _ctx: Option<JitCtx>,
+    /// The REGION-WIDE DynCall slot table this kernel's runtime
+    /// [`crate::fusion::kernel::Kernel`] builds its `dyn_slots` from: the
+    /// parent kernel's `fn_params` followed by each transitively-called
+    /// callee's `fn_params`, in callee-declaration order. A callee body's
+    /// builtin/cast/qop DynCalls bake `fn_index = base + local` where
+    /// `base` is the callee's offset into THIS list — so the one combined
+    /// `dyn_slots` array services the parent and every callee. Equal to
+    /// the parent's `fn_params` when there are no callee DynCalls (the
+    /// common case). Carried here (not on `KernelSig`) because it's
+    /// region-specific — the same callee `KernelSig` lands at different
+    /// `base`s in different regions — and rides into every `Kernel`
+    /// (incl. per-slot `clone_rebind`s, which clone this `Arc`).
+    pub dyn_fn_params: std::sync::Arc<[kernel_abi::FnParam]>,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -287,11 +300,24 @@ impl WrappedKernel {
 // instruction. The module lives as long as the ExecCtx; when the
 // ExecCtx drops, the module drops and the mapped code goes with it.
 //
-// `by_kernel` keys by `Arc<KernelSig>` raw-pointer identity so the
-// same `Arc<KernelSig>` referenced from multiple parent kernels
-// reuses one compilation within a single ExecCtx. Names alone
-// aren't unique enough — two distinct programs can both have a
+// `by_kernel` keys by `(Arc<KernelSig> raw-pointer identity, DynCall
+// base offset)` so the same `Arc<KernelSig>` referenced from multiple
+// parent kernels reuses one compilation within a single ExecCtx. Names
+// alone aren't unique enough — two distinct programs can both have a
 // binding `foo` with a different fused kernel.
+//
+// The `base` is the SOUNDNESS half of the key (Stage 2 — transitive
+// callee builtins). A callee body bakes `iconst(base + local_fn_index)`
+// for each of its DynCalls, where `base` is the callee's offset into the
+// COMBINED region-wide `dyn_slots` table (parent `fn_params` ++ each
+// callee's). That offset depends on the calling REGION (parent
+// `fn_params` length + callee order), so the same callee `KernelSig`
+// fused into region A (base 0) and region B (base 1) needs TWO compiled
+// bodies with different baked constants — keying on the pointer alone
+// would hand region B region A's body and silently mis-dispatch.
+// Callees that bake nothing (empty `fn_params`) are pinned at base 0 so
+// they still share one compilation across regions; the parent is always
+// base 0 and unique per region.
 //
 // (Was a process-global `SHARED_JIT` static before May 2026; moved
 // to per-context to align with the runtime's documented "multiple
@@ -300,13 +326,14 @@ impl WrappedKernel {
 
 pub struct Jit {
     ctx: JitCtx,
-    /// Per-kernel cache: Arc<KernelSig> raw pointer → cached entry.
-    /// We keep the Arc alive in the entry so the raw pointer key
-    /// stays valid for the lifetime of the ExecCtx. Without it,
-    /// Arc-allocator reuse could land a different KernelSig at the same
-    /// address and we'd return a stale FuncId pointing at code with
-    /// the wrong signature.
-    by_kernel: BTreeMap<usize, CachedKernel>,
+    /// Per-kernel cache: `(Arc<KernelSig> raw pointer, DynCall base
+    /// offset)` → cached entry. We keep the Arc alive in the entry so
+    /// the raw pointer key stays valid for the lifetime of the ExecCtx.
+    /// Without it, Arc-allocator reuse could land a different KernelSig
+    /// at the same address and we'd return a stale FuncId pointing at
+    /// code with the wrong signature. See the module comment above for
+    /// why `base` is part of the key.
+    by_kernel: BTreeMap<(usize, u32), CachedKernel>,
 }
 
 impl Jit {
@@ -351,9 +378,10 @@ unsafe impl Send for Jit {}
 /// `Arc::as_ptr`, recorded by `discover_lambda_calls`) emits from its
 /// body Node with its OWN discovered lambda sites (`CalleeBody.sites` —
 /// #203 Phase C, so a callee's body emits ITS nested cross-kernel calls)
-/// and an empty apply-site map (a callee body's builtin calls aren't
-/// discovered transitively yet, so a callee with one de-fuses). A callee
-/// WITHOUT a recorded body bails (the whole region de-fuses);
+/// AND its own discovered builtin/cast/qop sites (`CalleeBody.apply_sites`),
+/// each DynCall offset by the callee's base into the region-wide combined
+/// `dyn_slots` table (assembled here onto `WrappedKernel.dyn_fn_params`).
+/// A callee WITHOUT a recorded body bails (the whole region de-fuses);
 /// discovery records a body for every callee it returns.
 pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     jit: &mut Jit,
@@ -367,7 +395,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     type_env: &Env,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
-    let empty_apply = nohash::IntMap::default();
     let parent = NodeBodyEmitter {
         root,
         return_type: &kernel.return_type,
@@ -379,30 +406,56 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         self_call: parent_self_call,
         type_env,
         registry,
+        // Parent slots lead the combined `dyn_slots` table.
+        fn_index_offset: 0,
     };
+    // Assemble the region-wide DynCall slot table: parent `fn_params`
+    // first (base 0), then each callee's `fn_params`, in callee order.
+    // Each callee's `base` (its offset here) is stamped on its emitter as
+    // `fn_index_offset` — what its body bakes into DynCalls AND the cache
+    // key's `base` half. A callee with no DynCalls (empty `fn_params`)
+    // bakes nothing, so it's pinned at base 0 to share one compilation
+    // across regions. A self-name callee shares the parent's FuncId/body
+    // (its slots ARE the parent's, already at base 0) — skip it, matching
+    // the phase-1 declare loop.
+    let parent_ptr = std::sync::Arc::as_ptr(kernel) as usize;
+    let mut combined: Vec<kernel_abi::FnParam> = kernel.fn_params.to_vec();
     let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>)> = callees
         .values()
         .filter_map(|k| {
             let key = std::sync::Arc::as_ptr(k) as usize;
+            if k.fn_name.as_str() == kernel.fn_name.as_str() || key == parent_ptr {
+                return None;
+            }
             let cb = callee_bodies.get(&key)?;
+            let raw_base = combined.len() as u32;
+            let base = if k.fn_params.is_empty() { 0 } else { raw_base };
+            combined.extend(k.fn_params.iter().cloned());
             Some((
                 key,
                 NodeBodyEmitter {
                     root: cb.body,
                     return_type: &k.return_type,
-                    apply_sites: &empty_apply,
+                    apply_sites: &cb.apply_sites,
                     lambda_sites: &cb.sites,
                     self_call: cb.self_call.as_ref(),
                     type_env,
                     registry,
+                    fn_index_offset: base,
                 },
             ))
         })
         .collect();
     let mut emitters: BTreeMap<usize, &dyn BodyEmitter> =
         callee_emitters.iter().map(|(key, em)| (*key, em as &dyn BodyEmitter)).collect();
-    emitters.insert(std::sync::Arc::as_ptr(kernel) as usize, &parent);
-    compile_kernel_with_callees_impl(jit, kernel, callees, &emitters, registry)
+    emitters.insert(parent_ptr, &parent);
+    let mut wrapped =
+        compile_kernel_with_callees_impl(jit, kernel, callees, &emitters, registry)?;
+    // Override the parent-only default with the combined table; the
+    // runtime `Kernel` builds its `dyn_slots` from this (and per-slot
+    // `clone_rebind`s clone the `Arc`).
+    wrapped.dyn_fn_params = combined.into();
+    Ok(wrapped)
 }
 
 fn compile_kernel_with_callees_impl(
@@ -412,7 +465,7 @@ fn compile_kernel_with_callees_impl(
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
-    let mut to_define: Vec<std::sync::Arc<KernelSig>> = Vec::new();
+    let mut to_define: Vec<(std::sync::Arc<KernelSig>, u32)> = Vec::new();
     let r = compile_kernel_with_callees_inner(
         jit,
         kernel,
@@ -429,8 +482,8 @@ fn compile_kernel_with_callees_impl(
         // and shared across call sites) — a stale entry would hand
         // out a `FuncId` whose body was never defined. It would also
         // pin the kernel `Arc` (and its declared symbol) forever.
-        for k in &to_define {
-            jit.by_kernel.remove(&(std::sync::Arc::as_ptr(k) as usize));
+        for (k, base) in &to_define {
+            jit.by_kernel.remove(&(std::sync::Arc::as_ptr(k) as usize, *base));
         }
     }
     r
@@ -441,7 +494,7 @@ fn compile_kernel_with_callees_inner(
     kernel: &std::sync::Arc<KernelSig>,
     callees: &BTreeMap<ArcStr, std::sync::Arc<KernelSig>>,
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
-    to_define: &mut Vec<std::sync::Arc<KernelSig>>,
+    to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32)>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     // Phase 1 — declare every kernel in the closure (parent + all
@@ -452,16 +505,25 @@ fn compile_kernel_with_callees_inner(
     // The parent and any callee with name == parent's fn_name share
     // the same FuncId; that's how self-recursion
     // resolves to a CLIF call back to the parent.
+    //
+    // Each kernel's DynCall `base` offset (0 for the parent, its
+    // combined-list offset for a callee) is the body emitter's
+    // `fn_index_offset()` — the SAME value baked into its DynCalls — so
+    // the `(ptr, base)` cache key and the compiled body agree by
+    // construction.
     let kernel_name = kernel.fn_name.clone();
     let mut funcids: BTreeMap<ArcStr, (FuncId, Signature)> = BTreeMap::new();
-    let parent_entry = ensure_declared(jit, kernel, to_define, registry)?;
+    let parent_entry = ensure_declared(jit, kernel, 0, to_define, registry)?;
     funcids.insert(kernel_name.clone(), parent_entry.clone());
     for (name, k) in callees {
         if name.as_str() == kernel_name.as_str() {
             funcids.insert(name.clone(), parent_entry.clone());
             continue;
         }
-        let entry = ensure_declared(jit, k, to_define, registry)?;
+        let base = emitters
+            .get(&(std::sync::Arc::as_ptr(k) as usize))
+            .map_or(0, |e| e.fn_index_offset());
+        let entry = ensure_declared(jit, k, base, to_define, registry)?;
         funcids.insert(name.clone(), entry);
     }
     // Phase 2 — define each freshly-declared body. Bodies that came
@@ -482,9 +544,12 @@ fn compile_kernel_with_callees_inner(
     // `discover_lambda_calls` records a body for every callee it
     // returns; the check guards the invariant rather than a known
     // path.
-    for k in to_define.iter() {
-        let key = std::sync::Arc::as_ptr(k) as usize;
-        let body: &dyn BodyEmitter = *emitters.get(&key).ok_or_else(|| {
+    for (k, base) in to_define.iter() {
+        let ptr = std::sync::Arc::as_ptr(k) as usize;
+        // The emitter is keyed by pointer identity (it's the same body
+        // regardless of base); the `fn_index_offset` it carries (== base)
+        // is what `compile_into_function` bakes into the DynCalls.
+        let body: &dyn BodyEmitter = *emitters.get(&ptr).ok_or_else(|| {
             anyhow!(
                 "no body emitter recorded for kernel `{}` — \
                      discovery must record every callee body",
@@ -492,7 +557,7 @@ fn compile_kernel_with_callees_inner(
             )
         })?;
         let (strings, values) = define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
-        if let Some(cached) = jit.by_kernel.get_mut(&key) {
+        if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base)) {
             cached._strings = strings;
             cached._values = values;
         }
@@ -516,20 +581,26 @@ fn compile_kernel_with_callees_inner(
         _ctx: None,
         _strings: KernelStrings::empty(),
         _values: KernelValues::empty(),
+        // Parent-only default (correct when there are no callee DynCalls).
+        // `compile_kernel_with_callees_direct` overwrites this with the
+        // combined parent++callees list when callees contribute slots.
+        dyn_fn_params: kernel.fn_params.iter().cloned().collect(),
     })
 }
 
 /// Phase-1 helper: ensure `k` has a `FuncId` declared in the shared
-/// module. Cached kernels (by `Arc::as_ptr` identity) reuse their
-/// existing entry. Freshly-declared kernels are pushed onto
-/// `to_define` so phase 2 compiles their body.
+/// module FOR THIS DynCall `base` offset. Cached kernels (by
+/// `(Arc::as_ptr, base)` identity) reuse their existing entry. Freshly-
+/// declared kernels are pushed onto `to_define` (with their base) so
+/// phase 2 compiles their body with the matching `fn_index` offset.
 fn ensure_declared(
     jit: &mut Jit,
     k: &std::sync::Arc<KernelSig>,
-    to_define: &mut Vec<std::sync::Arc<KernelSig>>,
+    base: u32,
+    to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32)>,
     registry: &AbstractRegistry,
 ) -> Result<(FuncId, Signature)> {
-    let key = std::sync::Arc::as_ptr(k) as usize;
+    let key = (std::sync::Arc::as_ptr(k) as usize, base);
     if let Some(e) = jit.by_kernel.get(&key) {
         return Ok((e.func_id, e.signature.clone()));
     }
@@ -553,7 +624,7 @@ fn ensure_declared(
             _values: KernelValues::empty(),
         },
     );
-    to_define.push(k.clone());
+    to_define.push((k.clone(), base));
     Ok((fid, sig))
 }
 
@@ -997,6 +1068,7 @@ fn compile_into_function(
         self_call: body_emitter.self_call(),
         type_env: body_emitter.type_env(),
         registry: body_emitter.registry(),
+        fn_index_offset: body_emitter.fn_index_offset(),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -1259,6 +1331,11 @@ pub(crate) struct LowerCtx<'a> {
     /// classifiers (`abi_kind`/freeze/`resolve_abstract`) via
     /// [`BodyCx::registry`].
     registry: &'a AbstractRegistry,
+    /// DynCall `fn_index` base for the body being emitted (see
+    /// [`BodyEmitter::fn_index_offset`]). Added to every DynCall's
+    /// `info.fn_index` at emit so a callee body indexes the region-wide
+    /// combined `dyn_slots`. `0` for parents / per-slot callbacks.
+    fn_index_offset: u32,
 }
 
 /// Resolve named/abstract type refs in a node-carried `Type` through
@@ -2420,6 +2497,17 @@ trait BodyEmitter {
     /// `ExecCtx` into [`LowerCtx`] so emit-time type classification has
     /// the same view as the analysis phase.
     fn registry(&self) -> &AbstractRegistry;
+
+    /// Base offset added to every DynCall `fn_index` this body bakes, so
+    /// the body indexes its slots in the REGION-WIDE combined `dyn_slots`
+    /// table (parent slots first, then each callee's). `0` for the parent
+    /// (its slots lead the table) and for a callee with no DynCalls;
+    /// nonzero only for a callee body whose `fn_params` sit at an offset.
+    /// Doubles as the `base` half of the `(ptr, base)` JIT cache key —
+    /// see `compile_kernel_with_callees_inner`. Default `0`.
+    fn fn_index_offset(&self) -> u32 {
+        0
+    }
 }
 
 /// The body emitter — walks the region-root `Node` via `emit_clif`
@@ -2439,6 +2527,10 @@ struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
     /// The compiling `ExecCtx`'s abstract-type registry — see
     /// [`BodyEmitter::registry`].
     registry: &'a AbstractRegistry,
+    /// DynCall `fn_index` base — see [`BodyEmitter::fn_index_offset`].
+    /// `0` for region parents and per-slot callbacks; a callee's
+    /// combined-table offset for cross-kernel callee bodies.
+    fn_index_offset: u32,
 }
 
 impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
@@ -2484,6 +2576,10 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
 
     fn registry(&self) -> &AbstractRegistry {
         self.registry
+    }
+
+    fn fn_index_offset(&self) -> u32 {
+        self.fn_index_offset
     }
 }
 
@@ -2535,6 +2631,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             }
         };
         self.b.ins().iconst(types::I64, ptr as i64)
+    }
+
+    /// The DynCall `fn_index` base for the body being emitted — added to
+    /// every DynCall site's `info.fn_index` so a callee body indexes the
+    /// region-wide combined `dyn_slots` table. `0` for parents / per-slot
+    /// callbacks. See [`BodyEmitter::fn_index_offset`].
+    pub(crate) fn fn_index_offset(&self) -> u32 {
+        self.ctx.fn_index_offset
     }
 
     /// The discovered builtin Apply-site info for `id`, if the
@@ -4244,7 +4348,10 @@ fn emit_qop_deliver(
     let push = cx.helper(push_name)?;
     cx.b.ins().call(push, &[buf, clean, cv.payload]);
     let dyncall = cx.helper("graphix_dyncall")?;
-    let fn_idx = cx.b.ins().iconst(types::I32, info.fn_index as i64);
+    // Region-wide slot index: the site's local fn_index plus this body's
+    // base offset into the combined `dyn_slots` table.
+    let region_idx = info.fn_index + cx.fn_index_offset();
+    let fn_idx = cx.b.ins().iconst(types::I32, region_idx as i64);
     // ret_kind=3 (Unit): QopDeliverApply returns Value::Null; discarded.
     let ret_kind = cx.b.ins().iconst(types::I8, 3);
     cx.b.ins().call(dyncall, &[fn_idx, buf, ret_kind]);
@@ -4579,7 +4686,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    let fn_idx_val = cx.b.ins().iconst(types::I32, info.fn_index as i64);
+    // Region-wide slot index: local fn_index + this body's base offset
+    // into the combined `dyn_slots` table.
+    let region_idx = info.fn_index + cx.fn_index_offset();
+    let fn_idx_val = cx.b.ins().iconst(types::I32, region_idx as i64);
     let ret_kind_val = cx.b.ins().iconst(types::I8, ret_kind);
     let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, ret_kind_val]);
     // `graphix_dyncall` has two `I64` returns (disc, payload) so that

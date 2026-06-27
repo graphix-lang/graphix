@@ -737,11 +737,11 @@ run!(
         let risky = |x: i64| -> i64 x
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Abstract type used with a function that has throws clause
-// This tests that functions returning abstract types can be declared with throws
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Abstract type used with a function that has throws clause.
+// Fuses now (Stage 2): `get_value` is a transitive callee whose body holds a
+// handler-ful `?` (`a[0]?`, caught by the outer `try`) — a qop-deliver DynCall.
+// That DynCall is delivered through the region-wide combined `dyn_slots` table
+// (the callee's slot offset by its base), so the whole `try ... catch` fuses.
 run!(
     abstract_type_with_throws_clause,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -767,7 +767,7 @@ run!(
             let a = [t.value + 41];
             a[0]?
         }
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Cross-Module Abstract Type Usage

@@ -468,6 +468,79 @@ run!(transitive_chain, TRANSITIVE_CHAIN, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// Stage 2 — a transitively-called callee whose BODY contains a sync DynCall
+// (`cast<i64>` is non-numeric, so it lowers to the cast machinery rather than
+// inline arithmetic). The callee `g` is a bare cross-kernel FuncId with no
+// `Kernel` of its own; its cast dispatches through the REGION-WIDE combined
+// `dyn_slots` table (parent slots first, then `g`'s), with `g`'s body baking
+// `fn_index = base + local`. g(true)=1, g(false)=0 → 1. Before Stage 2 the
+// callee emitter used an empty apply-site map and this de-fused.
+const TRANSITIVE_CALLEE_DYNCALL: &str = r#"
+{
+    let g = |b: bool| cast<i64>(b)$;
+    g(true) + g(false)
+}
+"#;
+
+run!(transitive_callee_dyncall, TRANSITIVE_CALLEE_DYNCALL, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Stage 2 — the DynCall sits two callee levels deep (g -> h -> cast). The
+// combined table carries both callees' slots; each body bakes its own base.
+// h(true)=1,h(false)=0; g(b)=h(b)+10 → 11 + 10 = 21.
+const TRANSITIVE_DYNCALL_CHAIN: &str = r#"
+{
+    let h = |b: bool| cast<i64>(b)$;
+    let g = |b: bool| h(b) + 10;
+    g(true) + g(false)
+}
+"#;
+
+run!(transitive_dyncall_chain, TRANSITIVE_DYNCALL_CHAIN, |v: Result<&Value>| match v {
+    Ok(Value::I64(21)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Stage 2 SOUNDNESS — the cross-region cache-key witness. The function-valued
+// `let g` node-walks, splitting the block into SEPARATE regions that each call
+// `g`. Region `a` also has a root-level cast, so `g`'s slots land at base 1
+// there; region `bb` has no root cast, so `g` is at base 0. `g`'s body bakes
+// `base + local`, so the SAME `g` `KernelSig` needs two distinct compiled
+// bodies — keyed `(ptr, base)`. A ptr-only cache would hand region `bb` region
+// `a`'s body (baked at base 1) and dispatch off the end of `bb`'s 1-slot table.
+// a = g(true) + cast(false) = 1 + 0 = 1; bb = g(false) = 0; a + bb = 1.
+const CROSS_REGION_CALLEE_BASE: &str = r#"
+{
+    let g = |b: bool| cast<i64>(b)$;
+    let a = g(true) + cast<i64>(false)$;
+    let bb = g(false);
+    a + bb
+}
+"#;
+
+run!(cross_region_callee_base, CROSS_REGION_CALLEE_BASE, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Stage 2 — a RECURSIVE callee whose base case has a DynCall. The cast in the
+// `0 =>` arm dispatches through the combined table; the `_ =>` arm self-calls
+// via the kernel's own FuncRef (a CLIF call, not a DynCall, so unaffected by
+// the offset). g(3)→g(2)→g(1)→g(0)→cast<i64>(true) = 1.
+const RECURSIVE_CALLEE_DYNCALL: &str = r#"
+{
+    let rec g = |n: i64| -> i64 select n { 0 => cast<i64>(true)$, _ => g(n - 1) };
+    g(3)
+}
+"#;
+
+run!(recursive_callee_dyncall, RECURSIVE_CALLEE_DYNCALL, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 const LAMBDAMATCH0: &str = r#"
 {
   type T = { foo: Array<f64>, bar: i64, baz: f64 };

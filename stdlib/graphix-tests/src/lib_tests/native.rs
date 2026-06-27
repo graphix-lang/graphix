@@ -144,6 +144,28 @@ async fn native_fold_callback_fusable_ok() {
     );
 }
 
+// Stage 2 — `#[native]` on a computation that calls a transitively-defined
+// callee whose BODY contains a sync DynCall (`cast<i64>` lowers to the cast
+// machinery). The callee `g` fuses as a cross-kernel FuncId and its cast
+// dispatches through the region-wide combined `dyn_slots` table — so the whole
+// decorated computation is native (the `let g` binding itself node-walks, but
+// it isn't part of the decorated expr). Before Stage 2 the callee's cast
+// de-fused and this was a compile error.
+#[tokio::test]
+async fn native_transitive_callee_dyncall_ok() {
+    let prog = "{ \
+                let g = |b: bool| cast<i64>(b)$; \
+                #[native] (g(true) + g(false)) \
+                }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "#[native] on a computation calling a callee with a body DynCall must \
+         compile now that Stage 2 delivers transitive-callee DynCalls, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")
