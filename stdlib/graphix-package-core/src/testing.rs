@@ -267,6 +267,48 @@ where
     }
 }
 
+/// Like [`eval`], but for a REACTIVE program that CONVERGES over several
+/// cycles (a `<-` connect schedules updates for later cycles, which `eval`'s
+/// first-update return can't observe). Collects updates for a brief window
+/// and returns the LAST value of the result expr. Use for multi-cycle
+/// convergence (e.g. a fold whose init changes via `<-`).
+pub async fn eval_converged(code: &str, register: &[PackageRef]) -> Result<(Value, TestCtx)> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let gx_code = format!("let result = {code}");
+    let tbl = ahash::AHashMap::from_iter([(
+        netidx_core::path::Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(gx_code)),
+    )]);
+    let resolver = ModuleResolver::VFS(tbl);
+    let ctx = init_with_setup(tx, register, vec![resolver], |_| {}).await?;
+    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let eid = compiled.exprs[0].id;
+    let deadline = tokio::time::sleep(std::time::Duration::from_millis(500));
+    tokio::pin!(deadline);
+    let mut last: Option<Value> = None;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            batch = rx.recv() => match batch {
+                None => break,
+                Some(mut batch) => {
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e
+                            && id == eid
+                        {
+                            last = Some(v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    match last {
+        Some(v) => Ok((v, ctx)),
+        None => bail!("no update within deadline"),
+    }
+}
+
 /// Like [`eval`], but ships the `/test.gx` module as a PACKED pre-parsed AST
 /// (`serialize::pack_module`) rather than source, so the resolver takes its
 /// `unpack_module` path instead of parsing. The result must match [`eval`] —

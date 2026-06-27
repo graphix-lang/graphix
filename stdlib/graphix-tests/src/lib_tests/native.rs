@@ -75,3 +75,92 @@ async fn unknown_attribute_is_error() {
         r.map(|(v, _)| v)
     );
 }
+
+// `#[native]` INSIDE an HOF callback body — the case that used to pass
+// vacuously (the attribute checker stopped at lambda bodies). `list::map`
+// over a recursive List doesn't batch-loop inline, so its callback fuses
+// per-element; a wholly-sync callback fully fuses, so `#[native]` on its
+// body is satisfied and the program produces its value.
+#[tokio::test]
+async fn native_hof_callback_fusable_ok() {
+    let prog = "list::to_array(list::map(list::from_array([1, 2, 3]), \
+                |x| #[native] { let y = x * 2; y + 1 }))";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "#[native] on a fully-fusing HOF callback body must compile, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// The teeth, inside a callback: an `array::init` callback that calls a
+// recursive lambda does NOT fully fuse (the call node-walks, #203). The
+// checker now DESCENDS into the callback body, so `#[native]` on it is a
+// compile error — where before the fix it passed vacuously.
+#[tokio::test]
+async fn native_hof_callback_unfusable_is_error() {
+    let prog = "{ \
+                let rec f = |n: i64| -> i64 select n { 0 => 0, _ => f(n - 1) }; \
+                array::init(4, |idx| #[native] { let a = idx * 2; f(a) }) \
+                }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_err(),
+        "#[native] on a callback body that node-walks a call must be a compile \
+         error (the checker must descend into HOF callback bodies), got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// `#[native]` on an HOF call site whose callback batch-loop INLINES (the
+// whole call becomes one FusedKernel) is satisfied — and the descent must
+// NOT produce a false positive there (the callback was absorbed, there is
+// no separate per-element template to walk).
+#[tokio::test]
+async fn native_inlining_hof_callsite_ok() {
+    let r = eval("#[native]\narray::init(3, |i| i * i + i64:1)", crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "#[native] on a batch-loop-inlining HOF call must compile, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// `#[native]` inside a `list::fold` callback — FoldQ fuses its `(acc, elem)`
+// callback per-element through the per-slot template, so a wholly-sync
+// callback body is native.
+#[tokio::test]
+async fn native_fold_callback_fusable_ok() {
+    let prog = "list::fold(list::from_array([1, 2, 3]), 0, \
+                |acc, x| #[native] { let s = x + acc; s + i64:0 })";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "#[native] on a fully-fusing fold callback body must compile, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// The blocker LIST must be clean: a callback whose arithmetic fuses but
+// whose call node-walks should report the CALL ("builtin call site not
+// discovered"), NOT the structural `let`s ("node does not emit CLIF")
+// whose values fused — the `fused_ids` filter suppresses those.
+#[tokio::test]
+async fn native_blocker_list_is_filtered() {
+    let prog = "{ \
+                let rec f = |n: i64| -> i64 select n { 0 => 0, _ => f(n - 1) }; \
+                array::init(4, |idx| #[native] { let a = idx * 2; f(a) }) \
+                }";
+    let e = eval(prog, crate::TEST_REGISTER).await.err().expect("must be a compile error");
+    // `{:#}` includes anyhow's full cause chain (the `#[native]` blocker
+    // detail is a CAUSE, not the top-level context).
+    let err = format!("{e:#}");
+    assert!(
+        err.contains("builtin call site not discovered"),
+        "should report the real call blocker, got: {err}"
+    );
+    assert!(
+        !err.contains("does not emit CLIF"),
+        "structural `let` noise (whose values fused) must be filtered out, got: {err}"
+    );
+}

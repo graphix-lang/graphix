@@ -750,6 +750,18 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         }
     }
 
+    fn for_each_hof_fused_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        // Expose the FUSED template's callback body (NOT the pristine
+        // `analysis_pred`) for post-fusion attribute checks: its sync
+        // sub-regions are `FusedKernel`s, residue node-walks, so #[native]
+        // gets the real native/residue verdict per node.
+        if let Some(t) = &self.fused_template {
+            if let Some(body) = graphix_compiler::fusion::lowering::hof_callback_body(t) {
+                f(body);
+            }
+        }
+    }
+
     fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -797,16 +809,45 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             return Ok(());
         };
         cs.resolve_static(ctx, cb.lambda, fv)?;
-        // The analysis_pred is resolved (bound) but NOT fused here. The
-        // fuse + splice is deferred to the first `update()` (the lazy-fuse
-        // block in `update`) — because `emit_clif` (the array-HOF region
-        // inliner) reads THIS SAME `analysis_pred` body at compile time to
-        // inline the callback into the surrounding region. Mutating it
-        // here (splicing in FusedKernels) corrupts what `emit_clif` reads,
-        // so the HOF can't region-fuse and falls back to MapQ. Deferring
-        // to runtime orders the mutation strictly after `emit_clif` has
-        // read the pristine prototype. See design/impure_hof_fusion.md.
+        // The analysis_pred is resolved (bound) but stays PRISTINE — it is
+        // never fused. `emit_clif` (the array-HOF region inliner) reads
+        // THIS body to inline the callback when the whole HOF region fuses;
+        // mutating it (splicing in FusedKernels) would corrupt that read.
+        // The per-slot fused TEMPLATE is built from a CLONE of this in
+        // `Apply::fuse` (the fusion phase) — which runs strictly after
+        // every `emit_clif` attempt on the call site (the driver does
+        // `try_fuse` THEN `child.fuse`), so the ordering invariant holds at
+        // compile time. See design/impure_hof_fusion.md.
         self.analysis_pred = Some(Slot { id, pred, cur: None });
+        Ok(())
+    }
+
+    /// Build the per-slot callback template at COMPILE time (the fusion
+    /// phase). Reached via `CallSite::fuse` only when `try_fuse` on the
+    /// HOF call site already FAILED (the whole HOF did not batch-loop
+    /// inline) — so the callback would otherwise node-walk per element.
+    /// `clone_rebind` the pristine `analysis_pred` and fuse the CLONE
+    /// (keeping the prototype `emit_clif` reads untouched): whole-body
+    /// (pure) → replace the body with one FusedKernel; split (impure) →
+    /// fuse the body's maximal sync sub-regions in place, async residue
+    /// node-walks. Recording it here (vs. lazily in `update`) puts the
+    /// callback's fusion into FusionStats and makes it visible to the
+    /// post-fusion walk (`for_each_hof_fused_body` / #[native]). Errors
+    /// are swallowed (de-fuse, never fail the compile).
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if self.fused_template.is_none() && self.analysis_pred.is_some() {
+            let scope = self.scope.clone();
+            let ap = self.analysis_pred.as_ref().unwrap();
+            let feeders = [(ap.id, self.etyp.clone())];
+            let t = graphix_compiler::fusion::lowering::build_fused_template(
+                ctx,
+                &ap.pred,
+                &scope,
+                &feeders,
+                self.top_id,
+            );
+            self.fused_template = Some(t);
+        }
         Ok(())
     }
 
@@ -835,74 +876,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                 (Some(a), true)
             }
             Some(a) => {
-                // Build the per-slot template ONCE, lazily at first use:
-                // a `clone_rebind`'d COPY of the pristine `analysis_pred`
-                // with its sync sub-regions fused. We fuse the CLONE so
-                // the prototype `emit_clif` reads stays untouched — the
-                // two readers never share a mutable object. Lazy keeps a
-                // HOF that region-fuses from building this unused
-                // template. Split (impure): splice each sync sub-region;
-                // whole-body (pure): replace the body with one FusedKernel.
-                if self.fused_template.is_none() && self.analysis_pred.is_some() {
-                    let scope = self.scope.clone();
-                    let ap = self.analysis_pred.as_ref().unwrap();
-                    let element_id = ap.id;
-                    let mut t = ap.pred.clone_rebind(ctx, &scope);
-                    {
-                        let any: &mut dyn Any = &mut *t;
-                        if let Some(cs) = any.downcast_mut::<CallSite<R, E>>() {
-                            let fc = graphix_compiler::fusion::lowering::fuse_callsite(
-                                cs, ctx,
-                            );
-                            if let Some(fc) = &fc {
-                                // Whole body fused to one kernel: replace
-                                // the body with that FusedKernel.
-                                let element_ref = genn::reference(
-                                    ctx,
-                                    element_id,
-                                    self.etyp.clone(),
-                                    self.top_id,
-                                );
-                                if let Ok(fk) = fc.build_slot(
-                                    ctx,
-                                    vec![element_ref],
-                                    self.scope.clone(),
-                                    self.top_id,
-                                ) {
-                                    if let Some(graphix_compiler::ApplyViewMut::Lambda(
-                                        g,
-                                    )) = cs.resolved_apply_mut()
-                                    {
-                                        let mut old = std::mem::replace(g.body_mut(), fk);
-                                        old.delete(ctx);
-                                    }
-                                }
-                            } else if ctx.fusion.enabled {
-                                // Impure callback (async ops in the body):
-                                // no whole-body kernel. Fuse the body's
-                                // maximal sync sub-regions IN PLACE via the
-                                // canonical walk — the async residue stays
-                                // node-walked, and each per-slot clone_rebind
-                                // shares the fused kernels' Arcs. Gated on
-                                // `fusion_enabled` so `FusionDisabled` (interp
-                                // mode) node-walks the callback too: `try_fuse`
-                                // doesn't self-gate, so without this the HOF
-                                // callback would fuse even with fusion off.
-                                // (The whole-body branch above is gated the
-                                // same way — `fuse_callsite` returns None when
-                                // fusion is disabled.) Formerly
-                                // build_body_split + splice_into_body.
-                                if let Some(graphix_compiler::ApplyViewMut::Lambda(g)) =
-                                    cs.resolved_apply_mut()
-                                {
-                                    let _ =
-                                        graphix_compiler::fusion::fuse(g.body_mut(), ctx);
-                                }
-                            }
-                        }
-                    }
-                    self.fused_template = Some(t);
-                }
+                // The per-slot callback template is built at COMPILE time
+                // in `Apply::fuse` (the fusion phase), not lazily here —
+                // so its fusion is recorded in FusionStats and visible to
+                // the post-fusion graph walk (#[native]). `update` just
+                // clones it per slot below (genn::apply fallback when no
+                // template was built: fusion disabled / no static callback).
                 while self.slots.len() < a.len() {
                     // Mint this slot's fresh element binding "x" in scope
                     // (fresh id, no ref_var). The cloned template's arg[0]
@@ -1152,7 +1131,7 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
 #[derive(Debug)]
 pub struct FoldAnalysisPred<R: Rt, E: UserEvent> {
     /// BindId the accumulator Ref reads from. Synthetic — runtime
-    /// uses the parallel `binds`/`initids` arrays in [`FoldQ`].
+    /// uses the parallel `binds`/`accids` arrays in [`FoldQ`].
     pub acc_id: BindId,
     /// BindId the element Ref reads from. Synthetic, same.
     pub elem_id: BindId,
@@ -1177,10 +1156,16 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     top_id: ExprId,
     fid: BindId,
     scope: Scope,
+    /// Per-slot element bindings, name-bound "x" so the per-slot
+    /// `clone_rebind` of `fused_template` resolves the callback's element
+    /// ref to THIS slot's id.
     binds: Vec<BindId>,
     nodes: Vec<Node<R, E>>,
     inits: Vec<Option<Value>>,
-    initids: Vec<BindId>,
+    /// Per-slot accumulator-INPUT bindings, name-bound "acc". Slot i's acc
+    /// is fed from slot i-1's result (chain), or `init` for slot 0; the
+    /// callback's acc ref resolves "acc" to `accids[i]` per slot.
+    accids: Vec<BindId>,
     initid: BindId,
     mftype: TArc<FnType>,
     etyp: Type,
@@ -1195,6 +1180,10 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     /// Analysis-only pre-materialized callback Apply. See
     /// [`MapQ::analysis_pred`] for semantics.
     pub analysis_pred: Option<FoldAnalysisPred<R, E>>,
+    /// Per-slot callback template: a fused CLONE of `analysis_pred.pred`,
+    /// built at COMPILE time in `Apply::fuse` and cloned per slot in
+    /// `update`. `None` when fusion is disabled or no static callback.
+    fused_template: Option<Node<R, E>>,
     t: PhantomData<T>,
 }
 
@@ -1220,7 +1209,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
                     binds: vec![],
                     nodes: vec![],
                     inits: vec![],
-                    initids: vec![],
+                    accids: vec![],
                     initid: BindId::new(),
                     fid: BindId::new(),
                     etyp: T::Collection::etyp(typ)?,
@@ -1232,6 +1221,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
                     init: None,
                     arr_present: false,
                     analysis_pred: None,
+                    fused_template: None,
                     t: PhantomData,
                 }))
             }
@@ -1294,6 +1284,35 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         Ok(())
     }
 
+    /// Build the per-slot `(acc, elem)` callback template at COMPILE time
+    /// (the fusion phase), reached via `CallSite::fuse` when the fold call
+    /// site did not inline. Two formals (acc, elem) → `build_slot` gets two
+    /// element feeders. See `MapQ::fuse`; errors are swallowed (de-fuse).
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if self.fused_template.is_none() && self.analysis_pred.is_some() {
+            let scope = self.scope.clone();
+            let ap = self.analysis_pred.as_ref().unwrap();
+            let feeders = [(ap.acc_id, self.ityp.clone()), (ap.elem_id, self.etyp.clone())];
+            let t = graphix_compiler::fusion::lowering::build_fused_template(
+                ctx,
+                &ap.pred,
+                &scope,
+                &feeders,
+                self.top_id,
+            );
+            self.fused_template = Some(t);
+        }
+        Ok(())
+    }
+
+    fn for_each_hof_fused_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        if let Some(t) = &self.fused_template {
+            if let Some(body) = graphix_compiler::fusion::lowering::hof_callback_body(t) {
+                f(body);
+            }
+        }
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1314,16 +1333,67 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             Some(a) => {
                 self.arr_present = true;
                 let vals = a.iter_values().collect::<LPooled<Vec<Value>>>();
+                let init_idx = self.nodes.len();
+                // Grow: bind this slot's "acc" + "x" (name-bound so the
+                // template's refs resolve to THESE ids) AND build the node
+                // in the same iteration — each slot's `clone_rebind` must
+                // see its own (shadowing) bindings.
                 while self.binds.len() < a.len() {
-                    self.binds.push(BindId::new());
+                    let acc_id = ctx
+                        .env
+                        .bind_variable(
+                            &self.scope.lexical,
+                            "acc",
+                            self.ityp.clone(),
+                            Default::default(),
+                            TArc::new(graphix_compiler::expr::Origin::default()),
+                        )
+                        .id;
+                    let elem_id = ctx
+                        .env
+                        .bind_variable(
+                            &self.scope.lexical,
+                            "x",
+                            self.etyp.clone(),
+                            Default::default(),
+                            TArc::new(graphix_compiler::expr::Origin::default()),
+                        )
+                        .id;
+                    let pred = match &self.fused_template {
+                        Some(t) => {
+                            let scope = self.scope.clone();
+                            t.clone_rebind(ctx, &scope)
+                        }
+                        None => {
+                            let acc_ref =
+                                genn::reference(ctx, acc_id, self.ityp.clone(), self.top_id);
+                            let elem_ref =
+                                genn::reference(ctx, elem_id, self.etyp.clone(), self.top_id);
+                            let fnode = genn::reference(
+                                ctx,
+                                self.fid,
+                                Type::Fn(self.mftype.clone()),
+                                self.top_id,
+                            );
+                            genn::apply(
+                                fnode,
+                                self.scope.clone(),
+                                vec![acc_ref, elem_ref],
+                                &self.mftype,
+                                self.top_id,
+                            )
+                        }
+                    };
+                    self.accids.push(acc_id);
+                    self.binds.push(elem_id);
                     self.inits.push(None);
-                    self.initids.push(BindId::new());
+                    self.nodes.push(pred);
                 }
                 while a.len() < self.binds.len() {
                     if let Some(id) = self.binds.pop() {
                         ctx.cached.remove(&id);
                     }
-                    if let Some(id) = self.initids.pop() {
+                    if let Some(id) = self.accids.pop() {
                         ctx.cached.remove(&id);
                     }
                     self.inits.pop();
@@ -1331,46 +1401,21 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                         n.delete(ctx);
                     }
                 }
-                let init = self.nodes.len();
+                // Feed element values for all slots.
                 for i in 0..self.binds.len() {
                     ctx.cached.insert(self.binds[i], vals[i].clone());
                     event.variables.insert(self.binds[i], vals[i].clone());
-                    if i >= self.nodes.len() {
-                        let n = genn::reference(
-                            ctx,
-                            if i == 0 { self.initid } else { self.initids[i - 1] },
-                            self.ityp.clone(),
-                            self.top_id,
-                        );
-                        let x = genn::reference(
-                            ctx,
-                            self.binds[i],
-                            self.etyp.clone(),
-                            self.top_id,
-                        );
-                        let fnode = genn::reference(
-                            ctx,
-                            self.fid,
-                            Type::Fn(self.mftype.clone()),
-                            self.top_id,
-                        );
-                        let node = genn::apply(
-                            fnode,
-                            self.scope.clone(),
-                            vec![n, x],
-                            &self.mftype,
-                            self.top_id,
-                        );
-                        self.nodes.push(node);
-                    }
                 }
-                init
+                init_idx
             }
         };
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.initid, v.clone());
-            event.variables.insert(self.initid, v.clone());
-            self.init = Some(v);
+            self.init = Some(v.clone());
+            // Slot 0's accumulator input IS the init value — fire it.
+            if let Some(&acc0) = self.accids.first() {
+                ctx.cached.insert(acc0, v.clone());
+                event.variables.insert(acc0, v);
+            }
         }
         if let Some(v) = from[2].update(ctx, event) {
             ctx.cached.insert(self.fid, v.clone());
@@ -1384,6 +1429,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 return None;
             }
             if i == init {
+                // First NEW slot: prime. `event.init` stays true for the
+                // rest of the loop; ensure the callback fn value, and this
+                // slot's accumulator input (its predecessor's held result,
+                // or `init` for slot 0).
                 event.init = true;
                 if let Some(v) = ctx.cached.get(&self.fid)
                     && let Entry::Vacant(e) = event.variables.entry(self.fid)
@@ -1391,27 +1440,36 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                     e.insert(v.clone());
                 }
                 if i == 0 {
-                    if let Some(v) = self.init.as_ref()
-                        && let Entry::Vacant(e) = event.variables.entry(self.initid)
+                    if let Some(v) = self.init.clone()
+                        && let Entry::Vacant(e) = event.variables.entry(self.accids[0])
                     {
-                        e.insert(v.clone());
+                        ctx.cached.insert(self.accids[0], v.clone());
+                        e.insert(v);
                     }
-                } else {
-                    if let Some(v) = self.inits[i - 1].clone() {
-                        event.variables.insert(self.initids[i - 1], v);
-                    }
+                } else if let Some(v) = self.inits[i - 1].clone() {
+                    ctx.cached.insert(self.accids[i], v.clone());
+                    event.variables.insert(self.accids[i], v);
                 }
             }
             match self.nodes[i].update(ctx, event) {
                 Some(v) => {
-                    ctx.cached.insert(self.initids[i], v.clone());
-                    event.variables.insert(self.initids[i], v.clone());
-                    self.inits[i] = Some(v);
+                    self.inits[i] = Some(v.clone());
+                    // Chain: feed the NEXT slot's accumulator input (+cache
+                    // it, so the held acc is available when only that slot's
+                    // element fires a later cycle).
+                    if i + 1 < self.accids.len() {
+                        ctx.cached.insert(self.accids[i + 1], v.clone());
+                        event.variables.insert(self.accids[i + 1], v);
+                    }
                 }
                 None => {
-                    ctx.cached.remove(&self.initids[i]);
-                    event.variables.remove(&self.initids[i]);
                     self.inits[i] = None;
+                    // Bottom propagates: the next slot's acc is gone, so it
+                    // bottoms too.
+                    if i + 1 < self.accids.len() {
+                        ctx.cached.remove(&self.accids[i + 1]);
+                        event.variables.remove(&self.accids[i + 1]);
+                    }
                 }
             }
         }
@@ -1463,7 +1521,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         let i =
-            iter::once(&self.initid).chain(self.binds.iter()).chain(self.initids.iter());
+            iter::once(&self.initid).chain(self.binds.iter()).chain(self.accids.iter());
         for id in i {
             ctx.cached.remove(id);
         }

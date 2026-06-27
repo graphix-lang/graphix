@@ -1125,6 +1125,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         NodeView::CallSite(self)
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // Reached only when `try_fuse` on this call site already failed
+        // (the call did NOT inline). Two jobs:
+        //
+        // 1. DESCEND into the arg value nodes via `Update::fuse` — NOT
+        //    `fusion::fuse`. `fusion::fuse` would `try_fuse` each arg,
+        //    fusing bare constant args (string/int literals to async ops)
+        //    into 0-input kernels — a marginal pessimization that drifts
+        //    the FuseExpect metric on ~90 fixtures. Plain `node.fuse`
+        //    only descends: a nested HOF in arg position (the common
+        //    `list::to_array(list::map(..))` shape — list HOFs live in
+        //    arg position) reaches its own `CallSite::fuse` and builds
+        //    its callback template, while a constant arg's `fuse` is the
+        //    no-op default. (Fusing genuinely compute-heavy args as
+        //    regions is a separate, deliberate enhancement.)
+        // 2. Give the callee its fusion-phase hook: for an HOF builtin,
+        //    `Apply::fuse` builds its per-element callback template now.
+        for arg in self.args.values_mut() {
+            if let Some(node) = &mut arg.node {
+                if let Some(new) = node.fuse(ctx)? {
+                    let mut old = mem::replace(node, new);
+                    old.delete(ctx);
+                }
+            }
+        }
+        if let Some(apply) = self.callee.apply_mut() {
+            apply.fuse(ctx)?;
+        }
+        Ok(None)
+    }
+
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         if let Some(f) = self.callee.apply() {
             // A resolved user-lambda callee is a cross-kernel call:

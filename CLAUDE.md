@@ -712,6 +712,53 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **HOF callback fusion made a first-class compile-time activity + `#[native]`
+  descends into callbacks + blocker-list filter (2026-06-26).** `#[native]` (and
+  any attribute check) used to pass VACUOUSLY for anything inside an HOF callback
+  body: `check_attributes` walks `fusion::for_each_node`, which STOPS at
+  `NodeView::Lambda` (and `FusedKernel`), so a decorated node inside
+  `array::map(a, |x| #[native] ...)` was never visited. Root cause (the real
+  fix, per Eric): HOF per-element callback fusion wasn't part of the compile-time
+  fusion phase — `MapQ` built its `fused_template` LAZILY at runtime (first
+  `update`), and `Init`/`FoldQ` had NO template at all (node-walked the callback
+  per element). **Mechanism — BuiltIn participates in fusion:** new `Apply::fuse`
+  (trait method, delegated through `BuiltInLambda` — the delegation trap) is called
+  during the fusion phase by a new `CallSite::fuse` (`Update::fuse` override)
+  exactly when `try_fuse` on the call site FAILED (the HOF didn't batch-loop
+  inline). `CallSite::fuse` also DESCENDS into arg value nodes via plain
+  `node.fuse` — NOT `fusion::fuse`: `try_fuse`ing args fused trivial CONSTANT args
+  (string/int literals to async ops) into 0-input kernels (~92 FuseExpect drifts);
+  `node.fuse` reaches an arg-position HOF (the common `list::to_array(list::map(..))`
+  shape — list HOFs live in arg position) without that noise (fusing compute-heavy
+  args as regions is a deferred, orthogonal win). Each HOF builtin's `fuse` builds
+  its per-element template at COMPILE time via the shared
+  `fusion::lowering::build_fused_template` (clone the pristine `analysis_pred`, fuse
+  the CLONE: whole-body `fuse_callsite` → one `FusedKernel`, or split
+  `fusion::fuse(body)` → sync sub-regions fuse, residue node-walks). **`Init`
+  (`array::init`) and `FoldQ` (`list::fold`, which flipped `None`→`Jit`) GAINED
+  per-element callback fusion they never had.** FoldQ's restructure replaced the
+  raw-BindId `initids` accumulator chain with per-slot NAME-bound `accids`/`binds`
+  (so the template's `clone_rebind` resolves `"acc"`/`"x"` to each slot's id),
+  chaining the accumulator by feeding `accids[i+1]` (event + `ctx.cached`, the
+  held-acc combineLatest) when slot i fires and removing it on `None` (bottom
+  propagates); `update` now CONSUMES the compile-time template (per-slot
+  `clone_rebind`, `genn::apply` fallback when fusion-disabled). **The checker
+  descends** into HOF callbacks via new `Apply::for_each_hof_fused_body` (exposes
+  the FUSED template body), running the per-node attribute verdict (`FusedKernel` →
+  native; node-walk residue → `stats.failed`). **Blocker-list filter:**
+  `FusionStats.fused_ids` (region roots that fused) lets `Native::check` report only
+  the LEAF-most failures whose subtree has NO fused region — suppressing
+  attempt-then-recurse protocol noise (a `let px = idx%w` whose VALUE fused) + dedup;
+  mandelbrot's `#[native]` blocker list went 6 noisy entries → 1 clean (the
+  `iterate` call). Validation: 1466 differential tests ×2 modes + 22-program fuzz
+  regress + new `native.rs` tests (callback fusable/unfusable, inlining-callsite,
+  fold, blocker-filter) + a multi-cycle `eval_converged` fold convergence test
+  (init `0`→`100` reconverges to `106`). Deferred: arg-recursion-as-region-fusion
+  (the aspirational-Jit list-builder gains); the `analysis_pred`+`fused_template`
+  merge (collapse to in-place fusion, guarded by emit_clif-not-re-invoked).
+  `node-walk-is-canonical` held throughout (a lost fuse is a perf bug, never a wrong
+  value).
+
 - **Package registration unified onto one object-safe `Package` trait + one
   `packages!()` macro (2026-06-26).** Refines the same-day stdlib-as-features
   change (below): the three `ShellBuilder` hooks, the committed

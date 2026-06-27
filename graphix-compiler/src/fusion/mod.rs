@@ -69,6 +69,12 @@ pub struct FusionStats {
     /// Per-failure (region root ExprId, compile error) — the blocker
     /// profile. Compile-time only; bounded by program size.
     pub failed: Vec<(ExprId, compact_str::CompactString)>,
+    /// Region-root ExprIds that successfully fused. Lets a consumer
+    /// (e.g. the `#[native]` reporter) tell a STRUCTURAL `failed` entry —
+    /// a `let`/block whose region attempt failed but whose VALUE fused in
+    /// a sub-region — from a REAL blocker (a residue node with nothing
+    /// fused beneath it). Compile-time only; bounded by program size.
+    pub fused_ids: Vec<ExprId>,
 }
 
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, grouped here
@@ -724,6 +730,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                 inputs.len()
             );
             ctx.fusion.stats.fused += 1;
+            ctx.fusion.stats.fused_ids.push(source_id);
             Ok(Some(n))
         }
         Err(e) => {

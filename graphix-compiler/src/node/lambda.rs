@@ -408,6 +408,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.for_each_hof_callback_body(f)
     }
 
+    fn for_each_hof_fused_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        // MUST delegate (the trap) — else the checker descends into
+        // nothing and #[native] passes vacuously inside the callback.
+        self.apply.for_each_hof_fused_body(f)
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        // MUST delegate (the trap): the trait default `Ok(())` would
+        // silently swallow a wrapped HOF's compile-time callback build,
+        // so the callback would node-walk per element and #[native]
+        // would see nothing — the same class of bug as the emit_clif /
+        // for_each_hof_callback_body delegations above.
+        self.apply.fuse(ctx)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

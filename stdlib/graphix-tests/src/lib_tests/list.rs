@@ -522,12 +522,17 @@ const LIST_FOLD: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Now fuses + JITs per-element: `list::fold` over a recursive List
+// doesn't batch-loop, so its callback fuses through the per-slot
+// `fuse_callsite` template (FoldQ::fuse), the accumulator chained
+// across slots.
 run!(list_fold, LIST_FOLD, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(55)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Dynamic re-firing is tested as a multi-cycle CONVERGENCE test (the
+// `run!` harness only captures the first update) — see
+// `list_fold_dynamic_init_converges` below.
 
 const LIST_FOLD_TYPE_ERR: &str = r#"
 {
@@ -828,3 +833,27 @@ const LIST_ITERQ: &str = r#"
 run!(list_iterq, LIST_ITERQ, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(8)))
 }; graphix_package_core::testing::FuseExpect::None);
+
+// Multi-cycle CONVERGENCE: `list::fold`'s init accumulator changes 0 → 100
+// on the second cycle (via `<-`), which must re-fire the whole per-slot
+// accumulator chain and recompute the fold (100 + 1 + 2 + 3 = 106). The
+// `run!` harness only captures the FIRST update, so this uses
+// `eval_converged` (the last value after the program settles). Guards the
+// dynamic re-firing the static sums can't reach (FoldQ::update chain).
+#[tokio::test]
+async fn list_fold_dynamic_init_converges() {
+    let prog = "{ \
+        let init = 0; \
+        init <- select init { 0 => init ~ 100, _ => never() }; \
+        list::fold(list::from_array([1, 2, 3]), init, |acc, x| x + acc) \
+    }";
+    let (v, ctx) = graphix_package_core::testing::eval_converged(prog, crate::TEST_REGISTER)
+        .await
+        .expect("eval_converged");
+    assert_eq!(
+        v,
+        Value::I64(106),
+        "fold must re-fire the accumulator chain when init changes"
+    );
+    ctx.shutdown().await;
+}

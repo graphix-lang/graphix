@@ -583,6 +583,19 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// collect the bodies and walk them after the main pass.
     fn for_each_hof_callback_body<'a>(&'a self, _f: &mut dyn FnMut(&'a Node<R, E>)) {}
 
+    /// Walk this Apply's FUSED HOF callback bodies for post-fusion
+    /// attribute checking. The fused twin of
+    /// [`Apply::for_each_hof_callback_body`]: that one exposes the
+    /// pristine (unfused) `analysis_pred` body for fusion DISCOVERY;
+    /// this one exposes the body of the FUSED template built by
+    /// [`Apply::fuse`] (its sync sub-regions replaced by `FusedKernel`s),
+    /// so `check_attributes` can descend into it and give each decorated
+    /// callback node the right native/residue verdict. Default: no
+    /// callbacks — also correct when the HOF batch-loop-inlined (its
+    /// callback was absorbed into the enclosing kernel and there is no
+    /// separate fused template).
+    fn for_each_hof_fused_body<'a>(&'a self, _f: &mut dyn FnMut(&'a Node<R, E>)) {}
+
     /// put the node to sleep, used in conditions like select for branches that
     /// are not selected. Any cached values should be cleared on sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
@@ -623,6 +636,23 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         _cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         Ok(None)
+    }
+
+    /// Participate in the compile-time fusion phase. Called by
+    /// [`CallSite::fuse`] — i.e. exactly when `try_fuse` on the call
+    /// site FAILED (the call did NOT batch-loop inline via
+    /// [`Apply::emit_clif`]). A HOF builtin (`map`/`fold`/`init`/…)
+    /// overrides this to build its per-element fused callback template
+    /// NOW, at compile time, via the normal `fuse_callsite` /
+    /// [`fusion::fuse`] machinery — rather than lazily at runtime in
+    /// `update`. Doing it here records the callback's fusion in
+    /// [`fusion::FusionStats`] and makes it visible to the post-fusion
+    /// graph walk (the `#[native]` checker descends into the result via
+    /// [`Apply::for_each_hof_fused_body`]). The impl MUST swallow build
+    /// errors (de-fuse, never fail the compile — node-walk is
+    /// canonical). Default: no-op.
+    fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -979,21 +1009,36 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         if !ctx.fusion.enabled {
             crate::bailat!(node.spec(), "cannot verify #[native]: fusion is disabled");
         }
-        // The node survived fusion as node-walk residue. Surface the fusion
-        // blockers recorded within this expression's subtree — program ExprIds
-        // are unique, so filtering `stats.failed` by descendant id isolates
-        // this expr's blockers from the cumulative stdlib baseline.
-        let mut ids: AHashSet<ExprId> = AHashSet::default();
-        node.spec().fold(&mut ids, &mut |ids, e| {
-            ids.insert(e.id);
-            ids
+        // The node survived fusion as node-walk residue. Surface the REAL
+        // blockers, filtering out attempt-then-recurse protocol noise:
+        // `try_fuse` records a `failed` entry for EVERY region root it tries,
+        // including a `let`/block whose own region attempt fails ("node does
+        // not emit CLIF") but whose VALUE fused in a child sub-region. Report
+        // only the LEAF-most failures whose subtree contains NO fused region —
+        // the genuine residue (the call/op that node-walks), not the
+        // structural containers above it. Program ExprIds are unique, so this
+        // also isolates this expr's blockers from the stdlib baseline.
+        let fused: AHashSet<ExprId> = ctx.fusion.stats.fused_ids.iter().copied().collect();
+        let mut failed: AHashMap<ExprId, CompactString> = AHashMap::default();
+        for (id, reason) in ctx.fusion.stats.failed.iter() {
+            failed.entry(*id).or_insert_with(|| reason.clone());
+        }
+        let mut report: Vec<ExprId> = Vec::new();
+        node.spec().fold((), &mut |(), e| {
+            if failed.contains_key(&e.id) {
+                let subtree_fused = e.fold(false, &mut |acc, x| acc || fused.contains(&x.id));
+                let has_failed_desc = e.fold(false, &mut |acc, x| {
+                    acc || (x.id != e.id && failed.contains_key(&x.id))
+                });
+                if !subtree_fused && !has_failed_desc {
+                    report.push(e.id);
+                }
+            }
         });
         let mut reasons = CompactString::new("");
-        for (id, reason) in ctx.fusion.stats.failed.iter() {
-            if ids.contains(id) {
-                use std::fmt::Write;
-                let _ = write!(reasons, "\n  - {reason}");
-            }
+        for id in &report {
+            use std::fmt::Write;
+            let _ = write!(reasons, "\n  - {}", failed[id]);
         }
         if reasons.is_empty() {
             crate::bailat!(
@@ -1640,27 +1685,65 @@ pub fn compile<R: Rt, E: UserEvent>(
 /// Walk the post-fusion graph and run each registered attribute's check on the
 /// node of every decorated expression. `for_each_node` visits every node-walk
 /// survivor and every top-level `FusedKernel`, but stops at kernel interiors
-/// and lambda bodies — so a decorated node that was absorbed into a larger
-/// fused region is (correctly) never re-checked. Returns the first error.
+/// and lambda bodies — so a decorated node ABSORBED into a larger fused region
+/// is (correctly) never re-checked (it's native). HOF callback bodies are NOT
+/// absorbed into the visible graph (they fuse into a per-element template held
+/// by the HOF builtin), so [`check_decorated_node`] explicitly descends into
+/// them — otherwise `#[native]` inside `array::map(a, |x| ...)` would pass
+/// vacuously. Returns the first error.
 fn check_attributes<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
 ) -> Result<()> {
     let mut err: Option<anyhow::Error> = None;
     fusion::for_each_node(node, &mut |n| {
-        if err.is_some() {
-            return;
-        }
-        if let Some(dec) = &n.spec().dec {
-            for attr in dec.attrs.iter() {
-                if let Some(check) = ctx.lookup_attribute(&attr.name) {
-                    if let Err(e) = check(ctx, attr, n) {
-                        err = Some(e);
-                        return;
-                    }
-                }
+        if err.is_none() {
+            if let Err(e) = check_decorated_node(n, ctx) {
+                err = Some(e);
             }
         }
     });
     err.map_or(Ok(()), Err)
+}
+
+/// Run every registered attribute's check on `n`'s own decorations, then
+/// DESCEND into any HOF callback bodies the node's callee fused (a HOF
+/// builtin exposes its fused per-element template body via
+/// [`Apply::for_each_hof_fused_body`]). The main `for_each_node` walk stops at
+/// lambda bodies, so a decorated expression inside an HOF callback is
+/// otherwise never visited. The fused template's body carries `FusedKernel`s
+/// for the sub-regions that fused and node-walk residue (recorded in
+/// `FusionStats`) for those that didn't — exactly what each attribute's
+/// per-node verdict needs. Recurses through nested HOFs.
+fn check_decorated_node<R: Rt, E: UserEvent>(
+    n: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> Result<()> {
+    if let Some(dec) = &n.spec().dec {
+        for attr in dec.attrs.iter() {
+            if let Some(check) = ctx.lookup_attribute(&attr.name) {
+                check(ctx, attr, n)?;
+            }
+        }
+    }
+    if let NodeView::CallSite(cs) = n.view() {
+        if let Some(apply) = cs.callee_apply() {
+            let mut bodies: Vec<&Node<R, E>> = Vec::new();
+            apply.for_each_hof_fused_body(&mut |body| bodies.push(body));
+            for body in bodies {
+                let mut err: Option<anyhow::Error> = None;
+                fusion::for_each_node(body, &mut |bn| {
+                    if err.is_none() {
+                        if let Err(e) = check_decorated_node(bn, ctx) {
+                            err = Some(e);
+                        }
+                    }
+                });
+                if let Some(e) = err {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
 }

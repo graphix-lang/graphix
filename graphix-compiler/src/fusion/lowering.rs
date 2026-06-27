@@ -988,9 +988,49 @@ pub fn fuse_callsite<R: Rt, E: UserEvent>(
     }
     // The whole body didn't lower to one kernel (async ops in the body).
     // The caller fuses its maximal sync sub-regions in place via
-    // `fusion::fuse` (the impure-HOF split) — see `MapQ`'s template
-    // build.
+    // `fusion::fuse` (the impure-HOF split) — see `build_fused_template`.
     None
+}
+
+/// Build a HOF builtin's per-slot callback template at COMPILE time (the
+/// single source of `MapQ`/`Init`/`FoldQ`'s `Apply::fuse`). Clones the
+/// pristine analysis CallSite `pred` (leaving it untouched for `emit_clif`)
+/// and fuses the CLONE: whole-body (pure) → the callback body becomes one
+/// `FusedKernel` taking `feeders` (the callback's formal `(BindId, Type)`
+/// pairs, in arg order) as inputs; split (impure) → its maximal sync
+/// sub-regions fuse in place and the residue node-walks. Errors are
+/// swallowed (the returned template stays unfused → the slot node-walks).
+/// Caller stores the result in its `fused_template` and `clone_rebind`s it
+/// per slot.
+pub fn build_fused_template<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    pred: &Node<R, E>,
+    scope: &Scope,
+    feeders: &[(BindId, Type)],
+    top_id: ExprId,
+) -> Node<R, E> {
+    let mut t = pred.clone_rebind(ctx, scope);
+    {
+        let any: &mut dyn std::any::Any = &mut *t;
+        if let Some(cs) = any.downcast_mut::<CallSite<R, E>>() {
+            let fc = fuse_callsite(cs, ctx);
+            if let Some(fc) = &fc {
+                let element_feeders = feeders
+                    .iter()
+                    .map(|(id, ty)| genn::reference(ctx, *id, ty.clone(), top_id))
+                    .collect::<Vec<_>>();
+                if let Ok(fk) = fc.build_slot(ctx, element_feeders, scope.clone(), top_id) {
+                    if let Some(crate::ApplyViewMut::Lambda(g)) = cs.resolved_apply_mut() {
+                        let mut old = std::mem::replace(g.body_mut(), fk);
+                        old.delete(ctx);
+                    }
+                }
+            } else if let Some(crate::ApplyViewMut::Lambda(g)) = cs.resolved_apply_mut() {
+                let _ = fusion::fuse(g.body_mut(), ctx);
+            }
+        }
+    }
+    t
 }
 
 /// JIT-compile the whole-body callback kernel when `ec.fusion.enabled`,

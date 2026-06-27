@@ -1284,6 +1284,11 @@ struct Init<R: Rt, E: UserEvent> {
     /// full design rationale. `None` for dynamic callbacks
     /// (fusion falls back to DynCall in that case).
     analysis_pred: Option<Slot<R, E>>,
+    /// The per-slot callback template: a fused CLONE of `analysis_pred`,
+    /// built at COMPILE time in `Apply::fuse` and cloned per index slot
+    /// in `update`. `None` when fusion is disabled or no static callback.
+    /// See `MapQ::fused_template`.
+    fused_template: Option<Node<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
@@ -1313,6 +1318,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Init<R, E> {
                     },
                     slots: vec![],
                     analysis_pred: None,
+                    fused_template: None,
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -1326,6 +1332,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             if let Some(body) =
                 graphix_compiler::fusion::lowering::hof_callback_body(&slot.pred)
             {
+                f(body);
+            }
+        }
+    }
+
+    fn for_each_hof_fused_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        // The FUSED index-callback template body for post-fusion attribute
+        // checks (see `MapQ::for_each_hof_fused_body`).
+        if let Some(t) = &self.fused_template {
+            if let Some(body) = graphix_compiler::fusion::lowering::hof_callback_body(t) {
                 f(body);
             }
         }
@@ -1371,6 +1387,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         Ok(())
     }
 
+    /// Build the per-slot index-callback template at COMPILE time (the
+    /// fusion phase), reached via `CallSite::fuse` when the `array::init`
+    /// call site did not inline. The "element" is the `i64` index. See
+    /// `MapQ::fuse` for the full rationale; errors are swallowed
+    /// (de-fuse, never fail the compile).
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if self.fused_template.is_none() && self.analysis_pred.is_some() {
+            let scope = self.scope.clone();
+            let ap = self.analysis_pred.as_ref().unwrap();
+            let feeders = [(ap.id, Type::Primitive(Typ::I64.into()))];
+            let t = graphix_compiler::fusion::lowering::build_fused_template(
+                ctx,
+                &ap.pred,
+                &scope,
+                &feeders,
+                self.top_id,
+            );
+            self.fused_template = Some(t);
+        }
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1398,27 +1436,44 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
                     let i_typ = Type::Primitive(Typ::I64.into());
                     while self.slots.len() < n {
                         let i = self.slots.len();
-                        let (id, node) = genn::bind(
-                            ctx,
-                            &self.scope.lexical,
-                            "i",
-                            i_typ.clone(),
-                            self.top_id,
-                        );
+                        // Mint this slot's fresh index binding "i" (no
+                        // ref_var). The cloned template's index ref
+                        // resolves "i" to THIS slot's id via the env name
+                        // map; the genn::apply fallback builds its own ref.
+                        let id = ctx
+                            .env
+                            .bind_variable(
+                                &self.scope.lexical,
+                                "i",
+                                i_typ.clone(),
+                                Default::default(),
+                                TArc::new(graphix_compiler::expr::Origin::default()),
+                            )
+                            .id;
                         ctx.cached.insert(id, Value::I64(i as i64));
-                        let fnode = genn::reference(
-                            ctx,
-                            self.fid,
-                            Type::Fn(self.mftyp.clone()),
-                            self.top_id,
-                        );
-                        let pred = genn::apply(
-                            fnode,
-                            self.scope.clone(),
-                            vec![node],
-                            &self.mftyp,
-                            self.top_id,
-                        );
+                        let pred = match &self.fused_template {
+                            Some(t) => {
+                                let scope = self.scope.clone();
+                                t.clone_rebind(ctx, &scope)
+                            }
+                            None => {
+                                let node =
+                                    genn::reference(ctx, id, i_typ.clone(), self.top_id);
+                                let fnode = genn::reference(
+                                    ctx,
+                                    self.fid,
+                                    Type::Fn(self.mftyp.clone()),
+                                    self.top_id,
+                                );
+                                genn::apply(
+                                    fnode,
+                                    self.scope.clone(),
+                                    vec![node],
+                                    &self.mftyp,
+                                    self.top_id,
+                                )
+                            }
+                        };
                         self.slots.push(Slot { id, pred, cur: None });
                     }
                     (true, true)
