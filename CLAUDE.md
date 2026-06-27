@@ -712,6 +712,57 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 
 ### Major recent changes (newest first; `git log` for detail)
 
+- **Builtin/cast/qop calls inside lambda bodies fuse — the #203 deferred
+  follow-up, landed as two commits (2026-06-27).** A sync builtin DynCall, a
+  non-numeric `cast`, or a handler-ful `?` (qop-deliver) called inside a fused
+  lambda body now fuses instead of de-fusing the region. Two sub-cases, two
+  commits.
+  - **Stage 1 — compile-time discovery + scope fix.** Builtin-call discovery
+    (`try_register_builtin_call_from_callsite`) now resolves the builtin name in
+    the CALL SITE's own lexical scope (`cs.scope().lexical`), not the region
+    root's — so (a) region-root builtins called by their UNQUALIFIED imported
+    names (`{ use array; len(concat(...)) }`) fuse (root-scope lookup couldn't
+    see the unqualified name; `array_len` realized its ASPIRE: Jit), and (b) a
+    builtin in a nested-scope callee body resolves in its own module scope.
+    `build_lambda_kernel` now runs `walk_node_for_builtin_calls` on the
+    callee/callback body, installing the `fn_params` slots on the kernel sig +
+    recording `apply_sites` on `CachedKernel` (mirrored onto `CalleeBody`). The
+    per-slot HOF path (`fuse_callsite`) threads those in, so a callback whose
+    body has a DynCall fuses as ONE whole-callback kernel. Callee (cross-kernel)
+    emitters still used `&empty_apply` (a callee-with-a-DynCall de-fused cleanly,
+    never mis-dispatched) — wiring them up is Stage 2. The vestigial `scope`
+    param of `walk_node_for_builtin_calls`/`try_register_builtin_call_from_callsite`
+    was dropped (the scope comes from the node now — Eric's hint). New fixtures:
+    `array_len` None→Jit, `cast_callback_per_slot`.
+  - **Stage 2 — transitive-callee runtime delivery (combined slot table).** A
+    cross-kernel callee is a bare FuncId with no `Kernel`, so its DynCall can't
+    use its own slots. The whole region now shares ONE combined `dyn_slots`
+    table — parent `fn_params` ++ each callee's — carried on
+    `WrappedKernel.dyn_fn_params` (parent-only default; `compile_kernel_with_callees_direct`
+    assembles it). `Kernel::new` builds `dyn_slots` + pre-inits from the combined
+    table; `Kernel::update` sizes `fn_arg_values` to `dyn_slots.len()` (a callee
+    `fn_index` exceeds the parent's; callee slots are pre-bound so their entry is
+    an ignored `Null`). `NodeBodyEmitter.fn_index_offset` (default 0) threads to
+    `LowerCtx`; `emit_dyncall_node`/`emit_qop_deliver` bake `base + local`.
+    Callee emitters now consume `CalleeBody.apply_sites` (Stage-1-populated).
+    **SOUNDNESS — the `(ptr, base)` JIT cache key.** A callee body bakes a
+    region-specific `iconst(base)`, so the SAME callee `KernelSig` fused into two
+    regions with different parent `fn_params` needs two compiled bodies;
+    `by_kernel` (and `ensure_declared`/`to_define`/eviction) key on
+    `(Arc::as_ptr, base)`. A ptr-only key would hand region B region A's body and
+    mis-dispatch off the end of B's shorter `dyn_slots`. Empty-`fn_params`
+    callees pin at base 0 to share one compilation. New fixtures:
+    `transitive_callee_dyncall`, `transitive_dyncall_chain`,
+    `cross_region_callee_base` (the cache-key witness), `recursive_callee_dyncall`,
+    `native_transitive_callee_dyncall_ok`; `abstract_type_with_throws_clause`
+    None→Jit. STILL de-fuses: a callback that CAPTURES a local lambda
+    (`array::map(a, |x| g(x))`) — the `g(x)` call inside the per-slot template
+    isn't statically resolved (a separate resolution limitation, not delivery).
+    Gates: graphix-tests 1479 ×2, compiler 114, lsp 29, fuzz regress 22/0,
+    generate 3000 → 0 divergences, mutation 2000 → only the pre-existing #219
+    rand/dead-arm divergence + accepted runaway-recursion crashes; a 7-region
+    cross-region stress test (shared callees at bases 0/1/2) interp==jit.
+
 - **#203 RESOLVED — nested/transitive lambda calls fuse (callback→g→g2→…); the
   real blocker was cross-statement static resolution (2026-06-27).**
   `bench/mandelbrot.gx`'s per-pixel `iterate` (a recursive lambda CALLED inside
@@ -769,11 +820,11 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
   inverted to "fuses_ok" and the blocker-list test re-pointed at `once`, a
   permanent async non-fuser); compiler 114, lsp 29; fuzz regress 22/0 + generate
   3000 = **0 divergences**, 0 symbol panics (34 accepted runaway-recursion
-  hangs). Open follow-ups: transitive BUILTIN calls inside callee bodies still
-  de-fuse (callee `apply_sites` stay empty — needs builtin discovery +
-  `fn_params` in `build_lambda_kernel`); `check_inner` doesn't reset
-  `unstable_bindings` (pre-existing asymmetry, inert under lsp where fusion is
-  off).
+  hangs). Open follow-ups: ~~transitive BUILTIN calls inside callee bodies still
+  de-fuse~~ (RESOLVED 2026-06-27 by the two-stage builtin-in-lambda-body change
+  above — `build_lambda_kernel` now discovers them + the combined `dyn_slots`
+  table delivers them); `check_inner` doesn't reset `unstable_bindings`
+  (pre-existing asymmetry, inert under lsp where fusion is off).
 
 - **HOF callback fusion made a first-class compile-time activity + `#[native]`
   descends into callbacks + blocker-list filter (2026-06-26).** `#[native]` (and
