@@ -345,6 +345,29 @@ rather than allocating new memory.
 Maps maintain their key-value pairs in a balanced tree structure, ensuring
 O(log(N)) performance for all operations regardless of map size.
 
+## Chaining Access Operators
+
+The postfix access operators — struct field `.name`, tuple index `.0`, array
+index/slice `[i]` / `[i..j]`, map index `{key}`, and function call `(args)` —
+can be chained directly, left to right, without intermediate parentheses:
+
+```graphix
+data.users[0].name        // field, then index, then field
+config{"db"}.port         // map index, then field
+matrix[i][j]              // nested array index
+point.0.x                 // tuple index, then field
+make_handler(cfg)(event)  // a call whose result is itself called
+```
+
+Each operator applies to the value produced by everything to its left, so a
+chain reads in evaluation order. A trailing `?` or `$` applies to the whole
+chain: `data.users[0]?` propagates an error from the indexing.
+
+Parentheses are only needed when the *source* of an access is not itself a
+simple value or another access — for example `(a + b).0` (index into the
+result of an addition) or `(40 + 2).0`. A bare identifier or an existing chain
+never needs them.
+
 ## Error
 
 Error is the built in error type. It carries a type parameter indicating the

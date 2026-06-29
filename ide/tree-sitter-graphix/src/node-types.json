@@ -178,6 +178,10 @@
       "required": true,
       "types": [
         {
+          "type": "apply",
+          "named": true
+        },
+        {
           "type": "apply_args",
           "named": true
         },
@@ -6462,6 +6466,10 @@
       "required": true,
       "types": [
         {
+          "type": "apply",
+          "named": true
+        },
+        {
           "type": "array",
           "named": true
         },
@@ -7507,6 +7515,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "apply",
+          "named": true
+        },
         {
           "type": "array",
           "named": true

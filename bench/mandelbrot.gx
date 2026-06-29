@@ -21,14 +21,14 @@ let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
     _ if zr * zr + zi * zi > 4.0 => i,
     _ => iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
   };
-let counts = array::init(w * h, |idx| #[native] {
+let counts = array::init(w * h, |idx| {
   let px = idx % w;
   let py = idx / w;
   let cr = xmin + cast<f64>(px)$ * dx;
   let ci = ymin + cast<f64>(py)$ * dy;
   iterate(0.0, 0.0, cr, ci, max_iter)
 });
-let result = #[native] array::fold(counts, seed, |acc, n| acc + n);
+let result = array::fold(counts, seed, |acc, n| acc + n);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
 println("mandelbrot [w * h]px result=[result] elapsed_s=[elapsed]");

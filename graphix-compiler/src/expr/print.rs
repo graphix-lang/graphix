@@ -480,12 +480,33 @@ impl PrettyDisplay for StructExpr {
     }
 }
 
+/// Whether `e` can be printed as the bare source/function of a postfix
+/// operator (`.field`, `.N`, `[i]`, `{k}`, `(args)`) without enclosing parens.
+/// True exactly for the identifier and postfix-chain nodes: the parser folds
+/// postfix left, so `a.b.c` round-trips to `StructRef(StructRef(a,b),c)`. Any
+/// other source (binary op, constant, literal, qop, …) must be parenthesized —
+/// e.g. `(a+b).c` would otherwise mis-associate and `(42).0` would lex as a
+/// float.
+pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
+    matches!(
+        &e.kind,
+        ExprKind::Ref { .. }
+            | ExprKind::StructRef { .. }
+            | ExprKind::TupleRef { .. }
+            | ExprKind::ArrayRef { .. }
+            | ExprKind::ArraySlice { .. }
+            | ExprKind::MapRef { .. }
+            | ExprKind::Apply(_)
+    )
+}
+
 impl fmt::Display for ApplyExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let Self { args, function } = self;
-        match &function.kind {
-            ExprKind::Ref { name: _ } => write!(f, "{function}")?,
-            function => write!(f, "({function})")?,
+        if prints_as_bare_postfix(function) {
+            write!(f, "{function}")?
+        } else {
+            write!(f, "({function})")?
         }
         write!(f, "(")?;
         for i in 0..args.len() {
@@ -512,14 +533,13 @@ impl fmt::Display for ApplyExpr {
 impl PrettyDisplay for ApplyExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let Self { args, function } = self;
-        match &function.kind {
-            ExprKind::Ref { .. } => function.fmt_pretty(buf)?,
-            e => {
-                write!(buf, "(")?;
-                e.fmt_pretty(buf)?;
-                buf.kill_newline();
-                write!(buf, ")")?;
-            }
+        if prints_as_bare_postfix(function) {
+            function.fmt_pretty(buf)?
+        } else {
+            write!(buf, "(")?;
+            function.fmt_pretty(buf)?;
+            buf.kill_newline();
+            write!(buf, ")")?;
         }
         buf.kill_newline();
         writeln!(buf, "(")?;
@@ -934,18 +954,20 @@ impl fmt::Display for ExprKind {
             ExprKind::Ref { name } => {
                 write!(f, "{name}")
             }
-            ExprKind::StructRef { source, field } => match &source.kind {
-                ExprKind::Ref { .. } => {
+            ExprKind::StructRef { source, field } => {
+                if prints_as_bare_postfix(source) {
                     write!(f, "{source}.{field}")
+                } else {
+                    write!(f, "({source}).{field}")
                 }
-                source => write!(f, "({source}).{field}"),
-            },
-            ExprKind::TupleRef { source, field } => match &source.kind {
-                ExprKind::Ref { .. } => {
+            }
+            ExprKind::TupleRef { source, field } => {
+                if prints_as_bare_postfix(source) {
                     write!(f, "{source}.{field}")
+                } else {
+                    write!(f, "({source}).{field}")
                 }
-                source => write!(f, "({source}).{field}"),
-            },
+            }
             ExprKind::Module {
                 value:
                     ModuleKind::Resolved { from_interface: true, .. }
@@ -978,10 +1000,13 @@ impl fmt::Display for ExprKind {
                 }
                 write!(f, "}}")
             }
-            ExprKind::MapRef { source, key } => match &source.kind {
-                ExprKind::Ref { name } => write!(f, "{name}{{{key}}}"),
-                _ => write!(f, "({source}){{{key}}}"),
-            },
+            ExprKind::MapRef { source, key } => {
+                if prints_as_bare_postfix(source) {
+                    write!(f, "{source}{{{key}}}")
+                } else {
+                    write!(f, "({source}){{{key}}}")
+                }
+            }
             ExprKind::Any { args } => {
                 write!(f, "any")?;
                 print_exprs(f, args, "(", ")", ", ")
@@ -1020,12 +1045,13 @@ impl fmt::Display for ExprKind {
                 }
                 write!(f, "\"")
             }
-            ExprKind::ArrayRef { source, i } => match &source.kind {
-                ExprKind::Ref { .. } => {
+            ExprKind::ArrayRef { source, i } => {
+                if prints_as_bare_postfix(source) {
                     write!(f, "{}[{}]", source, i)
+                } else {
+                    write!(f, "({})[{}]", &source, &i)
                 }
-                _ => write!(f, "({})[{}]", &source, &i),
-            },
+            }
             ExprKind::ArraySlice { source, start, end } => {
                 let s = match start.as_ref() {
                     None => "",
@@ -1035,11 +1061,10 @@ impl fmt::Display for ExprKind {
                     None => "",
                     Some(e) => &format_compact!("{e}"),
                 };
-                match &source.kind {
-                    ExprKind::Ref { .. } => {
-                        write!(f, "{}[{}..{}]", source, s, e)
-                    }
-                    _ => write!(f, "({})[{}..{}]", source, s, e),
+                if prints_as_bare_postfix(source) {
+                    write!(f, "{}[{}..{}]", source, s, e)
+                } else {
+                    write!(f, "({})[{}..{}]", source, s, e)
                 }
             }
             ExprKind::Apply(ap) => write!(f, "{ap}"),

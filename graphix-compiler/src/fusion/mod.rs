@@ -180,6 +180,27 @@ impl FusionCtx {
             builtin_effects: ahash::AHashMap::default(),
         })
     }
+
+    /// Reset the JIT to a clean, empty module, discarding every compiled
+    /// kernel and the cross-kernel `by_kernel` cache. The lambda-kernel
+    /// SIGNATURE cache (`kernels`) is module-independent — it holds
+    /// `Arc<KernelSig>` descriptors, not `FuncId`s (those live in the
+    /// Jit's `by_kernel`) — so it deliberately survives: a surviving sig
+    /// simply re-declares into the fresh module on next use.
+    ///
+    /// For the check/LSP path ONLY. That path shares one long-lived
+    /// runtime across every checked file and NEVER executes a fused
+    /// kernel (the checked nodes are deleted right after), so without a
+    /// per-check reset each file's kernels pile into the single
+    /// persistent module until cranelift's `finalize_definitions` chokes
+    /// on the bloat — a cross-file crash that bricks the shared runtime.
+    /// A per-check reset makes each file hermetic, like a fresh-runtime
+    /// `--check`. MUST NOT be called on a runtime with live (executing)
+    /// kernels: it frees their compiled code.
+    pub fn reset_jit_for_check(&self) -> anyhow::Result<()> {
+        *self.jit.lock() = emit::Jit::new()?;
+        Ok(())
+    }
 }
 
 /// One free-var input slot resolved during walker analysis.

@@ -601,6 +601,18 @@ impl<X: GXExt> GX<X> {
         resolver_override: Option<Vec<ModuleResolver>>,
         initial_scope: Option<ArcStr>,
     ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
+        // The LSP shares one long-lived runtime across every checked file.
+        // Fusion still runs (to verify `#[native]` and check the fused
+        // graph), but a check NEVER executes its kernels — the compiled
+        // nodes are deleted below. Left alone, each file's kernels pile
+        // into the single persistent JIT module until cranelift's finalize
+        // chokes on the bloat, a cross-file crash that bricks the runtime.
+        // Reset the JIT per check so each file is hermetic, exactly like a
+        // fresh-runtime `--check`. Gated on `lsp_mode`: that's the only
+        // shared-runtime check path, and it never holds a live kernel.
+        if self.ctx.env.lsp_mode {
+            self.ctx.fusion.reset_jit_for_check()?;
+        }
         let env = self.ctx.env.clone();
         let prev_ide = if self.ctx.env.lsp_mode {
             self.ctx.env.ide.replace(Arc::new(parking_lot::Mutex::new(

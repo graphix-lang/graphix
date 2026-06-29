@@ -1402,6 +1402,138 @@ fn tupleref() {
     assert_eq!(e, pe)
 }
 
+// Postfix chaining (a.b.c, f(x)(y), a[i][j], m{k}.f, …) is a deliberate
+// language superset added by the primary + postfix-loop parser. The loop folds
+// postfix operators LEFT, so each chain link's source is the accumulated expr.
+
+fn refx(name: &str) -> Expr {
+    ExprKind::Ref { name: [name].into() }.to_expr_nopos()
+}
+
+#[test]
+fn struct_ref_chain() {
+    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
+        .to_expr_nopos();
+    let abc = ExprKind::StructRef { source: Arc::new(ab), field: literal!("c") }
+        .to_expr_nopos();
+    assert_eq!(abc, parse_one("a.b.c").unwrap());
+}
+
+#[test]
+fn tuple_ref_chain() {
+    let a0 =
+        ExprKind::TupleRef { source: Arc::new(refx("a")), field: 0 }.to_expr_nopos();
+    let a01 = ExprKind::TupleRef { source: Arc::new(a0), field: 1 }.to_expr_nopos();
+    assert_eq!(a01, parse_one("a.0.1").unwrap());
+}
+
+#[test]
+fn apply_chain() {
+    let fx = ExprKind::Apply(ApplyExpr {
+        function: Arc::new(refx("f")),
+        args: Arc::from_iter([(None, refx("x"))]),
+    })
+    .to_expr_nopos();
+    let fxy = ExprKind::Apply(ApplyExpr {
+        function: Arc::new(fx),
+        args: Arc::from_iter([(None, refx("y"))]),
+    })
+    .to_expr_nopos();
+    assert_eq!(fxy, parse_one("f(x)(y)").unwrap());
+}
+
+#[test]
+fn array_ref_chain() {
+    let ai = ExprKind::ArrayRef {
+        source: Arc::new(refx("a")),
+        i: Arc::new(refx("i")),
+    }
+    .to_expr_nopos();
+    let aij =
+        ExprKind::ArrayRef { source: Arc::new(ai), i: Arc::new(refx("j")) }
+            .to_expr_nopos();
+    assert_eq!(aij, parse_one("a[i][j]").unwrap());
+}
+
+#[test]
+fn map_then_struct_chain() {
+    // m{k}.f  =>  StructRef(MapRef(m, k), f)
+    let mk = ExprKind::MapRef {
+        source: Arc::new(refx("m")),
+        key: Arc::new(refx("k")),
+    }
+    .to_expr_nopos();
+    let mkf = ExprKind::StructRef { source: Arc::new(mk), field: literal!("f") }
+        .to_expr_nopos();
+    assert_eq!(mkf, parse_one("m{k}.f").unwrap());
+}
+
+#[test]
+fn apply_then_struct_ref() {
+    // f(x).b  =>  StructRef(Apply(f, [x]), b)  — apply is a chain base
+    let fx = ExprKind::Apply(ApplyExpr {
+        function: Arc::new(refx("f")),
+        args: Arc::from_iter([(None, refx("x"))]),
+    })
+    .to_expr_nopos();
+    let fxb = ExprKind::StructRef { source: Arc::new(fx), field: literal!("b") }
+        .to_expr_nopos();
+    assert_eq!(fxb, parse_one("f(x).b").unwrap());
+}
+
+#[test]
+fn paren_strip_before_postfix() {
+    // (a).b strips the parens: StructRef(a, b), not StructRef(ExplicitParens(a), b)
+    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
+        .to_expr_nopos();
+    assert_eq!(ab, parse_one("(a).b").unwrap());
+}
+
+#[test]
+fn paren_no_postfix_is_explicit() {
+    let pa = ExprKind::ExplicitParens(Arc::new(refx("a"))).to_expr_nopos();
+    assert_eq!(pa, parse_one("(a)").unwrap());
+}
+
+#[test]
+fn nested_parens_linear() {
+    // ((((1)))) parses to nested ExplicitParens around a constant — linearly.
+    let mut e = ExprKind::Constant(Value::I64(1)).to_expr_nopos();
+    for _ in 0..4 {
+        e = ExprKind::ExplicitParens(Arc::new(e)).to_expr_nopos();
+    }
+    assert_eq!(e, parse_one("((((1))))").unwrap());
+}
+
+#[test]
+fn qop_wraps_whole_chain() {
+    // a.b?  =>  Qop(StructRef(a, b))
+    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
+        .to_expr_nopos();
+    let q = ExprKind::Qop(Arc::new(ab)).to_expr_nopos();
+    assert_eq!(q, parse_one("a.b?").unwrap());
+}
+
+#[test]
+fn print_bare_chains_round_trip() {
+    // The printer emits bare chains for chain-node sources and parenthesizes
+    // non-chain sources; both must round-trip to the same AST.
+    for (src, expect) in [
+        ("a.b.c", "a.b.c"),
+        ("f(x)(y)", "f(x)(y)"),
+        ("a[i][j]", "a[i][j]"),
+        ("m{k}.f", "m{k}.f"),
+        ("f(x){k}", "f(x){k}"),
+        ("(a + b).c", "(a + b).c"),     // non-chain source stays parenthesized
+        ("(42).0", "(i64:42).0"),       // constant source stays parenthesized
+    ] {
+        let e = parse_one(src).unwrap();
+        let printed = format!("{e}");
+        assert_eq!(printed, expect, "printing {src}");
+        assert_eq!(e, parse_one(&printed).unwrap(), "round-trip {src}");
+    }
+}
+
 #[allow(unused)]
 fn parse_prop0(s: &str) -> anyhow::Result<Type> {
     crate::expr::parser::typ()
@@ -1544,3 +1676,4 @@ fn parenthesized_connect_round_trips() {
     let e2 = parse_one(&e.to_string()).unwrap();
     assert_eq!(e.kind, e2.kind);
 }
+

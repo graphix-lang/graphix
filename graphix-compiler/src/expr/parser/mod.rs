@@ -27,7 +27,7 @@ use compact_str::CompactString;
 use escaping::Escape;
 use netidx::{path::Path, publisher::Value};
 use netidx_value::parser::{
-    VAL_ESC, VAL_MUST_ESC, escaped_string, int, not_prefix, sep_by_tok, sep_by1_tok,
+    VAL_ESC, VAL_MUST_ESC, escaped_string, not_prefix, sep_by_tok, sep_by1_tok,
     value as parse_value,
 };
 use poolshark::local::LPooled;
@@ -44,10 +44,10 @@ mod typexp;
 use typexp::{fntype, typ, typedef};
 
 mod lambdaexp;
-use lambdaexp::{apply, lambda};
+use lambdaexp::{apply_args, lambda};
 
 mod arrayexp;
-use arrayexp::{array, arrayref};
+use arrayexp::{array, array_index_suffix};
 
 pub(crate) mod arithexp;
 use arithexp::arith;
@@ -395,43 +395,6 @@ where
     ))
 }
 
-fn structref<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), ref_pexp().skip(sptoken('.')), spfname()).map(|(pos, source, field)| {
-        ExprKind::StructRef { source: Arc::new(source), field }.to_expr(pos)
-    })
-}
-
-fn tupleref<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), ref_pexp().skip(sptoken('.')), int::<_, usize>()).map(
-        |(pos, source, field)| {
-            ExprKind::TupleRef { source: Arc::new(source), field }.to_expr(pos)
-        },
-    )
-}
-
-fn mapref<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), ref_pexp(), between(sptoken('{'), sptoken('}'), expr())).map(
-        |(pos, source, key)| {
-            ExprKind::MapRef { source: Arc::new(source), key: Arc::new(key) }.to_expr(pos)
-        },
-    )
-}
-
 fn any<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -603,29 +566,6 @@ where
         between(sptoken('('), sptoken(')'), expr()),
     )
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
-}
-
-fn tuple<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), token(')'))),
-    )
-        .then(|(pos, mut exprs): (_, LPooled<Vec<Expr>>)| {
-            if exprs.len() < 2 {
-                unexpected_any("tuples must have at least 2 elements").left()
-            } else {
-                value(
-                    ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }
-                        .to_expr(pos),
-                )
-                .right()
-            }
-        })
 }
 
 fn structure<I>() -> impl Parser<I, Output = Expr>
@@ -912,7 +852,7 @@ pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
 
 #[cfg(test)]
 pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
-    mapref()
+    arithexp::arith_term()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(&*s))

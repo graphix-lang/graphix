@@ -4280,6 +4280,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "apply"
+        },
+        {
+          "type": "SYMBOL",
           "name": "qop"
         },
         {
@@ -5295,6 +5299,10 @@
     ],
     [
       "lambda",
+      "_primary_expression"
+    ],
+    [
+      "_arithmetic_expression",
       "_primary_expression"
     ],
     [

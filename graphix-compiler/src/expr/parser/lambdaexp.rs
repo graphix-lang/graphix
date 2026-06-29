@@ -1,10 +1,10 @@
 use super::{
-    csep, expr, fname, qop, reference, spaces, sptoken, structure_pattern,
+    csep, expr, fname, spaces, sptoken, structure_pattern,
     typexp::{tvar, typ},
 };
 use crate::{
     expr::{
-        ApplyExpr, Arg, Expr, ExprKind, LambdaExpr, StructurePattern,
+        Arg, Expr, ExprKind, LambdaExpr, StructurePattern,
         parser::{sep_by_tok, spaces1},
     },
     typ::{TVar, Type},
@@ -21,15 +21,6 @@ use combine::{
 use netidx::utils::Either;
 use poolshark::local::LPooled;
 use triomphe::Arc;
-
-pub(super) fn apply_pexp<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(choice((between(token('('), sptoken(')'), expr()), qop(reference()))))
-}
 
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
 where
@@ -55,41 +46,35 @@ where
     })
 }
 
-pub(super) fn apply<I>() -> impl Parser<I, Output = Expr>
+/// The `( args )` of a call, used as a postfix operator by `arith_term`'s
+/// postfix loop. Parses the parenthesized argument list (labeled `#name: e`
+/// and anonymous, possibly empty) and validates that labeled args precede
+/// anonymous ones. The caller pairs this with the already-parsed function
+/// expression to build the `Apply` node.
+pub(super) fn apply_args<I>() -> impl Parser<I, Output = Vec<(Option<ArcStr>, Expr)>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (
-        position(),
-        apply_pexp(),
-        between(
-            token('('),
-            sptoken(')'),
-            spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
-        ),
+    between(
+        token('('),
+        sptoken(')'),
+        spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
     )
-        .then(|(pos, function, args): (_, Expr, Vec<(Option<ArcStr>, Expr)>)| {
-            let mut anon = false;
-            for (a, _) in &args {
-                if a.is_some() && anon {
-                    return unexpected_any(
-                        "labeled arguments must come before anonymous arguments",
-                    )
-                    .right();
-                }
-                anon |= a.is_none();
+    .then(|args: Vec<(Option<ArcStr>, Expr)>| {
+        let mut anon = false;
+        for (a, _) in &args {
+            if a.is_some() && anon {
+                return unexpected_any(
+                    "labeled arguments must come before anonymous arguments",
+                )
+                .right();
             }
-            value((pos, function, args)).left()
-        })
-        .map(|(pos, function, args): (_, Expr, Vec<(Option<ArcStr>, Expr)>)| {
-            ExprKind::Apply(ApplyExpr {
-                function: Arc::new(function),
-                args: Arc::from(args),
-            })
-            .to_expr(pos)
-        })
+            anon |= a.is_none();
+        }
+        value(args).left()
+    })
 }
 
 pub(super) fn lambda_args<I>()

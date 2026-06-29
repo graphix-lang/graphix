@@ -1,6 +1,6 @@
 use crate::expr::{
     Expr, ExprKind,
-    parser::{csep, expr, ref_pexp, sep_by_tok, spaces, spstring, sptoken},
+    parser::{csep, expr, sep_by_tok, spaces, spstring, sptoken},
 };
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, look_ahead, many1,
@@ -51,54 +51,44 @@ where
     )
 }
 
-pub(super) fn arrayref<I>() -> impl Parser<I, Output = Expr>
+/// The `[ idx ]` / `[ start..end ]` suffix, used as a postfix operator by
+/// `arith_term`'s postfix loop. `Right(e)` is a single-index `ArrayRef`;
+/// `Left((start, end))` is an `ArraySlice`. The caller pairs the result with
+/// the already-parsed source expression.
+pub(super) fn array_index_suffix<I>()
+-> impl Parser<I, Output = Either<(Option<Expr>, Option<Expr>), Expr>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (
-        position(),
-        ref_pexp(),
-        between(
-            token('['),
-            sptoken(']'),
-            (position(), spaces()).then(|(pos, _)| {
-                choice((
-                    attempt(idx().skip(look_ahead(sptoken(']')))).map(move |idx| {
-                        Either::Right(ExprKind::Constant(idx).to_expr(pos))
-                    }),
-                    attempt(
-                        (
-                            optional(idx()).skip(spstring("..")),
-                            spaces().with(optional(idx())),
-                        )
-                            .skip(look_ahead(sptoken(']'))),
+    between(
+        token('['),
+        sptoken(']'),
+        (position(), spaces()).then(|(pos, _)| {
+            choice((
+                attempt(idx().skip(look_ahead(sptoken(']')))).map(move |idx| {
+                    Either::Right(ExprKind::Constant(idx).to_expr(pos))
+                }),
+                attempt(
+                    (
+                        optional(idx()).skip(spstring("..")),
+                        spaces().with(optional(idx())),
                     )
-                    .map(move |(start, end)| {
-                        let start = start.map(|e| ExprKind::Constant(e).to_expr(pos));
-                        let end = end.map(|e| ExprKind::Constant(e).to_expr(pos));
-                        Either::Left((start, end))
-                    }),
-                    attempt((
-                        optional(attempt(expr())).skip(spstring("..")),
-                        optional(attempt(expr())),
-                    ))
-                    .map(|(start, end)| Either::Left((start, end))),
-                    attempt(expr()).map(|e| Either::Right(e)),
+                        .skip(look_ahead(sptoken(']'))),
+                )
+                .map(move |(start, end)| {
+                    let start = start.map(|e| ExprKind::Constant(e).to_expr(pos));
+                    let end = end.map(|e| ExprKind::Constant(e).to_expr(pos));
+                    Either::Left((start, end))
+                }),
+                attempt((
+                    optional(attempt(expr())).skip(spstring("..")),
+                    optional(attempt(expr())),
                 ))
-            }),
-        ),
+                .map(|(start, end)| Either::Left((start, end))),
+                attempt(expr()).map(|e| Either::Right(e)),
+            ))
+        }),
     )
-        .map(|(pos, a, args)| match args {
-            Either::Left((start, end)) => ExprKind::ArraySlice {
-                source: Arc::new(a),
-                start: start.map(Arc::new),
-                end: end.map(Arc::new),
-            }
-            .to_expr(pos),
-            Either::Right(i) => {
-                ExprKind::ArrayRef { source: Arc::new(a), i: Arc::new(i) }.to_expr(pos)
-            }
-        })
 }

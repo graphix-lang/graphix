@@ -59,6 +59,10 @@ module.exports = grammar({
     [$.variant_type, $.variant_pattern],
     [$.variant_type_args, $.variant_pattern],
     [$.lambda, $._primary_expression],
+    // `apply` is both a top-level arithmetic expression and a postfix-chain
+    // base (in `_primary_expression`), so an apply followed by e.g. `;` is
+    // ambiguous until the next token; let the GLR parser keep both.
+    [$._arithmetic_expression, $._primary_expression],
     [$._expression, $.or_never],
     [$.lambda, $.or_never],
     [$._expression, $.qop],
@@ -731,6 +735,9 @@ module.exports = grammar({
       $.array_ref,
       $.array_slice,
       $.map_ref,
+      // Apply is a postfix-chain base too, so `f(x).field`, `f(x)[i]`,
+      // `f(x){k}`, and `f(x)(y)` chain like the combine parser folds them.
+      $.apply,
       $.qop,
       $.or_never,
       $.parenthesized_expression,
