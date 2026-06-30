@@ -770,20 +770,9 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             None => false,
         }
     });
-    // #219: the validity bitmask is one u64 — one bit per region input
-    // (collect order). A region with >64 inputs can't be represented,
-    // so it de-fuses to the node-walk rather than silently dropping
-    // bits. Pathological in practice; logged, never silent.
-    if inputs.len() > 64 {
-        ctx.fusion.stats.failed.push((
-            node.spec().id,
-            compact_str::format_compact!(
-                "region has {} inputs (>64) — exceeds validity-bitmask width",
-                inputs.len()
-            ),
-        ));
-        return Ok(None);
-    }
+    // #219 taint rides each param's disc word (no separate validity
+    // bitmask), and the per-param firing trackers spill to the heap, so
+    // there is no input-count ceiling — a region of any width fuses.
     if let Some(name) = non_scalar_basename_collision(&inputs) {
         // A real blocker, not protocol noise — log it (a silent
         // Ok(None) after `attempted += 1` makes the stats disagree

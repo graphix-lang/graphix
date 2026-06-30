@@ -170,3 +170,43 @@ async fn two_counters_summed() -> Result<()> {
     ])
     .await
 }
+
+// ── >64 region inputs (the deleted validity-bitmask cap) ─────────────────
+// Each lifted counter is a kernel INPUT (a feeder). A block of `n` of them
+// summed is a single region with `n` inputs. The old `>64` de-fuse — tied
+// to a one-u64 validity bitmask that no longer exists (taint rides each
+// param's disc) — would have node-walked this; it now fuses.
+
+/// `{ let a0=0; …; let a{n-1}=0; a0<-a0+1; …; a0 + a1 + … + a{n-1} }`.
+/// First published value is the sum of the `n` seeds = 0.
+fn many_counters(n: usize) -> String {
+    let mut s = String::from("{ ");
+    for i in 0..n {
+        s.push_str(&format!("let a{i} = 0; "));
+    }
+    for i in 0..n {
+        s.push_str(&format!("a{i} <- a{i} + 1; "));
+    }
+    for i in 0..n {
+        if i > 0 {
+            s.push_str(" + ");
+        }
+        s.push_str(&format!("a{i}"));
+    }
+    s.push_str(" }");
+    s
+}
+
+run!(
+    region_over_64_inputs_fuses,
+    many_counters(70),
+    |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
+    FuseExpect::Jit
+);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn region_over_64_inputs_agrees() -> Result<()> {
+    // 70 self-feeding counters summed: every cycle each +1, so the stream
+    // steps by 70. Pin the differential (node-walk == jit) over a few cycles.
+    assert_stream(&many_counters(70), &[0, 70, 140, 210, 280]).await
+}
