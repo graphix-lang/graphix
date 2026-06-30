@@ -68,6 +68,15 @@ const ATAN2: &str =
     "math::abs(math::atan2(f64:1.0, f64:1.0) - math::pi / f64:4.0) < f64:1e-12";
 run!(math_atan2, ATAN2, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
+// clamp on an INVALID range (lo > hi) must NOT panic the runtime — it
+// returns a catchable `ClampError` (it used to SIGABRT via Rust's
+// `f64::clamp` asserting min <= max). See the valid-range `math_clamp`
+// test below.
+const CLAMP_INVALID: &str = "is_err(math::clamp(f64:42.0, f64:0.0, f64:-1.0))";
+run!(math_clamp_invalid_errors, CLAMP_INVALID, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+});
+
 // Constants sanity: tau > pi, pi > 3.14, pi < 3.15
 const CONSTANT_SANITY: &str = "math::tau > math::pi \
       && math::pi > f64:3.14 \
@@ -92,10 +101,11 @@ run!(math_predicates, PREDICATES, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
-// clamp
-const CLAMP: &str = "math::clamp(f64:5.0, f64:0.0, f64:10.0) == f64:5.0 \
-      && math::clamp(f64:-3.0, f64:0.0, f64:10.0) == f64:0.0 \
-      && math::clamp(f64:42.0, f64:0.0, f64:10.0) == f64:10.0";
+// clamp on a valid range (`$` unwraps the `[f64, Error]` union — never
+// an error here).
+const CLAMP: &str = "math::clamp(f64:5.0, f64:0.0, f64:10.0)$ == f64:5.0 \
+      && math::clamp(f64:-3.0, f64:0.0, f64:10.0)$ == f64:0.0 \
+      && math::clamp(f64:42.0, f64:0.0, f64:10.0)$ == f64:10.0";
 run!(math_clamp, CLAMP, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) });
 
 // to_radians / to_degrees round trip
