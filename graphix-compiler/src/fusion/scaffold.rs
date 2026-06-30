@@ -310,7 +310,7 @@ fn finalize_buf(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
 /// the push half of [`super::compile_and_push_field`]. Helper choice
 /// per shape:
 /// - **Scalar**: `graphix_value_buf_push_<T>` per the prim. A
-///   possibly-bottom (`Scalar2`) field aborts the kernel to pending
+///   may-bottom (tainted-disc) field aborts the kernel to pending
 ///   via [`super::emit_bottom_abort`] before the push (a composite
 ///   producer has no per-field validity channel, so a bottom field
 ///   must propagate to the kernel OUTPUT).
@@ -667,14 +667,15 @@ where
 /// body's result re-defines the acc Variable. No output buf, no
 /// pending-cleanup registration.
 ///
-/// The `init`/`body` closures must yield a DEFINITELY-VALID scalar:
-/// the design contract is that a may-bottom fold body de-fuses at
-/// BUILD time, so a closure holding a `Scalar2` must Err (callers
-/// get this from `compile_scalar`'s `.single()`), never strip
-/// the validity bit and return the bare value. Same contract for
-/// [`emit_filter_loop`]/[`emit_find_loop`] predicates and
-/// [`emit_flat_map_loop`] bodies. Contrast [`push_field`] (the map
-/// path), which accepts `Scalar2` and bottom-aborts at RUNTIME.
+/// The `init`/`body` closures return a register-scalar payload whose
+/// #219 taint has ALREADY been forced: callers wrap the compiled node in
+/// [`super::emit_forced`], which RUNTIME-aborts the whole kernel to bottom
+/// if the value taints (folds to no branch for a definitely-valid value).
+/// So a may-bottom fold body fuses and bottoms at runtime — faithful,
+/// since a bottom acc poisons every later iteration (the whole fold
+/// blocks). Same convention for [`emit_filter_loop`]/[`emit_find_loop`]
+/// predicates and [`emit_flat_map_loop`] bodies, and for the map path
+/// ([`push_field`]). There is NO build-time may-bottom de-fuse.
 pub fn emit_fold_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,

@@ -171,11 +171,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
     /// Direct-path filter loop via `scaffold::emit_filter_loop`. Same
     /// `Ok(None)` gates as `MapImpl::emit_clif` (destructured callback,
     /// unbindable element shape, owned input array), plus the predicate
-    /// type must freeze to `bool`. Unlike a map
-    /// body, a may-bottom (`Scalar2`) predicate Errs — the kernel
-    /// de-fuses at build time and the call site node-walks. There is no
-    /// runtime seam that could decide keep-vs-drop for a bottom
-    /// predicate, so only the node-walk represents it faithfully.
+    /// type must freeze to `bool`. A may-bottom predicate (e.g. `10 / x`)
+    /// fuses like a map body: `emit_forced` RUNTIME-aborts the whole
+    /// filter to bottom if the predicate actually taints — faithful,
+    /// since a bottom predicate has no keep-vs-drop answer, so the whole
+    /// filter output blocks (== a tainted kernel result).
     fn emit_clif(
         cx: &mut BodyCx,
         array_arg: &Node<R, E>,
@@ -424,10 +424,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
     /// Direct-path find loop via `scaffold::emit_find_loop` — early
     /// exit on the first matching element, result is the
     /// `Nullable<elem>` `(disc, payload)` pair. Same gates and
-    /// predicate contract as `FilterImpl::emit_clif`: a may-bottom
-    /// (`Scalar2`) predicate Errs = build-time de-fuse (a bottom
-    /// predicate has no match/no-match answer; canonically the pred
-    /// slot never fires and find's output blocks).
+    /// predicate convention as `FilterImpl::emit_clif`: a may-bottom
+    /// predicate fuses and `emit_forced` RUNTIME-aborts the whole find
+    /// to bottom if it taints (a bottom predicate has no match/no-match
+    /// answer; canonically the pred slot never fires and find's output
+    /// blocks == a tainted kernel result).
     fn emit_clif(
         cx: &mut BodyCx,
         array_arg: &Node<R, E>,
@@ -587,12 +588,11 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
     /// `Ok(None)` gates as `MapImpl::emit_clif`, plus the accumulator
     /// must be a register scalar whose prim the init and body types
     /// agree on (`scalar_prim(init)` +
-    /// `body == acc` checks). The init and body closures both carry
-    /// the BUILD-time de-fuse contract: a may-bottom (`Scalar2`)
-    /// result Errs — a bottom accumulator poisons every later
-    /// iteration, so there is no per-element runtime seam; only the
-    /// node-walk represents it (the acc slot never fires and fold's
-    /// output blocks).
+    /// `body == acc` checks). The init and body both route through
+    /// `emit_forced`: a may-bottom init/body fuses and RUNTIME-aborts
+    /// the whole fold to bottom if it taints — faithful, since a bottom
+    /// accumulator poisons every later iteration (the acc slot never
+    /// fires and fold's output blocks == a tainted kernel result).
     fn emit_clif(
         cx: &mut BodyCx,
         array_arg: &Node<R, E>,
@@ -1577,7 +1577,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
     /// param binds the loop counter Variable itself (no per-iteration
     /// copy), and the body's per-index result is pushed via
     /// `scaffold::push_field` (the runtime bottom-abort seam, same as
-    /// map). A may-bottom `n` Errs = build-time de-fuse.
+    /// map). A may-bottom `n` routes through `emit_forced` and
+    /// RUNTIME-aborts the whole init to bottom if it taints.
     fn emit_clif(
         &self,
         callsite: &graphix_compiler::node::callsite::CallSite<R, E>,

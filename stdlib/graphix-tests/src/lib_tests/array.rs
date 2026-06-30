@@ -416,6 +416,71 @@ run!(array_fold0, ARRAY_FOLD0, |v: Result<&Value>| {
     }
 });
 
+// A may-bottom predicate (`10 / x` can div0) over a runtime-clean array
+// still fuses: the scaffold routes the predicate through `emit_forced`,
+// which runtime-aborts to bottom only if the predicate actually taints
+// (here it never does → real filtered array, both modes agree).
+const ARRAY_FILTER_MAY_BOTTOM: &str = r#"
+{
+  let a = [1, 2, 3, 4, 5, 6, 7, 8];
+  array::filter(a, |x| 10 / x > 2)
+}
+"#;
+
+run!(array_filter_may_bottom, ARRAY_FILTER_MAY_BOTTOM, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            matches!(&a[..], [Value::I64(1), Value::I64(2), Value::I64(3)])
+        }
+        _ => false,
+    }
+});
+
+// A may-bottom fold body (`acc / x`) over a runtime-clean array fuses the
+// same way (the scaffold `emit_forced`s the body).
+const ARRAY_FOLD_MAY_BOTTOM: &str = r#"
+{
+  let a = [2, 5, 10];
+  array::fold(a, 1000, |acc, x| acc / x)
+}
+"#;
+
+run!(array_fold_may_bottom, ARRAY_FOLD_MAY_BOTTOM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(10)))
+});
+
+// A may-bottom find predicate fuses (runtime-aborts via `emit_forced`);
+// `10 / x > 4` matches the first x with 10/x > 4, i.e. x = 2.
+const ARRAY_FIND_MAY_BOTTOM: &str = r#"
+{
+  let a = [4, 2, 1];
+  array::find(a, |x| 10 / x > 4)
+}
+"#;
+
+run!(array_find_may_bottom, ARRAY_FIND_MAY_BOTTOM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+});
+
+// A may-bottom flat_map body (`[10 / x]` — the element div can bottom)
+// fuses; the array-literal body's internal bottom-abort + `emit_forced`
+// runtime-abort the kernel only if it actually taints.
+const ARRAY_FLAT_MAP_MAY_BOTTOM: &str = r#"
+{
+  let a = [1, 2, 5];
+  array::flat_map(a, |x| [10 / x])
+}
+"#;
+
+run!(array_flat_map_may_bottom, ARRAY_FLAT_MAP_MAY_BOTTOM, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            matches!(&a[..], [Value::I64(10), Value::I64(5), Value::I64(2)])
+        }
+        _ => false,
+    }
+});
+
 const ARRAY_FOLD1: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
