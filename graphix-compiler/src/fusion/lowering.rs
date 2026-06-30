@@ -1094,6 +1094,8 @@ fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
         self_call,
         &ec.env,
         &ec.fusion.abstract_registry,
+        // Per-slot HOF callback templates have no region-level lifts.
+        &ahash::AHashSet::default(),
     );
     match r {
         Ok(w) => Some(std::sync::Arc::new(w)),

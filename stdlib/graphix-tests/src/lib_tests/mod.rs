@@ -12,6 +12,7 @@ mod http;
 mod interrupt;
 mod json;
 mod list;
+mod lift;
 mod lsp_fusion;
 mod map;
 mod math;

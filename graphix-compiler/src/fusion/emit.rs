@@ -399,7 +399,11 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     parent_self_call: Option<&(BindId, LambdaCallInfo)>,
     type_env: &Env,
     registry: &AbstractRegistry,
+    lifted: &ahash::AHashSet<BindId>,
 ) -> Result<WrappedKernel> {
+    // Callee bodies never lift (lifts are region-level let-bound
+    // counters); only the parent emitter carries the lifted set.
+    let no_lift: ahash::AHashSet<BindId> = ahash::AHashSet::default();
     let parent = NodeBodyEmitter {
         root,
         return_type: &kernel.return_type,
@@ -422,6 +426,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         // sample), so its return must gate TAINT-only, else a stale-
         // constant base-case arm wrong-bottoms on a non-init dispatch.
         gate_stale: parent_self_call.is_none(),
+        lifted,
     };
     // Assemble the region-wide DynCall slot table: parent `fn_params`
     // first (base 0), then each callee's `fn_params`, in callee order.
@@ -460,6 +465,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     // call (its disc lost in the scalar return ABI), so it
                     // gates TAINT only — gating STALE would wrong-bottom.
                     gate_stale: false,
+                    lifted: &no_lift,
                 },
             ))
         })
@@ -1107,6 +1113,7 @@ fn compile_into_function(
         registry: body_emitter.registry(),
         fn_index_offset: body_emitter.fn_index_offset(),
         gate_stale_at_return: body_emitter.gate_stale_at_return(),
+        lifted: body_emitter.lifted(),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -1378,6 +1385,10 @@ pub(crate) struct LowerCtx<'a> {
     /// `true` for a published body, `false` for a cross-kernel callee.
     /// See [`BodyEmitter::gate_stale_at_return`].
     gate_stale_at_return: bool,
+    /// Lifted connect-target bind ids (let-bound scalar counters routed
+    /// in as feeders). Read by [`emit_let_node`] (seed-select) and
+    /// [`emit_connect_node`] (write gate). See [`BodyEmitter::lifted`].
+    lifted: &'a ahash::AHashSet<BindId>,
     /// DynCall `fn_index` base for the body being emitted (see
     /// [`BodyEmitter::fn_index_offset`]). Added to every DynCall's
     /// `info.fn_index` at emit so a callee body indexes the region-wide
@@ -2651,6 +2662,18 @@ trait BodyEmitter {
     fn gate_stale_at_return(&self) -> bool {
         true
     }
+
+    /// The region's LIFTED connect-target bind ids — let-bound scalar
+    /// counters/accumulators routed in as kernel inputs (feeders).
+    /// `emit_let_node` reads this to emit the seed-select for a lifted
+    /// binding instead of a plain let; `emit_connect_node` reads it to
+    /// allow the variable write. Empty for callees and for any region
+    /// with no lifts. Default: a shared empty set.
+    fn lifted(&self) -> &ahash::AHashSet<BindId> {
+        static EMPTY: std::sync::LazyLock<ahash::AHashSet<BindId>> =
+            std::sync::LazyLock::new(ahash::AHashSet::default);
+        &EMPTY
+    }
 }
 
 /// The body emitter — walks the region-root `Node` via `emit_clif`
@@ -2677,6 +2700,8 @@ struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
     /// STALE-gate the return — see [`BodyEmitter::gate_stale_at_return`].
     /// `true` for the published parent body, `false` for callee bodies.
     gate_stale: bool,
+    /// Lifted connect-target bind ids — see [`BodyEmitter::lifted`].
+    lifted: &'a ahash::AHashSet<BindId>,
 }
 
 impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
@@ -2731,6 +2756,10 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
     fn gate_stale_at_return(&self) -> bool {
         self.gate_stale
     }
+
+    fn lifted(&self) -> &ahash::AHashSet<BindId> {
+        self.lifted
+    }
 }
 
 /// The open-kernel emission context handed to
@@ -2771,6 +2800,13 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// fires only at init, then carries a cached (stale) value.
     pub fn init_flag(&self) -> ClifValue {
         self.ctx.init_flag
+    }
+
+    /// True iff `bind_id` is a LIFTED connect target in this region — a
+    /// let-bound scalar counter routed in as a feeder. `emit_let_node`
+    /// emits a seed-select for it; `emit_connect_node` allows its write.
+    pub(crate) fn is_lifted(&self, bind_id: BindId) -> bool {
+        self.ctx.lifted.contains(&bind_id)
     }
 
     /// Stable `*const ArcStr` for `s` as an `iconst`, interned lazily
@@ -3547,20 +3583,19 @@ pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
     bind_id: BindId,
 ) -> Result<CompiledExpr> {
     // Read-after-write-same-var guard: if the connect TARGET is a
-    // kernel-local (let-bound inside this region), a read of it in the
-    // same kernel resolves to the stale local value, not the written
-    // one (the write schedules next cycle; the read should see the
-    // variable through a feeder). Fusing that diverges from the
-    // node-walk (the self-referential counter `{ let x=0; x<-..; x }`).
-    // De-fuse — the block node-walks (correct), while the RHS still
-    // fuses as a sub-region. A connect to an EXTERNAL variable (read
-    // only in OTHER kernels, via feeders) is safe and fuses. (Full
-    // local-counter fusion needs unstable bindings routed as
-    // feeders+seeds — a follow-up.)
-    if cx.env.lookup(bind_id, "").is_some() {
+    // kernel-local (let-bound inside this region) that was NOT lifted, a
+    // read of it in the same kernel resolves to the stale local value,
+    // not the written one — de-fuse (the block node-walks, correct). A
+    // LIFTED target is the local-counter case: it was routed in as a
+    // feeder and `emit_let_node` bound it to a seed-select reading that
+    // feeder, so a read DOES see the variable's value. The fired-bit
+    // makes the write correct (`set_var_typed` skips a non-fired RHS), so
+    // the lifted connect fuses. A connect to an EXTERNAL variable (not in
+    // the env at all) also fuses.
+    if cx.env.lookup(bind_id, "").is_some() && !cx.is_lifted(bind_id) {
         return Err(anyhow!(
-            "emit_clif: connect target is a kernel-local — read-after-write \
-             unsafe, node-walks"
+            "emit_clif: connect target is a non-lifted kernel-local — \
+             read-after-write unsafe, node-walks"
         ));
     }
     let Some(p) = kernel_abi::scalar_prim(cx.registry(), rhs.typ()) else {
@@ -3943,6 +3978,38 @@ fn emit_let_node<R: Rt, E: UserEvent>(
     bind_id: Option<BindId>,
     value: &Node<R, E>,
 ) -> Result<()> {
+    // LIFTED connect target (a let-bound scalar counter routed in as a
+    // feeder): bind it to a SEED-SELECT — the feeder (entry param) when it
+    // has a value (untainted, i.e. ever fired), else the constant SEED
+    // (this let's value). Reproduces the node-walk exactly: the variable's
+    // value is the last `set_var`'d value, or the one-shot `Bind` seed
+    // until the first write. The seed is a STALE-gated constant
+    // (`emit_const_node` — fresh at init, stale after), so reads see the
+    // node-walk's firing; the feeder carries its own fresh/stale bit. The
+    // entry param is the binding the kernel-entry binder installed under
+    // this same `bind_id` (the lift added it to `inputs`); this let then
+    // SHADOWS it, so post-let reads resolve to the seed-select result.
+    if let Some(id) = bind_id {
+        if cx.is_lifted(id) {
+            let p = kernel_abi::scalar_prim(cx.registry(), value.typ()).ok_or_else(
+                || anyhow!("emit_clif: lifted connect target `{name}` isn't scalar"),
+            )?;
+            let vv = {
+                let l = cx.env.lookup(id, name).ok_or_else(|| {
+                    anyhow!("emit_clif: lifted target `{name}` has no feeder param")
+                })?;
+                l.vv
+            };
+            let pdisc = cx.b.use_var(vv.disc);
+            let ppay = cx.b.use_var(vv.payload);
+            let seed = value.emit_clif(cx)?;
+            let valid = is_untainted(cx.b, pdisc);
+            let disc = cx.b.ins().select(valid, pdisc, seed.disc);
+            let payload = cx.b.ins().select(valid, ppay, seed.payload);
+            bind_local(cx, name.clone(), disc, payload, LocalKind::Scalar(p), Some(id));
+            return Ok(());
+        }
+    }
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
     let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());

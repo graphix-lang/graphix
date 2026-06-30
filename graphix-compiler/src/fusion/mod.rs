@@ -244,35 +244,92 @@ pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
         if !seen.insert(id) {
             return;
         }
-        let Some(b) = ctx.env.by_id.get(&id) else { return };
-        // Resolve named/abstract type refs to their concrete rep
-        // BEFORE freezing — `freeze_for_abi` is deliberately Env-free
-        // and rejects `Type::Ref`, so an abstract-typed input (a Ref
-        // to a hidden-rep type name, e.g. an interface's `type Elem`)
-        // needs the same `resolve_abstract` pre-pass the classic
-        // kernel-signature derivation applies (#218). The feeder type
-        // below stays UNRESOLVED — the runtime Ref wants the type
-        // system's view; only the kernel-slot classification (`kind`,
-        // which carries the frozen types) needs the concrete rep.
-        let resolved = resolve_abstract(&ctx.fusion.abstract_registry, &b.typ, &ctx.env);
-        let Some(frozen) =
-            kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &resolved)
-        else {
-            return;
-        };
-        let Some(kind) =
-            lowering::type_to_region_input_kind(&ctx.fusion.abstract_registry, frozen)
-        else {
-            return;
-        };
-        out.push(FreeVarInput {
-            bind_id: id,
-            name: arcstr::ArcStr::from(b.name.as_str()),
-            kind,
-            typ: b.typ.clone(),
-        });
+        if let Some(fv) = free_var_input(id, ctx) {
+            out.push(fv);
+        }
     });
     out
+}
+
+/// Resolve a single binding `id` to its [`FreeVarInput`] (name + kernel
+/// slot classification + full type), or `None` if its type has no
+/// kernel-input representation (function types, bare `String`/`Null`).
+/// Shared by [`collect_region_inputs`] (external refs) and the
+/// connect-target LIFT (a let-bound counter routed in as a feeder).
+pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
+    id: BindId,
+    ctx: &ExecCtx<R, E>,
+) -> Option<FreeVarInput> {
+    let b = ctx.env.by_id.get(&id)?;
+    // Resolve named/abstract type refs to their concrete rep BEFORE
+    // freezing — `freeze_for_abi` is deliberately Env-free and rejects
+    // `Type::Ref`, so an abstract-typed input needs the same
+    // `resolve_abstract` pre-pass the classic kernel-signature derivation
+    // applies (#218). The feeder type stays UNRESOLVED — the runtime Ref
+    // wants the type system's view; only the kernel-slot classification
+    // (`kind`, which carries the frozen types) needs the concrete rep.
+    let resolved = resolve_abstract(&ctx.fusion.abstract_registry, &b.typ, &ctx.env);
+    let frozen = kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &resolved)?;
+    let kind = lowering::type_to_region_input_kind(&ctx.fusion.abstract_registry, frozen)?;
+    Some(FreeVarInput {
+        bind_id: id,
+        name: arcstr::ArcStr::from(b.name.as_str()),
+        kind,
+        typ: b.typ.clone(),
+    })
+}
+
+/// Detect "lifted" connect targets in a region — a SCALAR variable that
+/// is (a) `let`-bound in the region to a compile-time CONSTANT and (b)
+/// the target of EXACTLY ONE `connect` (`x <- e`). Such a variable is a
+/// reactive counter / accumulator whose READS must see the
+/// connect-written value (through a feeder), not the stale let-local that
+/// the kernel would otherwise bind. We route it in as a kernel INPUT;
+/// `emit_let_node`'s seed-select then reads the feeder (or the constant
+/// seed when the feeder has never fired), and the connect's `set_var`
+/// writes it. The fired-bit (STALE) makes this correct with NO cadence
+/// restriction: the constant seed (fresh at init, STALE after — used when
+/// the feeder is missing) reproduces the node-walk's one-shot `Bind` plus
+/// its downstream combineLatest cache, and `set_var_typed`'s fresh-gate
+/// reproduces `Connect::update`'s `if let Some(v) = ..` guard.
+///
+/// A non-constant seed is excluded (the node-walk re-runs the `Bind` when
+/// the seed's input fires, re-seeding the variable — the lift's
+/// fire-once seed can't model that). `ConnectDeref` (`*r <- e`) and
+/// multiple connects to one var are excluded (v1).
+pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> ahash::AHashSet<BindId> {
+    let mut connect_count: ahash::AHashMap<BindId, usize> = ahash::AHashMap::default();
+    let mut const_scalar_lets: ahash::AHashSet<BindId> = ahash::AHashSet::default();
+    for_each_node(node, &mut |n| match n.view() {
+        NodeView::Connect(c) => {
+            *connect_count.entry(c.id).or_default() += 1;
+        }
+        NodeView::Bind(b) => {
+            if let Some(id) = b.single_bind_id() {
+                // The seed must be a direct scalar Constant: it fires
+                // once (at init) exactly like the node-walk's `Bind` of a
+                // literal, which is what the STALE-gated seed reproduces.
+                if matches!(b.node.view(), NodeView::Constant(_))
+                    && kernel_abi::scalar_prim(
+                        &ctx.fusion.abstract_registry,
+                        b.node.typ(),
+                    )
+                    .is_some()
+                {
+                    const_scalar_lets.insert(id);
+                }
+            }
+        }
+        _ => {}
+    });
+    connect_count
+        .into_iter()
+        .filter(|&(t, count)| count == 1 && const_scalar_lets.contains(&t))
+        .map(|(t, _)| t)
+        .collect()
 }
 
 /// Visit `node` and every reachable descendant (pre-order: `f` sees a
@@ -687,7 +744,32 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         return Ok(None);
     };
     ctx.fusion.stats.attempted += 1;
-    let inputs = collect_region_inputs(&**node, ctx);
+    let mut inputs = collect_region_inputs(&**node, ctx);
+    // LIFT: a let-bound scalar counter/accumulator that is a `connect`
+    // target is routed in as a kernel INPUT (a feeder) so its READS see
+    // the connect-written variable, not the stale let-local. It's bound
+    // in-region (so `with_external_refs` skipped it) — add it explicitly.
+    // `emit_let_node` reads `lifted` to emit the seed-select instead of a
+    // plain let, and `emit_connect_node` reads it to allow the write.
+    let mut lifted = collect_lifted_connect_targets(node, ctx);
+    // Inject each lifted var as an input, KEEPING only those that yield a
+    // valid `FreeVarInput` (a scalar always does — but stay consistent: a
+    // var left in `lifted` without a matching feeder param would make
+    // `emit_let_node`'s seed-select fail and de-fuse). It's bound
+    // in-region, so it was never an external input (the `any` guard is
+    // defensive — it can't fire).
+    lifted.retain(|&t| {
+        if inputs.iter().any(|fv| fv.bind_id == t) {
+            return false;
+        }
+        match free_var_input(t, ctx) {
+            Some(fv) => {
+                inputs.push(fv);
+                true
+            }
+            None => false,
+        }
+    });
     // #219: the validity bitmask is one u64 — one bit per region input
     // (collect order). A region with >64 inputs can't be represented,
     // so it de-fuses to the node-walk rather than silently dropping
@@ -767,6 +849,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         None,
         &ctx.env,
         &ctx.fusion.abstract_registry,
+        &lifted,
     ) {
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
