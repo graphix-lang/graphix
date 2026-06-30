@@ -4207,7 +4207,7 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     buf: ClifValue,
     field: &Node<R, E>,
-) -> Result<()> {
+) -> Result<ClifValue> {
     let helper_name: &str = match kernel_abi::abi_kind(cx.registry(), field.typ()) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -4248,7 +4248,11 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     } else {
         cx.b.ins().call(push, &[buf, cv.payload]);
     }
-    Ok(())
+    // Return the field's disc so the composite result can AND-reduce STALE
+    // (a composite fires iff any field fired). The TAINT was already forced
+    // above (a tainted field bottomed the kernel), so only the STALE bit is
+    // live here.
+    Ok(cv.disc)
 }
 
 /// Tuple / array literal — build a `Vec<Value>` field-by-field via the
@@ -4264,12 +4268,15 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
     let call = cx.b.ins().call(buf_new, &[cap]);
     let buf = cx.b.inst_results(call)[0];
+    let mut field_discs = Vec::with_capacity(fields.len());
     for f in fields {
-        emit_push_field_node(cx, buf, &f.node)?;
+        field_discs.push(emit_push_field_node(cx, buf, &f.node)?);
     }
     let call = cx.b.ins().call(finalize, &[buf]);
     let payload = cx.b.inst_results(call)[0];
+    // The composite fires iff any field fired → STALE = AND(field stales).
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = propagate_flags(cx.b, disc, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
 
@@ -4295,13 +4302,16 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     let outer_cap = cx.b.ins().iconst(types::I64, indexed.len() as i64);
     let call = cx.b.ins().call(buf_new, &[outer_cap]);
     let outer = cx.b.inst_results(call)[0];
+    let mut field_discs = Vec::with_capacity(indexed.len());
     for (name, field) in indexed {
         let inner_cap = cx.b.ins().iconst(types::I64, 2);
         let call = cx.b.ins().call(buf_new, &[inner_cap]);
         let inner = cx.b.inst_results(call)[0];
         let name_ptr = cx.interned_str(name);
         cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
-        emit_push_field_node(cx, inner, &field.node)?;
+        // The struct fires iff any field VALUE fired — the names are
+        // interned constants, so only the value discs gate freshness.
+        field_discs.push(emit_push_field_node(cx, inner, &field.node)?);
         let call = cx.b.ins().call(finalize, &[inner]);
         let inner_arr = cx.b.inst_results(call)[0];
         cx.b.ins().call(push_array, &[outer, inner_arr]);
@@ -4309,6 +4319,7 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     let call = cx.b.ins().call(finalize, &[outer]);
     let payload = cx.b.inst_results(call)[0];
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = propagate_flags(cx.b, disc, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
 
@@ -4328,8 +4339,14 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     if payloads.is_empty() {
         let new_str = cx.helper("graphix_value_new_string_from_arcstr")?;
         let call = cx.b.ins().call(new_str, &[tag_ptr]);
-        let r = cx.b.inst_results(call);
-        Ok(CompiledExpr::new(r[0], r[1]))
+        let (r0, r1) = {
+            let r = cx.b.inst_results(call);
+            (r[0], r[1])
+        };
+        // A nullary variant `` `Tag `` is a constant — fires once at init.
+        let init = cx.init_flag();
+        let disc = const_stale_gate(cx.b, init, r0);
+        Ok(CompiledExpr::new(disc, r1))
     } else {
         let buf_new = cx.helper("graphix_value_buf_new")?;
         let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
@@ -4339,14 +4356,20 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let call = cx.b.ins().call(buf_new, &[cap]);
         let buf = cx.b.inst_results(call)[0];
         cx.b.ins().call(push_arcstr, &[buf, tag_ptr]);
+        let mut payload_discs = Vec::with_capacity(payloads.len());
         for p in payloads {
-            emit_push_field_node(cx, buf, &p.node)?;
+            payload_discs.push(emit_push_field_node(cx, buf, &p.node)?);
         }
         let call = cx.b.ins().call(finalize, &[buf]);
         let arr = cx.b.inst_results(call)[0];
         let call = cx.b.ins().call(wrap_array, &[arr]);
-        let r = cx.b.inst_results(call);
-        Ok(CompiledExpr::new(r[0], r[1]))
+        let (r0, r1) = {
+            let r = cx.b.inst_results(call);
+            (r[0], r[1])
+        };
+        // A `Tag(a, b)` variant fires iff any payload fired.
+        let disc = propagate_flags(cx.b, r0, &payload_discs);
+        Ok(CompiledExpr::new(disc, r1))
     }
 }
 
@@ -4360,7 +4383,7 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     want: AbiKind,
-) -> Result<(ClifValue, CompositeSource)> {
+) -> Result<(ClifValue, CompositeSource, ClifValue)> {
     if kernel_abi::abi_kind(cx.registry(), source.typ()) != Some(want) {
         return Err(anyhow!(
             "emit_clif: accessor source of type {:?} isn't {want:?}",
@@ -4375,7 +4398,10 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     let cv = source.emit_clif(cx)?;
     let valid = is_untainted(cx.b, cv.disc);
     emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    Ok((cv.payload, src))
+    // The source disc (TAINT now forced clear, STALE preserved) — the
+    // caller AND-folds it: `t.0` / `s.field` / `a[i]` fires iff the source
+    // (and, for `a[i]`, the index) fired.
+    Ok((cv.payload, src, cv.disc))
 }
 
 /// Drop an accessor's temporary Owned source after the element read.
@@ -4403,12 +4429,15 @@ pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
     // Node-carried elem types can be Refs to abstract type names
     // (#218) — resolve before the read classifies by abi_kind.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let (arr_ptr, src) = emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
+    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
     let result =
         compile_element_read(cx.b, arr_ptr, idx_const, &elem_typ, false, cx.ctx)?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
-    Ok(result)
+    // `t.0` fires iff the source tuple fired (the index is a constant); the
+    // element read synthesizes a fresh disc, so the source's STALE gates it.
+    let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
+    Ok(CompiledExpr::new(disc, result.payload))
 }
 
 /// `s.field` — the two-level kv-pair read via the `struct_get_*`
@@ -4423,11 +4452,14 @@ pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Same abstract-Ref resolution as the tuple read (#218).
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let (arr_ptr, src) = emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
     let result = compile_element_read(cx.b, arr_ptr, idx_const, &elem_typ, true, cx.ctx)?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
-    Ok(result)
+    // `s.field` fires iff the source struct fired (the field index is
+    // static); fold the source's STALE onto the fresh element read.
+    let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
+    Ok(CompiledExpr::new(disc, result.payload))
 }
 
 /// `a[i]` / `bytes[i]` — the result type is always `Nullable<elem>`
@@ -4445,7 +4477,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         .filter(|p| p.is_integer())
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
     if matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
-        let (arr_ptr, src) = emit_accessor_source_node(cx, source, AbiKind::Array)?;
+        let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;
@@ -4453,8 +4485,10 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         let r = cx.b.inst_results(call);
         let (rdisc, rpay) = (r[0], r[1]);
         emit_accessor_source_drop(cx, arr_ptr, src)?;
-        // #219: a tainted index taints the result.
-        let disc = propagate_taint(cx.b, rdisc, &[idx_cv.disc]);
+        // #219: a tainted index taints the result. STALE folds the source
+        // array AND the index (`a[i]` fires iff a OR i fired) — both
+        // operands present now that the accessor returns the source disc.
+        let disc = propagate_flags(cx.b, rdisc, &[src_disc, idx_cv.disc]);
         return Ok(CompiledExpr::new(disc, rpay));
     }
     if lowering::is_bytes(source.typ()) {
@@ -4467,8 +4501,10 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
             let r = cx.b.inst_results(call);
             (r[0], r[1])
         };
-        // #219: a tainted bytes operand or index taints the result.
-        let disc = propagate_taint(cx.b, rdisc, &[bcv.disc, idx_cv.disc]);
+        // A tainted bytes operand or index taints the result; STALE folds
+        // too (the index fires iff bytes OR idx fired — both operands
+        // present here, so the AND-reduce is complete).
+        let disc = propagate_flags(cx.b, rdisc, &[bcv.disc, idx_cv.disc]);
         return Ok(CompiledExpr::new(disc, rpay));
     }
     Err(anyhow!(
@@ -4501,8 +4537,9 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
         let r = cx.b.inst_results(call);
         (r[0], r[1])
     };
-    // #219: a tainted map or key taints the lookup result.
-    let disc = propagate_taint(cx.b, rdisc, &[mcv.disc, kcv.disc]);
+    // A tainted map or key taints the lookup result; STALE folds too (the
+    // lookup fires iff map OR key fired — both operands present here).
+    let disc = propagate_flags(cx.b, rdisc, &[mcv.disc, kcv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
@@ -4564,7 +4601,11 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     let call = cx.b.ins().call(helper, &[scv.disc, scv.payload, start_v, end_v, flags_v]);
     let r = cx.b.inst_results(call);
     let (rdisc, rpay) = (r[0], r[1]);
-    let disc = propagate_taint(cx.b, rdisc, &taint_discs);
+    // The slice fires iff the source OR any present bound fired — and
+    // `taint_discs` already holds the source disc plus each present bound,
+    // so STALE folds completely (a const-bound slice fires iff the source
+    // fired).
+    let disc = propagate_flags(cx.b, rdisc, &taint_discs);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
@@ -4781,7 +4822,8 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // inner passes through unchanged. Clean for the clone; the
             // inner's taint re-attaches to the result.
             let (od, op) = ensure_owned_value_src(cx, src, clean, payload)?;
-            let disc = propagate_taint(cx.b, od, &[cv.disc]);
+            // `e?` fires iff its operand fired (single input); STALE folds.
+            let disc = propagate_flags(cx.b, od, &[cv.disc]);
             Ok(CompiledExpr::new(disc, op))
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
@@ -5146,6 +5188,14 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     };
     cx.b.append_block_param(merge, payload_ty); // payload
     let scrut_disc = scrut.disc();
+    // A select FIRES iff its scrutinee OR the taken arm OR a GUARD fired.
+    // The arm result folds in the scrutinee's STALE (AND) — but a guard
+    // reading an EXTERNAL feeder fires the select too, and we don't fold
+    // the guard's disc, so a guarded select must NOT mark its result STALE
+    // (that would wrong-bottom on a guard-only fire). For a guarded select
+    // we force the result FRESH (an over-fire, safe); unguarded selects
+    // get the faithful AND(arm, scrut) fold.
+    let has_guard = sel.arms.iter().any(|(pat, _)| pat.guard.is_some());
     emit_select_arms(
         cx,
         sel,
@@ -5153,7 +5203,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         scrut_kind,
         &scrut_typ,
         &mut |cx, body, mark| {
-            emit_select_value_arm(cx, body, mark, merge_shape, merge, scrut_disc)
+            emit_select_value_arm(cx, body, mark, merge_shape, merge, scrut_disc, has_guard)
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
     )?;
@@ -5564,8 +5614,11 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                         compact_str::format_compact!("__pat{}", id.inner())
                             .as_str()
                             .into();
+                    // The bound payload fires iff its variant scrutinee
+                    // fired — inherit the scrutinee's STALE (and taint), so
+                    // an arm body reading it stays faithful.
                     let base = scalar_disc(cx.b, *prim);
-                    let pdisc = propagate_taint(cx.b, base, &[disc]);
+                    let pdisc = propagate_flags(cx.b, base, &[disc]);
                     bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
                 }
             }
@@ -5614,6 +5667,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge_shape: SelectMerge,
     merge: Block,
     scrut_disc: ClifValue,
+    has_guard: bool,
 ) -> Result<()> {
     use NodeView;
     let body_frozen =
@@ -5711,14 +5765,23 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         }
     };
     // Fold the scrutinee's flags into the arm result. A select FIRES iff
-    // its scrutinee OR its taken arm fired (the arm is sampled when the
-    // scrutinee fires; a live arm body re-fires on its own inputs), so
-    // STALE = AND(arm, scrut) — a stale-CONSTANT arm (`null => true`) must
-    // still fire when the scrutinee fired, else it wrong-bottoms. TAINT =
-    // OR(arm, scrut): a missing scrutinee bottoms regardless of arm. Built
-    // off a cleaned base so the arm's own STALE is ANDed (not ORed) in.
+    // its scrutinee OR its taken arm (OR a guard) fired. TAINT = OR(arm,
+    // scrut): a missing scrutinee bottoms regardless of arm. For STALE,
+    // off a cleaned base (so the arm's own STALE is recombined, not
+    // blindly kept):
+    //  - UNGUARDED: STALE = AND(arm, scrut) — fires iff arm or scrut fired.
+    //    A stale-CONSTANT arm (`null => true`) must still fire when the
+    //    scrutinee fired, else it wrong-bottoms.
+    //  - GUARDED: a guard reading an EXTERNAL feeder fires the select too,
+    //    and we don't fold the guard's disc — so force the result FRESH
+    //    (STALE clear, over-fire, safe) rather than risk a guard-only-fire
+    //    wrong-bottom.
     let base = clean_disc(cx.b, disc);
-    let disc = propagate_flags(cx.b, base, &[disc, scrut_disc]);
+    let disc = if has_guard {
+        propagate_taint(cx.b, base, &[disc, scrut_disc])
+    } else {
+        propagate_flags(cx.b, base, &[disc, scrut_disc])
+    };
     cx.env.truncate(mark);
     cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
     Ok(())
