@@ -24,7 +24,7 @@ use crate::{
     expr::{Expr, ExprId},
     fusion::{
         emit::{
-            TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
+            STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
             unpack_u64_to_value,
         },
         emit_helpers::{
@@ -599,8 +599,10 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
 /// Monomorphized variable-write for a fused `connect` / handler-ful
 /// `?`. Reaches `ctx` through the same `DispatcherState` the DynCall
 /// dispatcher uses and calls `ctx.set_var` — the exact write the
-/// node-walk `Connect::update` / `Qop::update` perform. A `#219`-tainted
-/// disc is skipped (the RHS produced no value this cycle). Never touches
+/// node-walk `Connect::update` / `Qop::update` perform. A disc that is
+/// `#219`-tainted (no value) OR STALE (did not fire this cycle) is
+/// skipped — the write happens only when the RHS FIRED with a value,
+/// mirroring the node-walk's `if let Some(v) = ..` guard. Never touches
 /// the pending flag — a write is a side effect, not an abort.
 ///
 /// SAFETY: same contract as `dispatch_typed` — `state_ptr` is a live
@@ -611,7 +613,7 @@ pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
     disc: u64,
     payload: u64,
 ) {
-    if disc & (TAINT as u64) != 0 {
+    if disc & ((TAINT | STALE) as u64) != 0 {
         return;
     }
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
@@ -966,9 +968,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // when at least one input has produced this cycle, but use
         // cached values for inputs that didn't.
         let mut any_updated = false;
+        // Per-feeder "fired THIS cycle" (vs retained-from-a-prior-cycle).
+        // `self.args[i]` records presence only — a `Some` may be fresh or
+        // cached — so this is the sole source of the STALE distinction the
+        // packing below stamps into each param's disc. Stack-resident:
+        // region inputs are capped at 64 (`try_fuse`), so this never
+        // spills to the heap.
+        let mut fired_this_cycle: smallvec::SmallVec<[bool; 64]> =
+            smallvec::smallvec![false; from.len()];
         for (i, src) in from.iter_mut().enumerate() {
             if let Some(v) = src.update(ctx, event) {
                 self.args[i] = Some(v);
+                fired_this_cycle[i] = true;
                 any_updated = true;
             }
         }
@@ -1071,6 +1082,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let base_value = base_string + k.string_params.len();
         let n_params = base_value + k.value_params.len();
         let mut param_opts: Vec<Option<Value>> = vec![None; n_params];
+        // Per-param-slot "fired this cycle", indexed like `param_opts`.
+        // A present-but-not-fired param packs its disc with STALE (it
+        // carries a cached value that did NOT update this cycle), so the
+        // kernel's firing gates (return / set_var) read the node-walk's
+        // combineLatest firing faithfully. Stack-resident (≤64 inputs).
+        let mut param_fired: smallvec::SmallVec<[bool; 64]> =
+            smallvec::smallvec![false; n_params];
         // Sized to the COMBINED slot table (`dyn_slots.len()`), not just
         // the parent's `fn_params`: `dispatch_typed` reads
         // `fn_arg_values[fn_index]` for EVERY slot, and a callee DynCall's
@@ -1085,20 +1103,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         }
         for (i, kind) in self.arg_layout.iter().enumerate() {
             let v = self.args[i].clone();
+            let fired = fired_this_cycle[i];
+            // Set both `param_opts[slot]` and `param_fired[slot]` for a
+            // value-bearing param; `ArgKind::Fn` carries no disc word, so
+            // it touches neither.
+            let mut put = |slot: usize, val: Option<Value>| {
+                param_opts[slot] = val;
+                param_fired[slot] = fired;
+            };
             match *kind {
-                ArgKind::Prim(idx) => param_opts[idx as usize] = v,
+                ArgKind::Prim(idx) => put(idx as usize, v),
                 ArgKind::Fn(fn_idx) => {
                     if let Some(v) = v {
                         fn_arg_values[fn_idx as usize] = v;
                     }
                 }
-                ArgKind::Array(idx) => param_opts[base_array + idx as usize] = v,
-                ArgKind::Tuple(idx) => param_opts[base_tuple + idx as usize] = v,
-                ArgKind::Struct(idx) => param_opts[base_struct + idx as usize] = v,
-                ArgKind::Variant(idx) => param_opts[base_variant + idx as usize] = v,
-                ArgKind::Nullable(idx) => param_opts[base_nullable + idx as usize] = v,
-                ArgKind::String(idx) => param_opts[base_string + idx as usize] = v,
-                ArgKind::Value(idx) => param_opts[base_value + idx as usize] = v,
+                ArgKind::Array(idx) => put(base_array + idx as usize, v),
+                ArgKind::Tuple(idx) => put(base_tuple + idx as usize, v),
+                ArgKind::Struct(idx) => put(base_struct + idx as usize, v),
+                ArgKind::Variant(idx) => put(base_variant + idx as usize, v),
+                ArgKind::Nullable(idx) => put(base_nullable + idx as usize, v),
+                ArgKind::String(idx) => put(base_string + idx as usize, v),
+                ArgKind::Value(idx) => put(base_value + idx as usize, v),
             }
         }
         // Resolve Binding-source fn slots by reading the BindId out
@@ -1126,6 +1152,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // harmless.
         let wrapped = &self.jit;
         let taint = TAINT as u64;
+        // A present param that did NOT fire this cycle (a retained cached
+        // value) carries STALE: its node-walk `Cached` reported `false`,
+        // so a consumer fires only if some OTHER input fired. A `None`
+        // (never-fired) param keeps TAINT (no value at all).
+        let stale = STALE as u64;
         // (disc, payload) words of a `repr(u64)` Value (16 bytes,
         // layout pinned by the const_assert in `emit_helpers`).
         let bits = |v: &Value| -> (u64, u64) {
@@ -1143,7 +1174,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // the pointer), so these smallvecs live for the rest of `update`.
         let composite = |i: usize| -> (u64, ValArray) {
             match param_opts[i].as_ref() {
-                Some(Value::Array(a)) => (arr_disc, a.clone()),
+                Some(Value::Array(a)) => {
+                    let disc = if param_fired[i] { arr_disc } else { arr_disc | stale };
+                    (disc, a.clone())
+                }
                 None => (arr_disc | taint, empty_arr.clone()),
                 Some(v) => {
                     panic!("Kernel: composite param expected Value::Array, got {v:?}")
@@ -1160,7 +1194,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let string_args: smallvec::SmallVec<[(u64, arcstr::ArcStr); 4]> =
             (0..k.string_params.len())
                 .map(|j| match param_opts[base_string + j].as_ref() {
-                    Some(Value::String(s)) => (str_disc, s.clone()),
+                    Some(Value::String(s)) => {
+                        let d = if param_fired[base_string + j] {
+                            str_disc
+                        } else {
+                            str_disc | stale
+                        };
+                        (d, s.clone())
+                    }
                     None => (str_disc | taint, empty_str.clone()),
                     Some(v) => {
                         panic!("Kernel: string param expected Value::String, got {v:?}")
@@ -1171,7 +1212,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // clone with its real disc, or `Value::Null` + TAINT.
         let value_arg = |i: usize| -> (u64, Value) {
             match param_opts[i].as_ref() {
-                Some(v) => (bits(v).0, v.clone()),
+                Some(v) => {
+                    let d = if param_fired[i] { bits(v).0 } else { bits(v).0 | stale };
+                    (d, v.clone())
+                }
                 None => (null_disc | taint, Value::Null),
             }
         };
@@ -1186,10 +1230,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // two words (disc, payload) each.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
+        // Leading cycle-context word(s): `event.init` (see
+        // `INIT_WIRE_SLOTS`) — the wrapper forwards it to the body where
+        // each constant reads it to gate its STALE bit.
+        for _ in 0..kernel_abi::INIT_WIRE_SLOTS {
+            slots.push(event.init as u64);
+        }
         for (i, p) in k.params.iter().enumerate() {
             let disc = prim_to_value_disc(p.prim) as u64;
             let (disc, payload) = match param_opts[i].as_ref() {
-                Some(v) => (disc, pack_value_to_u64(v, p.prim)),
+                Some(v) => {
+                    let disc = if param_fired[i] { disc } else { disc | stale };
+                    (disc, pack_value_to_u64(v, p.prim))
+                }
                 None => (disc | taint, 0),
             };
             slots.push(disc);

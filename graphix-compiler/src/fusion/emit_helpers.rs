@@ -1211,11 +1211,12 @@ pub unsafe extern "C" fn graphix_dyncall(
 /// Write a reactive variable from inside a JIT'd kernel — the fused
 /// form of `connect` (`x <- expr`) and a handler-ful `?`'s error
 /// delivery. Indirects through the per-call dispatch handle to a
-/// monomorphized `set_var_typed::<R, E>` (which reaches `ctx`). A
-/// `#219`-tainted `disc` (high TAINT bit) means the RHS produced no
-/// value this cycle — the write is skipped, mirroring the node-walk's
-/// `if let Some(v) = ..` guard. Does NOT set the pending flag: a
-/// variable write is a side effect, not a reason to abort the kernel.
+/// monomorphized `set_var_typed::<R, E>` (which reaches `ctx`). A `disc`
+/// that is `#219`-tainted (no value) OR STALE (did not fire this cycle)
+/// means the RHS did not fire with a value — the write is skipped,
+/// mirroring the node-walk's `if let Some(v) = ..` guard. Does NOT set
+/// the pending flag: a variable write is a side effect, not a reason to
+/// abort the kernel.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_set_var(bind_id: u64, disc: u64, payload: u64) {
     let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());

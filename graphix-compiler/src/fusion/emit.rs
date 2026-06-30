@@ -166,6 +166,11 @@ impl JitCtx {
 /// [`KernelSig::abi_params`] — the single source of truth — so this
 /// and [`ensure_declared`] can't drift.
 fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
+    // The leading cycle-context word(s) — currently the `event.init`
+    // flag (see `INIT_WIRE_SLOTS`). Read by every constant's STALE gate.
+    for _ in 0..kernel_abi::INIT_WIRE_SLOTS {
+        sig.params.push(AbiParam::new(types::I64));
+    }
     // Every param is two words: a disc (`I64`, carrying #219 taint) and
     // a payload at its natural CLIF type (a scalar's prim, else `I64`
     // for a pointer / value word).
@@ -408,6 +413,15 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         registry,
         // Parent slots lead the combined `dyn_slots` table.
         fn_index_offset: 0,
+        // A non-recursive published body gates STALE at its return (the
+        // over-fire fix). A RECURSIVE parent (a self-recursive per-slot
+        // HOF callback) emits its returns in tail position
+        // (`emit_body_tail`), which does NOT fold the select scrutinee's
+        // STALE into a constant tail arm — and a recursive kernel produces
+        // a value on EVERY dispatch (it's a function call, not a reactive
+        // sample), so its return must gate TAINT-only, else a stale-
+        // constant base-case arm wrong-bottoms on a non-init dispatch.
+        gate_stale: parent_self_call.is_none(),
     };
     // Assemble the region-wide DynCall slot table: parent `fn_params`
     // first (base 0), then each callee's `fn_params`, in callee order.
@@ -442,6 +456,10 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     type_env,
                     registry,
                     fn_index_offset: base,
+                    // A callee body's result is CONSUMED via a cross-kernel
+                    // call (its disc lost in the scalar return ABI), so it
+                    // gates TAINT only — gating STALE would wrong-bottom.
+                    gate_stale: false,
                 },
             ))
         })
@@ -810,6 +828,19 @@ fn define_wrapper(
         // nullable params load two `I64`s (disc, payload).
         // `d.wire_slot` is the param's starting 8-byte slot offset.
         let mut typed_args = Vec::with_capacity(kernel.abi_param_wire_slots());
+        // The leading cycle-context word(s) (the `event.init` flag) sit
+        // at the front of the args buffer, BEFORE the params — load and
+        // forward them first so `d.wire_slot` (already offset past them
+        // in `abi_params`) indexes the params correctly.
+        for i in 0..kernel_abi::INIT_WIRE_SLOTS {
+            let v = b.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                args_ptr,
+                (i as i32) * 8,
+            );
+            typed_args.push(v);
+        }
         for d in kernel.abi_params() {
             // Every param is two slots: disc (`I64`) then payload at its
             // narrow CLIF type (a scalar's prim, else `I64`). #219 taint
@@ -967,6 +998,11 @@ fn compile_into_function(
     // takes &mut self on the FunctionBuilder, which would conflict
     // with the &[Value] returned from block_params.
     let initial_vals: Vec<ClifValue> = b.block_params(entry).to_vec();
+    // The leading cycle-context word: `event.init` (1 on the kernel's
+    // init cycle). Read by `emit_const_node` to gate each constant's
+    // STALE bit (a constant fires only at init). Lives at wire slot 0,
+    // BEFORE the params (`abi_params` wire slots start past it).
+    let init_flag = initial_vals[0];
     // Bind every kernel param into the env in kind-grouped ABI order
     // (see `KernelSig::abi_params`), reading entry-block params from
     // `initial_vals[d.wire_slot..]`. Composite (array/tuple/struct) and
@@ -1055,6 +1091,7 @@ fn compile_into_function(
     let lower = LowerCtx {
         loop_head,
         param_mark,
+        init_flag,
         callee_refs,
         helper_refs,
         tail_call_slots,
@@ -1069,6 +1106,7 @@ fn compile_into_function(
         type_env: body_emitter.type_env(),
         registry: body_emitter.registry(),
         fn_index_offset: body_emitter.fn_index_offset(),
+        gate_stale_at_return: body_emitter.gate_stale_at_return(),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -1251,6 +1289,11 @@ pub(crate) struct LowerCtx<'a> {
     /// block / select-arm locals (scalar, composite, and variant)
     /// don't leak across iterations.
     param_mark: usize,
+    /// The `event.init` flag (`I64`, 1 on the kernel's init cycle),
+    /// loaded from wire slot 0. Read by [`emit_const_node`] (via
+    /// [`BodyCx::init_flag`]) so a constant carries [`STALE`] on every
+    /// non-init cycle — it fires only at init, like the node-walk.
+    init_flag: ClifValue,
     /// Cross-kernel call sites resolve their callee's `fn_name`
     /// through this map to a CLIF `FuncRef`. The caller must
     /// `declare_func_in_func` each callee's `FuncId` against the
@@ -1331,6 +1374,10 @@ pub(crate) struct LowerCtx<'a> {
     /// classifiers (`abi_kind`/freeze/`resolve_abstract`) via
     /// [`BodyCx::registry`].
     registry: &'a AbstractRegistry,
+    /// Whether [`emit_kernel_return`] gates this body's return on STALE —
+    /// `true` for a published body, `false` for a cross-kernel callee.
+    /// See [`BodyEmitter::gate_stale_at_return`].
+    gate_stale_at_return: bool,
     /// DynCall `fn_index` base for the body being emitted (see
     /// [`BodyEmitter::fn_index_offset`]). Added to every DynCall's
     /// `info.fn_index` at emit so a callee body indexes the region-wide
@@ -1928,6 +1975,24 @@ pub struct CompiledExpr {
 /// input's disc word.
 pub(crate) const TAINT: i64 = 0x4000_0000_0000_0000;
 
+/// The reserved "did not fire this cycle" bit of a [`CompiledExpr`]'s
+/// `disc` (bit 61, inside the JIT tag region [`emit_helpers::TagValue`]
+/// reserves, below [`TAINT`]). Set = "this value carries a CACHED value
+/// from a prior cycle — it did not update this cycle." It is the JIT
+/// twin of the node-walk's `Cached` reporting `false` from `update`
+/// (`node/mod.rs`): a node fires (publishes / writes a variable) only
+/// when at least one of its inputs fired this cycle. Leaves set it
+/// (a non-firing feeder, a constant after init); ops AND-reduce it
+/// ([`propagate_stale`] — a result fires iff ANY operand fired); and the
+/// kernel FORCES freshness at exactly two consumers — the output
+/// ([`emit_kernel_return`], via [`is_not_fresh`]) and a `connect`/`?`
+/// variable write (`set_var_typed`, the runtime twin). Mid-expression a stale
+/// value is USED (its cached payload), never aborted — that is what
+/// makes combineLatest agree with the node-walk. Invariant `TAINT ⟹
+/// STALE` (a value that bottoms this cycle reads as not-fired
+/// downstream) is maintained by [`propagate_flags`].
+pub(crate) const STALE: i64 = 0x2000_0000_0000_0000;
+
 impl CompiledExpr {
     pub fn new(disc: ClifValue, payload: ClifValue) -> Self {
         Self { disc, payload }
@@ -1956,6 +2021,39 @@ fn propagate_taint(
     disc
 }
 
+/// AND-reduce the [`STALE`] bit of `operands` into `base`. The dual of
+/// [`propagate_taint`]: a node FIRES this cycle iff at least one of its
+/// inputs fired, so its result is stale (not-fired) ONLY when EVERY
+/// operand is stale. Folds to `base` for a single operand and, when all
+/// operands carry compile-time-fresh discs, cranelift constant-folds the
+/// whole chain away.
+fn propagate_stale(
+    b: &mut FunctionBuilder,
+    base: ClifValue,
+    operands: &[ClifValue],
+) -> ClifValue {
+    let Some((first, rest)) = operands.split_first() else { return base };
+    let mut all = b.ins().band_imm(*first, STALE);
+    for op in rest {
+        let s = b.ins().band_imm(*op, STALE);
+        all = b.ins().band(all, s);
+    }
+    b.ins().bor(base, all)
+}
+
+/// The result-disc flag combinator for an op that consumes `operands`:
+/// [`TAINT`] is OR-reduced (any consumed bottom taints the result) and
+/// [`STALE`] is AND-reduced (the result fired iff any operand fired).
+/// The single call every binary/unary op uses to build its result disc.
+fn propagate_flags(
+    b: &mut FunctionBuilder,
+    base: ClifValue,
+    operands: &[ClifValue],
+) -> ClifValue {
+    let d = propagate_taint(b, base, operands);
+    propagate_stale(b, d, operands)
+}
+
 /// Fold `base` with a conditional taint: when `cond` (an I8 0/1) is
 /// true, OR [`TAINT`] into the disc. Used where a computed condition
 /// signals bottom (a div0, a `?`-error).
@@ -1977,11 +2075,41 @@ fn is_untainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     b.ins().icmp_imm(IntCC::Equal, t, 0)
 }
 
-/// Strip the [`TAINT`] bit, yielding the real netidx discriminant. Used
-/// before a disc crosses into a netidx-`Value` helper (a tainted disc is
-/// an invalid tag) and before a structural disc compare.
+/// True (I8 bool) iff the disc is NOT fresh — [`TAINT`] (bottom) OR
+/// [`STALE`] (did not fire this cycle) set, i.e. this value did NOT fire
+/// with a value. The firing gate consumed at the kernel-return seam
+/// (`emit_kernel_return` / `emit_force`): the node-walk publishes only
+/// when its output node returned `Some`, so a not-fresh root routes to
+/// the pending path → `Kernel::update` returns `None`. (The `set_var`
+/// write gate is the runtime twin, `set_var_typed` in `kernel.rs`.)
+/// Folds to const-false for a value the emitter proved fresh (an
+/// untainted, non-stale const disc) — no branch on the hot path.
+fn is_not_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
+    let m = b.ins().band_imm(disc, TAINT | STALE);
+    b.ins().icmp_imm(IntCC::NotEqual, m, 0)
+}
+
+/// OR [`STALE`] into a constant's `disc` on every NON-init cycle: a
+/// constant node fires only at init (`event.init`, wire slot 0), then
+/// reports not-fired (a cached value) — the node-walk's `Constant`
+/// `update` returning `Some` once then `None`. `init_flag` is the
+/// kernel's [`LowerCtx::init_flag`] (1 at init).
+fn const_stale_gate(
+    b: &mut FunctionBuilder,
+    init_flag: ClifValue,
+    disc: ClifValue,
+) -> ClifValue {
+    let not_init = b.ins().icmp_imm(IntCC::Equal, init_flag, 0);
+    let staled = b.ins().bor_imm(disc, STALE);
+    b.ins().select(not_init, staled, disc)
+}
+
+/// Strip the [`TAINT`] and [`STALE`] flag bits, yielding the real netidx
+/// discriminant. Used before a disc crosses into a netidx-`Value` helper
+/// (a flagged disc is an invalid tag) and before a structural disc
+/// compare (we compare on the underlying tag, stale or not).
 fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    b.ins().band_imm(disc, !TAINT)
+    b.ins().band_imm(disc, !(TAINT | STALE))
 }
 
 // ─── Env: name → Variable lookup ─────────────────────────────────
@@ -2508,6 +2636,21 @@ trait BodyEmitter {
     fn fn_index_offset(&self) -> u32 {
         0
     }
+
+    /// Whether this body's kernel return gates freshness on STALE (not
+    /// just TAINT). `true` for a PUBLISHED body — the region root / a
+    /// per-slot HOF callback whose result flows through the wrapper to
+    /// `Kernel::update`: a not-fired (stale) result must yield `None`,
+    /// matching the node-walk's "publish only on Some". `false` for a
+    /// cross-kernel CALLEE body: its scalar return ABI carries only the
+    /// payload (no disc), so the caller synthesizes a fresh disc and
+    /// treats the result as fired — gating STALE there would WRONG-BOTTOM
+    /// the whole kernel on a cycle the node-walk publishes the cached
+    /// callee value. A callee keeps the TAINT-only gate (a genuine bottom
+    /// still bottoms). Default `true`.
+    fn gate_stale_at_return(&self) -> bool {
+        true
+    }
 }
 
 /// The body emitter — walks the region-root `Node` via `emit_clif`
@@ -2531,6 +2674,9 @@ struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
     /// `0` for region parents and per-slot callbacks; a callee's
     /// combined-table offset for cross-kernel callee bodies.
     fn_index_offset: u32,
+    /// STALE-gate the return — see [`BodyEmitter::gate_stale_at_return`].
+    /// `true` for the published parent body, `false` for callee bodies.
+    gate_stale: bool,
 }
 
 impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
@@ -2581,6 +2727,10 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
     fn fn_index_offset(&self) -> u32 {
         self.fn_index_offset
     }
+
+    fn gate_stale_at_return(&self) -> bool {
+        self.gate_stale
+    }
 }
 
 /// The open-kernel emission context handed to
@@ -2613,6 +2763,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// FuncRef for a registered `emit_helpers` runtime helper.
     pub fn helper(&self, name: &str) -> Result<FuncRef> {
         self.ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing helper {name}"))
+    }
+
+    /// The `event.init` flag (`I64`, 1 on the kernel's init cycle),
+    /// loaded from wire slot 0 (see [`kernel_abi::INIT_WIRE_SLOTS`]).
+    /// `emit_const_node` reads it to STALE-gate a constant: a constant
+    /// fires only at init, then carries a cached (stale) value.
+    pub fn init_flag(&self) -> ClifValue {
+        self.ctx.init_flag
     }
 
     /// Stable `*const ArcStr` for `s` as an `iconst`, interned lazily
@@ -2770,22 +2928,42 @@ fn pending_exit_block(cx: &mut BodyCx) -> Block {
     }
 }
 
-/// #219 FORCE: if `disc` is tainted, drop the owned result (`drop_fn`),
-/// set pending, run the owned-set cleanup, and jump `pending_exit`;
+/// Return-path FORCE: if `disc` is NOT fresh (tainted bottom OR STALE —
+/// didn't fire this cycle), drop the owned result (`drop_fn`), set
+/// pending, run the owned-set cleanup, and jump `pending_exit`;
 /// otherwise fall through. On return the builder is positioned in the
-/// untainted (valid) block. Folds to no branch for an untainted const
+/// fresh (fired-with-value) block. Folds to no branch for a fresh const
 /// disc.
+/// The return-path "this body must bottom" condition. A PUBLISHED body
+/// (`gate_stale_at_return`) bottoms on not-fresh (`TAINT | STALE`): a
+/// stale root means "didn't fire — don't publish." A cross-kernel CALLEE
+/// body bottoms only on TAINT (genuine bottom): its stale result is
+/// returned and the caller synthesizes a fresh disc, so gating STALE
+/// would wrong-bottom the whole kernel. Both fold to a const when the
+/// disc is proven fresh.
+fn return_bottom_cond(cx: &mut BodyCx, disc: ClifValue) -> ClifValue {
+    if cx.ctx.gate_stale_at_return {
+        is_not_fresh(cx.b, disc)
+    } else {
+        is_tainted(cx.b, disc)
+    }
+}
+
 fn emit_force(
     cx: &mut BodyCx,
     disc: ClifValue,
     drop_fn: impl FnOnce(&mut BodyCx) -> Result<()>,
 ) -> Result<()> {
-    let tainted = is_tainted(cx.b, disc);
+    // The return-path firing gate: a not-fresh result (bottom OR, for a
+    // published body, didn't-fire-this-cycle) drops the owned result and
+    // bottoms the kernel (returns None), matching the node-walk's
+    // "publish only on Some". Folds to no branch for a fresh const disc.
+    let not_fresh = return_bottom_cond(cx, disc);
     let pending_set = cx.helper("graphix_dyncall_set_pending")?;
     let pre = cx.b.create_block();
     let ret = cx.b.create_block();
     let exit = pending_exit_block(cx);
-    cx.b.ins().brif(tainted, pre, &[], ret, &[]);
+    cx.b.ins().brif(not_fresh, pre, &[], ret, &[]);
     cx.b.switch_to_block(pre);
     cx.b.seal_block(pre);
     drop_fn(cx)?;
@@ -2819,17 +2997,18 @@ fn emit_kernel_return(
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
-            // #219: FORCE at the output — a tainted result bottoms (drop the
-            // owned value, set pending, jump `pending_exit`); else fall
-            // through and return. `is_tainted` folds to const-false for an
-            // untainted disc, so a non-bottom return emits no branch.
-            let tainted = is_tainted(cx.b, disc);
+            // FORCE at the output — a not-fresh result (bottom OR didn't
+            // fire this cycle) bottoms the kernel (drop the owned value,
+            // set pending, jump `pending_exit`); else fall through and
+            // return. The gate folds to const-false for a fresh disc, so
+            // a fired return emits no branch.
+            let not_fresh = return_bottom_cond(cx, disc);
             let val_drop = cx.helper("graphix_value_drop")?;
             let pending_set = cx.helper("graphix_dyncall_set_pending")?;
             let pre_pending = cx.b.create_block();
             let ret_block = cx.b.create_block();
             let pending_exit = pending_exit_block(cx);
-            cx.b.ins().brif(tainted, pre_pending, &[], ret_block, &[]);
+            cx.b.ins().brif(not_fresh, pre_pending, &[], ret_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
             cx.b.ins().call(val_drop, &[disc, payload]);
@@ -2883,14 +3062,15 @@ fn emit_kernel_return(
             cx.b.ins().return_(&[cv.payload]);
         }
         Some(AbiKind::Scalar(_)) => {
-            // #219: FORCE — a tainted scalar bottoms; else return. Folds to
-            // an unconditional return when the disc is an untainted const.
-            let tainted = is_tainted(cx.b, cv.disc);
+            // FORCE — a not-fresh scalar (bottom OR, for a published body,
+            // didn't fire this cycle) bottoms; else return. Folds to an
+            // unconditional return when the disc is a fresh const.
+            let not_fresh = return_bottom_cond(cx, cv.disc);
             let pending_set = cx.helper("graphix_dyncall_set_pending")?;
             let pre_pending = cx.b.create_block();
             let ret_block = cx.b.create_block();
             let pending_exit = pending_exit_block(cx);
-            cx.b.ins().brif(tainted, pre_pending, &[], ret_block, &[]);
+            cx.b.ins().brif(not_fresh, pre_pending, &[], ret_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
             cx.b.ins().call(pending_set, &[]);
@@ -2945,9 +3125,14 @@ pub(crate) fn emit_const_node(
     value: &Value,
     typ: &Type,
 ) -> Result<CompiledExpr> {
+    // A literal fires only at init, then carries a cached (stale) value
+    // (see `const_stale_gate`). The disc gate is the only flag change —
+    // a constant is never tainted.
+    let init = cx.init_flag();
     match kernel_abi::abi_kind(cx.registry(), typ) {
         Some(AbiKind::Scalar(prim)) => {
             let disc = scalar_disc(cx.b, prim);
+            let disc = const_stale_gate(cx.b, init, disc);
             Ok(CompiledExpr::new(disc, compile_const(cx.b, value, prim)?))
         }
         Some(AbiKind::String) => {
@@ -2962,14 +3147,19 @@ pub(crate) fn emit_const_node(
             let call = cx.b.ins().call(clone, &[ptr]);
             let payload = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            let disc = const_stale_gate(cx.b, init, disc);
             Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Value) => {
             let ptr = cx.interned_value(value);
             let clone = cx.helper("graphix_value_clone_from_static")?;
             let call = cx.b.ins().call(clone, &[ptr]);
-            let r = cx.b.inst_results(call);
-            Ok(CompiledExpr::new(r[0], r[1]))
+            let (r0, r1) = {
+                let r = cx.b.inst_results(call);
+                (r[0], r[1])
+            };
+            let disc = const_stale_gate(cx.b, init, r0);
+            Ok(CompiledExpr::new(disc, r1))
         }
         other => {
             Err(anyhow!("emit_clif: Constant of shape {other:?} — not yet supported"))
@@ -3084,7 +3274,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             let r = cx.b.inst_results(call);
             (r[0], r[1])
         };
-        let disc = propagate_taint(cx.b, rdisc, &[lcv.disc, rcv.disc]);
+        let disc = propagate_flags(cx.b, rdisc, &[lcv.disc, rcv.disc]);
         return Ok(CompiledExpr::new(disc, rpay));
     }
     let lcv = lhs.emit_clif(cx)?;
@@ -3127,7 +3317,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         let value = compile_bin(cx.b, op, prim, l, safe_r)?;
         // #219: a div0 / signed-MIN÷-1 taints the result; so does a
         // tainted operand. `is_tainted` resolves at the output.
-        let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+        let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
         let taint_word = cx.b.ins().iconst(types::I64, TAINT);
         let zero = cx.b.ins().iconst(types::I64, 0);
         let bad_taint = cx.b.ins().select(bad, taint_word, zero);
@@ -3135,7 +3325,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         return Ok(CompiledExpr::new(disc, value));
     }
     let value = compile_bin(cx.b, op, prim, l, r)?;
-    let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+    let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
     Ok(CompiledExpr::new(disc, value))
 }
 
@@ -3171,7 +3361,7 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
         (r[0], r[1])
     };
     // #219: propagate operand taint into the checked-arith result Value.
-    let disc = propagate_taint(cx.b, rdisc, &[lcv.disc, rcv.disc]);
+    let disc = propagate_flags(cx.b, rdisc, &[lcv.disc, rcv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
@@ -3199,7 +3389,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         let rcv = rhs.emit_clif(cx)?;
         let value = compile_cmp(cx.b, op, lp, lcv.payload, rcv.payload);
         let base = scalar_disc(cx.b, PrimType::Bool);
-        let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+        let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
         return Ok(CompiledExpr::new(disc, value));
     }
     let ne = match op {
@@ -3237,7 +3427,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     };
     // #219: a tainted operand taints the bool result.
     let base = scalar_disc(cx.b, PrimType::Bool);
-    let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+    let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
     Ok(CompiledExpr::new(disc, result))
 }
 
@@ -3256,7 +3446,7 @@ pub(crate) fn emit_bool_node<R: Rt, E: UserEvent>(
         BoolOp::Or => cx.b.ins().bor(lcv.payload, rcv.payload),
     };
     let base = scalar_disc(cx.b, PrimType::Bool);
-    let disc = propagate_taint(cx.b, base, &[lcv.disc, rcv.disc]);
+    let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
     Ok(CompiledExpr::new(disc, value))
 }
 
@@ -3269,7 +3459,7 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
     let one = cx.b.ins().iconst(types::I8, 1);
     let value = cx.b.ins().bxor(cv.payload, one);
     let base = scalar_disc(cx.b, PrimType::Bool);
-    let disc = propagate_taint(cx.b, base, &[cv.disc]);
+    let disc = propagate_flags(cx.b, base, &[cv.disc]);
     Ok(CompiledExpr::new(disc, value))
 }
 
@@ -3293,7 +3483,7 @@ pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
         cx.b.ins().fneg(cv.payload)
     };
     let base = scalar_disc(cx.b, prim);
-    let disc = propagate_taint(cx.b, base, &[cv.disc]);
+    let disc = propagate_flags(cx.b, base, &[cv.disc]);
     Ok(CompiledExpr::new(disc, value))
 }
 
@@ -3317,7 +3507,7 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
             let cv = inner.emit_clif(cx)?;
             let value = compile_cast(cx.b, cv.payload, src, tgt);
             let base = scalar_disc(cx.b, tgt);
-            let disc = propagate_taint(cx.b, base, &[cv.disc]);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
             return Ok(CompiledExpr::new(disc, value));
         }
     }
@@ -3445,7 +3635,7 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     let call = cx.b.ins().call(finalize, &[buf]);
     let payload = cx.b.inst_results(call)[0];
     let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
-    let disc = propagate_taint(cx.b, base, &part_discs);
+    let disc = propagate_flags(cx.b, base, &part_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
 
@@ -4412,7 +4602,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             }
             let value = cast_u64_to_prim(cx.b, payload, p);
             let base = scalar_disc(cx.b, p);
-            let disc = propagate_taint(cx.b, base, &[cv.disc]);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
             let disc = taint_if(cx.b, disc, is_err);
             Ok(CompiledExpr::new(disc, value))
         }
@@ -4482,7 +4672,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                 }
             };
             let base = cx.b.ins().iconst(types::I64, base_disc);
-            let disc = propagate_taint(cx.b, base, &[cv.disc]);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
             Ok(CompiledExpr::new(disc, v))
         }
         // Value-shape success. On `Error` disc, drop the owned inner,
@@ -4715,7 +4905,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // resolved at the kernel output.
             let value = cast_u64_to_prim(cx.b, raw0, p);
             let base = scalar_disc(cx.b, p);
-            let disc = propagate_taint(cx.b, base, &arg_taint_discs);
+            let disc = propagate_flags(cx.b, base, &arg_taint_discs);
             Ok(CompiledExpr::new(disc, value))
         }
         Some(AbiKind::Unit) => {
@@ -5453,9 +5643,15 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             (cv.disc, cv.payload)
         }
     };
-    // #219: OR the scrutinee's taint into the arm result — a missing
-    // scrutinee bottoms the select regardless of which arm "matched".
-    let disc = propagate_taint(cx.b, disc, &[scrut_disc]);
+    // Fold the scrutinee's flags into the arm result. A select FIRES iff
+    // its scrutinee OR its taken arm fired (the arm is sampled when the
+    // scrutinee fires; a live arm body re-fires on its own inputs), so
+    // STALE = AND(arm, scrut) — a stale-CONSTANT arm (`null => true`) must
+    // still fire when the scrutinee fired, else it wrong-bottoms. TAINT =
+    // OR(arm, scrut): a missing scrutinee bottoms regardless of arm. Built
+    // off a cleaned base so the arm's own STALE is ANDed (not ORed) in.
+    let base = clean_disc(cx.b, disc);
+    let disc = propagate_flags(cx.b, base, &[disc, scrut_disc]);
     cx.env.truncate(mark);
     cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
     Ok(())
@@ -5746,8 +5942,15 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let is_kind = |s: &&LambdaCallSlot<R, E>, k: AbiKind| {
         kernel_abi::abi_kind(reg, s.typ()) == Some(k)
     };
-    let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len() * 2);
+    let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len() * 2 + 1);
     let mut drops: Vec<CallArgDrop> = Vec::new();
+    // Leading cycle-context word(s): forward THIS kernel's `event.init`
+    // to the callee (its constants fire when this region inits) — every
+    // kernel signature carries the leading init slot (`push_abi_params`),
+    // so a cross-kernel call must pass it or the call mismatches the sig.
+    for _ in 0..kernel_abi::INIT_WIRE_SLOTS {
+        clif_args.push(cx.init_flag());
+    }
     // Marshal in canonical `abi_params` order — scalars, then composites
     // (array/tuple/struct), then value-shape (variant/nullable) — two
     // words (disc, payload) each. An Owned composite/value Arg is dropped
