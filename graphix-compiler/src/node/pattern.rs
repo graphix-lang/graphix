@@ -545,14 +545,19 @@ impl StructPatternNode {
             },
             Self::SliceSuffix { all, head, suffix } => match v {
                 Value::Array(a) if a.len() >= suffix.len() => {
+                    // The suffix patterns match the LAST `suffix.len()`
+                    // elements (`is_match` skips `len - N`), so the binds
+                    // must read from the same offset — and `head` is
+                    // everything BEFORE the suffix.
+                    let split = a.len() - suffix.len();
                     if let Some(id) = all {
                         f(*id, v.clone())
                     }
                     if let Some(id) = head {
-                        let ss = a.subslice(..suffix.len()).unwrap();
+                        let ss = a.subslice(..split).unwrap();
                         f(*id, Value::Array(ss))
                     }
-                    let tail = a.subslice(suffix.len()..).unwrap();
+                    let tail = a.subslice(split..).unwrap();
                     for (j, n) in suffix.iter().enumerate() {
                         n.bind(&tail[j], f)
                     }

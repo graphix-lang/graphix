@@ -5258,6 +5258,12 @@ enum SelectMerge {
 enum SelectScrut {
     Scalar { disc: ClifValue, value: ClifValue, prim: PrimType },
     Value { disc: ClifValue, payload: ClifValue },
+    /// A BORROWED array/tuple/struct scrutinee: the `*const ValArray`
+    /// stays live across the whole arm chain with no drop (the env slot
+    /// owns it — the owned-producer case de-fuses in
+    /// [`classify_select_scrutinee`]). Structural patterns
+    /// (tuple/struct/slice) test and read elements through it.
+    Composite { disc: ClifValue, ptr: ClifValue },
     Opaque { disc: ClifValue },
 }
 
@@ -5266,9 +5272,50 @@ impl SelectScrut {
         match self {
             SelectScrut::Scalar { disc, .. }
             | SelectScrut::Value { disc, .. }
+            | SelectScrut::Composite { disc, .. }
             | SelectScrut::Opaque { disc } => *disc,
         }
     }
+}
+
+/// Where a scalar pattern leaf lives in the composite scrutinee.
+#[derive(Clone, Copy)]
+enum ElemIdx {
+    /// `a[idx]` — tuple / slice / slice-prefix leaves.
+    FromStart(usize),
+    /// `a[len - back]` — slice-suffix leaves (`len` is the scrutinee
+    /// length SSA value read by the arm's structure condition).
+    FromEnd { back: usize, len: ClifValue },
+    /// `a[idx][1]` — a struct field's value (idx is the canonically-
+    /// sorted field index resolved by typecheck).
+    StructField(usize),
+}
+
+/// Read one scalar pattern leaf off the borrowed composite scrutinee.
+/// Callers MUST have proven the arm's length test first — under a
+/// tainted (missing) scrutinee the placeholder is an EMPTY array, and
+/// these reads are unchecked.
+fn read_scrut_elem(
+    cx: &mut BodyCx,
+    ptr: ClifValue,
+    idx: ElemIdx,
+    prim: PrimType,
+) -> Result<ClifValue> {
+    let (helper_name, idx_v) = match idx {
+        ElemIdx::FromStart(j) => {
+            (valarray_get_helper(prim)?, cx.b.ins().iconst(types::I64, j as i64))
+        }
+        ElemIdx::FromEnd { back, len } => {
+            let b = cx.b.ins().iconst(types::I64, back as i64);
+            (valarray_get_helper(prim)?, cx.b.ins().isub(len, b))
+        }
+        ElemIdx::StructField(i) => {
+            (struct_get_helper(prim)?, cx.b.ins().iconst(types::I64, i as i64))
+        }
+    };
+    let helper = cx.helper(helper_name)?;
+    let call = cx.b.ins().call(helper, &[ptr, idx_v]);
+    Ok(cx.b.inst_results(call)[0])
 }
 
 /// A pattern binding to install in the arm's matched region, under the
@@ -5283,6 +5330,12 @@ enum SelectArmBind {
     /// never in the fall-through chain. (The node-walk evaluates binds
     /// only after the pattern matches — we follow the node-walk.)
     Payload { id: BindId, idx: usize, prim: PrimType },
+    /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
+    /// composite scrutinee. Emitted inside the matched region: the
+    /// arm's length test (the structure condition) is the memory-safety
+    /// gate — a tainted scrutinee's empty placeholder fails it, so the
+    /// unchecked element read never touches the placeholder.
+    Elem { id: BindId, idx: ElemIdx, prim: PrimType },
 }
 
 /// `select` at expression position — the Node twin of
@@ -5451,12 +5504,25 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             let cv = sel.arg.node.emit_clif(cx)?;
             SelectScrut::Value { disc: cv.disc, payload: cv.payload }
         }
-        // String / composite scrutinees support only Ignore / guard
-        // arms (no condition can test them); we read the scrutinee only
-        // for its disc (#219 taint), borrowed so there's no drop path
-        // across the arm chain — except a String read CLONES, so drop
-        // that clone immediately (we keep only the disc).
-        AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
+        // A composite scrutinee keeps its BORROWED pointer live across
+        // the arm chain (no drop path — the env slot owns it, so the
+        // owned-producer case de-fuses): structural patterns
+        // (tuple/struct/slice) test and read elements through it.
+        AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
+            if node_composite_source(&sel.arg.node) != CompositeSource::Borrowed {
+                return Err(anyhow!(
+                    "emit_clif: owned composite select scrutinee — no \
+                     drop path across the arm chain"
+                ));
+            }
+            let cv = sel.arg.node.emit_clif(cx)?;
+            SelectScrut::Composite { disc: cv.disc, ptr: cv.payload }
+        }
+        // A String scrutinee supports only Ignore / guard arms (no
+        // condition can test it); we read it only for its disc (#219
+        // taint) — a String read CLONES, so drop that clone immediately
+        // (we keep only the disc).
+        AbiKind::String => {
             if node_composite_source(&sel.arg.node) != CompositeSource::Borrowed {
                 return Err(anyhow!(
                     "emit_clif: owned opaque select scrutinee — no drop \
@@ -5464,10 +5530,8 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
                 ));
             }
             let cv = sel.arg.node.emit_clif(cx)?;
-            if matches!(scrut_kind, AbiKind::String) {
-                let drop = cx.helper("graphix_arcstr_drop")?;
-                cx.b.ins().call(drop, &[cv.payload]);
-            }
+            let drop = cx.helper("graphix_arcstr_drop")?;
+            cx.b.ins().call(drop, &[cv.payload]);
             SelectScrut::Opaque { disc: cv.disc }
         }
         AbiKind::Unit | AbiKind::Null => {
@@ -5475,6 +5539,237 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
         }
     };
     Ok((scrut, scrut_kind, scrut_typ))
+}
+
+/// Structure condition + scalar leaf binds for a tuple/struct/slice
+/// pattern over a BORROWED composite scrutinee. Mirrors
+/// `StructPatternNode::is_match` / `bind` (node/pattern.rs — the
+/// canonical semantics):
+///
+/// - Slice (tuple or array literal pattern): `len == N`, leaves at
+///   `a[j]`;
+/// - SlicePrefix: `len >= N`, leaves at `a[j]`;
+/// - SliceSuffix: `len >= N`, leaves at `a[len - (N - j)]`;
+/// - Struct: `len >= N`, leaf values at `a[i][1]` (canonically-sorted
+///   field index from typecheck).
+///
+/// The LENGTH test is also the taint gate: a missing (#219) composite
+/// input is an EMPTY placeholder array, so every length test with
+/// `N > 0` fails under taint and the unchecked element reads (emitted
+/// after the test) never touch the placeholder — the chain falls
+/// through to the final-arm miss trap, which produces the tainted
+/// bottom. Literal leaves are tested in a second block AFTER the
+/// length branch (same reason); `Bind` leaves are recorded in `binds`
+/// and read in the matched region.
+///
+/// Deferred (Err → the select de-fuses, node-walks): whole-composite
+/// `@` bindings, named prefix/suffix rest bindings (both allocate an
+/// owned composite local inside the arm — `JitEnv::truncate` emits no
+/// drops, so they'd leak on the normal path), non-scalar leaves, and
+/// nested structural leaves.
+fn emit_composite_pattern_cond(
+    cx: &mut BodyCx,
+    ptr: ClifValue,
+    scrut_typ: &Type,
+    pat: &StructPatternNode,
+    fail: Block,
+    binds: &mut Vec<SelectArmBind>,
+) -> Result<ClifValue> {
+    // The length read up front (safe on the empty taint placeholder) —
+    // suffix leaves index relative to it.
+    let len_helper = cx.helper("graphix_valarray_len")?;
+    let call = cx.b.ins().call(len_helper, &[ptr]);
+    let len = cx.b.inst_results(call)[0];
+    // (leaf position, sub-pattern, element type) + the length compare.
+    let styp = resolve_node_typ(cx.ctx, scrut_typ);
+    struct LeafSpec<'p> {
+        idx: ElemIdx,
+        sub: &'p StructPatternNode,
+        typ: Type,
+    }
+    let (leaves, len_cc, n): (Vec<LeafSpec>, IntCC, usize) = match pat {
+        StructPatternNode::Slice { tuple, all, binds: pbinds } => {
+            if all.is_some() {
+                return Err(anyhow!(
+                    "emit_clif: whole-slice @ binding not lowerable (owned \
+                     composite arm local)"
+                ));
+            }
+            let elt = |j: usize| -> Result<Type> {
+                if *tuple {
+                    match &styp {
+                        Type::Tuple(elts) if elts.len() == pbinds.len() => {
+                            Ok(elts[j].clone())
+                        }
+                        t => Err(anyhow!(
+                            "emit_clif: tuple pattern over non-tuple \
+                             scrutinee {t:?}"
+                        )),
+                    }
+                } else {
+                    match &styp {
+                        Type::Array(t) => Ok((**t).clone()),
+                        t => Err(anyhow!(
+                            "emit_clif: slice pattern over non-array \
+                             scrutinee {t:?}"
+                        )),
+                    }
+                }
+            };
+            let leaves = pbinds
+                .iter()
+                .enumerate()
+                .map(|(j, sub)| {
+                    Ok(LeafSpec { idx: ElemIdx::FromStart(j), sub, typ: elt(j)? })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (leaves, IntCC::Equal, pbinds.len())
+        }
+        StructPatternNode::SlicePrefix { all, prefix, tail } => {
+            if all.is_some() || tail.is_some() {
+                return Err(anyhow!(
+                    "emit_clif: slice-prefix @/rest binding not lowerable \
+                     (owned subslice arm local)"
+                ));
+            }
+            let t = match &styp {
+                Type::Array(t) => (**t).clone(),
+                t => {
+                    return Err(anyhow!(
+                        "emit_clif: slice pattern over non-array scrutinee {t:?}"
+                    ));
+                }
+            };
+            let leaves = prefix
+                .iter()
+                .enumerate()
+                .map(|(j, sub)| LeafSpec {
+                    idx: ElemIdx::FromStart(j),
+                    sub,
+                    typ: t.clone(),
+                })
+                .collect();
+            (leaves, IntCC::SignedGreaterThanOrEqual, prefix.len())
+        }
+        StructPatternNode::SliceSuffix { all, head, suffix } => {
+            if all.is_some() || head.is_some() {
+                return Err(anyhow!(
+                    "emit_clif: slice-suffix @/head binding not lowerable \
+                     (owned subslice arm local)"
+                ));
+            }
+            let t = match &styp {
+                Type::Array(t) => (**t).clone(),
+                t => {
+                    return Err(anyhow!(
+                        "emit_clif: slice pattern over non-array scrutinee {t:?}"
+                    ));
+                }
+            };
+            // suffix leaf j lives at a[len - (N - j)].
+            let n = suffix.len();
+            let leaves = suffix
+                .iter()
+                .enumerate()
+                .map(|(j, sub)| LeafSpec {
+                    idx: ElemIdx::FromEnd { back: n - j, len },
+                    sub,
+                    typ: t.clone(),
+                })
+                .collect();
+            (leaves, IntCC::SignedGreaterThanOrEqual, n)
+        }
+        StructPatternNode::Struct { all, binds: sbinds } => {
+            if all.is_some() {
+                return Err(anyhow!(
+                    "emit_clif: whole-struct @ binding not lowerable (owned \
+                     composite arm local)"
+                ));
+            }
+            let flds = match &styp {
+                Type::Struct(flds) => flds,
+                t => {
+                    return Err(anyhow!(
+                        "emit_clif: struct pattern over non-struct scrutinee {t:?}"
+                    ));
+                }
+            };
+            let leaves = sbinds
+                .iter()
+                .map(|(_, i, sub)| {
+                    let typ = flds
+                        .get(*i)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "emit_clif: struct pattern field index {i} out \
+                                 of range"
+                            )
+                        })?;
+                    Ok(LeafSpec { idx: ElemIdx::StructField(*i), sub, typ })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (leaves, IntCC::SignedGreaterThanOrEqual, sbinds.len())
+        }
+        _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
+    };
+    // Classify each leaf BEFORE emitting anything (an Err mid-emission
+    // would abandon the kernel build — fine — but classify-first keeps
+    // the failure cheap and the emission below straight-line).
+    let mut lit_leaves: Vec<(ElemIdx, PrimType, &Value)> = Vec::new();
+    for leaf in &leaves {
+        match leaf.sub {
+            StructPatternNode::Ignore => {}
+            StructPatternNode::Bind(id) => {
+                let prim =
+                    kernel_abi::scalar_prim(cx.registry(), &leaf.typ).ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: non-scalar select pattern leaf {:?}",
+                            leaf.typ
+                        )
+                    })?;
+                binds.push(SelectArmBind::Elem { id: *id, idx: leaf.idx, prim });
+            }
+            StructPatternNode::Literal(v) => {
+                let prim = kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
+                    anyhow!("emit_clif: non-scalar literal pattern leaf {v:?}")
+                })?;
+                lit_leaves.push((leaf.idx, prim, v));
+            }
+            StructPatternNode::Slice { .. }
+            | StructPatternNode::SlicePrefix { .. }
+            | StructPatternNode::SliceSuffix { .. }
+            | StructPatternNode::Struct { .. }
+            | StructPatternNode::Variant { .. } => {
+                return Err(anyhow!(
+                    "emit_clif: nested select pattern leaf not lowerable"
+                ));
+            }
+        }
+    }
+    // The length test.
+    let n_c = cx.b.ins().iconst(types::I64, n as i64);
+    let len_ok = cx.b.ins().icmp(len_cc, len, n_c);
+    if lit_leaves.is_empty() {
+        return Ok(len_ok);
+    }
+    // Literal leaves test in a second block gated by the length branch
+    // (the reads are unchecked — see the taint note above).
+    let leaf_test = cx.b.create_block();
+    cx.b.ins().brif(len_ok, leaf_test, &[], fail, &[]);
+    cx.b.switch_to_block(leaf_test);
+    cx.b.seal_block(leaf_test);
+    let mut cond: Option<ClifValue> = None;
+    for (idx, prim, v) in lit_leaves {
+        let elem = read_scrut_elem(cx, ptr, idx, prim)?;
+        let lit = compile_const(cx.b, v, prim)?;
+        let c = compile_cmp(cx.b, CmpOp::Eq, prim, elem, lit);
+        cond = Some(match cond {
+            None => c,
+            Some(p) => cx.b.ins().band(p, c),
+        });
+    }
+    Ok(cond.unwrap())
 }
 
 /// The shared select arm chain: pattern conditions (type predicate /
@@ -5583,6 +5878,19 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
             }
         };
+        // A composite structural pattern (tuple/struct/slice) stages its
+        // condition across blocks (length branch, then literal-leaf
+        // tests), so its fail edge must exist BEFORE the condition is
+        // emitted — pre-create it (block creation order is free).
+        let composite_structural = matches!(
+            &pat.structure_predicate,
+            StructPatternNode::Slice { .. }
+                | StructPatternNode::SlicePrefix { .. }
+                | StructPatternNode::SliceSuffix { .. }
+                | StructPatternNode::Struct { .. }
+        ) && matches!(scrut, SelectScrut::Composite { .. });
+        let early_fail =
+            if composite_structural { Some(cx.b.create_block()) } else { None };
         // Structure condition + the binds to install once matched.
         let mut binds: Vec<SelectArmBind> = Vec::new();
         let scond: Option<ClifValue> = match &pat.structure_predicate {
@@ -5592,7 +5900,9 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     binds.push(SelectArmBind::Scrut(*id));
                     None
                 }
-                SelectScrut::Value { .. } | SelectScrut::Opaque { .. } => {
+                SelectScrut::Value { .. }
+                | SelectScrut::Composite { .. }
+                | SelectScrut::Opaque { .. } => {
                     return Err(anyhow!(
                         "emit_clif: non-scalar scrutinee bind pattern not \
                          yet lowerable"
@@ -5691,15 +6001,33 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                 let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr]);
                 Some(cx.b.inst_results(call)[0])
             }
-            StructPatternNode::Slice { .. }
+            p @ (StructPatternNode::Slice { .. }
             | StructPatternNode::SlicePrefix { .. }
             | StructPatternNode::SliceSuffix { .. }
-            | StructPatternNode::Struct { .. } => {
-                return Err(anyhow!(
-                    "emit_clif: slice/tuple/struct select pattern not \
-                     yet lowerable"
-                ));
-            }
+            | StructPatternNode::Struct { .. }) => match scrut {
+                SelectScrut::Composite { ptr, .. } => {
+                    if tcond.is_some() {
+                        return Err(anyhow!(
+                            "emit_clif: explicit type predicate on a \
+                             structural composite pattern not lowerable"
+                        ));
+                    }
+                    Some(emit_composite_pattern_cond(
+                        cx,
+                        ptr,
+                        scrut_typ,
+                        p,
+                        early_fail.unwrap(),
+                        &mut binds,
+                    )?)
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "emit_clif: slice/tuple/struct select pattern over a \
+                         non-composite scrutinee not lowerable"
+                    ));
+                }
+            },
         };
         let pcond = match (tcond, scond) {
             (None, None) => None,
@@ -5722,8 +6050,11 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
         // final fail block runs `emit_miss` (a tainted bottom), which is
         // dead code for an exhaustive non-tainted scrutinee.
         let matched = cx.b.create_block();
-        let fail: Option<Block> =
-            if pcond.is_some() || has_guard { Some(cx.b.create_block()) } else { None };
+        let fail: Option<Block> = match early_fail {
+            Some(f) => Some(f),
+            None if pcond.is_some() || has_guard => Some(cx.b.create_block()),
+            None => None,
+        };
         match pcond {
             Some(c) => {
                 cx.b.ins().brif(c, matched, &[], fail.unwrap(), &[]);
@@ -5772,6 +6103,28 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     // The bound payload fires iff its variant scrutinee
                     // fired — inherit the scrutinee's STALE (and taint), so
                     // an arm body reading it stays faithful.
+                    let base = scalar_disc(cx.b, *prim);
+                    let pdisc = propagate_flags(cx.b, base, &[disc]);
+                    bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
+                }
+                SelectArmBind::Elem { id, idx, prim } => {
+                    let SelectScrut::Composite { disc, ptr } = scrut else {
+                        return Err(anyhow!(
+                            "emit_clif: element bind without a composite \
+                             scrutinee"
+                        ));
+                    };
+                    // Safe here: the arm's length test (the structure
+                    // condition guarding this matched region) proved the
+                    // element exists — a tainted scrutinee's empty
+                    // placeholder failed it.
+                    let v = read_scrut_elem(cx, ptr, *idx, *prim)?;
+                    let name: ArcStr =
+                        compact_str::format_compact!("__pat{}", id.inner())
+                            .as_str()
+                            .into();
+                    // The bound leaf fires iff its composite scrutinee
+                    // fired — inherit the scrutinee's STALE (and taint).
                     let base = scalar_disc(cx.b, *prim);
                     let pdisc = propagate_flags(cx.b, base, &[disc]);
                     bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));

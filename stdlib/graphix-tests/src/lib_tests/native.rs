@@ -231,6 +231,36 @@ async fn native_hof_string_element_ok() {
     );
 }
 
+// `select` structural destructuring (Phase 4): a tuple pattern over a
+// borrowed scrutinee fuses — the arm's length test + scalar leaf reads
+// compile into the kernel.
+#[tokio::test]
+async fn native_select_destructure_ok() {
+    let prog = "#[native]\n{ let t = (3, 4); select t { (0, y) => y, (x, y) => x + y } }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "a tuple-destructuring select must fully fuse now, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// ...and the teeth for the DEFERRED case: a NAMED rest binding
+// (`[x, rest..]`) allocates an owned subslice arm local (JitEnv::truncate
+// emits no drops), so that select still de-fuses — `#[native]` on it must
+// be a compile error until that lands.
+#[tokio::test]
+async fn native_select_named_rest_defuses() {
+    let prog = "{ let a = [1, 2, 3]; \
+                #[native] select a { [x, rest..] => x + array::len(rest), _ => 0 } }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_err(),
+        "a named-rest select must still de-fuse (owned subslice arm local), got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")

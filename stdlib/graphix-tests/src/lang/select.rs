@@ -174,3 +174,205 @@ const MISSING_ON_DEAD_ARM_STRING: &str = r#"
 run!(missing_on_dead_arm_string, MISSING_ON_DEAD_ARM_STRING, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "live")
 });
+
+// =============================================================================
+// Phase 4 — structural destructuring over a BORROWED composite scrutinee
+// (tuple / struct / slice patterns with SCALAR leaves) fuses. The length
+// test in each arm's structure condition doubles as the #219 taint gate
+// (a missing composite input is an EMPTY placeholder, so it misses every
+// length-tested arm and the miss trap yields the tainted bottom).
+// Deferred (still de-fuse): whole-composite/@ binds, NAMED rest binds,
+// nested structural leaves (nestedmatch3), owned-producer scrutinees.
+
+const SELECT_TUPLE_DESTRUCTURE: &str = r#"
+{
+  let t = (3, 4);
+  select t {
+    (0, y) => y,
+    (x, y) => x + y
+  }
+}
+"#;
+
+run!(select_tuple_destructure, SELECT_TUPLE_DESTRUCTURE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+});
+
+const SELECT_TUPLE_LITERAL_ARM: &str = r#"
+{
+  let t = (0, 9);
+  select t {
+    (0, y) => y,
+    (x, y) => x + y
+  }
+}
+"#;
+
+run!(select_tuple_literal_arm, SELECT_TUPLE_LITERAL_ARM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(9)))
+});
+
+const SELECT_TUPLE_GUARD: &str = r#"
+{
+  let t = (5, 2);
+  select t {
+    (x, y) if x > y => x - y,
+    (x, y) => y - x
+  }
+}
+"#;
+
+run!(select_tuple_guard, SELECT_TUPLE_GUARD, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+});
+
+const SELECT_STRUCT_DESTRUCTURE: &str = r#"
+{
+  let p = { x: 0, y: 42 };
+  select p {
+    { x: 0, y } => y,
+    { x, y } => x + y
+  }
+}
+"#;
+
+run!(select_struct_destructure, SELECT_STRUCT_DESTRUCTURE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+const SELECT_SLICE_LEN_DISPATCH: &str = r#"
+{
+  let a = [10, 20];
+  select a {
+    [x] => x,
+    [x, y] => x + y,
+    _ => 0
+  }
+}
+"#;
+
+run!(select_slice_len_dispatch, SELECT_SLICE_LEN_DISPATCH, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(30)))
+});
+
+// Wrong-length arms fall through (the length test misses [x] and [x,y,z]),
+// landing on the catch-all.
+const SELECT_SLICE_MISS: &str = r#"
+{
+  let a = [1, 2, 3, 4];
+  select a {
+    [x] => x,
+    [x, y, z] => x + y + z,
+    _ => -1
+  }
+}
+"#;
+
+run!(select_slice_miss, SELECT_SLICE_MISS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(-1)))
+});
+
+// Anonymous-rest prefix `[x, ..]` (tail: None) fuses; a NAMED rest
+// (`[x, rest..]`) still de-fuses (owned subslice arm local — deferred).
+const SELECT_SLICE_PREFIX: &str = r#"
+{
+  let a = [7, 8, 9];
+  select a {
+    [x, ..] => x,
+    _ => 0
+  }
+}
+"#;
+
+run!(select_slice_prefix, SELECT_SLICE_PREFIX, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+});
+
+// Anonymous-head suffix `[.., x]` (head: None) — the leaf reads at
+// `a[len - 1]`, a runtime-relative index.
+const SELECT_SLICE_SUFFIX: &str = r#"
+{
+  let a = [7, 8, 9];
+  select a {
+    [.., x] => x,
+    _ => 0
+  }
+}
+"#;
+
+run!(select_slice_suffix, SELECT_SLICE_SUFFIX, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(9)))
+});
+
+// Empty-slice pattern: `[]` is `len == 0` — matched here by the empty
+// array, with the sized arms falling through.
+const SELECT_SLICE_EMPTY: &str = r#"
+{
+  let a: Array<i64> = [];
+  select a {
+    [x] => x,
+    [] => -7,
+    _ => 0
+  }
+}
+"#;
+
+run!(select_slice_empty, SELECT_SLICE_EMPTY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(-7)))
+});
+
+// A NAMED rest binding: the SELECT itself de-fuses (the subslice is an
+// owned composite arm local; JitEnv::truncate emits no drops — deferred),
+// but sibling regions (the array literal) still fuse, so the program-level
+// expectation stays Jit. The de-fuse itself is pinned by
+// `native_select_named_rest_defuses` in lib_tests/native.rs.
+const SELECT_SLICE_NAMED_REST: &str = r#"
+{
+  let a = [1, 2, 3];
+  select a {
+    [x, rest..] => x + array::len(rest),
+    _ => 0
+  }
+}
+"#;
+
+run!(select_slice_named_rest, SELECT_SLICE_NAMED_REST, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+});
+
+// Node-walk regression (found by the Phase 4 differential): SliceSuffix
+// BINDS used start-relative offsets (`a[N..]`) while `is_match` tested the
+// LAST N elements — `[init.., x]` over [7,8,9] bound x=8 (and init=[7])
+// instead of x=9/init=[7,8]. Named `init..` de-fuses (owned subslice arm
+// local), so this exercises the node-walk binder in both modes.
+const SELECT_SUFFIX_NAMED_HEAD: &str = r#"
+{
+  let a = [7, 8, 9];
+  select a {
+    [init.., x] => x * 100 + array::len(init),
+    _ => 0
+  }
+}
+"#;
+
+run!(select_suffix_named_head, SELECT_SUFFIX_NAMED_HEAD, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(902)))
+});
+
+// The old start-relative suffix binds indexed OUT OF BOUNDS (a node-walk
+// panic) when `suffix.len() <= len < 2 * suffix.len()`: `[.., x, y]` over a
+// 2-element array read `tail = a[2..]` (empty) then `tail[0]`. With the
+// fixed end-relative split it binds x=1, y=2.
+const SELECT_SUFFIX_EXACT_LEN: &str = r#"
+{
+  let a = [1, 2];
+  select a {
+    [.., x, y] => x * 10 + y,
+    _ => 0
+  }
+}
+"#;
+
+run!(select_suffix_exact_len, SELECT_SUFFIX_EXACT_LEN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(12)))
+});
