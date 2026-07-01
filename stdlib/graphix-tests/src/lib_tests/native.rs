@@ -217,6 +217,20 @@ async fn native_connect_composite_rhs_ok() {
     );
 }
 
+// String elements in an array HOF (Phase 3, #150): a map over a string
+// array fuses now that `bind_elem` reads the owned ArcStr element and
+// `drop_owned_elem` frees it. Before Phase 3 the string element de-fused.
+#[tokio::test]
+async fn native_hof_string_element_ok() {
+    let prog = "#[native]\narray::map([\"a\", \"bb\", \"ccc\"], |s| str::len(s))";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "a map over a string array must fully fuse now, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")

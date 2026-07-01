@@ -109,7 +109,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::String
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value,
             ) => {}
             _ => return Ok(None),
         }
@@ -202,7 +209,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::String
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value,
             ) => {}
             _ => return Ok(None),
         }
@@ -289,7 +303,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::String
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value,
             ) => {}
             _ => return Ok(None),
         }
@@ -464,7 +485,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::String
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value,
             ) => {}
             _ => return Ok(None),
         }
@@ -552,7 +580,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::String
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value,
             ) => {}
             _ => return Ok(None),
         }
@@ -635,7 +670,14 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
             Some(
-                AbiKind::Scalar(_) | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct,
+                AbiKind::Scalar(_)
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::String
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value,
             ) => {}
             _ => return Ok(None),
         }

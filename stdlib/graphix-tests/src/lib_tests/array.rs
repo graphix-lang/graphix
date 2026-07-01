@@ -907,6 +907,105 @@ run!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// ─── Phase 3: HOF over String / Value-shape ELEMENTS (#150) ──────────
+// String arrays are ubiquitous; these de-fused before the bind_elem
+// String/Value arms + drop_owned_elem landed. interp==jit agreement is
+// the drop-exactly-once proof (the value harness can't see a leak, so
+// the adversarial no-match / found-at-last / used-twice paths matter).
+
+const HOF_STR_MAP_LEN: &str = r#"array::map(["a", "bb", "ccc"], |s| str::len(s))"#;
+run!(hof_str_map_len, HOF_STR_MAP_LEN, |v: Result<&Value>| matches!(
+    v.map(|v| v.clone().cast_to::<[i64; 3]>()),
+    Ok(Ok([1, 2, 3]))
+));
+
+// String element AND String output — the element is dropped, the upper
+// String is pushed.
+const HOF_STR_MAP_UPPER: &str = r#"array::map(["hi", "yo"], |s| str::to_upper(s))"#;
+run!(hof_str_map_upper, HOF_STR_MAP_UPPER, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
+        Ok(Ok([a, b])) if &*a == "HI" && &*b == "YO")
+});
+
+// filter MOVES the kept string element into the output; drops the rest.
+const HOF_STR_FILTER: &str = r#"array::filter(["a", "bb", "ccc"], |s| str::len(s) > 1)"#;
+run!(hof_str_filter, HOF_STR_FILTER, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
+        Ok(Ok([a, b])) if &*a == "bb" && &*b == "ccc")
+});
+
+// No-match filter: EVERY string element hits the drop edge (the most
+// likely place a leak/double-free in the owned-element drop would show).
+const HOF_STR_FILTER_NONE: &str = r#"array::filter(["a", "b"], |s| str::len(s) > 5)"#;
+run!(hof_str_filter_none, HOF_STR_FILTER_NONE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Array(a)) if a.is_empty()
+));
+
+const HOF_STR_FOLD: &str = r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
+run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))));
+
+// find RETURNS the matched string element (moved into the Nullable result);
+// non-matches drop every iteration.
+const HOF_STR_FIND: &str = r#"array::find(["a", "bb", "ccc"], |s| str::len(s) == 2)"#;
+run!(hof_str_find, HOF_STR_FIND, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::String(s)) if &**s == "bb"
+));
+
+const HOF_STR_FIND_NONE: &str = r#"array::find(["a", "b"], |s| str::len(s) == 9)"#;
+run!(hof_str_find_none, HOF_STR_FIND_NONE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Null)
+));
+
+const HOF_STR_FLATMAP: &str = r#"array::flat_map(["a", "b"], |s| [s, s])"#;
+run!(hof_str_flatmap, HOF_STR_FLATMAP, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 4]>()),
+        Ok(Ok([a, b, c, d])) if &*a == "a" && &*b == "a" && &*c == "b" && &*d == "b")
+});
+
+// Element used TWICE in the body (interpolation reads `s` twice → two
+// refcount clones vs the single element drop).
+const HOF_STR_USED_TWICE: &str = r#"array::map(["a", "b"], |s| "[s][s]")"#;
+run!(hof_str_used_twice, HOF_STR_USED_TWICE, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
+        Ok(Ok([a, b])) if &*a == "aa" && &*b == "bb")
+});
+
+// Value-shape (Nullable) ELEMENT read path: bind_elem's Value arm +
+// drop_owned_elem exercised on the node-walk. The BODY here `select`s over
+// the owned value element, which hits the owned-value-scrutinee de-fuse
+// (Phase 6, owned select scrutinees), so the map node-walks — FuseExpect::None
+// until Phase 6. The value is still correct in both modes.
+const HOF_NULLABLE_MAP: &str = r#"
+array::map([1, null], |v| select v { i64 as n => n, null as _ => i64:0 })
+"#;
+run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
+    v.map(|v| v.clone().cast_to::<[i64; 2]>()),
+    Ok(Ok([1, 0]))
+); graphix_package_core::testing::FuseExpect::None);
+
+// Value-shape (variant) ELEMENT in a filter whose predicate is a `==`
+// (ValueEq, fuses) rather than a select — so the value-element read + the
+// keep-push Value arm fuse now (no owned-scrutinee dependency).
+const HOF_VARIANT_FILTER: &str = r#"
+array::filter([`Red, `Green, `Red], |v| v == `Red)
+"#;
+run!(hof_variant_filter, HOF_VARIANT_FILTER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a.len() == 2)
+});
+
+// Value-shape variant element RETURNED by find (the find Value pack arm,
+// pass-through) with the preceding non-match dropped (drop_owned_elem Value).
+const HOF_VARIANT_FIND: &str = r#"
+array::find([`Red, `Green, `Blue], |v| v == `Green)
+"#;
+run!(hof_variant_find, HOF_VARIANT_FIND, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::String(s)) if &**s == "Green"
+));
+
 const ARRAY_ENUMERATE: &str = r#"
 {
    let a = [1, 2, 3];

@@ -60,34 +60,18 @@ pub struct HofElem<'a> {
     pub leaves: &'a [(crate::BindId, usize, PrimType)],
 }
 
-/// A bound per-iteration element — see [`bind_elem`].
+/// A bound per-iteration element — see [`bind_elem`]. The owned kinds
+/// (Composite/String/Value) hold an owned refcount that a consumer must
+/// either MOVE into the output or drop via [`drop_owned_elem`] before the
+/// iteration ends.
 pub(crate) enum BoundElem {
-    Scalar {
-        var: Variable,
-        prim: PrimType,
-    },
-    /// An owned `*mut ValArray`: a consumer that doesn't move it into
-    /// the output must drop it before the iteration ends.
-    Composite {
-        var: Variable,
-    },
-}
-
-impl BoundElem {
-    fn var(&self) -> Variable {
-        match self {
-            BoundElem::Scalar { var, .. } | BoundElem::Composite { var } => *var,
-        }
-    }
-
-    /// The element Variable when it's an owned composite (the drop
-    /// sites' dispatch); `None` for scalars (nothing to drop).
-    fn composite_var(&self) -> Option<Variable> {
-        match self {
-            BoundElem::Scalar { .. } => None,
-            BoundElem::Composite { var } => Some(*var),
-        }
-    }
+    Scalar { var: Variable, prim: PrimType },
+    /// An owned `*mut ValArray`.
+    Composite { var: Variable },
+    /// An owned `ArcStr` (its raw thin-pointer bits).
+    String { var: Variable },
+    /// An owned two-word `(disc, payload)` Value (variant/nullable/value).
+    Value { disc: Variable, payload: Variable },
 }
 
 /// Fetch element `i_now` of `arr_ptr` and bind it under `elem.name`:
@@ -162,17 +146,83 @@ fn bind_elem(
             }
             Ok(BoundElem::Composite { var })
         }
+        Some(AbiKind::String) => {
+            if !elem.leaves.is_empty() {
+                return Err(anyhow!("destructure leaves on a string HOF element — caller bug"));
+            }
+            // `graphix_valarray_get_arcstr` returns an OWNED (refcount-bumped)
+            // ArcStr; bound as a `LocalKind::String` local so a mid-body
+            // pending exit drops it via `drop_owned_composites` (the same
+            // free coverage composite elements get).
+            let get = cx.helper("graphix_valarray_get_arcstr")?;
+            let call = cx.b.ins().call(get, &[arr_ptr, i_now]);
+            let bits = cx.b.inst_results(call)[0];
+            let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            let var = cx.b.declare_var(types::I64);
+            cx.b.def_var(var, bits);
+            let dv = cx.b.declare_var(types::I64);
+            cx.b.def_var(dv, disc);
+            cx.env.bind(
+                elem.name.clone(),
+                ValueVar { disc: dv, payload: var },
+                LocalKind::String,
+                elem.id,
+            );
+            Ok(BoundElem::String { var })
+        }
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            if !elem.leaves.is_empty() {
+                return Err(anyhow!(
+                    "destructure leaves on a value-shape HOF element — caller bug"
+                ));
+            }
+            // `graphix_valarray_get_value` returns an OWNED two-word Value;
+            // bound as the matching `LocalKind::{Variant,Nullable,Value}`
+            // local (uniform drop, mid-body-pending coverage as above).
+            let get = cx.helper("graphix_valarray_get_value")?;
+            let call = cx.b.ins().call(get, &[arr_ptr, i_now]);
+            let (d, p) = {
+                let r = cx.b.inst_results(call);
+                (r[0], r[1])
+            };
+            let disc = cx.b.declare_var(types::I64);
+            cx.b.def_var(disc, d);
+            let payload = cx.b.declare_var(types::I64);
+            cx.b.def_var(payload, p);
+            let kind = match kernel_abi::abi_kind(cx.registry(), elem.typ) {
+                Some(AbiKind::Variant) => LocalKind::Variant,
+                Some(AbiKind::Nullable) => LocalKind::Nullable,
+                _ => LocalKind::Value,
+            };
+            cx.env.bind(elem.name.clone(), ValueVar { disc, payload }, kind, elem.id);
+            Ok(BoundElem::Value { disc, payload })
+        }
         _ => Err(anyhow!("HOF element shape not supported by the JIT loop scaffolds")),
     }
 }
 
-/// Drop an owned composite element (no-op for scalars). The
-/// per-iteration counterpart of [`bind_elem`]'s composite arm.
-fn drop_composite_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
-    if let Some(var) = elem.composite_var() {
-        let drop_helper = cx.helper("graphix_valarray_drop")?;
-        let elem_now = cx.b.use_var(var);
-        cx.b.ins().call(drop_helper, &[elem_now]);
+/// Drop an owned per-iteration element (no-op for scalars): the
+/// counterpart of [`bind_elem`]'s owned arms, dispatching the matching
+/// sentinel-guarded drop helper.
+fn drop_owned_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
+    match elem {
+        BoundElem::Scalar { .. } => {}
+        BoundElem::Composite { var } => {
+            let drop = cx.helper("graphix_valarray_drop")?;
+            let v = cx.b.use_var(*var);
+            cx.b.ins().call(drop, &[v]);
+        }
+        BoundElem::String { var } => {
+            let drop = cx.helper("graphix_arcstr_drop")?;
+            let v = cx.b.use_var(*var);
+            cx.b.ins().call(drop, &[v]);
+        }
+        BoundElem::Value { disc, payload } => {
+            let drop = cx.helper("graphix_value_drop")?;
+            let d = cx.b.use_var(*disc);
+            let p = cx.b.use_var(*payload);
+            cx.b.ins().call(drop, &[d, p]);
+        }
     }
     Ok(())
 }
@@ -462,7 +512,7 @@ where
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
     let cv = body(cx)?;
     push_field(cx, buf, cv, out_typ, out_src)?;
-    drop_composite_elem(cx, &bound)?;
+    drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(loop_body);
@@ -490,10 +540,10 @@ pub fn emit_filter_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
 {
-    let composite = matches!(
-        kernel_abi::abi_kind(cx.registry(), elem.typ),
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
-    );
+    // The kept element is MOVED into the output; the not-kept edge must DROP
+    // an owned element (composite/string/value). A scalar owns nothing.
+    let owns_drop =
+        !matches!(kernel_abi::abi_kind(cx.registry(), elem.typ), Some(AbiKind::Scalar(_)));
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);
@@ -503,7 +553,7 @@ where
     let advance = cx.b.create_block();
     let loop_exit = cx.b.create_block();
     // not-kept owned composite element → drop before advancing
-    let drop_block = if composite { Some(cx.b.create_block()) } else { None };
+    let drop_block = if owns_drop { Some(cx.b.create_block()) } else { None };
     cx.b.ins().jump(loop_header, &[]);
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, loop_exit);
@@ -520,17 +570,36 @@ where
     let not_kept = drop_block.unwrap_or(advance);
     cx.b.ins().brif(keep, push_block, &[], not_kept, &[]);
     cx.b.switch_to_block(push_block);
-    let push = match &bound {
-        BoundElem::Scalar { prim, .. } => cx.helper(value_buf_push_helper(*prim)?)?,
-        BoundElem::Composite { .. } => cx.helper("graphix_value_buf_push_array")?,
-    };
-    let elem_again = cx.b.use_var(bound.var());
-    cx.b.ins().call(push, &[buf, elem_again]);
+    // Kept: MOVE the owned element into the output buf (consumes it, so no
+    // drop on this edge). A value-shape element pushes both words.
+    match &bound {
+        BoundElem::Scalar { prim, var } => {
+            let push = cx.helper(value_buf_push_helper(*prim)?)?;
+            let v = cx.b.use_var(*var);
+            cx.b.ins().call(push, &[buf, v]);
+        }
+        BoundElem::Composite { var } => {
+            let push = cx.helper("graphix_value_buf_push_array")?;
+            let v = cx.b.use_var(*var);
+            cx.b.ins().call(push, &[buf, v]);
+        }
+        BoundElem::String { var } => {
+            let push = cx.helper("graphix_value_buf_push_string")?;
+            let v = cx.b.use_var(*var);
+            cx.b.ins().call(push, &[buf, v]);
+        }
+        BoundElem::Value { disc, payload } => {
+            let push = cx.helper("graphix_value_buf_push_value")?;
+            let d = cx.b.use_var(*disc);
+            let p = cx.b.use_var(*payload);
+            cx.b.ins().call(push, &[buf, d, p]);
+        }
+    }
     cx.b.ins().jump(advance, &[]);
     cx.b.seal_block(push_block);
     if let Some(drop_block) = drop_block {
         cx.b.switch_to_block(drop_block);
-        drop_composite_elem(cx, &bound)?;
+        drop_owned_elem(cx, &bound)?;
         cx.b.ins().jump(advance, &[]);
         cx.b.seal_block(drop_block);
     }
@@ -648,7 +717,7 @@ where
     let mark = cx.env.mark();
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
     let body_ptr = body(cx)?;
-    drop_composite_elem(cx, &bound)?;
+    drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     cx.b.ins().call(extend, &[buf, body_ptr]);
     emit_increment(cx, i_var, i_now, loop_header);
@@ -712,7 +781,7 @@ where
     bind_scalar_var(cx, acc_name.clone(), acc_prim, acc_var, acc_id);
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
     let new_acc = body(cx)?;
-    drop_composite_elem(cx, &bound)?;
+    drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     cx.b.def_var(acc_var, new_acc);
     emit_increment(cx, i_var, i_now, loop_header);
@@ -784,11 +853,24 @@ where
             let r = cx.b.inst_results(call);
             (r[0], r[1])
         }
+        BoundElem::String { var } => {
+            // Wrap the owned ArcStr into a value-shape `(STRING_DISC, payload)`
+            // Value (consumes it).
+            let wrap = cx.helper("graphix_value_new_string")?;
+            let s = cx.b.use_var(*var);
+            let call = cx.b.ins().call(wrap, &[s]);
+            let r = cx.b.inst_results(call);
+            (r[0], r[1])
+        }
+        BoundElem::Value { disc, payload } => {
+            // The element is already a two-word Value — pass it through (move).
+            (cx.b.use_var(*disc), cx.b.use_var(*payload))
+        }
     };
     cx.b.ins().jump(exit, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
     cx.b.switch_to_block(advance);
     // Not matched this iteration — drop an owned composite element.
-    drop_composite_elem(cx, &bound)?;
+    drop_owned_elem(cx, &bound)?;
     emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(advance);
     cx.b.seal_block(loop_body);
@@ -848,7 +930,7 @@ where
     let mark = cx.env.mark();
     let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
     let (bdisc, bpayload) = body(cx)?;
-    drop_composite_elem(cx, &bound)?;
+    drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     // A tainted body bottoms the whole HOF (#219); `bdisc` is then clean
     // on the continue path, so the `== NULL` compare is exact.
