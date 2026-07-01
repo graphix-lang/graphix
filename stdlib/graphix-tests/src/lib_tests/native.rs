@@ -166,6 +166,38 @@ async fn native_transitive_callee_dyncall_ok() {
     );
 }
 
+// `#[native]` on a `{ s with f: v }` struct update — Phase 1 gave StructWith
+// an `emit_clif` (build a new struct, copying unchanged fields from the source
+// via `compile_element_read`, overriding the replaced ones). An all-scalar
+// struct-with over a fused source struct fully fuses into one kernel.
+#[tokio::test]
+async fn native_structwith_ok() {
+    let prog = "#[native]\n{ let s = { x: i64:1, y: i64:2, z: i64:3 }; { s with y: i64:10 } }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "#[native] on a scalar struct-with must compile now that StructWith has \
+         an emit_clif, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// A struct-with whose source struct has a STRING field copied UNCHANGED — the
+// old "composite-with-string cliff". Phase 1 copies it via
+// `compile_element_read` + `push_field` (`graphix_struct_get_arcstr`), so the
+// whole update fuses.
+#[tokio::test]
+async fn native_structwith_string_field_ok() {
+    let prog = "#[native]\n{ let s = { name: \"x\", n: i64:1 }; { s with n: i64:2 } }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "#[native] on a struct-with copying an unchanged string field must \
+         compile, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")

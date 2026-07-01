@@ -5,7 +5,8 @@ use crate::{
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_struct_new_node, emit_struct_ref_node,
-        emit_tuple_new_node, emit_tuple_ref_node, emit_variant_new_node,
+        emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
+        emit_variant_new_node,
     },
     typ::Type,
     update_args, wrap,
@@ -138,7 +139,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 
 #[derive(Debug)]
 pub struct Replace<R: Rt, E: UserEvent> {
-    index: Option<usize>,
+    pub(crate) index: Option<usize>,
     pub name: Value,
     pub n: Cached<R, E>,
 }
@@ -302,6 +303,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::StructWith(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_struct_with_node(cx, &self.source, &self.replace)
     }
 
     fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {

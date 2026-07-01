@@ -4388,6 +4388,99 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
+/// `{ source with f: v, ... }` — build a NEW struct that copies the
+/// source's sorted `[name, value]` pairs, overriding the replaced
+/// fields. Mirrors [`emit_struct_new_node`], but each unchanged field's
+/// value is READ from the source struct (one source read, N element
+/// reads) while a replaced field emits its replacement node. `Replace.index`
+/// is the field's sorted position (set by typecheck0). The outer/inner
+/// bufs and an Owned source are registered for pending-exit cleanup so a
+/// may-bottom replacement (`{s with x: a / b}`) frees them instead of
+/// leaking.
+pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    replace: &[crate::node::data::Replace<R, E>],
+) -> Result<CompiledExpr> {
+    // Sorted (name, type) fields of the source struct — cloned out of the
+    // deref before emitting (lock discipline).
+    let fields: Vec<(ArcStr, Type)> = source.typ().with_deref(|t| match t {
+        Some(Type::Struct(flds)) => {
+            Ok(flds.iter().map(|(n, t)| (n.clone(), t.clone())).collect())
+        }
+        _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
+    })?;
+    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    // Register an Owned source: a replaced-field bottom-abort between here
+    // and the finalize would otherwise leak it (a Borrowed source is
+    // env-owned — nothing to drop).
+    let src_var = match src {
+        CompositeSource::Owned => {
+            let v = cx.b.declare_var(types::I64);
+            cx.b.def_var(v, arr_ptr);
+            cx.ctx.owned_input_stack.borrow_mut().push(v);
+            Some(v)
+        }
+        CompositeSource::Borrowed => None,
+    };
+    let buf_new = cx.helper("graphix_value_buf_new")?;
+    let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
+    let push_array = cx.helper("graphix_value_buf_push_array")?;
+    let finalize = cx.helper("graphix_valarray_finalize")?;
+    let outer_cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
+    let call = cx.b.ins().call(buf_new, &[outer_cap]);
+    let outer = cx.b.inst_results(call)[0];
+    let outer_var = cx.b.declare_var(types::I64);
+    cx.b.def_var(outer_var, outer);
+    cx.ctx.dyncall_buf_stack.borrow_mut().push(outer_var);
+    // The struct fires iff the source fired OR any replacement fired: fold
+    // the source disc once (all unchanged fields share its freshness) and
+    // each replacement's disc.
+    let mut field_discs: Vec<ClifValue> = vec![src_disc];
+    for (i, (name, field_typ)) in fields.iter().enumerate() {
+        let inner_cap = cx.b.ins().iconst(types::I64, 2);
+        let call = cx.b.ins().call(buf_new, &[inner_cap]);
+        let inner = cx.b.inst_results(call)[0];
+        let inner_var = cx.b.declare_var(types::I64);
+        cx.b.def_var(inner_var, inner);
+        cx.ctx.dyncall_buf_stack.borrow_mut().push(inner_var);
+        let name_ptr = cx.interned_str(name);
+        cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
+        match replace.iter().find(|r| r.index == Some(i)) {
+            Some(r) => {
+                // Replacement value — may bottom-abort (both bufs + Owned
+                // source are registered, so `emit_pending_cleanup` frees them).
+                field_discs.push(emit_push_field_node(cx, inner, &r.n.node)?);
+            }
+            None => {
+                // Unchanged field — read the value from the source struct
+                // (an owned clone, no abort) and push it.
+                let ftyp = resolve_node_typ(cx.ctx, field_typ);
+                let idx = cx.b.ins().iconst(types::I64, i as i64);
+                let cv = compile_element_read(cx.b, arr_ptr, idx, &ftyp, true, cx.ctx)?;
+                scaffold::push_field(cx, inner, cv, &ftyp, CompositeSource::Owned)?;
+            }
+        }
+        let call = cx.b.ins().call(finalize, &[inner]);
+        let inner_arr = cx.b.inst_results(call)[0];
+        cx.ctx.dyncall_buf_stack.borrow_mut().pop(); // inner consumed by finalize
+        cx.b.ins().call(push_array, &[outer, inner_arr]);
+    }
+    let call = cx.b.ins().call(finalize, &[outer]);
+    let payload = cx.b.inst_results(call)[0];
+    cx.ctx.dyncall_buf_stack.borrow_mut().pop(); // outer consumed by finalize
+    // Drop the Owned source on the normal path (exactly once — the pending
+    // path drops it via `owned_input_stack`).
+    if src_var.is_some() {
+        let drop = cx.helper("graphix_valarray_drop")?;
+        cx.b.ins().call(drop, &[arr_ptr]);
+        cx.ctx.owned_input_stack.borrow_mut().pop();
+    }
+    let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = propagate_flags(cx.b, disc, &field_discs);
+    Ok(CompiledExpr::new(disc, payload))
+}
+
 /// Variant constructor. Nullary →
 /// `Value::String(tag)` via `graphix_value_new_string_from_arcstr`
 /// (clones the interned tag — the borrowed interned pointer makes the

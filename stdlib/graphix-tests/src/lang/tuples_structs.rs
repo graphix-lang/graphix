@@ -164,10 +164,10 @@ const STRUCTWITH1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — `emit_struct_with` handles the spread,
-// but this struct has a `string` field (`foo`) that's copied via
-// StructGet; the struct-with-string-field in a block doesn't fuse yet
-// (composite-with-string cliff, same as `structaccessor`).
+// `emit_struct_with_node` fuses the whole update, including copying the
+// unchanged `string` field `foo` via `compile_element_read` +
+// `push_field` (`graphix_struct_get_arcstr`) — the old composite-with-
+// string cliff is gone.
 run!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
     Ok(Value::F64(85.0)) => true,
     _ => false,
@@ -280,6 +280,55 @@ run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A struct-with that copies an UNCHANGED composite field (`pt`, a tuple)
+// while replacing a scalar (`n`). Reads a field back so interp==jit
+// agreement proves the composite copy (and its drop) is correct.
+const STRUCTWITH_COMPOSITE: &str = r#"
+{
+  let s = { pt: (i64:1, i64:2), n: i64:0 };
+  let s2 = { s with n: i64:5 };
+  s2.pt.1 + s2.n
+}
+"#;
+
+run!(structwith_composite, STRUCTWITH_COMPOSITE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(7))
+));
+
+// A `#[native]` struct-with in the differential `run!` harness: the interp
+// mode (fusion off) exercises the `#[native]` `--no-fusion` no-op, the jit mode
+// verifies the struct-with fuses to native — both must yield 9.
+const STRUCTWITH_NATIVE: &str = r#"
+#[native]
+{
+  let s = { x: i64:1, y: i64:2 };
+  ({ s with y: i64:9 }).y
+}
+"#;
+
+run!(structwith_native, STRUCTWITH_NATIVE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(9))
+));
+
+// A may-bottom REPLACEMENT field (`i64:10 / d`, a division) that is
+// runtime-clean (`d = 2`). Exercises `emit_push_field_node`'s bottom-abort
+// branch + the outer/inner buf registration on the struct-with build path,
+// while still yielding a real value both modes agree on.
+const STRUCTWITH_MAYBOTTOM: &str = r#"
+{
+  let s = { x: i64:0, y: i64:0 };
+  let d = i64:2;
+  ({ s with x: i64:10 / d }).x
+}
+"#;
+
+run!(structwith_maybottom, STRUCTWITH_MAYBOTTOM, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(5))
+));
 
 // ─── Composite / value-shape cross-kernel calls (#131) ───────────
 //

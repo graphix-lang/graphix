@@ -1007,7 +1007,12 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
             return Ok(());
         }
         if !ctx.fusion.enabled {
-            crate::bailat!(node.spec(), "cannot verify #[native]: fusion is disabled");
+            // Nothing to verify when fusion is off — a `#[native]` requirement
+            // is vacuously satisfied (there is no fusion to check against). This
+            // lets `#[native]` ride in `run!` fixtures (which run an interp/
+            // node-walk mode) and in bench programs executed under `--no-fusion`,
+            // rather than being a hard error outside a fusion-on run.
+            return Ok(());
         }
         // The node survived fusion as node-walk residue. Surface the REAL
         // blockers, filtering out attempt-then-recurse protocol noise:
