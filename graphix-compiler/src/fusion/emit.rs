@@ -3638,10 +3638,11 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
 /// helper (no value this cycle = no write), mirroring the node-walk's
 /// `if let Some(v) = ..` guard.
 ///
-/// First cut: scalar RHS only. A composite/string/value RHS needs an
-/// OWNED payload handed to `set_var` (clone if borrowed) — until that's
-/// wired, a non-scalar RHS de-fuses (the block node-walks, still
-/// correct).
+/// The RHS is marshaled to an OWNED `(disc, payload)` Value of any shape
+/// (`emit_owned_value_operand_node`) and handed to `graphix_set_var`, which
+/// CONSUMES it — or drops it on a tainted/stale skip. So a composite/string
+/// RHS (`data <- array::push(data, x)`) fuses without a leak, uniform with the
+/// scalar case.
 pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     rhs: &Node<R, E>,
@@ -3663,20 +3664,16 @@ pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
              read-after-write unsafe, node-walks"
         ));
     }
-    let Some(p) = kernel_abi::scalar_prim(cx.registry(), rhs.typ()) else {
-        return Err(anyhow!(
-            "emit_clif: connect RHS non-scalar — node-walks (TODO owned marshal)"
-        ));
-    };
-    let cv = rhs.emit_clif(cx)?;
-    // A scalar's (disc, payload) IS the Value wire form; widen the
-    // payload to the i64 the helper expects (f64 bitcast / small-int
-    // uextend). `cv.disc` carries any #219 taint, which the helper
-    // honors (tainted → skip the write).
-    let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
+    // Marshal the RHS to an OWNED `(disc, payload)` Value of any shape; a
+    // scalar's `(disc, payload)` is already its Value wire form (payload
+    // widened to i64). `set_var` consumes the payload (or drops it on the
+    // tainted/stale skip), so a composite/string RHS transfers ownership
+    // without leaking; #219 taint / STALE ride `cv.disc` and the helper honors
+    // them (skip the write).
+    let cv = emit_owned_value_operand_node(cx, rhs)?;
     let id_const = cx.b.ins().iconst(types::I64, bind_id.inner() as i64);
     let set_var = cx.helper("graphix_set_var")?;
-    cx.b.ins().call(set_var, &[id_const, cv.disc, payload]);
+    cx.b.ins().call(set_var, &[id_const, cv.disc, cv.payload]);
     // `connect` produces no value — a tainted-null bottom. Discarded as a
     // block statement (a connect is never a kernel's published result;
     // its `typ()` is `Bottom`).

@@ -198,6 +198,25 @@ async fn native_structwith_string_field_ok() {
     );
 }
 
+// A non-scalar `connect` (Phase 2): a composite RHS marshaled to an owned
+// Value and handed to `set_var`. The target `last` is an external capture
+// WRITTEN (not read) inside the map callback, so the connect fuses (the
+// read-after-write guard doesn't fire) and the struct literal is marshaled via
+// `emit_owned_value_operand_node`. Before Phase 2 the non-scalar RHS de-fused.
+#[tokio::test]
+async fn native_connect_composite_rhs_ok() {
+    let prog = "{ let last = { v: i64:0 }; \
+                array::map([1, 2, 3], |x| #[native] { last <- { v: x }; x }); \
+                last.v }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "a non-scalar connect in a fused callback must compile now that \
+         emit_connect_node marshals any shape, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")

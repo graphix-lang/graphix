@@ -613,12 +613,21 @@ pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
     disc: u64,
     payload: u64,
 ) {
+    // CONSUME the payload unconditionally: `emit_connect_node` marshals any
+    // shape (scalar/string/composite/value) to an OWNED `(disc, payload)`, so
+    // a skipped write must still DROP the owned value or it leaks. A scalar
+    // payload is inline (drop is a no-op); a composite/string owns a heap
+    // allocation. `TagValue::value` masks the tag byte, so a tainted / stale
+    // disc materializes as a valid placeholder Value that is safe to drop.
+    let value = TagValue::from_raw(disc, payload).value();
     if disc & ((TAINT | STALE) as u64) != 0 {
+        // No value this cycle (tainted) or the RHS did not fire (stale) — drop
+        // the owned value, no write (the node-walk's `if let Some(v) = ..`).
+        drop(value);
         return;
     }
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let ctx = unsafe { &mut *state.ctx };
-    let value = TagValue::from_raw(disc, payload).value();
     ctx.set_var(BindId::from_inner(bind_id), value);
 }
 
@@ -1066,9 +1075,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // NOT a whole-kernel abort: it feeds `None` (bottom) into
         // `param_opts`, and the kernel emits `None` only if the OUTPUT
         // consumes that bottom — `select c { 0 => x, 1 => never_fired }`
-        // with `c=0` must still yield `x`. (The JIT path below still
-        // aborts on a missing input — JIT bottom support is a later
-        // phase.) `param_opts` slots are placed by per-kind base offset
+        // with `c=0` must still yield `x`. (The JIT path below behaves the
+        // same via #219: a missing input feeds a taint-marked helper-safe
+        // placeholder, and the kernel bottoms only if the taken output
+        // path consumes it.) `param_opts` slots are placed by per-kind base offset
         // so the order matches `eval_kernel_full`'s declaration-order
         // binding (scalars, arrays, tuples, structs, variants, nullables,
         // strings, values).
