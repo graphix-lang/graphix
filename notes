@@ -1,9 +1,0 @@
-notes
-
-- lsp server is failing with "runtime dead" again
-- #[native] should not fail when fusion is explicitly disabled
-- A callback that captures a local lambda — array::map(a, |x| g(x)) — still
-de-fuses: the g(x) call inside the per-slot template isn't statically resolved.
-That's a resolution limitation, orthogonal to the delivery mechanism I built.
-Worth a separate look if it matters, but I left it out of scope here.
-
