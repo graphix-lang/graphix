@@ -397,18 +397,26 @@ the stmt subtree is effect-free.
 
 ### Coverage (current)
 
-Measured by the FuseExpect audit above: **~70% of the `run!` corpus fuses+JITs
-(≈449 `Jit` / ≈194 `None`, zero annotation drift), and all bench programs
+Measured by the FuseExpect audit above: **~71% of the `run!` corpus fuses+JITs
+(≈487 `Jit` / ≈195 `None`, zero annotation drift), and all bench programs
 (`bench/`) fuse fully.** The value-computing vocabulary is essentially complete:
 all scalar arithmetic/comparison/logical/cast/checked-arith, every producer
-(struct/tuple/variant/array/map-literal) and accessor (field/index/slice/`m{key}`),
-scalar `select`, `?`/`$`, scalar `connect`, all eight array HOFs as native loops
-(map/filter/flat_map/filter_map/find/find_map/fold/init, incl. composite elements
-and `|(k,v)|` scalar destructure, and HOF-of-HOF fused into one multi-loop kernel),
-every Sync core/str/re/map/math/rand builtin via the generic DynCall path,
-cross-kernel lambda calls (incl. recursive self-calls: tail → rebind-and-jump loop,
-non-tail → native recursion), transitive callees, and builtin/cast/qop calls inside
-lambda bodies.
+(struct/tuple/variant/array/map-literal incl. `{s with f: v}`) and accessor
+(field/index/slice/`m{key}`), `?`/`$`, all eight array HOFs as native loops
+(map/filter/flat_map/filter_map/find/find_map/fold/init — over scalar, composite,
+**String, and value-shape elements**, with `|(k,v)|` destructure leaves of any of
+those shapes, and HOF-of-HOF fused into one multi-loop kernel), **`select`
+structural destructuring** (tuple/struct/slice patterns with scalar leaf binds,
+anonymous-rest prefix/suffix, nested patterns via borrowed interior reads, owned
+fresh-producer scrutinees in value position — each arm's length test doubles as
+the #219 taint gate), **`connect` of any RHS shape** (owned marshal into a
+consume-always `set_var`) including **lifted composite/string/struct
+accumulators** (`data <- array::push(data, x)`, `s <- "[s]x"`,
+`st <- {st with n: st.n+1}` — the sliding-window idiom, seed-select with
+clone-vs-seed branches), every Sync core/str/re/map/math/rand builtin via the
+generic DynCall path, cross-kernel lambda calls (incl. recursive self-calls:
+tail → rebind-and-jump loop, non-tail → native recursion), transitive callees,
+and builtin/cast/qop calls inside lambda bodies.
 
 The **correct-None denominator** (principled, never a gap): async/streaming
 builtins (timers, IO, netidx, `never`, `queue`, `once`/`take`/`skip`), cross-cycle
@@ -417,28 +425,30 @@ nodes (`~`, `Any`, `TryCatch`'s catch-read), and non-register-encodable types
 TVars). The sync operands of an async boundary still fuse (`clock ~ (a + b)` fuses
 the `a + b`).
 
-The genuine missed-fusion tail is small; ranked by impact × tractability (the
-composite/string/value read+marshal helpers already exist in `emit`, so most are
-wiring, not new ABI):
+The remaining missed-fusion tail (each pinned by a `#[native]` de-fuse test or an
+ASPIRE comment where noted):
 
-1. **HOF over String / Value-shape elements + composite destructure leaves (#150)**
-   — `array::map(names, str::to_upper)` de-fuses; string arrays are ubiquitous.
-2. **`select` structural destructuring** — tuple/struct/slice patterns and
-   non-scalar/nested variant payloads de-fuse; only scalar scrutinees + scalar
-   variant payloads fuse. `select` is the language's sole control-flow construct,
-   so this is its default idiom.
-3. **Non-scalar `connect` + `StructWith`** — composite reactive accumulators
-   (`data <- array::push(...)`, `{state with count: ...}`); `StructWith` has no
-   `emit_clif` at all despite being classified Sync.
-4. **HOF callback capturing a *local* lambda** (`array::map(a, |x| g(x))`) — the
+1. **HOF callback capturing a *local* lambda** (`array::map(a, |x| g(x))`) — the
    `g(x)` call inside the per-slot template isn't statically resolved (harder:
-   resolution of captured locals in cloned templates).
-5. Lower-impact: non-scalar string-interp parts, String-returning callees, dynamic
-   map literals, `array::group`, ByRef/Deref, decimal arith.
+   resolution of captured locals in cloned templates; in `notes`).
+2. **Struct-parent nested-pattern TVar inference** — a nested pattern under a
+   STRUCT parent (`{foo: [a, b, ..], ..}`) leaves the leaf binds' TVars at the
+   loose `Number` set (tuple parents narrow fine), so the select's return type
+   carries an unbound TVar and `freeze_region_return` correctly refuses. A
+   TYPECHECK gap, not emission — pinned by `native_select_nested_struct_defuses`.
+3. **select residue**: whole-composite/`@`/NAMED-rest binds (owned arm locals —
+   `JitEnv::truncate` emits no drops), nested/non-scalar variant payloads,
+   owned scrutinees in TAIL position (no merge point to drop at).
+4. Lower-impact: non-scalar string-interp parts, String-returning cross-kernel
+   callees, dynamic map literals, `array::group`, `filter_map`/`init`
+   string/value-element widening, ByRef/Deref, decimal arith.
 
-**F4/#213 (EmitTags)** is the one clearly-unfinished piece, but it is *test
-infrastructure* — it would let `node_shape` assert *what fused into what* (kernels
-carry no per-op tags yet, `node_shape.rs`), not make any new program fuse.
+**F4/#213 (EmitTags) is settled: retired unbuilt.** Per-op body tags would
+resurrect the GIR vocabulary tax; the shape oracle is the differential value
+check + `KernelMatcher` signature facts + the `#[native]` attribute (zero
+node-walk residue at a source location; a no-op under `--no-fusion`, so it works
+in `run!` fixtures and bench programs). The decision is recorded in
+`node_shape.rs`.
 
 ### Design documents (`design/`)
 
