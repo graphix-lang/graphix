@@ -2663,8 +2663,8 @@ fn emit_interrupt_check(
 // shape) returns `Err` → the kernel build fails → `try_fuse` leaves
 // the region un-spliced → it node-walks (the universal fallback).
 // Bottom/taint: a may-bottom scalar (div/mod-by-zero) produces a
-// [`CompiledExpr::Scalar2`] whose validity is resolved where it's
-// consumed (`require_valid` / the kernel boundary).
+// `CompiledExpr` whose disc carries `TAINT`, resolved where it's
+// consumed (`emit_bottom_abort` / the kernel boundary).
 
 /// A type-erased producer of a kernel function BODY, given the
 /// already-set-up entry block, bound params, and lowering context. The
@@ -3318,9 +3318,8 @@ pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
 
 /// A binding read. Resolve the Ref's source name to the kernel param
 /// / block-let slot in the env (same name the params were bound under
-/// — see `compile_into_function`'s entry binder). Surfaces a tainted
-/// local's validity bit, mirroring `compile_expr`'s scalar-Local
-/// intercept.
+/// — see `compile_into_function`'s entry binder). Surfaces the local's
+/// disc (carrying any `TAINT`/`STALE`) alongside its payload.
 pub(crate) fn emit_ref_node(
     cx: &mut BodyCx,
     spec: &Expr,
@@ -4235,8 +4234,8 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
 /// `Value::<prim>` by inline packing; a String (already owned at
 /// production) is wrapped via `graphix_value_new_string` (consumes); a
 /// composite is owned-ensured then wrapped via
-/// `graphix_value_new_from_array` (consumes). A possibly-bottom
-/// (`Scalar2`) scalar errors via `.single()`.
+/// `graphix_value_new_from_array` (consumes). A possibly-bottom scalar
+/// (its disc may carry `TAINT`) runtime-aborts via `emit_bottom_abort`.
 fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
@@ -4289,9 +4288,9 @@ fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
 
 /// Compile one producer-op field and emit the matching
 /// `graphix_value_buf_push_*` call into `buf` — the Node twin of
-/// `compile_and_push_field` (same helper choice per shape, same
+/// `scaffold::push_field` (same helper choice per shape, same
 /// owned/borrowed push variant via `node_composite_source`, same
-/// bottom-abort for a `Scalar2` field).
+/// bottom-abort for a may-bottom (tainted-disc) field).
 fn emit_push_field_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     buf: ClifValue,
@@ -5168,12 +5167,12 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
 }
 
 /// How a `select`'s arms merge into one result — derived from the
-/// select node's frozen result type. Scalar merges always thread an I8
-/// validity phi (`expr_may_value_bottom` has no Node twin, so every
-/// arm passes a validity arg; the result is reported `Scalar2` only
-/// when something actually tainted). String/composite merges have no
-/// validity channel — a possibly-bottom scrutinee with one of those
-/// result shapes refuses to fuse instead.
+/// select node's frozen result type. Scalar merges thread the disc
+/// (carrying `TAINT`/`STALE`) through the arm phi alongside the payload,
+/// so a tainted arm value propagates its bottom to the merged result.
+/// String/composite merges have no such per-arm channel — a possibly-
+/// bottom scrutinee with one of those result shapes refuses to fuse
+/// instead.
 #[derive(Clone, Copy)]
 enum SelectMerge {
     Scalar(PrimType),
@@ -5225,8 +5224,8 @@ enum SelectArmBind {
 /// `PatternNode::is_match` (node/select.rs, node/pattern.rs):
 ///
 /// - the scrutinee is evaluated once; no scrutinee value → no select
-///   value (a `Scalar2` scrutinee's validity ANDs into every arm's
-///   result validity — the #178 scrutinee gate);
+///   value (the scrutinee's disc `TAINT`/`STALE` folds into every arm's
+///   result disc — the #178 scrutinee gate);
 /// - an explicit type predicate is TESTED (`null as _` → IsNull;
 ///   `i64 as _` over `[i64, null]` → NOT-null), so arm order is right
 ///   by construction;
@@ -6050,11 +6049,15 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// (borrowed) and never drop. Captures resolve BindId-first with a
 /// name fallback; V1 supports scalar + composite captures — a
 /// value-shape capture Errs (those env tables are still name-keyed)
-/// and the subtree node-walks. A may-bottom (`Scalar2`) scalar arg or
-/// capture Errs = de-fuse (same `compile_scalar` contract). The
-/// result is unpacked per the callee's return ABI: one
-/// CLIF result for scalar / composite-pointer returns, a two-word
-/// `(disc, payload)` pair for variant/nullable — owned.
+/// and the subtree node-walks. Every arg/capture is passed as TWO words
+/// (disc + payload), so a may-bottom scalar arg forwards its `TAINT` to
+/// the callee (which bottoms if it consumes it) — no de-fuse. The
+/// result is unpacked per the callee's return ABI: one CLIF result for
+/// scalar / composite-pointer returns, a two-word `(disc, payload)` pair
+/// for variant/nullable — owned. A scalar RETURN is one word (no disc):
+/// the callee already gated its own bottom (a callee that bottomed set
+/// the global `DYNCALL_PENDING` flag → the caller kernel returns `None`),
+/// so the caller synthesizes a fresh disc for the result.
 pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
@@ -6628,11 +6631,10 @@ fn element_read_helper(
 
 /// Emit an element read: `arr_ptr[idx]` (or struct field) of the given
 /// element `Type`, dispatching to the right `..._get_*` helper. The
-/// result is OWNED (fresh box / refcount-bumped clone). Returns
-/// `CompiledExpr::Value` for a value-shape element (two-register
-/// Value) and `CompiledExpr::Single` for scalar / string / composite-
-/// pointer elements — so the same routine serves both the scalar arm
-/// (`.single()`) and the value-shape arm of `compile_expr`.
+/// result is OWNED (fresh box / refcount-bumped clone). Returns a
+/// `CompiledExpr` (disc + payload) whose disc tag marks a value-shape
+/// element (two-register Value) vs a scalar / string / composite-pointer
+/// element — one routine serves both the scalar and value-shape reads.
 fn compile_element_read(
     b: &mut FunctionBuilder,
     arr_ptr: ClifValue,

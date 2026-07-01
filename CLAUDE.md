@@ -439,7 +439,9 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
   `compile_ifchain` trap was reachable there and SIGILL'd — #201,
   classic path now refuses identically; the stmt form was already
   immune via its pending-exit scrutinee gate). Both repros live in
-  findings/select-jun2026. `fusion::kernel_abi::freeze_for_abi_normalized` exists because
+  findings/select-jun2026. (SUPERSEDED by #219: a conditional final arm
+  no longer refuses — it emits a fail block producing a tainted bottom,
+  emit.rs `emit_select_node`; the refusal above is C5-era history.) `fusion::kernel_abi::freeze_for_abi_normalized` exists because
   typecheck leaves a select's result type as the un-flattened arm
   union (`Set([i64, TVar→i64])`), which `freeze_for_abi` rejects.
   Stage D1 landed: the eight HOF loop scaffolds extracted from the
@@ -711,6 +713,39 @@ single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
 `whole_graph_fusion_m7.md`.
 
 ### Major recent changes (newest first; `git log` for detail)
+
+- **Post-TagValue fusion audit — 4 commits (2026-06-30).** After the fired-bit
+  (`STALE`) + lift work made fused kernels replicate the node-walk's non-async
+  firing, an audit for follow-on wins. The audit's premises were mostly
+  overturned by RUNNING the code (stale comments had misled it), with two real
+  fixes:
+  - **`>64`-input de-fuse cap removed** (`55c619d5`). The cap's justification
+    (a one-u64 validity bitmask) was gone — taint rides each param's disc,
+    firing trackers spill to the heap. A 70-input region now fuses.
+  - **HOF may-bottom already fused** (`fdd73682`). fold/filter/find/flat_map
+    were documented as de-fusing at BUILD time on a may-bottom body, but every
+    scaffold already routes its body/predicate through `emit_forced` (RUNTIME
+    abort); `Scalar2`/`.single()`/`compile_scalar` had ZERO code refs. Pinned
+    with fixtures; de-staled the contracts.
+  - **HOF result firing — a real pre-existing SIGSEGV + capture-aware STALE**
+    (`eaf778d9`). Chasing the "benign" HOF over-fire surfaced a JIT crash: a
+    scalar `array::fold` result wore an ARRAY disc (from `array_result`), so a
+    `connect`'s `set_var` deref'd the scalar as a `*ValArray` → new
+    `emit::scalar_result` gives the prim's disc. The over-fire itself needed
+    CAPTURE-AWARE firing (`emit::inherit_hof_firing`: result STALE = AND of the
+    source array's STALE, fold's init, and every feeder the callback body
+    captures via `Refs::with_external_refs`) — a source-only version under-fired
+    `map(a,|e| e+x)` (never re-fired when `x` changed). BOTH are multi-cycle
+    firing bugs the differential fuzzer can't see (3000-soak clean despite
+    them); pinned by hand-written stream tests + findings/hof-connect-jun2026.
+  - **2.1 (widen the cross-kernel scalar call ABI) — SKIPPED** (Eric's call):
+    may-bottom scalar callees already fuse and bottom correctly (args are 2-word
+    with taint; a callee's scalar-return bottom rides the global
+    `DYNCALL_PENDING` flag). Widening would only delete `gate_stale_at_return`
+    at a per-call perf cost with no coverage gain. De-staled the comments
+    (emit.rs `emit_lambda_call_node`, the `Scalar2`/`.single()` survivors).
+  Gates each step: graphix-tests 1511 ×2, compiler 125, fuzz regress 24/0,
+  generate 3000 → 0 divergences/0 crashes.
 
 - **Builtin/cast/qop calls inside lambda bodies fuse — the #203 deferred
   follow-up, landed as two commits (2026-06-27).** A sync builtin DynCall, a
