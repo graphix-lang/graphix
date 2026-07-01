@@ -130,11 +130,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug, so
         // Err (abort the kernel), never Ok(None).
-        let arr_ptr = emit::emit_forced(cx, array_arg)?;
+        let arr = emit::emit_forced_keep(cx, array_arg)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            scaffold::ArraySrc { ptr: arr.payload, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -145,7 +145,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| Some(emit::array_result(cx, v)))
+        .map(|v| {
+            let r = emit::array_result(cx, v);
+            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+        })
     }
 }
 
@@ -217,10 +220,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = emit::emit_forced(cx, array_arg)?;
+        let arr = emit::emit_forced_keep(cx, array_arg)?;
         scaffold::emit_filter_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            scaffold::ArraySrc { ptr: arr.payload, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -229,7 +232,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
             },
             |cx| emit::emit_forced(cx, body),
         )
-        .map(|v| Some(emit::array_result(cx, v)))
+        .map(|v| {
+            let r = emit::array_result(cx, v);
+            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+        })
     }
 }
 
@@ -300,11 +306,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = emit::emit_forced(cx, array_arg)?;
+        let arr = emit::emit_forced_keep(cx, array_arg)?;
         let body_src = emit::node_composite_source(body);
         scaffold::emit_flat_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            scaffold::ArraySrc { ptr: arr.payload, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -316,7 +322,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                 emit::ensure_owned_composite_src(cx, body_src, p)
             },
         )
-        .map(|v| Some(emit::array_result(cx, v)))
+        .map(|v| {
+            let r = emit::array_result(cx, v);
+            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+        })
     }
 }
 
@@ -384,17 +393,20 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             };
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = emit::emit_forced(cx, array_arg)?;
+        let arr = emit::emit_forced_keep(cx, array_arg)?;
         scaffold::emit_filter_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            scaffold::ArraySrc { ptr: arr.payload, owned },
             in_prim,
             elem_name,
             elem_id,
             out_prim,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| Some(emit::array_result(cx, v)))
+        .map(|v| {
+            let r = emit::array_result(cx, v);
+            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+        })
     }
 }
 
@@ -470,10 +482,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = emit::emit_forced(cx, array_arg)?;
+        let arr = emit::emit_forced_keep(cx, array_arg)?;
         scaffold::emit_find_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            scaffold::ArraySrc { ptr: arr.payload, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -482,7 +494,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
             },
             |cx| emit::emit_forced(cx, body),
         )
-        .map(|(disc, payload)| Some(CompiledExpr::new(disc, payload)))
+        .map(|(disc, payload)| {
+            let r = CompiledExpr::new(disc, payload);
+            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+        })
     }
 }
 
@@ -554,11 +569,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = emit::emit_forced(cx, array_arg)?;
+        let arr = emit::emit_forced_keep(cx, array_arg)?;
         let body_src = emit::node_composite_source(body);
         let (disc, payload) = scaffold::emit_find_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            scaffold::ArraySrc { ptr: arr.payload, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -570,7 +585,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
                 emit::ensure_owned_value_src(cx, body_src, cv.disc, cv.payload)
             },
         )?;
-        Ok(Some(CompiledExpr::new(disc, payload)))
+        let r = CompiledExpr::new(disc, payload);
+        Ok(Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None)))
     }
 }
 
@@ -646,10 +662,10 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr_ptr = emit::emit_forced(cx, array_arg)?;
+        let arr = emit::emit_forced_keep(cx, array_arg)?;
         scaffold::emit_fold_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr_ptr, owned },
+            scaffold::ArraySrc { ptr: arr.payload, owned },
             acc_prim,
             acc_name,
             acc_id,
@@ -664,7 +680,10 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
             |cx| emit::emit_forced(cx, init_arg),
             |cx| emit::emit_forced(cx, body),
         )
-        .map(|v| Some(emit::array_result(cx, v)))
+        .map(|v| {
+            let r = emit::scalar_result(cx, acc_prim, v);
+            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body, init_arg], elem_id, elem_binds, acc_id))
+        })
     }
 }
 
@@ -1633,11 +1652,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let n_raw = emit::emit_forced(cx, n_node)?;
+        let n = emit::emit_forced_keep(cx, n_node)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_init_loop(
             cx,
-            n_raw,
+            n.payload,
             n_prim,
             &idx_name,
             idx_id,
@@ -1645,7 +1664,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| Some(emit::array_result(cx, v)))
+        .map(|v| {
+            let r = emit::array_result(cx, v);
+            Some(emit::inherit_hof_firing(cx, r, n.disc, &[body], idx_id, &[], None))
+        })
     }
 }
 

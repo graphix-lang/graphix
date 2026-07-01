@@ -1,0 +1,16 @@
+// bisect: JIT SIGSEGV + over-fire (interp settles at 6; jit crashed, then
+// busy-spun) when a SCALAR array::fold result flows directly into a connect.
+// Found while auditing HOF STALE propagation (Tier 3.1, 2026-06-30).
+// root_cause (two bugs, one repro):
+//   1. FoldImpl::emit_clif wrapped its SCALAR accumulator result with
+//      `array_result` — an ARRAY disc over a scalar payload. On the
+//      kernel-return path the disc tag is ignored, but a connect's
+//      `set_var` reconstructs a Value from the disc → interpreted the
+//      scalar `6` as a `*ValArray` → SIGSEGV at init. Fixed by
+//      `emit::scalar_result` (the prim's natural disc).
+//   2. The fold result didn't inherit the source array's STALE, so over a
+//      CONSTANT array it stayed fresh forever → the self-connect re-fired
+//      every cycle (busy-spin) while the node-walk quiesced (fold fires
+//      once, at init). Fixed by `emit::inherit_source_stale`.
+// Both modes now settle at 6.
+{ let a = [i64:1, i64:2, i64:3]; let s = i64:0; s <- array::fold(a, i64:0, |acc, e| acc + e); s }

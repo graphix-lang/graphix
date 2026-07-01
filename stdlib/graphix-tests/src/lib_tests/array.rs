@@ -481,6 +481,20 @@ run!(array_flat_map_may_bottom, ARRAY_FLAT_MAP_MAY_BOTTOM, |v: Result<&Value>| {
     }
 });
 
+// A scalar `array::fold` result flowing directly into a `connect` once
+// SIGSEGV'd (fold wrapped its scalar result in an ARRAY disc → the connect's
+// set_var deref'd the scalar as a *ValArray) and over-fired (no source STALE
+// → the self-connect busy-spun while the node-walk quiesced). Now it fuses,
+// sets `s` once, and quiesces. See findings/hof-connect-jun2026 and the
+// `fold_into_connect_quiesces` stream test.
+const FOLD_INTO_CONNECT: &str = r#"
+{ let a = [1, 2, 3]; let s = 0; s <- array::fold(a, 0, |acc, e| acc + e); s }
+"#;
+
+run!(fold_into_connect, FOLD_INTO_CONNECT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(0)))
+});
+
 const ARRAY_FOLD1: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];

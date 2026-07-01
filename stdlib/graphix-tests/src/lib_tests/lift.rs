@@ -205,6 +205,44 @@ run!(
 );
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fold_into_connect_quiesces() -> Result<()> {
+    // Regression (findings/hof-connect-jun2026): a scalar `array::fold`
+    // result wired straight into a self-`connect` once crashed (ARRAY disc
+    // over a scalar payload) and over-fired (no source STALE). The fold's
+    // source is a CONSTANT array (STALE after init), so the fold fires once:
+    // s goes 0 (seed) → 6, then quiesces. Both modes agree.
+    assert_stream(
+        "{ let a = [1, 2, 3]; let s = 0; s <- array::fold(a, 0, |acc, e| acc + e); s }",
+        &[0, 6],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fold_captured_init_fires_then_quiesces() -> Result<()> {
+    // Capture-aware HOF firing: the fold's INIT is a feeder (`s`), so the
+    // fold must RE-FIRE when s lands (a source-STALE-only fix would
+    // under-fire → the JIT never publishes). s: 0 → 5; fold(a, s, +) =
+    // s + 6 → the result stream is [6, 11], then quiesces.
+    assert_stream(
+        "{ let a = [1, 2, 3]; let s = 0; s <- 5; array::fold(a, s, |acc, e| acc + e) }",
+        &[6, 11],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fold_captured_body_fires_then_quiesces() -> Result<()> {
+    // Same, but the feeder `k` is captured in the BODY (`acc + e + k`).
+    // fold(a, 0, |acc, e| acc + e + k) = 6 + 3*k → [6, 21], then quiesces.
+    assert_stream(
+        "{ let a = [1, 2, 3]; let k = 0; k <- 5; array::fold(a, 0, |acc, e| acc + e + k) }",
+        &[6, 21],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn region_over_64_inputs_agrees() -> Result<()> {
     // 70 self-feeding counters summed: every cycle each +1, so the stream
     // steps by 70. Pin the differential (node-walk == jit) over a few cycles.
