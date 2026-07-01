@@ -1,9 +1,8 @@
 // Headless mandelbrot: per-pixel escape-time over a 100x75 grid (64 max
-// iterations), summed to a checksum. A realistic mixed workload — and a
-// fusion-coverage probe: the per-pixel `iterate` is a recursive function
-// CALLED inside array::init's callback (a nested recursive lambda), which
-// doesn't inline yet (#203). So this shows a smaller JIT speedup than the
-// flat fold/map benches — the corpus surfacing the next gap.
+// iterations), summed to a checksum. A realistic mixed workload: the
+// per-pixel `iterate` is a recursive function CALLED inside array::init's
+// callback (a nested recursive lambda). That case (#203) now fully fuses
+// to native code, so the whole hot loop JITs like the flat fold/map benches.
 let w = 100;
 let h = 75;
 let max_iter = 64;

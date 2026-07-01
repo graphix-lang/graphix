@@ -64,7 +64,7 @@ can't build. Handling, in order of how much it covers:
   and a node knows that without compiling. The coloring reads it off the node.
 - **Most emit-failures are type-determinable.** `try_fuse`'s existing
   pre-cranelift gates — identity rejection, representable-return via
-  `freeze_concrete` / `abi_kind` — already decide a large fraction without
+  `freeze_for_abi` / `abi_kind` — already decide a large fraction without
   touching the backend.
 - **Strategy:** lift every `emit_clif` bail condition into a fusion-time gate,
   so the coloring is accurate by construction. The residual tail (a node that

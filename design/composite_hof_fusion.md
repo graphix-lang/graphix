@@ -1,5 +1,28 @@
 # Composite-element + destructure-pattern HOF fusion (plan)
 
+> **STATUS (2026-07-01): IMPLEMENTED for the array HOFs.** All eight array
+> HOFs (`map`/`filter`/`flat_map`/`filter_map`/`find`/`find_map`/`fold`/
+> `init`) fuse as native loops, including composite (tuple/struct) *elements*
+> and `|(k, v)|` **scalar** destructure *leaves*; HOF-of-HOF composes into a
+> single multi-loop kernel with no intermediate array. Per-slot HOF
+> callbacks fuse into a template kernel once at compile time and then
+> `clone_rebind` per array slot.
+>
+> The lowering mechanism described below in GIR vocabulary
+> (`emit_gir`/`GirOp`/`GirType`) is **historical**: the GIR IR was deleted
+> (F3, 2026-06-12) and fusion is now distributed as per-node
+> `Update::emit_clif` + the `fusion/scaffold.rs` HOF loop scaffolds. Read
+> the `emit_gir`/`GirOp`/`GirType` names below as archaeology of the design,
+> not as the current mechanism. Current architecture:
+> `design/distributed_jit.md`.
+>
+> **Still-open gaps (#150):** a HOF over `String`- or `Value`-shape
+> (variant/nullable) **elements** de-fuses; **composite** (non-scalar)
+> destructure **leaves** node-walk; `filter_map` over composite elements.
+> Separately, a callback that captures a *local* lambda
+> (`array::map(a, |x| g(x))`) de-fuses — a static-resolution limit, not a
+> shape one.
+
 The largest remaining tractable fusion cluster. Closes the composite
 array HOFs (`array::find`/`find_map` over `Array<(string, i64)>`) and the
 **entire map-HOF cluster** (`map::map`/`filter`/`filter_map`/`fold`),
@@ -203,12 +226,16 @@ the gap is the composite slot ABI carrying a string element). Closing
 this also lets the map-HOF string-key fixtures reach `Jit` in Phase 4.
 Independent of the HOF work; can land anytime.
 
-## Other remaining clusters (separate features)
+## Other clusters (status)
 
-- **`/list` recursive variant types** (44 fixtures): `List<'a> =
-  [`Cons('a, List<'a>), `Nil]` is an infinite type `GirType::from_type`
-  can't represent. Needs a recursive/boxed variant representation.
-- **`node:Lambda` lambda-binds-in-bodies** (32): a `let f = |x| ...`
-  inside a fused body doesn't resolve via the CallSite Lambda arm
-  (unique per-`LambdaId` kernel naming + registry coordination — the
-  SAFETY INVARIANT in `ensure_lambda_kernel`).
+- **`/list` recursive variant types**: list HOFs (`list::map`/`filter`/
+  `fold`/`find`) now fuse through the per-slot callback path (they never
+  batch-loop — a recursive-variant `List` has no O(1) indexed access), so
+  this is no longer a blocker for list-HOF *callbacks*. A recursive-variant
+  value carried directly as a kernel element remains unrepresentable.
+- **lambda-binds-in-bodies** (nested/transitive lambda calls,
+  formerly "`node:Lambda`", #203): **RESOLVED** — a `let f = |x| ...`
+  called inside a fused callback/callee body now fuses (cross-statement
+  static resolution + transitive-callee discovery). The one honest
+  remaining shape is a callback that *captures* a **local** lambda
+  (`array::map(a, |x| g(x))`), which still de-fuses.

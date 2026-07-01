@@ -59,9 +59,9 @@ bench/run.sh [iterations] [graphix-binary]
 `run.sh` runs each program a few times per mode, keeps the best (min)
 time to cut scheduler noise, and prints the node-walk / JIT ratio. A
 node-walk cell of `fail` means the program produced no timing line and
-`timeout` means it exceeded the per-run limit. Read the table as a
-fusion-coverage check too: a natural bench showing a *small* JIT speedup
-is the corpus surfacing a remaining gap (see `mandelbrot`).
+`timeout` means it exceeded the per-run limit. Every program in the
+corpus fuses fully under the JIT, so the ratios reflect native code vs
+the interpreter, not differences in fusion coverage.
 
 The two scalar tail-loop benches (`tail_sum`, `leibniz_pi`) are the
 case where the interpreter does *best* relative to the JIT: it handles
@@ -73,6 +73,11 @@ that's a separate limitation, not exercised here.)
 
 ## Results
 
+> The absolute numbers below predate the #203 resolution and the
+> TagValue/STALE reworks and are stale — regenerate them with `run.sh`.
+> In particular `mandelbrot` now fuses fully (its old ~1x speedup no
+> longer holds); the `—` cells are placeholders pending a fresh run.
+
 Release build, best-of-5 per mode:
 
 | bench            | jit       | node-walk | speedup |
@@ -83,14 +88,14 @@ Release build, best-of-5 per mode:
 | `filter_fold`    | 3.3 ms    | 3.92 s    | 1175x   |
 | `leibniz_pi`     | 35.2 ms   | 4.62 s    | 131x    |
 | `tail_sum`       | 23.4 ms   | 2.67 s    | 114x    |
-| `mandelbrot`     | 7.03 s    | 7.51 s    | 1x      |
+| `mandelbrot`     | —         | —         | —       |
 
 The HOF benches show the largest gap (node-walk builds a per-element node
 graph); the scalar tail loops show the smallest (node-walk runs them as a
-tight iterative loop). `mandelbrot` is the outlier at ~1x — its hot loop
-node-walks even under fusion (see below), so it's the corpus surfacing a
-coverage gap rather than a speedup. Re-run with `run.sh` to reproduce;
-absolute times vary with machine load, the ratios less so.
+tight iterative loop). `mandelbrot` — a per-pixel recursive escape-time
+loop — now fuses fully as well (see below), so it lands with the other
+fused benches rather than being an outlier. Re-run with `run.sh` to
+reproduce; absolute times vary with machine load, the ratios less so.
 
 ## Benches
 
@@ -102,10 +107,9 @@ absolute times vary with machine load, the ratios less so.
 | `filter_fold`      | `filter (even)` then `fold (+)`, 100k  | yes (1 kernel)|
 | `tail_sum`         | scalar int tail loop, 10M              | yes           |
 | `leibniz_pi`       | scalar f64 tail loop, 10M              | yes           |
-| `mandelbrot`       | per-pixel escape-time, 100x75          | partial (#203)|
+| `mandelbrot`       | per-pixel escape-time, 100x75          | yes           |
 
 `mandelbrot`'s per-pixel `iterate` is a recursive function called inside
-`array::init`'s callback (a nested recursive lambda), which doesn't
-inline yet (#203) — so its hot loop node-walks and the JIT speedup is
-small. That's the corpus doing its job: a natural program surfacing the
-next fusion gap.
+`array::init`'s callback (a nested recursive lambda). That case (#203)
+now fully fuses, so the whole hot loop JITs to native code like the flat
+fold/map benches.

@@ -1,5 +1,20 @@
 # Impure HOF fusion via partial-body splitting (plan)
 
+> **STATUS (2026-07-01): IMPLEMENTED.** The impure-HOF story is built and
+> shipping: an impure callback splits at the async boundary — the sync part
+> fuses + JITs per array slot, the async residue node-walks. **The mechanism
+> that landed is the SUPERSEDING DESIGN immediately below** (fuse the
+> callback template once, then `clone_rebind` it per slot), **not** the
+> original splice / `SplitKernel` / `build_body_split` plan in the lower half
+> of this file — that machinery was deleted and is kept only for archaeology.
+>
+> Lowering is now distributed as per-node `Update::emit_clif` + the
+> `fusion/scaffold.rs` HOF loop scaffolds; the GIR vocabulary throughout the
+> older plan text (`emit_gir`/`GirOp`/`GirNode`/`Arc<GirKernel>`/`GirExpr`)
+> is **historical** — the GIR IR was deleted (F3, 2026-06-12). Read those
+> names as archaeology, not as the current mechanism. Current architecture:
+> `design/distributed_jit.md`.
+
 ---
 
 ## ★ SUPERSEDING DESIGN (Jun 2026): clone the fused template per slot
@@ -355,7 +370,7 @@ loop, *unchanged in shape*):
 For N elements: 1 shared compiled kernel, N async Apply nodes (each with
 its own state — same as today), N lightweight GirNode wrappers. **No
 runtime GIR generation. No loss of per-slot async state.** This is the
-mechanism the old `unified_fusion.md` HOF section sketched (correctly) —
+mechanism the earlier HOF-fusion sketches described (correctly) —
 generalized to the bidirectional split and grounded in `fuse_callsite`.
 
 ### 4. The architectural payoff (mechanism, not policy)
@@ -596,18 +611,14 @@ lift. This milestone is where that lift finally gets built. Two options
 to decide during Phase 2: (a) revive `RegionInputSource::Lifted` as the
 async-upstream half of the bidirectional split, claiming the variant as
 the starting point; or (b) delete it and build the split fresh under the
-`fuse_callsite` framing. Either way, the doc claims (in
-`whole_graph_fusion.md` Status, CLAUDE.md M8.4 entries) that the lift is
+`fuse_callsite` framing. Either way, older claims that the lift is
 *landed* are wrong and are corrected alongside this doc.
 
 ## See also
 
-- `design/unified_fusion.md` `### HOF fusion and the async-callback
-  constraint` (L537-640) — the original sketch of this mechanism
-  (async-upstream only, pre-`fuse_callsite`). Superseded by this doc.
-- `design/whole_graph_fusion.md` `## Fusion model` / `## Effect
-  classification` — the async-edge vocabulary; its `## Status` claim that
-  maximal/lifted landed is corrected (it did not).
+- `design/distributed_jit.md` — the current fusion architecture
+  (per-node `Update::emit_clif` + `fusion/scaffold.rs` loop scaffolds) that
+  this design landed on.
 - `design/composite_hof_fusion.md` — the sibling cluster (composite
   *shape*; this one is *effect*/partial-body). Both feed the HOF emit
   path.

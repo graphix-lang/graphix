@@ -1,6 +1,15 @@
-# graphix-fuzz — differential model-checking harness for the fusion/JIT backend (design)
+# graphix-fuzz — differential model-checking harness for the fusion/JIT backend
 
-Status: design, pre-build. Crate to be added: `graphix-fuzz`.
+Status: **built and in active use.** The `graphix-fuzz` crate is committed at
+`graphix-fuzz/`, exposing the subcommands `check` / `run` / `generate` / `fuzz`
+/ `minimize` / `regress` plus a committed `findings/` regression corpus (the
+directory *is* the regression gate). It is the differential model-checking
+harness described below: the **node-walk** (trusted oracle) vs the
+**fusion + cranelift-JIT backend** (under test), compared in **two modes** —
+`interp` (node-walk, `FusionDisabled`) and `jit` (fusion + JIT). The sections
+that follow are the original design rationale; where a mechanism has since been
+superseded — most notably the third `fused` / GIR-interpreter bisection mode
+(the GIR interpreter is deleted) — it is flagged inline.
 
 ## 1. The idea
 
@@ -19,9 +28,9 @@ from the language semantics about what the program *should* do, then determine
 what each model actually does and which one is wrong.
 
 This is dynamic translation validation: we don't prove `compiled ≡ source`, we
-*run* both and compare. The oracle already exists — the three-mode
-`run!`/`assert_modes_agree` harness does exactly this on ~550 fixed fixtures.
-The missing ingredient is a firehose of **valid, deterministic,
+*run* both and compare. The oracle already exists — the two-mode
+`run!`/`assert_modes_agree` harness (`interp` vs `jit`) does exactly this on the
+fixed fixtures. graphix-fuzz supplies the firehose of **valid, deterministic,
 semantically-rich** programs that exercise the fusion machinery (nested HOFs
 with captures, composite-element destructure callbacks, `?` on Results, select
 arm bindings, value-shape arithmetic) — where every real bug of the last month
@@ -175,7 +184,7 @@ costly relative to the mechanical generator. They are the **discovery** layer,
 not the overnight-millions **saturation** layer. The combination is the design:
 agents find the frontier, the mechanical fuzzer saturates it. E is also the
 *cheapest source to stand up* — it needs only the `check` CLI, no generator
-infrastructure, so it can run the day V1 ships.
+infrastructure, so it has run since V1 shipped.
 
 #### Worked example: the class the differential oracle CANNOT catch
 
@@ -232,7 +241,14 @@ Reactive is complex; we are not claiming to test everything. V1 tests something
 worth testing (pure-sync, where most of the GirOp/JIT surface lives) and we
 expand the horizon as we learn.
 
-### Two modes hot, the third as a free bisector
+### Two modes hot, the third as a free bisector (historical)
+
+> **Superseded.** The third `fused` (`JitDisabled`) mode below *was* the GIR
+> interpreter; both it and the `JitDisabled` flag have since been deleted, so the
+> oracle now runs the two-mode `interp`-vs-`jit` differential only. With one
+> fusion flag, a divergence is diagnosed by semantic reasoning (and the
+> subprocess re-check of §11), not an automatic third mode. The trisection below
+> is kept as design history.
 
 Run `interp` vs `jit` per case (highest signal). On divergence, auto-re-run
 `fused` (`JitDisabled`): `interp == fused ≠ jit` → cranelift codegen bug;
@@ -386,6 +402,13 @@ exactly the repo's existing idiom (#162 landed `#[ignore]`'d as a live doc;
    instantly — don't over-engineer perfect dedup).
 
 ## 9. V1 and roadmap
+
+> **Status (current):** V1 and V1.5 shipped and the crate is in active use — it
+> exposes `check` / `run` / `generate` / `fuzz` / `minimize` / `regress` and a
+> committed `findings/` regression corpus, and the process-isolation half of V2
+> landed (§11). The staged plan below is retained as build history / rationale;
+> genuinely-unbuilt items — the reactive per-cycle trace oracle (V2) and
+> coverage-guided selection + crossover + swarm (V4) — remain future work.
 
 **V1 (~4 days; single-process, single-threaded, in-process, pure-sync,
 single-snapshot). Cuts: type-directed generator, coverage-guided selector,

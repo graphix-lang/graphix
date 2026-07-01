@@ -1,7 +1,6 @@
 // Compute-heavy float reduction: several f64 ops per element over a
 // 100k-element array. Stresses the inner-loop arithmetic the JIT compiles
-// to native code, without the nested-recursion fusion gap (#203) that the
-// mandelbrot bench hits.
+// to native code.
 let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<f64>(t0)$;

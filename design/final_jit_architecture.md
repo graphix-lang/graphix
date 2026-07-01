@@ -1,92 +1,99 @@
 # The final fusion/JIT architecture: `Expr → node graph → CLIF`
 
-Status: **design note, not yet implemented.** Captured at the user's request
-("think about it for a while, and note it down") after the GIR interpreter was
-deleted (CLAUDE.md "GIR interpreter DELETED"). Do **not** start this without an
-explicit go-ahead — it's a large rewrite and the current state (node-walk +
-GIR→JIT) is correct and green.
+Status: **implemented and current.** This is the architecture the compiler runs
+today. Part 1 (eliminate GIR — the pipeline is `Expr → node graph → CLIF`,
+distributed as `Update::emit_clif` + `Update::fuse` per node) landed as the F3
+GIR-IR deletion; the node graph is the single IR. Part 2 (a fast, eager
+node-walk) remains a **future** idea — it is described below and clearly marked
+as not-yet-built.
 
 ## The thesis
 
-The compiled pipeline should be exactly **`Expr → node graph → CLIF`**, with:
+The compiled pipeline is exactly **`Expr → node graph → CLIF`**, with:
 
-1. **No GIR.** The GIR (`GirKernel`/`GirOp`/`GirExpr`/`GirStmt`) is a
+1. **No GIR** (done). The GIR (`GirKernel`/`GirOp`/`GirExpr`/`GirStmt`) was a
    *same-altitude re-encoding* of the node-graph subtree, not a genuine
-   lowering. It should be eliminated; the JIT should walk the node-graph
-   subtree directly (via `NodeView`) and emit CLIF, doing the fusion
-   transformations inline.
-2. **A fast, eager node-walk.** The node-walk should evaluate *pure* subtrees
-   eagerly in-cycle (and pure tail calls as a loop), removing the
+   lowering. It has been eliminated; the JIT walks the node-graph subtree
+   directly (via `NodeView`) and emits CLIF, doing the fusion transformations
+   inline — distributed as `Update::emit_clif` + `Update::fuse` per node.
+2. **A fast, eager node-walk** (future). The node-walk *would* evaluate *pure*
+   subtrees eagerly in-cycle (and pure tail calls as a loop), removing the
    one-cycle-per-call overhead that was the GIR interpreter's *entire* reason
-   to be faster. This makes the node-walk both the canonical model and a fast
-   interpreter, with the JIT as a native accelerator on the hottest pure
-   subtrees.
+   to be faster. This would make the node-walk both the canonical model and a
+   fast interpreter, with the JIT as a native accelerator on the hottest pure
+   subtrees. Not yet built.
 
 The winding path that got us here (a GIR interpreter, a GIR IR) was worth
 building — it's how we learned the fusion design, the purity boundary, the
 HOF-callback lowering, the value/bottom semantics — but **the final product
-should carry none of that scaffolding.** A reviewer who had never seen the code
-should not have to ask "why is there a second copy of the node graph?"
+carries none of that scaffolding.** A reviewer who had never seen the code does
+not have to ask "why is there a second copy of the node graph?"
 
 ---
 
-## Part 1 — Eliminate GIR
+## Part 1 — Eliminate GIR (done)
 
-### Why GIR is baggage now
+This landed as the F3 GIR-IR deletion. The record below is why GIR was baggage
+and how its work was relocated; it is kept as rationale, not as a plan.
 
-Before, GIR fed two consumers: the GIR interpreter (a flat evaluable form) and
-the JIT. With the interpreter gone, GIR feeds only the JIT — and it sits at the
-*same abstraction level* as the node graph:
+### Why GIR was baggage
 
-- Its ops mirror the node ops one-for-one (`Bin`, `Cmp`, `Select`/`IfChain`,
-  `TupleNew`, `ArrayGet`, …). It is not lower-level.
-- The genuinely-lower IR already exists *downstream*: **CLIF is SSA.** The real
-  lowering step is `node graph → CLIF`. GIR-in-the-middle is a third
+GIR fed two consumers: the GIR interpreter (a flat evaluable form) and the JIT.
+Once the interpreter was gone, GIR fed only the JIT — and it sat at the *same
+abstraction level* as the node graph:
+
+- Its ops mirrored the node ops one-for-one (`Bin`, `Cmp`, `Select`/`IfChain`,
+  `TupleNew`, `ArrayGet`, …). It was not lower-level.
+- The genuinely-lower IR already existed *downstream*: **CLIF is SSA.** The real
+  lowering step is `node graph → CLIF`. GIR-in-the-middle was a third
   representation at node-graph altitude.
 
 The classic "separate lowering from codegen via an IR" principle only justifies
-an IR that is *below* the source. GIR isn't, so the principle doesn't apply —
-it's path dependence: GIR was the interpreter's input form, and the JIT was
+an IR that is *below* the source. GIR wasn't, so the principle didn't apply —
+it was path dependence: GIR was the interpreter's input form, and the JIT was
 built to consume it.
 
-### The honest nuance: GIR isn't *pure* re-encoding
+### The honest nuance: GIR wasn't *pure* re-encoding
 
-GIR also does real transformation work that must live somewhere:
+GIR also did real transformation work that had to live somewhere:
 
-- **Normalization** — const-folds map/array/tuple literals to one
-  `Const(Value)`, collapses the three option representations
+- **Normalization** — const-folded map/array/tuple literals to one
+  `Const(Value)`, collapsed the three option representations
   (`[T,null]` Set / collapsed `T|null` prim / `[T,Error]` Set) into one
   `Nullable` shape, etc.
-- **HOF lowering** — inlines a callback lambda's body into a single loop op
+- **HOF lowering** — inlined a callback lambda's body into a single loop op
   (`ArrayMap`/`ArrayFold`/…) instead of a `CallSite` + lambda.
-- **The kernel boundary** — identifies the fused region's inputs/captures (the
+- **The kernel boundary** — identified the fused region's inputs/captures (the
   fusion analysis result).
 
-Eliminating GIR means relocating this work, not deleting it:
+Eliminating GIR meant relocating this work, not deleting it — which is what
+happened:
 
-- Normalization → either node-graph→node-graph passes, or handled inline in the
-  CLIF walk (more arms, un-normalized forms).
+- Normalization → handled inline in the CLIF walk (more arms, un-normalized
+  forms) and via the `abi_kind`/`freeze_for_abi` type classifiers.
 - HOF lowering → the CLIF walk inlines the callback when it hits an
-  `array::map` CallSite to a pure static lambda (the JIT already does this via
-  `emit_array_map`-style helpers; it just reads them from GIR today).
-- The kernel boundary → the fusion analysis annotates / identifies the
-  node-graph subtree + its free variables; no GIR materialization.
+  `array::map` CallSite to a pure static lambda; the emit path does this via
+  the `fusion::emit::scaffold` loop scaffolds, driven straight from the node
+  graph — no GIR.
+- The kernel boundary → the fusion analysis identifies the node-graph subtree +
+  its free variables (the `KernelSig` / input list); no GIR materialization.
 
-### The rewrite sketch
+### How it was done
 
-- `gir_jit.rs` (rename) stops being `compile_expr(GirExpr)` matching `GirOp`,
-  becomes `compile_node(&Node)` matching `NodeView` (the downcast view already
-  exists), doing normalization + HOF inlining during the walk.
-- `fusion/lowering.rs` shrinks from "emit a GIR" to "identify the sync subtree
-  + its free-var inputs" (the analysis), feeding the node subtree + input list
-  to the JIT walk.
-- `GirKernel`/`GirOp`/`GirExpr`/`GirStmt` deleted. The `abi_kind`/`Type`
-  classification (already on `Type`, not GIR) stays — it's the JIT's
+- The emitter (now `fusion/emit.rs`, née `gir_jit.rs`) stopped being
+  `compile_expr(GirExpr)` matching `GirOp` and became per-node emission:
+  `Update::emit_clif` / `Apply::emit_clif` walk the node graph via `NodeView`,
+  doing normalization + HOF inlining during the walk.
+- `fusion/lowering.rs` shrank from "emit a GIR" to "identify the sync subtree +
+  its free-var inputs" (the analysis), feeding the node subtree + input list to
+  the emit walk.
+- `GirKernel`/`GirOp`/`GirExpr`/`GirStmt` were deleted. The `abi_kind`/`Type`
+  classification (already on `Type`, not GIR) stayed — it's the JIT's
   type-shape oracle and is orthogonal.
-- `gir_interp.rs`'s remaining `GirNode` (the spliced fused node + JIT dispatch +
-  arg-packing) stays in spirit but its "kernel" becomes the compiled CLIF +
-  the input feeders; the arg-packing is driven by the analysis's input list,
-  not a `GirKernel`.
+- The spliced fused node + JIT dispatch + arg-packing (now `Kernel` in
+  `fusion/kernel.rs`, née `GirNode` in `gir_interp.rs`) stayed in spirit, but
+  its "kernel" became the compiled CLIF + the input feeders, with arg-packing
+  driven by the analysis's input list (an `Arc<KernelSig>`), not a `GirKernel`.
 
 ### Steelman for keeping GIR (and why it loses)
 
@@ -103,7 +110,14 @@ None of these is a *fundamental* reason — they're effort and habit.
 
 ---
 
-## Part 2 — A fast, eager node-walk (the real reason the GIR interp was faster)
+## Part 2 — A fast, eager node-walk (future — not yet built)
+
+> This part is a **future** design idea; it captures the real reason the GIR
+> interp was faster. The eager node-walk described here does not exist yet — the
+> node-walk today is purely reactive. What *is* already true (and current) is
+> the JIT behavior called out below: an infinite pure tail recursion hangs the
+> JIT. The rest of this section is the plan for closing the node-walk's
+> per-cycle overhead.
 
 ### The limitation
 
@@ -213,33 +227,42 @@ which Part 2 closes by making the interp hang too. Don't chase it as a JIT bug.
 ## Part 3 — The end-state, and why it's clean
 
 ```
-Expr ──parse/typecheck──▶ node graph ──┬─(node-walk: eager for pure subtrees,
-                                        │   reactive for impure; loop tail-calls)
+Expr ──parse/typecheck──▶ node graph ──┬─(node-walk: reactive, canonical;
+                                        │   *future*: eager for pure subtrees,
+                                        │   loop tail-calls)
                                         │
                                         └─(JIT: hottest pure subtrees,
                                             walk node graph via NodeView ─▶ CLIF)
 ```
 
-- **One IR people see: the node graph.** It's the canonical model AND a fast
-  interpreter.
+- **One IR people see: the node graph.** It's the canonical model (and, once
+  Part 2 lands, also a fast interpreter).
 - **CLIF is the low-level IR** for the JIT'd hot paths. The lowering is
   `node graph → CLIF`, directly.
 - **No GIR.** No second interpreter. No same-altitude re-encoding.
 - A fresh reviewer sees `Expr → node graph → CLIF` and asks no "why does this
   exist twice?" question.
 
-The JIT still earns its keep: native code beats even an eager tree-walk for the
-hottest pure kernels (mandelbrot inner loop). But the node-walk baseline is now
-fast for *all* pure computation, so the JIT is a targeted accelerator, not a
-correctness-or-speed necessity. Correctness is structural (node-walk is
-canonical; JIT-can't → node-walk).
+The JIT earns its keep: native code beats even an eager tree-walk for the
+hottest pure kernels (mandelbrot inner loop). Once the eager node-walk (Part 2)
+lands, the node-walk baseline is fast for *all* pure computation and the JIT
+becomes a targeted accelerator rather than a correctness-or-speed necessity.
+Correctness is structural today regardless (node-walk is canonical;
+JIT-can't → node-walk).
 
 ---
 
-## Staging (when we do it)
+## Staging
 
-Rough order, each independently validatable, node-walk stays canonical &
-green throughout:
+The GIR-deletion half (steps 4–5 below) is **done** — it landed as the F3
+GIR-IR deletion (`compile_node`/`emit_clif` over `NodeView`, HOF inlining
+inline, normalization relocated, `GirKernel`/`GirOp`/`GirExpr`/`GirStmt`
+removed, `fusion/lowering.rs` reduced to subtree+input identification),
+validated via the 2-mode oracle (node-walk vs JIT) — unchanged contract, GIR
+just gone.
+
+The eager-node-walk half (steps 1–3) is **future**. Rough order, each
+independently validatable, node-walk stays canonical & green throughout:
 
 1. **`Node::pure(&self) -> bool`** + builtin purity, derived from the existing
    effect analysis. Pure addition; assert it agrees with the fusion sync
@@ -249,11 +272,6 @@ green throughout:
    (measure cycles via the runtime); no stack overflow on a big loop. Differential
    vs the current reactive node-walk (same values).
 3. **Eager pure-arg handling** in nodes/builtins (incremental, op by op).
-4. **JIT walks the node graph (delete GIR).** The big one: `compile_node`
-   over `NodeView`, HOF inlining inline, normalization relocated. Validate via
-   the 2-mode oracle (node-walk vs JIT) — unchanged contract, GIR just gone.
-5. Delete `GirKernel`/`GirOp`/`GirExpr`/`GirStmt`; shrink `fusion/lowering.rs`
-   to subtree+input identification.
 
-The fuzzer (2-mode interp-vs-jit) is the safety net for steps 2 and 4 — both are
-"same values, different mechanism."
+The fuzzer (2-mode interp-vs-jit) is the safety net for step 2 (and was for the
+now-landed GIR deletion) — both are "same values, different mechanism."

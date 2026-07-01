@@ -270,1270 +270,192 @@ Builtins that need type information from their call site (e.g. `json::read` for 
 
 HOF builtins (e.g. `MapQ`, `FoldQ`) that take function-typed arguments must return `NeedsCallSite` and handle the `CallSite(resolved)` phase to update their stored predicate types (`mftyp`, `etyp`) from the resolved FnType. This enables the deferred check cascade to propagate concrete types to inner predicates like `json::read`.
 
-
 ## Fusion / JIT subsystem (current state)
 
-> The fusion/JIT subsystem was heavily reworked May–Jun 2026. This section is
-> the **durable current-state summary**; the per-change history is in `git log`,
-> and the deep design rationale is in `design/` (indexed below). The old
-> blow-by-blow changelog was removed — most of it described code that has since
-> been deleted (`GirType`, the GIR interpreter, `RegValue`/`ConstVal`,
-> `EvalResult`, the 3-mode test harness, the AOT backend).
+> Durable current-state summary — what the subsystem IS, not how it got here.
+> Per-change history is in `git log`; deep design rationale is in `design/`
+> (indexed at the end of this section).
 
-**Two evaluators, one of them canonical:**
+**Two evaluators, one canonical:**
 
 - **Node-walk** (`node/*.rs` — the `Box<dyn Update>` reactive graph) is the
-  **canonical execution model.** It runs when fusion is off, and is the
-  **universal fallback** for any subtree the JIT can't compile. It must ALWAYS
-  be correct (see the global `node-walk-is-canonical` memory). A fusion/JIT bug
-  can *lose fusion* (a perf regression) but can never produce a *wrong answer* —
+  **canonical execution model** and the **universal fallback** for any subtree
+  the JIT can't compile. It runs when fusion is off, and it must ALWAYS be
+  correct (global `node-walk-is-canonical` memory). A fusion bug can *lose
+  fusion* (a perf regression) but can never produce a *wrong answer* —
   correctness is structural.
-- **Fusion → cranelift JIT** (`fusion/`, the emitter is `fusion/emit.rs`)
-  identifies sync (pure) subtrees and compiles them to native code. **JIT
-  success → splice the native kernel + delete the originals; JIT failure →
-  don't splice, the originals node-walk.** There is no third evaluator.
+- **Fusion → cranelift JIT** (`fusion/`, emitter in `fusion/emit.rs`) identifies
+  sync (pure) subtrees and compiles them to native kernels. **Success → splice
+  the kernel + delete the originals; failure → don't splice, the originals
+  node-walk.** There is no third evaluator.
 
-**The GIR IR is GONE (F3, 2026-06-12; the gir-named files were renamed
-into `fusion/` on 2026-06-16 — pure churn, behavior-neutral).** The
-pipeline is `Expr → node graph → CLIF`, period: `fusion::fuse` is
-`Update::fuse` recursion, each node's `emit_clif` emits its own CLIF
-(`Apply::emit_clif` for builtins, `MapFn`/`FoldFn::emit_clif` + the
-`fusion::emit::scaffold` loop scaffolds for HOFs), and kernel builds
-are pure SIGNATURE derivation — `sig_from_inputs` is the single sig
-builder, the `Arc<KernelSig>` is the compiled-callable handle, and "is
-it fusable" IS the compile attempt. The kernel-ABI vocabulary
-(`KernelSig`/`abi_kind`/`freeze_for_abi`/slots/`FnSource`/`BuiltinSlot`, plus
-`KnownFusedFn`) lives in the single `fusion/kernel_abi.rs` (the old
-`fusion/vocab.rs` that re-exported it was deleted — one module, one path); the
-`BinOp`/`CmpOp`/`BoolOp` scalar operator enums (not ABI — shared by node-walk
-and JIT) live in `node::op` with the node-walk, and `fusion::emit` imports them;
-`GirExpr`/`GirOp`/`GirStmt`/`GirKernel`/`GirEmitter`/`FusedBuiltin`/
-`FUSABLE`/`emit_gir` no longer exist.
+**The pipeline is `Expr → node graph → CLIF`.** The node graph IS the IR: each
+node's `Update::emit_clif` emits its own CLIF (`Apply::emit_clif` for builtins;
+`MapFn`/`FoldFn::emit_clif` + the `fusion::scaffold` loop scaffolds for HOFs).
+Fusion recursion is `Update::fuse` (driven from `compile()`, gated once on
+`ctx.fusion.enabled`); `fusion::try_fuse` is the mechanics-only library. **Kernel
+builds are pure signature derivation** — `sig_from_inputs` is the single sig
+builder, the `Arc<KernelSig>` is the compiled-callable handle, and "is it
+fusable" IS the compile attempt. The kernel-ABI vocabulary
+(`KernelSig`/`abi_kind`/`freeze_for_abi`/slots/`FnSource`/`BuiltinSlot`/`KnownFusedFn`)
+lives in `fusion/kernel_abi.rs`; the `BinOp`/`CmpOp`/`BoolOp` scalar-operator
+enums are *not* ABI (shared by node-walk and JIT) and live in `node::op`, which
+`fusion::emit` imports.
 
-> **GIR is historical — do NOT rebuild it.** GIR was a parallel typed
-> IR (`GirExpr`/`GirOp`/`GirStmt`/`GirKernel`/`GirType`) plus a GIR
-> *interpreter* — a redundant THIRD evaluator beside the node-walk and
-> the JIT. It was removed deliberately because: (1) the interpreter
-> forced every semantics fix to be written THREE times (node-walk +
-> GIR-interp + JIT), a standing drift hazard, and its centralized
-> jump-table was slower than the node-walk's distributed vtable
-> dispatch; (2) the closed op-set was a *vocabulary tax* — every new
-> op/shape had to be added to `GirOp`/`GirType` AND the node graph AND
-> the emitter; (3) the op-list was a pass-through label anyway —
-> emission keys off the netidx `Type` + `abi_kind`, never off `GirOp`
-> structure, so **the node graph already IS the IR**. Lesson: keep the
-> node graph as the single IR and distribute codegen as `emit_clif`
-> per node; the only part of `GirKernel` worth keeping was the ABI
-> contract, which survives as `KernelSig` / `abi_kind` in
-> `fusion/kernel_abi.rs`.
+> **Do NOT reintroduce a parallel typed IR or a third evaluator.** The old GIR
+> (a `GirExpr`/`GirOp`/`GirType` IR plus a GIR *interpreter*) was deleted
+> deliberately: (1) the interpreter forced every semantics fix to be written
+> THREE times (node-walk + GIR-interp + JIT) — a standing drift hazard; (2) the
+> closed op-set was a vocabulary tax — every new op/shape had to be added in
+> three places; (3) emission keys off the netidx `Type` + `abi_kind`, never off
+> op *structure*, so the node graph already IS the IR. The only part worth
+> keeping was the ABI contract, which survives as `KernelSig`/`abi_kind`. Keep
+> the node graph as the single IR and distribute codegen as `emit_clif` per node.
 
-The 2026-06-16 rename map: `gir_jit.rs → fusion/emit.rs`,
-`gir_interp.rs → fusion/kernel.rs` (`GirNode → Kernel`), `gir.rs →
-fusion/vocab.rs`, `gir_jit_helpers.rs → fusion/emit_helpers.rs`,
-`gir_jit_intern.rs → fusion/intern.rs`, `gir_jit_scaffold.rs →
-fusion/scaffold.rs` (still a submodule of `emit`); `Update::jit →
-Update::fuse`, `fusion::jit_node → fusion::fuse` (the old
-flag-checking `fuse` driver was deleted and its skip promoted into
-`compile()` via `ctx.fusion.enabled`, so it's checked once
-instead of every recursion); `GirMatcher → KernelMatcher`. See
-`design/distributed_jit.md` — "F3 — the delete"
-for what went and the two behavioral seams (fuse_callsite's
-fall-through to the split path on a failed whole-body compile;
-builtin-call discovery riding `for_each_node` with resolved
-FnTypes), and "Semantic contracts for emit work" for the six
-invariants the F2 flip taught us (replayability ≠ Sync, effects
-de-fuse-never-skip, first-dispatch-is-init, `(BindId, top_id)`
-wake-up keying, with_deref/registry lock discipline, dead-statement
-elimination). Remaining: F4 (#213) EmitTags for node_shape, #219
-missing-input bottom support.
-
-**Value & type representation — use the netidx types, no parallel copies:**
+**Value & type representation — the netidx types, no parallel copies:**
 
 - **Values:** netidx `Value` everywhere (`#[repr(u64)]`, 16 bytes = (disc,
-  payload)). No bespoke value types — `RegValue`/`ConstVal`/`EvalResult` are
-  gone. `Value::copy_unchecked` is the branch-free copy for proven scalars.
-- **Types:** netidx `Type` everywhere. `GirType` is gone. Runtime shape
-  comes from `abi_kind(&Type) -> Option<AbiKind>` + `freeze_for_abi` (in
-  `fusion/kernel_abi.rs`); `PrimType` is the closed
-  register-scalar set (the one *good* small classifier enum — exhaustively
-  matched in codegen).
+  payload)). `Value::copy_unchecked` is the branch-free copy for proven scalars.
+- **Types:** netidx `Type` everywhere. Runtime shape comes from
+  `abi_kind(&Type) -> Option<AbiKind>` + `freeze_for_abi` (`fusion/kernel_abi.rs`);
+  `PrimType` is the closed register-scalar set, exhaustively matched in codegen.
 
-**Semantics — node-walk and JIT must agree (the differential fuzzer enforces it):**
+**Semantics — node-walk and JIT must agree bit-for-bit (the differential fuzzer
+enforces it):**
 
-- `&&`/`||` are **STRICT** — both operands required, `false && ⊥ = ⊥`. NOT
-  short-circuit (uniform with every other binary op; a dataflow value reflects
-  all its inputs).
-- Float comparison uses graphix's **TOTAL order** (`Value::partial_cmp`): `NaN
-  == NaN`, `NaN` sorts below every non-NaN (so `Value` is map-key-able). NOT
-  IEEE.
-- Checked arith (`+?`/`-?`/`*?`) detects overflow via `Value::checked_*`;
-  unchecked wraps; integer div0 / signed MIN-/-1 → bottom.
+- `&&`/`||` are **STRICT** — both operands required, `false && ⊥ = ⊥`. Not
+  short-circuit (a dataflow value reflects all its inputs).
+- Float comparison uses graphix's **TOTAL order** (`Value::partial_cmp`):
+  `NaN == NaN`, `NaN` sorts below every non-NaN (so `Value` is map-key-able).
+  Not IEEE.
+- Checked arith (`+?`/`-?`/`*?`) detects overflow via `Value::checked_*` and
+  yields the catchable `ArithError` *value*; unchecked wraps; integer div0 /
+  signed `MIN`-/-1 → bottom.
 - `a[i]` / `a[i..j]` / `bytes[i]` / `m{key}` are bounds-checked through shared
-  `node::array` / `node::map` helpers — one semantic seam, all backends agree
-  bit-for-bit.
-- **Bottom** ("no value this cycle" — div0, `?`-error, a never-fired input) is
-  `None`-from-`update` in the node-walk (canonical). A JIT'd kernel that would
-  produce an *eager* bottom it can't represent simply doesn't fuse → node-walks
-  (correct). `design/representable_bottom.md`.
-- An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield
-  to the scheduler) — accepted/correct; the reactive node-walk's per-cycle
-  "continue" is the artifact. `design/final_jit_architecture.md` Part 2.
+  `node::array` / `node::map` helpers — one semantic seam, all backends agree.
+- **Bottom** ("no value this cycle" — div0, `?`-error, an unfired input) is
+  `None`-from-`update` in the node-walk. In the JIT it is the **taint channel**
+  (#219): a missing/unfired input becomes a taint-marked, helper-safe placeholder
+  (`Value::Null` / empty `ValArray` / empty `ArcStr`), taint propagates through
+  pure ops (`propagate_taint`), and the kernel forces bottom (emits `None`) only
+  if the taken output path *consumes* a tainted value (`is_tainted`) — so a
+  missing input no longer de-fuses the whole region. `design/representable_bottom.md`.
+- An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield to
+  the scheduler) — accepted/correct; the reactive node-walk's per-cycle
+  "continue" is the artifact.
+
+**Per-cycle firing (the STALE fired-bit):** a fused kernel must replicate the
+node-walk's non-async firing — an output fires only when an input that feeds it
+actually fired this cycle. A "fired-this-cycle" (`STALE`) bit rides each kernel
+param's disc; a lifted let-bound `connect`-target counter is threaded in as a
+kernel input so reactive counters fuse. HOF results inherit capture-aware firing
+(`inherit_hof_firing`: a result is STALE unless the source array, the HOF init,
+and every feeder the callback body captures fired).
 
 **Testing is differential:**
 
 - `run!` (`graphix-package-core/src/testing.rs`): each fixture runs in 2 modes —
-  `interp` (node-walk, `FusionDisabled`) and `jit` (fusion+JIT) — asserting equal
-  values. `FuseExpect::{Jit, None}` asserts *whether* it fuses+JITs (a
-  bidirectional drift check). Optional `; shape:` asserts the compiled graph via
-  `NodeShape` (`node_shape.rs`).
-- **graphix-fuzz** (`graphix-fuzz/`) — the differential model-checking fuzzer:
-  node-walk (trusted) vs JIT (under test). `check`/`run`/`generate`/`fuzz`/
+  `interp` (node-walk, fusion off) and `jit` (fusion+JIT) — asserting equal
+  values. `FuseExpect::{Jit, None}` asserts *whether* it fuses (a bidirectional
+  drift check). Optional `; shape:` asserts the compiled graph via `NodeShape`
+  (`node_shape.rs`, currently signature-fact-only — see F4/#213 below).
+- **graphix-fuzz** (`graphix-fuzz/`): the differential model-checking fuzzer —
+  node-walk (trusted) vs JIT (under test), with `check`/`run`/`generate`/`fuzz`/
   `minimize`/`regress`; the committed `findings/` corpus is the regression gate.
-  It found ~a dozen real bugs this cycle. `design/graphix_fuzz.md`.
-- **`FusionStats`** (D0, `fusion/mod.rs`) — per-`ExecCtx` compile-time counters
-  (`attempted`/`fused`/`failed: Vec<(ExprId, reason)>`), populated by `try_fuse`
-  (+ the classic splice, fused-only), exposed via `GXHandle::fusion_stats()`
-  (the `ToGX` exec pattern), `TestCtx::fusion_stats()`, and graphix-fuzz's
-  `run_program_with_stats` (which subtracts the per-init stdlib-root baseline —
-  9 stdlib regions fuse per init under DirectJit). The `direct_node_jit_*`
-  probes assert `fused > 0` via `all_three_agree_fused` for every probe known
-  to fuse — the direct path degrades silently, so value agreement alone can't
-  catch a coverage regression. Landing it immediately exposed two probes that
-  had NEVER compiled (CompileErr == CompileErr passes `all_three_agree`).
-  Read `failed` as a blocker profile, not a gap count: the `fusion::fuse`
-  attempt-then-recurse protocol means a wholly-fused trivial program still
-  logs ~3 Module/Bind misses.
+  `design/graphix_fuzz.md`.
+- **`FusionStats`** (`fusion/mod.rs`): per-`ExecCtx` compile-time counters
+  (`attempted`/`fused`/`failed: Vec<(ExprId, reason)>`), exposed via
+  `GXHandle::fusion_stats()` / `TestCtx::fusion_stats()`. Read `failed` as a
+  blocker profile, not a gap count (the attempt-then-recurse protocol logs
+  Module/Bind misses even for a wholly-fused program).
+- **`GRAPHIX_FUSE_AUDIT=1 cargo test -p graphix-tests -- jit --nocapture`** prints
+  a per-fixture `FUSEAUDIT <name> <expected> <actual> OK|MISMATCH` line plus the
+  blocker list — the annotation-vs-reality audit (stdout is captured without
+  `--nocapture`).
 - A divergence is **at least as likely a fused/JIT bug as a node-walk one** —
-  verify the intended semantics against the node-walk before changing the
-  canonical model.
+  verify the intended semantics against the node-walk before touching it.
 
 **Per-slot HOF callbacks** (`array::map(a, cb)` etc.): the callback fuses into a
-template kernel once, then `clone_rebind`s per array slot (each slot gets fresh
-async state). An *impure* callback splits at the async boundary — the sync part
-fuses + JITs per slot, the async residue node-walks. `design/impure_hof_fusion.md`,
-`design/composite_hof_fusion.md`, `design/clone_rebind_testing.md`.
+template kernel once at compile time, then `clone_rebind`s per array slot (each
+slot gets fresh async state). An *impure* callback splits at the async boundary —
+the sync part fuses + JITs per slot, the async residue node-walks.
+`design/impure_hof_fusion.md`, `design/composite_hof_fusion.md`,
+`design/clone_rebind_testing.md`.
 
-**Kernel ABI**: kind-grouped params — scalars, then array/tuple/struct
-pointers, then string, then 2-word variant/nullable/value — derived from a
-single source (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`).
+**Kernel ABI:** kind-grouped params — scalars, then array/tuple/struct pointers,
+then string, then 2-word variant/nullable/value — derived from a single source
+(`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`). Any region width
+fuses (the #219 taint rides each param's disc, so there is no input-count cap).
+
+**Emit contracts** (the invariants a new `emit_clif` must respect — full detail in
+`design/distributed_jit.md`, "Semantic contracts for emit work"): replayability ≠
+`Sync` (an effect that re-delivers all args per fire is `Async`); effects
+de-fuse, never silently skip; first dispatch forces the init view; wake-ups key on
+`(BindId, fusion.top_id)`; clone types out of `with_deref`/the abstract registry
+before recursing (lock discipline); dead statements eliminate at emit only when
+the stmt subtree is effect-free.
+
+### Coverage (current)
+
+Measured by the FuseExpect audit above: **~70% of the `run!` corpus fuses+JITs
+(≈449 `Jit` / ≈194 `None`, zero annotation drift), and all bench programs
+(`bench/`) fuse fully.** The value-computing vocabulary is essentially complete:
+all scalar arithmetic/comparison/logical/cast/checked-arith, every producer
+(struct/tuple/variant/array/map-literal) and accessor (field/index/slice/`m{key}`),
+scalar `select`, `?`/`$`, scalar `connect`, all eight array HOFs as native loops
+(map/filter/flat_map/filter_map/find/find_map/fold/init, incl. composite elements
+and `|(k,v)|` scalar destructure, and HOF-of-HOF fused into one multi-loop kernel),
+every Sync core/str/re/map/math/rand builtin via the generic DynCall path,
+cross-kernel lambda calls (incl. recursive self-calls: tail → rebind-and-jump loop,
+non-tail → native recursion), transitive callees, and builtin/cast/qop calls inside
+lambda bodies.
+
+The **correct-None denominator** (principled, never a gap): async/streaming
+builtins (timers, IO, netidx, `never`, `queue`, `once`/`take`/`skip`), cross-cycle
+nodes (`~`, `Any`, `TryCatch`'s catch-read), and non-register-encodable types
+(`decimal`, `Fn`, `Ref`, recursive `List`/ADTs — no fixed ABI layout — and unbound
+TVars). The sync operands of an async boundary still fuse (`clock ~ (a + b)` fuses
+the `a + b`).
+
+The genuine missed-fusion tail is small; ranked by impact × tractability (the
+composite/string/value read+marshal helpers already exist in `emit`, so most are
+wiring, not new ABI):
+
+1. **HOF over String / Value-shape elements + composite destructure leaves (#150)**
+   — `array::map(names, str::to_upper)` de-fuses; string arrays are ubiquitous.
+2. **`select` structural destructuring** — tuple/struct/slice patterns and
+   non-scalar/nested variant payloads de-fuse; only scalar scrutinees + scalar
+   variant payloads fuse. `select` is the language's sole control-flow construct,
+   so this is its default idiom.
+3. **Non-scalar `connect` + `StructWith`** — composite reactive accumulators
+   (`data <- array::push(...)`, `{state with count: ...}`); `StructWith` has no
+   `emit_clif` at all despite being classified Sync.
+4. **HOF callback capturing a *local* lambda** (`array::map(a, |x| g(x))`) — the
+   `g(x)` call inside the per-slot template isn't statically resolved (harder:
+   resolution of captured locals in cloned templates).
+5. Lower-impact: non-scalar string-interp parts, String-returning callees, dynamic
+   map literals, `array::group`, ByRef/Deref, decimal arith.
+
+**F4/#213 (EmitTags)** is the one clearly-unfinished piece, but it is *test
+infrastructure* — it would let `node_shape` assert *what fused into what* (kernels
+carry no per-op tags yet, `node_shape.rs`), not make any new program fuse.
 
 ### Design documents (`design/`)
 
-**Current / active:**
-- `distributed_jit.md` — the GIR-IR removal as it's actually being executed:
-  fusion/JIT distributed as `Update::emit_clif` + `Update::fuse` trait methods
-  (the delete/sleep/refs pattern), `Apply::emit_clif` for builtins,
-  `fusion::try_fuse` as mechanics-only library, `KernelSig` in
-  `fusion/kernel_abi.rs`. In progress (Stage A landed; Stage C complete through
-  C6 — scalars, strings/values, BindId env, composites, qop/DynCall,
-  `select` via `emit_select_node`, StringInterpolate via
-  `emit_string_interpolate_node`, and checked arith via
-  `emit_checked_arith_node` + the shared `node::op::wrap_arith_error`
-  core, NEW coverage the GIR path never had — overflow/div0 is the
-  catchable `ArithError` error VALUE, never bottom). C5 notes: the direct path
-  tests an explicit-type-predicate `i64 as _` over a Nullable scrutinee
-  as `disc != NULL` (the classic path's trivially-true shortcut was
-  arm-order-UNSOUND — wrong-value divergence, #200, since fixed in
-  the classic path too), and refuses to fuse a select whose final arm
-  is conditional under a possibly-bottom scrutinee (the classic
-  `compile_ifchain` trap was reachable there and SIGILL'd — #201,
-  classic path now refuses identically; the stmt form was already
-  immune via its pending-exit scrutinee gate). Both repros live in
-  findings/select-jun2026. (SUPERSEDED by #219: a conditional final arm
-  no longer refuses — it emits a fail block producing a tainted bottom,
-  emit.rs `emit_select_node`; the refusal above is C5-era history.) `fusion::kernel_abi::freeze_for_abi_normalized` exists because
-  typecheck leaves a select's result type as the un-flattened arm
-  union (`Set([i64, TVar→i64])`), which `freeze_for_abi` rejects.
-  Stage D1 landed: the eight HOF loop scaffolds extracted from the
-  GirOp arms into `fusion/scaffold.rs` —
-  mechanics (loop/buf/element binding+drops/pending-cleanup) behind
-  `emit_*_loop` fns taking body closures over `BodyCx`; verified
-  CLIF-identical via `GRAPHIX_DUMP_CLIF` differential. D2 reuses the
-  scaffolds from `Apply::emit_clif` HOF impls (pass `ArraySrc { owned:
-  true }` for fresh producer inputs — dead config under the GIR arms).
-  D2-map landed: `MapFn::emit_clif` + MapQ's `Apply::emit_clif`
-  orchestration + `MapImpl` via `emit_map_loop` — whole-block maximal
-  fusion on the direct path, EXCEEDING classic on composite-elem and
-  qop-body maps. TRAP (cost a day): `BuiltInLambda` (node/lambda.rs,
-  the builtin plumbing wrapper) must delegate EVERY `Apply` method —
-  it delegated ten but not the new `emit_clif`, so the trait default's
-  `Ok(None)` silently swallowed every builtin's hook while all probes
-  "passed" (the array-literal region satisfied `fused > 0`
-  vacuously). Diagnostics that catch this class: `graphix-fuzz run
-  <f>` runs all THREE modes printing per-mode `attempted/fused` + the
-  blocker list, and probe suites use a `Fuse::{No,Some,Clean}` ladder
-  (`Clean` = fused>0 AND no non-ancestor-noise blocker). Nested HOFs
-  don't inline on either path (#203 — resolve_static_calls doesn't
-  descend lambda bodies). D2-filter landed: `FilterImpl::emit_clif`
-  via `emit_filter_loop` — the orchestration is generic over `MapFn`,
-  so each further HOF is one new method. Filter's contract: a
-  may-bottom (Scalar2) PREDICATE Errs = build-time de-fuse (vs map's
-  runtime bottom-abort seam) — there's no runtime keep-vs-drop answer
-  for a bottom pred; canonically the pred slot never fires and the
-  output BLOCKS. The strong de-fuse probe is statically-may-bottom /
-  runtime-clean (div by element, no zero): de-fuses, then node-walks
-  to a REAL value all modes agree on — Timeout==Timeout agreement is
-  value-blind. Composite-elem filters inline on direct only
-  (classic needs a register-scalar elem for single-name callbacks).
-  D2-fold landed: `FoldFn::emit_clif` + FoldQ's `Apply::emit_clif`
-  (the 2-arg `(acc, elem)` orchestration) + `FoldImpl` via
-  `emit_fold_loop`; the scaffold's acc bind gained `Option<BindId>`
-  (classic passes None — differential-proven invariant), so
-  `fold(a, acc, |acc, x| ...)` resolves the init's outer `acc` vs
-  the loop's acc BindId-first. BOTH init and body closures de-fuse
-  at build on may-bottom (a bottom acc poisons all later iterations —
-  no per-element runtime seam). Fold probes found #204 (pre-existing,
-  both paths): a HOF callsite in OPERAND position (`k + fold(...)`)
-  never statically resolved — static_resolve's visit_mut only
-  descended Module/Block/Bind/CallSite. #204 FIXED (pulled ahead of
-  the Stage-F flip): static resolution now descends every
-  child-bearing node except Lambda bodies (#203) and FusedKernel.
-  `collect_lambda_binds` is the canonical enumeration — an EXHAUSTIVE
-  NodeView match (no `_` arm; a new node variant is a compile error
-  there, not a silently-untraversed container); `visit_mut` mirrors
-  it with per-type downcast arms. Position probes (operand /
-  select-arm / array-element HOFs) pin it at `Clean`. Benefits both
-  paths; zero fixture/CLIF fallout. The D2 HOF ladder then COMPLETED:
-  flat_map, filter_map, find, find_map, array::init all inline on the
-  direct path (one `emit_clif` each — the orchestrations made every
-  rung a single method). find/find_map return Value-shape Nullable
-  pairs; borrowed body sources clone via `ensure_owned_*_src` (now
-  pub). OPERATIONAL RULE (bitten twice): `cargo test` does NOT
-  rebuild `target/debug/graphix-fuzz` — always `cargo build -p
-  graphix-fuzz` before CLI kernel inspection or differential capture.
-  Owned-array-arg widening landed: fresh-producer inputs (literals,
-  slices, inlined-HOF results) feed the loop scaffolds via
-  `adopt_owned_src` + the ValArray-typed `owned_input_stack`
-  (pending exits free them; normal path drops + pops after the loop
-  — the buf stack has the wrong destructor; env-binding was rejected
-  because JitEnv `truncate` emits no drops: select arms DO
-  mark/truncate per arm, sound today only because arm binds are
-  scalar-only, so an env-bound composite adoption inside an arm
-  would leak on the normal path). With #204, HOF-of-HOF args now
-  fuse as multi-loop single kernels (`filter(map(a,f),g)` = one
-  kernel, two loops, intermediate dropped exactly once —
-  kernel-verified). D3 landed, closing Stage D's functional scope:
-  destructured `|(k,v)|` callbacks inline via `HofElem::leaves`
-  (per-leaf BindId-bound scalar reads off the owned composite
-  element; sparse `_` slots free via tuple_leaves; composite leaves
-  node-walk). Remaining parity gaps: #150 (string/value elements,
-  composite leaves, filter_map composite elems), #203 (nested HOFs
-  in lambda BODIES — Stage E). Stage E1+E2 landed: cross-kernel
-  lambda calls on the direct path — `discover_lambda_calls` (the
-  canonical full `for_each_node` walker) builds callee kernels via
-  the shared `build_lambda_kernel` (pub(crate); callees compile from
-  GIR bodies during the parallel period), records
-  `ExprId → LambdaCallInfo` (the apply_sites pattern), and
-  `CallSite::emit_clif` + `emit_lambda_call_node` emit kind-grouped
-  CLIF calls with closure-converted captures (kernel-verified: the
-  capture rides the parent as an input, forwards as the trailing
-  arg). Source-name keying mirrors classic (`ident_of`). New guards:
-  `ExecCtx::fusion_building` (mutual-recursion re-entrancy —
-  pre-existing infinite-build landmine, now a de-fuse) and two
-  formerly-SILENT try_fuse Ok(None) paths now log (FusedKernel::new
-  Err; duplicate-basename). Findings: #205 (pre-existing:
-  GirStmt::Return mis-routes un-normalized Nullable select types —
-  the first kernel build ever to reach it found it); recursive
-  lambdas have NEVER fused on any path. NOTE: deep recursion
-  overflows the NODE-WALK's native stack (~50k frames) — keep
-  node-walk-compared recursion probes shallow. E3 landed: recursive
-  lambdas fuse on the direct path. The REAL build-killer was the
-  captures scan, not the `self_info: None` hardcode — a rec
-  binding's env type is a TVar-wrapped `Fn` the shallow skip missed,
-  so `freeze_for_abi` rejected the self-"capture".
-  `build_lambda_kernel` gains `self_bind: Option<BindId>` (the call
-  site's fnode Ref id, threaded from discovery /
-  `ensure_lambda_kernel` / the per-slot path): the self-reference is
-  excluded from captures, recursion = external-refs ∋ self_bind,
-  non-tail self-calls lower to `GirOp::Call` native recursion
-  (fib-verified), and `body_has_self_tail_call` (pure pre-scan of
-  emit_tail's positions) + `SelfInfo { name, bind_id, source_args }`
-  (params field deleted — zero consumers; matching is BindId-based)
-  turn tail self-calls into the rebind-and-jump loop
-  (kernel-verified: icmp/isub/iadd/jump, no call insn; 5M-deep
-  fused-only probe — DirectJit ONLY, the node-walk AND classic both
-  node-walk it and overflow). `tail_call_slots` must stay full (it
-  doubles as the runtime arg layout) — the JIT TailCall arm rebinds
-  only the leading formals (captures are loop-invariant; the
-  clone-bump loop needed `.take(args.len())`, OOB otherwise).
-  Tail-loop gate: all formals Prim/Array/Tuple/Struct. **#206 (live
-  E1-reachable crasher, found+fixed)**: f2's body call to a shadowed
-  same-name OUTER f name-resolved against f2's own known_fns self
-  entry → infinite native self-call → stack overflow.
-  `KnownFusedFn::self_bind` now guards every name-keyed resolution
-  (fnode Ref BindId must match). Repro in findings/lambda-jun2026;
-  when #203 resolves inner-body sites, known_fns must re-key by
-  BindId. Rec FN-valued lets now emit the "function-valued let"
-  message (Clean-compatible); 5 recursion seeds in the fuzz corpus.
-  Stage F runs F0a→F0b→F0c→F1→F2→F3→F4 (GIR bodies are load-bearing
-  in three places that must port to Node emission BEFORE the delete:
-  lambda callees, per-slot HOF kernels, body-split kernels). Scope
-  fact: lambda-calls-OTHER-lambda in a callee body never fused on any
-  path (#203 — per-callee known_fns starts empty); a callee's only
-  cross-kernel reference is SELF. F0a landed: non-rec callee bodies
-  Node-emit (discovery returns kernel-identity → body-Node;
-  per-callee NodeBodyEmitters with empty site maps; define loop
-  routes by Arc::as_ptr; needed-FuncRefs per-emitter). The define
-  loop now log::trace!s "Node-emitted body" vs "GIR body" per kernel
-  — the standing diagnostic for the silent-fallback class; verify
-  routing with RUST_LOG=graphix_compiler=trace, not by CLIF
-  inspection (shared helpers make both emitters' output identical).
-  F0b landed: recursive callee bodies Node-emit — NO lambda callee
-  reads its GIR body on the direct mode. Two byte-identical-gated
-  refactors made the seams (`emit_tail_rebind_jump` extracted from
-  the GIR TailCall arm; `emit_select_node` split into
-  classify + `emit_select_arms`(arm-closure) + value-arm), then the
-  tail walkers mirroring lowering 1:1: `emit_body_tail` /
-  `emit_select_node_tail` (arms terminate, no merge) /
-  `emit_self_tail_call` / shared `emit_block_stmt`. NO in_tail flag:
-  tail self-calls intercept structurally before value emission;
-  value-position self-calls go through `CallSite::emit_clif` → the
-  kernel's own FuncRef via `emit_lambda_call_node` (captures forward
-  from own params). TRAP: inner self-callsites are #203-unresolved
-  (`self.function` None) — the self check must live OUTSIDE the
-  resolved-Apply block (tail worked immediately; value-position
-  rec/fib silently de-fused until moved). Return-leak safety is
-  structural (emit_kernel_return drops all owned at any depth).
-  Non-recursive bodies keep value-position emission (per-arm returns
-  = pointless CLIF churn). F0c landed: per-slot kernels route by
-  `ExecCtx::direct_node_jit` (the jit_enabled pattern — fuse_callsite
-  runs outside fuse()'s flag-aware loop); split branch proven live
-  (`__split_*` Node-emitted under DirectJit), whole-body branch
-  code-uniform but probe-less (D2 inlining subsumes its trigger
-  space — the per-slot compile-failure trace is the watchdog). With
-  F0a+b+c NO direct-mode kernel reads a GIR body. F1 in progress:
-  generate-5000 clean; the mutation soak found **#214** (pre-existing
-  at HEAD, both paths): a pending String DynCall's sentinel-zero rode
-  the scalar convention into owned-ArcStr drops —
-  `graphix_arcstr_drop(0)` SIGSEGV (`{let v = str::concat(); i64:0}`,
-  isolated via the new GRAPHIX_FUZZ_ECHO crash forensics). Fixed:
-  String dyncall results take the same site-level pending branch as
-  composite/Value (shared `emit_dyncall_pending_branch` — one helper,
-  six arms, both paths), and ALL five JIT drop helpers null-check +
-  PANIC (aborts with message at the extern "C" boundary — the
-  whole sentinel-into-drop mistake class is now loud instead of UB;
-  `graphix_value_drop`/`graphix_arcstr_drop` retyped to raw words so
-  the check precedes invalid-value materialization; Value disc 0 is
-  unambiguous, discs are bitmasks from 0x1). The fix EXPOSED a
-  residual pre-existing VALUE divergence the crash was masking: a
-  pending dyncall in DEAD position bottoms the whole kernel (interp=0
-  vs jit=Timeout; membership = zero-vararg variadic calls,
-  `str::concat()` / `str::join(#sep:)` — zero-input nodes never fire
-  canonically; used-position agrees). Decision pending (#216); repro
-  at `findings/dyncall-jun2026/*.gx.pending` (excluded from regress
-  until resolved). The post-fix soak then died on the OTHER
-  process-killer (runaway-recursion mutant → node-walk stack
-  overflow) → built **fuzzer subprocess crash isolation** (#215):
-  campaign checks run in `check-one` children (stdin program →
-  VERDICT line); signal-death → `crash_*.gx` finding with status +
-  stderr tail; minimization isolated too via `minimize-one` (a
-  REDUCTION of a benign divergence can be a crasher — dropped base
-  case), child death → record unminimized; `GRAPHIX_FUZZ_INPROC=1`
-  opts back; crash findings must NOT be promoted to findings/ until
-  fixed (regress runs in-process). With isolation the 3000@777 soak
-  COMPLETED (first time): 1 divergence (dead-pend) + 1 crash
-  (runaway recursion, accepted) — ZERO unexplained. FuseExpect audit
-  (`GRAPHIX_FUSE_AUDIT=1 cargo test -p graphix-tests -- jit
-  --nocapture` — stdout is CAPTURED without --nocapture, silently 0
-  lines): 612 fixtures → 450 OK, 155 GAINS (None→Jit), 6 LOSSES =
-  two closable clusters (map literals: no direct emit_clif, #143
-  unported; abstract types in composites: resolve_abstract not on
-  the direct freeze, #145 unported) — values agree everywhere.
-  #216 RESOLVED at the language level (Eric): a sync variadic builtin
-  called with no positional arguments can never fire (no data inputs)
-  — now a COMPILE ERROR (`reject_dead_variadic_call`, callsite.rs;
-  labeled args are config, not data, so `str::join(#sep:)` is caught;
-  first-class-value calls escape to the safe runtime bottom).
-  `never()` is the sanctioned intentional bottom — reclassified
-  `EffectKind::Async` (its honest contract), which exempts it and
-  makes it a fusion boundary instead of an always-pending fused
-  dyncall (zero FuseExpect fallout). dyncall-jun2026 findings are
-  CompileErr-agreement regress guards. Audit loss clusters CLOSED:
-  map literals via `Map::emit_clif`→`emit_map_new_node` (const-fold
-  through shared `const_map`, classic's contract); abstract types
-  via four seams (resolve_abstract TVar-deref arm — inferred binding
-  types are TVar-wrapped; collect_region_inputs resolves before
-  freeze; try_fuse's return gate retries through resolve_abstract;
-  emit-time `BodyEmitter::type_env`→`LowerCtx.type_env`→
-  `freeze_node_typ` retry at elem reads + arith prims) and
-  `emit_lambda_call_node` typing arg slots from the CALLEE signature
-  (`LambdaCallInfo.arg_types`) like classic. Audit now ZERO losses,
-  165 gains. Classic also gained (abstract_type_in_typedef
-  re-annotated Jit). Remaining before F2: one-time FuseExpect
-  re-annotation of the gains → F2 flip → F3 delete → F4 EmitTags.
-  **F2 FLIPPED (2026-06-13)**: CFlag::DirectNodeJit gone, fuse() =
-  unconditional fuse recursion (classic planner body deleted),
-  Mode::DirectJit aliases Mode::Jit, 168 FuseExpect upgrades, 5
-  GirOp-tag shape pins parked for F4. Six flip-surfaced defects
-  fixed (design/distributed_jit.md "F2 — the flip" has the detail):
-  handler-ful `?` must not fuse (error delivery = variable write);
-  feeder ref_var must key the TOP expr id (ExecCtx::fuse_top_id) or
-  connect-fed regions see one update ever; DynCallSlot's first
-  dispatch forces the init view (labeled defaults are init-firing
-  Constants); Once/Take/Skip/Count/Uniq are Async (the dispatch
-  protocol re-delivers all args every fire — update-history
-  semantics unreproducible); TVar/ABSTRACT_REGISTRY lock discipline
-  (clone out of with_deref before recursing; never hold a registry
-  read as a match temporary — two deadlock edges wedged the parallel
-  suite); dead statements eliminate at emit_block_node (classic's
-  prune semantics) gated on stmt_subtree_effect_free — skipping an
-  effectful stmt would DROP the effect instead of de-fusing (the
-  env-accounting probe caught it). Gates: 1429/1429 ×2, 115/115,
-  regress 22/22 (findings/flip-jun2026 promoted), generate clean,
-  mutation 1 divergence = #219 (the DOCUMENTED pre-existing JIT
-  missing-input gap, not flip-caused).
-  **F3 LANDED (2026-06-12)** — the GIR IR deleted (~12.5k lines, 3
-  gated chunks, ZERO FuseExpect drift; "F3 — the delete" section has
-  the chunk detail + the two behavioral seams). Sig-only kernel
-  builds via the shared `sig_from_inputs`; `GirKernel` dissolved
-  into `Arc<KernelSig>`; `BodyEmitter` mandatory in the define loop;
-  builtin-call discovery on `for_each_node` (resolved-FnType-only —
-  the Expr-fallback walker died); fuzz probes two-mode
-  (`agree*`/`jit_*`); node_shape matches sig facts only until F4.
-  NEXT: F4 EmitTags (#213); #219 missing-input bottoms.
-- `delete_gir_ir.md` — superseded by `distributed_jit.md` (planned the same
-  removal around a central walker); its scoping analysis and risks remain
-  valid.
-- `final_jit_architecture.md` — the end-state (node graph → CLIF; eager node-walk is a future note).
-- `representable_bottom.md` — bottom semantics.
+- `final_jit_architecture.md` — the end-state architecture (`Expr → node graph →
+  CLIF`), now realized.
+- `distributed_jit.md` — how the GIR IR was removed and fusion distributed as
+  `emit_clif`/`fuse` per node; holds the emit contracts and the ABI-contract
+  rationale.
+- `representable_bottom.md` — bottom semantics (the taint channel).
 - `graphix_fuzz.md` — the differential fuzzer.
-- `fusion_state.md` — the fusion-coverage map / gap metric.
-- `impure_hof_fusion.md`, `composite_hof_fusion.md` — HOF fusion.
-- `clone_rebind_testing.md` — the `clone_rebind` contract + its test campaign.
-- `queue_fn.md` — `queue_fn` feature design.
-- `fusion_lowering_split.md` — **PROPOSED, not built.** Split `try_fuse`'s welded
-  analysis+lowering into a pure fusion *analysis* pass (color nodes with a
-  `KernelId`, build per-kernel descriptors in `ctx`) consumed by a thin lowering
-  pass (descriptors → CLIF). Node graph stays the IR; descriptors are the data
-  seam. Motivated by legibility (see the `feedback_clarity_as_participation`
-  memory).
-
-**Historical** (earlier fusion stages — superseded, kept for archaeology):
-`fusion_architecture.md`, `unified_fusion.md`, `whole_graph_fusion.md`,
-`whole_graph_fusion_m7.md`.
-
-### Major recent changes (newest first; `git log` for detail)
-
-- **Post-TagValue fusion audit — 4 commits (2026-06-30).** After the fired-bit
-  (`STALE`) + lift work made fused kernels replicate the node-walk's non-async
-  firing, an audit for follow-on wins. The audit's premises were mostly
-  overturned by RUNNING the code (stale comments had misled it), with two real
-  fixes:
-  - **`>64`-input de-fuse cap removed** (`55c619d5`). The cap's justification
-    (a one-u64 validity bitmask) was gone — taint rides each param's disc,
-    firing trackers spill to the heap. A 70-input region now fuses.
-  - **HOF may-bottom already fused** (`fdd73682`). fold/filter/find/flat_map
-    were documented as de-fusing at BUILD time on a may-bottom body, but every
-    scaffold already routes its body/predicate through `emit_forced` (RUNTIME
-    abort); `Scalar2`/`.single()`/`compile_scalar` had ZERO code refs. Pinned
-    with fixtures; de-staled the contracts.
-  - **HOF result firing — a real pre-existing SIGSEGV + capture-aware STALE**
-    (`eaf778d9`). Chasing the "benign" HOF over-fire surfaced a JIT crash: a
-    scalar `array::fold` result wore an ARRAY disc (from `array_result`), so a
-    `connect`'s `set_var` deref'd the scalar as a `*ValArray` → new
-    `emit::scalar_result` gives the prim's disc. The over-fire itself needed
-    CAPTURE-AWARE firing (`emit::inherit_hof_firing`: result STALE = AND of the
-    source array's STALE, fold's init, and every feeder the callback body
-    captures via `Refs::with_external_refs`) — a source-only version under-fired
-    `map(a,|e| e+x)` (never re-fired when `x` changed). BOTH are multi-cycle
-    firing bugs the differential fuzzer can't see (3000-soak clean despite
-    them); pinned by hand-written stream tests + findings/hof-connect-jun2026.
-  - **2.1 (widen the cross-kernel scalar call ABI) — SKIPPED** (Eric's call):
-    may-bottom scalar callees already fuse and bottom correctly (args are 2-word
-    with taint; a callee's scalar-return bottom rides the global
-    `DYNCALL_PENDING` flag). Widening would only delete `gate_stale_at_return`
-    at a per-call perf cost with no coverage gain. De-staled the comments
-    (emit.rs `emit_lambda_call_node`, the `Scalar2`/`.single()` survivors).
-  Gates each step: graphix-tests 1511 ×2, compiler 125, fuzz regress 24/0,
-  generate 3000 → 0 divergences/0 crashes.
-
-- **Builtin/cast/qop calls inside lambda bodies fuse — the #203 deferred
-  follow-up, landed as two commits (2026-06-27).** A sync builtin DynCall, a
-  non-numeric `cast`, or a handler-ful `?` (qop-deliver) called inside a fused
-  lambda body now fuses instead of de-fusing the region. Two sub-cases, two
-  commits.
-  - **Stage 1 — compile-time discovery + scope fix.** Builtin-call discovery
-    (`try_register_builtin_call_from_callsite`) now resolves the builtin name in
-    the CALL SITE's own lexical scope (`cs.scope().lexical`), not the region
-    root's — so (a) region-root builtins called by their UNQUALIFIED imported
-    names (`{ use array; len(concat(...)) }`) fuse (root-scope lookup couldn't
-    see the unqualified name; `array_len` realized its ASPIRE: Jit), and (b) a
-    builtin in a nested-scope callee body resolves in its own module scope.
-    `build_lambda_kernel` now runs `walk_node_for_builtin_calls` on the
-    callee/callback body, installing the `fn_params` slots on the kernel sig +
-    recording `apply_sites` on `CachedKernel` (mirrored onto `CalleeBody`). The
-    per-slot HOF path (`fuse_callsite`) threads those in, so a callback whose
-    body has a DynCall fuses as ONE whole-callback kernel. Callee (cross-kernel)
-    emitters still used `&empty_apply` (a callee-with-a-DynCall de-fused cleanly,
-    never mis-dispatched) — wiring them up is Stage 2. The vestigial `scope`
-    param of `walk_node_for_builtin_calls`/`try_register_builtin_call_from_callsite`
-    was dropped (the scope comes from the node now — Eric's hint). New fixtures:
-    `array_len` None→Jit, `cast_callback_per_slot`.
-  - **Stage 2 — transitive-callee runtime delivery (combined slot table).** A
-    cross-kernel callee is a bare FuncId with no `Kernel`, so its DynCall can't
-    use its own slots. The whole region now shares ONE combined `dyn_slots`
-    table — parent `fn_params` ++ each callee's — carried on
-    `WrappedKernel.dyn_fn_params` (parent-only default; `compile_kernel_with_callees_direct`
-    assembles it). `Kernel::new` builds `dyn_slots` + pre-inits from the combined
-    table; `Kernel::update` sizes `fn_arg_values` to `dyn_slots.len()` (a callee
-    `fn_index` exceeds the parent's; callee slots are pre-bound so their entry is
-    an ignored `Null`). `NodeBodyEmitter.fn_index_offset` (default 0) threads to
-    `LowerCtx`; `emit_dyncall_node`/`emit_qop_deliver` bake `base + local`.
-    Callee emitters now consume `CalleeBody.apply_sites` (Stage-1-populated).
-    **SOUNDNESS — the `(ptr, base)` JIT cache key.** A callee body bakes a
-    region-specific `iconst(base)`, so the SAME callee `KernelSig` fused into two
-    regions with different parent `fn_params` needs two compiled bodies;
-    `by_kernel` (and `ensure_declared`/`to_define`/eviction) key on
-    `(Arc::as_ptr, base)`. A ptr-only key would hand region B region A's body and
-    mis-dispatch off the end of B's shorter `dyn_slots`. Empty-`fn_params`
-    callees pin at base 0 to share one compilation. New fixtures:
-    `transitive_callee_dyncall`, `transitive_dyncall_chain`,
-    `cross_region_callee_base` (the cache-key witness), `recursive_callee_dyncall`,
-    `native_transitive_callee_dyncall_ok`; `abstract_type_with_throws_clause`
-    None→Jit. STILL de-fuses: a callback that CAPTURES a local lambda
-    (`array::map(a, |x| g(x))`) — the `g(x)` call inside the per-slot template
-    isn't statically resolved (a separate resolution limitation, not delivery).
-    Gates: graphix-tests 1479 ×2, compiler 114, lsp 29, fuzz regress 22/0,
-    generate 3000 → 0 divergences, mutation 2000 → only the pre-existing #219
-    rand/dead-arm divergence + accepted runaway-recursion crashes; a 7-region
-    cross-region stress test (shared callees at bases 0/1/2) interp==jit.
-
-- **#203 RESOLVED — nested/transitive lambda calls fuse (callback→g→g2→…); the
-  real blocker was cross-statement static resolution (2026-06-27).**
-  `bench/mandelbrot.gx`'s per-pixel `iterate` (a recursive lambda CALLED inside
-  `array::init`'s callback) now fully fuses (`#[native]` passes, runs ~0.18s),
-  and the GENERAL case fuses too: any callback/callee body calling a chain of
-  module/outer lambdas. **The blocker was NOT the cross-kernel discovery
-  machinery (which existed) but STATIC RESOLUTION.** `bind_to_lambda` (the
-  `BindId → LambdaDef` index that static call resolution reads) was cleared per
-  `compile()`, yet the RT compiles a program's top-level statements as SEPARATE
-  `compile()` calls (`gx.rs` process_input_batch / check_inner / load). So a
-  lambda bound in `let rec iterate = …` (its own compile) was invisible to the
-  `array::init` callback's `iterate(…)` call (a later, separate compile) —
-  traced to `b2l_len=0` at the call's resolution (backtrace: each statement is
-  its own `graphix_compiler::compile` off process_input_batch). The plan had
-  assumed same-compile resolution; the actual fix is **batch-scoped
-  `bind_to_lambda`**: paired its `.clear()` with `unstable_bindings.clear()` at
-  the RT's batch entry points (gx.rs — 3 sites with the unstable reset, + a 4th
-  bare clear at `check_inner` which has no unstable reset, pre-existing), removed
-  the per-compile clear in `lib.rs`. All statements in one program/REPL-input now
-  share the index; BindIds are globally unique (accumulation is collision-free);
-  the `unstable_bindings` guard still excludes `<-` targets within-batch; the
-  per-batch clear keeps a `<-`-reassigned lambda from resolving stalely next
-  batch (consistent with the already-unbounded `lambda_defs` registry, but
-  bounded). On top of that:
-  - **Phase A** (`callsite.rs` `resolve_static`): drives the resolved callee's
-    body through `typecheck1` so its nested calls resolve (the
-    `GXLambda::typecheck1 → body.typecheck1` cascade — user-lambda bodies are
-    otherwise never `typecheck1`'d), guarded by a `fusion.resolving` in-progress
-    `LambdaId` set that cuts the self-recursion back-edge (a self-call stays
-    `DynamicUnbound`, handled by the `self_call`/tail-loop emit mechanism).
-  - **Phase B/C** (`fusion/mod.rs` `discover_lambda_calls`): rewritten as a
-    TRANSITIVE worklist — after a callee's kernel is built, its OWN body is
-    scanned for further lambda calls, accumulating the whole reachable closure
-    into the shared `callees`/`bodies` maps. `CalleeBody` gained `sites` (each
-    callee's own discovered calls), fed to the callee `NodeBodyEmitter`
-    (`emit.rs`, replacing the old empty map — the bug that left a callee's nested
-    call un-emittable → cranelift `can't resolve symbol g__kir_*` finalize
-    PANIC). Termination: a callee already in `bodies` isn't re-scanned (the
-    back-edge's site is still recorded for emission, the body isn't re-enqueued).
-    The declare-all-then-define-all loop already supported cross-kernel (incl.
-    mutual) calls.
-  - **De-fuse safety**: a callee body with a call discovery can't record (a
-    non-fusable builtin, e.g. `once`) emits no CLIF for it → the whole compile
-    errs → the existing eviction path de-fuses the region to the node-walk
-    (verified: correct values, no declared-but-undefined symbol, no panic).
-  Static MUTUAL recursion isn't expressible (forward `let rec g1 = …g2…` →
-  "g2 not defined"), so the plan's Phase D cut is moot — the worklist would fuse
-  it (two non-recursive kernels cross-calling) if it ever arose, consistent with
-  self-recursion. Verified: mandelbrot + transitive (g→g2→g3) + deep chain +
-  recursive-callee + de-fuse (`once` in callee) all correct, no panics;
-  graphix-tests **1468×2** (3 long-standing "ASPIRE: Jit" fixtures realized —
-  `call_tuple_arg`/`call_struct_arg`/`dyncall_static_nonfusable` re-annotated
-  None→Jit; new `transitive_chain` fixture; 2 obsolete `#[native]` gap-tests
-  updated — the recursive-call-in-callback now FUSES, so the "is_error" test
-  inverted to "fuses_ok" and the blocker-list test re-pointed at `once`, a
-  permanent async non-fuser); compiler 114, lsp 29; fuzz regress 22/0 + generate
-  3000 = **0 divergences**, 0 symbol panics (34 accepted runaway-recursion
-  hangs). Open follow-ups: ~~transitive BUILTIN calls inside callee bodies still
-  de-fuse~~ (RESOLVED 2026-06-27 by the two-stage builtin-in-lambda-body change
-  above — `build_lambda_kernel` now discovers them + the combined `dyn_slots`
-  table delivers them); `check_inner` doesn't reset `unstable_bindings`
-  (pre-existing asymmetry, inert under lsp where fusion is off).
-
-- **HOF callback fusion made a first-class compile-time activity + `#[native]`
-  descends into callbacks + blocker-list filter (2026-06-26).** `#[native]` (and
-  any attribute check) used to pass VACUOUSLY for anything inside an HOF callback
-  body: `check_attributes` walks `fusion::for_each_node`, which STOPS at
-  `NodeView::Lambda` (and `FusedKernel`), so a decorated node inside
-  `array::map(a, |x| #[native] ...)` was never visited. Root cause (the real
-  fix, per Eric): HOF per-element callback fusion wasn't part of the compile-time
-  fusion phase — `MapQ` built its `fused_template` LAZILY at runtime (first
-  `update`), and `Init`/`FoldQ` had NO template at all (node-walked the callback
-  per element). **Mechanism — BuiltIn participates in fusion:** new `Apply::fuse`
-  (trait method, delegated through `BuiltInLambda` — the delegation trap) is called
-  during the fusion phase by a new `CallSite::fuse` (`Update::fuse` override)
-  exactly when `try_fuse` on the call site FAILED (the HOF didn't batch-loop
-  inline). `CallSite::fuse` also DESCENDS into arg value nodes via plain
-  `node.fuse` — NOT `fusion::fuse`: `try_fuse`ing args fused trivial CONSTANT args
-  (string/int literals to async ops) into 0-input kernels (~92 FuseExpect drifts);
-  `node.fuse` reaches an arg-position HOF (the common `list::to_array(list::map(..))`
-  shape — list HOFs live in arg position) without that noise (fusing compute-heavy
-  args as regions is a deferred, orthogonal win). Each HOF builtin's `fuse` builds
-  its per-element template at COMPILE time via the shared
-  `fusion::lowering::build_fused_template` (clone the pristine `analysis_pred`, fuse
-  the CLONE: whole-body `fuse_callsite` → one `FusedKernel`, or split
-  `fusion::fuse(body)` → sync sub-regions fuse, residue node-walks). **`Init`
-  (`array::init`) and `FoldQ` (`list::fold`, which flipped `None`→`Jit`) GAINED
-  per-element callback fusion they never had.** FoldQ's restructure replaced the
-  raw-BindId `initids` accumulator chain with per-slot NAME-bound `accids`/`binds`
-  (so the template's `clone_rebind` resolves `"acc"`/`"x"` to each slot's id),
-  chaining the accumulator by feeding `accids[i+1]` (event + `ctx.cached`, the
-  held-acc combineLatest) when slot i fires and removing it on `None` (bottom
-  propagates); `update` now CONSUMES the compile-time template (per-slot
-  `clone_rebind`, `genn::apply` fallback when fusion-disabled). **The checker
-  descends** into HOF callbacks via new `Apply::for_each_hof_fused_body` (exposes
-  the FUSED template body), running the per-node attribute verdict (`FusedKernel` →
-  native; node-walk residue → `stats.failed`). **Blocker-list filter:**
-  `FusionStats.fused_ids` (region roots that fused) lets `Native::check` report only
-  the LEAF-most failures whose subtree has NO fused region — suppressing
-  attempt-then-recurse protocol noise (a `let px = idx%w` whose VALUE fused) + dedup;
-  mandelbrot's `#[native]` blocker list went 6 noisy entries → 1 clean (the
-  `iterate` call). Validation: 1466 differential tests ×2 modes + 22-program fuzz
-  regress + new `native.rs` tests (callback fusable/unfusable, inlining-callsite,
-  fold, blocker-filter) + a multi-cycle `eval_converged` fold convergence test
-  (init `0`→`100` reconverges to `106`). Deferred: arg-recursion-as-region-fusion
-  (the aspirational-Jit list-builder gains); the `analysis_pred`+`fused_template`
-  merge (collapse to in-place fusion, guarded by emit_clif-not-re-invoked).
-  `node-walk-is-canonical` held throughout (a lost fuse is a perf bug, never a wrong
-  value).
-
-- **Package registration unified onto one object-safe `Package` trait + one
-  `packages!()` macro (2026-06-26).** Refines the same-day stdlib-as-features
-  change (below): the three `ShellBuilder` hooks, the committed
-  `graphix-shell/src/packages.rs`, the static `graphix-shell/src/deps.rs`
-  register list, and the PM's `generate_packages_rs` + `skel/packages.rs`
-  template are ALL DELETED, replaced by one mechanism. **`graphix_package::Package<X>`
-  is now object-safe** — 3 instance methods (`register(&self, …)`,
-  `maybe_init_custom(&self, …) -> Pin<Box<dyn Future<…CustomResult…>>>`,
-  `main_program(&self)`). `defpackage!` generates the impl, keeping its
-  author-facing `is_custom`/`init_custom` clauses but combining them into
-  `maybe_init_custom` via two inherent `__is_custom`/`__init_custom` helpers that
-  preserve the *original* signatures, so author bodies (gui/tui) compile
-  unchanged. `Cdc`/`CustomResult` moved shell→graphix-package; a shared
-  `root_module_source` replaces the triplicated root-string builder. Packages
-  collect as `Vec<Box<dyn Package<X>>>` (owned, shell) or **`const &[&dyn
-  Package<NoExt>]`** (tests — `&P` is a const-promotable ZST ref, validated).
-  **Two proc-macros in graphix-derive, re-exported from graphix-package**
-  (`pub use graphix_derive::{packages, package_refs}`): `packages!()` scrapes the
-  calling crate's `[dependencies]` for `graphix-package-*` (core first), emits
-  `Vec<Box<dyn Package<_>>>` with `#[cfg(feature="<short>")]` on optional deps +
-  an `include_bytes!(Cargo.toml)` change-tracker (so adding a dep re-expands it);
-  `package_refs!()` emits the `const`-compatible `&[&dyn Package<NoExt>]` for the
-  (non-optional-dep) test crates. **`ShellBuilder` collapses to ONE `packages`
-  field** (default `stdlib_packages()` = `packages!()` over the shell's own
-  Cargo.toml → stdlib + any PM-added externals) + `.add_packages()` (append, for
-  embedders) + `.packages()` (replace); `init` `find_map`s `main_program` from
-  the list, `Output::from_expr` iterates it. **The PM only edits Cargo.toml now**
-  — `install_from_source`/`build_standalone` write no `.rs` (the macro reads the
-  modified Cargo.toml at compile time); the feature mechanism, `update_cargo_toml`,
-  `build_plan`, and remove-cascade are unchanged. **Test harness unified**:
-  `graphix-package-core::testing`'s `RegisterFn` fn-pointer → `PackageRef =
-  &'static dyn Package<NoExt>` (the loop calls `p.register`); `graphix-tests`/
-  `graphix-fuzz` auto-discover via `package_refs!()`; gui/tui's curated 6-package
-  local test subsets become hand-written `&[&dyn Package<NoExt>]`. **Embedder UX**:
-  add a `graphix-package-*` dep + `.add_packages(graphix_shell::packages!())` —
-  zero hand-written registration. Object-safety + const-`&dyn`-promotion +
-  boxed-future-`maybe_init_custom` pre-validated with scratch compiles. Verified:
-  graphix-tests harness builds (1400+ tests, all 17 packages on the new trait) +
-  shell (default + reduced `--features` builds) + PM; full test suites green.
-
-- **Stdlib packages as Cargo features + `ShellBuilder` package hooks (2026-06-26).**
-  Every stdlib package is now an **optional Cargo dependency of `graphix-shell` behind a
-  per-package feature** (`graphix-shell/Cargo.toml`), `default = ["all"]` (the `all`
-  meta-feature lists all 19 incl. the internal `bench`); each feature enables its non-core
-  **dependency closure** (`json = ["dep:graphix-package-json", "sys"]`, `tui = […, "array",
-  "sys"]`, `hbs = […, "json"]`, …) so a package can't compile without the packages its `.gx`
-  code `use`s. `core` stays **non-optional** (always compiled & registered, can't be removed);
-  `krb5_iov` uses weak `pkg?/krb5_iov` activation so it never force-enables sys/http. Two
-  payoffs: **(1) removing a stdlib package is a pure build flag** —
-  `cargo install --no-default-features --features "<set>"`, editing **no source files**; **(2)
-  the shell is embeddable with feature selection.** The committed `src/deps.rs` is now static —
-  each stdlib registration is `#[cfg(feature="<name>")]`-gated (in both `register` and
-  `maybe_init_custom`), and `register` takes a `register_packages` closure it calls after the
-  stdlib. **`ShellBuilder` gained three package hooks** (Eric's design — one uniform mechanism
-  for embedders AND the generated codegen): `register_packages` (FnOnce), `main_program` (the
-  embedded default program, replacing the old `RegisterResult.main_program`), and
-  `custom_display` (a persistent async dispatcher for external custom-display, tried after the
-  stdlib). `main.rs` wires all three from a new committed **`src/packages.rs`** (a no-op
-  default) — **the only file the package manager regenerates**; `lsp_backend` takes the closure
-  as a param so the LSP sees externals. **Package-manager inversion** (`graphix-package/src/lib.rs`):
-  `combined_map` → `BuildPlan` (stdlib → feature list, externals → `packages.rs` + Cargo.toml);
-  `install_from_source` writes `packages.rs` (never `deps.rs`/`main.rs`) and builds
-  `--no-default-features --features`; `update_cargo_toml` shrinks to **external-only** (the
-  permanent stdlib deps + `[features]` are untouched); `generate_deps_rs` → `generate_packages_rs`
-  (new `skel/packages.rs` template; `skel/deps.rs` deleted); `build_standalone` registers the
-  embedded package as an external + builds with its stdlib-dep closure + `<crate>/standalone`.
-  **`remove` cascades**: removing a stdlib package others depend on lists the dependents and
-  removes them too (with confirmation; non-TTY → no cascade), computed from the unpacked shell
-  `[features]` table (`feature_edges`/`feature_depends_on`/`installed_dependents` — the single
-  source of truth; the feature graph would otherwise silently keep a "removed" package compiled
-  in). Tests (`graphix-package/src/test.rs`): pure `BuildPlan`/feature-graph + an
-  `every_stdlib_package_has_a_feature` drift guard, `update_cargo_toml` preservation, a real
-  reduced-feature build asserting `use http`/`use sqlite` fail while `use str`/`use re` pass,
-  and `build_standalone` minimality (`use gui` fails). Verified: shell default build (all
-  packages) + reduced `--features "str re"` build both green; graphix-package 30/30 (incl. the
-  three real-build tests). Test gotcha that bit once: a `--check` probe needs `;` between
-  statements (`use str;\nstr::len(..)`) — a missing `;` is a parse error, not a removal signal.
-
-- **Packed AST wired in + activated — Parts D3 + D2 (2026-06-24).** **D3** threads
-  the codec into the load path: the VFS map value `ArcStr` → `VfsEntry { source,
-  packed: Option<Bytes> }`, and `resolve`'s parse splice calls
-  `serialize::unpack_module`/`unpack_sig` (in the same `spawn_blocking`, so the
-  decode thread sets the `Origin`/`AbstractId`-remap thread-locals) when `packed`
-  is present, else `parser::parse`. `Resolution::Resolved` gained
-  `impl_packed`/`intf_packed` (bytes can't ride in `Origin`). Threaded through
-  `Package::register`, the `defpackage!`-generated `register`, shell
-  `deps::register`, `RegisterFn`, the `run!`/`eval` builders, graphix-fuzz, the
-  gui/tui harnesses, and `skel/deps.rs`. **D2** activates it: a new build-dep
-  crate `graphix-ast-pack` whose `emit()` a per-package `build.rs` calls — it
-  walks `src/graphix/*` (skipping `main.gx`), parses each, `pack_module`/
-  `pack_sig`, and writes `OUT_DIR/graphix_ast.pack` as a self-contained index
-  `Vec<(vfs_path, source, ast)>` (`serialize::pack_index`/`unpack_index` — the
-  outer index decodes cheaply at `register` time; the per-module AST stays packed
-  in `VfsEntry.packed` and decodes LAZILY at resolution). `package_name`/
-  `vfs_path` in `graphix-ast-pack` replicate `graphix-derive`'s key scheme
-  (`/{pkg}/{rel-with-ext}`, crate name minus `graphix_package_`). The `defpackage!`
-  macro's file walk is gone — `graphix_files()` is now one stmt:
-  `include_bytes!(OUT_DIR/graphix_ast.pack)` + an `unpack_index` insert loop.
-  Per **Eric's call, packing is MANDATORY (not optional)** — every `defpackage!`
-  user ships a blob (no `include_str!` fallback), so all 20 stdlib packages + the
-  `skel/` new-package template got a `build.rs` + `[build-dependencies]
-  graphix-ast-pack`. `GRAPHIX_DISABLE_PACKED_AST=1` forces the parse path
-  (resolver `.filter(|_| !packed_ast_disabled())` at the splice) for differential
-  testing + as an escape hatch. **CRITICAL design notes:** the per-module AST
-  decode is lazy (only when `mod`-imported), matching the existing lazy-parse
-  model; the blob is self-contained (source + packed), so the macro never
-  computes keys (no key-mismatch risk — only `build.rs` does, stored IN the
-  blob); `Decorations`'s `dec` is preserved end-to-end (D1) so a packaged
-  `#[native]` survives. **Validation — the differential is the proof:** packed
-  graphix-tests **1460 in 18.66s** vs `GRAPHIX_DISABLE_PACKED_AST=1` (parse)
-  **1460 in 41.55s** — identical results, ~2.2× faster stdlib load across the
-  per-test runtime inits; single `graphix --check` startup **0.079s packed vs
-  0.123s parsed (~36% faster, dev build)**; compiler-lib 114, lsp 29 (loads the
-  packed stdlib). The whole stdlib now ships pre-parsed; **Part D is complete.**
-
-- **Packed (pre-parsed) AST codec — Part D1 (2026-06-24).** A netidx `Pack`
-  binary codec for the module AST (`graphix-compiler/src/expr/serialize.rs`:
-  `pack_module`/`unpack_module`/`pack_sig`/`unpack_sig`, `b"GXAS"` magic), so a
-  package can ship its pre-parsed AST and skip re-parsing its `.gx` source at
-  load (the ~450 ms stdlib parse is the dominant startup cost). No version field
-  / no parse fallback: the same in-tree compiler builds the package AND
-  regenerates the blob, so a decode error is a hard internal bug. **Codec is
-  DEAD CODE until D2/D3 wire it** — pure new code, zero behavior change.
-  **Design (Eric): derive everywhere plausible, fix the upstream gaps.** Most
-  AST types `#[derive(Pack)]`; only **4** manual impls remain (`Expr`,
-  `AbstractId`, `TVar`, `FnType`). Two upstream points: added `Pack for
-  Either<T,U>` in **netidx** (`netidx-core/src/pack.rs` — the sibling repo, an
-  additive change REQUIRED for the build, so `LambdaExpr.body` derives); and
-  `atomic_id! Default` was tried but conflicts with an existing manual `Default
-  for WriteId` AND wasn't needed (`Expr` is manual anyway), so reverted. The 4
-  manual impls: `Expr` (id fresh via `ExprId::new()`, `ori` restored from a
-  decode-unit thread-local via `swap_origin`/`get_origin`, `pos` inline as 2×i32
-  — `SourcePosition` is a foreign orphan), `AbstractId` (replaced `atomic_id!`
-  with a manual newtype whose `decode` remaps old→fresh per decode-unit via an
-  `ABSTRACT_REMAP` thread-local — raw ids collide across modules each packed
-  from 0, which would corrupt `Type` identity), `TVar` (encode name + bound
-  type, decode mints a fresh `TVarId` via `empty_named`/`named` — the
-  typechecker re-aliases same-named tvars by name, so a fresh id is sound),
-  `FnType` (snapshot `constraints` out of the `Arc<RwLock<LPooled<…>>>`, drop
-  the `Weak`-graph `lambda_ids` — both excluded from `FnType` identity).
-  **CRITICAL gotcha:** the derive length-wraps every struct/enum by default,
-  whose `buf.take(len)` produces `Take<&mut Take<…>>` — INFINITE TYPE recursion
-  (E0275 overflow) on recursive AST types (`Expr`↔`ExprKind`, `Type`↔`Type`).
-  Fixed with `#[pack(unwrapped)]` on EVERY derived AST type (the skip-unknown
-  forward-compat that length-wrapping buys is irrelevant here — exact-match
-  codec). `Decorations`'s `Box<[T]>` fields became `Arc<[T]>` (`Box<[T]>` has no
-  Pack impl, only `Box<T>`), preserving `dec` because `#[native]` attrs are
-  semantic (dropping them would silently un-enforce a `#[native]` in a package).
-  `TypeRef`/`Arg`/`SigItem` derive with `#[pack(skip)]` on their IDE-only
-  `pos`/`ori` (decode to the `SourcePosition` `1,1` default / `None`). Validated:
-  graphix-compiler 113 (3 codec tests — full-surface round-trip, type-annotation
-  round-trip, AbstractId-remap invariants), graphix-tests 1459, netidx-core pack
-  5; round-trip is kind-only `PartialEq` (which ignores id/ori/pos), so it
-  verifies the whole tree structurally.
-
-- **Attributes (`#[..]`) + the `#[native]` attribute — Part C2/C3
-  (2026-06-24).** Rust-style attributes written on their own line directly
-  above an expression — `#[name]` / `#[name(arg, ...)]`, args are full
-  expressions — captured into the existing `Expr.dec.attrs` slot exactly where
-  a `//` comment is captured (every other position is a parse error). Both
-  `Expr` printers emit them, so print->parse round-trips verbatim. New parser
-  combinators `attribute()` + `leading_decorations()` (the latter replaces
-  `leading_comments()` at the `expr()` entry, interleaving comment+attr lines;
-  `leading_comments()` stays for the `.gxi` `sig_item` path). Attribute names
-  are validated against an `ExecCtx` registry (`Attribute<R,E>` trait +
-  `AttributeCheckFn<R,E>` + `register_attribute`, mirroring builtin
-  registration so packages can add their own) — an unregistered name is a
-  compile error at the single `compile()` choke point (`node/compiler.rs`,
-  every Expr re-enters there once). Each known attribute carries a check fn run
-  once per decorated node AFTER fusion, walked via `for_each_node` over the
-  final graph (which stops at fused-kernel interiors — a node absorbed into a
-  larger kernel is correctly NOT re-checked → counts as native). **First
-  attribute `#[native]`** (registered in `ExecCtx::new`, compiler-internal
-  check): the decorated expr must compile to native code — one fused JIT kernel
-  with zero node-walk residue — else a compile error quoting `stats.failed`
-  filtered to the expr's descendant ExprIds (`Expr::fold`). **DESIGN (Eric):
-  function-level `#[native]` was DROPPED.** It may ONLY decorate a
-  value-producing computation or a call; a lambda literal or any function-typed
-  target (`Type::Fn`, which a `let f = |..|` binding reports) is a compile
-  error. A `native` marker carried in `FnType` would make the function
-  second-class (un-storable, un-dispatchable, can't pass to a non-fusing HOF —
-  every non-static call would fail to be native), so a perf requirement belongs
-  at the use site, not the definition. Dropping it deletes the riskiest planned
-  work (no `FnType` field, no contains/eq threading, no static-resolution
-  rule) and collapses the feature to ONE uniform check. `#[native]` is
-  deliberately mode-dependent: under `--no-fusion` it errors ("cannot verify
-  #[native]: fusion is disabled") rather than silently passing (all normal
-  flows — run/`--check`/lsp — keep fusion on and DO enforce it), so it is
-  tested with dedicated `eval` compile assertions in
-  `stdlib/graphix-tests/src/lib_tests/native.rs`, not the `run!` differential
-  harness (whose cross-mode value-agreement `#[native]` intentionally breaks).
-  Validation: graphix-compiler 110, graphix-tests 1459 (+5 native) ×2,
-  graphix-lsp 29, fuzz regress 22/0, generate soak 400/0/0. The
-  `defpackage! attributes => [...]` clause is DEFERRED (no package needs it
-  yet; `register_attribute` already exposes the public interface).
-
-- **qop/cast/connect fusion + bench naturalization + LSP fusion-off
-  (2026-06-24).** Three fusion gaps closed so that *natural user code* fuses
-  (the bench corpus is the live witness), plus an LSP fix. **(1)
-  Variable-write-in-kernel** (`graphix_set_var` helper → `DynDispatchHandle.set_var`
-  → `set_var_typed::<R,E>` → `ctx.set_var`): a `connect` (`x <- e`) and a
-  **handler-ful `?`** (a `?` whose error is caught by an enclosing `try`) both
-  deliver via a variable write, which is *sync* (schedules next cycle); the real
-  fusion boundary is the **read** side (already handled by feeders keyed to
-  `fusion.top_id`), not the write. So both now fuse — `Connect::emit_clif`,
-  `Qop::emit_clif` (handler error branch does `wrap_error` + set_var via
-  `QopDeliverApply`/`emit_qop_deliver`, removing the `id.is_some()` bail),
-  `TryCatch::fuse` recurses into try/catch bodies. Conservative guard: a connect
-  whose LOCAL target is read in the same kernel de-fuses (read-after-write-same-var
-  reads the stale let-local — `cx.env.lookup(bind_id).is_some()` check; full
-  local-counter fix deferred). **(2) cast machinery-DynCall** (`CastApply<R,E>` +
-  `FnSource::Cast`): any non-scalar-fast-path cast lowers to a one-arg dyncall whose
-  callee is `target.cast_value(&ctx.env, v)` — the SAME machinery the node-walk uses,
-  so interp/jit agree by construction; the scalar→scalar inline fast path
-  (`compile_cast`) is preserved but now gated on `is_numeric()` on BOTH src+tgt (bool
-  excluded → dyncall, fixing a `cast<i64>(true)` `unreachable!`). An inline cast in a
-  HOF arg no longer de-fuses the HOF. **(3) qop/connect EffectKind → Sync**
-  (`analysis.rs` `node_effect`: `Qop`/`OrNever`/`Connect`/`ConnectDeref` moved to
-  `Sync`; `Sample`/`TryCatch`/`Any`/`FusedKernel` stay `Async`). Double duty: enables
-  the above fusion AND **fixes the node-walk tail-loop overflow** (a qop in a
-  tail-call argument made the lambda `Async` → `mark_recursion` skipped → real
-  recursion → stack overflow; now `lambda_is_sync` → tail-loop engages, verified
-  2M-int + 10M-float deep, both modes agree). `stmt_subtree_effect_free` (dead-stmt
-  pruning) is left UNCHANGED — orthogonal: a connect is *sync* yet *not effect-free*.
-  **(4) inline-HOF-callback discovery gap** (`Apply::for_each_hof_callback_body` +
-  `hof_callback_body` helper, overridden by MapQ/FoldQ/Init): `for_each_node` skips
-  lambda bodies, so a cast/builtin call *inside* an inline HOF callback was never
-  discovered for slot registration → de-fuse; now descended.
-  **Bench corpus naturalized** (`bench/`, per "judge by what a user would write"):
-  dropped the outer `{ }` block wrapper (file scope is an implicit block), all
-  `i64:` literal prefixes (i64 is default), and the redundant `~` self-gate on
-  `sys::time::now(x)` (already triggered by its arg) — kept only the load-bearing
-  `sys::exit(elapsed ~ 0)` gate; `leibniz_pi` reverted to the natural in-loop
-  `cast<f64>(2*n-1)$` (the qop-in-tail-arg fix made the `d`-accumulator workaround
-  unnecessary). **LSP "runtime is dead" fixed** — STRUCTURAL: `lsp_mode` now forces
-  `ctx.fusion.enabled = false` at the single derivation point in `compile()`
-  (`lib.rs`, `&& !ctx.env.lsp_mode`), so a check-only runtime CAN'T fuse and no
-  caller can opt back in (a call-site `FusionDisabled` flag was tried then reverted —
-  DRY, invalid state unrepresentable). The LSP shares ONE runtime that only
-  typechecks (compiles → deletes nodes, never executes) but had fusion ON; its
-  `lsp_mode` check continues past type errors and fed fusion partially-typed mid-edit
-  exprs (violating fusion's well-typed invariant) → panic → bricked the shared runtime
-  (no panic isolation) → every later check "runtime is dead", a `(0,0)` file-wide
-  diagnostic (cached IDE data masked it). NOT the interrupt/abort change (those paths
-  only run during node execution the LSP never does). Fusion-emit proven solid on
-  valid programs (212 repo `.gx` + 3000-prog fuzzer soaks, 0 panics); fusion for a
-  never-executing runtime was pure waste regardless. Validation: 1446×2 + 29 LSP
-  green, fuzz regress 22/0, mutation soak clean (only the documented #219
-  missing-input gap + accepted runaway-recursion). Open follow-ups: general
-  panic-isolation in the shared check runtime (catch_unwind); and `graphix --check`
-  (`Mode::Check`) still fuses-then-discards (a smaller one-shot waste — no crash,
-  since `--check` bails on type errors before fusion).
-
-- **Self-timed exec-throughput bench corpus `bench/selftimed/` (2026-06-23).** Six
-  `.gx` programs + `run.sh` + README comparing JIT (fusion on, default) vs
-  node-walk (`--no-fusion`) on pure computation. Each program brackets ONLY its
-  computation with `sys::time::now` (parse/typecheck/kernel-compile happen
-  before cycle 1, so they're excluded). Release best-of-4 on a quiet machine:
-  HOF benches (fold/map/filter over 100k) **~1200–2700x** (node-walk's
-  per-element node graph is its worst case); scalar tail loops (tail_sum/leibniz,
-  10M) **~130–160x** (node-walk loops these iteratively via the GXLambda
-  tail-loop — its *best* case). Self-timing structure + its hard-won gotchas live
-  in the README and the `project_selftimed_bench_corpus` memory: trigger `now`
-  with a constant (`i64:0`, NOT `once(null)` — that never fires); seed the
-  compute with a separate-`let` `cast<i64>(t0)` (inlining the `$`-cast in a HOF
-  arg de-fuses it — a fusion gap, not a correctness bug); gate `sys::exit` on
-  `elapsed`, not on `println`'s return. **Two findings surfaced**: (1) a qop
-  (`$`/`?`) inside a TAIL-CALL ARGUMENT defeats the node-walk's tail-loop
-  optimization → real recursion → stack overflow, where the JIT loops fine (a
-  mode divergence the differential fuzzer won't catch — overflow ≠ wrong value);
-  (2) the `netidx-value` `datetime -> f64` cast returned `2*whole_seconds` with
-  the sub-second part discarded (integer-div bug) — fixed (Eric committed it +
-  hardened the other cast arms), which is what unblocked sub-second self-timing.
-  Language note: graphix has NO unary minus on a variable (`-x` is a parse error;
-  negative literals like `-2.5` are fine) — flip a sign with `(0.0 - x)`.
-
-- **`interrupt()` / `abort()` — recover & shut down a wedged runtime (2026-06-20;
-  behavior-neutral when idle, 1438×2 + 29 LSP green, fuzz regress 22/0).** An
-  unbounded loop within one reactive cycle (sync tail-loop `let rec f = |v| f(v+1)`,
-  or a HOF over a giant collection) wedges the runtime thread — the runtime is
-  batch-atomic, so yielding mid-cycle can't preserve consistency (rejected); a
-  *kill* has no resume, so it can. One mechanism, two needs: a `BitFlags`
-  control flag (`CtlFlag::{Interrupt,Abort}` over `AtomicU32`, wrapped in the
-  abstract `Control` type in `graphix-compiler/src/lib.rs`), held as
-  `Arc<Control>` on `ExecCtx` (so generic node code reads it via
-  `ctx.interrupted()` with no `Rt` method) and cloned into `GXHandleInner`.
-  **`GXHandle::interrupt()`** = direct atomic store (NEVER a `ToGX` command — a
-  wedged runtime can't drain its channel) → in-flight loops abort to bottom
-  (`None`, a legal reactive state = a cancelled async node), runtime keeps
-  running. **`GXHandle::abort()`** = the explicit shutdown; needed because the
-  command methods are `async fn(&self)` borrowing the handle across `.await`, so
-  you *can't drop the handle while commands are pending* — `abort()` is a
-  `&self` store that fires anyway, and `GXHandleInner::drop` also sets `Abort`
-  (fixing a real leak: dropping a wedged runtime's handle spun forever — both
-  `task.abort()` and channel-close need the runtime to reach an `.await`/`select!`
-  a wedged sync loop never does). The run loop checks `aborted()` at the top of
-  `'main` (before `process_input_batch`), so a runtime that broke out of a wedged
-  `do_cycle` exits next iteration; on return its `to_rt` receiver drops →
-  pending commands' oneshots drop → blocked callers get errors instead of
-  deadlocking. **Loop polls:** interp opt-in per builtin
-  (`if ctx.interrupted() { return None }` at the loop head — tail-loop
-  `GXLambda::update`, array HOFs MapQ/FoldQ/Init/Group/Iter/IterQ); fused via one
-  shared `emit_interrupt_check` (calls `graphix_interrupted()` — reads the
-  per-cycle thread-local `INTERRUPT_PTR`, set in `do_cycle` to handle task
-  migration — and reuses the existing `emit_pending_cleanup` + `pending_exit`
-  abort path, so a partial HOF result buffer on `dyncall_buf_stack` frees for
-  free) at the tail-loop head + all 8 HOF scaffold loop heads. **`do_cycle`**
-  clears `Interrupt` each cycle (Abort is **sticky** so the pre-cycle check sees
-  it — this reverses the request's "do_cycle only clears abort", read as a slip),
-  and wraps the node loop in `tokio::task::block_in_place` so a wedge doesn't
-  starve IO/the interrupting caller — **flavor-guarded** (`block_in_place` only
-  isolates on `multi_thread`; `current_thread` runs inline, the existing
-  `run!`/`TestCtx` harness flavor). Integration tests in
-  `stdlib/graphix-tests/src/lib_tests/interrupt.rs` (multi_thread, so the test
-  thread fires the flag while a worker wedges): tail-loop interrupt-recovers
-  (interp + fused) + abort-unblocks-pending-commands. Coverage limit noted in
-  the file: the *only* constant-stack, bounded-memory wedge is the tail loop —
-  the array-HOF eval-loop polls can't be driven to a real timeout without
-  materializing millions of per-slot nodes (the slot *build* phase is itself the
-  slow, un-polled part), and fused is too fast to wedge within any memory-safe
-  N; those polls are behavior-neutral (1438×2) and the fused scaffolds share the
-  tail loop's `emit_interrupt_check`. A nested recursive lambda inside an HOF
-  callback (`array::map([1], |x| { let rec f...; f(x) })`) stack-OVERFLOWS rather
-  than wedging (#203: it node-walks as deep recursion, ~50k frames, before any
-  interrupt lands) — so it's not a usable interrupt probe. The 3000-program fuzz
-  soak surfaced 1 divergence + 1 crash, both the documented pre-existing
-  dead-bottom/div0 class (`findings/flip-jun2026/*_dead_bottom_stmt.gx`) —
-  loop-free, so outside the loop-head-only codegen change; not interrupt-caused.
-
-- **Fusion state extracted from `ExecCtx` into `fusion::FusionCtx` (2026-06-19;
-  behavior-neutral, 1431×2 + 29 LSP green).** This session piled fusion
-  machinery onto `ExecCtx` as loose fields; grouped the 8 that are genuinely
-  *fusion's own state* into a non-generic `FusionCtx` struct in `fusion/mod.rs`,
-  reached as **`ctx.fusion.<x>`**. Membership + rename map: `jit`→`fusion.jit`,
-  `fusion_kernels`→`fusion.kernels`, `fusion_building`→`fusion.building`,
-  `fusion_enabled`→`fusion.enabled`, `fusion_stats`→`fusion.stats`,
-  `abstract_registry`→`fusion.abstract_registry`, `fuse_top_id`→`fusion.top_id`,
-  `builtin_effects`→`fusion.builtin_effects` (dropped the now-redundant
-  `fusion_`/`fuse_` prefixes). `FusionCtx::new() -> Result` (the `jit` build is
-  fallible); `ExecCtx::new` calls it. Non-generic because none of the field
-  types depend on `R`/`E` (`Jit`/`CachedKernel` are plain structs). **Left in
-  `ExecCtx`** (Tier 3 — compile-analysis the *node compiler* owns, fusion only a
-  downstream reader): `bind_to_lambda` (not read by fusion at all),
-  `lambda_defs` (general `LambdaId→Value` registry), `unstable_bindings` and
-  `builtin_bindings` (populated by `Connect`/`Bind::compile`, read by
-  `callsite.rs`'s static-resolution). `builtin_effects` moved despite being
-  populated in `register_builtin` because *only* fusion reads it. The
-  `GXHandle::fusion_stats()`/`TestCtx::fusion_stats()` methods keep their names
-  (they read `ctx.fusion.stats`). Rename gotcha avoided: `.jit` is also a field
-  on `Kernel` (`self.jit`) and the graphix-fuzz diff (`d.jit`), so only the
-  `ctx.jit`/`ec.jit` ExecCtx receivers were renamed.
-
-- **rustfmt revived + workspace-wide import hygiene (2026-06-18/19;
-  behavior-neutral, 1431×2 + 29 LSP green).** `rustfmt.toml` pinned
-  `required_version = "1.4.12"` (uninstallable; only 1.9.0 exists) so **rustfmt
-  had been refusing to run for ages** — which is why imports drifted. Fixed:
-  dropped the pin, migrated the deprecated options (`merge_imports` →
-  `imports_granularity = "Crate"`, `fn_args_layout` → `fn_params_layout`,
-  `hide_parse_errors` → `show_parse_errors`), enabled `unstable_features` (the
-  import-merging is nightly-only) — so **`cargo +nightly fmt` works again** and
-  enforces grouping going forward. Ran it once over the whole repo (128 files,
-  −464 net) to absorb 1.4.12→1.9.0 drift and merge every stacked `use crate::X;
-  use crate::Y;` into `use crate::{X, Y}`. Then hand-hoisted repeated inline
-  `crate::a::B` full paths into grouped `use` blocks across the fusion core
-  (`fusion/{mod,lowering,emit,emit_helpers,builder,kernel}.rs`), `lib.rs`, and
-  the whole `node/` cluster (`mod,op,data,callsite,bind,array,lambda,error,map,
-  select`) + `graphix-lsp/state.rs`. **Use-statement standard** (now in the
-  global CLAUDE.md): items used >1× → top-level (or fn-local) `use`, grouped by
-  crate/module; single-use at discretion (favor importing long paths); avoid
-  glob `use` except crate preludes, test-module `use super::*`, and fn-local
-  enum-variant globs. **Two files deliberately keep full paths** — `fusion/
-  scaffold.rs` (`use super::*` over `emit`'s scope — an extracted-from-`emit`
-  submodule, de-globbing it is a 25+ item churn for no gain) and
-  `graphix-package-core/src/testing.rs` (the `run!`/`run_with_tempdir!` exported
-  macros need absolute `::graphix_compiler::…` paths to expand in other crates —
-  same reason `$crate::` paths are sacrosanct). Mechanical-sweep gotchas worth
-  remembering for next time: never shorten `$crate::` or `::graphix_compiler::`
-  inside macro bodies; the path-inventory regex truncates digit-suffixed names
-  (`array_slice_i64` → `array_slice_i`); doc-only refs become dangling intra-doc
-  links if shortened to an unimported name (keep them fully qualified); and
-  shortening `crate::m::foo` → `foo` when a same-named local `fn foo` exists
-  silently creates infinite self-recursion that COMPILES (bit `state.rs`'s
-  `path_to_uri` wrapper).
-
-
-- **`fusion::vocab` deleted — folded into `fusion::kernel_abi`, one module
-  (2026-06-18; behavior-neutral, 1431×2 + 29 LSP tests pass).** `vocab` was a
-  66-line module that did three things: `pub use crate::fusion::kernel_abi::*`
-  (so every ABI type had TWO reachable names — `kernel_abi::X` and the alias
-  `vocab::X` — used inconsistently across ~120 sites), plus its own
-  `KnownFusedFn` (the cross-kernel call signature — actually ABI) and the
-  `BinOp`/`CmpOp`/`BoolOp` scalar operator enums (shared by the node-walk
-  `node::op` and the JIT `fusion::emit`). Deleted `vocab`: the re-export (the
-  two-name ambiguity) is gone, `KnownFusedFn` moved into `kernel_abi` (it's ABI),
-  and the operator enums moved into `node::op` — they aren't ABI, and `node::op`
-  is the canonical evaluator that defines those operators' semantics, so the JIT
-  imports them from there (`use crate::node::op::{BinOp, CmpOp, BoolOp}`; the
-  node↔fusion coupling already exists — `node::op`'s `emit_clif` methods call
-  `fusion::emit`). One path per type, both clear names. ~120 `vocab::` references
-  rewrote to `kernel_abi::` across the compiler + 2 stdlib crates
-  (`graphix-package-array`, `graphix-tests`); external `Apply::emit_clif`
-  implementors now import `fusion::kernel_abi::*` instead of `fusion::vocab::*`.
-
-- **`kernel_abi` moved from toplevel into `fusion` (2026-06-18; pure relocation,
-  behavior-neutral, 1431×2 + 29 LSP tests pass).** `kernel_abi.rs` →
-  `fusion/kernel_abi.rs`; the `pub mod kernel_abi;` declaration moved from
-  `lib.rs` into `fusion/mod.rs`; ~30 `crate::kernel_abi::` paths rewrote to
-  `crate::fusion::kernel_abi::` (matching fusion's existing fully-qualified
-  `crate::fusion::vocab::` house style), and `vocab`'s `pub use
-  crate::kernel_abi::*` became `pub use crate::fusion::kernel_abi::*`. It was
-  toplevel only as a GIR-removal survivor (it's the ABI contract that outlived
-  `GirKernel`), never relocated. It's used exclusively by `fusion/*` plus the one
-  `ExecCtx::abstract_registry` field (a fusion-only artifact written by typecheck
-  solely for fusion to read); external stdlib `Apply::emit_clif` implementors
-  reach it through `fusion::vocab::*` and saw zero API change. Clean leaf (depends
-  only on `typ`/`BindId`), so no cycle. `lib.rs`'s two `kernel_abi::AbstractRegistry`
-  references became `fusion::kernel_abi::AbstractRegistry` — consistent with how
-  `lib.rs` already reaches `fusion::emit::Jit` / `fusion::FusionStats`.
-
-- **IDE/LSP side-channels unified into one `ide::Ide` struct; new toplevel
-  `ide` module (2026-06-18; behavior-neutral, 1431×2 + 29 LSP tests pass).**
-  IDE tooling data (go-to-def / find-refs / cursor→scope) was spread across two
-  homes split only by what the push site could reach: three loose `ExecCtx`
-  fields (`references`/`module_references`/`scope_map`, pushed from `&mut
-  ExecCtx`) and a separate `env::Lsp` struct (`type_refs`/`sig_links`/
-  `module_internals`, pushed from `&Env` via `Arc<Mutex>`). Collapsed to ONE
-  struct, `ide::Ide`, holding all six tables, owned via the shared
-  `Env.ide: Option<Arc<Mutex<Ide>>>` sink (renamed from `Env.lsp` — the sink
-  is general IDE state, not language-server-specific; atlas etc. may read it)
-  — `ExecCtx` now carries ZERO IDE fields. The three former `ExecCtx` pushes route through new `Env` helpers
-  (`push_reference`/`push_module_reference`/`push_scope_map_entry`, siblings of
-  the existing `push_type_ref`/etc.), so all six tables share the one
-  lsp-gated, clone-shared sink. New `graphix-compiler/src/ide.rs` owns the six
-  site types (`ReferenceSite`, `ModuleRefSite`, `ScopeMapEntry`, `TypeRefSite`,
-  `SigImplLink`, `ModuleInternalView`), the six pools (now private statics local
-  to `Ide::new()`), and `Ide` — moved out of `lib.rs`/`env.rs`; external crates
-  import from `graphix_compiler::ide::*`. `BuiltinBindInfo` stayed in `lib.rs`
-  (it's fusion, not IDE). Downstream mirrors (`CheckResult`, the LSP
-  `Document`/`TypecheckResult`/`ProjectResult`) each collapsed their four IDE
-  fields to one `ide: Ide`, and `gx.rs::check_inner`'s three field swaps + the
-  lsp swap became the single `env.ide` swap. Eric's call (vs the lighter
-  "group the 3 in ExecCtx" option): full unification — one home for every IDE
-  table, ExecCtx decluttered to nothing IDE-shaped, the `&mut ExecCtx` vs
-  `&Env` access split erased. The added `Arc<Mutex>` on the three former-direct
-  pushes is compile-time-only and lsp-gated (negligible).
-
-- **`ABSTRACT_REGISTRY` global → per-`ExecCtx` field (2026-06-16;
-  behavior-neutral, fixes an unbounded-growth leak).** The fusion abstract-type
-  registry (`AbstractId → concrete Type`, written by `check_sig` during
-  typecheck, read by the fusion classifiers to peek through abstract types to
-  their wire shape) was a process-global `static LazyLock<RwLock<IntMap>>`. Two
-  problems: (1) `AbstractId`s are minted fresh on every compile (each `ExecCtx`
-  recompiles its stdlib from source), so the global grew without bound across a
-  long-lived process spinning up contexts — a leak; (2) it was a global when the
-  access points all have an `ExecCtx`. Moved it to a plain `ExecCtx`
-  field, `pub abstract_registry: AbstractRegistry` (a newtype over
-  `nohash::IntMap<AbstractId, Type>` in `kernel_abi.rs`). **No lock, no interior
-  mutability**: writes (typecheck, `&mut ctx`) and reads (fusion, `&ctx`) are
-  disjoint phases within a single `compile()`, and `compile()` is
-  single-threaded — the old `RwLock` existed only to guard concurrent compiles
-  of *different* contexts on parallel test threads, contention that per-context
-  storage erases (along with the whole cross-lock deadlock-avoidance discipline).
-  Per-context is also *correct*: a `Type`/`AbstractId` never escapes its owning
-  context (verified), so context A never resolves an abstract context B
-  registered. The three reader fns (`freeze_for_abi`, `abi_kind`,
-  `resolve_abstract`) and their helpers (`freeze_for_abi_normalized`,
-  `nullable_inner`, `scalar_prim`, `array_scalar_prim`, `is_value_shape`,
-  `KernelSig::abi_return`) now take a non-generic `&AbstractRegistry` first param
-  (kept non-generic to avoid rippling `<R,E>` into the classifiers). Threading:
-  ~87 call sites. Sites with an `ExecCtx` pass `&ctx.abstract_registry`; the
-  ~60 emit-path sites read it via `BodyCx::registry()` (returns the `'c`-lifetime
-  borrow from `LowerCtx`, INDEPENDENT of `&self`, so a reader call coexists with
-  `&mut cx`), threaded `ExecCtx → BodyEmitter::registry() → LowerCtx.registry`;
-  leaf helpers got a `reg` param. The `kernel_abi` unit tests became hermetic (a
-  local `AbstractRegistry`, no more global insert/remove dance). Eric's call:
-  full move (vs the lighter global-with-Drop-cleanup) for the architecture win,
-  knowing the cost was ~87 mechanical edits not "three places."
-
-- **`freeze_concrete` → `freeze_for_abi` rename + scratch-Vec pooling
-  (2026-06-16; behavior-neutral).** Two related cleanups in `kernel_abi.rs`.
-  (1) `freeze_concrete`/`freeze_concrete_d`/`freeze_normalized` renamed to
-  `freeze_for_abi`/`freeze_for_abi_d`/`freeze_for_abi_normalized` (the
-  `vocab::*` glob re-export carries the path; all callers in
-  `fusion/{lowering,mod,emit}.rs` + `graphix-package-array` updated). The name
-  now states what it IS: not (only) a `Type → Type` normalize but the
-  **kernel-ABI encodability gate** — concretizing TVars is the means, deciding
-  register/`Value` encodability and returning the wire shape is the end. This
-  is *why* it lives in `kernel_abi` and not on `Type`: its `None`s are valid
-  types with no kernel encoding (`Fn`/`Ref`/`decimal`), its accept rule is
-  `PrimType::from_typ` (a register gate), it peeks through `ABSTRACT_REGISTRY`
-  (opaque to the type system), and the `Map`/`Error` pass-through stops
-  recursion exactly at the `AbiKind::Value` boundary (carried as an opaque
-  two-register `Value`, params never reach the wire) — none of which a generic
-  type normalize would do. The pure type-level concretization it rests on
-  already lives on `Type` as `with_deref`/`normalize`. Expanded the fn doc to
-  record this. (2) The five transient scratch `Vec`s in `freeze_for_abi_d`
-  (Tuple/Struct/Variant elems + Set variant-union outer & inner) now collect
-  into `LPooled<Vec<_>>` and `drain(..)` into `Arc::from_iter`:
-  `triomphe::Arc::from_iter` allocates its own backing and never adopts the Vec
-  (unlike `std::sync::Arc`), so the collect Vec was pure transient garbage —
-  pooling it turns the warm path from two allocs (scratch + Arc) to one. Design
-  point that fell out of this (Eric): the pooling reinforces the placement —
-  we pool scratch in service of building a *wire-layout descriptor*, not
-  normalizing a type.
-
-- **Type concretization: fixed depth caps → real cycle detection (2026-06-16;
-  predictable-performance fix + a latent hang closed).** The three functions
-  that concretize a type by expanding nullary `Type::Abstract` (and, for
-  `resolve_abstract`, named `Type::Ref`) through `ABSTRACT_REGISTRY` —
-  `freeze_for_abi` + `abi_kind` (`kernel_abi.rs`) and `resolve_abstract`
-  (`fusion/lowering.rs`) — used a fixed `depth > 16` cap to terminate on
-  recursive types. The cap incremented on EVERY recursion (structural nesting
-  too), so it silently refused to fuse deeply-nested but FINITE, non-recursive
-  types (a 17-deep array/tuple/struct) — a predictable-performance violation.
-  Replaced with a stack-allocated `Seen` cons-list (`kernel_abi::Seen` /
-  `ExpandKey`, zero-heap) that cycle-detects by EXPANSION IDENTITY (full
-  `TypeRef` / `AbstractId`): structural depth no longer trips it (finite types
-  of any depth fuse), while true recursion — self / mutual / Ref-mediated /
-  option-of-self — terminates by re-occurring-key detection → `None`/opaque
-  (correct: a recursive type has no fixed ABI layout). `freeze_for_abi` needs
-  no backstop (nullary abstracts can't grow params); `resolve_abstract` keeps a
-  generous 256-EXPANSION backstop only for non-regular recursion (`type T<'a> =
-  T<Array<'a>>`, which identity can't catch). Structural recursion is
-  intentionally unbounded, consistent with sibling type-walks
-  (`normalize`/`contains`/`resolve_tvars`) — any overflow-deep type dies in the
-  parser/typechecker first. **`abi_kind` was a THIRD unguarded concretizer**
-  (`type A = [A, null]` would have hung it) — found and fixed by a 3-lens
-  adversarial review (all lenses: "sound"). Verified: 4 unit tests (40-deep
-  finite freezes; self/mutual/option-of-self recursion terminates+rejects),
-  1431×2 differential tests, all `Seen` lifetimes sound (covariant cons-on-stack).
-
-- **`JitDisabled` flag deleted — one fusion flag, and `interp` made a TRUE
-  node-walk (2026-06-16; values behavior-neutral, 1431×2 tests pass).**
-  `CFlag::JitDisabled` was dead (never set anywhere) and "behaviourally
-  identical to `FusionDisabled`" by its own doc. Worse: `jit_enabled` (derived
-  from `!JitDisabled`, so permanently `true`) gated the *runtime per-slot
-  HOF-callback* fusion path — which has no compile-flag access — so `interp`
-  mode (`FusionDisabled` only) was STILL fusing `map`/`filter`/`fold` callbacks
-  per-slot, silently contaminating the differential oracle's "node-walk ground
-  truth" (proven: an instrumented probe fired 6× under interp-only map tests).
-  Collapsed to the single `FusionDisabled` flag; `jit_enabled → fusion_enabled`,
-  derived from `!FusionDisabled`, now gating BOTH the compile-time phase and the
-  per-slot path. `interp` is now a pure node-walk (probe fires 0× for interp
-  programs), so the oracle regains its node-walk-vs-fused guarantee for HOFs —
-  and the node-walk HOF path it now actually exercises agrees with fused (no
-  latent bug surfaced). One bool, fusion on/off; invalid states unrepresentable.
-
-- **`jit` → `fuse` rename + flag-check promotion + the `gir` naming scrub
-  (2026-06-16; pure churn, behavior-neutral — 1431×2 differential tests pass).**
-  The fusion driver `Update::jit` became `Update::fuse` (it fuses, it doesn't
-  JIT), and the free function `fusion::jit_node` became `fusion::fuse`. The old
-  tiny `fusion::fuse` driver — whose only job was the `FusionDisabled |
-  JitDisabled` skip — was deleted and that check promoted into `compile()`, so
-  it runs once instead of on every recursive step. Separately, the lingering
-  `gir` naming (the GIR IR itself was deleted at F3; only the names survived as
-  "deferred churn") was scrubbed: the six `gir*.rs` files moved into `fusion/`
-  (`emit.rs`, `kernel.rs`, `vocab.rs`, `emit_helpers.rs`, `intern.rs`,
-  `scaffold.rs`), `crate::gir_*` / `graphix_compiler::gir_*` paths rewrote to
-  `fusion::*`, `GirNode → Kernel`, `GirMatcher → KernelMatcher`, `gir_*` test
-  names de-prefixed, and ~186 GIR mentions in comments/strings reworded to
-  current-state vocabulary. Zero `gir` remains in the codebase. See the "GIR is
-  historical — do NOT rebuild it" note above for the why. (Follow-up noted by the
-  scrub agents: several comments still cite *deleted-but-not-gir-named* helpers —
-  `compile_ifchain`, `compile_concat`, `from_type`, `emit_lambda_call`,
-  `eval_kernel_full`, etc. — left intact since they contain no `gir`; a separate
-  de-staling pass could address them.)
-
-- **`Update::splice_child` deleted — the impure-HOF split re-expressed as `fuse`.**
-  The only live user of the ExprId-keyed `splice_child` / `fusion::splice_into` was the
-  impure-HOF body split: `fuse_callsite`'s `build_body_split` computed `(value_id →
-  kernel)` pairs and a *separate* `splice_into_body` pass re-found each node by id to
-  install it — decoupled only because `fuse_callsite` borrows the CallSite immutably,
-  though both operate on the SAME template body. Now `fuse_callsite` does ONLY the
-  whole-body (Phase-1) attempt; when it returns `None` (impure callback), `MapQ`'s
-  template build runs the canonical `fusion::fuse` on the cloned template body IN
-  PLACE — fusing each maximal sync sub-region via the standard parent-swap
-  (`std::mem::replace`), no id search. Gated on `ctx.jit_enabled` for exact parity with
-  the old `jit_compile_split_kernel` gate (`try_fuse` doesn't self-gate, so JitDisabled
-  would otherwise fuse). Deleted: `Update::splice_child` (+ Bind/Module/Block overrides),
-  `fusion::splice_into`, `fusion::find_node_by_id` (orphaned), `build_body_split`,
-  `splice_into_body`, `SplitKernel`, `FusedCallback.split`/`is_split` (−328 net). Removes
-  a DRY violation (`build_body_split` duplicated `try_fuse`'s region-finding) and there is
-  no `NodeViewMut`, so reusing `fusion::fuse`'s concrete mutable descent is the only in-place
-  install that doesn't add a new abstraction. `fusion::fuse` fuses strictly MORE than
-  `build_body_split` — single-expr callback bodies it skipped (it only walked block
-  `let`-values; `Connect` is fusion-terminal), e.g. `array::map(a, |s| str::trim(s))` —
-  so 5 lib_tests fixtures (`str::{split,rsplit,splitn,rsplitn}`, `list::find`, the
-  "ASPIRE: Jit" cases) gained fusion (None→Jit) and were re-annotated: the desired,
-  value-identical direction (predictable fusion). Validated: 1431×2 tests, FuseExpect
-  audit 0 unexpected drift, fuzz regress 22/0 + generate 3000 + mutation 3000 = 0
-  divergences (4 accepted-class crashes — huge-`init` hangs / runaway-recursion node-walk
-  stack overflows, pre-existing). `design/distributed_jit.md` had scheduled this for the
-  F stage.
-- **`static_resolve` pass deleted — 4 compile walks → 2.** The standalone
-  post-typecheck static-resolution pass (`collect_lambda_binds` + `visit_mut`)
-  is folded into typecheck: `typecheck0` builds `ctx.bind_to_lambda` (via
-  `Bind::lambda_def_value` + `Module::typecheck0`'s sig→impl proxy entries) and
-  `CallSite::typecheck1` resolves via the new `try_static_resolve` (value-based —
-  the `unstable_bindings` guard kept; queuefn wrappers/`never()` stay dynamic;
-  callee bodies aren't descended, so no compile-time recursion). `Module::typecheck1`
-  now drives its children under the restored env (they get finalize for the first
-  time). Zero drift: 1429×2, FuseExpect audit 618 OK / 0 gain / 0 loss, fuzz clean.
-- **`Apply::static_resolve_fn_args` deleted — folded into `Apply::typecheck1`**
-  (now 5-arg: `+ fn_args: &[StaticFnArg]`). The HOF callback hook was a second
-  compile-time `Apply` method in the same phase. `typecheck1` fires on the scratch
-  `def.check` (`fn_args=&[]`) AND, HOF call sites only, the bound `cs.function`
-  (with the discovered `fn_args`, via `try_static_resolve`). HOF builtins
-  (`MapQ`/`FoldQ`/`Init`) gate on `fn_args.find(arg_idx==N)`; `CachedArgs`/
-  `CachedArgsAsync` absorb the param (inner `EvalCached` is never a HOF, so those
-  traits stay unchanged). The value-based discovery stays at the call site
-  (soundness — it needs the source arg node to skip queuefn wrappers). New
-  `queuefn_hof_callback` regression test. Zero drift: 1431×2, audit 618 OK, fuzz clean.
-- **GIR IR removal** in progress — `compile_node` walks the node graph + emits
-  CLIF directly (Stage 1 landed, gated by `CFlag::DirectNodeJit`).
-- **GIR interpreter deleted** — fusion is JIT-only; node-walk is the universal
-  fallback; correctness became structural.
-- **`GirType` deleted** → `Type` + `abi_kind`; **`RegValue`/`ConstVal` deleted**
-  → `Value` + `copy_unchecked`.
-- Semantics fixes: `&&`/`||` made strict; NaN total-order; checked-overflow
-  detection; representable bottom (interp), then subsumed by the node-walk
-  fallback.
-- **graphix-fuzz** differential fuzzer built (oracle, mutation/generation
-  sources, minimizer, regression corpus) — found ~a dozen real bugs.
-- Whole-graph maximal fusion; impure-HOF callback splitting; `clone_rebind`
-  per-slot template + closure conversion; the `node-walk↔fused` capture/scope
-  bug cascade (#162–#170).
+- `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
+  HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
+- `queue_fn.md` — `queuefn` feature design.
+- `fusion_lowering_split.md` — **proposed, not built:** split `try_fuse`'s welded
+  analysis+lowering into a pure analysis pass (color nodes with a `KernelId`,
+  build per-kernel descriptors) consumed by a thin lowering pass. Motivated by
+  legibility.
 
 ## Stdlib package notes
 
