@@ -3965,7 +3965,8 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
     }
-    let (scrut, scrut_kind, scrut_typ) = classify_select_scrutinee(cx, sel)?;
+    let (scrut, scrut_kind, scrut_typ, _none) =
+        classify_select_scrutinee(cx, sel, false)?;
     // Tail position: FORCE the scrutinee up front — a missing scrutinee
     // bottoms the whole kernel (the tail select IS the kernel result, so
     // there's no dead-select hazard, unlike value position). The arms
@@ -5391,7 +5392,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    let (scrut, scrut_kind, scrut_typ) = classify_select_scrutinee(cx, sel)?;
+    let (scrut, scrut_kind, scrut_typ, scrut_drop) =
+        classify_select_scrutinee(cx, sel, true)?;
     // Every merge shape phis (disc, payload) — the scrutinee's taint
     // rides the disc into every arm result, so there's no separate
     // validity phi and no possibly-bottom-scrutinee gate (#219).
@@ -5424,8 +5426,38 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     )?;
     cx.b.switch_to_block(merge);
     cx.b.seal_block(merge);
-    let params = cx.b.block_params(merge);
-    Ok(CompiledExpr::new(params[0], params[1]))
+    let (rdisc, rpayload) = {
+        let params = cx.b.block_params(merge);
+        (params[0], params[1])
+    };
+    // Discharge an OWNED scrutinee: every normal path (each arm + the
+    // miss trap) crosses the merge, so this drops exactly once; a
+    // mid-arm pending exit dropped it as an env local instead. Unbind
+    // (truncate) so a LATER pending exit elsewhere in the kernel can't
+    // double-drop the already-freed value.
+    if let Some(ScrutDrop { kind, vv, mark }) = scrut_drop {
+        match kind {
+            LocalKind::Composite => {
+                let drop = cx.helper("graphix_valarray_drop")?;
+                let p = cx.b.use_var(vv.payload);
+                cx.b.ins().call(drop, &[p]);
+            }
+            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                let drop = cx.helper("graphix_value_drop")?;
+                let d = cx.b.use_var(vv.disc);
+                let p = cx.b.use_var(vv.payload);
+                cx.b.ins().call(drop, &[d, p]);
+            }
+            LocalKind::Scalar(_) | LocalKind::String => {
+                return Err(anyhow!(
+                    "emit_clif: scrutinee drop obligation of shape {kind:?} — \
+                     classify bug"
+                ));
+            }
+        }
+        cx.env.truncate(mark);
+    }
+    Ok(CompiledExpr::new(rdisc, rpayload))
 }
 
 /// The final-arm fail block of a VALUE-position select: reached only
@@ -5478,12 +5510,29 @@ fn emit_select_miss_value(
     Ok(())
 }
 
+/// What the value-position select owes at its merge point for an OWNED
+/// (fresh-producer) scrutinee: the scrutinee was bound as an env local
+/// (so a mid-arm pending exit drops it via `drop_owned_composites`), and
+/// the merge emits the normal-path drop then unbinds it (the env mark) —
+/// exactly once on either path.
+struct ScrutDrop {
+    kind: LocalKind,
+    vv: ValueVar,
+    mark: usize,
+}
+
 /// Classify (and emit the read of) a select scrutinee: the shared
 /// prologue of the value-position and tail-position select emitters.
+/// `allow_owned`: the value-position caller has a single merge point
+/// every path crosses, so it can accept an OWNED composite/Value
+/// scrutinee and discharge the returned [`ScrutDrop`] there; the
+/// tail-position caller's arms terminate individually (no merge), so it
+/// passes `false` and owned scrutinees keep de-fusing.
 fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
-) -> Result<(SelectScrut, AbiKind, Type)> {
+    allow_owned: bool,
+) -> Result<(SelectScrut, AbiKind, Type, Option<ScrutDrop>)> {
     let scrut_typ =
         kernel_abi::freeze_for_abi_normalized(cx.registry(), sel.arg.node.typ())
             .ok_or_else(|| {
@@ -5495,6 +5544,24 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             })?;
     let scrut_kind = kernel_abi::abi_kind(cx.registry(), &scrut_typ)
         .ok_or_else(|| anyhow!("emit_clif: select scrutinee shape not classifiable"))?;
+    let mut drop_ob: Option<ScrutDrop> = None;
+    // Bind an OWNED scrutinee as an env local of its kind: a mid-arm
+    // pending exit drops it via `drop_owned_composites`, and the caller
+    // discharges the ScrutDrop (drop + unbind) at the merge on the
+    // normal path — exactly once on either path.
+    let mut adopt = |cx: &mut BodyCx,
+                     kind: LocalKind,
+                     disc: ClifValue,
+                     payload: ClifValue|
+     -> Option<ScrutDrop> {
+        let mark = cx.env.mark();
+        let name: ArcStr =
+            compact_str::format_compact!("__scrut{}", sel.spec.id.inner())
+                .as_str()
+                .into();
+        let vv = bind_local(cx, name, disc, payload, kind, None);
+        Some(ScrutDrop { kind, vv, mark })
+    };
     let scrut = match scrut_kind {
         AbiKind::Scalar(p) => {
             let cv = sel.arg.node.emit_clif(cx)?;
@@ -5502,43 +5569,49 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
         }
         AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
             // The (disc, payload) pair stays live across the whole arm
-            // chain with no drop path, so it must be a borrowed env
-            // slot (a Ref read). An owned producer scrutinee would
-            // leak.
-            if node_composite_source(&sel.arg.node) != CompositeSource::Borrowed {
+            // chain: a BORROWED env slot needs nothing; an OWNED
+            // producer needs the merge-point drop (value position only).
+            let owned = node_composite_source(&sel.arg.node) != CompositeSource::Borrowed;
+            if owned && !allow_owned {
                 return Err(anyhow!(
-                    "emit_clif: owned value-shape select scrutinee — no \
-                     drop path across the arm chain"
+                    "emit_clif: owned value-shape select scrutinee in tail \
+                     position — no merge point to drop at"
                 ));
             }
             let cv = sel.arg.node.emit_clif(cx)?;
+            if owned {
+                let kind = match scrut_kind {
+                    AbiKind::Variant => LocalKind::Variant,
+                    AbiKind::Nullable => LocalKind::Nullable,
+                    _ => LocalKind::Value,
+                };
+                drop_ob = adopt(cx, kind, cv.disc, cv.payload);
+            }
             SelectScrut::Value { disc: cv.disc, payload: cv.payload }
         }
-        // A composite scrutinee keeps its BORROWED pointer live across
-        // the arm chain (no drop path — the env slot owns it, so the
-        // owned-producer case de-fuses): structural patterns
-        // (tuple/struct/slice) test and read elements through it.
+        // A composite scrutinee keeps its pointer live across the arm
+        // chain: borrowed = env-owned; owned = merge-point drop.
         AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
-            if node_composite_source(&sel.arg.node) != CompositeSource::Borrowed {
+            let owned = node_composite_source(&sel.arg.node) != CompositeSource::Borrowed;
+            if owned && !allow_owned {
                 return Err(anyhow!(
-                    "emit_clif: owned composite select scrutinee — no \
-                     drop path across the arm chain"
+                    "emit_clif: owned composite select scrutinee in tail \
+                     position — no merge point to drop at"
                 ));
             }
             let cv = sel.arg.node.emit_clif(cx)?;
+            if owned {
+                drop_ob = adopt(cx, LocalKind::Composite, cv.disc, cv.payload);
+            }
             SelectScrut::Composite { disc: cv.disc, ptr: cv.payload }
         }
         // A String scrutinee supports only Ignore / guard arms (no
         // condition can test it); we read it only for its disc (#219
-        // taint) — a String read CLONES, so drop that clone immediately
-        // (we keep only the disc).
+        // taint). The read is an owned ArcStr either way (a borrowed
+        // slot read CLONES, an owned producer transfers) — drop it
+        // immediately, keeping only the disc. No cross-arm retention,
+        // so owned strings are fine in both positions.
         AbiKind::String => {
-            if node_composite_source(&sel.arg.node) != CompositeSource::Borrowed {
-                return Err(anyhow!(
-                    "emit_clif: owned opaque select scrutinee — no drop \
-                     path across the arm chain"
-                ));
-            }
             let cv = sel.arg.node.emit_clif(cx)?;
             let drop = cx.helper("graphix_arcstr_drop")?;
             cx.b.ins().call(drop, &[cv.payload]);
@@ -5548,7 +5621,7 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             return Err(anyhow!("emit_clif: select scrutinee of shape {scrut_kind:?}"));
         }
     };
-    Ok((scrut, scrut_kind, scrut_typ))
+    Ok((scrut, scrut_kind, scrut_typ, drop_ob))
 }
 
 /// Structure condition + scalar leaf binds for a tuple/struct/slice

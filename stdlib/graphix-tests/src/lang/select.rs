@@ -431,3 +431,72 @@ const SELECT_NESTED_LITERAL: &str = r#"
 run!(select_nested_literal, SELECT_NESTED_LITERAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 });
+
+// =============================================================================
+// Phase 6 — OWNED (fresh-producer) select scrutinees fuse in value
+// position: the scrutinee is bound as an env local (a mid-arm pending
+// exit drops it via drop_owned_composites) and dropped exactly once at
+// the merge every normal path crosses. Tail-position selects keep the
+// borrowed-only gate (no merge point).
+
+// An inline tuple literal scrutinee (fresh producer = Owned).
+const SELECT_OWNED_TUPLE: &str = r#"
+{
+  let a = 3;
+  select (a, a * 2) {
+    (0, y) => y,
+    (x, y) => x + y
+  }
+}
+"#;
+
+run!(select_owned_tuple, SELECT_OWNED_TUPLE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(9)))
+});
+
+// An inlined-HOF result as the scrutinee — the owned array flows from
+// the map loop straight into the select's length dispatch.
+const SELECT_OWNED_HOF_RESULT: &str = r#"
+{
+  let a = [1, 2];
+  select array::map(a, |x| x * 10) {
+    [x, y] => x + y,
+    _ => 0
+  }
+}
+"#;
+
+run!(select_owned_hof_result, SELECT_OWNED_HOF_RESULT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(30)))
+});
+
+// An owned VARIANT scrutinee (fresh constructor) with a scalar payload
+// bind — the two-word owned Value drops at the merge.
+const SELECT_OWNED_VARIANT: &str = r#"
+{
+  let n = 5;
+  select `Foo(n + 1) {
+    `Foo(x) => x * 2
+  }
+}
+"#;
+
+run!(select_owned_variant, SELECT_OWNED_VARIANT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(12)))
+});
+
+// The no-match edge: the owned scrutinee still drops when the taken path
+// is the catch-all (every arm's length test missed).
+const SELECT_OWNED_MISS: &str = r#"
+{
+  let a = [1, 2, 3];
+  select array::filter(a, |x| x > 10) {
+    [x] => x,
+    _ => -1
+  }
+}
+"#;
+
+run!(select_owned_miss, SELECT_OWNED_MISS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(-1)))
+});
