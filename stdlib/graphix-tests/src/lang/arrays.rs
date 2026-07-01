@@ -16,7 +16,7 @@ const ARRAY_INDEXING0: &str = r#"
 run!(array_indexing0, ARRAY_INDEXING0, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
+}; shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 // ── array[i] bounds-check seam (node-walk / JIT) ──
 // `array[i]` is `[elem, Error<…>]`: out-of-bounds (or negative

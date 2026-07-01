@@ -1584,12 +1584,11 @@ async fn node_shape_external_scalar() -> Result<()> {
     let eid = res.exprs[0].id;
 
     // The whole expression fuses into one kernel: scalar input `foo`,
-    // returns i64, body multiplies (a `Bin` op).
+    // returns i64. (Signature facts + the value check are the shape
+    // oracle — per-op body tags were deliberately NOT rebuilt; see
+    // node_shape.rs.)
     let spec = NodeShape::fused(
         KernelMatcher::new().returns(prim_type(PrimType::I64)).params(&["foo"]),
-        // F4 (#213): the binary-op tag pin removed at the F2
-        // flip — direct kernels carry no op-tag metadata to tag-match;
-        // restore as an EmitTag assertion.
     );
     ctx.rt.match_shape(eid, spec).await?;
 

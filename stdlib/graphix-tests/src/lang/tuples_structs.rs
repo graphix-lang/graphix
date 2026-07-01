@@ -20,7 +20,7 @@ run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
+   shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 // A composite literal with a value-shape (Duration) field. The
 // `compile_and_push_field` helper-selection already routed all six
@@ -83,7 +83,7 @@ run!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
+   shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 const STRUCTS0: &str = r#"
 {
@@ -115,7 +115,7 @@ run!(structs0, STRUCTS0, |v: Result<&Value>| match v {
     },
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit;
-   shape: NodeShape::contains_fused(KernelMatcher::new() /* F4 (#213): op-tag pin removed at the F2 flip — direct kernels carry no op-tag metadata; restore as an EmitTag assertion */));
+   shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 const BINDSTRUCT: &str = r#"
 {

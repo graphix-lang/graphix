@@ -124,10 +124,14 @@ impl KernelMatcher {
                 return Err(format!("param names: expected {names:?}, got {actual:?}"));
             }
         }
-        // Body-op assertions return as `EmitTag`s recorded during
-        // emission — F4 (#213). Kernels carry no per-op tags yet, so
-        // there's no body-op matcher; the parked fixture pins are
-        // marked `F4 (#213)`.
+        // There is deliberately NO body-op matcher (the old F4/#213
+        // "EmitTags" idea — per-op tags recorded during emission —
+        // was retired unbuilt). Threading a closed op-tag enum through
+        // every `emit_clif` would resurrect the deleted GIR IR's
+        // vocabulary tax to assert internal structure that the
+        // differential value check, these signature facts, and the
+        // `#[native]` attribute (an expr fully fused, zero node-walk
+        // residue, usable at any source location) already cover.
         Ok(())
     }
 }
