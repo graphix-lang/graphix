@@ -4058,9 +4058,6 @@ fn emit_let_node<R: Rt, E: UserEvent>(
     // SHADOWS it, so post-let reads resolve to the seed-select result.
     if let Some(id) = bind_id {
         if cx.is_lifted(id) {
-            let p = kernel_abi::scalar_prim(cx.registry(), value.typ()).ok_or_else(
-                || anyhow!("emit_clif: lifted connect target `{name}` isn't scalar"),
-            )?;
             let vv = {
                 let l = cx.env.lookup(id, name).ok_or_else(|| {
                     anyhow!("emit_clif: lifted target `{name}` has no feeder param")
@@ -4069,11 +4066,89 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             };
             let pdisc = cx.b.use_var(vv.disc);
             let ppay = cx.b.use_var(vv.payload);
-            let seed = value.emit_clif(cx)?;
             let valid = is_untainted(cx.b, pdisc);
-            let disc = cx.b.ins().select(valid, pdisc, seed.disc);
-            let payload = cx.b.ins().select(valid, ppay, seed.payload);
-            bind_local(cx, name.clone(), disc, payload, LocalKind::Scalar(p), Some(id));
+            let frozen =
+                kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());
+            let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
+            match ak {
+                Some(AbiKind::Scalar(p)) => {
+                    // Register scalars are branch-free: both sides are
+                    // plain values, select the feeder or the seed.
+                    let seed = value.emit_clif(cx)?;
+                    let disc = cx.b.ins().select(valid, pdisc, seed.disc);
+                    let payload = cx.b.ins().select(valid, ppay, seed.payload);
+                    bind_local(
+                        cx,
+                        name.clone(),
+                        disc,
+                        payload,
+                        LocalKind::Scalar(p),
+                        Some(id),
+                    );
+                }
+                // A composite / string accumulator (`let data = []; data <-
+                // array::push(data, x)`) needs OWNERSHIP on both sides:
+                // the feeder path CLONES the entry param (the param local
+                // keeps its own allocation — both drop at the return via
+                // `drop_owned_composites`), the seed path emits the fresh
+                // literal only when taken (no allocation to discard on the
+                // other side).
+                Some(k @ (AbiKind::Array | AbiKind::Tuple | AbiKind::Struct))
+                | Some(k @ AbiKind::String) => {
+                    let is_string = matches!(k, AbiKind::String);
+                    let use_param = cx.b.create_block();
+                    let use_seed = cx.b.create_block();
+                    let merge = cx.b.create_block();
+                    cx.b.append_block_param(merge, types::I64); // disc
+                    cx.b.append_block_param(merge, types::I64); // ptr/bits
+                    cx.b.ins().brif(valid, use_param, &[], use_seed, &[]);
+                    cx.b.switch_to_block(use_param);
+                    cx.b.seal_block(use_param);
+                    let clone_helper = if is_string {
+                        cx.helper("graphix_arcstr_clone")?
+                    } else {
+                        cx.helper("graphix_valarray_clone")?
+                    };
+                    let call = cx.b.ins().call(clone_helper, &[ppay]);
+                    let cloned = cx.b.inst_results(call)[0];
+                    cx.b.ins().jump(
+                        merge,
+                        &[BlockArg::Value(pdisc), BlockArg::Value(cloned)],
+                    );
+                    cx.b.switch_to_block(use_seed);
+                    cx.b.seal_block(use_seed);
+                    let seed = value.emit_clif(cx)?;
+                    let seed_owned = if is_string {
+                        // Strings are owned at production.
+                        seed.payload
+                    } else {
+                        ensure_owned_composite_src(
+                            cx,
+                            node_composite_source(value),
+                            seed.payload,
+                        )?
+                    };
+                    cx.b.ins().jump(
+                        merge,
+                        &[BlockArg::Value(seed.disc), BlockArg::Value(seed_owned)],
+                    );
+                    cx.b.switch_to_block(merge);
+                    cx.b.seal_block(merge);
+                    let (disc, payload) = {
+                        let params = cx.b.block_params(merge);
+                        (params[0], params[1])
+                    };
+                    let kind =
+                        if is_string { LocalKind::String } else { LocalKind::Composite };
+                    bind_local(cx, name.clone(), disc, payload, kind, Some(id));
+                }
+                other => {
+                    return Err(anyhow!(
+                        "emit_clif: lifted connect target `{name}` of shape \
+                         {other:?} — not yet supported"
+                    ));
+                }
+            }
             return Ok(());
         }
     }
@@ -5549,10 +5624,10 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     // pending exit drops it via `drop_owned_composites`, and the caller
     // discharges the ScrutDrop (drop + unbind) at the merge on the
     // normal path — exactly once on either path.
-    let mut adopt = |cx: &mut BodyCx,
-                     kind: LocalKind,
-                     disc: ClifValue,
-                     payload: ClifValue|
+    let adopt = |cx: &mut BodyCx,
+                 kind: LocalKind,
+                 disc: ClifValue,
+                 payload: ClifValue|
      -> Option<ScrutDrop> {
         let mark = cx.env.mark();
         let name: ArcStr =

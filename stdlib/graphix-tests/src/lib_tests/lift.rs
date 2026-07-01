@@ -248,3 +248,85 @@ async fn region_over_64_inputs_agrees() -> Result<()> {
     // steps by 70. Pin the differential (node-walk == jit) over a few cycles.
     assert_stream(&many_counters(70), &[0, 70, 140, 210, 280]).await
 }
+
+// ── Phase 7: COMPOSITE / STRING lifted accumulators ──────────────────────
+// The lift now accepts a constant-foldable composite / string seed, and
+// `emit_let_node` emits a branch-based clone-vs-seed (the feeder path
+// CLONES the entry param so the shadow local owns its allocation; the
+// seed literal is emitted only on the never-fired path). The connect's
+// owned marshal (Phase 2) writes the new value; the runtime feeds it
+// back next cycle. This is the reactive sliding-window idiom.
+
+run!(
+    array_accumulator_lifts_and_fuses,
+    "{ let data: Array<i64> = []; \
+       data <- array::push(data, array::len(data)); array::len(data) }",
+    |v: ::anyhow::Result<&Value>| matches!(v, Ok(Value::I64(0)));
+    FuseExpect::Jit
+);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn array_accumulator_grows() -> Result<()> {
+    // Each cycle pushes the current length: len goes 0, 1, 2, ... — the
+    // canonical growing-array accumulator, now fused end to end.
+    assert_stream(
+        "{ let data: Array<i64> = []; \
+           data <- array::push(data, array::len(data)); array::len(data) }",
+        &[0, 1, 2, 3, 4],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn array_connect_const_quiesces() -> Result<()> {
+    // A constant composite RHS fires only at init: data goes [] → [1, 2]
+    // then the kernel quiesces — stream [0, 2].
+    assert_stream(
+        "{ let data: Array<i64> = []; data <- [1, 2]; array::len(data) }",
+        &[0, 2],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn string_accumulator_grows() -> Result<()> {
+    // A string accumulator via interpolation: s grows by one char per
+    // cycle; the observed stream is its length.
+    assert_stream(
+        "{ let s = \"\"; s <- \"[s]x\"; str::len(s) }",
+        &[0, 1, 2, 3, 4],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn struct_accumulator_grows() -> Result<()> {
+    // A struct accumulator through StructWith (Phase 1) over a lifted
+    // struct local (Phase 7): the classic reactive-state-threading idiom
+    // `st <- { st with n: st.n + 1 }`.
+    assert_stream(
+        "{ let st = { n: 0 }; st <- { st with n: st.n + 1 }; st.n }",
+        &[0, 1, 2, 3, 4],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn array_window_accumulator_agrees() -> Result<()> {
+    // A bounded sliding window: grow to 3 elements, then push+shift
+    // (`[1..]` is only taken once the array is full, so the fallible
+    // slice is always in bounds — a `[-3..]` from the start would error
+    // on the short array, `$`-drop the write, and quiesce). Exercises a
+    // select + push + slice pipeline into the lifted connect across
+    // cycles; pin the node-walk == jit differential.
+    assert_agree(
+        "{ let data: Array<i64> = []; \
+           data <- select array::len(data) { \
+             3 => (array::push(data, array::len(data)))[1..]$, \
+             _ => array::push(data, array::len(data)) \
+           }; \
+           array::len(data) }",
+        6,
+    )
+    .await
+}

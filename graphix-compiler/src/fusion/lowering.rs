@@ -501,7 +501,7 @@ pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
 
 /// The constant `Value` of a node, seeing through `ExplicitParens`.
 /// `None` for anything that isn't a compile-time-known literal.
-fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
+pub(crate) fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
     use NodeView;
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),

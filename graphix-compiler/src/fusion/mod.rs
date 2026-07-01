@@ -302,24 +302,34 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
 ) -> ahash::AHashSet<BindId> {
     let mut connect_count: ahash::AHashMap<BindId, usize> = ahash::AHashMap::default();
-    let mut const_scalar_lets: ahash::AHashSet<BindId> = ahash::AHashSet::default();
+    let mut const_lets: ahash::AHashSet<BindId> = ahash::AHashSet::default();
     for_each_node(node, &mut |n| match n.view() {
         NodeView::Connect(c) => {
             *connect_count.entry(c.id).or_default() += 1;
         }
         NodeView::Bind(b) => {
             if let Some(id) = b.single_bind_id() {
-                // The seed must be a direct scalar Constant: it fires
+                // The seed must be a compile-time CONSTANT (a scalar
+                // Constant, or a constant-foldable array/tuple literal /
+                // string — `node_const_value`): such a producer fires
                 // once (at init) exactly like the node-walk's `Bind` of a
                 // literal, which is what the STALE-gated seed reproduces.
-                if matches!(b.node.view(), NodeView::Constant(_))
-                    && kernel_abi::scalar_prim(
-                        &ctx.fusion.abstract_registry,
-                        b.node.typ(),
+                // The shape gate matches `emit_let_node`'s lifted arms —
+                // scalar (register select), composite / string
+                // (branch-based clone-vs-seed).
+                use kernel_abi::AbiKind;
+                let shape_ok = matches!(
+                    kernel_abi::abi_kind(&ctx.fusion.abstract_registry, b.node.typ()),
+                    Some(
+                        AbiKind::Scalar(_)
+                            | AbiKind::Array
+                            | AbiKind::Tuple
+                            | AbiKind::Struct
+                            | AbiKind::String
                     )
-                    .is_some()
-                {
-                    const_scalar_lets.insert(id);
+                );
+                if shape_ok && lowering::node_const_value(&b.node).is_some() {
+                    const_lets.insert(id);
                 }
             }
         }
@@ -327,7 +337,7 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     });
     connect_count
         .into_iter()
-        .filter(|&(t, count)| count == 1 && const_scalar_lets.contains(&t))
+        .filter(|&(t, count)| count == 1 && const_lets.contains(&t))
         .map(|(t, _)| t)
         .collect()
 }
