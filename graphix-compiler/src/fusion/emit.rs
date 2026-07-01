@@ -3123,25 +3123,13 @@ fn emit_kernel_return(
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
             // FORCE at the output — a not-fresh result (bottom OR didn't
-            // fire this cycle) bottoms the kernel (drop the owned value,
-            // set pending, jump `pending_exit`); else fall through and
-            // return. The gate folds to const-false for a fresh disc, so
-            // a fired return emits no branch.
-            let not_fresh = return_bottom_cond(cx, disc);
-            let val_drop = cx.helper("graphix_value_drop")?;
-            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
-            let pre_pending = cx.b.create_block();
-            let ret_block = cx.b.create_block();
-            let pending_exit = pending_exit_block(cx);
-            cx.b.ins().brif(not_fresh, pre_pending, &[], ret_block, &[]);
-            cx.b.switch_to_block(pre_pending);
-            cx.b.seal_block(pre_pending);
-            cx.b.ins().call(val_drop, &[disc, payload]);
-            cx.b.ins().call(pending_set, &[]);
-            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().jump(pending_exit, &[]);
-            cx.b.switch_to_block(ret_block);
-            cx.b.seal_block(ret_block);
+            // fire this cycle) drops the owned value + bottoms the kernel;
+            // else fall through. Folds to no branch for a fresh const disc.
+            emit_force(cx, disc, |cx| {
+                let val_drop = cx.helper("graphix_value_drop")?;
+                cx.b.ins().call(val_drop, &[disc, payload]);
+                Ok(())
+            })?;
             emit_return_pending_check(
                 cx.b,
                 cx.env,
@@ -3188,21 +3176,10 @@ fn emit_kernel_return(
         }
         Some(AbiKind::Scalar(_)) => {
             // FORCE — a not-fresh scalar (bottom OR, for a published body,
-            // didn't fire this cycle) bottoms; else return. Folds to an
-            // unconditional return when the disc is a fresh const.
-            let not_fresh = return_bottom_cond(cx, cv.disc);
-            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
-            let pre_pending = cx.b.create_block();
-            let ret_block = cx.b.create_block();
-            let pending_exit = pending_exit_block(cx);
-            cx.b.ins().brif(not_fresh, pre_pending, &[], ret_block, &[]);
-            cx.b.switch_to_block(pre_pending);
-            cx.b.seal_block(pre_pending);
-            cx.b.ins().call(pending_set, &[]);
-            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().jump(pending_exit, &[]);
-            cx.b.switch_to_block(ret_block);
-            cx.b.seal_block(ret_block);
+            // didn't fire this cycle) bottoms; else return. A scalar owns
+            // nothing, so the drop is a no-op. Folds to an unconditional
+            // return when the disc is a fresh const.
+            emit_force(cx, cv.disc, |_| Ok(()))?;
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().return_(&[cv.payload]);
         }
