@@ -1516,8 +1516,10 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         // (a `*mut ValArray` for composite elems, or an `ArcStr` thin
         // pointer for string elems).
         "graphix_valarray_get_array"
+        | "graphix_valarray_get_array_borrowed"
         | "graphix_valarray_get_arcstr"
         | "graphix_struct_get_array"
+        | "graphix_struct_get_array_borrowed"
         | "graphix_struct_get_arcstr" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
@@ -2251,12 +2253,14 @@ fn bind_local(
     payload: ClifValue,
     kind: LocalKind,
     bind_id: Option<BindId>,
-) {
+) -> ValueVar {
     let dv = cx.b.declare_var(types::I64);
     cx.b.def_var(dv, disc);
     let pv = cx.b.declare_var(local_payload_ty(kind));
     cx.b.def_var(pv, payload);
-    cx.env.bind(name, ValueVar { disc: dv, payload: pv }, kind, bind_id);
+    let vv = ValueVar { disc: dv, payload: pv };
+    cx.env.bind(name, vv, kind, bind_id);
+    vv
 }
 
 /// Emit an HOF operand and FORCE its #219 taint (a tainted operand
@@ -5331,11 +5335,14 @@ enum SelectArmBind {
     /// only after the pattern matches — we follow the node-walk.)
     Payload { id: BindId, idx: usize, prim: PrimType },
     /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
-    /// composite scrutinee. Emitted inside the matched region: the
-    /// arm's length test (the structure condition) is the memory-safety
-    /// gate — a tainted scrutinee's empty placeholder fails it, so the
+    /// composite scrutinee. `ptr` is the (borrowed) composite the leaf
+    /// reads from: the scrutinee itself, or — for a NESTED pattern — a
+    /// borrowed interior pointer read during the arm's structure
+    /// condition. Emitted inside the matched region: the length tests
+    /// (the structure condition stages) are the memory-safety gate — a
+    /// tainted scrutinee's empty placeholder fails them, so the
     /// unchecked element read never touches the placeholder.
-    Elem { id: BindId, idx: ElemIdx, prim: PrimType },
+    Elem { id: BindId, idx: ElemIdx, prim: PrimType, ptr: ClifValue },
 }
 
 /// `select` at expression position — the Node twin of
@@ -5434,7 +5441,10 @@ fn emit_select_miss_value(
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(p) => {
             let d = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
-            let z = cx.b.ins().iconst(prim_to_clif(p), 0);
+            // `zero_const`, NOT `iconst(prim_to_clif(p))`: an `iconst.f64`
+            // is invalid CLIF (a verifier panic) — a float-result select
+            // with a conditional final arm reaches this trap.
+            let z = zero_const(cx.b, p);
             (d, z)
         }
         SelectMerge::Value => {
@@ -5717,6 +5727,7 @@ fn emit_composite_pattern_cond(
     // would abandon the kernel build — fine — but classify-first keeps
     // the failure cheap and the emission below straight-line).
     let mut lit_leaves: Vec<(ElemIdx, PrimType, &Value)> = Vec::new();
+    let mut nested: Vec<(ElemIdx, &StructPatternNode, Type)> = Vec::new();
     for leaf in &leaves {
         match leaf.sub {
             StructPatternNode::Ignore => {}
@@ -5724,11 +5735,11 @@ fn emit_composite_pattern_cond(
                 let prim =
                     kernel_abi::scalar_prim(cx.registry(), &leaf.typ).ok_or_else(|| {
                         anyhow!(
-                            "emit_clif: non-scalar select pattern leaf {:?}",
+                            "emit_clif: non-scalar select pattern leaf bind {:?}",
                             leaf.typ
                         )
                     })?;
-                binds.push(SelectArmBind::Elem { id: *id, idx: leaf.idx, prim });
+                binds.push(SelectArmBind::Elem { id: *id, idx: leaf.idx, prim, ptr });
             }
             StructPatternNode::Literal(v) => {
                 let prim = kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
@@ -5736,40 +5747,87 @@ fn emit_composite_pattern_cond(
                 })?;
                 lit_leaves.push((leaf.idx, prim, v));
             }
-            StructPatternNode::Slice { .. }
+            sub @ (StructPatternNode::Slice { .. }
             | StructPatternNode::SlicePrefix { .. }
             | StructPatternNode::SliceSuffix { .. }
-            | StructPatternNode::Struct { .. }
-            | StructPatternNode::Variant { .. } => {
+            | StructPatternNode::Struct { .. }) => {
+                // A NESTED structural pattern over a composite-shaped
+                // leaf recurses through a BORROWED interior pointer —
+                // read after this level's length test (below).
+                match kernel_abi::abi_kind(cx.registry(), &leaf.typ) {
+                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                        nested.push((leaf.idx, sub, leaf.typ.clone()));
+                    }
+                    other => {
+                        return Err(anyhow!(
+                            "emit_clif: nested pattern over a leaf of shape \
+                             {other:?} not lowerable"
+                        ));
+                    }
+                }
+            }
+            StructPatternNode::Variant { .. } => {
                 return Err(anyhow!(
-                    "emit_clif: nested select pattern leaf not lowerable"
+                    "emit_clif: nested variant pattern leaf not lowerable"
                 ));
             }
         }
     }
-    // The length test.
+    // The length test for THIS level.
     let n_c = cx.b.ins().iconst(types::I64, n as i64);
     let len_ok = cx.b.ins().icmp(len_cc, len, n_c);
-    if lit_leaves.is_empty() {
+    if lit_leaves.is_empty() && nested.is_empty() {
+        // Nothing to read before the matched region — the length test
+        // IS the condition (the caller's arm brif consumes it).
         return Ok(len_ok);
     }
-    // Literal leaves test in a second block gated by the length branch
-    // (the reads are unchecked — see the taint note above).
-    let leaf_test = cx.b.create_block();
-    cx.b.ins().brif(len_ok, leaf_test, &[], fail, &[]);
-    cx.b.switch_to_block(leaf_test);
-    cx.b.seal_block(leaf_test);
+    // Reads happen below, so the length must be proven FIRST: branch to
+    // a staging block (the reads are unchecked — see the taint note
+    // above), then test literal leaves and recurse into nested patterns.
+    let stage = cx.b.create_block();
+    cx.b.ins().brif(len_ok, stage, &[], fail, &[]);
+    cx.b.switch_to_block(stage);
+    cx.b.seal_block(stage);
     let mut cond: Option<ClifValue> = None;
-    for (idx, prim, v) in lit_leaves {
-        let elem = read_scrut_elem(cx, ptr, idx, prim)?;
-        let lit = compile_const(cx.b, v, prim)?;
-        let c = compile_cmp(cx.b, CmpOp::Eq, prim, elem, lit);
+    let mut fold = |cx: &mut BodyCx, c: ClifValue| {
         cond = Some(match cond {
             None => c,
             Some(p) => cx.b.ins().band(p, c),
         });
+    };
+    for (idx, prim, v) in lit_leaves {
+        let elem = read_scrut_elem(cx, ptr, idx, prim)?;
+        let lit = compile_const(cx.b, v, prim)?;
+        let c = compile_cmp(cx.b, CmpOp::Eq, prim, elem, lit);
+        fold(cx, c);
     }
-    Ok(cond.unwrap())
+    for (idx, sub, typ) in nested {
+        // Borrowed interior pointer into this level's element slot —
+        // stable for the whole arm chain (the root scrutinee is a
+        // pinned borrowed env slot and values are immutable), so the
+        // recursion's reads and the matched-region leaf binds need no
+        // ownership or drops.
+        let (helper_name, idx_v) = match idx {
+            ElemIdx::FromStart(j) => (
+                "graphix_valarray_get_array_borrowed",
+                cx.b.ins().iconst(types::I64, j as i64),
+            ),
+            ElemIdx::FromEnd { back, len } => {
+                let b = cx.b.ins().iconst(types::I64, back as i64);
+                ("graphix_valarray_get_array_borrowed", cx.b.ins().isub(len, b))
+            }
+            ElemIdx::StructField(i) => (
+                "graphix_struct_get_array_borrowed",
+                cx.b.ins().iconst(types::I64, i as i64),
+            ),
+        };
+        let helper = cx.helper(helper_name)?;
+        let call = cx.b.ins().call(helper, &[ptr, idx_v]);
+        let child_ptr = cx.b.inst_results(call)[0];
+        let c = emit_composite_pattern_cond(cx, child_ptr, &typ, sub, fail, binds)?;
+        fold(cx, c);
+    }
+    Ok(cond.expect("staged composite pattern with no conditions"))
 }
 
 /// The shared select arm chain: pattern conditions (type predicate /
@@ -6107,18 +6165,18 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     let pdisc = propagate_flags(cx.b, base, &[disc]);
                     bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
                 }
-                SelectArmBind::Elem { id, idx, prim } => {
-                    let SelectScrut::Composite { disc, ptr } = scrut else {
+                SelectArmBind::Elem { id, idx, prim, ptr } => {
+                    let SelectScrut::Composite { disc, .. } = scrut else {
                         return Err(anyhow!(
                             "emit_clif: element bind without a composite \
                              scrutinee"
                         ));
                     };
-                    // Safe here: the arm's length test (the structure
-                    // condition guarding this matched region) proved the
-                    // element exists — a tainted scrutinee's empty
-                    // placeholder failed it.
-                    let v = read_scrut_elem(cx, ptr, *idx, *prim)?;
+                    // Safe here: the arm's length tests (the structure
+                    // condition stages guarding this matched region) proved
+                    // the element exists — a tainted scrutinee's empty
+                    // placeholder failed them.
+                    let v = read_scrut_elem(cx, *ptr, *idx, *prim)?;
                     let name: ArcStr =
                         compact_str::format_compact!("__pat{}", id.inner())
                             .as_str()

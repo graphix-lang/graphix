@@ -11,7 +11,10 @@ use graphix_compiler::{
     effects::EffectKind,
     expr::ExprId,
     fusion::{
-        emit::{self, BodyCx, CompiledExpr, CompositeSource, scaffold},
+        emit::{
+            self, BodyCx, CompiledExpr, CompositeSource, scaffold,
+            scaffold::{LeafShape, ValueLeafKind},
+        },
         kernel_abi::{self, PrimType},
     },
     node::genn,
@@ -40,17 +43,20 @@ fn is_unit_or_null(reg: &kernel_abi::AbstractRegistry, t: &Type) -> bool {
 }
 
 /// Destructure leaves (`|(k, v)|` — pattern BindId + tuple position)
-/// lowered to the `(id, position, prim)` triples
+/// lowered to the `(id, position, shape)` triples
 /// `scaffold::bind_elem` binds per iteration off the composite
-/// element. `None` when the (frozen) element isn't a tuple carrying a
-/// register scalar at every BOUND position — those callbacks
-/// node-walk (composite leaves are a future widening). An empty
-/// `elem_binds` (single-name callback) is trivially `Some(empty)`.
-fn scalar_leaves(
+/// element: register scalars by value, composite / string / value-shape
+/// leaves as OWNED clones the loop drops at body end. `None` when the
+/// (frozen) element isn't a tuple, or a BOUND position has no
+/// register/heap shape (Unit / bare Null / non-fusable) — those
+/// callbacks node-walk. An empty `elem_binds` (single-name callback) is
+/// trivially `Some(empty)`.
+fn elem_leaves(
     reg: &kernel_abi::AbstractRegistry,
     in_elem: &Type,
     elem_binds: &[(BindId, usize)],
-) -> Option<Vec<(BindId, usize, PrimType)>> {
+) -> Option<Vec<(BindId, usize, LeafShape)>> {
+    use kernel_abi::AbiKind;
     if elem_binds.is_empty() {
         return Some(Vec::new());
     }
@@ -58,7 +64,18 @@ fn scalar_leaves(
     elem_binds
         .iter()
         .map(|(id, i)| {
-            ts.get(*i).and_then(|t| kernel_abi::scalar_prim(reg, t)).map(|p| (*id, *i, p))
+            let shape = match kernel_abi::abi_kind(reg, ts.get(*i)?) {
+                Some(AbiKind::Scalar(p)) => LeafShape::Scalar(p),
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                    LeafShape::Composite
+                }
+                Some(AbiKind::String) => LeafShape::String,
+                Some(AbiKind::Variant) => LeafShape::Value(ValueLeafKind::Variant),
+                Some(AbiKind::Nullable) => LeafShape::Value(ValueLeafKind::Nullable),
+                Some(AbiKind::Value) => LeafShape::Value(ValueLeafKind::Value),
+                Some(AbiKind::Unit | AbiKind::Null) | None => return None,
+            };
+            Some((*id, *i, shape))
         })
         .collect()
 }
@@ -104,7 +121,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // A destructured `|(k, v)|` callback binds per-leaf reads off
         // the composite element — register-scalar leaves only
         // (composite leaves node-walk).
-        let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
+        let Some(leaves) = elem_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
@@ -204,7 +221,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         // A destructured `|(k, v)|` callback binds per-leaf reads off
         // the composite element — register-scalar leaves only
         // (composite leaves node-walk).
-        let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
+        let Some(leaves) = elem_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
@@ -298,7 +315,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         // A destructured `|(k, v)|` callback binds per-leaf reads off
         // the composite element — register-scalar leaves only
         // (composite leaves node-walk).
-        let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
+        let Some(leaves) = elem_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
@@ -480,7 +497,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         // A destructured `|(k, v)|` callback binds per-leaf reads off
         // the composite element — register-scalar leaves only
         // (composite leaves node-walk).
-        let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
+        let Some(leaves) = elem_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
@@ -575,7 +592,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         // A destructured `|(k, v)|` callback binds per-leaf reads off
         // the composite element — register-scalar leaves only
         // (composite leaves node-walk).
-        let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
+        let Some(leaves) = elem_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {
@@ -665,7 +682,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         // A destructured `|acc, (k, v)|` callback binds per-leaf reads
         // off the composite element — register-scalar leaves only
         // (composite leaves node-walk).
-        let Some(leaves) = scalar_leaves(cx.registry(), &in_elem, elem_binds) else {
+        let Some(leaves) = elem_leaves(cx.registry(), &in_elem, elem_binds) else {
             return Ok(None);
         };
         match kernel_abi::abi_kind(cx.registry(), &in_elem) {

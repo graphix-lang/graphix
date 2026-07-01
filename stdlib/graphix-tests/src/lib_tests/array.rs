@@ -1057,3 +1057,54 @@ run!(array_unzip, ARRAY_UNZIP, |v: Result<&Value>| {
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// ─── Phase 5: composite / string / value destructure LEAVES ──────────
+// `|(k, v)|` callbacks whose leaf is itself composite/string/value now
+// fuse: the leaf is an OWNED clone bound as an env local (pending-exit
+// drop for free) and dropped at body end on every edge.
+
+const HOF_LEAF_COMPOSITE: &str = r#"
+array::map([((1, 2), 10), ((3, 4), 20)], |(pt, n)| pt.0 + pt.1 + n)
+"#;
+run!(hof_leaf_composite, HOF_LEAF_COMPOSITE, |v: Result<&Value>| matches!(
+    v.map(|v| v.clone().cast_to::<[i64; 2]>()),
+    Ok(Ok([13, 27]))
+));
+
+const HOF_LEAF_STRING: &str = r#"
+array::fold([("a", 1), ("bb", 2)], 0, |acc, (s, n)| acc + str::len(s) + n)
+"#;
+run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(6))
+));
+
+// filter: the leaf drops pre-branch on BOTH edges (kept elements move,
+// leaves never do) — no-match + all-match covered by the two predicates.
+const HOF_LEAF_FILTER: &str = r#"
+array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 3)
+"#;
+run!(hof_leaf_filter, HOF_LEAF_FILTER, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Array(a)) if a.len() == 1
+));
+
+// A string leaf read TWICE in the body (two refcount clones vs one leaf
+// drop), through interpolation.
+const HOF_LEAF_STRING_TWICE: &str = r#"
+array::map([("x", 1), ("y", 2)], |(s, n)| "[s][s][n]")
+"#;
+run!(hof_leaf_string_twice, HOF_LEAF_STRING_TWICE, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
+        Ok(Ok([a, b])) if &*a == "xx1" && &*b == "yy2")
+});
+
+// A nullable (value-shape) leaf: `==` over the two-word leaf fuses
+// (ValueEq); the leaf's owned clone drops at body end.
+const HOF_LEAF_NULLABLE: &str = r#"
+array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => v, false => null })
+"#;
+run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
+    v.map(|v| v.clone().cast_to::<[i64; 1]>()),
+    Ok(Ok([20]))
+));

@@ -376,3 +376,58 @@ const SELECT_SUFFIX_EXACT_LEN: &str = r#"
 run!(select_suffix_exact_len, SELECT_SUFFIX_EXACT_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(12)))
 });
+
+// =============================================================================
+// Phase 5 — NESTED structural select patterns (scalar leaf binds) fuse:
+// the intermediate composite reads are BORROWED interior pointers (the
+// root scrutinee is pinned borrowed across the arm chain and values are
+// immutable), staged behind each level's length test.
+
+const SELECT_NESTED_TUPLE: &str = r#"
+{
+  let t = ((1, 2), 30);
+  select t {
+    ((0, b), c) => b + c,
+    ((a, b), c) => a + b + c
+  }
+}
+"#;
+
+run!(select_nested_tuple, SELECT_NESTED_TUPLE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(33)))
+});
+
+// The nestedmatch3 shape: a struct pattern with a nested slice-prefix
+// leaf. NOTE the SELECT itself still de-fuses (typecheck's pattern
+// inference leaves the nested leaf TVars loose under a STRUCT parent —
+// see `native_select_nested_struct_defuses`); the Jit expectation here is
+// satisfied by the sibling struct-literal region, and the value agreement
+// exercises the node-walk binder.
+const SELECT_NESTED_STRUCT_SLICE: &str = r#"
+{
+  let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 };
+  select x {
+    { foo: [a, b, ..], bar: _, baz: _ } => a + b,
+    _ => 0.0
+  }
+}
+"#;
+
+run!(select_nested_struct_slice, SELECT_NESTED_STRUCT_SLICE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::F64(3.0)))
+});
+
+// A LITERAL inside the nested level (second-stage staged test).
+const SELECT_NESTED_LITERAL: &str = r#"
+{
+  let t = ((7, 2), 5);
+  select t {
+    ((7, b), c) => b * c,
+    ((a, b), c) => a + b + c
+  }
+}
+"#;
+
+run!(select_nested_literal, SELECT_NESTED_LITERAL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(10)))
+});

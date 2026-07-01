@@ -50,14 +50,41 @@ pub struct HofElem<'a> {
     pub id: Option<crate::BindId>,
     pub typ: &'a Type,
     /// Destructure leaves for a `|(k, v)|` callback: per bound leaf,
-    /// its pattern `BindId`, tuple position, and register-scalar prim.
-    /// [`bind_elem`] reads each off the owned composite element and
-    /// binds it BindId-first, so the body's leaf `Ref`s resolve
-    /// without name plumbing. Sparse positions (`|(k, _)|`) simply
-    /// have no entry. Empty for single-name callbacks. Only valid on
-    /// a composite element — leaves on a scalar element are a caller
-    /// bug ([`bind_elem`] Errs).
-    pub leaves: &'a [(crate::BindId, usize, PrimType)],
+    /// its pattern `BindId`, tuple position, and shape. [`bind_elem`]
+    /// reads each off the owned composite element and binds it
+    /// BindId-first, so the body's leaf `Ref`s resolve without name
+    /// plumbing. Scalar leaves are by-value copies; composite / string /
+    /// value-shape leaves are OWNED clones the loop drops at body end
+    /// (see [`drop_owned_elem`] — the leaf list `bind_elem` returns).
+    /// Sparse positions (`|(k, _)|`) simply have no entry. Empty for
+    /// single-name callbacks. Only valid on a composite element —
+    /// leaves on a non-composite element are a caller bug
+    /// ([`bind_elem`] Errs).
+    pub leaves: &'a [(crate::BindId, usize, LeafShape)],
+}
+
+/// The shape of one `|(k, v)|` destructure leaf — decided by the HOF
+/// gate (`elem_leaves` in the array package) from the tuple element
+/// type, and dispatched by [`bind_elem`]'s per-leaf reads.
+#[derive(Clone, Copy, Debug)]
+pub enum LeafShape {
+    /// A register scalar — by-value copy, nothing to drop.
+    Scalar(PrimType),
+    /// Array/tuple/struct — an owned `*mut ValArray` clone.
+    Composite,
+    /// An owned `ArcStr` clone.
+    String,
+    /// Variant / Nullable / DateTime / Duration / Bytes / Map — an owned
+    /// two-word Value clone, bound under the given local kind.
+    Value(ValueLeafKind),
+}
+
+/// Which value-shape local kind a [`LeafShape::Value`] leaf binds as.
+#[derive(Clone, Copy, Debug)]
+pub enum ValueLeafKind {
+    Variant,
+    Nullable,
+    Value,
 }
 
 /// A bound per-iteration element — see [`bind_elem`]. The owned kinds
@@ -87,7 +114,7 @@ fn bind_elem(
     arr_ptr: ClifValue,
     i_now: ClifValue,
     elem: &HofElem,
-) -> Result<BoundElem> {
+) -> Result<(BoundElem, Vec<BoundElem>)> {
     match kernel_abi::abi_kind(cx.registry(), elem.typ) {
         Some(AbiKind::Scalar(prim)) => {
             if !elem.leaves.is_empty() {
@@ -112,7 +139,7 @@ fn bind_elem(
                 LocalKind::Scalar(prim),
                 elem.id,
             );
-            Ok(BoundElem::Scalar { var, prim })
+            Ok((BoundElem::Scalar { var, prim }, Vec::new()))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let get_helper = cx.helper("graphix_valarray_get_array")?;
@@ -129,22 +156,66 @@ fn bind_elem(
                 LocalKind::Composite,
                 elem.id,
             );
-            // Destructure leaves: scalar reads off the owned element,
-            // bound under their pattern BindIds (the body's leaf Refs
-            // resolve BindId-first; the synthetic name is never looked
-            // up). Scalar Variables need no per-iteration drops — the
-            // element's own drop covers the allocation.
-            for (id, idx, prim) in elem.leaves {
-                let get = cx.helper(valarray_get_helper(*prim)?)?;
+            // Destructure leaves, bound under their pattern BindIds (the
+            // body's leaf Refs resolve BindId-first; the synthetic name is
+            // never looked up). Scalar leaves are by-value copies (the
+            // element's own drop covers the allocation); composite /
+            // string / value leaves are OWNED clones — bound as env
+            // locals of the matching kind (so a mid-body pending exit
+            // drops them via `drop_owned_composites`) and returned for
+            // the loop's normal-path [`drop_owned_leaves`].
+            let mut owned_leaves: Vec<BoundElem> = Vec::new();
+            for (id, idx, shape) in elem.leaves {
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
-                let v = cx.b.inst_results(call)[0];
                 let name: ArcStr =
                     compact_str::format_compact!("__leaf{}", id.inner()).as_str().into();
-                let d = scalar_disc(cx.b, *prim);
-                bind_local(cx, name, d, v, LocalKind::Scalar(*prim), Some(*id));
+                match shape {
+                    LeafShape::Scalar(prim) => {
+                        let get = cx.helper(valarray_get_helper(*prim)?)?;
+                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
+                        let v = cx.b.inst_results(call)[0];
+                        let d = scalar_disc(cx.b, *prim);
+                        bind_local(cx, name, d, v, LocalKind::Scalar(*prim), Some(*id));
+                    }
+                    LeafShape::Composite => {
+                        let get = cx.helper("graphix_valarray_get_array")?;
+                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
+                        let p = cx.b.inst_results(call)[0];
+                        let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+                        let vv =
+                            bind_local(cx, name, d, p, LocalKind::Composite, Some(*id));
+                        owned_leaves.push(BoundElem::Composite { var: vv.payload });
+                    }
+                    LeafShape::String => {
+                        let get = cx.helper("graphix_valarray_get_arcstr")?;
+                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
+                        let s = cx.b.inst_results(call)[0];
+                        let d = cx.b.ins().iconst(types::I64, value_disc::STRING);
+                        let vv = bind_local(cx, name, d, s, LocalKind::String, Some(*id));
+                        owned_leaves.push(BoundElem::String { var: vv.payload });
+                    }
+                    LeafShape::Value(vk) => {
+                        let get = cx.helper("graphix_valarray_get_value")?;
+                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
+                        let (d, p) = {
+                            let r = cx.b.inst_results(call);
+                            (r[0], r[1])
+                        };
+                        let kind = match vk {
+                            ValueLeafKind::Variant => LocalKind::Variant,
+                            ValueLeafKind::Nullable => LocalKind::Nullable,
+                            ValueLeafKind::Value => LocalKind::Value,
+                        };
+                        let disc = cx.b.declare_var(types::I64);
+                        cx.b.def_var(disc, d);
+                        let payload = cx.b.declare_var(types::I64);
+                        cx.b.def_var(payload, p);
+                        cx.env.bind(name, ValueVar { disc, payload }, kind, Some(*id));
+                        owned_leaves.push(BoundElem::Value { disc, payload });
+                    }
+                }
             }
-            Ok(BoundElem::Composite { var })
+            Ok((BoundElem::Composite { var }, owned_leaves))
         }
         Some(AbiKind::String) => {
             if !elem.leaves.is_empty() {
@@ -168,7 +239,7 @@ fn bind_elem(
                 LocalKind::String,
                 elem.id,
             );
-            Ok(BoundElem::String { var })
+            Ok((BoundElem::String { var }, Vec::new()))
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             if !elem.leaves.is_empty() {
@@ -195,10 +266,24 @@ fn bind_elem(
                 _ => LocalKind::Value,
             };
             cx.env.bind(elem.name.clone(), ValueVar { disc, payload }, kind, elem.id);
-            Ok(BoundElem::Value { disc, payload })
+            Ok((BoundElem::Value { disc, payload }, Vec::new()))
         }
         _ => Err(anyhow!("HOF element shape not supported by the JIT loop scaffolds")),
     }
+}
+
+/// Drop the owned destructure-leaf clones of one iteration — emitted
+/// once the body (or predicate) has fully consumed them: after the
+/// output push in map (a body result may BORROW a leaf local until the
+/// push copies it), and right after the predicate in filter/find (the
+/// kept/found edges move only the ELEMENT — leaves are never moved).
+/// The mid-body pending exit needs nothing here: each owned leaf is an
+/// env local of its kind, dropped by `drop_owned_composites`.
+fn drop_owned_leaves(cx: &mut BodyCx, leaves: &[BoundElem]) -> Result<()> {
+    for l in leaves {
+        drop_owned_elem(cx, l)?;
+    }
+    Ok(())
 }
 
 /// Drop an owned per-iteration element (no-op for scalars): the
@@ -509,9 +594,12 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let cv = body(cx)?;
     push_field(cx, buf, cv, out_typ, out_src)?;
+    // Leaves drop AFTER the push — a body result may BORROW a leaf local
+    // until the push copies it into the buf.
+    drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     emit_increment(cx, i_var, i_now, loop_header);
@@ -564,8 +652,11 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let keep = pred(cx)?;
+    // Leaves are consumed by the predicate; the kept edge moves only the
+    // ELEMENT into the output, so drop leaves once, pre-branch.
+    drop_owned_leaves(cx, &owned_leaves)?;
     cx.env.truncate(mark);
     let not_kept = drop_block.unwrap_or(advance);
     cx.b.ins().brif(keep, push_block, &[], not_kept, &[]);
@@ -715,8 +806,9 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let body_ptr = body(cx)?;
+    drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     cx.b.ins().call(extend, &[buf, body_ptr]);
@@ -779,8 +871,9 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     bind_scalar_var(cx, acc_name.clone(), acc_prim, acc_var, acc_id);
-    let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let new_acc = body(cx)?;
+    drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     cx.b.def_var(acc_var, new_acc);
@@ -831,8 +924,11 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let keep = pred(cx)?;
+    // Leaves are consumed by the predicate; the found edge moves only
+    // the ELEMENT into the result, so drop leaves once, pre-branch.
+    drop_owned_leaves(cx, &owned_leaves)?;
     cx.env.truncate(mark);
     cx.b.ins().brif(keep, found, &[], advance, &[]);
     cx.b.switch_to_block(found);
@@ -928,8 +1024,11 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let bound = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let (bdisc, bpayload) = body(cx)?;
+    // The body result is already OWNED (the caller ensures ownership
+    // before the merge), so the element and leaves drop safely here.
+    drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
     // A tainted body bottoms the whole HOF (#219); `bdisc` is then clean

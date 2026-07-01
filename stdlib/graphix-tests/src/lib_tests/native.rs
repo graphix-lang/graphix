@@ -245,6 +245,76 @@ async fn native_select_destructure_ok() {
     );
 }
 
+// NESTED structural select patterns (Phase 5): the intermediate composite
+// reads are borrowed interior pointers staged behind each level's length
+// test — a nested slice inside a TUPLE fully fuses.
+#[tokio::test]
+async fn native_select_nested_tuple_ok() {
+    let prog = "{ let t = ([1.0, 2.0], 42); \
+                #[native] select t { ([a, b], c) => a + b, _ => 0.0 } }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "a nested-slice-in-tuple select must fully fuse now, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// The STRUCT-parent nested case (the nestedmatch3 shape) still de-fuses —
+// NOT an emission gap: typecheck's pattern inference leaves the nested
+// leaf binds' TVars constrained to the loose `Number` set instead of
+// narrowing them to the array element type (the tuple-parent case above
+// narrows fine), so the select's return type is `Set([f64, TVar(Number)])`
+// and `freeze_region_return` correctly refuses the unbound TVar. Pinned
+// here until the pattern-inference gap is fixed; the run! fixture
+// `select_nested_struct_slice` proves the node-walk value either way.
+#[tokio::test]
+async fn native_select_nested_struct_defuses() {
+    let prog = "{ let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 }; \
+                #[native] select x { \
+                { foo: [a, b, ..], bar: _, baz: _ } => a + b, _ => 0.0 } }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_err(),
+        "the struct-nested select still de-fuses (loose leaf TVar from \
+         pattern inference) — if this now FUSES, the inference gap was \
+         fixed: flip this pin to is_ok and celebrate, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// A FLOAT-result select with a CONDITIONAL final arm (a composite pattern's
+// length test makes final arms conditional) exercises the miss trap's
+// zero constant — which must be `f64const`, not `iconst.f64` (invalid CLIF:
+// a cranelift verifier PANIC that killed the check runtime).
+#[tokio::test]
+async fn native_select_float_conditional_final_ok() {
+    let prog = "{ let x = { bar: 42, baz: 8.0 }; \
+                #[native] select x { \
+                { bar: 0, baz } => baz, { bar: _, baz: _ } => 0.0 } }";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "a float-result select with a conditional final arm must fuse \
+         (and not panic the verifier), got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// HOF destructure leaves that are composite/string (Phase 5): the owned
+// leaf clones bind as env locals and drop at body end, so the whole map
+// fuses.
+#[tokio::test]
+async fn native_hof_composite_leaf_ok() {
+    let prog = "#[native]\narray::map([((1, 2), 10), ((3, 4), 20)], |(pt, n)| pt.0 + n)";
+    let r = eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_ok(),
+        "a map with a composite destructure leaf must fully fuse now, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
 // ...and the teeth for the DEFERRED case: a NAMED rest binding
 // (`[x, rest..]`) allocates an owned subslice arm local (JitEnv::truncate
 // emits no drops), so that select still de-fuses — `#[native]` on it must

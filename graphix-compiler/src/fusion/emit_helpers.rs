@@ -1443,6 +1443,45 @@ pub unsafe extern "C" fn graphix_valarray_get_array(
     }
 }
 
+/// `arr[idx]` as a BORROWED `*const ValArray` — an interior pointer
+/// into the parent's element slot. Valid for exactly as long as the
+/// parent array is alive and unmutated; used by select's nested
+/// structural patterns, whose scrutinee is a borrowed env slot pinned
+/// across the whole arm chain (values are immutable, so the interior
+/// pointer is stable). NEVER pass this to a consuming/dropping helper.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_valarray_get_array_borrowed(
+    p: *const ValArray,
+    idx: usize,
+) -> *const ValArray {
+    unsafe {
+        match &arr(p)[idx] {
+            Value::Array(a) => a as *const ValArray,
+            _ => std::hint::unreachable_unchecked(),
+        }
+    }
+}
+
+/// Struct field read (`arr[sorted_idx]` is a `[name, value]` kv-pair;
+/// slot 1) as a BORROWED `*const ValArray` interior pointer — same
+/// lifetime contract as [`graphix_valarray_get_array_borrowed`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_struct_get_array_borrowed(
+    p: *const ValArray,
+    sorted_idx: usize,
+) -> *const ValArray {
+    unsafe {
+        let kv = match &arr(p)[sorted_idx] {
+            Value::Array(a) => a,
+            _ => std::hint::unreachable_unchecked(),
+        };
+        match &kv[1] {
+            Value::Array(a) => a as *const ValArray,
+            _ => std::hint::unreachable_unchecked(),
+        }
+    }
+}
+
 /// `arr[idx]` as an owned `ArcStr` (String elem).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_valarray_get_arcstr(
@@ -1537,6 +1576,14 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_valarray_index", graphix_valarray_index as *const u8),
         // Non-primitive element reads (composite / string / value-shape).
         ("graphix_valarray_get_array", graphix_valarray_get_array as *const u8),
+        (
+            "graphix_valarray_get_array_borrowed",
+            graphix_valarray_get_array_borrowed as *const u8,
+        ),
+        (
+            "graphix_struct_get_array_borrowed",
+            graphix_struct_get_array_borrowed as *const u8,
+        ),
         ("graphix_valarray_get_arcstr", graphix_valarray_get_arcstr as *const u8),
         ("graphix_valarray_get_value", graphix_valarray_get_value as *const u8),
         ("graphix_struct_get_array", graphix_struct_get_array as *const u8),
