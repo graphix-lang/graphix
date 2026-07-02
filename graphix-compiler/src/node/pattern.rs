@@ -1,5 +1,5 @@
 use crate::{
-    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, UserEvent,
+    BindId, CFlag, Event, ExecCtx, PrintFlag, RebindMap, Rt, Scope, UserEvent,
     env::Env,
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
@@ -47,14 +47,18 @@ pub enum StructPatternNode {
 }
 
 /// Re-mint one bound id for [`StructPatternNode::clone_rebind`]: read the
-/// original binding's record and bind a fresh id under the same
-/// name/type/pos/ori in `scope`. The fresh id enters `scope`'s name map,
-/// so a subsequent `lookup_bind` by that name (during the cloned body's
-/// `clone_rebind`) resolves to it. Unknown ids are kept as-is (defensive;
-/// every pattern id has a `by_id` record).
+/// original binding's record, bind a fresh id under the same
+/// name/type/pos/ori in `scope` (env registration — `Slot::delete`
+/// unbinds by id), and record old→new in `remap`, the table the cloned
+/// body's `Ref`s resolve through. Resolution is by the table, never by
+/// name: the clone walk threads one flat scope, so name lookup would
+/// conflate same-named lexically-distinct bindings (audit-jul2026/03).
+/// Unknown ids are kept as-is (defensive; every pattern id has a
+/// `by_id` record).
 fn remint_bind_id<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     scope: &Scope,
+    remap: &mut RebindMap,
     old: BindId,
 ) -> BindId {
     match ctx.env.by_id.get(&old) {
@@ -63,7 +67,9 @@ fn remint_bind_id<R: Rt, E: UserEvent>(
             let typ = b.typ.clone();
             let pos = b.pos;
             let ori = b.ori.clone();
-            ctx.env.bind_variable(&scope.lexical, &name, typ, pos, ori).id
+            let new = ctx.env.bind_variable(&scope.lexical, &name, typ, pos, ori).id;
+            remap.insert(old, new);
+            new
         }
         None => old,
     }
@@ -72,46 +78,53 @@ fn remint_bind_id<R: Rt, E: UserEvent>(
 impl StructPatternNode {
     /// Produce a structurally-identical pattern with every bound id
     /// re-minted to a fresh env-registered `BindId` in `scope`. See
-    /// [`crate::Update::clone_rebind`] — the fresh names enter `scope`'s
-    /// name map so the cloned body's `Ref`s resolve to these fresh ids.
+    /// [`crate::Update::clone_rebind`] — each re-mint records old->new in
+    /// `remap` so the cloned body's `Ref`s resolve to these fresh ids.
     pub fn clone_rebind<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
+        remap: &mut RebindMap,
     ) -> Self {
-        let opt = |ctx: &mut ExecCtx<R, E>, o: &Option<BindId>| {
-            o.as_ref().map(|id| remint_bind_id(ctx, scope, *id))
+        let opt = |ctx: &mut ExecCtx<R, E>, remap: &mut RebindMap, o: &Option<BindId>| {
+            o.as_ref().map(|id| remint_bind_id(ctx, scope, remap, *id))
         };
         match self {
             Self::Ignore => Self::Ignore,
             Self::Literal(v) => Self::Literal(v.clone()),
-            Self::Bind(id) => Self::Bind(remint_bind_id(ctx, scope, *id)),
+            Self::Bind(id) => Self::Bind(remint_bind_id(ctx, scope, remap, *id)),
             Self::Slice { tuple, all, binds } => Self::Slice {
                 tuple: *tuple,
-                all: opt(ctx, all),
-                binds: binds.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
+                all: opt(ctx, remap, all),
+                binds: binds.iter().map(|b| b.clone_rebind(ctx, scope, remap)).collect(),
             },
             Self::SlicePrefix { all, prefix, tail } => Self::SlicePrefix {
-                all: opt(ctx, all),
-                prefix: prefix.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
-                tail: opt(ctx, tail),
+                all: opt(ctx, remap, all),
+                prefix: prefix
+                    .iter()
+                    .map(|b| b.clone_rebind(ctx, scope, remap))
+                    .collect(),
+                tail: opt(ctx, remap, tail),
             },
             Self::SliceSuffix { all, head, suffix } => Self::SliceSuffix {
-                all: opt(ctx, all),
-                head: opt(ctx, head),
-                suffix: suffix.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
+                all: opt(ctx, remap, all),
+                head: opt(ctx, remap, head),
+                suffix: suffix
+                    .iter()
+                    .map(|b| b.clone_rebind(ctx, scope, remap))
+                    .collect(),
             },
             Self::Struct { all, binds } => Self::Struct {
-                all: opt(ctx, all),
+                all: opt(ctx, remap, all),
                 binds: binds
                     .iter()
-                    .map(|(n, i, b)| (n.clone(), *i, b.clone_rebind(ctx, scope)))
+                    .map(|(n, i, b)| (n.clone(), *i, b.clone_rebind(ctx, scope, remap)))
                     .collect(),
             },
             Self::Variant { tag, all, binds } => Self::Variant {
                 tag: tag.clone(),
-                all: opt(ctx, all),
-                binds: binds.iter().map(|b| b.clone_rebind(ctx, scope)).collect(),
+                all: opt(ctx, remap, all),
+                binds: binds.iter().map(|b| b.clone_rebind(ctx, scope, remap)).collect(),
             },
         }
     }
@@ -772,10 +785,18 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// Structural clone for [`crate::Update::clone_rebind`]: re-mint the
     /// structure's bound ids first (they enter `scope`'s name map), then
     /// clone the guard so its `Ref`s resolve to the fresh ids.
-    pub(super) fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Self {
-        let structure_predicate = self.structure_predicate.clone_rebind(ctx, scope);
-        let guard =
-            self.guard.as_ref().map(|c| Cached::new(c.node.clone_rebind(ctx, scope)));
+    pub(super) fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Self {
+        let structure_predicate =
+            self.structure_predicate.clone_rebind(ctx, scope, remap);
+        let guard = self
+            .guard
+            .as_ref()
+            .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)));
         Self {
             explicit_type_predicate: self.explicit_type_predicate,
             type_predicate: self.type_predicate.clone(),

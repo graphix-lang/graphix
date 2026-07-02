@@ -760,3 +760,28 @@ run!(two_monomorphizations_one_region, TWO_MONOMORPHIZATIONS_ONE_REGION, |v: Res
     v,
     Ok(Value::F64(11.0))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A fold-callback body whose local (`e`) shares a name with an embedded
+// callee's parameter (audit-jul2026/03): per-slot template cloning used
+// to resolve cloned `Ref`s by NAME against the flat clone scope, so the
+// `+ e` read aliased to `pair`'s freshly re-minted param (= 22 fused vs
+// 21 node-walk). clone_rebind now threads an explicit old->new BindId
+// remap; names never resolve. The `rec` on the callee is load-bearing
+// for the repro shape (it makes the callee embed in the template).
+const FOLD_CALLBACK_NAME_COLLISION: &str = r#"
+{
+  let rec pair = |e: i64| -> i64 select e { 0 => 0, _ => e * 10 };
+  let run_one = |s: i64| -> i64 {
+    let e = s + 1;
+    pair(e + 1) + e
+  };
+  array::fold(array::init(1, |i| i), 0, |acc, i| acc + run_one(i))
+}
+"#;
+
+run!(fold_callback_name_collision, FOLD_CALLBACK_NAME_COLLISION, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::I64(21))
+); graphix_package_core::testing::FuseExpect::Jit);

@@ -5,7 +5,7 @@
 //! kernel executor is [`Kernel`].
 
 use crate::{
-    Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
+    Apply, Event, ExecCtx, Node, NodeView, RebindMap, Refs, Rt, Scope, Update, UserEvent,
     expr::{Expr, ExprId},
     fusion::{emit::WrappedKernel, kernel::Kernel, kernel_abi::KernelSig},
     typ::Type,
@@ -139,14 +139,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         NodeView::FusedKernel(self)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         // An ordinary Node: recurse its feeder deps (Refs that re-resolve
         // to the slot's fresh element / captures by name) and clone the
         // Kernel by SHARING the immutable kernel/JIT/registry Arcs while
         // re-initing per-cycle scratch + dyn_slots. The kernel is
         // incidental — the precompiled update logic, shared across slots.
         let feeders: Box<[Node<R, E>]> =
-            self.feeders.iter().map(|f| f.clone_rebind(ctx, scope)).collect();
+            self.feeders.iter().map(|f| f.clone_rebind(ctx, scope, remap)).collect();
         let n_args = feeders.len();
         let inner = self
             .inner

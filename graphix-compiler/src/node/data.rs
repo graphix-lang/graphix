@@ -1,7 +1,7 @@
 use super::{Cached, compiler::compile};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update, UserEvent,
-    deref_typ,
+    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, RebindMap, Refs, Rt, Scope, Update,
+    UserEvent, deref_typ,
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_struct_new_node, emit_struct_ref_node,
@@ -123,7 +123,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         emit_struct_new_node(cx, &self.names, &self.n)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
@@ -131,7 +136,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
             n: self
                 .n
                 .iter()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)))
                 .collect(),
         })
     }
@@ -315,11 +320,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         emit_struct_with_node(cx, &self.source, &self.replace)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
-            source: self.source.clone_rebind(ctx, scope),
+            source: self.source.clone_rebind(ctx, scope, remap),
             current: None,
             replace: self
                 .replace
@@ -327,7 +337,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                 .map(|r| Replace {
                     index: r.index,
                     name: r.name.clone(),
-                    n: Cached::new(r.n.node.clone_rebind(ctx, scope)),
+                    n: Cached::new(r.n.node.clone_rebind(ctx, scope, remap)),
                 })
                 .collect(),
         })
@@ -461,11 +471,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
-            source: self.source.clone_rebind(ctx, scope),
+            source: self.source.clone_rebind(ctx, scope, remap),
             field: self.field,
             field_name: self.field_name.clone(),
         })
@@ -564,14 +579,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         emit_tuple_new_node(cx, &self.n)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
             n: self
                 .n
                 .iter()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)))
                 .collect(),
         })
     }
@@ -678,7 +698,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         emit_variant_new_node(cx, &self.tag, &self.n)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
@@ -686,7 +711,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
             n: self
                 .n
                 .iter()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)))
                 .collect(),
         })
     }
@@ -783,11 +808,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
-            source: self.source.clone_rebind(ctx, scope),
+            source: self.source.clone_rebind(ctx, scope, remap),
             field: self.field,
         })
     }

@@ -1,7 +1,7 @@
 use super::pattern::StructPatternNode;
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent, bailat,
+    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, RebindMap,
+    Refs, Rt, Scope, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -273,18 +273,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         Ok(None)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         // `rec`: pattern bound before value (so the value can reference
         // itself); non-rec: value cloned before the binding is re-minted
         // (the RHS can't see the new binding). Mirrors `Bind::compile`.
         let rec = matches!(&self.spec.kind, ExprKind::Bind(b) if b.rec);
         let (pattern, node) = if rec {
-            let pattern = self.pattern.clone_rebind(ctx, scope);
-            let node = self.node.clone_rebind(ctx, scope);
+            let pattern = self.pattern.clone_rebind(ctx, scope, remap);
+            let node = self.node.clone_rebind(ctx, scope, remap);
             (pattern, node)
         } else {
-            let node = self.node.clone_rebind(ctx, scope);
-            let pattern = self.pattern.clone_rebind(ctx, scope);
+            let node = self.node.clone_rebind(ctx, scope, remap);
+            let pattern = self.pattern.clone_rebind(ctx, scope, remap);
             (pattern, node)
         };
         Box::new(Self {
@@ -398,22 +403,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         emit_ref_node(cx, self.spec.as_ref(), &self.typ, self.id)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
-        // Resolve a fresh id by NAME in `scope`. The name comes from the
-        // source spec (`ExprKind::Ref`), or — for a synthesized (NOP-spec)
-        // feeder ref — from the binding record. An internal binding
-        // (re-minted by an enclosing clone) resolves to its fresh id; a
-        // capture (external, not re-bound here) resolves to the unchanged
-        // outer binding; failing to resolve keeps the original id.
-        let name: Option<ModPath> = match &self.spec.kind {
-            ExprKind::Ref { name } => Some(name.clone()),
-            _ => {
-                ctx.env.by_id.get(&self.id).map(|b| ModPath::from_iter([b.name.as_str()]))
-            }
-        };
-        let new_id = name
-            .and_then(|n| ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id))
-            .unwrap_or(self.id);
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        _scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
+        // Resolve through the walk's old→new table: an internal binding
+        // (re-minted by an enclosing clone, or seeded by the per-slot
+        // initiator) maps to its fresh id; a capture (external, never
+        // re-minted) isn't in the table and keeps the original id.
+        // NEVER by name — the walk threads one flat scope, so a name
+        // lookup conflates lexically-distinct same-named bindings (a
+        // local aliased to a cloned callee's parameter,
+        // audit-jul2026/03).
+        let new_id = remap.get(&self.id).copied().unwrap_or(self.id);
         ctx.rt.ref_var(new_id, self.top_id);
         Box::new(Self {
             spec: self.spec.clone(),

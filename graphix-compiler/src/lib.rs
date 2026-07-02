@@ -256,6 +256,12 @@ impl From<u64> for LambdaId {
 
 atomic_id!(BindId);
 
+/// The old->new `BindId` table a `clone_rebind` walk threads through
+/// every node: re-minted bindings record themselves, `Ref`s resolve
+/// through it (an id not in the table is a capture and passes through
+/// unchanged). See [`Update::clone_rebind`].
+pub type RebindMap = nohash::IntMap<BindId, BindId>;
+
 impl From<u64> for BindId {
     fn from(v: u64) -> Self {
         BindId(v)
@@ -611,9 +617,11 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     fn clone_rebind(
         &self,
         _ctx: &mut ExecCtx<R, E>,
-        // CR estokes: Why are we passing this scope? We shouldn't be
-        // reconstructing scope multiple times
+        // The scope is where re-minted bindings register in the env
+        // (and where the recompile default resolves); ref RESOLUTION
+        // goes through `remap` (see `Update::clone_rebind`).
         _scope: &Scope,
+        _remap: &mut RebindMap,
     ) -> Box<dyn Apply<R, E>> {
         panic!("clone_rebind not implemented for Apply {self:?}")
     }
@@ -836,9 +844,19 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// an external binding) keeps pointing at the original outer
     /// binding; immutable shared artifacts (fused-kernel `Arc`s) are
     /// shared, not copied; and stateful builtins get fresh independent
-    /// state via their own `clone_rebind`. The re-binding rides the
-    /// env's scoped name map exactly as `compile` does (binds register
-    /// fresh names, refs resolve by name) — no side remap table.
+    /// state via their own `clone_rebind`.
+    ///
+    /// The re-binding rides `remap`, an explicit old→new `BindId` table
+    /// threaded through the whole clone walk: each re-minted binding
+    /// records itself (`pattern.rs remint_bind_id`), and `Ref` resolves
+    /// through the table — an id not in the table is a capture and
+    /// passes through unchanged. Resolution is NEVER by name: the walk
+    /// threads one flat scope, so name lookup conflates lexically
+    /// distinct same-named bindings (a local named like a callee's
+    /// parameter aliased to the parameter — audit-jul2026/03). The
+    /// initiator (a HOF's per-slot instantiation) seeds the table with
+    /// its feeder rebindings (e.g. the analysis element id → this
+    /// slot's fresh element id).
     ///
     /// Used by per-slot HOF dispatch (`MapQ`) to instantiate one
     /// independent graph per array element from a single fused
@@ -852,6 +870,10 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// computing residue (arithmetic, producers, accessors, `Select`,
     /// …) and the fusion spine override with structural clones (lighter,
     /// and the spine must preserve spliced `FusedKernel` descendants).
+    /// NOTE the recompile default resolves refs BY NAME against `scope`
+    /// (compile has no remap channel) — it keeps the flat-scope name
+    /// hazard the structural spine no longer has; acceptable because
+    /// env-managing nodes are rare inside per-slot templates.
     ///
     /// **Capture-safe.** `compile` re-resolves every `Ref` by name, but a
     /// CAPTURE was resolved in an *outer* scope not lexically visible from
@@ -860,7 +882,12 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// `scope`; the recompile then resolves it back to the same outer
     /// binding. Internal refs re-minted into `scope` already resolve and
     /// are left alone (the alias would wrongly shadow the fresh id).
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        _remap: &mut RebindMap,
+    ) -> Node<R, E> {
         let mut refs = Refs::default();
         self.refs(&mut refs);
         for id in refs.refed.iter() {

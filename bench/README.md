@@ -147,8 +147,10 @@ network, and the bench documents that honestly.
 `symbolic` builds, differentiates, simplifies, and evaluates expression
 trees over a recursive ADT (`` `Num/`Var/`Add/`Mul ``). Recursive ADTs
 have no fixed kernel ABI, so the hot path node-walks even with fusion
-on — and with fusion enabled the program currently runs ~1.5x *slower*
-than plain node-walk, alongside a known value divergence (fusion-on
-checksum comes out exactly 2x the canonical node-walk value; see the
-header comment in `symbolic.gx`). Both are real findings this bench
-exists to surface, not measurement noise.
+on — with fusion enabled the program runs a little *slower* than plain
+node-walk (partial fusion of tiny scalar fragments inside a
+node-walked recursive region costs more than it saves). The bench also
+found a real fusion value divergence on its first run (the checksum
+came out exactly 2x under fusion — a name-keyed clone_rebind bug,
+fixed 2026-07-02; see graphix-fuzz/findings/audit-jul2026/03), which
+is exactly the kind of finding it exists to surface.

@@ -1,7 +1,7 @@
 use super::{Nop, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId,
-    Node, NodeView, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
+    Node, NodeView, RebindMap, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
@@ -302,6 +302,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         &self,
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
+        remap: &mut RebindMap,
     ) -> Box<dyn Apply<R, E>> {
         // Re-mint the arg patterns first (fresh param ids enter the scope
         // name map), then recurse the body STRUCTURALLY so any spliced
@@ -309,8 +310,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // LambdaId so clones share the cached JIT kernel. Mirrors the
         // order in `GXLambda::new` (patterns then body, one scope).
         let args: Box<[StructPatternNode]> =
-            self.args.iter().map(|p| p.clone_rebind(ctx, scope)).collect();
-        let body = self.body.clone_rebind(ctx, scope);
+            self.args.iter().map(|p| p.clone_rebind(ctx, scope, remap)).collect();
+        let body = self.body.clone_rebind(ctx, scope, remap);
         // Same LambdaId ⇒ same recursion property: a per-slot HOF clone
         // inherits the template's analysis-set tail_loop bit (the clone
         // itself isn't visited by the analysis pass).
@@ -493,12 +494,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         &self,
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
+        remap: &mut RebindMap,
     ) -> Box<dyn Apply<R, E>> {
         // Plumbing wrapper — delegate to the inner builtin's own
         // clone_rebind (builtins own their clone, 100%).
         Box::new(Self {
             typ: self.typ.clone(),
-            apply: self.apply.clone_rebind(ctx, scope),
+            apply: self.apply.clone_rebind(ctx, scope, remap),
         })
     }
 }
@@ -729,7 +731,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        // Unused: a lambda VALUE recompiles from spec (below), and its
+        // captures resolve by the alias-into-scope dance — the
+        // recompile path has no remap channel (see the trait doc's
+        // recompile note).
+        _remap: &mut RebindMap,
+    ) -> Node<R, E> {
         // `Lambda::refs` is intentionally empty (a lambda VALUE has no
         // runtime refs until it is applied), so the recompile-default
         // `clone_rebind` never aliases this lambda's CAPTURES into the

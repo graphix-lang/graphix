@@ -885,8 +885,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                 while self.slots.len() < a.len() {
                     // Mint this slot's fresh element binding "x" in scope
                     // (fresh id, no ref_var). The cloned template's arg[0]
-                    // element ref + the FusedKernel's element feeder
-                    // resolve "x" to THIS slot's id via the env name map.
+                    // element ref + the FusedKernel's element feeder reach
+                    // THIS slot's id through the seeded remap below (the
+                    // template kept the ANALYSIS element id).
                     let id = ctx
                         .env
                         .bind_variable(
@@ -907,7 +908,11 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                     let pred = match &self.fused_template {
                         Some(t) => {
                             let scope = self.scope.clone();
-                            t.clone_rebind(ctx, &scope)
+                            let mut remap = graphix_compiler::RebindMap::default();
+                            if let Some(ap) = &self.analysis_pred {
+                                remap.insert(ap.id, id);
+                            }
+                            t.clone_rebind(ctx, &scope, &mut remap)
                         }
                         None => {
                             let node =
@@ -1292,7 +1297,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         if self.fused_template.is_none() && self.analysis_pred.is_some() {
             let scope = self.scope.clone();
             let ap = self.analysis_pred.as_ref().unwrap();
-            let feeders = [(ap.acc_id, self.ityp.clone()), (ap.elem_id, self.etyp.clone())];
+            let feeders =
+                [(ap.acc_id, self.ityp.clone()), (ap.elem_id, self.etyp.clone())];
             let t = graphix_compiler::fusion::lowering::build_fused_template(
                 ctx,
                 &ap.pred,
@@ -1334,10 +1340,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 self.arr_present = true;
                 let vals = a.iter_values().collect::<LPooled<Vec<Value>>>();
                 let init_idx = self.nodes.len();
-                // Grow: bind this slot's "acc" + "x" (name-bound so the
-                // template's refs resolve to THESE ids) AND build the node
-                // in the same iteration — each slot's `clone_rebind` must
-                // see its own (shadowing) bindings.
+                // Grow: bind this slot's "acc" + "x" AND build the node
+                // in the same iteration; the template's refs (which kept
+                // the ANALYSIS acc/elem ids) reach these slot ids through
+                // the seeded remap below.
                 while self.binds.len() < a.len() {
                     let acc_id = ctx
                         .env
@@ -1362,13 +1368,26 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                     let pred = match &self.fused_template {
                         Some(t) => {
                             let scope = self.scope.clone();
-                            t.clone_rebind(ctx, &scope)
+                            let mut remap = graphix_compiler::RebindMap::default();
+                            if let Some(ap) = &self.analysis_pred {
+                                remap.insert(ap.acc_id, acc_id);
+                                remap.insert(ap.elem_id, elem_id);
+                            }
+                            t.clone_rebind(ctx, &scope, &mut remap)
                         }
                         None => {
-                            let acc_ref =
-                                genn::reference(ctx, acc_id, self.ityp.clone(), self.top_id);
-                            let elem_ref =
-                                genn::reference(ctx, elem_id, self.etyp.clone(), self.top_id);
+                            let acc_ref = genn::reference(
+                                ctx,
+                                acc_id,
+                                self.ityp.clone(),
+                                self.top_id,
+                            );
+                            let elem_ref = genn::reference(
+                                ctx,
+                                elem_id,
+                                self.etyp.clone(),
+                                self.top_id,
+                            );
                             let fnode = genn::reference(
                                 ctx,
                                 self.fid,

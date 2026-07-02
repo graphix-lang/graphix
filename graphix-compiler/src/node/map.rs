@@ -1,6 +1,6 @@
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
-    err, errf,
+    CFlag, Event, ExecCtx, Node, NodeView, RebindMap, Refs, Rt, Scope, Update, UserEvent,
+    defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
     node::{Cached, compiler::compile},
@@ -127,19 +127,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
             keys: self
                 .keys
                 .iter()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)))
                 .collect(),
             vals: self
                 .vals
                 .iter()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)))
                 .collect(),
         })
     }
@@ -254,10 +259,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         emit_map_ref_node(cx, &self.source.node, &self.key.node)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
-            source: Cached::new(self.source.node.clone_rebind(ctx, scope)),
-            key: Cached::new(self.key.node.clone_rebind(ctx, scope)),
+            source: Cached::new(self.source.node.clone_rebind(ctx, scope, remap)),
+            key: Cached::new(self.key.node.clone_rebind(ctx, scope, remap)),
             spec: self.spec.clone(),
             typ: self.typ.clone(),
             vtyp: self.vtyp.clone(),

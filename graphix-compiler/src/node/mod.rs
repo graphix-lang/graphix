@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent,
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, RebindMap, Refs, Rt, Scope,
+    Update, UserEvent,
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         emit::{
@@ -163,7 +163,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         NodeView::Nop(self)
     }
 
-    fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        _ctx: &mut ExecCtx<R, E>,
+        _scope: &Scope,
+        _remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self { typ: self.typ.clone() })
     }
 }
@@ -230,8 +235,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.emit_clif(cx)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
-        Box::new(Self { spec: self.spec.clone(), n: self.n.clone_rebind(ctx, scope) })
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
+        Box::new(Self {
+            spec: self.spec.clone(),
+            n: self.n.clone_rebind(ctx, scope, remap),
+        })
     }
 }
 
@@ -483,7 +496,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         emit_const_node(cx, &self.value, &self.typ)
     }
 
-    fn clone_rebind(&self, _ctx: &mut ExecCtx<R, E>, _scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        _ctx: &mut ExecCtx<R, E>,
+        _scope: &Scope,
+        _remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             value: self.value.clone(),
@@ -615,12 +633,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         Ok(None)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         // `Do` children share the block's scope (see `Block::compile`),
         // so recurse in lexical order — each `Bind` re-mints into the
         // (transient) scope name map before later siblings resolve names.
         let children: Box<[Node<R, E>]> =
-            self.children.iter().map(|c| c.clone_rebind(ctx, scope)).collect();
+            self.children.iter().map(|c| c.clone_rebind(ctx, scope, remap)).collect();
         Box::new(Self {
             module: self.module,
             spec: self.spec.clone(),
@@ -733,7 +756,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         emit_string_interpolate_node(cx, &self.args)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
@@ -741,7 +769,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
             args: self
                 .args
                 .iter()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope)))
+                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)))
                 .collect(),
         })
     }
@@ -845,7 +873,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         emit_connect_node(cx, &self.node, self.id)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         // Re-resolve the `<-` target by name: an outer Connect target
         // (e.g. `counter`, shared across slots) resolves to the unchanged
         // outer binding; an internal target (a block-local re-minted by an
@@ -859,7 +892,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
             .and_then(|n| ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id))
             .unwrap_or(self.id);
         ctx.unstable_bindings.insert(new_id);
-        let node = self.node.clone_rebind(ctx, scope);
+        let node = self.node.clone_rebind(ctx, scope, remap);
         Box::new(Self { spec: self.spec.clone(), node, id: new_id })
     }
 }
@@ -1047,12 +1080,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         emit_cast_node(cx, &self.n, &self.target, self.spec.id)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
             target: self.target.clone(),
-            n: self.n.clone_rebind(ctx, scope),
+            n: self.n.clone_rebind(ctx, scope, remap),
         })
     }
 }
@@ -1134,11 +1172,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         NodeView::Any(self)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
-            n: self.n.iter().map(|x| x.clone_rebind(ctx, scope)).collect(),
+            n: self.n.iter().map(|x| x.clone_rebind(ctx, scope, remap)).collect(),
         })
     }
 }

@@ -1,6 +1,7 @@
 use super::{CFlag, Cached, compiler::compile};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
+    Event, ExecCtx, Node, NodeView, RebindMap, Refs, Rt, Scope, Update, UserEvent,
+    defetyp,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
     typ::Type,
@@ -161,12 +162,13 @@ macro_rules! compare_op {
                 &self,
                 ctx: &mut ExecCtx<R, E>,
                 scope: &Scope,
+                remap: &mut RebindMap,
             ) -> Node<R, E> {
                 Box::new(Self {
                     spec: self.spec.clone(),
                     typ: self.typ.clone(),
-                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope)),
-                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope)),
+                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope, remap)),
+                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope, remap)),
                 })
             }
         }
@@ -296,12 +298,13 @@ macro_rules! bool_op {
                 &self,
                 ctx: &mut ExecCtx<R, E>,
                 scope: &Scope,
+                remap: &mut RebindMap,
             ) -> Node<R, E> {
                 Box::new(Self {
                     spec: self.spec.clone(),
                     typ: self.typ.clone(),
-                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope)),
-                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope)),
+                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope, remap)),
+                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope, remap)),
                 })
             }
         }
@@ -386,11 +389,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         emit_not_node(cx, &self.n)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
-            n: self.n.clone_rebind(ctx, scope),
+            n: self.n.clone_rebind(ctx, scope, remap),
         })
     }
 }
@@ -484,11 +492,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         emit_neg_node(cx, &self.n)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
-            n: self.n.clone_rebind(ctx, scope),
+            n: self.n.clone_rebind(ctx, scope, remap),
         })
     }
 }
@@ -784,12 +797,17 @@ macro_rules! arith_op {
                 $crate::NodeView::$name(self)
             }
 
-            fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+            fn clone_rebind(
+                &self,
+                ctx: &mut ExecCtx<R, E>,
+                scope: &Scope,
+                remap: &mut RebindMap,
+            ) -> Node<R, E> {
                 Box::new(Self {
                     spec: self.spec.clone(),
                     typ: self.typ.clone(),
-                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope)),
-                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope)),
+                    lhs: Cached::new(self.lhs.node.clone_rebind(ctx, scope, remap)),
+                    rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope, remap)),
                 })
             }
         }

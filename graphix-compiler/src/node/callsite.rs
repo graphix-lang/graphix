@@ -1,8 +1,8 @@
 use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId, Node,
-    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update,
-    UserEvent, deref_typ,
+    NodeView, PendingTailCall, PrintFlag, RebindMap, Refs, Rt, Scope, StaticFnArg,
+    Update, UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
     node::lambda::LambdaDef,
@@ -1274,7 +1274,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         emit_dyncall_node(cx, &info, &arg_nodes)
     }
 
-    fn clone_rebind(&self, ctx: &mut ExecCtx<R, E>, scope: &Scope) -> Node<R, E> {
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
         // Bind-shaped: re-mint the arg-slot ids (genn-minted, NOT env-named,
         // so they need a local old→new map), clone each arg value node (the
         // element ref re-resolves its name to MapQ's fresh element), rebuild
@@ -1286,7 +1291,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         for (key, arg) in &self.args {
             let new_id = BindId::new();
             id_remap.insert(arg.id, new_id);
-            let node = arg.node.as_ref().map(|n| n.clone_rebind(ctx, scope));
+            let node = arg.node.as_ref().map(|n| n.clone_rebind(ctx, scope, remap));
             new_args.insert(
                 key.clone(),
                 Arg { id: new_id, node, is_default: arg.is_default },
@@ -1309,7 +1314,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }) as Node<R, E>
             })
             .collect();
-        let fnode = self.fnode.clone_rebind(ctx, scope);
+        let fnode = self.fnode.clone_rebind(ctx, scope, remap);
         // A `GXLambda` callee is cloned STRUCTURALLY — preserving its fused
         // body AND its variant (`Static` re-primes on first update). A
         // builtin callee (or unbound) instead resets to `DynamicUnbound` so
@@ -1326,7 +1331,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             {
                 Callee::Static {
                     def: def.clone(),
-                    apply: apply.clone_rebind(ctx, scope),
+                    apply: apply.clone_rebind(ctx, scope, remap),
                     // Re-prime on the clone's first update (like a fresh bind).
                     first_update: true,
                 }
@@ -1336,7 +1341,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             {
                 Callee::DynamicBound {
                     def: def.clone(),
-                    apply: apply.clone_rebind(ctx, scope),
+                    apply: apply.clone_rebind(ctx, scope, remap),
                 }
             }
             _ => Callee::DynamicUnbound,

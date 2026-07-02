@@ -1062,7 +1062,12 @@ pub fn build_fused_template<R: Rt, E: UserEvent>(
     feeders: &[(BindId, Type)],
     top_id: ExprId,
 ) -> Node<R, E> {
-    let mut t = pred.clone_rebind(ctx, scope);
+    // Fresh remap: the analysis element/acc binds live OUTSIDE `pred`
+    // (the HOF minted them), so they stay unmapped here and the
+    // template's feeders keep the ANALYSIS ids — the per-slot
+    // clone_rebind seeds {analysis id -> slot id} to redirect them.
+    let mut remap = crate::RebindMap::default();
+    let mut t = pred.clone_rebind(ctx, scope, &mut remap);
     {
         let any: &mut dyn std::any::Any = &mut *t;
         if let Some(cs) = any.downcast_mut::<CallSite<R, E>>() {

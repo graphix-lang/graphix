@@ -171,7 +171,15 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         )
         .map(|v| {
             let r = emit::array_result(cx, v);
-            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+            Some(emit::inherit_hof_firing(
+                cx,
+                r,
+                arr.disc,
+                &[body],
+                elem_id,
+                elem_binds,
+                None,
+            ))
         })
     }
 }
@@ -265,7 +273,15 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         )
         .map(|v| {
             let r = emit::array_result(cx, v);
-            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+            Some(emit::inherit_hof_firing(
+                cx,
+                r,
+                arr.disc,
+                &[body],
+                elem_id,
+                elem_binds,
+                None,
+            ))
         })
     }
 }
@@ -362,7 +378,15 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         )
         .map(|v| {
             let r = emit::array_result(cx, v);
-            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+            Some(emit::inherit_hof_firing(
+                cx,
+                r,
+                arr.disc,
+                &[body],
+                elem_id,
+                elem_binds,
+                None,
+            ))
         })
     }
 }
@@ -443,7 +467,15 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         )
         .map(|v| {
             let r = emit::array_result(cx, v);
-            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+            Some(emit::inherit_hof_firing(
+                cx,
+                r,
+                arr.disc,
+                &[body],
+                elem_id,
+                elem_binds,
+                None,
+            ))
         })
     }
 }
@@ -541,7 +573,15 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         )
         .map(|(disc, payload)| {
             let r = CompiledExpr::new(disc, payload);
-            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None))
+            Some(emit::inherit_hof_firing(
+                cx,
+                r,
+                arr.disc,
+                &[body],
+                elem_id,
+                elem_binds,
+                None,
+            ))
         })
     }
 }
@@ -638,7 +678,15 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
             },
         )?;
         let r = CompiledExpr::new(disc, payload);
-        Ok(Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body], elem_id, elem_binds, None)))
+        Ok(Some(emit::inherit_hof_firing(
+            cx,
+            r,
+            arr.disc,
+            &[body],
+            elem_id,
+            elem_binds,
+            None,
+        )))
     }
 }
 
@@ -741,7 +789,15 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         )
         .map(|v| {
             let r = emit::scalar_result(cx, acc_prim, v);
-            Some(emit::inherit_hof_firing(cx, r, arr.disc, &[body, init_arg], elem_id, elem_binds, acc_id))
+            Some(emit::inherit_hof_firing(
+                cx,
+                r,
+                arr.disc,
+                &[body, init_arg],
+                elem_id,
+                elem_binds,
+                acc_id,
+            ))
         })
     }
 }
@@ -1515,9 +1571,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
                     while self.slots.len() < n {
                         let i = self.slots.len();
                         // Mint this slot's fresh index binding "i" (no
-                        // ref_var). The cloned template's index ref
-                        // resolves "i" to THIS slot's id via the env name
-                        // map; the genn::apply fallback builds its own ref.
+                        // ref_var). The cloned template's index ref (which
+                        // kept the ANALYSIS index id) reaches THIS slot's
+                        // id through the seeded remap below; the
+                        // genn::apply fallback builds its own ref.
                         let id = ctx
                             .env
                             .bind_variable(
@@ -1532,7 +1589,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
                         let pred = match &self.fused_template {
                             Some(t) => {
                                 let scope = self.scope.clone();
-                                t.clone_rebind(ctx, &scope)
+                                let mut remap = graphix_compiler::RebindMap::default();
+                                if let Some(ap) = &self.analysis_pred {
+                                    remap.insert(ap.id, id);
+                                }
+                                t.clone_rebind(ctx, &scope, &mut remap)
                             }
                             None => {
                                 let node =

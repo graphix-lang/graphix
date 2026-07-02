@@ -10,11 +10,11 @@
 // Hypothesis under test: recursive ADTs have no fixed kernel ABI, so this
 // class should get near-zero fusion — this bench quantifies that honestly.
 //
-// KNOWN DIVERGENCE (2026-07-02, found by this bench): with fusion ON the
-// checksum comes out exactly 2x the canonical node-walk value — run_one's
-// first eval term is double-counted and the second dropped. Needs n >= 16,
-// BOTH eval terms, and the call through the fold callback (straight-line
-// agrees). Timing stays valid; the value mismatch is a real bug.
+// This bench found (and now regression-guards) audit-jul2026/03: per-slot
+// HOF template cloning resolved refs by NAME, so run_one's local `e`
+// aliased to eval_at's parameter `e` and the checksum came out exactly 2x
+// under fusion. Fixed 2026-07-02 (clone_rebind BindId remap); both modes
+// agree. See graphix-fuzz/findings/audit-jul2026/03.
 type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
 
 let n = 32;
