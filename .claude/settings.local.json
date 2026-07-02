@@ -117,7 +117,9 @@
       "Bash(/usr/bin/time -f \"wall=%es user=%Us sys=%Ss max_rss=%MKB\" cargo run --bin graphix --release -q -- bench/mandelbrot_bench.gx)",
       "Bash(command -v time)",
       "Bash(awk 'NR>=250 && NR<=500 && \\(/^impl|fn typecheck1|fn init|struct [A-Z]/\\)' stdlib/graphix-package-core/src/lib.rs)",
-      "Bash(awk 'NR>=733 && NR<=1135 && /fn \\(typecheck0|typecheck1|update|init|static_resolve_fn_args|emit_clif\\)/' stdlib/graphix-package-core/src/lib.rs)"
+      "Bash(awk 'NR>=733 && NR<=1135 && /fn \\(typecheck0|typecheck1|update|init|static_resolve_fn_args|emit_clif\\)/' stdlib/graphix-package-core/src/lib.rs)",
+      "Bash(npx tree-sitter *)",
+      "Bash(git commit *)"
     ],
     "deny": [],
     "ask": []
