@@ -97,8 +97,8 @@ sub-regions).
 
 ## Semantic contracts for emit work
 
-Every `emit_clif` impl, and any future dispatch-like seam (F4's EmitTags, a possible
-eager path), must preserve these. They are the distilled form of the six defects the
+Every `emit_clif` impl, and any future dispatch-like seam (e.g. a possible eager
+path), must preserve these. They are the distilled form of the six defects the
 F2 flip surfaced — each was obvious in hindsight and invisible in advance.
 
 1. **Three different things masquerade as "pure":** *Sync* (output on the trigger's
@@ -112,10 +112,14 @@ F2 flip surfaced — each was obvious in hindsight and invisible in advance.
 
 2. **Effects fuse never.** The known effect carriers in stmt position:
    `Connect`/`ConnectDeref` (variable writes), handler-ful `?` (writes the catch's
-   variable — gated in `Qop::emit_clif`), `$` (logs), any CallSite to an effectful
-   builtin. The SAFE failure mode is a build-time `Err` (de-fuse → the node-walk
-   performs the effect); the FATAL failure mode is skipping/eliding the node (the
-   effect is silently dropped). Dead-statement elimination is therefore gated on
+   variable — gated in `Qop::emit_clif`), any CallSite to an effectful builtin
+   (IO, set_var, callbacks). The SAFE failure mode is a build-time `Err` (de-fuse
+   → the node-walk performs the effect); the FATAL failure mode for a true effect
+   is skipping/eliding the node (the effect is silently dropped). One deliberate
+   carve-out: the error-DIAGNOSTIC logging of `$`, handler-less `?`, and
+   unchecked arith is NOT a semantic effect — the node-walk logs when it swallows
+   an error, and a fused kernel produces the same bottom value silently
+   (`--no-fusion` shows the diagnostics). Dead-statement elimination is gated on
    `stmt_subtree_effect_free` — conservative by construction (ALL CallSites count as
    effectful; we cannot consult `builtin_effects` at emit time). If you widen the
    eliminable set, the env-accounting probe (#164) and the connect fixtures are the
@@ -173,6 +177,9 @@ fuzz regression corpus with zero FuseExpect drift:
   files were renamed into `fusion/` (`emit.rs`, `kernel.rs`, `scaffold.rs`,
   `emit_helpers.rs`, `intern.rs`), and `GirNode → Kernel`.
 
-Remaining: **F4/#213 (EmitTags)** — attach per-op tags to kernels so `NodeShape` can
-assert *what fused into what* (today it matches signature facts only). This is test
-infrastructure; it makes no new program fuse.
+**F4/#213 (EmitTags) is settled: retired unbuilt.** Per-op body tags would have
+resurrected the GIR vocabulary tax — every new op/shape taught to a second
+vocabulary. The shape oracle is the differential value check + `KernelMatcher`
+signature facts + the `#[native]` attribute (asserts zero node-walk residue at a
+source location; a no-op under `--no-fusion`, so it works in `run!` fixtures and
+bench programs). The decision is recorded in `node_shape.rs`.

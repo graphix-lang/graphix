@@ -2,8 +2,9 @@ use tui;
 use tui::gauge;
 use tui::text;
 
-let used_memory = 6.5;  // GB
-let total_memory = 16.0;  // GB
+// memory amounts, in GB
+let used_memory = 6.5;
+let total_memory = 16.0;
 let usage_ratio = used_memory / total_memory;
 
 let color = select usage_ratio {

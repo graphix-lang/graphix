@@ -289,7 +289,9 @@ on `'_2067: Number` and `_2069: Number` mean.
 
 Because unchecked arithmetic operators like `+` log errors and return
 bottom on overflow rather than throwing, there is no `throws` clause
-in the type signature.
+in the type signature. (The log message is an interpreter debugging
+aid — JIT compiled code, the default, returns bottom without logging.
+Run with `--no-fusion` to see the diagnostics when debugging.)
 
 In the shell this type signature is made a bit more complex by the
 shell also telling you what type variables are currently bound to, or

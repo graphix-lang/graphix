@@ -1,7 +1,8 @@
 use tui;
 use tui::gauge;
 
-let progress = 0.75;  // 75%
+// 75%
+let progress = 0.75;
 
 gauge(
     #gauge_style: &style(#fg: `Green),

@@ -924,8 +924,12 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// callback template, and the maximal-region property falls out of
     /// top-down order (the highest subtree whose `try_fuse` succeeds
     /// is spliced and nothing below it is attempted). The default is
-    /// `Ok(None)` with no recursion — correct for leaves; container
-    /// nodes override.
+    /// `Ok(None)` with no recursion. Only Module, Block, Bind,
+    /// CallSite, and TryCatch (plus `Apply` on Lambda) override it to
+    /// descend; the other containers (Sample, Connect, Select, Any,
+    /// the operators, producers) deliberately keep the no-recursion
+    /// default — a sync subtree under them fuses only as part of an
+    /// enclosing block/bind region that fuses as a whole.
     fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         Ok(None)
     }
@@ -1023,7 +1027,8 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         // the genuine residue (the call/op that node-walks), not the
         // structural containers above it. Program ExprIds are unique, so this
         // also isolates this expr's blockers from the stdlib baseline.
-        let fused: AHashSet<ExprId> = ctx.fusion.stats.fused_ids.iter().copied().collect();
+        let fused: AHashSet<ExprId> =
+            ctx.fusion.stats.fused_ids.iter().copied().collect();
         let mut failed: AHashMap<ExprId, CompactString> = AHashMap::default();
         for (id, reason) in ctx.fusion.stats.failed.iter() {
             failed.entry(*id).or_insert_with(|| reason.clone());
@@ -1031,7 +1036,8 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         let mut report: Vec<ExprId> = Vec::new();
         node.spec().fold((), &mut |(), e| {
             if failed.contains_key(&e.id) {
-                let subtree_fused = e.fold(false, &mut |acc, x| acc || fused.contains(&x.id));
+                let subtree_fused =
+                    e.fold(false, &mut |acc, x| acc || fused.contains(&x.id));
                 let has_failed_desc = e.fold(false, &mut |acc, x| {
                     acc || (x.id != e.id && failed.contains_key(&x.id))
                 });

@@ -16,8 +16,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-2459343d.css">
-        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/general-0392ca55.css">
+        <link rel="stylesheet" href="css/chrome-fc474251.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-55785d7d.js";
+            window.path_to_searchindex_js = "searchindex-53af2a43.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-885d6cb4.js"></script>
+        <script src="toc-58dc951f.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -929,6 +929,23 @@ pooled and very efficient - creating new maps typically reuses existing memory
 rather than allocating new memory.</p>
 <p>Maps maintain their key-value pairs in a balanced tree structure, ensuring
 O(log(N)) performance for all operations regardless of map size.</p>
+<h2 id="chaining-access-operators"><a class="header" href="#chaining-access-operators">Chaining Access Operators</a></h2>
+<p>The postfix access operators — struct field <code>.name</code>, tuple index <code>.0</code>, array
+index/slice <code>[i]</code> / <code>[i..j]</code>, map index <code>{key}</code>, and function call <code>(args)</code> —
+can be chained directly, left to right, without intermediate parentheses:</p>
+<pre><code class="language-graphix">data.users[0].name        // field, then index, then field
+config{"db"}.port         // map index, then field
+matrix[i][j]              // nested array index
+point.0.x                 // tuple index, then field
+make_handler(cfg)(event)  // a call whose result is itself called
+</code></pre>
+<p>Each operator applies to the value produced by everything to its left, so a
+chain reads in evaluation order. A trailing <code>?</code> or <code>$</code> applies to the whole
+chain: <code>data.users[0]?</code> propagates an error from the indexing.</p>
+<p>Parentheses are only needed when the <em>source</em> of an access is not itself a
+simple value or another access — for example <code>(a + b).0</code> (index into the
+result of an addition) or <code>(40 + 2).0</code>. A bare identifier or an existing chain
+never needs them.</p>
 <h2 id="error"><a class="header" href="#error">Error</a></h2>
 <p>Error is the built in error type. It carries a type parameter indicating the
 type of error, for example <code>Error&lt;</code>MapKeyError(string)&gt;<code>is an error that carries a ``</code>MapKeyError `` variant. You can access the inner error value
@@ -1113,7 +1130,9 @@ it may not be the same type of number as either of the arguments.</li>
 </ul>
 <p>Because unchecked arithmetic operators like <code>+</code> log errors and return
 bottom on overflow rather than throwing, there is no <code>throws</code> clause
-in the type signature.</p>
+in the type signature. (The log message is an interpreter debugging
+aid — JIT compiled code, the default, returns bottom without logging.
+Run with <code>--no-fusion</code> to see the diagnostics when debugging.)</p>
 <p>In the shell this type signature is made a bit more complex by the
 shell also telling you what type variables are currently bound to, or
 <code>unbound</code> if they aren’t bound. So in the shell this pops out as,</p>
@@ -1808,6 +1827,11 @@ nothing. This is a concise way of writing,</p>
 </code></pre>
 <p>The <code>$</code> operator logs errors rather than silently discarding them, making it
 easier to debug issues while still allowing execution to continue.</p>
+<p>One caveat: the log message is produced by the interpreter. When the
+expression is compiled by the JIT (fusion is on by default), the error is
+dropped without a diagnostic — the resulting value is the same, but nothing
+is logged. If you’re debugging a swallowed error, run with <code>--no-fusion</code> to
+see the logged diagnostics.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="functions-1"><a class="header" href="#functions-1">Functions</a></h1>
 <p>Functions are first class values. They can be stored in variables, in data
@@ -6029,7 +6053,8 @@ let selected_path: string = never();
 browser(
     #size: {width: 40, height: 10},
     #selected_path: &amp;selected_path,
-    "/"  // Start browsing from root
+    // Start browsing from root
+    "/"
 )
 </code></pre>
 <p><img src="ui/tui/media/browser_basic.png" alt="Basic Browser Widget"></p>
@@ -6793,7 +6818,8 @@ paragraph(
 <pre><code class="language-graphix">use tui;
 use tui::gauge;
 
-let progress = 0.75;  // 75%
+// 75%
+let progress = 0.75;
 
 gauge(
     #gauge_style: &amp;style(#fg: `Green),
@@ -6833,8 +6859,9 @@ block(
 use tui::gauge;
 use tui::text;
 
-let used_memory = 6.5;  // GB
-let total_memory = 16.0;  // GB
+// memory amounts, in GB
+let used_memory = 6.5;
+let total_memory = 16.0;
 let usage_ratio = used_memory / total_memory;
 
 let color = select usage_ratio {
@@ -6884,7 +6911,8 @@ gauge(
 <pre><code class="language-graphix">use tui;
 use tui::line_gauge;
 
-let progress = 0.75;  // 75%
+// 75%
+let progress = 0.75;
 
 line_gauge(
     #filled_style: &amp;style(#fg: `Green),
@@ -7991,17 +8019,20 @@ let make_cpu_cell = |cpu| {
 
 let row1 = row([
     cell(line("process-1")),
-    make_cpu_cell(85)  // Red
+    // Red
+    make_cpu_cell(85)
 ]);
 
 let row2 = row([
     cell(line("process-2")),
-    make_cpu_cell(60)  // Yellow
+    // Yellow
+    make_cpu_cell(60)
 ]);
 
 let row3 = row([
     cell(line("process-3")),
-    make_cpu_cell(30)  // Green
+    // Green
+    make_cpu_cell(30)
 ]);
 
 let header = row([
@@ -12142,7 +12173,8 @@ let tbl: Table = {
 // on_update is called on updates to netidx subscriptions by the table.
 let on_update = |#path: string, #value: Primitive| {
     let v = cast&lt;i64&gt;(value)$;
-    let d = v ~ data; // run only when v updates
+    // run only when v updates
+    let d = v ~ data;
     let (row, col) = opt::or_never(str::row_col(path));
     let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
     let sum = map::fold(d, 0, |sum, (col, rows)| select col {
@@ -13980,11 +14012,11 @@ for ev in batch.drain(..) {
 
         <script src="elasticlunr-ef4e11c1.min.js"></script>
         <script src="mark-09e88c2c.min.js"></script>
-        <script src="searcher-c2a407aa.js"></script>
+        <script src="searcher-09f2665d.js"></script>
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-a0b12cfe.js"></script>
+        <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
         <script src="theme/graphix-highlight-d71af7ae.js"></script>

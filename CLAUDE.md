@@ -331,6 +331,11 @@ enforces it):**
 - Checked arith (`+?`/`-?`/`*?`) detects overflow via `Value::checked_*` and
   yields the catchable `ArithError` *value*; unchecked wraps; integer div0 /
   signed `MIN`-/-1 → bottom.
+- **Swallowed-error diagnostics are node-walk-only:** unchecked-arith errors,
+  handler-less `?`, and `$` log (`error!`/`warn!`/eprintln) in the node-walk;
+  a fused kernel produces the same bottom value silently — deliberate (the
+  logs are a debugging aid, not value semantics). Use `--no-fusion` when
+  debugging swallowed errors.
 - `a[i]` / `a[i..j]` / `bytes[i]` / `m{key}` are bounds-checked through shared
   `node::array` / `node::map` helpers — one semantic seam, all backends agree.
 - **Bottom** ("no value this cycle" — div0, `?`-error, an unfired input) is
@@ -422,8 +427,11 @@ The **correct-None denominator** (principled, never a gap): async/streaming
 builtins (timers, IO, netidx, `never`, `queue`, `once`/`take`/`skip`), cross-cycle
 nodes (`~`, `Any`, `TryCatch`'s catch-read), and non-register-encodable types
 (`decimal`, `Fn`, `Ref`, recursive `List`/ADTs — no fixed ABI layout — and unbound
-TVars). The sync operands of an async boundary still fuse (`clock ~ (a + b)` fuses
-the `a + b`).
+TVars). Note that fusion recursion (`Update::fuse`) descends only through
+Module/Block/Bind/CallSite/TryCatch/Lambda — a sync expression under `~`, `<-`,
+`select`, or an operator fuses only as part of an enclosing block/bind region
+that fuses as a whole, so `clock ~ (a + b)` leaves the `a + b` node-walking
+unless it is hoisted into its own `let` (accepted current design, 2026-07-02).
 
 The remaining missed-fusion tail (each pinned by a `#[native]` de-fuse test or an
 ASPIRE comment where noted):
