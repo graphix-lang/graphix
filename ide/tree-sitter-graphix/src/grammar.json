@@ -4323,7 +4323,7 @@
           "members": [
             {
               "type": "PATTERN",
-              "value": "\\d+(\\.\\d*)?[smhd]"
+              "value": "\\d+(\\.\\d+)?[smhd]"
             },
             {
               "type": "PATTERN",

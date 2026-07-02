@@ -751,8 +751,14 @@ module.exports = grammar({
     ),
 
     number: $ => token(prec(1, choice(
-      // Duration literals (must come before floats/integers to match correctly)
-      /\d+(\.\d*)?[smhd]/,
+      // Duration literals (must come before floats/integers to match
+      // correctly). The fractional part requires ≥1 digit: with `\.\d*`
+      // (zero digits allowed) a chained tuple-index→field access whose
+      // field starts with s/m/h/d — `x.5.summary`, `x.<n>.duration_ms` —
+      // lexed `5.s` / `<n>.d` as a "duration", stealing the identifier's
+      // first letter and erroring on the rest. `\d+.\d+[smhd]` can't span
+      // two dots, so postfix chains lex cleanly.
+      /\d+(\.\d+)?[smhd]/,
       // Scientific notation
       /[+-]?\d+(\.\d+)?[eE][+-]?\d+/,
       // Floats (require at least one digit after decimal to avoid consuming '..' operator)
