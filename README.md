@@ -36,8 +36,12 @@ block(
 cargo install graphix-shell
 ```
 
-Requires Rust and `clang` / `libkrb5-dev` (Debian/Ubuntu) or `clang-devel` /
-`krb5-devel` (Fedora).
+Requires Rust, `clang`, OpenSSL, Kerberos, and `pkg-config` / `pkgconf`
+development packages.
+
+Tagged releases also publish prebuilt `graphix` binaries on GitHub Releases.
+These archives are intended to make Graphix installable by tools such as
+`mise` without requiring every user to build from source.
 
 ## Learn More
 
