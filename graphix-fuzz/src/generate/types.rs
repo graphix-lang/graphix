@@ -25,6 +25,9 @@ pub enum GenType {
     /// String-keyed map, built from a small key pool so accesses
     /// mostly hit.
     Map(Box<GenType>),
+    /// An option (`[T, null]`) — produced as a value or `null`,
+    /// consumed by null-arm selects, `?`-in-try, or pass-through.
+    Nullable(Box<GenType>),
     /// A lambda with fully annotated params/return — callable at
     /// exactly these types. Never produced by `random_type` (fn VALUES
     /// inside composites are deferred); enters scope only through
@@ -86,6 +89,7 @@ impl GenType {
                 format!("[{}]", parts.join(", "))
             }
             GenType::Map(v) => format!("Map<string, {}>", v.render()),
+            GenType::Nullable(t) => format!("[{}, null]", t.render()),
             // fn-type annotations name their positional params.
             GenType::Fn { params, ret } => {
                 let parts: Vec<_> = params
@@ -103,6 +107,30 @@ impl GenType {
 
     pub(super) fn is_numeric(&self) -> bool {
         matches!(self, GenType::I64 | GenType::F64 | GenType::U8)
+    }
+
+    /// Whether the type contains an option anywhere — such a binding
+    /// must be ANNOTATED: an unannotated `let v = null` infers type
+    /// `null`, not the union, and every value-arm consumer of it is
+    /// then a dead arm.
+    pub(super) fn contains_nullable(&self) -> bool {
+        match self {
+            GenType::Nullable(_) => true,
+            GenType::Tuple(es) => es.iter().any(|e| e.contains_nullable()),
+            GenType::Struct(fs) => fs.iter().any(|(_, t)| t.contains_nullable()),
+            GenType::Variant(ts) => {
+                ts.iter().any(|(_, args)| args.iter().any(|t| t.contains_nullable()))
+            }
+            GenType::Array(e) | GenType::Map(e) => e.contains_nullable(),
+            GenType::I64
+            | GenType::F64
+            | GenType::U8
+            | GenType::Bool
+            | GenType::Str
+            | GenType::Fn { .. }
+            | GenType::PolyFn { .. }
+            | GenType::Opaque => false,
+        }
     }
 
     pub(super) fn is_scalar(&self) -> bool {
@@ -177,7 +205,7 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);
     }
-    match rng.below(10) {
+    match rng.below(11) {
         0 | 1 => GenType::I64,
         2 => GenType::F64,
         3 => GenType::U8,
@@ -189,6 +217,7 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
         }
         7 => random_struct(rng, depth - 1),
         8 => GenType::Map(Box::new(random_type(rng, depth - 1))),
+        9 => GenType::Nullable(Box::new(scalar_type(rng))),
         _ => GenType::Array(Box::new(random_type(rng, depth - 1))),
     }
 }
@@ -250,6 +279,13 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
             let parts: Vec<_> =
                 keys.iter().map(|k| format!("\"{k}\" => {}", literal(rng, v))).collect();
             format!("{{{}}}", parts.join(", "))
+        }
+        GenType::Nullable(t) => {
+            if rng.below(3) == 0 {
+                "null".into()
+            } else {
+                literal(rng, t)
+            }
         }
         GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
             unreachable!("fn/opaque types have no literal form")

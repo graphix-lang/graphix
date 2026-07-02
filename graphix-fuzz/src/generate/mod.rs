@@ -30,6 +30,7 @@
 
 mod exprs;
 mod funcs;
+mod patterns;
 mod types;
 
 pub use types::GenType;
@@ -284,10 +285,11 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
             } else {
                 types::random_type(rng, 2)
             };
-            let val = exprs::maybe_select(&ctx, rng, &ty, 3)
+            let val = patterns::maybe_select(&ctx, rng, &ty, 3)
                 .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &ty, 3));
             let name = ctx.name_for_bind(rng, cfg);
-            let stmt = if variant || chance(rng, cfg.p_annotate) {
+            let must = variant || ty.contains_nullable();
+            let stmt = if must || chance(rng, cfg.p_annotate) {
                 format!("let {name}: {} = {val}", ty.render())
             } else {
                 format!("let {name} = {val}")
@@ -297,7 +299,7 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
         }
     }
     let tail_ty = types::random_type(rng, 2);
-    let tail = exprs::maybe_select(&ctx, rng, &tail_ty, 3)
+    let tail = patterns::maybe_select(&ctx, rng, &tail_ty, 3)
         .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &tail_ty, 3));
     let prog = if stmts.is_empty() {
         tail

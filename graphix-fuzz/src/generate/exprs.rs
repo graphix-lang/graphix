@@ -87,6 +87,18 @@ fn try_accessor(
                     cands.push(format!("{name}{{\"{k}\"}}$"));
                 }
             }
+            // A visible option unwrapped to its value type via a
+            // two-arm type-match select. (`?` is error-only — it
+            // rejects [T, null], so there is no try/catch consumer.)
+            GenType::Nullable(t) => {
+                if **t == *ty && ty.is_scalar() {
+                    let dflt = gen_typed(ctx, rng, ty, depth);
+                    cands.push(format!(
+                        "select {name} {{ null as _ => {dflt}, {} as n => n }}",
+                        ty.render()
+                    ));
+                }
+            }
             GenType::I64
             | GenType::F64
             | GenType::U8
@@ -272,8 +284,30 @@ pub(super) fn gen_typed(
             return hof;
         }
     }
+    if rng.below(8) == 0 {
+        if let Some(b) = try_str_builtin(ctx, rng, ty, d) {
+            return b;
+        }
+    }
     match ty {
         GenType::I64 | GenType::F64 | GenType::U8 => {
+            // Checked arithmetic, consumed by one of the three legal
+            // forms: `$` (error -> bottom), a type-match select with an
+            // error arm, or `?` under try/catch.
+            if rng.below(8) == 0 {
+                let op = pick(rng, &["+?", "-?", "*?", "/?", "%?"]);
+                let a = gen_typed(ctx, rng, ty, d);
+                let b = gen_typed(ctx, rng, ty, d);
+                let dflt = gen_typed(ctx, rng, ty, d);
+                return match rng.below(3) {
+                    0 => format!("({a} {op} {b})$"),
+                    1 => format!(
+                        "select ({a} {op} {b}) {{ error as _ => {dflt}, {} as n => n }}",
+                        ty.render()
+                    ),
+                    _ => format!("(try (({a} {op} {b}))? catch(e) => {dflt})"),
+                };
+            }
             // Unary minus (a real `Neg` node, exercising `ineg`/`fneg`). Only
             // for signed/float — `-u8` is a compile error (Part B's
             // signed/float/decimal constraint). Parenthesize the operand so
@@ -315,7 +349,23 @@ pub(super) fn gen_typed(
             }
             _ => format!("(!{})", gen_typed(ctx, rng, &GenType::Bool, d)),
         },
-        GenType::Str => types::literal(rng, ty),
+        GenType::Str => match rng.below(3) {
+            // Computed interpolation: 1-2 [expr] parts over scalars,
+            // occasionally with escaped literal brackets around them.
+            0 => {
+                let n = 1 + rng.below(2);
+                let parts: Vec<_> = (0..n)
+                    .map(|_| {
+                        let t = types::scalar_type(rng);
+                        format!("[{}]", gen_typed(ctx, rng, &t, d.min(1)))
+                    })
+                    .collect();
+                let (pre, post) =
+                    if rng.below(5) == 0 { ("\\[", "\\]") } else { ("", "") };
+                format!("\"{pre}{}{post}\"", parts.join("-"))
+            }
+            _ => types::literal(rng, ty),
+        },
         GenType::Tuple(elems) => {
             let parts: Vec<_> = elems.iter().map(|e| gen_typed(ctx, rng, e, d)).collect();
             format!("({})", parts.join(", "))
@@ -367,26 +417,63 @@ pub(super) fn gen_typed(
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
+        GenType::Nullable(t) => {
+            if rng.below(3) == 0 {
+                "null".into()
+            } else {
+                gen_typed(ctx, rng, t, d)
+            }
+        }
         GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
             unreachable!("gen_typed is never asked for a fn/opaque type")
         }
     }
 }
 
-/// Maybe wrap an expression of `ty` in a `select` over a numeric
-/// scrutinee with a literal arm + catch-all (both arms produce `ty`).
-pub(super) fn maybe_select(
+/// A `str::` builtin call producing `ty`: length, predicates with
+/// labeled args, and string transforms (the labeled-arg + DynCall
+/// surface).
+fn try_str_builtin(
     ctx: &GenCtx,
     rng: &mut Rng,
     ty: &GenType,
     depth: usize,
 ) -> Option<String> {
-    if depth == 0 || rng.below(4) != 0 {
-        return None;
+    let d = depth.min(1);
+    match ty {
+        GenType::I64 => {
+            Some(format!("str::len({})", gen_typed(ctx, rng, &GenType::Str, d)))
+        }
+        GenType::Bool => {
+            let (f, lbl) =
+                [("contains", "part"), ("starts_with", "pfx"), ("ends_with", "sfx")]
+                    [rng.below(3)];
+            let needle = types::literal(rng, &GenType::Str);
+            let s = gen_typed(ctx, rng, &GenType::Str, d);
+            Some(format!("str::{f}(#{lbl}: {needle}, {s})"))
+        }
+        GenType::Str => match rng.below(4) {
+            0 => {
+                let f = pick(rng, &["to_upper", "to_lower", "trim"]);
+                Some(format!("str::{f}({})", gen_typed(ctx, rng, &GenType::Str, d)))
+            }
+            1 => {
+                let pat = types::literal(rng, &GenType::Str);
+                let rep = types::literal(rng, &GenType::Str);
+                let s = gen_typed(ctx, rng, &GenType::Str, d);
+                Some(format!("str::replace(#pat: {pat}, #rep: {rep}, {s})"))
+            }
+            2 => Some(format!(
+                "str::concat({}, {})",
+                gen_typed(ctx, rng, &GenType::Str, d),
+                gen_typed(ctx, rng, &GenType::Str, d)
+            )),
+            _ => {
+                let sep = types::literal(rng, &GenType::Str);
+                let arr = gen_typed(ctx, rng, &GenType::Array(Box::new(GenType::Str)), d);
+                Some(format!("str::join(#sep: {sep}, {arr})"))
+            }
+        },
+        _ => None,
     }
-    let scrut = gen_typed(ctx, rng, &GenType::I64, depth - 1);
-    let lit = [0i64, 1, 2, 42][rng.below(4)];
-    let arm = gen_typed(ctx, rng, ty, depth - 1);
-    let dflt = gen_typed(ctx, rng, ty, depth - 1);
-    Some(format!("select {scrut} {{ {lit} => {arm}, _ => {dflt} }}"))
 }
