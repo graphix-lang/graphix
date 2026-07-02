@@ -431,17 +431,20 @@ ASPIRE comment where noted):
 1. **HOF callback capturing a *local* lambda** (`array::map(a, |x| g(x))`) — the
    `g(x)` call inside the per-slot template isn't statically resolved (harder:
    resolution of captured locals in cloned templates; in `notes`).
-2. **Struct-parent nested-pattern TVar inference** — a nested pattern under a
-   STRUCT parent (`{foo: [a, b, ..], ..}`) leaves the leaf binds' TVars at the
-   loose `Number` set (tuple parents narrow fine), so the select's return type
-   carries an unbound TVar and `freeze_region_return` correctly refuses. A
-   TYPECHECK gap, not emission — pinned by `native_select_nested_struct_defuses`.
-3. **select residue**: whole-composite/`@`/NAMED-rest binds (owned arm locals —
+2. **select residue**: whole-composite/`@`/NAMED-rest binds (owned arm locals —
    `JitEnv::truncate` emits no drops), nested/non-scalar variant payloads,
    owned scrutinees in TAIL position (no merge point to drop at).
-4. Lower-impact: non-scalar string-interp parts, String-returning cross-kernel
+3. Lower-impact: non-scalar string-interp parts, String-returning cross-kernel
    callees, dynamic map literals, `array::group`, `filter_map`/`init`
    string/value-element widening, ByRef/Deref, decimal arith.
+
+(The former "struct-parent nested-pattern TVar inference" gap is FIXED: `_`
+infers `Type::Any` — load-bearing for exhaustiveness/dead-arm/runtime dispatch
+— but `T.contains(Any)` is false and the select typecheck's bool-discarding
+unification walk short-circuits composite pairs, so every pattern slot AFTER a
+`_` never narrowed. The select arm unification now runs through
+`Type::any_as_tvar()` — a view sharing all TVar cells with `Any` leaves
+swapped for throwaway fresh TVars — node/select.rs `typecheck0`.)
 
 **F4/#213 (EmitTags) is settled: retired unbuilt.** Per-op body tags would
 resurrect the GIR vocabulary tax; the shape oracle is the differential value

@@ -230,8 +230,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             })
         })?;
         for (pat, n) in self.arms.iter_mut() {
-            // make sure tvars are aliased properly even if itype was Any
-            self.arg.node.typ().contains(&ctx.env, &pat.type_predicate)?;
+            // make sure tvars are aliased properly even if itype was Any.
+            // Unify through the `any_as_tvar` VIEW (same TVar cells, `Any`
+            // leaves swapped for throwaway fresh TVars): the contains walk
+            // short-circuits composite pairs on the first false, and
+            // `T.contains(Any)` is false — a `_` slot would otherwise stop
+            // the walk and leave every LATER slot's bind TVars un-narrowed.
+            self.arg.node.typ().contains(&ctx.env, &pat.type_predicate.any_as_tvar())?;
             wrap!(n.node, n.node.typecheck0(ctx))?;
         }
         let mut atype = self.arg.node.typ().clone().normalize();

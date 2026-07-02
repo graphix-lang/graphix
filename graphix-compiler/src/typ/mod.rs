@@ -557,4 +557,53 @@ impl Type {
             Type::Fn(f) => Type::Fn(Arc::new(f.scope_refs(scope))),
         }
     }
+
+    /// A unification VIEW of this type with every `Any` leaf replaced by a
+    /// fresh (throwaway) TVar, sharing everything else — in particular the
+    /// existing TVar CELLS, so bindings made through the view land in the
+    /// original type.
+    ///
+    /// Select's arm typecheck unifies each pattern predicate against the
+    /// scrutinee with a bool-discarding `contains` walk whose composite
+    /// arms short-circuit on the first false pair. A pattern `_` infers
+    /// `Type::Any` (load-bearing for exhaustiveness / dead-arm analysis /
+    /// runtime dispatch — a catch-all must match everything), but
+    /// `T.contains(Any)` is false, so the walk stopped at a `_` slot and
+    /// every LATER slot's bind TVars never narrowed to the scrutinee's
+    /// slot types (which also kept those selects from fusing: their arm
+    /// types carried unbound TVars that `freeze_region_return` refuses).
+    /// Unifying through this view instead makes the `_` slot bind its
+    /// throwaway TVar (→ true) and the walk continue, without changing
+    /// what the stored predicate means anywhere else.
+    pub fn any_as_tvar(&self) -> Type {
+        match self {
+            Type::Any => Type::empty_tvar(),
+            Type::Bottom
+            | Type::Primitive(_)
+            | Type::TVar(_)
+            | Type::Ref(_)
+            | Type::Fn(_)
+            | Type::Abstract { .. } => self.clone(),
+            Type::Error(t) => Type::Error(Arc::new(t.any_as_tvar())),
+            Type::Array(t) => Type::Array(Arc::new(t.any_as_tvar())),
+            Type::ByRef(t) => Type::ByRef(Arc::new(t.any_as_tvar())),
+            Type::Map { key, value } => Type::Map {
+                key: Arc::new(key.any_as_tvar()),
+                value: Arc::new(value.any_as_tvar()),
+            },
+            Type::Tuple(ts) => {
+                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.any_as_tvar())))
+            }
+            Type::Variant(tag, ts) => Type::Variant(
+                tag.clone(),
+                Arc::from_iter(ts.iter().map(|t| t.any_as_tvar())),
+            ),
+            Type::Struct(ts) => Type::Struct(Arc::from_iter(
+                ts.iter().map(|(n, t)| (n.clone(), t.any_as_tvar())),
+            )),
+            Type::Set(ts) => {
+                Type::Set(Arc::from_iter(ts.iter().map(|t| t.any_as_tvar())))
+            }
+        }
+    }
 }

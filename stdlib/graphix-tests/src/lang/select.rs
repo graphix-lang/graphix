@@ -145,7 +145,11 @@ const NESTEDMATCH3: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+// The nested destructure itself fuses now (`_` infers a fresh TVar), but
+// THIS select's `_ => never()` arm body is async — a correct de-fuse for
+// the select region (program-level Jit is satisfied by sibling regions).
+// `select_ignore_sorts_first` covers the same pattern shape with a
+// fusable catch-all.
 run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
@@ -398,11 +402,9 @@ run!(select_nested_tuple, SELECT_NESTED_TUPLE, |v: Result<&Value>| {
 });
 
 // The nestedmatch3 shape: a struct pattern with a nested slice-prefix
-// leaf. NOTE the SELECT itself still de-fuses (typecheck's pattern
-// inference leaves the nested leaf TVars loose under a STRUCT parent —
-// see `native_select_nested_struct_defuses`); the Jit expectation here is
-// satisfied by the sibling struct-literal region, and the value agreement
-// exercises the node-walk binder.
+// leaf. The select fuses fully now that `_` infers a fresh TVar (see
+// `native_select_nested_struct_ok` — the old `Type::Any` inference
+// short-circuited the unification walk at the sorted-first `_` fields).
 const SELECT_NESTED_STRUCT_SLICE: &str = r#"
 {
   let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 };
@@ -499,4 +501,43 @@ const SELECT_OWNED_MISS: &str = r#"
 
 run!(select_owned_miss, SELECT_OWNED_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
+});
+
+// =============================================================================
+// `_` inference regression: `_` used to infer `Type::Any`, and select's
+// unification-by-contains walk short-circuits at the first false pair
+// (`T.contains(Any)` = false) — so every slot AFTER a `_` (positional in
+// tuples, sorted-field order in structs) never narrowed its bind TVars,
+// and those selects de-fused. `_` now infers a fresh TVar like an
+// anonymous bind.
+
+// `_` BEFORE the nested slot in a tuple (the p7 probe shape).
+const SELECT_IGNORE_BEFORE_NESTED: &str = r#"
+{
+  let t = (42, [1.0, 2.0]);
+  select t {
+    (_, [a, b]) => a + b,
+    _ => 0.0
+  }
+}
+"#;
+
+run!(select_ignore_before_nested, SELECT_IGNORE_BEFORE_NESTED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::F64(3.0)))
+});
+
+// Struct parent whose `_` fields sort FIRST (bar/baz < foo) — the
+// nestedmatch3 shape with a fusable catch-all.
+const SELECT_IGNORE_SORTS_FIRST: &str = r#"
+{
+  let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 };
+  select x {
+    { foo: [a, b, ..], bar: _, baz: _ } => a + b,
+    _ => 0.0
+  }
+}
+"#;
+
+run!(select_ignore_sorts_first, SELECT_IGNORE_SORTS_FIRST, |v: Result<&Value>| {
+    matches!(v, Ok(Value::F64(3.0)))
 });

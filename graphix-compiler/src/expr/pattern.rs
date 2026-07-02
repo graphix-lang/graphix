@@ -131,6 +131,14 @@ impl StructurePattern {
 
     pub fn infer_type_predicate(&self, env: &Env) -> Result<Type> {
         match self {
+            // `Any` is load-bearing here: a catch-all `_` arm's
+            // predicate must match EVERYTHING for exhaustiveness,
+            // dead-arm analysis, and runtime dispatch. It does make
+            // select's unification-by-contains walk short-circuit at
+            // `_` slots (`T.contains(Any)` is false) — the select
+            // typecheck compensates by unifying through a view that
+            // substitutes fresh TVars for Any (`Type::any_as_tvar`),
+            // so slots AFTER a `_` still narrow.
             Self::Ignore => Ok(Type::Any),
             Self::Bind(_) => Ok(Type::empty_tvar()),
             Self::Literal(v) => Ok(Type::Primitive(Typ::get(v).into())),

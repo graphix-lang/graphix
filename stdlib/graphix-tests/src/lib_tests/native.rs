@@ -260,25 +260,22 @@ async fn native_select_nested_tuple_ok() {
     );
 }
 
-// The STRUCT-parent nested case (the nestedmatch3 shape) still de-fuses —
-// NOT an emission gap: typecheck's pattern inference leaves the nested
-// leaf binds' TVars constrained to the loose `Number` set instead of
-// narrowing them to the array element type (the tuple-parent case above
-// narrows fine), so the select's return type is `Set([f64, TVar(Number)])`
-// and `freeze_region_return` correctly refuses the unbound TVar. Pinned
-// here until the pattern-inference gap is fixed; the run! fixture
-// `select_nested_struct_slice` proves the node-walk value either way.
+// The STRUCT-parent nested case (the nestedmatch3 shape) — flipped from a
+// de-fuse pin: the blocker was `_` inferring as `Type::Any`
+// (`infer_type_predicate`), which made select's unification-by-contains
+// walk short-circuit at the `_` slot (`T.contains(Any)` = false), leaving
+// every LATER slot's bind TVars un-narrowed. `_` now infers a fresh TVar
+// like an anonymous bind, so the whole select fuses.
 #[tokio::test]
-async fn native_select_nested_struct_defuses() {
+async fn native_select_nested_struct_ok() {
     let prog = "{ let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 }; \
                 #[native] select x { \
                 { foo: [a, b, ..], bar: _, baz: _ } => a + b, _ => 0.0 } }";
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
-        r.is_err(),
-        "the struct-nested select still de-fuses (loose leaf TVar from \
-         pattern inference) — if this now FUSES, the inference gap was \
-         fixed: flip this pin to is_ok and celebrate, got {:?}",
+        r.is_ok(),
+        "the struct-nested select must fully fuse now that `_` infers a \
+         fresh TVar, got {:?}",
         r.map(|(v, _)| v)
     );
 }
