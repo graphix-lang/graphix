@@ -13,6 +13,18 @@ pub enum GenType {
     Str,
     Tuple(Vec<GenType>),
     Array(Box<GenType>),
+    /// Fields kept SORTED by name at construction, so structural
+    /// equality (the vocabulary-matching relation) matches graphix's
+    /// field-order-insensitive structs.
+    Struct(Vec<(String, GenType)>),
+    /// A tag union (`` [`A(i64), `B] ``). Only produced by dedicated
+    /// let emission (a bare variant literal's type is its single tag —
+    /// the union needs the annotation); consumed as pass-through data
+    /// until select patterns land.
+    Variant(Vec<(String, Vec<GenType>)>),
+    /// String-keyed map, built from a small key pool so accesses
+    /// mostly hit.
+    Map(Box<GenType>),
     /// A lambda with fully annotated params/return — callable at
     /// exactly these types. Never produced by `random_type` (fn VALUES
     /// inside composites are deferred); enters scope only through
@@ -24,10 +36,10 @@ pub enum GenType {
     /// An explicitly-polymorphic numeric lambda
     /// (`'a: Number |x: 'a, y: 'a| -> 'a x + y`) — per-call-site
     /// monomorphizing, callable with all args at any one numeric type
-    /// (its body is built from params with `+ - *` and neg only, so
-    /// the result type equals the argument type). Two call sites at
-    /// distinct numeric types = a monomorphization pair, the audit's
-    /// bug-2 shape.
+    /// (its body is built from params with `+ - *` only, so the result
+    /// type follows the argument type). Two call sites at distinct
+    /// numeric types = a monomorphization pair, the audit's bug-2
+    /// shape.
     PolyFn {
         arity: usize,
     },
@@ -54,6 +66,26 @@ impl GenType {
                 format!("({})", parts.join(", "))
             }
             GenType::Array(elem) => format!("Array<{}>", elem.render()),
+            GenType::Struct(fields) => {
+                let parts: Vec<_> =
+                    fields.iter().map(|(f, t)| format!("{f}: {}", t.render())).collect();
+                format!("{{{}}}", parts.join(", "))
+            }
+            GenType::Variant(tags) => {
+                let parts: Vec<_> = tags
+                    .iter()
+                    .map(|(tag, args)| {
+                        if args.is_empty() {
+                            format!("`{tag}")
+                        } else {
+                            let a: Vec<_> = args.iter().map(|t| t.render()).collect();
+                            format!("`{tag}({})", a.join(", "))
+                        }
+                    })
+                    .collect();
+                format!("[{}]", parts.join(", "))
+            }
+            GenType::Map(v) => format!("Map<string, {}>", v.render()),
             // fn-type annotations name their positional params.
             GenType::Fn { params, ret } => {
                 let parts: Vec<_> = params
@@ -99,11 +131,53 @@ pub(super) fn numeric_type(rng: &mut Rng) -> GenType {
     }
 }
 
+/// Struct field names. Deliberately overlaps nothing with binding
+/// names (`v<N>`) — field-vs-binding confusion is exercised through
+/// select patterns later, not here.
+pub(super) const FIELDS: &[&str] = &["a", "b", "c", "x", "y", "n"];
+
+/// Map keys — small pool so generated accesses mostly hit.
+pub(super) const KEYS: &[&str] = &["k0", "k1", "k2", "a", "b"];
+
+/// Variant tags.
+pub(super) const TAGS: &[&str] = &["A", "B", "C", "Some", "Nil"];
+
+pub(super) fn random_struct(rng: &mut Rng, depth: usize) -> GenType {
+    let n = 1 + rng.below(3);
+    let mut fields: Vec<(String, GenType)> = Vec::new();
+    for _ in 0..n {
+        let f = FIELDS[rng.below(FIELDS.len())];
+        if !fields.iter().any(|(g, _)| g == f) {
+            fields.push((f.to_string(), random_type(rng, depth)));
+        }
+    }
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    GenType::Struct(fields)
+}
+
+/// A random tag union: 2-3 distinct tags, each with 0-2 payload types.
+pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
+    let n = 2 + rng.below(2);
+    let mut tags: Vec<(String, Vec<GenType>)> = Vec::new();
+    for _ in 0..n {
+        let t = TAGS[rng.below(TAGS.len())];
+        if !tags.iter().any(|(u, _)| u == t) {
+            let nargs = rng.below(3);
+            tags.push((
+                t.to_string(),
+                (0..nargs).map(|_| random_type(rng, depth)).collect(),
+            ));
+        }
+    }
+    tags.sort_by(|a, b| a.0.cmp(&b.0));
+    GenType::Variant(tags)
+}
+
 pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);
     }
-    match rng.below(8) {
+    match rng.below(10) {
         0 | 1 => GenType::I64,
         2 => GenType::F64,
         3 => GenType::U8,
@@ -113,6 +187,8 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
             let n = 2 + rng.below(2);
             GenType::Tuple((0..n).map(|_| random_type(rng, depth - 1)).collect())
         }
+        7 => random_struct(rng, depth - 1),
+        8 => GenType::Map(Box::new(random_type(rng, depth - 1))),
         _ => GenType::Array(Box::new(random_type(rng, depth - 1))),
     }
 }
@@ -147,6 +223,33 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| literal(rng, elem)).collect();
             format!("[{}]", parts.join(", "))
+        }
+        GenType::Struct(fields) => {
+            let parts: Vec<_> =
+                fields.iter().map(|(f, t)| format!("{f}: {}", literal(rng, t))).collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+        GenType::Variant(tags) => {
+            let (tag, args) = &tags[rng.below(tags.len())];
+            if args.is_empty() {
+                format!("`{tag}")
+            } else {
+                let parts: Vec<_> = args.iter().map(|t| literal(rng, t)).collect();
+                format!("`{tag}({})", parts.join(", "))
+            }
+        }
+        GenType::Map(v) => {
+            let n = 1 + rng.below(3);
+            let mut keys: Vec<&str> = Vec::new();
+            for _ in 0..n {
+                let k = KEYS[rng.below(KEYS.len())];
+                if !keys.contains(&k) {
+                    keys.push(k);
+                }
+            }
+            let parts: Vec<_> =
+                keys.iter().map(|k| format!("\"{k}\" => {}", literal(rng, v))).collect();
+            format!("{{{}}}", parts.join(", "))
         }
         GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
             unreachable!("fn/opaque types have no literal form")

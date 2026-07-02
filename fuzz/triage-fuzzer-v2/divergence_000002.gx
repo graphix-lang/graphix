@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [String("c"), I64(9999)] }) })))), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [String("x"), U8(100)] }) }))))] }) })))))
+// jit:    Timeout
+// mutant: { let v1 = 'a: Number |v0: 'a| -> 'a (((v0 - v0) * v0) - v0); let v2 = (((u8:255 - u8:100) - v1(u8:1)) % u8:0); let v4 = 'a: Number |v3: 'a, v2: 'a| -> 'a (((v2 + v2) - v3) * v3); let v5: i64 = v4((i64:-100 - i64:-1), i64:-100); let v6: f64 = v4((f64:0.0 * f64:0.0), (f64:0.0 % f64:0.0)); { c: v5, x: array::fold([u8:100], v2, |v4, v7| v7) } }
+// minimized:
+{let v1 = 'a: Number|v0: 'a| -> 'a (v0 - v0) * v0; let v2 = (((u8:255 - u8:100) - v1(u8:1)) % u8:0); let v4 = 'a: Number|v3: 'a, v2: 'a| -> 'a (((v2 + v2) - v3) * v3); let v5: i64 = v4((i64:-100 - i64:-1), i64:-100); let v6: f64 = v4((f64:0. * f64:0.), (f64:0. % f64:0.)); { c: v5, x: array::fold([u8:100], v2, |v4, v7| v7) }}

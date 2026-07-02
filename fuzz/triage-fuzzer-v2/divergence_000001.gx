@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(Bool(false))
+// jit:    Timeout
+// mutant: { let v2 = |v0: f64, v1: i64| -> u8 ((u8:1 - u8:100) % (u8:2 - u8:255)); let v2: f64 = select i64:0 { 0 => f64:0.1, _ => ((-(f64:2.5)) + (f64:2.5 * f64:-1.0)) }; let v3: (Array<i64>, i64, u8) = (array::init(2, |v3| v3), ((i64:1 / i64:0) - (i64:100 / i64:42)), u8:255); let v2 = |v3: f64| -> i64 (i64:0 * i64:42); (false || (false || (false && false))) }
+// minimized:
+{i64:0; let v2: f64 = select i64:0 {i64:0 => f64:0.1, _ => ((-(f64:2.5)) + (f64:2.5 * f64:-1.))}; let v3: (Array<i64>, i64, u8) = (array::init(i64:2, |v3| v3), ((i64:1 / i64:0) - (i64:100 / i64:42)), u8:255); let v2 = |v3: f64| -> i64 (i64:0 * i64:42); (false || (false || (false && false)))}

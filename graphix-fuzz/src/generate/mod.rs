@@ -69,6 +69,9 @@ pub struct GenCfg {
     /// A statement slot emits the whole shadowed-lambda-name template
     /// (the audit's bug-1 shape).
     pub p_lambda_shadow_template: f64,
+    /// A value let binds a TAG-UNION variant (always annotated — a
+    /// bare variant literal's type is its single tag).
+    pub p_variant: f64,
     /// Statement slots per program: 0..=max_lets (template slots may
     /// emit several statements).
     pub max_lets: usize,
@@ -87,6 +90,7 @@ impl Default for GenCfg {
             p_body_block: 0.4,
             p_rec: 0.06,
             p_lambda_shadow_template: 0.05,
+            p_variant: 0.08,
             max_lets: 6,
         }
     }
@@ -115,6 +119,7 @@ pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
     (rng.below(1000) as f64) < p * 1000.0
 }
 
+#[derive(Clone)]
 pub(crate) struct GenCtx {
     /// In-scope bindings in declaration order (inner scopes at the
     /// tail). Shadowing = a later entry with the same name; lookups
@@ -195,55 +200,50 @@ impl GenCtx {
         self.vars.truncate(mark);
     }
 
-    /// Visible bindings of type `ty` (last-binding-wins per name).
+    /// The visible bindings (last-binding-wins per name), innermost
+    /// first — the single lookup all the typed queries filter over.
+    fn visible_entries(&self) -> Vec<(&str, &GenType)> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut out = Vec::new();
+        for (n, t) in self.vars.iter().rev() {
+            if seen.contains(&n.as_str()) {
+                continue;
+            }
+            seen.push(n.as_str());
+            out.push((n.as_str(), t));
+        }
+        out
+    }
+
+    /// Visible bindings of type `ty`.
     fn vars_of(&self, ty: &GenType) -> Vec<&str> {
-        let mut seen: Vec<&str> = Vec::new();
-        let mut out = Vec::new();
-        for (n, t) in self.vars.iter().rev() {
-            if seen.contains(&n.as_str()) {
-                continue;
-            }
-            seen.push(n.as_str());
-            if t == ty {
-                out.push(n.as_str());
-            }
-        }
-        out
+        self.visible_entries()
+            .into_iter()
+            .filter_map(|(n, t)| (t == ty).then_some(n))
+            .collect()
     }
 
-    /// Visible typed lambdas returning `ty` (last-binding-wins — a
-    /// lambda name shadowed by a value is NOT callable).
+    /// Visible typed lambdas returning `ty` (a lambda name shadowed by
+    /// a value is NOT callable).
     fn fns_returning(&self, ty: &GenType) -> Vec<(&str, Vec<GenType>)> {
-        let mut seen: Vec<&str> = Vec::new();
-        let mut out = Vec::new();
-        for (n, t) in self.vars.iter().rev() {
-            if seen.contains(&n.as_str()) {
-                continue;
-            }
-            seen.push(n.as_str());
-            if let GenType::Fn { params, ret } = t {
-                if **ret == *ty {
-                    out.push((n.as_str(), params.clone()));
-                }
-            }
-        }
-        out
+        self.visible_entries()
+            .into_iter()
+            .filter_map(|(n, t)| match t {
+                GenType::Fn { params, ret } if **ret == *ty => Some((n, params.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
-    /// Visible poly lambdas (last-binding-wins).
+    /// Visible poly lambdas.
     fn poly_fns(&self) -> Vec<(&str, usize)> {
-        let mut seen: Vec<&str> = Vec::new();
-        let mut out = Vec::new();
-        for (n, t) in self.vars.iter().rev() {
-            if seen.contains(&n.as_str()) {
-                continue;
-            }
-            seen.push(n.as_str());
-            if let GenType::PolyFn { arity } = t {
-                out.push((n.as_str(), *arity));
-            }
-        }
-        out
+        self.visible_entries()
+            .into_iter()
+            .filter_map(|(n, t)| match t {
+                GenType::PolyFn { arity } => Some((n, *arity)),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -278,11 +278,16 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
                 stmts.push(funcs::gen_typed_lambda(&mut ctx, rng, cfg, &mut stats));
             }
         } else {
-            let ty = types::random_type(rng, 2);
+            let variant = chance(rng, cfg.p_variant);
+            let ty = if variant {
+                types::random_variant(rng, 1)
+            } else {
+                types::random_type(rng, 2)
+            };
             let val = exprs::maybe_select(&ctx, rng, &ty, 3)
                 .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &ty, 3));
             let name = ctx.name_for_bind(rng, cfg);
-            let stmt = if chance(rng, cfg.p_annotate) {
+            let stmt = if variant || chance(rng, cfg.p_annotate) {
                 format!("let {name}: {} = {val}", ty.render())
             } else {
                 format!("let {name} = {val}")
