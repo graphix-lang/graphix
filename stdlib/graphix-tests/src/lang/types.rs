@@ -246,3 +246,38 @@ run!(typedef_tvar_ok, TYPEDEF_TVAR_OK, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
 });
+
+// A legitimate multi-hop type-alias chain must resolve — deref_typ!'s
+// old cycle detection keyed on the STACK ADDRESS of a loop local, so
+// chains of 3+ hops were spuriously (and build-dependently) rejected
+// as cyclic.
+const DEEP_ALIAS_CHAIN: &str = r#"
+{
+  type E = (i64, i64);
+  type D = E;
+  type C = D;
+  type B = C;
+  type A = B;
+  let t: A = (1, 2);
+  t.0
+}
+"#;
+
+run!(deep_alias_chain, DEEP_ALIAS_CHAIN, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+));
+
+// A genuinely cyclic typedef must be a compile error (bounded deref),
+// not a hang.
+const CYCLIC_ALIAS: &str = r#"
+{
+  type A = B;
+  type B = A;
+  let t: A = (1, 2);
+  t.0
+}
+"#;
+
+run!(cyclic_alias, CYCLIC_ALIAS, |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None);

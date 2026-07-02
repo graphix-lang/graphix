@@ -11,7 +11,7 @@ use crate::{
     typ::Type,
     update_args, wrap,
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::{ValArray, Value};
@@ -247,6 +247,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.current = None;
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
@@ -264,9 +265,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             }
             _ => bail!("BUG: miscompiled structwith"),
         };
-        wrap!(
-            self,
-            self.source.typ().with_deref(|typ| match typ {
+        // clone the deref'd type out BEFORE recursing — the typecheck0 and
+        // unification calls below take TVar write locks, and with_deref
+        // holds read guards on the source type's whole deref chain for the
+        // closure's duration (a same-thread deadlock, not just a race)
+        let styp = self.source.typ().with_deref(|typ| typ.cloned());
+        let check = || -> Result<()> {
+            match styp {
                 Some(Type::Struct(flds)) => {
                     for (rep, n) in self.replace.iter_mut().zip(fields.iter()) {
                         let r = flds.iter().enumerate().find_map(|(i, (field, typ))| {
@@ -288,8 +293,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                 }
                 None => bail!("type must be known, annotations needed"),
                 _ => bail!("expected a struct"),
-            })
-        )?;
+            }
+        };
+        wrap!(self, check())?;
         wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
     }
 
@@ -749,7 +755,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("tuple", ctx, self.source.typ(),
-            Some(Type::Tuple(flds)) => Ok(flds[self.field].clone()),
+            Some(Type::Tuple(flds)) => flds
+                .get(self.field)
+                .map(|t| t.clone())
+                .ok_or_else(|| anyhow!("in tuple, no such field {}", self.field)),
             Some(Type::Error(t)) => {
                 if self.field != 0 {
                     bail!("no such field {}", self.field);

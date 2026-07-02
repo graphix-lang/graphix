@@ -81,20 +81,25 @@ macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
         $typ.with_deref(|typ| {
             let mut typ = typ.cloned();
-            let mut hist: poolshark::local::LPooled<nohash::IntSet<usize>> = poolshark::local::LPooled::take();
+            // alias chains are follow-your-nose; a bound this deep is a
+            // cyclic typedef, not a real program
+            let mut depth = 0usize;
             loop {
                 #[allow(unreachable_patterns)]
                 match &typ {
                     $($pat => break $body),+,
                     Some(rt @ $crate::typ::Type::Ref($crate::typ::TypeRef { .. })) => {
-                        let rt = rt.lookup_ref(&$ctx.env)?;
-                        if hist.insert(&rt as *const _ as usize) {
-                            typ = Some(rt);
-                        } else {
+                        depth += 1;
+                        if depth > 64 {
                             $crate::format_with_flags(PrintFlag::DerefTVars, || {
-                                anyhow::bail!("expected {} not {rt}", $name)
+                                anyhow::bail!(
+                                    "cyclic type alias while dereferencing {rt} \
+                                     (expected {})",
+                                    $name
+                                )
                             })?
                         }
+                        typ = Some(rt.lookup_ref(&$ctx.env)?);
                     }
                     Some(t) => $crate::format_with_flags(PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)

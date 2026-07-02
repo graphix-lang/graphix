@@ -122,8 +122,8 @@ macro_rules! compare_op {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.node.sleep(ctx);
-                self.rhs.node.sleep(ctx)
+                self.lhs.sleep(ctx);
+                self.rhs.sleep(ctx)
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

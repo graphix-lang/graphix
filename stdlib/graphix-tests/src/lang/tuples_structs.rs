@@ -437,3 +437,41 @@ const VALUE_EQ_TUPLE: &str = r#"
 run!(value_eq_tuple, VALUE_EQ_TUPLE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
+
+// Out-of-range tuple index must be a TYPE ERROR, not a compiler panic
+// (TupleRef::typecheck0 indexed the field list unchecked — the panic
+// killed the runtime worker, and the LSP with it).
+const TUPLE_INDEX_OOB: &str = r#"
+{
+  let t = (1, 2);
+  t.5
+}
+"#;
+
+run!(tuple_index_oob, TUPLE_INDEX_OOB, |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None);
+
+// `{src with f}` where the source type sits behind TVars and the
+// replacement recursively typechecks a select over the SAME struct —
+// StructWith::typecheck0 used to run the recursion inside with_deref's
+// read guards, deadlocking the compiler on a single thread.
+const STRUCT_WITH_SELECT_OVER_SOURCE: &str = r#"
+{
+  let g = |v: {x: i64, y: i64}| v;
+  let t = g({x: 1, y: 2});
+  {t with x: select t { {x, y} => x + y }}
+}
+"#;
+
+run!(struct_with_select_over_source, STRUCT_WITH_SELECT_OVER_SOURCE, |v: Result<
+    &Value,
+>| match v {
+    Ok(Value::Array(flds)) => match &flds[..] {
+        [Value::Array(x), Value::Array(y)] => {
+            matches!(&x[..], [Value::String(n), Value::I64(3)] if &**n == "x")
+                && matches!(&y[..], [Value::String(n), Value::I64(2)] if &**n == "y")
+        }
+        _ => false,
+    },
+    _ => false,
+});
