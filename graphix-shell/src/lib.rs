@@ -8,7 +8,7 @@ use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag, ExecCtx, PrintFlag,
+    CFlag, ExecCtx, FusionStats, PrintFlag,
     env::Env,
     expr::{CouldNotResolve, ExprId, ModuleResolver, Source},
     format_with_flags,
@@ -24,7 +24,7 @@ use netidx::{
     publisher::{Publisher, Value},
     subscriber::Subscriber,
 };
-use poolshark::global::GPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
 use std::{marker::PhantomData, process::exit, time::Duration};
 use tokio::{select, sync::mpsc};
@@ -40,6 +40,36 @@ pub mod lsp_backend;
 /// with `ShellBuilder::add_packages`.
 pub fn stdlib_packages<X: GXExt>() -> Vec<Box<dyn Package<X>>> {
     graphix_package::packages!()
+}
+
+/// Print the script's fusion profile: the delta between the stats
+/// snapshot taken after the stdlib root loaded (`base`) and after the
+/// script compiled (`after`), so stdlib compilation noise is excluded.
+/// `failed` is a blocker profile, not a gap count — the
+/// attempt-then-recurse protocol logs structural misses (Module/Bind
+/// wrappers) even when everything beneath them fused.
+fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
+    let attempted = after.attempted - base.attempted;
+    let fused = after.fused - base.fused;
+    let failed = &after.failed[base.failed.len()..];
+    eprintln!(
+        "fusion: {fused} of {attempted} attempted regions fused, {} blocked",
+        failed.len()
+    );
+    let mut by_reason: LPooled<AHashMap<&str, usize>> = LPooled::take();
+    for (_, reason) in failed {
+        // reasons embed the region's spec text, which can span many
+        // lines — the first line identifies the blocker and keeps the
+        // grouping tight
+        let reason = reason.lines().next().unwrap_or("").trim_end();
+        *by_reason.entry(reason).or_insert(0) += 1;
+    }
+    let mut sorted: LPooled<Vec<(&str, usize)>> =
+        by_reason.iter().map(|(r, n)| (*r, *n)).collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    for (reason, n) in sorted.iter() {
+        eprintln!("  {n}x {reason}");
+    }
 }
 
 enum Output<X: GXExt> {
@@ -152,6 +182,12 @@ pub struct Shell<X: GXExt> {
     /// (default_flags | enable_flags) - disable_flags
     #[builder(default)]
     disable_flags: BitFlags<CFlag>,
+    /// after compiling a script, print its fusion profile (regions
+    /// attempted/fused and the per-region blocker reasons) to stderr.
+    /// The stdlib baseline is subtracted, so the profile covers the
+    /// script alone.
+    #[builder(default = "false")]
+    fusion_stats: bool,
     /// program arguments to pass to the graphix script
     #[builder(default)]
     program_args: Vec<ArcStr>,
@@ -257,11 +293,21 @@ impl<X: GXExt> Shell<X> {
                     Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
                     _ => None,
                 };
+                let baseline =
+                    if self.fusion_stats { Some(gx.fusion_stats().await?) } else { None };
                 gx.check(source.clone(), initial_scope).await?;
+                if let Some(baseline) = baseline {
+                    print_fusion_stats(&baseline, &gx.fusion_stats().await?);
+                }
                 exit(0)
             }
             Mode::Script(source) => {
+                let baseline =
+                    if self.fusion_stats { Some(gx.fusion_stats().await?) } else { None };
                 let r = gx.load(source.clone()).await?;
+                if let Some(baseline) = baseline {
+                    print_fusion_stats(&baseline, &gx.fusion_stats().await?);
+                }
                 exprs.extend(r.exprs);
                 env = gx.get_env().await?;
                 if let Some(e) = exprs.pop() {

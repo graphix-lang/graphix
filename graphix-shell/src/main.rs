@@ -182,6 +182,12 @@ struct Params {
     /// fusion issue.
     #[arg(long = "no-fusion")]
     no_fusion: bool,
+    /// after compiling the script, print its fusion profile to stderr:
+    /// how many regions attempted/fused and the per-region blocker
+    /// reasons (the stdlib baseline is subtracted). Only meaningful
+    /// when running a file with fusion enabled.
+    #[arg(long = "fusion-stats")]
+    fusion_stats: bool,
     /// do not execute the program, just veryify that it compiles and
     /// type checks.
     #[arg(long = "check")]
@@ -337,6 +343,7 @@ fn tokio_main(
             p.program_args.iter().map(|s| ArcStr::from(s.as_str())).collect();
         shell = shell.program_args(program_args);
         shell = shell.no_init(p.no_init);
+        shell = shell.fusion_stats(p.fusion_stats);
         if let Some(t) = p.publish_timeout {
             shell = shell.publish_timeout(Duration::from_secs(t));
         }
