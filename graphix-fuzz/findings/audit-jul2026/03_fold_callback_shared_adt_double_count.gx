@@ -1,0 +1,50 @@
+// bisect: DirectJit wrong value — interp 0.000006326995883331423
+// (= r1 + r2, correct), jit -0.000006237253819364291 (= exactly 2*r1:
+// the deriv-side term is DOUBLE-COUNTED and the eval_at(e, x) term is
+// DROPPED — the fold accumulator steps twice: 0+r1 then r1+r1).
+// Found by bench/symbolic.gx during the 2026-07 fusion audit; minimized
+// from there (session scratchpad min5-min14 bisect chain).
+// Boundary conditions, all verified two-mode: needs BOTH eval terms
+// (single-term agrees); needs the call through the fold callback
+// (straight-line with the identical body agrees); needs tree width
+// >= 16 (width 4 and 8 agree — a depth/cycle-count threshold); does
+// NOT need simplify; does NOT reproduce with two independently-built
+// trees each consumed once — `e` must feed both a long chain (deriv)
+// and a direct consumer.
+// root_cause: OPEN. The recursive-ADT pipeline itself node-walks (no
+// kernel ABI) and the run_one call site is never discovered — the
+// signature (double-fire glitch of the callback body result) points at
+// the fired/STALE machinery of the small fused scalar fragments around
+// the fold rather than at callee resolution. NOTE the masking gotcha:
+// at eval points on the 0.1 lattice many seeds make eval_at(e, x) = 0,
+// hiding the dropped term — x = 0.55 unmasks.
+{
+  type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
+  let rec build = |width: i64, idx: i64, s: i64| -> Expr
+    select width {
+      i64:1 => `Add(`Var, `Num(cast<f64>((s + idx * i64:37) % i64:19 - i64:9)$ / 10.0)),
+      _ => {
+        let half = width / i64:2;
+        `Mul(build(half, idx, s), build(width - half, idx + half, s))
+      }
+    };
+  let rec deriv = |e: Expr| -> Expr
+    select e {
+      `Num(_) => `Num(0.0),
+      `Var => `Num(1.0),
+      `Add(a, b) => `Add(deriv(a), deriv(b)),
+      `Mul(a, b) => `Add(`Mul(deriv(a), b), `Mul(a, deriv(b)))
+    };
+  let rec eval_at = |e: Expr, x: f64| -> f64
+    select e {
+      `Num(c) => c,
+      `Var => x,
+      `Add(a, b) => eval_at(a, x) + eval_at(b, x),
+      `Mul(a, b) => eval_at(a, x) * eval_at(b, x)
+    };
+  let run_one = |s: i64| -> f64 {
+    let e = build(i64:16, i64:0, s);
+    eval_at(deriv(e), 0.55) + eval_at(e, 0.55)
+  };
+  array::fold(array::init(i64:1, |i| i), 0.0, |acc, i| acc + run_one(i64:1234567 + i))
+}

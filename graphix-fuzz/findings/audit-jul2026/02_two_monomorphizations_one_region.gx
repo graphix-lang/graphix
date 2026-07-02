@@ -1,0 +1,27 @@
+// bisect: DirectJit compile-time PANIC — cranelift FunctionBuilder
+// "declared type of variable var3 doesn't match type of value v13"
+// (cranelift-frontend frontend.rs:509); the unwind kills the tokio
+// worker ("runtime did not respond") and skips the by_kernel eviction
+// loop. interp: 11 (via the shell; `graphix-fuzz check` reports the
+// interp side as Timeout on this program — the jit-side panic appears
+// to poison the check process, so check still flags DIVERGENCE, just
+// with a misleading interp verdict; re-check after the fix).
+// Found by the 2026-07 release-readiness review (fusion-core dim).
+// root_cause: same name-keyed callee resolution as 01 — kernels are
+// cached per (LambdaId, resolved FnType), so one polymorphic lambda
+// used at two monomorphizations in one region mints two kernels that
+// SHARE a source name; the f64 call site binds to the i64 kernel's
+// FuncId. Unlike 01 the CLIF signature mismatches, so instead of a
+// silent wrong answer the FunctionBuilder panics at emit time. This is
+// why a BindId-only guard can't fix the class (same binding, two
+// FnTypes): resolution must key on kernel identity (the Arc).
+// SHAPE MATTERS: the lambda binding must sit OUTSIDE the attempted
+// region — with `let f` inside the block, the function-valued let
+// blocks the whole-region attempt, recursion splits the two call sites
+// into separate single-mono regions, and everything agrees.
+let f = 'a: Number |x: 'a| -> 'a x + x;
+{
+  let a = f(i64:3);
+  let b = f(2.5);
+  cast<f64>(a)$ + b
+}

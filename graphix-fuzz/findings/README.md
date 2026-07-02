@@ -85,3 +85,27 @@ dead-statement elimination at the direct block-emission seam
 (`emit_block_node`): a Bind is emitted iff a later sibling or the tail
 references one of its bound ids; a bare expression statement is always
 dead (sync-emittable code has no effects).
+
+## audit-jul2026
+
+Three OPEN divergences found by the 2026-07 pre-release fusion audit
+(none by the generator — a coverage gap in itself: it produces neither
+shadowed rebinding, multi-monomorphization regions, nor recursive-ADT
+pipelines). 01/02 share one root cause: cross-kernel lambda-call
+resolution is keyed by source NAME only (`discover_lambda_calls` keeps
+one kernel per name; emission resolves sites via name-keyed
+`funcids`/`callee_refs` without checking the site's kernel Arc) — a
+regression of the #206 fix, whose BindId guard lived in the deleted
+classic path's `emit_known_fused_call`. 01: a shadowed same-name outer
+lambda reached transitively gives a silent WRONG ANSWER (interp 5,
+jit 1). 02: two monomorphizations of one polymorphic lambda in one
+region collide on the name and PANIC cranelift's FunctionBuilder at
+compile time, killing the runtime worker. A BindId-only guard cannot
+fix 02 (same binding, two FnTypes) — resolution must key on kernel
+identity (the Arc). 03: root cause OPEN — a fold callback calling a
+local lambda whose body consumes a shared recursive-ADT subtree via
+TWO terms double-counts the first term and drops the second (exactly
+2x checksum; needs tree width >= 16 and the call through the callback;
+the ADT pipeline itself node-walks, pointing at fired/STALE glitching
+of the fused scalar fragments around the fold). Found by
+bench/symbolic.gx.
