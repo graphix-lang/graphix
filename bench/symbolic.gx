@@ -1,0 +1,81 @@
+// Symbolic differentiation over a recursive ADT — the symbolic-processing
+// workload class (build -> deriv -> simplify -> eval over an expression
+// tree). A balanced product tree of (x + c_i) terms is built per seed
+// (constants derive from the runtime seed, defeating const folding), then
+// symbolically differentiated (product rule roughly doubles the tree),
+// simplified (constant folding + 0/1 identity elimination via nested
+// select on the simplified child pair), and evaluated at a point. The
+// per-seed results accumulate into a float checksum via array::fold.
+//
+// Hypothesis under test: recursive ADTs have no fixed kernel ABI, so this
+// class should get near-zero fusion — this bench quantifies that honestly.
+//
+// KNOWN DIVERGENCE (2026-07-02, found by this bench): with fusion ON the
+// checksum comes out exactly 2x the canonical node-walk value — run_one's
+// first eval term is double-counted and the second dropped. Needs n >= 16,
+// BOTH eval terms, and the call through the fold callback (straight-line
+// agrees). Timing stays valid; the value mismatch is a real bug.
+type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
+
+let n = 32;
+let k = 32;
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+
+let rec build = |width: i64, idx: i64, s: i64| -> Expr
+  select width {
+    1 => `Add(`Var, `Num(cast<f64>((s + idx * 37) % 19 - 9)$ / 10.0)),
+    _ => {
+      let half = width / 2;
+      `Mul(build(half, idx, s), build(width - half, idx + half, s))
+    }
+  };
+
+let rec deriv = |e: Expr| -> Expr
+  select e {
+    `Num(_) => `Num(0.0),
+    `Var => `Num(1.0),
+    `Add(a, b) => `Add(deriv(a), deriv(b)),
+    `Mul(a, b) => `Add(`Mul(deriv(a), b), `Mul(a, deriv(b)))
+  };
+
+let rec simplify = |e: Expr| -> Expr
+  select e {
+    `Num(x) => `Num(x),
+    `Var => `Var,
+    `Add(a, b) => select (simplify(a), simplify(b)) {
+      (`Num(x), `Num(y)) => `Num(x + y),
+      (`Num(x), sb) if x == 0.0 => sb,
+      (sa, `Num(y)) if y == 0.0 => sa,
+      (sa, sb) => `Add(sa, sb)
+    },
+    `Mul(a, b) => select (simplify(a), simplify(b)) {
+      (`Num(x), `Num(y)) => `Num(x * y),
+      (`Num(x), _) if x == 0.0 => `Num(0.0),
+      (_, `Num(y)) if y == 0.0 => `Num(0.0),
+      (`Num(x), sb) if x == 1.0 => sb,
+      (sa, `Num(y)) if y == 1.0 => sa,
+      (sa, sb) => `Mul(sa, sb)
+    }
+  };
+
+let rec eval_at = |e: Expr, x: f64| -> f64
+  select e {
+    `Num(c) => c,
+    `Var => x,
+    `Add(a, b) => eval_at(a, x) + eval_at(b, x),
+    `Mul(a, b) => eval_at(a, x) * eval_at(b, x)
+  };
+
+let run_one = |s: i64| -> f64 {
+  let e = build(n, 0, s);
+  let d = simplify(deriv(e));
+  let x = 0.3 + cast<f64>(s % 5)$ * 0.1;
+  eval_at(d, x) + eval_at(e, x)
+};
+
+let result = array::fold(array::init(k, |i| i), 0.0, |acc, i| acc + run_one(seed + i));
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("symbolic n=[n] k=[k] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

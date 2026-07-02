@@ -59,57 +59,96 @@ bench/run.sh [iterations] [graphix-binary]
 `run.sh` runs each program a few times per mode, keeps the best (min)
 time to cut scheduler noise, and prints the node-walk / JIT ratio. A
 node-walk cell of `fail` means the program produced no timing line and
-`timeout` means it exceeded the per-run limit. Every program in the
-corpus fuses fully under the JIT, so the ratios reflect native code vs
-the interpreter, not differences in fusion coverage.
+`timeout` means it exceeded the per-run limit.
+
+The corpus is no longer all-fused: the seven pure-compute benches
+(`fold_*`, `map_fold`, `filter_fold`, `tail_sum`, `leibniz_pi`,
+`mandelbrot`) fuse fully, so their ratios reflect native code vs the
+interpreter. The three newer benches deliberately probe workload
+classes at the edge of fusion coverage — `stream_stats` and
+`netidx_stream` have an async event spine that can never fuse (only the
+per-event sync compute does), and `symbolic` works over a recursive ADT
+that has no fixed kernel ABI, so its hot path node-walks even with
+fusion on. Their ratios measure fusion *coverage* as much as codegen
+quality, which is the point.
 
 The two scalar tail-loop benches (`tail_sum`, `leibniz_pi`) are the
-case where the interpreter does *best* relative to the JIT: it handles
-tail self-calls iteratively (no per-element node-graph overhead), so the
-ratio there is the floor (~100x). The HOF benches are where the
-interpreter's per-element node graph hurts most (~1000-3000x). (Non-tail
-recursion — e.g. fib — would overflow the interpreter's native stack;
-that's a separate limitation, not exercised here.)
+case where the interpreter does *best* relative to the JIT among the
+fully-fused programs: it handles tail self-calls iteratively (no
+per-element node-graph overhead), so the ratio there is the floor
+(~50x). The HOF benches are where the interpreter's per-element node
+graph hurts most (~1400-2600x). (Non-tail recursion — e.g. fib — would
+overflow the interpreter's native stack; that's a separate limitation,
+not exercised here.)
 
 ## Results
 
-> The absolute numbers below predate the #203 resolution and the
-> TagValue/STALE reworks and are stale — regenerate them with `run.sh`.
-> In particular `mandelbrot` now fuses fully (its old ~1x speedup no
-> longer holds); the `—` cells are placeholders pending a fresh run.
-
-Release build, best-of-5 per mode:
+Release build, best-of-3 per mode (2026-07-02):
 
 | bench            | jit       | node-walk | speedup |
 |------------------|-----------|-----------|---------|
-| `fold_floatmath` | 2.2 ms    | 7.45 s    | 3430x   |
-| `fold_sum`       | 2.8 ms    | 5.38 s    | 1897x   |
-| `map_fold`       | 4.2 ms    | 6.24 s    | 1478x   |
-| `filter_fold`    | 3.3 ms    | 3.92 s    | 1175x   |
-| `leibniz_pi`     | 35.2 ms   | 4.62 s    | 131x    |
-| `tail_sum`       | 23.4 ms   | 2.67 s    | 114x    |
-| `mandelbrot`     | —         | —         | —       |
+| `fold_floatmath` | 2.2 ms    | 5.80 s    | 2597x   |
+| `fold_sum`       | 2.2 ms    | 4.71 s    | 2129x   |
+| `map_fold`       | 4.6 ms    | 7.10 s    | 1532x   |
+| `filter_fold`    | 3.8 ms    | 5.20 s    | 1383x   |
+| `mandelbrot`     | 80.0 ms   | 7.09 s    | 89x     |
+| `tail_sum`       | 35.8 ms   | 1.93 s    | 54x     |
+| `leibniz_pi`     | 74.3 ms   | 3.64 s    | 49x     |
+| `stream_stats`   | 0.65 s    | 20.8 s    | 32x     |
+| `netidx_stream`  | 0.68 s    | 0.69 s    | 1.0x    |
+| `symbolic`       | 18.5 s    | 12.2 s    | 0.66x   |
+
+(`run.sh` rounds the ratio to a whole number, so it prints `symbolic`
+as `1x`; the honest ratio is 0.66x — with fusion *on* it runs ~1.5x
+slower than the node-walk. See the `symbolic` notes below.)
 
 The HOF benches show the largest gap (node-walk builds a per-element node
-graph); the scalar tail loops show the smallest (node-walk runs them as a
-tight iterative loop). `mandelbrot` — a per-pixel recursive escape-time
-loop — now fuses fully as well (see below), so it lands with the other
-fused benches rather than being an outlier. Re-run with `run.sh` to
-reproduce; absolute times vary with machine load, the ratios less so.
+graph); the fully-fused scalar loops (`mandelbrot`, `tail_sum`,
+`leibniz_pi`) show the smallest (node-walk runs tail self-calls as a
+tight iterative loop). `stream_stats` shows what fusing only the
+per-event compute buys on a stream (32x end-to-end); `netidx_stream`
+shows the same compute hidden behind a real network round trip (~1x);
+`symbolic` shows the recursive-ADT class the JIT cannot touch. Re-run
+with `run.sh` to reproduce; absolute times vary with machine load, the
+ratios less so.
 
 ## Benches
 
-| file               | shape                                  | fuses cleanly |
-|--------------------|----------------------------------------|---------------|
-| `fold_sum`         | int `fold (+)` over 100k               | yes           |
-| `fold_floatmath`   | heavy f64 math `fold` over 100k        | yes           |
-| `map_fold`         | `map (*3)` then `fold (+)`, 100k       | yes (1 kernel)|
-| `filter_fold`      | `filter (even)` then `fold (+)`, 100k  | yes (1 kernel)|
-| `tail_sum`         | scalar int tail loop, 10M              | yes           |
-| `leibniz_pi`       | scalar f64 tail loop, 10M              | yes           |
-| `mandelbrot`       | per-pixel escape-time, 100x75          | yes           |
+| file               | shape                                            | fuses cleanly |
+|--------------------|--------------------------------------------------|---------------|
+| `fold_sum`         | int `fold (+)` over 100k                         | yes           |
+| `fold_floatmath`   | heavy f64 math `fold` over 100k                  | yes           |
+| `map_fold`         | `map (*3)` then `fold (+)`, 100k                 | yes (1 kernel)|
+| `filter_fold`      | `filter (even)` then `fold (+)`, 100k            | yes (1 kernel)|
+| `tail_sum`         | scalar int tail loop, 10M                        | yes           |
+| `leibniz_pi`       | scalar f64 tail loop, 10M                        | yes           |
+| `mandelbrot`       | per-pixel escape-time, 100x75                    | yes           |
+| `stream_stats`     | per-tick sliding-window stats, 5000 events       | per-event compute only (async spine node-walks) |
+| `netidx_stream`    | same stats, each tick a real netidx round trip   | per-event compute only (round trip dominates) |
+| `symbolic`         | build/deriv/simplify/eval over a recursive ADT   | no (recursive ADT — no kernel ABI) |
 
 `mandelbrot`'s per-pixel `iterate` is a recursive function called inside
 `array::init`'s callback (a nested recursive lambda). That case (#203)
 now fully fuses, so the whole hot loop JITs to native code like the flat
 fold/map benches.
+
+`stream_stats` delivers n simulated market ticks one per reactive cycle
+via `array::iter`; each tick recomputes sum/mean/variance/min over a
+64-element sliding window plus an EMA. The async boundaries (`iter`,
+`~`, connect scheduling) can never fuse — the 32x speedup is what
+fusing just the per-event window folds buys end-to-end.
+
+`netidx_stream` is the same per-tick pipeline, but every tick makes a
+real netidx round trip (publish → subscribe, self-clocked so coalescing
+can't drop ticks). The round trip dominates per-event cost, so the two
+modes tie (~1x): fusion doesn't help a workload whose bottleneck is the
+network, and the bench documents that honestly.
+
+`symbolic` builds, differentiates, simplifies, and evaluates expression
+trees over a recursive ADT (`` `Num/`Var/`Add/`Mul ``). Recursive ADTs
+have no fixed kernel ABI, so the hot path node-walks even with fusion
+on — and with fusion enabled the program currently runs ~1.5x *slower*
+than plain node-walk, alongside a known value divergence (fusion-on
+checksum comes out exactly 2x the canonical node-walk value; see the
+header comment in `symbolic.gx`). Both are real findings this bench
+exists to surface, not measurement noise.
