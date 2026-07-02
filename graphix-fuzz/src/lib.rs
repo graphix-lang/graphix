@@ -120,6 +120,39 @@ pub async fn run_program(code: &str, mode: Mode, timeout: Duration) -> Outcome {
     run_program_with_stats(code, mode, timeout).await.0
 }
 
+/// Compile `code` under `mode` WITHOUT driving it — `None` = compiled
+/// clean, `Some(error)` = parse/typecheck reject (or the runtime failed
+/// to init). This is `gen-check`'s primitive: the generator is
+/// type-correct by construction, so the compile-reject RATE is its
+/// health metric and each reject message is a tuning signal.
+pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
+    let (tx, _rx) = mpsc::channel(64);
+    let wrapped = format!("let result = {code}");
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
+    )]);
+    let resolver = ModuleResolver::VFS(tbl);
+    let ctx = match init_with_flags_and_setup(
+        tx,
+        REGISTER,
+        vec![resolver],
+        mode.flags(),
+        |_| {},
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => return Some(format!("runtime init failed: {e}")),
+    };
+    let res = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await;
+    ctx.shutdown().await;
+    match res {
+        Ok(_) => None,
+        Err(e) => Some(format!("{e:#}")),
+    }
+}
+
 /// [`run_program`], also returning the compile-time [`FusionStats`]
 /// delta for the program itself. Stats accumulate per `ExecCtx` across
 /// every compile the runtime dispatches — including the stdlib root —

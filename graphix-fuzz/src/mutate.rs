@@ -18,7 +18,7 @@
 
 use graphix_compiler::expr::{
     ApplyExpr, BindExpr, Expr, ExprKind, SelectExpr, StructExpr, StructWithExpr,
-    TryCatchExpr, parser::parse_one,
+    StructurePattern, TryCatchExpr, parser::parse_one,
 };
 use netidx::utils::Either;
 use netidx_value::Value;
@@ -408,6 +408,58 @@ fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     Some(ExprKind::Constant(nv))
 }
 
+/// If `e` is a block with ≥2 simple (`let name = …`) binds, rename a
+/// later one to an earlier one's name — a targeted shadow-creating
+/// mutation. The 2026-07 audit's bug classes were all name-vs-identity
+/// confusions (shadowed lambda names, colliding locals); this steers
+/// seed programs into exactly those shapes. Type-blind (a rebind at a
+/// different type is legal); the oracle's compile step filters.
+fn try_shadow_rename(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
+    let exprs = match &e.kind {
+        ExprKind::Do { exprs } => exprs,
+        _ => return None,
+    };
+    let binds: Vec<usize> = exprs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ex)| match &ex.kind {
+            ExprKind::Bind(b) if matches!(&b.pattern, StructurePattern::Bind(_)) => {
+                Some(i)
+            }
+            _ => None,
+        })
+        .collect();
+    if binds.len() < 2 {
+        return None;
+    }
+    let i = rng.below(binds.len() - 1);
+    let j = i + 1 + rng.below(binds.len() - 1 - i);
+    let name = match &exprs[binds[i]].kind {
+        ExprKind::Bind(b) => match &b.pattern {
+            StructurePattern::Bind(n) => n.clone(),
+            _ => unreachable!(),
+        },
+        _ => unreachable!(),
+    };
+    let new_exprs: Vec<Expr> = exprs
+        .iter()
+        .enumerate()
+        .map(|(k, ex)| match &ex.kind {
+            ExprKind::Bind(b) if k == binds[j] => Expr::new(
+                ExprKind::Bind(Arc::new(BindExpr {
+                    rec: b.rec,
+                    pattern: StructurePattern::Bind(name.clone()),
+                    typ: b.typ.clone(),
+                    value: b.value.clone(),
+                })),
+                ex.pos,
+            ),
+            _ => ex.clone(),
+        })
+        .collect();
+    Some(ExprKind::Do { exprs: aslice(new_exprs) })
+}
+
 /// Apply one random mutation to `prog`, drawing transplant donors from
 /// `donor_nodes` (a flat preorder pool of subtrees from the seed corpus).
 pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
@@ -422,9 +474,10 @@ pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
     for _ in 0..4 {
         let target = rng.below(total);
         let node = &nodes[target];
-        let kind = match rng.below(3) {
+        let kind = match rng.below(4) {
             0 => try_swap_binop(node, rng),
             1 => try_perturb_literal(node, rng),
+            2 => try_shadow_rename(node, rng),
             _ => None,
         };
         if let Some(k) = kind {

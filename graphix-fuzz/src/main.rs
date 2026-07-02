@@ -90,6 +90,67 @@ async fn main() -> Result<()> {
                 println!("{}", graphix_fuzz::generate::gen_program(&mut rng));
             }
         }
+        Some("gen-check") => {
+            // Generator health: compile rate + reject reasons. The
+            // generator is type-correct by construction, so every
+            // reject is a generator bug or a rule to tune — this is
+            // the instrument for every vocabulary stage.
+            let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
+            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let progs: Vec<String> = {
+                let mut rng = graphix_fuzz::mutate::Rng::new(seed);
+                (0..n).map(|_| graphix_fuzz::generate::gen_program(&mut rng)).collect()
+            };
+            let par =
+                std::thread::available_parallelism().map(|n| n.get() * 2).unwrap_or(8);
+            let mut set: tokio::task::JoinSet<Option<String>> =
+                tokio::task::JoinSet::new();
+            let mut next = 0usize;
+            let mut compiled = 0usize;
+            let mut rejects: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            while next < progs.len() && set.len() < par {
+                let p = progs[next].clone();
+                set.spawn(async move {
+                    graphix_fuzz::compile_program(&p, graphix_fuzz::Mode::Interp).await
+                });
+                next += 1;
+            }
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Ok(None) => compiled += 1,
+                    Ok(Some(err)) => {
+                        let mut key = first_line(&err);
+                        key.truncate(120);
+                        *rejects.entry(key).or_default() += 1;
+                    }
+                    Err(_) => {
+                        *rejects.entry("worker panicked".into()).or_default() += 1;
+                    }
+                }
+                if next < progs.len() {
+                    let p = progs[next].clone();
+                    set.spawn(async move {
+                        graphix_fuzz::compile_program(&p, graphix_fuzz::Mode::Interp)
+                            .await
+                    });
+                    next += 1;
+                }
+            }
+            println!(
+                "gen-check: seed={seed}: {compiled}/{n} compiled ({:.1}%)",
+                compiled as f64 * 100.0 / n as f64
+            );
+            let mut buckets: Vec<(usize, String)> =
+                rejects.into_iter().map(|(k, v)| (v, k)).collect();
+            buckets.sort_by(|a, b| b.0.cmp(&a.0));
+            for (count, msg) in buckets.iter().take(15) {
+                println!("  {count:>4}  {msg}");
+            }
+            if buckets.len() > 15 {
+                println!("  … {} more reject buckets", buckets.len() - 15);
+            }
+        }
         Some("regress") => {
             let n = print_regression().await;
             if n > 0 {
@@ -216,7 +277,8 @@ async fn main() -> Result<()> {
         }
         _ => bail!(
             "usage: graphix-fuzz <check|run|minimize> <file>  |  \
-             graphix-fuzz <fuzz|generate> [iters] [seed]  |  graphix-fuzz regress"
+             graphix-fuzz <fuzz|generate> [iters] [seed]  |  \
+             graphix-fuzz gen-check [n] [seed]  |  graphix-fuzz regress"
         ),
     }
     Ok(())
