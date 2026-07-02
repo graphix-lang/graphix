@@ -460,6 +460,48 @@ fn try_shadow_rename(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     Some(ExprKind::Do { exprs: aslice(new_exprs) })
 }
 
+/// If `e` is a lambda (or a bind of one), strip a type annotation: a
+/// random param constraint, the return type, or the bind's own
+/// annotation. An unannotated lambda is per-call-site polymorphic, so
+/// stripping a typed seed creates monomorphization pressure (the
+/// audit's bug-2 class: two instantiations of one lambda in one
+/// region). Type-blind; the oracle filters.
+fn try_strip_annotation(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
+    match &e.kind {
+        ExprKind::Bind(b) if b.typ.is_some() && rng.below(2) == 0 => {
+            Some(ExprKind::Bind(Arc::new(BindExpr {
+                rec: b.rec,
+                pattern: b.pattern.clone(),
+                typ: None,
+                value: b.value.clone(),
+            })))
+        }
+        ExprKind::Lambda(l) => {
+            let annotated: Vec<usize> = l
+                .args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| a.constraint.is_some().then_some(i))
+                .collect();
+            let strip_ret = l.rtype.is_some();
+            if annotated.is_empty() && !strip_ret {
+                return None;
+            }
+            let mut nl = (**l).clone();
+            if strip_ret && (annotated.is_empty() || rng.below(2) == 0) {
+                nl.rtype = None;
+            } else {
+                let i = annotated[rng.below(annotated.len())];
+                let mut args: Vec<_> = l.args.iter().cloned().collect();
+                args[i].constraint = None;
+                nl.args = Arc::from_iter(args);
+            }
+            Some(ExprKind::Lambda(Arc::new(nl)))
+        }
+        _ => None,
+    }
+}
+
 /// Apply one random mutation to `prog`, drawing transplant donors from
 /// `donor_nodes` (a flat preorder pool of subtrees from the seed corpus).
 pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
@@ -474,10 +516,11 @@ pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
     for _ in 0..4 {
         let target = rng.below(total);
         let node = &nodes[target];
-        let kind = match rng.below(4) {
+        let kind = match rng.below(5) {
             0 => try_swap_binop(node, rng),
             1 => try_perturb_literal(node, rng),
             2 => try_shadow_rename(node, rng),
+            3 => try_strip_annotation(node, rng),
             _ => None,
         };
         if let Some(k) = kind {

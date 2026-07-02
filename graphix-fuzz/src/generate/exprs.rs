@@ -12,6 +12,29 @@ pub(super) fn pick<'a>(rng: &mut Rng, xs: &[&'a str]) -> &'a str {
     xs[rng.below(xs.len())]
 }
 
+/// A call to a visible lambda producing `ty`, if one is in scope: a
+/// typed lambda whose return type is `ty` (args generated recursively
+/// at its param types), or — for numeric `ty` — a poly lambda with all
+/// args at `ty` (its numeric body makes the result type follow the
+/// arguments, so each distinct arg type is a distinct monomorphization).
+fn try_call(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<String> {
+    let typed = ctx.fns_returning(ty);
+    let polys = if ty.is_numeric() { ctx.poly_fns() } else { Vec::new() };
+    if typed.is_empty() && polys.is_empty() {
+        return None;
+    }
+    let n = rng.below(typed.len() + polys.len());
+    let (name, param_tys) = if n < typed.len() {
+        let (name, params) = &typed[n];
+        (name.to_string(), params.clone())
+    } else {
+        let (name, arity) = polys[n - typed.len()];
+        (name.to_string(), vec![ty.clone(); arity])
+    };
+    let args: Vec<_> = param_tys.iter().map(|p| gen_typed(ctx, rng, p, depth)).collect();
+    Some(format!("{name}({})", args.join(", ")))
+}
+
 /// Emit an expression of exactly `ty`, recursing up to `depth`.
 pub(super) fn gen_typed(
     ctx: &GenCtx,
@@ -30,6 +53,11 @@ pub(super) fn gen_typed(
         return types::literal(rng, ty);
     }
     let d = depth - 1;
+    if ty.is_scalar() && rng.below(5) == 0 {
+        if let Some(call) = try_call(ctx, rng, ty, d) {
+            return call;
+        }
+    }
     match ty {
         GenType::I64 | GenType::F64 | GenType::U8 => {
             // Unary minus (a real `Neg` node, exercising `ineg`/`fneg`). Only
@@ -82,6 +110,9 @@ pub(super) fn gen_typed(
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
             format!("[{}]", parts.join(", "))
+        }
+        GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
+            unreachable!("gen_typed is never asked for a fn/opaque type")
         }
     }
 }

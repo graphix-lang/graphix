@@ -149,7 +149,9 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
     ctx.shutdown().await;
     match res {
         Ok(_) => None,
-        Err(e) => Some(format!("{e:#}")),
+        // Debug format = the multi-line anyhow chain; the last line is
+        // the innermost cause, which is what gen-check buckets on.
+        Err(e) => Some(format!("{e:?}")),
     }
 }
 

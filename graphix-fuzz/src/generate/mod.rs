@@ -29,6 +29,7 @@
 //! patterns, error ops, reactive programs with injection schedules.
 
 mod exprs;
+mod funcs;
 mod types;
 
 pub use types::GenType;
@@ -48,14 +49,66 @@ pub struct GenCfg {
     pub p_collision: f64,
     /// A let carries an explicit type annotation.
     pub p_annotate: f64,
-    /// Bindings per program: 0..=max_lets.
+    /// A statement slot emits a lambda binding instead of a value let.
+    pub p_lambda: f64,
+    /// A lambda is poly (explicit `'a: Number` constraint form —
+    /// per-call-site monomorphization) rather than fully typed.
+    pub p_poly: f64,
+    /// A statement slot emits the bare-unannotated-lambda template
+    /// (wide shared tvar, two unannotated call sites — the everyday
+    /// user shape and the wide-Number JIT-blocker class).
+    pub p_bare: f64,
+    /// A poly lambda is immediately called at two distinct numeric
+    /// types (the audit's bug-2 shape).
+    pub p_mono_pair: f64,
+    /// A typed lambda's body is a block with a collision-prone local
+    /// (the audit's bug-3 shape).
+    pub p_body_block: f64,
+    /// A statement slot emits a terminating `let rec` + call.
+    pub p_rec: f64,
+    /// A statement slot emits the whole shadowed-lambda-name template
+    /// (the audit's bug-1 shape).
+    pub p_lambda_shadow_template: f64,
+    /// Statement slots per program: 0..=max_lets (template slots may
+    /// emit several statements).
     pub max_lets: usize,
 }
 
 impl Default for GenCfg {
     fn default() -> Self {
-        GenCfg { p_shadow: 0.25, p_collision: 0.15, p_annotate: 0.3, max_lets: 6 }
+        GenCfg {
+            p_shadow: 0.25,
+            p_collision: 0.15,
+            p_annotate: 0.3,
+            p_lambda: 0.25,
+            p_poly: 0.4,
+            p_bare: 0.05,
+            p_mono_pair: 0.5,
+            p_body_block: 0.4,
+            p_rec: 0.06,
+            p_lambda_shadow_template: 0.05,
+            max_lets: 6,
+        }
     }
+}
+
+/// Which bug-class shapes one generated program contains — the
+/// shape-presence gate asserts each stays reachable at a healthy rate
+/// (a probability-weights bug silently disabling a shape is exactly
+/// the failure mode this fuzzer exists to catch in the compiler).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GenStats {
+    /// A lambda name was rebound (organically or via the template) —
+    /// audit bug-1 shape.
+    pub lambda_rebind: bool,
+    /// A poly lambda got call sites at two distinct numeric types —
+    /// audit bug-2 shape.
+    pub mono_pair: bool,
+    /// A lambda-body local reused a name bound elsewhere in the
+    /// program — audit bug-3 shape.
+    pub collision_local: bool,
+    /// A `let rec` was emitted.
+    pub rec: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -121,6 +174,27 @@ impl GenCtx {
         out
     }
 
+    /// The type `name` currently resolves to, if bound.
+    fn visible_type(&self, name: &str) -> Option<&GenType> {
+        self.vars.iter().rev().find(|(n, _)| n == name).map(|(_, t)| t)
+    }
+
+    fn in_collision_pool(&self, name: &str) -> bool {
+        self.collision_pool.iter().any(|n| n == name)
+    }
+
+    /// Scope bracket for lambda bodies / blocks / arms: bindings pushed
+    /// after `mark()` are dropped by `truncate(mark)`. The collision
+    /// pool deliberately keeps them — out-of-scope names are what
+    /// targeted collisions are made of.
+    fn mark(&self) -> usize {
+        self.vars.len()
+    }
+
+    fn truncate(&mut self, mark: usize) {
+        self.vars.truncate(mark);
+    }
+
     /// Visible bindings of type `ty` (last-binding-wins per name).
     fn vars_of(&self, ty: &GenType) -> Vec<&str> {
         let mut seen: Vec<&str> = Vec::new();
@@ -136,37 +210,96 @@ impl GenCtx {
         }
         out
     }
+
+    /// Visible typed lambdas returning `ty` (last-binding-wins — a
+    /// lambda name shadowed by a value is NOT callable).
+    fn fns_returning(&self, ty: &GenType) -> Vec<(&str, Vec<GenType>)> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut out = Vec::new();
+        for (n, t) in self.vars.iter().rev() {
+            if seen.contains(&n.as_str()) {
+                continue;
+            }
+            seen.push(n.as_str());
+            if let GenType::Fn { params, ret } = t {
+                if **ret == *ty {
+                    out.push((n.as_str(), params.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Visible poly lambdas (last-binding-wins).
+    fn poly_fns(&self) -> Vec<(&str, usize)> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut out = Vec::new();
+        for (n, t) in self.vars.iter().rev() {
+            if seen.contains(&n.as_str()) {
+                continue;
+            }
+            seen.push(n.as_str());
+            if let GenType::PolyFn { arity } = t {
+                out.push((n.as_str(), *arity));
+            }
+        }
+        out
+    }
 }
 
 /// Generate one complete program with the default profile.
 pub fn gen_program(rng: &mut Rng) -> String {
-    gen_program_cfg(&GenCfg::default(), rng)
+    gen_program_stats(&GenCfg::default(), rng).0
 }
 
 /// Generate one complete program (a graphix expression): a run of
-/// `let`-bindings whose values reference (and rebind) earlier bindings,
-/// plus a tail expression.
-pub fn gen_program_cfg(cfg: &GenCfg, rng: &mut Rng) -> String {
+/// statement slots — value lets, lambda bindings, rec skeletons,
+/// bug-shape templates — whose values reference (and rebind) earlier
+/// bindings, plus a tail expression. Also reports which bug-class
+/// shapes the program contains.
+pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut ctx = GenCtx::new();
+    let mut stats = GenStats::default();
     let mut stmts = Vec::new();
-    let nlets = rng.below(cfg.max_lets + 1);
-    for _ in 0..nlets {
-        let ty = types::random_type(rng, 2);
-        let val = exprs::maybe_select(&ctx, rng, &ty, 3)
-            .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &ty, 3));
-        let name = ctx.name_for_bind(rng, cfg);
-        let stmt = if chance(rng, cfg.p_annotate) {
-            format!("let {name}: {} = {val}", ty.render())
+    let nslots = rng.below(cfg.max_lets + 1);
+    for _ in 0..nslots {
+        if chance(rng, cfg.p_rec) {
+            stmts.extend(funcs::gen_rec_lambda(&mut ctx, rng, cfg, &mut stats));
+        } else if chance(rng, cfg.p_lambda_shadow_template) {
+            stmts.extend(funcs::gen_shadowed_lambda_template(
+                &mut ctx, rng, cfg, &mut stats,
+            ));
+        } else if chance(rng, cfg.p_bare) {
+            stmts.extend(funcs::gen_bare_lambda(&mut ctx, rng, cfg));
+        } else if chance(rng, cfg.p_lambda) {
+            if chance(rng, cfg.p_poly) {
+                stmts.extend(funcs::gen_poly_lambda(&mut ctx, rng, cfg, &mut stats));
+            } else {
+                stmts.push(funcs::gen_typed_lambda(&mut ctx, rng, cfg, &mut stats));
+            }
         } else {
-            format!("let {name} = {val}")
-        };
-        stmts.push(stmt);
-        ctx.push(name, ty);
+            let ty = types::random_type(rng, 2);
+            let val = exprs::maybe_select(&ctx, rng, &ty, 3)
+                .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &ty, 3));
+            let name = ctx.name_for_bind(rng, cfg);
+            let stmt = if chance(rng, cfg.p_annotate) {
+                format!("let {name}: {} = {val}", ty.render())
+            } else {
+                format!("let {name} = {val}")
+            };
+            stmts.push(stmt);
+            ctx.push(name, ty);
+        }
     }
     let tail_ty = types::random_type(rng, 2);
     let tail = exprs::maybe_select(&ctx, rng, &tail_ty, 3)
         .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &tail_ty, 3));
-    if stmts.is_empty() { tail } else { format!("{{ {}; {} }}", stmts.join("; "), tail) }
+    let prog = if stmts.is_empty() {
+        tail
+    } else {
+        format!("{{ {}; {} }}", stmts.join("; "), tail)
+    };
+    (prog, stats)
 }
 
 #[cfg(test)]
@@ -224,6 +357,33 @@ mod test {
             with_rebind * 100 / N >= 15,
             "only {with_rebind}/{N} programs contain a rebind"
         );
+    }
+
+    /// The Phase-1.2 acceptance gate: the generator can EXPRESS all
+    /// three 2026-07 audit bug shapes (each was hand-found because the
+    /// fresh-names-only V1 could not reach it), at a rate a campaign
+    /// will actually exercise.
+    #[test]
+    fn audit_bug_shapes_reachable() {
+        let cfg = GenCfg::default();
+        let mut rng = Rng::new(3);
+        let (mut rebind, mut mono, mut collision, mut rec) = (0, 0, 0, 0);
+        const N: usize = 500;
+        for _ in 0..N {
+            let (_, s) = gen_program_stats(&cfg, &mut rng);
+            rebind += s.lambda_rebind as usize;
+            mono += s.mono_pair as usize;
+            collision += s.collision_local as usize;
+            rec += s.rec as usize;
+        }
+        for (what, n) in [
+            ("lambda rebind (bug 1)", rebind),
+            ("monomorphization pair (bug 2)", mono),
+            ("collision local (bug 3)", collision),
+            ("let rec", rec),
+        ] {
+            assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
+        }
     }
 
     /// Rebinds must be sound: a name rebound at a different type must

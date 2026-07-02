@@ -103,37 +103,54 @@ async fn main() -> Result<()> {
             };
             let par =
                 std::thread::available_parallelism().map(|n| n.get() * 2).unwrap_or(8);
-            let mut set: tokio::task::JoinSet<Option<String>> =
+            let mut set: tokio::task::JoinSet<(usize, Option<String>)> =
                 tokio::task::JoinSet::new();
             let mut next = 0usize;
             let mut compiled = 0usize;
-            let mut rejects: std::collections::BTreeMap<String, usize> =
+            // Bucket by the innermost anyhow cause (the last line) — the
+            // outer layers are per-program position context. Keep one
+            // example program per bucket: the reject is only actionable
+            // next to the text that provoked it.
+            let mut rejects: std::collections::BTreeMap<String, (usize, String)> =
                 std::collections::BTreeMap::new();
-            while next < progs.len() && set.len() < par {
-                let p = progs[next].clone();
+            let spawn = |set: &mut tokio::task::JoinSet<_>, i: usize, p: String| {
                 set.spawn(async move {
-                    graphix_fuzz::compile_program(&p, graphix_fuzz::Mode::Interp).await
+                    (
+                        i,
+                        graphix_fuzz::compile_program(&p, graphix_fuzz::Mode::Interp)
+                            .await,
+                    )
                 });
+            };
+            while next < progs.len() && set.len() < par {
+                spawn(&mut set, next, progs[next].clone());
                 next += 1;
             }
             while let Some(res) = set.join_next().await {
                 match res {
-                    Ok(None) => compiled += 1,
-                    Ok(Some(err)) => {
-                        let mut key = first_line(&err);
+                    Ok((_, None)) => compiled += 1,
+                    Ok((i, Some(err))) => {
+                        let mut key = err
+                            .lines()
+                            .rev()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
                         key.truncate(120);
-                        *rejects.entry(key).or_default() += 1;
+                        let entry =
+                            rejects.entry(key).or_insert_with(|| (0, progs[i].clone()));
+                        entry.0 += 1;
                     }
                     Err(_) => {
-                        *rejects.entry("worker panicked".into()).or_default() += 1;
+                        rejects
+                            .entry("worker panicked".into())
+                            .or_insert_with(|| (0, String::new()))
+                            .0 += 1;
                     }
                 }
                 if next < progs.len() {
-                    let p = progs[next].clone();
-                    set.spawn(async move {
-                        graphix_fuzz::compile_program(&p, graphix_fuzz::Mode::Interp)
-                            .await
-                    });
+                    spawn(&mut set, next, progs[next].clone());
                     next += 1;
                 }
             }
@@ -141,11 +158,12 @@ async fn main() -> Result<()> {
                 "gen-check: seed={seed}: {compiled}/{n} compiled ({:.1}%)",
                 compiled as f64 * 100.0 / n as f64
             );
-            let mut buckets: Vec<(usize, String)> =
-                rejects.into_iter().map(|(k, v)| (v, k)).collect();
+            let mut buckets: Vec<(usize, String, String)> =
+                rejects.into_iter().map(|(k, (c, ex))| (c, k, ex)).collect();
             buckets.sort_by(|a, b| b.0.cmp(&a.0));
-            for (count, msg) in buckets.iter().take(15) {
+            for (count, msg, example) in buckets.iter().take(15) {
                 println!("  {count:>4}  {msg}");
+                println!("        e.g. {example}");
             }
             if buckets.len() > 15 {
                 println!("  … {} more reject buckets", buckets.len() - 15);
