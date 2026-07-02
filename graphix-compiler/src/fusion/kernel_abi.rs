@@ -1217,6 +1217,20 @@ pub enum AbiReturn {
     Two,
 }
 
+/// A kernel's identity: the address of its shared [`KernelSig`]
+/// allocation. Every map that resolves "which kernel" — the JIT's
+/// `by_kernel` cache, discovery's `callees`/`bodies`, the declare
+/// phase's `funcids`, a function's `callee_refs` — keys on THIS, never
+/// on the kernel's source name. Names shadow, and one polymorphic
+/// lambda mints one kernel PER monomorphization, so distinct kernels
+/// legitimately share a name; resolving by name binds call sites to
+/// the wrong FuncId (a silent wrong answer, or a CLIF signature
+/// mismatch — the audit-jul2026 findings). `fn_name` is a label for
+/// symbols and diagnostics only.
+pub(crate) fn kernel_key(k: &std::sync::Arc<KernelSig>) -> usize {
+    std::sync::Arc::as_ptr(k) as usize
+}
+
 /// A kernel's ABI contract — everything the boundary sites (the JIT
 /// signature builders, the uniform wrapper's slot unpacker, the
 /// kernel entry binder, and the runtime arg packer) need to agree
@@ -1225,8 +1239,9 @@ pub enum AbiReturn {
 /// same allocation.
 #[derive(Debug, Clone)]
 pub struct KernelSig {
-    /// Graphix-level function name (used for self-recursion detection
-    /// and for naming the emitted Rust free function).
+    /// Graphix-level function name. A LABEL for emitted symbols and
+    /// diagnostics only — never resolve calls by it (see
+    /// [`kernel_key`]).
     pub fn_name: ArcStr,
     /// Primitive parameters in declaration order. Each is also visible
     /// as a local in the body.

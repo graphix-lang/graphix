@@ -7,14 +7,20 @@
 // to poison the check process, so check still flags DIVERGENCE, just
 // with a misleading interp verdict; re-check after the fix).
 // Found by the 2026-07 release-readiness review (fusion-core dim).
-// root_cause: same name-keyed callee resolution as 01 — kernels are
-// cached per (LambdaId, resolved FnType), so one polymorphic lambda
-// used at two monomorphizations in one region mints two kernels that
-// SHARE a source name; the f64 call site binds to the i64 kernel's
-// FuncId. Unlike 01 the CLIF signature mismatches, so instead of a
-// silent wrong answer the FunctionBuilder panics at emit time. This is
-// why a BindId-only guard can't fix the class (same binding, two
-// FnTypes): resolution must key on kernel identity (the Arc).
+// root_cause: TWO layers. (a) The same name-keyed callee resolution
+// as 01. (b) Deeper: the kernel cache keyed on (LambdaId,
+// g.typ().resolve_tvars()) — but a lambda INSTANCE's FnType shares
+// TVar cells with the lambda def, and the FIRST site's unification
+// wins those cells, so the f64 site's g.typ() reported fn(x: i64) ->
+// i64 and cache-HIT the i64 kernel; the emitted call's CLIF types
+// then mismatched and the FunctionBuilder panicked.
+// FIXED (2026-07-02): resolution re-keyed on kernel identity (see 01),
+// and build_lambda_kernel now keys the cache on the CALL SITE's
+// resolved FnType and REFUSES to build when the instance's own
+// args/return disagree with the site (the shared-cell corruption) —
+// that site node-walks. Here the i64 site fuses, the f64 site
+// node-walks, values correct. Fixture:
+// graphix-tests lang/functions.rs two_monomorphizations_one_region.
 // SHAPE MATTERS: the lambda binding must sit OUTSIDE the attempted
 // region — with `let f` inside the block, the function-valued let
 // blocks the whole-region attempt, recursion splits the two call sites

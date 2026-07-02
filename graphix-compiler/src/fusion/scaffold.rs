@@ -92,13 +92,23 @@ pub enum ValueLeafKind {
 /// either MOVE into the output or drop via [`drop_owned_elem`] before the
 /// iteration ends.
 pub(crate) enum BoundElem {
-    Scalar { var: Variable, prim: PrimType },
+    Scalar {
+        var: Variable,
+        prim: PrimType,
+    },
     /// An owned `*mut ValArray`.
-    Composite { var: Variable },
+    Composite {
+        var: Variable,
+    },
     /// An owned `ArcStr` (its raw thin-pointer bits).
-    String { var: Variable },
+    String {
+        var: Variable,
+    },
     /// An owned two-word `(disc, payload)` Value (variant/nullable/value).
-    Value { disc: Variable, payload: Variable },
+    Value {
+        disc: Variable,
+        payload: Variable,
+    },
 }
 
 /// Fetch element `i_now` of `arr_ptr` and bind it under `elem.name`:
@@ -219,7 +229,9 @@ fn bind_elem(
         }
         Some(AbiKind::String) => {
             if !elem.leaves.is_empty() {
-                return Err(anyhow!("destructure leaves on a string HOF element — caller bug"));
+                return Err(anyhow!(
+                    "destructure leaves on a string HOF element — caller bug"
+                ));
             }
             // `graphix_valarray_get_arcstr` returns an OWNED (refcount-bumped)
             // ArcStr; bound as a `LocalKind::String` local so a mid-body
@@ -630,8 +642,10 @@ where
 {
     // The kept element is MOVED into the output; the not-kept edge must DROP
     // an owned element (composite/string/value). A scalar owns nothing.
-    let owns_drop =
-        !matches!(kernel_abi::abi_kind(cx.registry(), elem.typ), Some(AbiKind::Scalar(_)));
+    let owns_drop = !matches!(
+        kernel_abi::abi_kind(cx.registry(), elem.typ),
+        Some(AbiKind::Scalar(_))
+    );
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);

@@ -270,7 +270,8 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     // (`kind`, which carries the frozen types) needs the concrete rep.
     let resolved = resolve_abstract(&ctx.fusion.abstract_registry, &b.typ, &ctx.env);
     let frozen = kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &resolved)?;
-    let kind = lowering::type_to_region_input_kind(&ctx.fusion.abstract_registry, frozen)?;
+    let kind =
+        lowering::type_to_region_input_kind(&ctx.fusion.abstract_registry, frozen)?;
     Some(FreeVarInput {
         bind_id: id,
         name: arcstr::ArcStr::from(b.name.as_str()),
@@ -573,13 +574,14 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
 ) -> (
     nohash::IntMap<ExprId, LambdaCallInfo>,
-    std::collections::BTreeMap<arcstr::ArcStr, std::sync::Arc<KernelSig>>,
+    std::collections::BTreeMap<usize, std::sync::Arc<KernelSig>>,
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
 ) {
-    let mut callees: std::collections::BTreeMap<
-        arcstr::ArcStr,
-        std::sync::Arc<KernelSig>,
-    > = std::collections::BTreeMap::new();
+    // Keyed by kernel IDENTITY (`kernel_key`), like `bodies` — names
+    // shadow and monomorphizations share a name, so a name-keyed map
+    // here bound call sites to the wrong kernel (audit-jul2026 01/02).
+    let mut callees: std::collections::BTreeMap<usize, std::sync::Arc<KernelSig>> =
+        std::collections::BTreeMap::new();
     let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
         std::collections::BTreeMap::new();
     // Bodies still to scan; the second field says where the body's
@@ -600,16 +602,12 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else {
                 return;
             };
-            // Kernel name: the call site's SOURCE name, derived exactly
-            // like the classic region path (lowering.rs `emit_expr_node`'s
-            // CallSite arm) — a self-recursive body call resolves to the
-            // same key the build registered before emitting its body, so a
-            // recursive lambda builds ONCE with a coherent cache entry.
-            // (Shadowed same-name lambdas can't collide within one region:
-            // the second `let f` would put a Lambda-valued Bind inside the
-            // region, which doesn't emit — the region splits first.) A
-            // lambda-literal call (`(|x| x)(1)` — fnode isn't a Ref) has no
-            // name and stays on the node-walk, classic parity.
+            // Kernel name: the call site's SOURCE name — a LABEL for the
+            // emitted symbol and diagnostics only; resolution is by kernel
+            // identity, so shadowed same-name lambdas and multiple
+            // monomorphizations coexist. A lambda-literal call
+            // (`(|x| x)(1)` — fnode isn't a Ref) has no name and stays on
+            // the node-walk.
             let ExprKind::Ref { name } = &cs.fnode.spec().kind else {
                 return;
             };
@@ -621,21 +619,24 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                 }
             };
             // The fnode Ref's BindId identifies the binding being called —
-            // build_lambda_kernel uses it to recognise self-recursion (and
-            // emit_known_fused_call to refuse shadowed same-name targets,
-            // #206).
+            // build_lambda_kernel uses it to recognise self-recursion.
             let call_bind = match cs.fnode.view() {
                 NodeView::Ref(r) => Some(r.id),
                 _ => None,
             };
-            let Some(cached) = lowering::build_lambda_kernel(g, &name, call_bind, ctx)
+            // The SITE's resolved FnType keys the kernel cache — see
+            // build_lambda_kernel (the instance's g.typ() lies about
+            // which monomorphization a later site calls).
+            let Some(site_ftype) = cs.resolved_ftype().or_else(|| cs.ftype()) else {
+                return;
+            };
+            let Some(cached) =
+                lowering::build_lambda_kernel(g, site_ftype, &name, call_bind, ctx)
             else {
                 return;
             };
-            callees
-                .entry(cached.fn_name.clone())
-                .or_insert_with(|| cached.kernel.clone());
-            let ptr = std::sync::Arc::as_ptr(&cached.kernel) as usize;
+            let ptr = kernel_abi::kernel_key(&cached.kernel);
+            callees.entry(ptr).or_insert_with(|| cached.kernel.clone());
             // First time we reach this callee: record its body + self-call
             // info and enqueue it for transitive scanning. A repeat (its
             // own self-call, or a mutual back-edge) records the site below

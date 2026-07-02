@@ -684,18 +684,48 @@ fn resolve_abstract_d<'a>(
 /// can verify a name-resolved call really targets this binding (#206).
 pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
+    site_ftype: &FnType,
     kernel_name: &ArcStr,
     self_bind: Option<BindId>,
     ec: &mut ExecCtx<R, E>,
 ) -> Option<CachedKernel> {
-    // Cache key: (LambdaId, resolved FnType). `resolve_tvars` deep-
-    // clones, dereffing every TVar to its bound concrete type, so
-    // monomorphizations agree across syntactically-distinct but
-    // structurally-equivalent FnTypes.
-    let resolved_typ = std::sync::Arc::new(g.typ().resolve_tvars());
+    // Cache key: (LambdaId, the CALL SITE's resolved FnType).
+    // `resolve_tvars` deep-clones, dereffing every TVar to its bound
+    // concrete type, so monomorphizations agree across syntactically-
+    // distinct but structurally-equivalent FnTypes. The key must be the
+    // SITE's type, not `g.typ()`: the lambda instance's FnType shares
+    // TVar cells with the lambda def, and when one polymorphic lambda
+    // is called at two monomorphizations the first site's unification
+    // wins those cells — a later site's `g.typ()` reports the FIRST
+    // monomorphization (audit-jul2026/02).
+    let resolved_typ = std::sync::Arc::new(site_ftype.resolve_tvars());
     let key = (g.id(), resolved_typ);
     if let Some(cached) = ec.fusion.kernels.lock().get(&key).cloned() {
         return Some(cached);
+    }
+    // The kernel is BUILT from `g` — its body's node types are what
+    // emission reads — so if the instance disagrees with the site
+    // (the shared-cell corruption above), building would emit a kernel
+    // whose CLIF types mismatch the call site (a cranelift verifier
+    // panic, or worse a silent same-width misread). Refuse instead;
+    // the site node-walks. Compare the pieces the build consumes
+    // (args/vargs/return), not the whole FnType — constraint lists
+    // carry TVar identities that differ benignly between the site copy
+    // and the def.
+    {
+        let gt = g.typ().resolve_tvars();
+        let st = &*key.1;
+        let args_agree = gt.args.len() == st.args.len()
+            && gt.args.iter().zip(st.args.iter()).all(|(a, b)| a.typ == b.typ);
+        if !args_agree || gt.vargs != st.vargs || gt.rtype != st.rtype {
+            log::trace!(
+                "build_lambda_kernel: site mono {} disagrees with lambda \
+                 instance {} — refusing (site node-walks)",
+                st,
+                gt
+            );
+            return None;
+        }
     }
     // Re-entrancy guard: a lambda whose body (transitively) builds a
     // lambda that calls back into THIS one — mutual recursion — would
@@ -973,7 +1003,9 @@ pub fn fuse_callsite<R: Rt, E: UserEvent>(
     // emit (async ops, unsupported shapes) fails the JIT compile and
     // falls through to Phase 2: fuse the body's sync sub-regions
     // instead (`build_body_split`).
-    if let Some(cached) = build_lambda_kernel(g, &kernel_name, self_bind, ec) {
+    let site_ftype = cs.resolved_ftype().or_else(|| cs.ftype())?.clone();
+    if let Some(cached) = build_lambda_kernel(g, &site_ftype, &kernel_name, self_bind, ec)
+    {
         // Self-call info for a recursive callback (Node emission
         // needs it; mirrors `discover_lambda_calls`).
         let self_call = cached.is_rec.then(|| {
@@ -1040,8 +1072,10 @@ pub fn build_fused_template<R: Rt, E: UserEvent>(
                     .iter()
                     .map(|(id, ty)| genn::reference(ctx, *id, ty.clone(), top_id))
                     .collect::<Vec<_>>();
-                if let Ok(fk) = fc.build_slot(ctx, element_feeders, scope.clone(), top_id) {
-                    if let Some(crate::ApplyViewMut::Lambda(g)) = cs.resolved_apply_mut() {
+                if let Ok(fk) = fc.build_slot(ctx, element_feeders, scope.clone(), top_id)
+                {
+                    if let Some(crate::ApplyViewMut::Lambda(g)) = cs.resolved_apply_mut()
+                    {
                         let mut old = std::mem::replace(g.body_mut(), fk);
                         old.delete(ctx);
                     }

@@ -714,3 +714,49 @@ run!(vargs0, VARGS0, |v: Result<&Value>| match v {
     },
     _ => false,
 });
+
+// Cross-kernel callee resolution is keyed by kernel IDENTITY, not
+// source name (audit-jul2026/01): g's body call to the OUTER f must
+// bind to the outer f's kernel even though a later `let f` shadows the
+// name. Name-keyed resolution silently answered 1 here.
+const SHADOWED_NAME_CROSS_KERNEL: &str = r#"
+{
+  let f = |x: i64| -> i64 x + 1;
+  let g = |y: i64| -> i64 f(y) * 2;
+  let f = |x: i64| -> i64 x - 1;
+  let q = 0;
+  g(1) + f(2) + q
+}
+"#;
+
+run!(shadowed_name_cross_kernel, SHADOWED_NAME_CROSS_KERNEL, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::I64(5))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// One polymorphic lambda called at two monomorphizations in one region
+// (audit-jul2026/02): the kernel cache must key on the CALL SITE's
+// resolved FnType, and a site whose lambda instance reports a different
+// monomorphization (the def's TVar cells were won by the first site)
+// must refuse to fuse rather than emit against the wrong body. The
+// name-keyed version panicked cranelift's FunctionBuilder here and
+// killed the runtime worker.
+const TWO_MONOMORPHIZATIONS_ONE_REGION: &str = r#"
+{
+  let f = 'a: Number |x: 'a| -> 'a x + x;
+  {
+    let a = f(3);
+    let b = f(2.5);
+    cast<f64>(a)$ + b
+  }
+}
+"#;
+
+run!(two_monomorphizations_one_region, TWO_MONOMORPHIZATIONS_ONE_REGION, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::F64(11.0))
+); graphix_package_core::testing::FuseExpect::Jit);

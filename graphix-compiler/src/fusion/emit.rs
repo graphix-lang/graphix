@@ -391,7 +391,7 @@ unsafe impl Send for Jit {}
 pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
-    callees: &BTreeMap<ArcStr, std::sync::Arc<KernelSig>>,
+    callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
     root: &Node<R, E>,
     apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     lambda_sites: &nohash::IntMap<ExprId, LambdaCallInfo>,
@@ -434,16 +434,17 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     // `fn_index_offset` — what its body bakes into DynCalls AND the cache
     // key's `base` half. A callee with no DynCalls (empty `fn_params`)
     // bakes nothing, so it's pinned at base 0 to share one compilation
-    // across regions. A self-name callee shares the parent's FuncId/body
-    // (its slots ARE the parent's, already at base 0) — skip it, matching
-    // the phase-1 declare loop.
-    let parent_ptr = std::sync::Arc::as_ptr(kernel) as usize;
+    // across regions. A callee that IS the parent (a self-recursive
+    // per-slot callback) shares the parent's FuncId/body (its slots ARE
+    // the parent's, already at base 0) — skip it, matching the phase-1
+    // declare loop.
+    let parent_ptr = kernel_abi::kernel_key(kernel);
     let mut combined: Vec<kernel_abi::FnParam> = kernel.fn_params.to_vec();
     let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>)> = callees
         .values()
         .filter_map(|k| {
-            let key = std::sync::Arc::as_ptr(k) as usize;
-            if k.fn_name.as_str() == kernel.fn_name.as_str() || key == parent_ptr {
+            let key = kernel_abi::kernel_key(k);
+            if key == parent_ptr {
                 return None;
             }
             let cb = callee_bodies.get(&key)?;
@@ -485,7 +486,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
 fn compile_kernel_with_callees_impl(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
-    callees: &BTreeMap<ArcStr, std::sync::Arc<KernelSig>>,
+    callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
@@ -516,7 +517,7 @@ fn compile_kernel_with_callees_impl(
 fn compile_kernel_with_callees_inner(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
-    callees: &BTreeMap<ArcStr, std::sync::Arc<KernelSig>>,
+    callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32)>,
     registry: &AbstractRegistry,
@@ -526,29 +527,27 @@ fn compile_kernel_with_callees_inner(
     // `FuncId`; fresh ones get a freshly-declared FuncId and queue
     // for phase-2 body definition.
     //
-    // The parent and any callee with name == parent's fn_name share
-    // the same FuncId; that's how self-recursion
-    // resolves to a CLIF call back to the parent.
+    // `funcids` is keyed by kernel IDENTITY (`kernel_key`) — a callee
+    // that IS the parent (a self-recursive per-slot callback) lands on
+    // the parent's entry by pointer equality, which is how
+    // self-recursion resolves to a CLIF call back to the parent.
     //
     // Each kernel's DynCall `base` offset (0 for the parent, its
     // combined-list offset for a callee) is the body emitter's
     // `fn_index_offset()` — the SAME value baked into its DynCalls — so
     // the `(ptr, base)` cache key and the compiled body agree by
     // construction.
-    let kernel_name = kernel.fn_name.clone();
-    let mut funcids: BTreeMap<ArcStr, (FuncId, Signature)> = BTreeMap::new();
+    let parent_ptr = kernel_abi::kernel_key(kernel);
+    let mut funcids: BTreeMap<usize, (FuncId, Signature)> = BTreeMap::new();
     let parent_entry = ensure_declared(jit, kernel, 0, to_define, registry)?;
-    funcids.insert(kernel_name.clone(), parent_entry.clone());
-    for (name, k) in callees {
-        if name.as_str() == kernel_name.as_str() {
-            funcids.insert(name.clone(), parent_entry.clone());
+    funcids.insert(parent_ptr, parent_entry.clone());
+    for (ptr, k) in callees {
+        if *ptr == parent_ptr {
             continue;
         }
-        let base = emitters
-            .get(&(std::sync::Arc::as_ptr(k) as usize))
-            .map_or(0, |e| e.fn_index_offset());
+        let base = emitters.get(ptr).map_or(0, |e| e.fn_index_offset());
         let entry = ensure_declared(jit, k, base, to_define, registry)?;
-        funcids.insert(name.clone(), entry);
+        funcids.insert(*ptr, entry);
     }
     // Phase 2 — define each freshly-declared body. Bodies that came
     // back from the cache already had `define_function` called for
@@ -658,11 +657,12 @@ fn ensure_declared(
 /// call sites reference.
 fn define_kernel_body(
     jit: &mut JitCtx,
-    kernel: &KernelSig,
-    funcids: &BTreeMap<ArcStr, (FuncId, Signature)>,
+    kernel: &std::sync::Arc<KernelSig>,
+    funcids: &BTreeMap<usize, (FuncId, Signature)>,
     body_emitter: &dyn BodyEmitter,
 ) -> Result<(KernelStrings, KernelValues)> {
-    let (func_id, sig) = funcids.get(&kernel.fn_name).cloned().ok_or_else(|| {
+    let self_ptr = kernel_abi::kernel_key(kernel);
+    let (func_id, sig) = funcids.get(&self_ptr).cloned().ok_or_else(|| {
         anyhow!(
             "define_kernel_body: missing FuncId for kernel `{}` \
                  (phase-1 declare must have populated `funcids` first)",
@@ -686,41 +686,41 @@ fn define_kernel_body(
         // because both `declare_func_in_func` and `FunctionBuilder::new`
         // borrow `jit.func_ctx.func` mutably.
         //
-        // Exactly the fn_names the body's discovered lambda call sites
+        // Exactly the kernels the body's discovered lambda call sites
         // reference (the parent carries the region's direct callee
         // set; a CALLEE's map is empty — its inner sites are
         // #203-unresolved, so its only cross-kernel reference is
-        // itself). The kernel's own name is excluded from sites; a
-        // self-recursive body imports its own FuncRef via `self_call`
-        // (funcids carries every callee by name, this kernel
-        // included).
-        let needed: std::collections::BTreeSet<ArcStr> = {
-            let mut s: std::collections::BTreeSet<ArcStr> = body_emitter
+        // itself). Keyed by kernel identity, so shadowed same-name
+        // targets and sibling monomorphizations each resolve to their
+        // OWN FuncId. The kernel itself is excluded from sites; a
+        // self-recursive body imports its own FuncRef via `self_call`.
+        let needed: std::collections::BTreeSet<usize> = {
+            let mut s: std::collections::BTreeSet<usize> = body_emitter
                 .lambda_call_sites()
                 .map(|m| {
                     m.values()
-                        .map(|info| info.fn_name.clone())
-                        .filter(|n| n.as_str() != kernel.fn_name.as_str())
+                        .map(|info| kernel_abi::kernel_key(&info.kernel))
+                        .filter(|ptr| *ptr != self_ptr)
                         .collect()
                 })
                 .unwrap_or_default();
             if let Some((_, info)) = body_emitter.self_call() {
-                s.insert(info.fn_name.clone());
+                s.insert(kernel_abi::kernel_key(&info.kernel));
             }
             s
         };
-        let mut callee_refs: BTreeMap<ArcStr, FuncRef> = BTreeMap::new();
-        for name in needed {
-            let target_fid = funcids.get(&name).map(|(f, _)| *f).ok_or_else(|| {
+        let mut callee_refs: BTreeMap<usize, FuncRef> = BTreeMap::new();
+        for ptr in needed {
+            let target_fid = funcids.get(&ptr).map(|(f, _)| *f).ok_or_else(|| {
                 anyhow!(
-                    "define_kernel_body: kernel `{}` calls `{name}` \
-                         but no entry in funcids",
+                    "define_kernel_body: kernel `{}` calls a kernel with \
+                         no entry in funcids",
                     kernel.fn_name
                 )
             })?;
             let fref =
                 jit.module.declare_func_in_func(target_fid, &mut jit.func_ctx.func);
-            callee_refs.insert(name, fref);
+            callee_refs.insert(ptr, fref);
         }
         // Lazy interning arenas — filled during emission via
         // `BodyCx::interned_str` / `interned_value`, merged into the
@@ -839,12 +839,8 @@ fn define_wrapper(
         // forward them first so `d.wire_slot` (already offset past them
         // in `abi_params`) indexes the params correctly.
         for i in 0..kernel_abi::INIT_WIRE_SLOTS {
-            let v = b.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                args_ptr,
-                (i as i32) * 8,
-            );
+            let v =
+                b.ins().load(types::I64, MemFlags::trusted(), args_ptr, (i as i32) * 8);
             typed_args.push(v);
         }
         for d in kernel.abi_params() {
@@ -984,7 +980,7 @@ pub fn unpack_u64_to_value(bits: u64, prim: PrimType) -> Value {
 fn compile_into_function(
     b: &mut FunctionBuilder,
     kernel: &KernelSig,
-    callee_refs: &BTreeMap<ArcStr, FuncRef>,
+    callee_refs: &BTreeMap<usize, FuncRef>,
     helper_refs: &HelperRefs,
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
@@ -1301,13 +1297,15 @@ pub(crate) struct LowerCtx<'a> {
     /// [`BodyCx::init_flag`]) so a constant carries [`STALE`] on every
     /// non-init cycle — it fires only at init, like the node-walk.
     init_flag: ClifValue,
-    /// Cross-kernel call sites resolve their callee's `fn_name`
-    /// through this map to a CLIF `FuncRef`. The caller must
+    /// Cross-kernel call sites resolve their callee's kernel IDENTITY
+    /// (`kernel_key` of the site's `info.kernel` Arc) through this map
+    /// to a CLIF `FuncRef` — never by name (names shadow, and
+    /// monomorphizations share a name). The caller must
     /// `declare_func_in_func` each callee's `FuncId` against the
     /// current function before constructing the FunctionBuilder, then
     /// pass the resulting refs in here. Empty for kernels with no
     /// lambda call sites.
-    callee_refs: &'a BTreeMap<ArcStr, FuncRef>,
+    callee_refs: &'a BTreeMap<usize, FuncRef>,
     /// `FuncRef`s for the `emit_helpers::*` runtime helpers.
     /// Declared in the current function before the FunctionBuilder
     /// is constructed (same constraint as `callee_refs`). Lookups
@@ -1364,7 +1362,7 @@ pub(crate) struct LowerCtx<'a> {
     /// Discovered statically-resolved lambda call sites — the direct
     /// path's `ExprId → LambdaCallInfo` map (`None` for callee bodies).
     /// `CallSite::emit_clif` resolves a registered site to a CLIF
-    /// `call` against `callee_refs[info.fn_name]`.
+    /// `call` against `callee_refs[kernel_key(&info.kernel)]`.
     lambda_call_sites: Option<&'a nohash::IntMap<ExprId, LambdaCallInfo>>,
     /// `Some` when this kernel is a self-recursive lambda body being
     /// Node-emitted: the self binding + the kernel's own call
@@ -2293,7 +2291,11 @@ pub fn array_result(cx: &mut BodyCx, ptr: ClifValue) -> CompiledExpr {
 /// value survives a `connect`'s `set_var` (which reconstructs a `Value`
 /// from the disc) — an ARRAY disc over a scalar payload would deref the
 /// scalar as a `*ValArray`.
-pub fn scalar_result(cx: &mut BodyCx, prim: PrimType, payload: ClifValue) -> CompiledExpr {
+pub fn scalar_result(
+    cx: &mut BodyCx,
+    prim: PrimType,
+    payload: ClifValue,
+) -> CompiledExpr {
     CompiledExpr::new(scalar_disc(cx.b, prim), payload)
 }
 
@@ -2938,7 +2940,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// The discovered lambda call-site info for `id`, if `try_fuse`'s
     /// analysis registered one (direct path only). A `Some` means the
     /// callee kernel is declared in this function's `callee_refs` under
-    /// `info.fn_name` and ready to `call`.
+    /// its kernel identity and ready to `call`.
     pub(crate) fn lambda_site(&self, id: ExprId) -> Option<&LambdaCallInfo> {
         self.ctx.lambda_call_sites.and_then(|m| m.get(&id))
     }
@@ -4111,10 +4113,8 @@ fn emit_let_node<R: Rt, E: UserEvent>(
                     };
                     let call = cx.b.ins().call(clone_helper, &[ppay]);
                     let cloned = cx.b.inst_results(call)[0];
-                    cx.b.ins().jump(
-                        merge,
-                        &[BlockArg::Value(pdisc), BlockArg::Value(cloned)],
-                    );
+                    cx.b.ins()
+                        .jump(merge, &[BlockArg::Value(pdisc), BlockArg::Value(cloned)]);
                     cx.b.switch_to_block(use_seed);
                     cx.b.seal_block(use_seed);
                     let seed = value.emit_clif(cx)?;
@@ -4487,7 +4487,8 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         }
         _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
     })?;
-    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    let (arr_ptr, src, src_disc) =
+        emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     // Register an Owned source: a replaced-field bottom-abort between here
     // and the finalize would otherwise leak it (a Borrowed source is
     // env-owned — nothing to drop).
@@ -4687,7 +4688,8 @@ pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Same abstract-Ref resolution as the tuple read (#218).
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    let (arr_ptr, src, src_disc) =
+        emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
     let result = compile_element_read(cx.b, arr_ptr, idx_const, &elem_typ, true, cx.ctx)?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
@@ -4712,7 +4714,8 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         .filter(|p| p.is_integer())
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
     if matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
-        let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Array)?;
+        let (arr_ptr, src, src_disc) =
+            emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;
@@ -5336,15 +5339,27 @@ enum SelectMerge {
 /// arm's result so a bottom (missing) scrutinee bottoms the select.
 #[derive(Clone, Copy)]
 enum SelectScrut {
-    Scalar { disc: ClifValue, value: ClifValue, prim: PrimType },
-    Value { disc: ClifValue, payload: ClifValue },
+    Scalar {
+        disc: ClifValue,
+        value: ClifValue,
+        prim: PrimType,
+    },
+    Value {
+        disc: ClifValue,
+        payload: ClifValue,
+    },
     /// A BORROWED array/tuple/struct scrutinee: the `*const ValArray`
     /// stays live across the whole arm chain with no drop (the env slot
     /// owns it — the owned-producer case de-fuses in
     /// [`classify_select_scrutinee`]). Structural patterns
     /// (tuple/struct/slice) test and read elements through it.
-    Composite { disc: ClifValue, ptr: ClifValue },
-    Opaque { disc: ClifValue },
+    Composite {
+        disc: ClifValue,
+        ptr: ClifValue,
+    },
+    Opaque {
+        disc: ClifValue,
+    },
 }
 
 impl SelectScrut {
@@ -5495,7 +5510,15 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         scrut_kind,
         &scrut_typ,
         &mut |cx, body, mark| {
-            emit_select_value_arm(cx, body, mark, merge_shape, merge, scrut_disc, has_guard)
+            emit_select_value_arm(
+                cx,
+                body,
+                mark,
+                merge_shape,
+                merge,
+                scrut_disc,
+                has_guard,
+            )
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
     )?;
@@ -5630,10 +5653,9 @@ fn classify_select_scrutinee<R: Rt, E: UserEvent>(
                  payload: ClifValue|
      -> Option<ScrutDrop> {
         let mark = cx.env.mark();
-        let name: ArcStr =
-            compact_str::format_compact!("__scrut{}", sel.spec.id.inner())
-                .as_str()
-                .into();
+        let name: ArcStr = compact_str::format_compact!("__scrut{}", sel.spec.id.inner())
+            .as_str()
+            .into();
         let vv = bind_local(cx, name, disc, payload, kind, None);
         Some(ScrutDrop { kind, vv, mark })
     };
@@ -5855,15 +5877,12 @@ fn emit_composite_pattern_cond(
             let leaves = sbinds
                 .iter()
                 .map(|(_, i, sub)| {
-                    let typ = flds
-                        .get(*i)
-                        .map(|(_, t)| t.clone())
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "emit_clif: struct pattern field index {i} out \
+                    let typ = flds.get(*i).map(|(_, t)| t.clone()).ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: struct pattern field index {i} out \
                                  of range"
-                            )
-                        })?;
+                        )
+                    })?;
                     Ok(LeafSpec { idx: ElemIdx::StructField(*i), sub, typ })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -5880,13 +5899,14 @@ fn emit_composite_pattern_cond(
         match leaf.sub {
             StructPatternNode::Ignore => {}
             StructPatternNode::Bind(id) => {
-                let prim =
-                    kernel_abi::scalar_prim(cx.registry(), &leaf.typ).ok_or_else(|| {
+                let prim = kernel_abi::scalar_prim(cx.registry(), &leaf.typ).ok_or_else(
+                    || {
                         anyhow!(
                             "emit_clif: non-scalar select pattern leaf bind {:?}",
                             leaf.typ
                         )
-                    })?;
+                    },
+                )?;
                 binds.push(SelectArmBind::Elem { id: *id, idx: leaf.idx, prim, ptr });
             }
             StructPatternNode::Literal(v) => {
@@ -6834,12 +6854,15 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         clif_args.push(cv.disc);
         clif_args.push(cv.payload);
     }
-    let func_ref = cx.ctx.callee_refs.get(fn_name).ok_or_else(|| {
-        anyhow!(
-            "lambda call `{fn_name}`: callee_refs has no entry — \
-             discovery/declare drift"
-        )
-    })?;
+    let func_ref =
+        cx.ctx.callee_refs.get(&kernel_abi::kernel_key(&info.kernel)).ok_or_else(
+            || {
+                anyhow!(
+                    "lambda call `{fn_name}`: callee_refs has no entry — \
+                     discovery/declare drift"
+                )
+            },
+        )?;
     let inst = cx.b.ins().call(*func_ref, &clif_args);
     // The callee RETURN ABI is unchanged (params went 2-word, returns
     // didn't): scalar/composite return one word, value-shape two. The

@@ -1,17 +1,18 @@
 // bisect: DirectJit wrong value — interp 5, jit 1 (silent).
 // Found by the 2026-07 release-readiness review (fusion-core dim), not
 // the generator: it never produces shadowed rebinding.
-// root_cause: cross-kernel lambda-call resolution is keyed by source
-// NAME only — discover_lambda_calls keeps one kernel per name
-// (fusion/mod.rs callees.entry(fn_name).or_insert_with, first wins) and
-// emission resolves call sites via the name-keyed funcids/callee_refs
-// without checking the site's info.kernel Arc. g's body call to the
-// OUTER f binds to the shadowing f's FuncId (same CLIF sig, verifier
-// happy). Regression of the #206 fix (KnownFusedFn::self_bind), whose
-// guard lived in the deleted classic path's emit_known_fused_call; a
-// BindId guard alone is NOT sufficient (see 02, same root cause) —
-// resolution must key on kernel identity (the Arc), as bodies/emitters
-// already do.
+// root_cause: cross-kernel lambda-call resolution was keyed by source
+// NAME only — discover_lambda_calls kept one kernel per name
+// (first wins) and emission resolved call sites via the name-keyed
+// funcids/callee_refs without checking the site's info.kernel Arc.
+// g's body call to the OUTER f bound to the shadowing f's FuncId
+// (same CLIF sig, verifier happy). Regression of the #206 fix, whose
+// guard lived in the deleted classic path's emit_known_fused_call.
+// FIXED (2026-07-02): callees/funcids/callee_refs re-keyed on kernel
+// IDENTITY (kernel_abi::kernel_key — the KernelSig Arc address, as
+// bodies/emitters/by_kernel already were); fn_name is a symbol/
+// diagnostic label only. Fixture:
+// graphix-tests lang/functions.rs shadowed_name_cross_kernel.
 {
   let f = |x: i64| -> i64 x + i64:1;
   let g = |y: i64| -> i64 f(y) * i64:2;
