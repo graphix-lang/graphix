@@ -83,7 +83,11 @@ not exercised here.)
 
 ## Results
 
-Release build, best-of-3 per mode (2026-07-02):
+Release build, best-of-3 per mode (2026-07-02). NOTE: the fixes that
+landed later the same day (the never()-gate threading fix and the
+clone_rebind remap) improve `stream_stats` (its three window folds now
+fuse as native loops) and make `symbolic`'s two modes agree on values —
+re-run `run.sh` at the next release build to refresh these rows:
 
 | bench            | jit       | node-walk | speedup |
 |------------------|-----------|-----------|---------|
