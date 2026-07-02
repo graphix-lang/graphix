@@ -269,7 +269,13 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     // wants the type system's view; only the kernel-slot classification
     // (`kind`, which carries the frozen types) needs the concrete rep.
     let resolved = resolve_abstract(&ctx.fusion.abstract_registry, &b.typ, &ctx.env);
-    let frozen = kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &resolved)?;
+    // Normalized: a binding whose defining select has a never() arm
+    // carries a Set polluted by the arm's late-bound TVar — the
+    // resolve_tvars rung collapses it so the local threads as a region
+    // input instead of silently de-fusing every consumer
+    // (bench/stream_stats.gx's window-gate idiom).
+    let frozen =
+        kernel_abi::freeze_for_abi_normalized(&ctx.fusion.abstract_registry, &resolved)?;
     let kind =
         lowering::type_to_region_input_kind(&ctx.fusion.abstract_registry, frozen)?;
     Some(FreeVarInput {

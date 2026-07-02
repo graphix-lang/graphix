@@ -14,7 +14,7 @@ use crate::{
         emit::WrappedKernel,
         kernel_abi::{
             self, AbiKind, AbstractRegistry, BuiltinSlot, FnParam, FnSource, KernelSig,
-            Seen, abi_kind, freeze_for_abi, freeze_for_abi_normalized, scalar_prim,
+            Seen, abi_kind, freeze_for_abi_normalized, scalar_prim,
         },
     },
     node::{Cached, callsite::CallSite, genn, lambda::GXLambda},
@@ -194,7 +194,7 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
 ) {
     let Some(handler_id) = q.id else { return };
     let reg = &ctx.fusion.abstract_registry;
-    let Some(inner_typ) = freeze_for_abi(reg, q.n.typ()) else { return };
+    let Some(inner_typ) = freeze_for_abi_normalized(reg, q.n.typ()) else { return };
     if kernel_abi::nullable_inner(reg, &inner_typ).is_none() {
         return;
     }
@@ -249,7 +249,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
     // fallible result type (`[T, Error]`) must decode — otherwise the
     // site can't be lowered and emission fails on the un-registered
     // node (the region stays unfused).
-    let Some(arg_frozen) = freeze_for_abi(reg, source) else { return };
+    let Some(arg_frozen) = freeze_for_abi_normalized(reg, source) else { return };
     let Some(ret_frozen) = freeze_for_abi_normalized(reg, &tc.typ) else { return };
     let fn_index = out.fn_params.len() as u32;
     out.fn_params.push(FnParam {
@@ -368,7 +368,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
-                let kt = match kernel_abi::freeze_for_abi(
+                let kt = match kernel_abi::freeze_for_abi_normalized(
                     &ctx.fusion.abstract_registry,
                     &arg_typ,
                 ) {
@@ -386,7 +386,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         .arg_named(name)
                         .map(|n| n.typ().clone())
                         .unwrap_or_else(|| fa.typ.clone());
-                    let kt = match kernel_abi::freeze_for_abi(
+                    let kt = match kernel_abi::freeze_for_abi_normalized(
                         &ctx.fusion.abstract_registry,
                         &arg_typ,
                     ) {
@@ -437,12 +437,13 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 Some(t) => t,
                 None => return,
             };
-            let kt =
-                match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &arg_typ)
-                {
-                    Some(t) => t,
-                    None => return,
-                };
+            let kt = match kernel_abi::freeze_for_abi_normalized(
+                &ctx.fusion.abstract_registry,
+                &arg_typ,
+            ) {
+                Some(t) => t,
+                None => return,
+            };
             arg_types.push(kt);
             marshal_arg_indices.push(*call_idx);
         }
@@ -453,11 +454,13 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // Return type — the CallSite's own resolved output type (the
     // node-resident value the typechecker propagated for this Apply).
     let ret_typ = cs.typ().clone();
-    let return_type =
-        match kernel_abi::freeze_for_abi(&ctx.fusion.abstract_registry, &ret_typ) {
-            Some(t) => t,
-            None => return,
-        };
+    let return_type = match kernel_abi::freeze_for_abi_normalized(
+        &ctx.fusion.abstract_registry,
+        &ret_typ,
+    ) {
+        Some(t) => t,
+        None => return,
+    };
     if !arg_types
         .iter()
         .all(|t| is_dyncall_arg_supported(&ctx.fusion.abstract_registry, t))
@@ -763,7 +766,10 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             _ => return None,
         };
         let arg_typ = resolve_abstract(&ec.fusion.abstract_registry, &fa.typ, &ec.env);
-        let kt = kernel_abi::freeze_for_abi(&ec.fusion.abstract_registry, &arg_typ)?;
+        let kt = kernel_abi::freeze_for_abi_normalized(
+            &ec.fusion.abstract_registry,
+            &arg_typ,
+        )?;
         let kind = type_to_region_input_kind(&ec.fusion.abstract_registry, kt)?;
         inputs.push((name, kind, None));
     }
@@ -825,7 +831,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             // the whole build returns None below.
             continue;
         }
-        let kt = match kernel_abi::freeze_for_abi(
+        let kt = match kernel_abi::freeze_for_abi_normalized(
             &ec.fusion.abstract_registry,
             &resolve_abstract(&ec.fusion.abstract_registry, &cap_typ, &ec.env),
         ) {
@@ -841,7 +847,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         inputs.push((name.clone(), kind, Some(bind_id)));
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
-    let return_typ = kernel_abi::freeze_for_abi(
+    let return_typ = kernel_abi::freeze_for_abi_normalized(
         &ec.fusion.abstract_registry,
         &resolve_abstract(&ec.fusion.abstract_registry, &typ.rtype, &ec.env),
     )?;
@@ -1237,8 +1243,10 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
             return false;
         }
         let arg_typ = resolve_abstract(&ec.fusion.abstract_registry, &fa.typ, &ec.env);
-        let kt = match kernel_abi::freeze_for_abi(&ec.fusion.abstract_registry, &arg_typ)
-        {
+        let kt = match kernel_abi::freeze_for_abi_normalized(
+            &ec.fusion.abstract_registry,
+            &arg_typ,
+        ) {
             Some(t) => t,
             None => return false,
         };

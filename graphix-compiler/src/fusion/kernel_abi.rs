@@ -691,16 +691,26 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
     }
 }
 
-/// [`freeze_for_abi`], retrying through [`Type::normalize`] when the
-/// direct freeze fails. Typecheck can leave a union un-flattened — a
+/// [`freeze_for_abi`], retrying through [`Type::normalize`] and then
+/// through [`Type::resolve_tvars`]`().normalize()` when the direct
+/// freeze fails. Typecheck can leave a union un-flattened — a
 /// `select`'s result type is the raw fold of its arm types, e.g.
 /// `Set([i64, TVar→i64])` — which `freeze_for_abi` rejects (it
 /// mirrors `from_type` shape-for-shape). Normalizing flattens and
-/// merges the set (→ `i64`) without changing the denoted type. The
-/// normalize pass only runs when the direct freeze fails, so the
-/// common path neither pays for it nor rewrites TVar bindings.
+/// merges the set (→ `i64`) without changing the denoted type. But
+/// `normalize`'s merge compares members STRUCTURALLY, so it can't see
+/// a TVar bound AFTER the union was built: a `never()` arm's fresh
+/// TVar gets bound by a downstream consumer's unification (e.g. to
+/// `Array<f64>`), leaving `Set([TVar→Array<TVar→f64>, Array<f64>])` —
+/// structurally unequal members. The third rung snapshots every bound
+/// TVar to its binding first, so the merge collapses the set. Each
+/// rung runs only when the previous fails, so the common path pays
+/// nothing and no rung rewrites TVar bindings (`resolve_tvars`
+/// deep-clones).
 pub fn freeze_for_abi_normalized(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
-    freeze_for_abi(reg, t).or_else(|| freeze_for_abi(reg, &t.normalize()))
+    freeze_for_abi(reg, t)
+        .or_else(|| freeze_for_abi(reg, &t.normalize()))
+        .or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
 }
 
 /// Normalizes ALL THREE option-shaped forms that collapse to

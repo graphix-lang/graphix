@@ -4905,7 +4905,12 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     inner: &Node<R, E>,
     handler_site: Option<ExprId>,
 ) -> Result<CompiledExpr> {
-    let Some(inner_typ) = kernel_abi::freeze_for_abi(cx.registry(), inner.typ()) else {
+    // Lockstep with the discovery-side freeze (lowering.rs
+    // try_register_qop_deliver): both normalized, so a site the
+    // discovery registered always emits.
+    let Some(inner_typ) =
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), inner.typ())
+    else {
         return Err(anyhow!(
             "emit_clif: `?` inner type {:?} doesn't freeze concrete",
             inner.typ()

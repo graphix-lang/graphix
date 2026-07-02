@@ -541,3 +541,91 @@ const SELECT_IGNORE_SORTS_FIRST: &str = r#"
 run!(select_ignore_sorts_first, SELECT_IGNORE_SORTS_FIRST, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(3.0)))
 });
+
+// The "gate stats until the window is non-empty" idiom
+// (bench/stream_stats.gx): an Array local whose defining bind is a
+// never()-gated select must thread into the downstream fold region as
+// a kernel input. The never() arm's fresh TVar gets bound by the
+// fold's own unification AFTER the select's arm-union type was built,
+// leaving Set([TVar->Array<TVar->f64>, Array<f64>]) — structurally
+// unmergeable, so the plain and normalize freezes both reject it and
+// the local was silently skipped as a region input ("undefined local
+// `w`", ~30x on the per-event stats). freeze_for_abi_normalized's
+// resolve_tvars rung collapses it. The #[native] on the fold is the
+// load-bearing assertion — program-level FuseExpect::Jit passes even
+// unfixed via the sibling regions.
+// windows (n=3): [1] -> [1,2] -> [1,2,3] -> [2,3,4]; final fold = 9.0
+const GATED_WINDOW_FOLD: &str = r#"
+{
+  let tick = array::iter([1.0, 2.0, 3.0, 4.0]);
+  let win: Array<f64> = [];
+  win <- array::window(#n: 3, tick ~ win, tick);
+  let w = select array::len(win) {
+    0 => never(),
+    _ => win
+  };
+  let total = #[native] array::fold(w, 0.0, |a, x| a + x);
+  select count(total) {
+    4 => total,
+    _ => never()
+  }
+}
+"#;
+
+run!(gated_window_fold, GATED_WINDOW_FOLD, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::F64(9.0))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// The discovery leg of the same gap: a builtin call whose ARG is a
+// never()-gated string local — the arg freeze also runs through the
+// normalized path now, so the str::len site registers and fuses.
+const GATED_STRING_BUILTIN: &str = r#"
+{
+  let tick = array::iter([1, 2, 3, 4]);
+  let acc = "";
+  acc <- tick ~ "[acc]x";
+  let s = select str::len(acc) {
+    0 => never(),
+    _ => acc
+  };
+  let l = #[native] str::len(s) * 2;
+  select count(l) {
+    4 => l,
+    _ => never()
+  }
+}
+"#;
+
+run!(gated_string_builtin, GATED_STRING_BUILTIN, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(8))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// ASPIRE: Jit (currently None) — the residue of the gate idiom: an
+// UNANNOTATED scalar gate. Arith's contains(Number, TVar) binds the
+// never-TVar to the WIDE Number set, which genuinely denotes multiple
+// register classes — no freeze can soundly pick one, and the
+// contaminated type propagates into every downstream arith result, so
+// nothing in this minimal program fuses (silently, at the return
+// gate). Annotating the let (`let m: i64 = ...`) fixes it. Pinned so
+// drift in either direction surfaces.
+const GATED_SCALAR_UNANNOTATED: &str = r#"
+{
+  let c = array::iter([1, 2, 3, 4]);
+  let m = select c {
+    0 => never(),
+    _ => c
+  };
+  let r = m * 2 + 1;
+  select count(r) {
+    4 => r,
+    _ => never()
+  }
+}
+"#;
+
+run!(gated_scalar_unannotated, GATED_SCALAR_UNANNOTATED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(9))
+); graphix_package_core::testing::FuseExpect::None);
