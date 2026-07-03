@@ -31,6 +31,7 @@
 mod exprs;
 mod funcs;
 mod patterns;
+pub mod reactive;
 mod types;
 
 pub use types::GenType;

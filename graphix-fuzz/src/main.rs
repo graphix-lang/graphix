@@ -94,7 +94,20 @@ fn read_stdin() -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    // `--reactive` selects the reactive (scheduled) generator wherever
+    // a generator is used; it's stripped before positional parsing so
+    // `generate --reactive 500 42` and `generate 500 42 --reactive`
+    // both work.
+    let mut args: Vec<String> = std::env::args().collect();
+    let reactive = args.iter().any(|a| a == "--reactive");
+    args.retain(|a| a != "--reactive");
+    let gen_one = move |rng: &mut graphix_fuzz::mutate::Rng| {
+        if reactive {
+            graphix_fuzz::generate::reactive::gen_reactive_program(rng)
+        } else {
+            graphix_fuzz::generate::gen_program(rng)
+        }
+    };
     match args.get(1).map(String::as_str) {
         Some("gen") => {
             // Debug: print N generated programs (no oracle) to eyeball the
@@ -103,7 +116,7 @@ async fn main() -> Result<()> {
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let mut rng = graphix_fuzz::mutate::Rng::new(seed);
             for _ in 0..n {
-                println!("{}", graphix_fuzz::generate::gen_program(&mut rng));
+                println!("{}\n", gen_one(&mut rng));
             }
         }
         Some("gen-check") => {
@@ -115,7 +128,7 @@ async fn main() -> Result<()> {
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let progs: Vec<String> = {
                 let mut rng = graphix_fuzz::mutate::Rng::new(seed);
-                (0..n).map(|_| graphix_fuzz::generate::gen_program(&mut rng)).collect()
+                (0..n).map(|_| gen_one(&mut rng)).collect()
             };
             let par =
                 std::thread::available_parallelism().map(|n| n.get() * 2).unwrap_or(8);
@@ -191,6 +204,102 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some("reactive-check") => {
+            // Reactive-generator health beyond compile rate: programs
+            // must QUIESCE within their trace budget (runaways are the
+            // deliberate few percent) and injection epochs must
+            // actually ADVANCE the trace (an all-quiet epoch tail is
+            // this stage's silent-loss mode — a generator that stopped
+            // wiring inputs into observable results would still
+            // compile fine). Runs each program under interp only (the
+            // health of the GENERATOR, not the differential).
+            let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
+            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let progs: Vec<String> = {
+                let mut rng = graphix_fuzz::mutate::Rng::new(seed);
+                (0..n)
+                    .map(|_| {
+                        graphix_fuzz::generate::reactive::gen_reactive_program(&mut rng)
+                    })
+                    .collect()
+            };
+            let par =
+                std::thread::available_parallelism().map(|n| n.get() * 2).unwrap_or(8);
+            let mut set: tokio::task::JoinSet<(usize, Outcome)> =
+                tokio::task::JoinSet::new();
+            let mut next = 0usize;
+            let spawn = |set: &mut tokio::task::JoinSet<_>, i: usize, p: String| {
+                set.spawn(async move {
+                    (i, graphix_fuzz::run_program(&p, Mode::Interp, TIMEOUT).await)
+                });
+            };
+            while next < progs.len() && set.len() < par {
+                spawn(&mut set, next, progs[next].clone());
+                next += 1;
+            }
+            let (mut compiled, mut quiesced, mut advanced, mut wedged) = (0, 0, 0, 0);
+            let mut rejects: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            while let Some(res) = set.join_next().await {
+                if let Ok((_, out)) = res {
+                    match out {
+                        Outcome::CompileErr(e) => {
+                            let mut key = e
+                                .lines()
+                                .rev()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            key.truncate(120);
+                            *rejects.entry(key).or_default() += 1;
+                        }
+                        Outcome::RuntimeErr(e) => {
+                            let mut key = format!("RUNTIME: {}", first_line(&e));
+                            key.truncate(120);
+                            *rejects.entry(key).or_default() += 1;
+                        }
+                        Outcome::Timeout => {
+                            compiled += 1;
+                            wedged += 1;
+                        }
+                        Outcome::Trace(t) => {
+                            compiled += 1;
+                            if !t.epochs.iter().any(|e| e.capped) {
+                                quiesced += 1;
+                            }
+                            // Injection epochs advanced iff any epoch
+                            // past the compile burst produced events.
+                            let has_inj = t.epochs.len() > 1;
+                            if !has_inj
+                                || t.epochs[1..].iter().any(|e| !e.events.is_empty())
+                            {
+                                advanced += 1;
+                            }
+                        }
+                    }
+                }
+                if next < progs.len() {
+                    spawn(&mut set, next, progs[next].clone());
+                    next += 1;
+                }
+            }
+            let pct = |x: usize| x as f64 * 100.0 / n as f64;
+            println!(
+                "reactive-check: seed={seed}: {compiled}/{n} compiled ({:.1}%), \
+                 quiesced {quiesced} ({:.1}%), epochs-advanced {advanced} ({:.1}%), \
+                 wedged {wedged}",
+                pct(compiled),
+                pct(quiesced),
+                pct(advanced),
+            );
+            let mut buckets: Vec<(usize, String)> =
+                rejects.into_iter().map(|(k, c)| (c, k)).collect();
+            buckets.sort_by(|a, b| b.0.cmp(&a.0));
+            for (count, msg) in buckets.iter().take(15) {
+                println!("  {count:>4}  {msg}");
+            }
+        }
         Some("selfcheck") => {
             // Oracle-soundness gate: per-mode trace determinism over the
             // corpus + generated programs. Must be 100% before any
@@ -260,7 +369,7 @@ async fn main() -> Result<()> {
             let stats = if cmd == "fuzz" {
                 fuzz(iters, seed, CAMPAIGN_TIMEOUT, &corpus).await
             } else {
-                generate_campaign(iters, seed, CAMPAIGN_TIMEOUT, &corpus).await
+                generate_campaign(iters, seed, CAMPAIGN_TIMEOUT, &corpus, reactive).await
             };
             // (Only reached in finite mode; `forever` runs until killed.)
             let new = corpus.len() - before;
@@ -333,8 +442,9 @@ async fn main() -> Result<()> {
         }
         _ => bail!(
             "usage: graphix-fuzz <check|run|minimize> <file>  |  \
-             graphix-fuzz <fuzz|generate> [iters] [seed]  |  \
-             graphix-fuzz gen-check [n] [seed]  |  \
+             graphix-fuzz <fuzz|generate> [iters] [seed] [--reactive]  |  \
+             graphix-fuzz <gen|gen-check> [n] [seed] [--reactive]  |  \
+             graphix-fuzz reactive-check [n] [seed]  |  \
              graphix-fuzz selfcheck [iters] [seed]  |  graphix-fuzz regress"
         ),
     }

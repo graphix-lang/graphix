@@ -572,6 +572,103 @@ pub fn mutate_program(
     Some(expr.to_string())
 }
 
+/// Wrapper-aware mutation (Phase 3): split any schedule header off
+/// FIRST — the AST round-trip drops comments, so parsing the raw
+/// wrapper would silently strip the schedule and every mutant of a
+/// reactive seed would degenerate to single-burst. The body mutates
+/// through [`mutate_program`] as before; when the seed carries a
+/// schedule, an M3 SCHEDULE op fires with its own probability —
+/// sometimes alongside a body mutation, sometimes alone (values
+/// pushed toward edges, epochs dropped/duplicated/swapped/extended).
+/// Headerless seeds behave exactly as before.
+pub fn mutate_wrapper(
+    seed: &str,
+    donor_nodes: &[Expr],
+    rng: &mut Rng,
+    max_muts: usize,
+) -> Option<String> {
+    let (mut sched, body) = crate::schedule::Schedule::parse(seed).ok()?;
+    let sched_op = !sched.epochs.is_empty() && rng.below(100) < 40;
+    let body_only_keep = sched_op && rng.below(100) < 50;
+    let new_body = if body_only_keep {
+        body.trim().to_string()
+    } else {
+        mutate_program(body, donor_nodes, rng, max_muts)?
+    };
+    if sched_op {
+        mutate_schedule(&mut sched, rng);
+    }
+    Some(sched.render(&new_body))
+}
+
+/// One M3 schedule op. Epoch structure stays valid by construction
+/// (never an empty epoch; dropping the last epoch yields the empty
+/// schedule, which renders headerless). Caps are left alone — they're
+/// the trace budgets, and shrinking them is the minimizer's business,
+/// not a bug-finding move.
+fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
+    use netidx::publisher::Value;
+    let n = s.epochs.len();
+    match rng.below(5) {
+        // Perturb one injection toward an edge value.
+        0 => {
+            let i = rng.below(n);
+            let m = s.epochs[i].len();
+            let v = &mut s.epochs[i][rng.below(m)].1;
+            *v = match &*v {
+                Value::I64(_) => Value::I64([0, 1, -1, i64::MAX, i64::MIN][rng.below(5)]),
+                Value::F64(_) => Value::F64(
+                    [
+                        0.0,
+                        -0.0,
+                        1.0,
+                        f64::NAN,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::MIN_POSITIVE,
+                    ][rng.below(7)],
+                ),
+                Value::Bool(b) => Value::Bool(!*b),
+                other => other.clone(),
+            };
+        }
+        // Drop an epoch.
+        1 => {
+            s.epochs.remove(rng.below(n));
+        }
+        // Duplicate an epoch in place (same values twice — the
+        // classic same-length-source / unchanged-selection firing
+        // provocation).
+        2 => {
+            let i = rng.below(n);
+            let ep = s.epochs[i].clone();
+            s.epochs.insert(i, ep);
+        }
+        // Swap adjacent epochs.
+        3 => {
+            if n >= 2 {
+                let i = rng.below(n - 1);
+                s.epochs.swap(i, i + 1);
+            }
+        }
+        // Append a perturbed copy of the last epoch.
+        _ => {
+            if let Some(last) = s.epochs.last().cloned() {
+                s.epochs.push(last);
+                let i = s.epochs.len() - 1;
+                let m = s.epochs[i].len();
+                let v = &mut s.epochs[i][rng.below(m)].1;
+                *v = match &*v {
+                    Value::I64(x) => Value::I64(x.wrapping_add(1)),
+                    Value::F64(x) => Value::F64(*x + 1.0),
+                    Value::Bool(b) => Value::Bool(!*b),
+                    other => other.clone(),
+                };
+            }
+        }
+    }
+}
+
 /// Build the transplant donor pool: every subtree of every seed.
 pub fn donor_pool(seeds: &[&str]) -> Vec<Expr> {
     let mut pool = Vec::new();

@@ -802,10 +802,11 @@ pub async fn fuzz(
     run_pool(corpus, iters, timeout, || {
         // Mutate a random seed; retry a few times if a mutation chain
         // didn't yield a parseable program, falling back to a raw seed
-        // (always valid) so the pool never stalls.
+        // (always valid) so the pool never stalls. `mutate_wrapper`
+        // preserves (and M3-mutates) schedule headers.
         for _ in 0..8 {
             let s = seeds[rng.below(seeds.len())];
-            if let Some(p) = mutate::mutate_program(s, &donors, &mut rng, 5) {
+            if let Some(p) = mutate::mutate_wrapper(s, &donors, &mut rng, 5) {
                 return p;
             }
         }
@@ -838,9 +839,17 @@ pub async fn generate_campaign(
     seed: u64,
     timeout: Duration,
     corpus: &std::sync::Arc<Corpus>,
+    reactive: bool,
 ) -> FuzzStats {
     let mut rng = mutate::Rng::new(seed);
-    run_pool(corpus, iters, timeout, || generate::gen_program(&mut rng)).await
+    run_pool(corpus, iters, timeout, || {
+        if reactive {
+            generate::reactive::gen_reactive_program(&mut rng)
+        } else {
+            generate::gen_program(&mut rng)
+        }
+    })
+    .await
 }
 
 /// What one pool slot concluded about a program.
