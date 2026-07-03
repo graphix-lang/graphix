@@ -22,6 +22,7 @@
 pub mod corpus;
 pub mod generate;
 pub mod mutate;
+pub mod schedule;
 pub mod trace;
 
 use ahash::AHashMap;
@@ -124,10 +125,13 @@ impl Outcome {
     }
 }
 
-/// Run `code` (a graphix expression) under `mode`, returning the
-/// per-cycle trace of everything `result` emitted (or why nothing ran).
-/// The program is wrapped as `let result = {code}` and driven to
-/// quiescence or the trace budget.
+/// Run `code` — a WRAPPER (optional `// schedule-v1:` header + graphix
+/// expression body, see [`schedule::Schedule`]) — under `mode`,
+/// returning the per-cycle trace of everything `result` emitted across
+/// every epoch (or why nothing ran). The body is wrapped as
+/// `let result = {body}`; injected inputs are declared at the compile
+/// text's top level per the D4 contract; each epoch's injections are
+/// delivered and driven to quiescence or the trace budget in turn.
 ///
 /// A fresh `ExecCtx` + in-process resolver is created per call — fusion
 /// state and the per-context JIT do not leak between runs (matching the
@@ -137,14 +141,19 @@ pub async fn run_program(code: &str, mode: Mode, timeout: Duration) -> Outcome {
     run_program_with_stats(code, mode, timeout).await.0
 }
 
-/// Compile `code` under `mode` WITHOUT driving it — `None` = compiled
-/// clean, `Some(error)` = parse/typecheck reject (or the runtime failed
-/// to init). This is `gen-check`'s primitive: the generator is
-/// type-correct by construction, so the compile-reject RATE is its
-/// health metric and each reject message is a tuning signal.
+/// Compile `code` (a wrapper, as [`run_program`]) under `mode` WITHOUT
+/// driving it — `None` = compiled clean, `Some(error)` = parse/typecheck
+/// reject (or the runtime failed to init). This is `gen-check`'s
+/// primitive: the generator is type-correct by construction, so the
+/// compile-reject RATE is its health metric and each reject message is
+/// a tuning signal.
 pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
+    let (sched, body) = match schedule::Schedule::parse(code) {
+        Ok(x) => x,
+        Err(e) => return Some(format!("schedule header: {e}")),
+    };
     let (tx, _rx) = mpsc::channel(64);
-    let wrapped = format!("let result = {code}");
+    let wrapped = format!("let result = {body}");
     let tbl = AHashMap::from_iter([(
         Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
@@ -162,7 +171,8 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
         Ok(c) => c,
         Err(e) => return Some(format!("runtime init failed: {e}")),
     };
-    let res = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await;
+    let text = format!("{}{{ mod test; test::result }}", sched.decls());
+    let res = ctx.rt.compile(ArcStr::from(text)).await;
     ctx.shutdown().await;
     match res {
         Ok(_) => None,
@@ -184,8 +194,20 @@ pub async fn run_program_with_stats(
     mode: Mode,
     timeout: Duration,
 ) -> (Outcome, FusionStats) {
+    // A malformed schedule header is a COMPILE-class reject in every
+    // mode (agreement) — a generator/minimizer bug surfaces in
+    // gen-check, never as a phantom divergence.
+    let (sched, body) = match schedule::Schedule::parse(code) {
+        Ok(x) => x,
+        Err(e) => {
+            return (
+                Outcome::CompileErr(format!("schedule header: {e}")),
+                FusionStats::default(),
+            );
+        }
+    };
     let (tx, mut rx) = mpsc::channel(64);
-    let wrapped = format!("let result = {code}");
+    let wrapped = format!("let result = {body}");
     let tbl = AHashMap::from_iter([(
         Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
@@ -209,7 +231,7 @@ pub async fn run_program_with_stats(
         }
     };
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let outcome = drive(&ctx, &mut rx, timeout).await;
+    let outcome = drive(&ctx, &mut rx, &sched, timeout).await;
     // A Timeout means the evaluator may be WEDGED in sync code (a
     // runaway native loop, a huge node-walk loop) — a wedged runtime
     // never answers another request, so an un-timeouted await here
@@ -236,33 +258,14 @@ pub async fn run_program_with_stats(
 async fn drive(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
+    sched: &schedule::Schedule,
     timeout: Duration,
 ) -> Outcome {
-    // Tracing is armed BEFORE the compile (ToGX messages are FIFO), so
-    // a value emitted during the compile cycle is in the trace — there
-    // is no "already emitted before the watch registered" race, and no
-    // event-stream fallback. The runtime-side `Compiled` marker anchors
-    // epoch 0.
-    if let Err(e) = ctx.rt.trace_start(trace::MAX_EVENTS, trace::MAX_CYCLES) {
-        return Outcome::RuntimeErr(format!("trace_start: {e}"));
-    }
-    let compile = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }"));
-    let compiled = match tokio::time::timeout(timeout, compile).await {
-        // A compile-time hang (typechecker/fusion pathology) must not
-        // wedge an in-process campaign task.
-        Err(_) => return Outcome::Timeout,
-        Ok(Err(e)) => return Outcome::CompileErr(format!("{e}")),
-        Ok(Ok(c)) => c,
-    };
-    let eid = compiled.exprs[0].id;
-    // The wait resolves at quiescence (a bottom program resolves
-    // instantly with an empty trace — no timeout sleep) or when the
-    // trace budget trips (a runaway is cut deterministically). The
-    // event subscription is drained-and-discarded concurrently so a
-    // chatty program can't fill the channel and stall the runtime;
-    // `timeout` is a wall-clock backstop for a wedged evaluator only.
-    let wait = ctx.rt.trace_wait_idle();
-    tokio::pin!(wait);
+    // The whole multi-epoch drive shares one wall-clock deadline (a
+    // backstop for a wedged evaluator only — quiescence and the trace
+    // budgets are the real bounds) and one concurrent drain of the
+    // event subscription so a chatty program can't fill the channel
+    // and stall the runtime.
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
     let drain = async {
@@ -270,15 +273,68 @@ async fn drive(
         future::pending::<()>().await
     };
     tokio::pin!(drain);
-    tokio::select! {
-        biased;
-        r = &mut wait => match r {
-            Ok(seg) => Outcome::Trace(trace::Trace::from_segments(&[seg], eid)),
-            Err(e) => Outcome::RuntimeErr(format!("trace_wait_idle: {e}")),
-        },
-        _ = &mut drain => unreachable!(),
-        _ = &mut deadline => Outcome::Timeout,
+    macro_rules! bounded {
+        ($fut:expr, $on_ok:pat => $ok:expr, $on_err:pat => $err:expr) => {{
+            let f = $fut;
+            tokio::pin!(f);
+            tokio::select! {
+                biased;
+                r = &mut f => match r { $on_ok => $ok, $on_err => $err },
+                _ = &mut drain => unreachable!(),
+                _ = &mut deadline => return Outcome::Timeout,
+            }
+        }};
     }
+    // Tracing is armed BEFORE the compile (ToGX messages are FIFO), so
+    // a value emitted during the compile cycle is in the trace — there
+    // is no "already emitted before the watch registered" race, and no
+    // event-stream fallback. The runtime-side `Compiled` marker anchors
+    // epoch 0; an input ref's own echo anchors each injection epoch.
+    // Budgets are schedule DATA: identical in every mode, so a cap
+    // mismatch is a real divergence.
+    if let Err(e) = ctx.rt.trace_start(sched.max_events, sched.max_cycles) {
+        return Outcome::RuntimeErr(format!("trace_start: {e}"));
+    }
+    // Injected-input decls sit at the compile text's TOP LEVEL (the D4
+    // contract; see `schedule::Schedule::decls`), before the module
+    // wrap, where `compile_ref_by_name` can reach them from root.
+    let text = format!("{}{{ mod test; test::result }}", sched.decls());
+    let compiled = bounded!(
+        ctx.rt.compile(ArcStr::from(text)),
+        Ok(c) => c,
+        Err(e) => return Outcome::CompileErr(format!("{e}"))
+    );
+    let eid = compiled.exprs.last().expect("compile returned no exprs").id;
+    let mut segs = Vec::with_capacity(1 + sched.epochs.len());
+    segs.push(bounded!(
+        ctx.rt.trace_wait_idle(),
+        Ok(s) => s,
+        Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
+    ));
+    let mut refs: AHashMap<&str, graphix_rt::Ref<NoExt>> = AHashMap::new();
+    for ep in &sched.epochs {
+        for (name, v) in ep {
+            if !refs.contains_key(name.as_str()) {
+                let scope = graphix_compiler::Scope::root();
+                let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
+                let r = bounded!(
+                    ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
+                    Ok(r) => r,
+                    Err(e) => return Outcome::RuntimeErr(format!("input {name}: {e}"))
+                );
+                refs.insert(name.as_str(), r);
+            }
+            if let Err(e) = refs.get_mut(name.as_str()).unwrap().set(v.clone()) {
+                return Outcome::RuntimeErr(format!("set {name}: {e}"));
+            }
+        }
+        segs.push(bounded!(
+            ctx.rt.trace_wait_idle(),
+            Ok(s) => s,
+            Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
+        ));
+    }
+    Outcome::Trace(trace::Trace::from_segments(&segs, eid))
 }
 
 /// A detected disagreement between the reference (interp = node-walk)
@@ -339,24 +395,53 @@ fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
     (d.bisect(), d.interp.kind(), d.jit.kind(), td)
 }
 
-/// Hierarchical delta-debugging on the typed AST: repeatedly try to
-/// replace a subtree with one of its children (hoist) or a minimal
-/// constant, keeping any reduction that still parses, still typechecks,
-/// and reproduces the SAME divergence bucket. Returns the minimized
-/// program and the number of oracle checks spent (capped by `budget`).
-/// Accepts partial minima — a smaller-but-not-minimal repro still beats
-/// the raw mutant.
+/// Minimize a diverging WRAPPER, schedule first, then hierarchical
+/// delta-debugging on the body's typed AST. The header is split off
+/// BEFORE `mutate::parse` and reattached around every candidate — the
+/// AST round-trip drops comments, so parsing the raw wrapper would
+/// silently strip the schedule and morph a reactive bug into a
+/// single-burst one. Schedule reductions run first and cheapest-win:
+/// drop the whole schedule, drop epochs (trailing, then each), drop
+/// injections within an epoch, simplify literals toward 0/1. Caps stay
+/// FIXED (they're the trace budgets both modes ran under; changing
+/// them mid-minimize changes what "the same bug" means). Then the body
+/// shrinks by subtree hoist / constant replacement, keeping any
+/// reduction that still parses and reproduces the SAME divergence
+/// bucket. Returns the minimized wrapper and the number of oracle
+/// checks spent (capped by `budget`). Accepts partial minima.
 pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, usize) {
     let d0 = match check(code, timeout).await {
         Some(d) => d,
         None => return (code.to_string(), 1),
     };
     let target = bucket(&d0);
-    let mut current = match mutate::parse(code) {
+    let Ok((mut sched, body)) = schedule::Schedule::parse(code) else {
+        return (code.to_string(), 1);
+    };
+    let mut current = match mutate::parse(body) {
         Some(e) => e,
         None => return (code.to_string(), 1),
     };
     let mut calls = 1;
+    // Phase 1 — schedule reductions.
+    'sched: while calls < budget {
+        let body_text = current.to_string();
+        for cand in schedule_reductions(&sched) {
+            if calls >= budget {
+                break 'sched;
+            }
+            calls += 1;
+            if let Some(d) = check(&cand.render(&body_text), timeout).await {
+                if bucket(&d) == target {
+                    sched = cand;
+                    continue 'sched; // restart from the smaller schedule
+                }
+            }
+        }
+        break;
+    }
+    // Phase 2 — body AST HDD, every candidate re-wrapped in the
+    // (now minimal) schedule.
     loop {
         let n = mutate::node_count(&current);
         let cur_text = current.to_string();
@@ -371,7 +456,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                     continue;
                 }
                 calls += 1;
-                if let Some(d) = check(&cand, timeout).await {
+                if let Some(d) = check(&sched.render(&cand), timeout).await {
                     if bucket(&d) == target {
                         if let Some(e) = mutate::parse(&cand) {
                             current = e;
@@ -386,7 +471,58 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
             break;
         }
     }
-    (current.to_string(), calls)
+    (sched.render(&current.to_string()), calls)
+}
+
+/// The schedule-shrink candidates for one greedy round, most
+/// aggressive first. Caps are never touched.
+fn schedule_reductions(s: &schedule::Schedule) -> Vec<schedule::Schedule> {
+    let mut out = Vec::new();
+    if !s.epochs.is_empty() {
+        // Drop everything (also resets caps to default — the whole
+        // header disappears if the body alone reproduces).
+        out.push(schedule::Schedule::default());
+        // Drop the trailing epoch, then each single epoch.
+        let mut t = s.clone();
+        t.epochs.pop();
+        out.push(t);
+        if s.epochs.len() > 1 {
+            for i in 0..s.epochs.len() - 1 {
+                let mut t = s.clone();
+                t.epochs.remove(i);
+                out.push(t);
+            }
+        }
+        // Drop single injections (keeping each epoch non-empty).
+        for (i, ep) in s.epochs.iter().enumerate() {
+            if ep.len() > 1 {
+                for j in 0..ep.len() {
+                    let mut t = s.clone();
+                    t.epochs[i].remove(j);
+                    out.push(t);
+                }
+            }
+        }
+        // Simplify literals toward 0 then 1.
+        for (i, ep) in s.epochs.iter().enumerate() {
+            for (j, (_, v)) in ep.iter().enumerate() {
+                let simpler: &[Value] = match v {
+                    Value::I64(_) => &[Value::I64(0), Value::I64(1)],
+                    Value::F64(_) => &[Value::F64(0.0), Value::F64(1.0)],
+                    Value::Bool(_) => &[Value::Bool(false)],
+                    _ => &[],
+                };
+                for sv in simpler {
+                    if sv != v {
+                        let mut t = s.clone();
+                        t.epochs[i][j].1 = sv.clone();
+                        out.push(t);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Run the embedded regression corpus (every saved finding under
@@ -1997,6 +2133,27 @@ mod tests {
         // The live coverage number — visible in every `--nocapture`
         // run, no instrumentation ritual required.
         eprintln!("sweep: {fused} regions fused across 120 programs");
+    }
+
+    /// Every scheduled hand seed (Phase 3.1) agrees across modes at
+    /// trace strength — the injection driver's permanent gate: the
+    /// D4 contract, per-epoch anchoring, the connect lifts
+    /// (scalar/array/string/struct), cross-cycle builtins over
+    /// injected streams, and cap determinism under schedules.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn scheduled_seed_sweep() {
+        let t = Duration::from_secs(10);
+        for seed in corpus::all_seeds() {
+            if !seed.starts_with(schedule::HEADER_PREFIX) {
+                continue;
+            }
+            if let Some(d) = check(seed, t).await {
+                panic!(
+                    "scheduled seed diverges:\n{seed}\n  interp={:?}\n  jit={:?}",
+                    d.interp, d.jit
+                );
+            }
+        }
     }
 }
 

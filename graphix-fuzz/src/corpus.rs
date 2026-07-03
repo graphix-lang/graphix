@@ -88,4 +88,39 @@ pub const SEEDS: &[&str] = &[
     "{ let rec fib = |n: i64| -> i64 select n { i64:0 => i64:0, i64:1 => i64:1, _ => fib(n - i64:1) + fib(n - i64:2) }; fib(i64:12) }",
     "{ let k = i64:3; let rec f = |n: i64| -> i64 select n { i64:0 => k, _ => f(n - i64:1) }; f(i64:5) }",
     "{ let f = |x: i64| -> i64 x + i64:1; let f = |n: i64| -> i64 f(n) * i64:2; f(i64:3) }",
+    // ── Scheduled reactive seeds (Phase 3.1) — hand-written shapes
+    // exercising the injection driver + the multi-epoch trace oracle
+    // before reactive GENERATION lands. Each is a wrapper: a
+    // `// schedule-v1:` header + body referencing driver-declared
+    // root inputs (the D4 contract). Deterministic (no rand/IO) so
+    // they're selfcheck subjects too.
+    // Scalar accumulator through the connect lift.
+    "// schedule-v1: cap=64 events=512; in0=i64:21; in0=i64:5\n{ let acc = i64:0; acc <- in0 ~ (acc + in0); acc }",
+    // Array accumulator (composite lift) — the sliding-window idiom.
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\n{ let data: Array<i64> = []; data <- in0 ~ array::push(data, in0); data }",
+    // String accumulator (string lift, interpolation per epoch).
+    "// schedule-v1: cap=64 events=512; in0=i64:7; in0=i64:8\n{ let s = \"\"; s <- in0 ~ \"[s][in0]\"; s }",
+    // Struct accumulator (StructWith lift).
+    "// schedule-v1: cap=64 events=512; in0=i64:10; in0=i64:20\n{ let st = { n: i64:0, last: i64:0 }; st <- in0 ~ { st with n: st.n + i64:1, last: in0 }; st.n * i64:100 + st.last }",
+    // Cross-cycle builtins over an injected source: count / sum / uniq.
+    "// schedule-v1: cap=64 events=512; in0=i64:4; in0=i64:4; in0=i64:9\ncount(in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:4; in0=i64:4; in0=i64:9\nsum(in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:4; in0=i64:4; in0=i64:9\nuniq(in0)",
+    // once / take / skip / filter over the injected stream.
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\nonce(in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\ntake(i64:2, in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\nskip(i64:2, in0)",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:6; in0=i64:3\nfilter(|x: i64| x > i64:2, in0)",
+    // Injection-driven guarded select (the selection-memory shape).
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:4\nselect i64:0 { i64:0 if in0 % i64:2 == i64:0 => i64:1, _ => i64:2 }",
+    // Injection feeding a HOF over a rebuilt array (prev-len shape).
+    "// schedule-v1: cap=64 events=512; in0=i64:5; in0=i64:5; in0=i64:6\narray::map([in0], |x: i64| x * i64:2)",
+    // Two inputs, mixed types, simultaneous + separate epochs.
+    "// schedule-v1: cap=64 events=512; in0=i64:2 in1=f64:1.5; in1=f64:2.5; in0=i64:3\ncast<f64>(in0)$ * in1",
+    // A bounded self-clocked counter (no injections needed to move,
+    // quiesces by construction at 5).
+    "// schedule-v1: cap=64 events=512; in0=i64:1\n{ let c = i64:0; select c { n if n < i64:5 => c <- (n ~ c) + i64:1, _ => never() }; c + (in0 * i64:0) }",
+    // A deliberate runaway cut by a small cycle budget (cap
+    // determinism under schedules).
+    "// schedule-v1: cap=16 events=128; in0=i64:1\n{ let x = i64:0; x <- x + i64:1; x + (in0 * i64:0) }",
 ];
