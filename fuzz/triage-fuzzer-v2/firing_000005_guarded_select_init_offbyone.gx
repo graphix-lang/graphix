@@ -11,6 +11,10 @@
 // status: OPEN — revisit at trace-oracle calibration. Exactness may
 //   need cross-invocation selection state (the node-walk emits on a
 //   guard-only event only when the SELECTION changes).
+// trace-oracle confirmation (2026-07-03, calibration): the oracle now
+//   flags this directly — interp Trace([4:i64:4]) vs jit
+//   Trace([4:i64:5]). Candidate fix shares a mechanism with
+//   firing_000007: per-kernel-instance state (a state wire slot).
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x % 2;

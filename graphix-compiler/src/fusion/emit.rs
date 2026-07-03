@@ -115,9 +115,9 @@ impl JitCtx {
     pub fn new() -> Result<Self> {
         let mut flag_builder = settings::builder();
         // Speed > size on the assumption that a JIT'd kernel is hot
-        // by definition. PIC off (we stay in-process), no colocated
-        // libcalls (we don't need any libm helpers for the v1
-        // op set).
+        // by definition. PIC off (cranelift-jit requires it), no
+        // colocated libcalls (we don't need any libm helpers for the
+        // v1 op set).
         flag_builder.set("opt_level", "speed").context("set opt_level")?;
         flag_builder
             .set("use_colocated_libcalls", "false")
@@ -129,6 +129,27 @@ impl JitCtx {
             .finish(settings::Flags::new(flag_builder))
             .context("isa_builder.finish")?;
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+        // One contiguous up-front reservation for ALL of this module's
+        // code and data, instead of the default provider's scattered
+        // per-chunk mmaps. This is CORRECTNESS, not tuning: intra-module
+        // calls (wrapper→kernel, cross-kernel) are colocated
+        // (Linkage::Local), which lowers to a ±2GiB PC-relative
+        // relocation that cranelift-jit applies with
+        // `i32::try_from(dist).unwrap()` — with scattered chunks, two
+        // functions can land >2GiB apart and finalize PANICS, killing
+        // the runtime (the fuzzer's in-process selfcheck, ~100
+        // concurrent JIT contexts, hit this reliably; an unlucky
+        // single-runtime mmap layout can too). Host-helper calls were
+        // never at risk (Linkage::Import lowers to movabs/Abs8). The
+        // arena is a PROT_NONE reservation — real memory is committed
+        // page-by-page as kernels are emitted — and exhausting it is a
+        // clean error ("jit memory region exhausted") that de-fuses the
+        // region onto the node-walk rather than a crash.
+        const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
+        builder.memory_provider(Box::new(
+            cranelift_jit::ArenaMemoryProvider::new_with_size(JIT_ARENA_RESERVE)
+                .map_err(|e| anyhow!("jit arena reservation failed: {e}"))?,
+        ));
         // Make the emit_helpers entry points resolvable from JIT'd
         // code. Each one is `#[no_mangle] extern "C"`, registered
         // here under the same symbol name we use in `declare_function`.

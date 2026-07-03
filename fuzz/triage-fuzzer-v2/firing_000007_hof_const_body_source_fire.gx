@@ -13,6 +13,12 @@
 //   prefix), so suppressing source-only fires without knowing the prior
 //   length would under-fire there (wrong values). Revisit at trace-
 //   oracle calibration; candidate: wrapper-level length memory.
+// trace-oracle confirmation (2026-07-03, calibration): the raw shape
+//   (no count instrumentation — `array::map([y], |x| 7)` over an
+//   array::iter feeder) now diverges directly as ExtraFire: interp
+//   Trace([1:[i64:7]]) vs jit Trace([1:[i64:7] 2:[i64:7] 3:[i64:7]
+//   4:[i64:7]]). Candidate fix shares a mechanism with firing_000005:
+//   per-kernel-instance state (a state wire slot holding prev length).
 {
   let y = array::iter([1, 2, 3, 4]);
   let src = [y];

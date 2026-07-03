@@ -210,16 +210,26 @@ pub async fn run_program_with_stats(
     };
     let base = ctx.fusion_stats().await.unwrap_or_default();
     let outcome = drive(&ctx, &mut rx, timeout).await;
-    let stats = match ctx.fusion_stats().await {
-        Ok(mut s) => {
+    // A Timeout means the evaluator may be WEDGED in sync code (a
+    // runaway native loop, a huge node-walk loop) — a wedged runtime
+    // never answers another request, so an un-timeouted await here
+    // deadlocks the whole (in-process) campaign task. Abort first
+    // (breaks a cooperative loop via the sticky flag), then never
+    // await the runtime without a deadline.
+    if matches!(outcome, Outcome::Timeout) {
+        ctx.rt.abort();
+    }
+    let grace = Duration::from_secs(2);
+    let stats = match tokio::time::timeout(grace, ctx.fusion_stats()).await {
+        Ok(Ok(mut s)) => {
             s.attempted -= base.attempted;
             s.fused -= base.fused;
             s.failed.drain(..base.failed.len());
             s
         }
-        Err(_) => FusionStats::default(),
+        Ok(Err(_)) | Err(_) => FusionStats::default(),
     };
-    ctx.shutdown().await;
+    let _ = tokio::time::timeout(grace, ctx.shutdown()).await;
     (outcome, stats)
 }
 
@@ -236,11 +246,14 @@ async fn drive(
     if let Err(e) = ctx.rt.trace_start(trace::MAX_EVENTS, trace::MAX_CYCLES) {
         return Outcome::RuntimeErr(format!("trace_start: {e}"));
     }
-    let compiled =
-        match ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await {
-            Ok(c) => c,
-            Err(e) => return Outcome::CompileErr(format!("{e}")),
-        };
+    let compile = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }"));
+    let compiled = match tokio::time::timeout(timeout, compile).await {
+        // A compile-time hang (typechecker/fusion pathology) must not
+        // wedge an in-process campaign task.
+        Err(_) => return Outcome::Timeout,
+        Ok(Err(e)) => return Outcome::CompileErr(format!("{e}")),
+        Ok(Ok(c)) => c,
+    };
     let eid = compiled.exprs[0].id;
     // The wait resolves at quiescence (a bottom program resolves
     // instantly with an empty trace — no timeout sleep) or when the
@@ -469,6 +482,11 @@ pub async fn selfcheck(
     let mut done = 0usize;
     while let Some(res) = set.join_next().await {
         if let Ok(mut bad) = res {
+            // Stream each finding as it lands — a killed or wedged run
+            // must not take the collected list with it.
+            for (prog, mode) in &bad {
+                eprintln!("FLAKY under {mode}: {}", prog.replace('\n', "\\n"));
+            }
             flaky.append(&mut bad);
         }
         done += 1;
