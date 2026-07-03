@@ -156,14 +156,17 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // Err (abort the kernel), never Ok(None).
         // #219: no runtime abort anywhere — a tainted SOURCE is the
         // helper-safe empty placeholder (zero iterations) and a tainted
-        // body SLOT is a pushed placeholder; both taint the RESULT (the
-        // scaffold's SlotTaint + inherit_hof_firing's source-taint OR),
-        // never the kernel.
+        // body SLOT is a pushed placeholder; both taint the RESULT via
+        // the scaffold's SlotFlags, never the kernel. SlotFlags also
+        // carries FIRING: the result fires iff the source fired or any
+        // slot body fired (MapQ's slot-driven aggregation), replacing
+        // the static-refs capture walk that over-fired on captures read
+        // only by sleeping select arms.
         let arr = array_arg.emit_clif(cx)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr.payload, owned },
+            scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -174,18 +177,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, taint)| {
+        .map(|(v, flags)| {
             let r = emit::array_result(cx, v);
-            let r = taint.apply(cx, r);
-            Some(emit::inherit_hof_firing(
-                cx,
-                r,
-                arr.disc,
-                &[body],
-                elem_id,
-                elem_binds,
-                None,
-            ))
+            Some(flags.apply(cx, r, &[arr.disc]))
         })
     }
 }
@@ -269,7 +263,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_filter_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr.payload, owned },
+            scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -278,18 +272,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
             },
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, taint)| {
+        .map(|(v, flags)| {
             let r = emit::array_result(cx, v);
-            let r = taint.apply(cx, r);
-            Some(emit::inherit_hof_firing(
-                cx,
-                r,
-                arr.disc,
-                &[body],
-                elem_id,
-                elem_binds,
-                None,
-            ))
+            Some(flags.apply(cx, r, &[arr.disc]))
         })
     }
 }
@@ -375,7 +360,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         let body_src = emit::node_composite_source(body);
         scaffold::emit_flat_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr.payload, owned },
+            scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -388,18 +373,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                 Ok(CompiledExpr::new(cv.disc, p))
             },
         )
-        .map(|(v, taint)| {
+        .map(|(v, flags)| {
             let r = emit::array_result(cx, v);
-            let r = taint.apply(cx, r);
-            Some(emit::inherit_hof_firing(
-                cx,
-                r,
-                arr.disc,
-                &[body],
-                elem_id,
-                elem_binds,
-                None,
-            ))
+            Some(flags.apply(cx, r, &[arr.disc]))
         })
     }
 }
@@ -472,25 +448,16 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_filter_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr.payload, owned },
+            scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
             in_prim,
             elem_name,
             elem_id,
             out_prim,
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, taint)| {
+        .map(|(v, flags)| {
             let r = emit::array_result(cx, v);
-            let r = taint.apply(cx, r);
-            Some(emit::inherit_hof_firing(
-                cx,
-                r,
-                arr.disc,
-                &[body],
-                elem_id,
-                elem_binds,
-                None,
-            ))
+            Some(flags.apply(cx, r, &[arr.disc]))
         })
     }
 }
@@ -581,7 +548,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_find_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr.payload, owned },
+            scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -590,18 +557,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
             },
             |cx| body.emit_clif(cx),
         )
-        .map(|((disc, payload), taint)| {
+        .map(|((disc, payload), flags)| {
             let r = CompiledExpr::new(disc, payload);
-            let r = taint.apply(cx, r);
-            Some(emit::inherit_hof_firing(
-                cx,
-                r,
-                arr.disc,
-                &[body],
-                elem_id,
-                elem_binds,
-                None,
-            ))
+            Some(flags.apply(cx, r, &[arr.disc]))
         })
     }
 }
@@ -686,9 +644,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         // all-slots-complete rule.
         let arr = array_arg.emit_clif(cx)?;
         let body_src = emit::node_composite_source(body);
-        let ((disc, payload), taint) = scaffold::emit_find_map_loop(
+        let ((disc, payload), flags) = scaffold::emit_find_map_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr.payload, owned },
+            scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
             &scaffold::HofElem {
                 name: elem_name,
                 id: elem_id,
@@ -701,16 +659,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
             },
         )?;
         let r = CompiledExpr::new(disc, payload);
-        let r = taint.apply(cx, r);
-        Ok(Some(emit::inherit_hof_firing(
-            cx,
-            r,
-            arr.disc,
-            &[body],
-            elem_id,
-            elem_binds,
-            None,
-        )))
+        Ok(Some(flags.apply(cx, r, &[arr.disc])))
     }
 }
 
@@ -794,15 +743,15 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         //
         // #219: neither the source nor the init/body abort on taint.
         // A tainted source is the helper-safe empty placeholder (zero
-        // iterations) and `inherit_hof_firing` taints the result; the
-        // init/body taint is LOOP-CARRIED in the accumulator's disc —
+        // iterations) and SlotFlags taints the result; the init/body
+        // taint is LOOP-CARRIED in the accumulator's disc —
         // the node-walk's per-slot dataflow bottoms the fold only
         // while the callback CONSUMES the bottom acc (`|acc, x| x`
         // recovers on the first slot).
         let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_fold_loop(
             cx,
-            scaffold::ArraySrc { ptr: arr.payload, owned },
+            scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
             acc_prim,
             acc_name,
             acc_id,
@@ -815,17 +764,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
             |cx| init_arg.emit_clif(cx),
             |cx| body.emit_clif(cx),
         )
-        .map(|r| {
-            Some(emit::inherit_hof_firing(
-                cx,
-                r,
-                arr.disc,
-                &[body, init_arg],
-                elem_id,
-                elem_binds,
-                acc_id,
-            ))
-        })
+        .map(|(r, flags)| Some(flags.apply(cx, r, &[arr.disc])))
     }
 }
 
@@ -1800,14 +1739,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
         // #219: a tainted COUNT is the zero placeholder (empty result)
-        // and taints the result via inherit_hof_firing's source-taint
-        // OR (the count is this HOF's "source"); a tainted body slot
-        // rides the scaffold's SlotTaint. No kernel abort.
+        // and taints the result via SlotFlags::apply (the count is this
+        // HOF's "source"); a tainted body slot rides the accumulator.
+        // No kernel abort.
         let n = n_node.emit_clif(cx)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_init_loop(
             cx,
             n.payload,
+            n.disc,
             n_prim,
             &idx_name,
             idx_id,
@@ -1815,10 +1755,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, taint)| {
+        .map(|(v, flags)| {
             let r = emit::array_result(cx, v);
-            let r = taint.apply(cx, r);
-            Some(emit::inherit_hof_firing(cx, r, n.disc, &[body], idx_id, &[], None))
+            Some(flags.apply(cx, r, &[n.disc]))
         })
     }
 }

@@ -2392,8 +2392,7 @@ pub fn scalar_result(
 /// Like [`emit_forced`] but returns the whole [`CompiledExpr`] (disc +
 /// payload) rather than just the payload. The abort guarantees the
 /// continue path is reached only when [`TAINT`] is clear, so the returned
-/// disc carries just the operand's [`STALE`] bit — a caller reads it to
-/// propagate the operand's firing (see [`inherit_hof_firing`]).
+/// disc carries just the operand's [`STALE`] bit.
 pub fn emit_forced_keep<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
@@ -2402,67 +2401,6 @@ pub fn emit_forced_keep<R: Rt, E: UserEvent>(
     let valid = is_untainted(cx.b, cv.disc);
     emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
     Ok(cv)
-}
-
-/// Set an HOF result's firing (`STALE`) to match the node-walk: an
-/// `array::map`/`fold`/… fires this cycle iff its SOURCE array fired OR
-/// any feeder its callback body CAPTURES fired (the node-walk drives the
-/// per-slot callbacks, so a captured `x` firing re-fires the HOF). We
-/// AND-reduce (`propagate_stale`) the source disc's STALE with the STALE
-/// of every EXTERNAL ref the body reads that resolves to a kernel-visible
-/// local (a capture / outer let / feeder), skipping the callback's own
-/// element / accumulator binds (`elem_id`, `elem_binds`, `extra`) — those
-/// are source-derived or loop-carried, already covered by the source.
-/// `result` starts fresh, so its STALE becomes the AND of those inputs;
-/// a constant capture contributes STALE=1 (AND identity, harmless).
-///
-/// Without this an HOF over an ALL-CONSTANT input stays fresh forever, so
-/// a self-`connect` fed by it busy-spins (the constant is STALE after
-/// init but the result never went stale); with ONLY the source a
-/// capture-bearing HOF (`|e| e + x`) under-fires when `x` alone fires.
-pub fn inherit_hof_firing<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    mut result: CompiledExpr,
-    source_disc: ClifValue,
-    bodies: &[&Node<R, E>],
-    elem_id: Option<BindId>,
-    elem_binds: &[(BindId, usize)],
-    extra: Option<BindId>,
-) -> CompiledExpr {
-    let is_own = |id: BindId| {
-        elem_id == Some(id)
-            || extra == Some(id)
-            || elem_binds.iter().any(|(b, _)| *b == id)
-    };
-    // Union the external refs of every firing input node (the callback
-    // body, plus `fold`'s init) — a feeder read by any of them re-fires
-    // the HOF.
-    let mut cap_ids: Vec<BindId> = Vec::new();
-    for node in bodies {
-        let mut refs = crate::Refs::default();
-        node.refs(&mut refs);
-        refs.with_external_refs(|id| {
-            if !is_own(id) && !cap_ids.contains(&id) {
-                cap_ids.push(id);
-            }
-        });
-    }
-    let mut stale_srcs = Vec::with_capacity(cap_ids.len() + 1);
-    stale_srcs.push(source_disc);
-    for id in cap_ids {
-        // Copy the Variable out (Copy) before touching `cx.b`, so the
-        // env borrow ends before the mutable-builder borrow.
-        if let Some(dv) = cx.env.lookup_by_id(id).map(|l| l.vv.disc) {
-            stale_srcs.push(cx.b.use_var(dv));
-        }
-    }
-    // A tainted (bottom) SOURCE array taints the result too — the loop
-    // ran over the helper-safe empty placeholder, so the value is
-    // garbage the consumer must never see. A no-op for callers that
-    // still runtime-abort on source taint (their disc is clean here).
-    result.disc = propagate_taint(cx.b, result.disc, &[source_disc]);
-    result.disc = propagate_stale(cx.b, result.disc, &stale_srcs);
-    result
 }
 
 /// Bind an EXISTING scalar Variable as a local (a loop counter /

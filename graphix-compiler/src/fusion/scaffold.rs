@@ -34,6 +34,11 @@ use super::*;
 /// array passes `owned: false`.
 pub struct ArraySrc {
     pub ptr: ClifValue,
+    /// The source expression's full disc — its STALE bit is "the source
+    /// fired this invocation" (inherited by the bound elements, so slot
+    /// bodies fire with their elements) and its TAINT bit rides into
+    /// the result.
+    pub disc: ClifValue,
     pub owned: bool,
 }
 
@@ -119,8 +124,18 @@ pub(crate) enum BoundElem {
 /// shape errs — lowering never produces string / value-shape loop
 /// elements (the #150 gap), and an explicit refusal turns would-be
 /// type confusion on unreachable input into a clean de-fuse.
+/// Fold the SOURCE's STALE bit onto a synthesized element/leaf disc:
+/// an element "fires" exactly when its source array fired, so slot
+/// bodies that consume the element fire with the source — and stay
+/// quiet on capture-only cycles (the sleeping-select-arm class).
+fn elem_disc(cx: &mut BodyCx, base: ClifValue, src_disc: ClifValue) -> ClifValue {
+    let sb = cx.b.ins().band_imm(src_disc, STALE);
+    cx.b.ins().bor(base, sb)
+}
+
 fn bind_elem(
     cx: &mut BodyCx,
+    src_disc: ClifValue,
     arr_ptr: ClifValue,
     i_now: ClifValue,
     elem: &HofElem,
@@ -139,6 +154,7 @@ fn bind_elem(
             // The element of a valid array is untainted (a tainted source
             // array bottoms the whole HOF separately).
             let disc = scalar_disc(cx.b, prim);
+            let disc = elem_disc(cx, disc, src_disc);
             let var = cx.b.declare_var(prim_to_clif(prim));
             cx.b.def_var(var, elem_val);
             let dv = cx.b.declare_var(types::I64);
@@ -156,6 +172,7 @@ fn bind_elem(
             let call = cx.b.ins().call(get_helper, &[arr_ptr, i_now]);
             let elem_ptr = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            let disc = elem_disc(cx, disc, src_disc);
             let var = cx.b.declare_var(types::I64);
             cx.b.def_var(var, elem_ptr);
             let dv = cx.b.declare_var(types::I64);
@@ -185,6 +202,7 @@ fn bind_elem(
                         let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
                         let v = cx.b.inst_results(call)[0];
                         let d = scalar_disc(cx.b, *prim);
+                        let d = elem_disc(cx, d, src_disc);
                         bind_local(cx, name, d, v, LocalKind::Scalar(*prim), Some(*id));
                     }
                     LeafShape::Composite => {
@@ -192,6 +210,7 @@ fn bind_elem(
                         let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
                         let p = cx.b.inst_results(call)[0];
                         let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+                        let d = elem_disc(cx, d, src_disc);
                         let vv =
                             bind_local(cx, name, d, p, LocalKind::Composite, Some(*id));
                         owned_leaves.push(BoundElem::Composite { var: vv.payload });
@@ -201,6 +220,7 @@ fn bind_elem(
                         let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
                         let s = cx.b.inst_results(call)[0];
                         let d = cx.b.ins().iconst(types::I64, value_disc::STRING);
+                        let d = elem_disc(cx, d, src_disc);
                         let vv = bind_local(cx, name, d, s, LocalKind::String, Some(*id));
                         owned_leaves.push(BoundElem::String { var: vv.payload });
                     }
@@ -211,6 +231,7 @@ fn bind_elem(
                             let r = cx.b.inst_results(call);
                             (r[0], r[1])
                         };
+                        let d = elem_disc(cx, d, src_disc);
                         let kind = match vk {
                             ValueLeafKind::Variant => LocalKind::Variant,
                             ValueLeafKind::Nullable => LocalKind::Nullable,
@@ -241,6 +262,7 @@ fn bind_elem(
             let call = cx.b.ins().call(get, &[arr_ptr, i_now]);
             let bits = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            let disc = elem_disc(cx, disc, src_disc);
             let var = cx.b.declare_var(types::I64);
             cx.b.def_var(var, bits);
             let dv = cx.b.declare_var(types::I64);
@@ -268,6 +290,7 @@ fn bind_elem(
                 let r = cx.b.inst_results(call);
                 (r[0], r[1])
             };
+            let d = elem_disc(cx, d, src_disc);
             let disc = cx.b.declare_var(types::I64);
             cx.b.def_var(disc, d);
             let payload = cx.b.declare_var(types::I64);
@@ -507,7 +530,7 @@ pub fn push_field(
     };
     let push = cx.helper(helper_name)?;
     // A tainted slot does NOT abort the kernel — the caller accumulates
-    // it (SlotTaint) into the HOF's RESULT disc (#219). Pushing the
+    // it (SlotFlags) into the HOF's RESULT disc (#219). Pushing the
     // tainted slot is safe: its payload is the helper-safe placeholder,
     // and every push helper masks the tag byte through the `TagValue`
     // gateway before the value is cloned or stored.
@@ -522,37 +545,88 @@ pub fn push_field(
     Ok(())
 }
 
-/// Loop-carried slot-taint accumulator. A tainted (bottom) body /
-/// predicate slot taints the WHOLE HOF result — the node-walk's HOF
-/// node emits nothing while a slot is incomplete — but never the
-/// kernel: unrelated outputs still fire (#219; previously these
-/// paths runtime-aborted the kernel, escalating a locally-unconsumed
-/// bottom into whole-kernel bottom). The pushed slot values are the
-/// helper-safe placeholders, masked at every helper boundary, and the
-/// accumulated word is OR'd into the HOF's result disc after the loop.
-pub struct SlotTaint(Variable);
+/// Loop-carried slot-flags accumulator: per-slot TAINT is OR-reduced
+/// and per-slot STALE is AND-reduced across the loop.
+///
+/// TAINT: a tainted (bottom) body / predicate slot taints the WHOLE
+/// HOF result — the node-walk's HOF node emits nothing while a slot is
+/// incomplete — but never the kernel: unrelated outputs still fire
+/// (#219; these paths used to runtime-abort the kernel). The pushed
+/// slot values are the helper-safe placeholders, masked at every
+/// helper boundary.
+///
+/// STALE (firing): the node-walk's HOF aggregation is SLOT-DRIVEN
+/// (MapQ::update: emit iff resized or any slot pred emitted, and all
+/// slots determined; plus an unconditional emit when the source fires
+/// while EMPTY). The stateless-kernel translation: the result fires
+/// iff the SOURCE fired or ANY slot body fired — `apply` ANDs this
+/// accumulator's stale word with the source discs' stale bits.
+/// Exactness gap (deliberate, documented): a same-length source fire
+/// whose slot bodies all stay quiet (const callbacks) re-emits here
+/// but not in the node-walk; suppressing it would need previous-length
+/// state (a shrink with an unchanged prefix fires NO slot but must
+/// emit the shorter array — under-firing there is a wrong value).
+pub struct SlotFlags {
+    taint: Variable,
+    stale: Variable,
+}
 
-impl SlotTaint {
+impl SlotFlags {
     pub fn new(cx: &mut BodyCx) -> Self {
-        let v = cx.b.declare_var(types::I64);
+        let taint = cx.b.declare_var(types::I64);
         let z = cx.b.ins().iconst(types::I64, 0);
-        cx.b.def_var(v, z);
-        SlotTaint(v)
+        cx.b.def_var(taint, z);
+        let stale = cx.b.declare_var(types::I64);
+        // All-stale start: an empty loop contributes no firing.
+        let st = cx.b.ins().iconst(types::I64, STALE);
+        cx.b.def_var(stale, st);
+        SlotFlags { taint, stale }
     }
 
-    /// Fold one slot's disc into the accumulator (inside the loop).
+    /// Fold one slot's disc into the accumulators (inside the loop).
     pub fn fold(&self, cx: &mut BodyCx, disc: ClifValue) {
-        let cur = cx.b.use_var(self.0);
+        let cur = cx.b.use_var(self.taint);
         let t = cx.b.ins().band_imm(disc, TAINT);
         let n = cx.b.ins().bor(cur, t);
-        cx.b.def_var(self.0, n);
+        cx.b.def_var(self.taint, n);
+        let cur = cx.b.use_var(self.stale);
+        let sb = cx.b.ins().band_imm(disc, STALE);
+        let n = cx.b.ins().band(cur, sb);
+        cx.b.def_var(self.stale, n);
     }
 
-    /// OR the accumulated taint into the HOF's result disc (after the
-    /// loop).
-    pub fn apply(&self, cx: &mut BodyCx, mut r: CompiledExpr) -> CompiledExpr {
-        let t = cx.b.use_var(self.0);
+    /// Fold ONLY the STALE (firing) bit of `disc` — fold's INIT
+    /// participates in firing (init fired → the fold fires) but its
+    /// TAINT rides the accumulator carry instead: a bottom init
+    /// RECOVERS when the callback never consumes the acc, so folding
+    /// its taint here would re-bottom the recovered result.
+    pub fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
+        let cur = cx.b.use_var(self.stale);
+        let sb = cx.b.ins().band_imm(disc, STALE);
+        let n = cx.b.ins().band(cur, sb);
+        cx.b.def_var(self.stale, n);
+    }
+
+    /// Finish the HOF's result disc (after the loop): OR the slot
+    /// taint (plus each source's TAINT), and set STALE iff every slot
+    /// AND every source is stale — the result fires iff the source
+    /// fired or any slot body fired.
+    pub fn apply(
+        &self,
+        cx: &mut BodyCx,
+        mut r: CompiledExpr,
+        srcs: &[ClifValue],
+    ) -> CompiledExpr {
+        let t = cx.b.use_var(self.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
+        let mut sb = cx.b.use_var(self.stale);
+        for s in srcs {
+            let ss = cx.b.ins().band_imm(*s, STALE);
+            sb = cx.b.ins().band(sb, ss);
+            let st = cx.b.ins().band_imm(*s, TAINT);
+            r.disc = cx.b.ins().bor(r.disc, st);
+        }
+        r.disc = cx.b.ins().bor(r.disc, sb);
         r
     }
 }
@@ -566,17 +640,18 @@ impl SlotTaint {
 pub fn emit_init_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     n_raw: ClifValue,
+    n_disc: ClifValue,
     n_prim: PrimType,
     idx_name: &ArcStr,
     idx_id: Option<crate::BindId>,
     out_typ: &Type,
     out_src: CompositeSource,
     mut body: F,
-) -> Result<(ClifValue, SlotTaint)>
+) -> Result<(ClifValue, SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotTaint::new(cx);
+    let taint = SlotFlags::new(cx);
     let buf_new = cx.helper("graphix_value_buf_new")?;
     let n_widened = widen_to_i64(cx.b, n_raw, n_prim)?;
     let zero_clamp = cx.b.ins().iconst(types::I64, 0);
@@ -598,7 +673,14 @@ where
     // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let mark = cx.env.mark();
-    bind_scalar_var(cx, idx_name.clone(), PrimType::I64, i_var, idx_id);
+    // The index "fires" with the count (see `elem_disc`).
+    let idisc = {
+        let base = scalar_disc(cx.b, PrimType::I64);
+        elem_disc(cx, base, n_disc)
+    };
+    let idv = cx.b.declare_var(types::I64);
+    cx.b.def_var(idv, idisc);
+    bind_scalar_var_with_disc(cx, idx_name.clone(), PrimType::I64, i_var, idv, idx_id);
     let cv = body(cx)?;
     taint.fold(cx, cv.disc);
     push_field(cx, buf, cv, out_typ, out_src)?;
@@ -622,11 +704,11 @@ pub fn emit_map_loop<'a, 'f, 'c, F>(
     out_typ: &Type,
     out_src: CompositeSource,
     mut body: F,
-) -> Result<(ClifValue, SlotTaint)>
+) -> Result<(ClifValue, SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotTaint::new(cx);
+    let taint = SlotFlags::new(cx);
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);
@@ -643,7 +725,7 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let cv = body(cx)?;
     taint.fold(cx, cv.disc);
     push_field(cx, buf, cv, out_typ, out_src)?;
@@ -674,11 +756,11 @@ pub fn emit_filter_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     elem: &HofElem,
     mut pred: F,
-) -> Result<(ClifValue, SlotTaint)>
+) -> Result<(ClifValue, SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotTaint::new(cx);
+    let taint = SlotFlags::new(cx);
     // The kept element is MOVED into the output; the not-kept edge must DROP
     // an owned element (composite/string/value). A scalar owns nothing.
     let owns_drop = !matches!(
@@ -705,7 +787,7 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let keep_cv = pred(cx)?;
     taint.fold(cx, keep_cv.disc);
     // A tainted predicate's placeholder keep flag is 0 (not kept) —
@@ -776,11 +858,11 @@ pub fn emit_filter_map_loop<'a, 'f, 'c, F>(
     elem_id: Option<crate::BindId>,
     out_elem: PrimType,
     mut body: F,
-) -> Result<(ClifValue, SlotTaint)>
+) -> Result<(ClifValue, SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotTaint::new(cx);
+    let taint = SlotFlags::new(cx);
     let get_helper = cx.helper(valarray_get_helper(in_elem)?)?;
     let push = cx.helper(value_buf_push_helper(out_elem)?)?;
     adopt_owned_src(cx, &arr);
@@ -805,7 +887,14 @@ where
     let elem_var = cx.b.declare_var(prim_to_clif(in_elem));
     cx.b.def_var(elem_var, elem_val);
     let mark = cx.env.mark();
-    bind_scalar_var(cx, elem_name.clone(), in_elem, elem_var, elem_id);
+    // The element fires with its source (see `elem_disc`).
+    let ed = {
+        let base = scalar_disc(cx.b, in_elem);
+        elem_disc(cx, base, arr.disc)
+    };
+    let edv = cx.b.declare_var(types::I64);
+    cx.b.def_var(edv, ed);
+    bind_scalar_var_with_disc(cx, elem_name.clone(), in_elem, elem_var, edv, elem_id);
     let cv = body(cx)?;
     cx.env.truncate(mark);
     // A tainted body slot (e.g. `elem / 0`) taints the whole HOF
@@ -843,11 +932,11 @@ pub fn emit_flat_map_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     elem: &HofElem,
     mut body: F,
-) -> Result<(ClifValue, SlotTaint)>
+) -> Result<(ClifValue, SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotTaint::new(cx);
+    let taint = SlotFlags::new(cx);
     let extend = cx.helper("graphix_value_buf_extend_from_array")?;
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
@@ -865,7 +954,7 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let body_cv = body(cx)?;
     taint.fold(cx, body_cv.disc);
     drop_owned_leaves(cx, &owned_leaves)?;
@@ -906,7 +995,7 @@ pub fn emit_fold_loop<'a, 'f, 'c, I, F>(
     elem: &HofElem,
     init: I,
     mut body: F,
-) -> Result<CompiledExpr>
+) -> Result<(CompiledExpr, SlotFlags)>
 where
     I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
@@ -923,7 +1012,9 @@ where
     // ignoring acc — interp folds to the last element, jit bottomed).
     // Each carry re-bases on the clean scalar tag so only TAINT rides.
     let acc_disc_var = cx.b.declare_var(types::I64);
+    let taint = SlotFlags::new(cx);
     let init_cv = init(cx)?;
+    taint.fold_stale(cx, init_cv.disc);
     cx.b.def_var(acc_var, init_cv.payload);
     let base = scalar_disc(cx.b, acc_prim);
     let t = cx.b.ins().band_imm(init_cv.disc, TAINT);
@@ -951,11 +1042,12 @@ where
         acc_disc_var,
         acc_id,
     );
-    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let new_acc = body(cx)?;
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
+    taint.fold(cx, new_acc.disc);
     cx.b.def_var(acc_var, new_acc.payload);
     let base = scalar_disc(cx.b, acc_prim);
     let t = cx.b.ins().band_imm(new_acc.disc, TAINT);
@@ -969,7 +1061,7 @@ where
     drop_owned_src(cx, &arr)?;
     let payload = cx.b.use_var(acc_var);
     let disc = cx.b.use_var(acc_disc_var);
-    Ok(CompiledExpr::new(disc, payload))
+    Ok((CompiledExpr::new(disc, payload), taint))
 }
 
 /// `array::find(arr, |x| pred)` — the result is the `Nullable<elem>`
@@ -988,11 +1080,11 @@ pub fn emit_find_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     elem: &HofElem,
     mut pred: F,
-) -> Result<((ClifValue, ClifValue), SlotTaint)>
+) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotTaint::new(cx);
+    let taint = SlotFlags::new(cx);
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let found_var = cx.b.declare_var(types::I8);
@@ -1021,7 +1113,7 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let keep_cv = pred(cx)?;
     // A tainted predicate slot taints the whole find; its placeholder
     // keep flag is 0, so it never takes.
@@ -1104,11 +1196,11 @@ pub fn emit_find_map_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     elem: &HofElem,
     mut body: F,
-) -> Result<((ClifValue, ClifValue), SlotTaint)>
+) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<(ClifValue, ClifValue)>,
 {
-    let taint = SlotTaint::new(cx);
+    let taint = SlotFlags::new(cx);
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let found_var = cx.b.declare_var(types::I8);
@@ -1137,7 +1229,7 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let (bdisc, bpayload) = body(cx)?;
     // The body result is already OWNED (the caller ensures ownership
     // before the merge), so the element and leaves drop safely here.

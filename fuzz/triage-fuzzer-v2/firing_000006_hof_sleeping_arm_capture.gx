@@ -2,7 +2,12 @@
 //   callback's SLEEPING select arm still re-fires the fused map
 //   (interp count 1, jit count 5 via count). inherit_hof_firing's
 //   STATIC refs walk can't see dynamic arm selection.
-// status: OPEN — fix at trace-oracle calibration (fuzzer-v2 phase
+// FIXED (2026-07-02): HOF firing is now dynamic — SlotFlags AND-reduces
+//   slot-body STALE (elements inherit the source's STALE) and the result
+//   fires iff the source or any slot body fired; the static-refs walk
+//   (inherit_hof_firing) is deleted. Regression: lang/functions.rs
+//   hof_sleeping_arm_capture_quiet / hof_consumed_capture_fires.
+// prior status note (obsolete): OPEN — fix at calibration (phase
 //   2.1+). The exact rule is MapQ's aggregation protocol (slot-driven:
 //   see firing_000007 — even a SOURCE fire doesn't re-emit when slot
 //   bodies are const), which needs per-cycle traces to pin down; the

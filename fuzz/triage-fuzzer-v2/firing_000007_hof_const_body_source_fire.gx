@@ -5,7 +5,14 @@
 //   the slot's const body never emits after init, so the map doesn't
 //   either. Contrast hf4 (shrink-to-empty DOES fire per event) — the
 //   full MapQ protocol needs the trace oracle to map.
-// status: OPEN — fix at trace-oracle calibration with firing_000006.
+// status: OPEN (narrowed, deliberate): the stateless firing rule is now
+//   "source fired OR any slot body fired" — this finding's shape (same-
+//   length source fire, const bodies, node-walk quiet) is its one
+//   remaining over-fire. Exactness needs previous-length state: MapQ
+//   emits on RESIZE even when no slot fires (a shrink with an unchanged
+//   prefix), so suppressing source-only fires without knowing the prior
+//   length would under-fire there (wrong values). Revisit at trace-
+//   oracle calibration; candidate: wrapper-level length memory.
 {
   let y = array::iter([1, 2, 3, 4]);
   let src = [y];

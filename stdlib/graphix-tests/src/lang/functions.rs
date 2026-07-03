@@ -881,3 +881,41 @@ run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, |v: Result<&Value>| match
     v,
     Ok(Value::Bool(false))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A capture read ONLY inside a slot callback's SLEEPING select arm
+// must not re-fire the fused map (interp counted 1, jit counted 5):
+// "a sleeping select shouldn't be firing". HOF result firing is now
+// DYNAMIC — the scaffold AND-reduces slot-body STALE (elements inherit
+// the source's STALE, so bodies fire with their elems/captures) and
+// the result fires iff the source fired or any slot body fired —
+// replacing the static-refs capture walk (inherit_hof_firing, deleted).
+const HOF_SLEEPING_ARM_CAPTURE_QUIET: &str = r#"
+{
+  let y = array::iter([1, 2, 3, 4]);
+  let m = array::map([1], |x| select 1 { 1 => x, _ => y });
+  let c = count(m);
+  select count(y) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    hof_sleeping_arm_capture_quiet,
+    HOF_SLEEPING_ARM_CAPTURE_QUIET,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// The consumed-capture dual: the body READS y in the taken path, so
+// the map re-fires per y event.
+const HOF_CONSUMED_CAPTURE_FIRES: &str = r#"
+{
+  let y = array::iter([1, 2, 3, 4]);
+  let m = array::map([1], |x| x + y);
+  let c = count(m);
+  select count(y) { 4 => c, _ => never() }
+}
+"#;
+
+run!(hof_consumed_capture_fires, HOF_CONSUMED_CAPTURE_FIRES, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(4)))
+}; graphix_package_core::testing::FuseExpect::Jit);
