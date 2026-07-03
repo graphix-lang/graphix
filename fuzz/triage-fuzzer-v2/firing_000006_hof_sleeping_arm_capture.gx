@@ -1,0 +1,17 @@
+// bisect: HOF FIRING over-fire — a capture read ONLY inside a slot
+//   callback's SLEEPING select arm still re-fires the fused map
+//   (interp count 1, jit count 5 via count). inherit_hof_firing's
+//   STATIC refs walk can't see dynamic arm selection.
+// status: OPEN — fix at trace-oracle calibration (fuzzer-v2 phase
+//   2.1+). The exact rule is MapQ's aggregation protocol (slot-driven:
+//   see firing_000007 — even a SOURCE fire doesn't re-emit when slot
+//   bodies are const), which needs per-cycle traces to pin down; the
+//   candidate mechanism is dynamic slot-body STALE accumulation in the
+//   scaffold loops (the SlotTaint pattern) replacing the static refs
+//   walk, plus elem discs inheriting the source's STALE.
+{
+  let y = array::iter([1, 2, 3, 4]);
+  let m = array::map([1], |x| select 1 { 1 => x, _ => y });
+  let c = count(m);
+  select count(y) { 4 => c, _ => never() }
+}

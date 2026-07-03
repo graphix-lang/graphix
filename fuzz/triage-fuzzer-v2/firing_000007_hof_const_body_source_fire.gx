@@ -1,0 +1,15 @@
+// bisect: HOF FIRING over-fire — a map whose callback body is CONST
+//   does NOT re-emit in the node-walk when its source array fires
+//   (interp count 1), but the fused kernel's static-refs firing marks
+//   it fresh per source event (jit count 4). Slot-driven aggregation:
+//   the slot's const body never emits after init, so the map doesn't
+//   either. Contrast hf4 (shrink-to-empty DOES fire per event) — the
+//   full MapQ protocol needs the trace oracle to map.
+// status: OPEN — fix at trace-oracle calibration with firing_000006.
+{
+  let y = array::iter([1, 2, 3, 4]);
+  let src = [y];
+  let m = array::map(src, |x| 7);
+  let c = count(m);
+  select count(y) { 4 => c, _ => never() }
+}
