@@ -942,7 +942,8 @@ run!(hof_str_filter_none, HOF_STR_FILTER_NONE, |v: Result<&Value>| matches!(
     Ok(Value::Array(a)) if a.is_empty()
 ));
 
-const HOF_STR_FOLD: &str = r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
+const HOF_STR_FOLD: &str =
+    r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
 run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))));
 
 // find RETURNS the matched string element (moved into the Nullable result);

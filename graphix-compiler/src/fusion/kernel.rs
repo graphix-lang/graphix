@@ -676,6 +676,17 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// index in `kernel.fn_params`). Computed once at construction
     /// to avoid scanning `fn_params` per cycle.
     arg_layout: Vec<ArgKind>,
+    /// Per-INSTANCE cross-invocation state, `jit.state_words` zeroed
+    /// `u64`s (empty for the common stateless kernel). Passed by
+    /// pointer in wire slot 1 each invocation; emission sites claim a
+    /// word each for firing bookkeeping (exact HOF resize detection,
+    /// select selection memory — `design/kernel_instance_state.md`).
+    /// Zero = "no previous observation": consumers store `value + 1`,
+    /// so a fresh instance's init semantics fall out of the zeroing.
+    /// `clone_rebind` goes through the construction chokepoint, so
+    /// every per-slot clone gets its own fresh buffer — matching the
+    /// node-walk's per-slot node state.
+    state: Box<[u64]>,
 }
 
 /// Tag for each call-site arg position. The runtime walks the
@@ -874,12 +885,14 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             .map(|fp| DynCallSlot::new(fp, scope.clone(), top_id))
             .collect();
         let arg_layout = build_arg_layout(&kernel);
+        let state = vec![0u64; wrapped.state_words].into_boxed_slice();
         let mut node = Self {
             kernel,
             args: vec![None; n_args].into_boxed_slice(),
             jit: wrapped,
             dyn_slots,
             arg_layout,
+            state,
         };
         node.pre_init_binding_slots(ctx);
         node.pre_init_builtin_slots(ctx)?;
@@ -1240,12 +1253,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // two words (disc, payload) each.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
-        // Leading cycle-context word(s): `event.init` (see
-        // `INIT_WIRE_SLOTS`) — the wrapper forwards it to the body where
-        // each constant reads it to gate its STALE bit.
-        for _ in 0..kernel_abi::INIT_WIRE_SLOTS {
-            slots.push(event.init as u64);
-        }
+        // Leading cycle-context words (see `CTX_WIRE_SLOTS`), forwarded
+        // by the wrapper to the body: the `event.init` flag (each
+        // constant reads it to gate its STALE bit) and this instance's
+        // state-buffer pointer (0 when the kernel claimed no state).
+        slots.push(event.init as u64);
+        slots.push(if self.state.is_empty() {
+            0
+        } else {
+            self.state.as_mut_ptr() as u64
+        });
         for (i, p) in k.params.iter().enumerate() {
             let disc = prim_to_value_disc(p.prim) as u64;
             let (disc, payload) = match param_opts[i].as_ref() {

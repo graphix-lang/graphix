@@ -8,7 +8,9 @@
 //   residual needs the per-cycle trace oracle (fuzzer-v2 phase 2.1+)
 //   to pin the exact init cadence — the value-differential can only
 //   see it through count.
-// status: OPEN — revisit at trace-oracle calibration. Exactness may
+// status: FIXED (2026-07-03) — selection memory (per-kernel-instance state, wire slot 1),
+//   design/kernel_instance_state.md; promoted to findings/firing-jul2026/.
+// prior status: OPEN — revisit at trace-oracle calibration. Exactness may
 //   need cross-invocation selection state (the node-walk emits on a
 //   guard-only event only when the SELECTION changes).
 // trace-oracle confirmation (2026-07-03, calibration): the oracle now

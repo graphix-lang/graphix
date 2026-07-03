@@ -919,3 +919,25 @@ const HOF_CONSUMED_CAPTURE_FIRES: &str = r#"
 run!(hof_consumed_capture_fires, HOF_CONSUMED_CAPTURE_FIRES, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// Exact HOF resize detection (design/kernel_instance_state.md): MapQ
+// emits iff resized ∨ any slot pred emitted (plus unconditionally when
+// the source fires while EMPTY). A same-length source fire with a
+// CONST callback body emits nothing after the first array arrives —
+// the kernel's per-instance state word remembers the previous length,
+// so "resized" is real; the stateless rule ("source fired ∨ slot
+// fired") re-emitted per source event (interp 1, jit 4 —
+// findings/firing-jul2026/02).
+const HOF_CONST_BODY_PREV_LEN: &str = r#"
+{
+  let y = array::iter([1, 2, 3, 4]);
+  let src = [y];
+  let m = array::map(src, |x| 7);
+  let c = count(m);
+  select count(y) { 4 => c, _ => never() }
+}
+"#;
+
+run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; graphix_package_core::testing::FuseExpect::Jit);

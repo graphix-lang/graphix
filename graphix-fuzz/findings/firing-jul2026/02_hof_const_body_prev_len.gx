@@ -1,0 +1,23 @@
+// bisect: HOF FIRING over-fire — a map with a CONST callback body does
+// not re-emit in the node-walk when its source fires at the SAME length
+// (MapQ emits iff resized ∨ any slot pred emitted, plus unconditionally
+// when the source fires while EMPTY), but the kernel's stateless rule
+// ("source fired ∨ slot fired") re-emitted per source event: interp
+// Trace([1:[7]]) vs jit Trace([1:[7] 2:[7] 3:[7] 4:[7]]).
+// Found by hand probe (2026-07-02, fuzz/triage-fuzzer-v2/firing_000007),
+// confirmed as ExtraFire by the trace oracle at phase-2.3 calibration.
+// root_cause: "resized" needs the PREVIOUS length; suppressing
+//   source-only fires without it would under-fire the
+//   shrink-with-unchanged-prefix case (no slot fires, shorter array
+//   MUST emit — a wrong value, worse than a duplicate fire).
+// fix: per-kernel-instance state word remembering len+1 (0 = no
+//   previous); SlotFlags::apply implements MapQ's exact rule:
+//   resized ∨ slot-fired ∨ (source-fired ∧ empty).
+//   design/kernel_instance_state.md.
+// mutant: hand probe
+// minimized:
+{
+  let y = array::iter([1, 2, 3, 4]);
+  let src = [y];
+  array::map(src, |x| 7)
+}

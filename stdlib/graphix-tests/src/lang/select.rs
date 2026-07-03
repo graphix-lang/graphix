@@ -720,3 +720,27 @@ const GUARDED_SELECT_FIRING_COUNT: &str = r#"
 run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// Selection memory (design/kernel_instance_state.md): the node-walk
+// emits on a guard-only event only when the SELECTION changes — m
+// alternates 1,0,1,0, so the guard re-selects arms on cycles 2..4 (3
+// emissions) but cycle 1 re-takes the init selection (no emission):
+// 4 total with the init. The kernel's per-instance state word records
+// the taken arm (idx+1) and the guard term fires only on a change;
+// without it the guard-feeder fold over-fired the unchanged cycle
+// (interp 4, jit 5 — findings/firing-jul2026/01).
+const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x % 2;
+  let sel = select 0 { 0 if m == 0 => 1, _ => 2 };
+  let c = count(sel);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Result<
+    &Value,
+>| {
+    matches!(v, Ok(Value::I64(4)))
+}; graphix_package_core::testing::FuseExpect::Jit);

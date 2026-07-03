@@ -1306,21 +1306,34 @@ pub struct KernelSig {
 }
 
 /// The number of leading `u64` wire slots reserved before the parameter
-/// list, carrying per-kernel cycle context. Slot 0 is the `event.init`
-/// flag (1 = the kernel's init cycle), read by every fused constant to
-/// gate its [`emit::STALE`](crate::fusion::emit) bit (a constant fires
-/// only at init). Every kernel — even a zero-param constant-only one —
-/// carries it, so the ABI is uniform. The single source of truth for the
-/// offset: [`KernelSig::abi_params`] starts its wire-slot scan here and
-/// every load/pack site reserves this many leading words.
-pub(crate) const INIT_WIRE_SLOTS: usize = 1;
+/// list, carrying per-kernel cycle context. Every kernel — even a
+/// zero-param constant-only one — carries them, so the ABI is uniform.
+/// The single source of truth for the offset: [`KernelSig::abi_params`]
+/// starts its wire-slot scan here and every load/pack site reserves
+/// this many leading words.
+///
+/// Slot 0 is the `event.init` flag (1 = the kernel's init cycle), read
+/// by every fused constant to gate its
+/// [`emit::STALE`](crate::fusion::emit) bit (a constant fires only at
+/// init).
+///
+/// Slot 1 is the per-kernel-INSTANCE state pointer (`*mut u64`, 0 when
+/// the kernel claimed no state — `WrappedKernel::state_words == 0`): a
+/// zero-initialized buffer owned by the invoking runtime `Kernel` node,
+/// fresh per `clone_rebind`, giving root-body emission sites one word
+/// each of cross-invocation memory (exact HOF resize detection, select
+/// selection memory — `design/kernel_instance_state.md`). Cross-kernel
+/// calls forward the caller's pointer for signature uniformity, but
+/// only the region parent's ROOT body may claim words (a callee is
+/// reached from arbitrarily many call sites, whose claims would alias).
+pub(crate) const CTX_WIRE_SLOTS: usize = 2;
 
 impl KernelSig {
     /// Iterate the kernel's parameters in canonical kind-grouped ABI
     /// order, each tagged with its wire-slot offset. This is THE
     /// definition of the parameter calling convention — every ABI site
     /// consumes it rather than re-deriving the order. Wire slots start
-    /// after the [`INIT_WIRE_SLOTS`] leading cycle-context words.
+    /// after the [`CTX_WIRE_SLOTS`] leading cycle-context words.
     pub fn abi_params(&self) -> impl Iterator<Item = AbiParamDesc<'_>> {
         let scalars = self
             .params
@@ -1352,7 +1365,7 @@ impl KernelSig {
             .chain(variants)
             .chain(nullables)
             .chain(values)
-            .scan(INIT_WIRE_SLOTS, |off, (name, kind, bind_id)| {
+            .scan(CTX_WIRE_SLOTS, |off, (name, kind, bind_id)| {
                 let wire_slot = *off;
                 *off += kind.wire_words();
                 Some(AbiParamDesc { name, kind, wire_slot, bind_id })
@@ -1360,11 +1373,11 @@ impl KernelSig {
     }
 
     /// Total number of `u64` wire slots the boundary buffer occupies —
-    /// the [`INIT_WIRE_SLOTS`] leading cycle-context words plus two per
+    /// the [`CTX_WIRE_SLOTS`] leading cycle-context words plus two per
     /// param (`disc`, `payload`) now that every kind carries a disc word
     /// for #219 taint.
     pub fn abi_param_wire_slots(&self) -> usize {
-        INIT_WIRE_SLOTS
+        CTX_WIRE_SLOTS
             + 2 * (self.params.len()
                 + self.array_params.len()
                 + self.tuple_params.len()

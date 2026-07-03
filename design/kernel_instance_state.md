@@ -1,8 +1,17 @@
 # Per-kernel-instance state (the firing-exactness wire slot)
 
-Status: PROPOSED (2026-07-03). Motivated by the two firing residuals the
-trace oracle confirmed at fuzzer-v2 phase-2.3 calibration
-(`fuzz/triage-fuzzer-v2/firing_000005`, `firing_000007`). Not yet built.
+Status: BUILT (2026-07-03, same day as proposed). Motivated by the two
+firing residuals the trace oracle confirmed at fuzzer-v2 phase-2.3
+calibration; both are fixed and promoted to `findings/firing-jul2026/`
+(the trace-strength regress gate), with `run!` fixtures
+(`guarded_select_selection_memory`, `hof_const_body_prev_len`) pinning
+the count-observable forms. Two v1 scope notes vs the proposal below:
+claims are ROOT-BODY only (`BodyEmitter::allow_state` — a callee is
+reached from many call sites whose claims would alias; the per-callsite
+sub-buffer composition described below remains future work), and the
+select rule was corrected against the observed node-walk: the scrutinee
+term STAYS (a scrutinee fire re-emits even with a const arm — verified
+2026-07-03); selection memory refines only the GUARD term.
 
 ## The problem
 

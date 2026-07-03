@@ -121,7 +121,8 @@ async fn native_hof_callback_recursive_call_fuses_ok() {
 // no separate per-element template to walk).
 #[tokio::test]
 async fn native_inlining_hof_callsite_ok() {
-    let r = eval("#[native]\narray::init(3, |i| i * i + i64:1)", crate::TEST_REGISTER).await;
+    let r =
+        eval("#[native]\narray::init(3, |i| i * i + i64:1)", crate::TEST_REGISTER).await;
     assert!(
         r.is_ok(),
         "#[native] on a batch-loop-inlining HOF call must compile, got {:?}",
@@ -172,7 +173,8 @@ async fn native_transitive_callee_dyncall_ok() {
 // struct-with over a fused source struct fully fuses into one kernel.
 #[tokio::test]
 async fn native_structwith_ok() {
-    let prog = "#[native]\n{ let s = { x: i64:1, y: i64:2, z: i64:3 }; { s with y: i64:10 } }";
+    let prog =
+        "#[native]\n{ let s = { x: i64:1, y: i64:2, z: i64:3 }; { s with y: i64:10 } }";
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
         r.is_ok(),
@@ -339,7 +341,8 @@ async fn native_select_named_rest_defuses() {
 #[tokio::test]
 async fn native_blocker_list_is_filtered() {
     let prog = "array::init(4, |idx| #[native] { let a = idx * 2; once(a) })";
-    let e = eval(prog, crate::TEST_REGISTER).await.err().expect("must be a compile error");
+    let e =
+        eval(prog, crate::TEST_REGISTER).await.err().expect("must be a compile error");
     // `{:#}` includes anyhow's full cause chain (the `#[native]` blocker
     // detail is a CAUSE, not the top-level context).
     let err = format!("{e:#}");

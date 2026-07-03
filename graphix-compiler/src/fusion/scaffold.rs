@@ -558,17 +558,25 @@ pub fn push_field(
 /// STALE (firing): the node-walk's HOF aggregation is SLOT-DRIVEN
 /// (MapQ::update: emit iff resized or any slot pred emitted, and all
 /// slots determined; plus an unconditional emit when the source fires
-/// while EMPTY). The stateless-kernel translation: the result fires
-/// iff the SOURCE fired or ANY slot body fired — `apply` ANDs this
-/// accumulator's stale word with the source discs' stale bits.
-/// Exactness gap (deliberate, documented): a same-length source fire
-/// whose slot bodies all stay quiet (const callbacks) re-emits here
-/// but not in the node-walk; suppressing it would need previous-length
-/// state (a shrink with an unchanged prefix fires NO slot but must
-/// emit the shorter array — under-firing there is a wrong value).
+/// while EMPTY). With a per-instance state word (top-level HOF in the
+/// root body — `BodyCx::claim_state_word`) `apply` implements that
+/// rule EXACTLY: the word remembers the previous source length, so
+/// "resized" is real and a same-length source fire with all-quiet
+/// (const-callback) slots stays quiet, matching the node-walk
+/// (fuzz/triage-fuzzer-v2/firing_000007). Without a word (a nested
+/// HOF inside another loop) the stateless approximation stands — the
+/// result fires iff the SOURCE fired or ANY slot body fired — a
+/// deliberate residual duplicate-fire, never a wrong value
+/// (suppressing source-only fires without length memory would
+/// under-fire the shrink-with-unchanged-prefix case: no slot fires
+/// but the shorter array MUST emit).
 pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
+    /// The source's slot count (array length; `array::init`'s clamped
+    /// `n`) — set by each loop emitter, consumed by `apply`'s exact
+    /// resize detection. `None` disables exactness (approximation).
+    len: Option<ClifValue>,
 }
 
 impl SlotFlags {
@@ -580,7 +588,13 @@ impl SlotFlags {
         // All-stale start: an empty loop contributes no firing.
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags { taint, stale }
+        SlotFlags { taint, stale, len: None }
+    }
+
+    /// Record the source's slot count for `apply`'s exact resize
+    /// detection. Every loop emitter calls this once, before the loop.
+    pub fn set_len(&mut self, len: ClifValue) {
+        self.len = Some(len);
     }
 
     /// Fold one slot's disc into the accumulators (inside the loop).
@@ -608,9 +622,22 @@ impl SlotFlags {
     }
 
     /// Finish the HOF's result disc (after the loop): OR the slot
-    /// taint (plus each source's TAINT), and set STALE iff every slot
-    /// AND every source is stale — the result fires iff the source
-    /// fired or any slot body fired.
+    /// taint (plus each source's TAINT), and set the firing bit.
+    ///
+    /// With a state word available (this runs AFTER the loop closes,
+    /// so a top-level HOF claims while a nested one inside another
+    /// loop is refused — exactly the per-slot-memory boundary), the
+    /// firing rule is MapQ's, exact:
+    ///   fires = resized ∨ any-slot-fired ∨ (source-fired ∧ empty)
+    /// where `resized` compares the remembered previous length
+    /// (stored as len+1; 0 = no previous, so a fresh instance's first
+    /// real array always counts as resized — which is also MapQ's
+    /// unconditional emit when the source first arrives). The record
+    /// is skipped while any source is TAINTED: the placeholder's
+    /// length is phantom and the node-walk's slot machinery makes no
+    /// progress on a missing input.
+    ///
+    /// Without a word: fires = source-fired ∨ any-slot-fired.
     pub fn apply(
         &self,
         cx: &mut BodyCx,
@@ -619,14 +646,49 @@ impl SlotFlags {
     ) -> CompiledExpr {
         let t = cx.b.use_var(self.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
-        let mut sb = cx.b.use_var(self.stale);
+        // STALE words (bit SET = quiet): the loop's slot accumulator,
+        // and the AND-fold over the sources. Source TAINT ORs into the
+        // result as before.
+        let slots_word = cx.b.use_var(self.stale);
+        let mut src_word = cx.b.ins().iconst(types::I64, STALE);
+        let mut src_taint = cx.b.ins().iconst(types::I64, 0);
         for s in srcs {
             let ss = cx.b.ins().band_imm(*s, STALE);
-            sb = cx.b.ins().band(sb, ss);
+            src_word = cx.b.ins().band(src_word, ss);
             let st = cx.b.ins().band_imm(*s, TAINT);
-            r.disc = cx.b.ins().bor(r.disc, st);
+            src_taint = cx.b.ins().bor(src_taint, st);
         }
-        r.disc = cx.b.ins().bor(r.disc, sb);
+        r.disc = cx.b.ins().bor(r.disc, src_taint);
+        let exact = match self.len {
+            Some(len) => cx.claim_state_word().map(|off| (len, off)),
+            None => None,
+        };
+        match exact {
+            None => {
+                // Approximation: fires = source-fired ∨ any-slot-fired.
+                let sb = cx.b.ins().band(slots_word, src_word);
+                r.disc = cx.b.ins().bor(r.disc, sb);
+            }
+            Some((len, off)) => {
+                let sp = cx.state_ptr();
+                let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+                let lenp1 = cx.b.ins().iadd_imm(len, 1);
+                let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
+                let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
+                let recorded = cx.b.ins().select(valid, lenp1, stored);
+                cx.b.ins().store(MemFlags::trusted(), recorded, sp, off);
+                let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, slots_word, 0);
+                let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
+                let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                let src_empty = cx.b.ins().band(src_fired, empty);
+                let fires = cx.b.ins().bor(resized, slot_fired);
+                let fires = cx.b.ins().bor(fires, src_empty);
+                let quiet = cx.b.ins().iconst(types::I64, STALE);
+                let zero = cx.b.ins().iconst(types::I64, 0);
+                let sbit = cx.b.ins().select(fires, zero, quiet);
+                r.disc = cx.b.ins().bor(r.disc, sbit);
+            }
+        }
         r
     }
 }
@@ -651,12 +713,13 @@ pub fn emit_init_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
     let buf_new = cx.helper("graphix_value_buf_new")?;
     let n_widened = widen_to_i64(cx.b, n_raw, n_prim)?;
     let zero_clamp = cx.b.ins().iconst(types::I64, 0);
     let is_neg = cx.b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
     let n_val = cx.b.ins().select(is_neg, zero_clamp, n_widened);
+    taint.set_len(n_val);
     let call = cx.b.ins().call(buf_new, &[n_val]);
     let buf = cx.b.inst_results(call)[0];
     register_hof_buf(cx.b, cx.ctx, buf);
@@ -681,7 +744,10 @@ where
     let idv = cx.b.declare_var(types::I64);
     cx.b.def_var(idv, idisc);
     bind_scalar_var_with_disc(cx, idx_name.clone(), PrimType::I64, i_var, idv, idx_id);
-    let cv = body(cx)?;
+    cx.enter_loop();
+    let cv = body(cx);
+    cx.exit_loop();
+    let cv = cv?;
     taint.fold(cx, cv.disc);
     push_field(cx, buf, cv, out_typ, out_src)?;
     cx.env.truncate(mark);
@@ -708,9 +774,10 @@ pub fn emit_map_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
+    taint.set_len(len);
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
@@ -726,7 +793,10 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    let cv = body(cx)?;
+    cx.enter_loop();
+    let cv = body(cx);
+    cx.exit_loop();
+    let cv = cv?;
     taint.fold(cx, cv.disc);
     push_field(cx, buf, cv, out_typ, out_src)?;
     // Leaves drop AFTER the push — a body result may BORROW a leaf local
@@ -760,7 +830,7 @@ pub fn emit_filter_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
     // The kept element is MOVED into the output; the not-kept edge must DROP
     // an owned element (composite/string/value). A scalar owns nothing.
     let owns_drop = !matches!(
@@ -769,6 +839,7 @@ where
     );
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
+    taint.set_len(len);
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
@@ -788,7 +859,10 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    let keep_cv = pred(cx)?;
+    cx.enter_loop();
+    let keep_cv = pred(cx);
+    cx.exit_loop();
+    let keep_cv = keep_cv?;
     taint.fold(cx, keep_cv.disc);
     // A tainted predicate's placeholder keep flag is 0 (not kept) —
     // the slot contributes nothing, and the accumulated taint bottoms
@@ -862,11 +936,12 @@ pub fn emit_filter_map_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
     let get_helper = cx.helper(valarray_get_helper(in_elem)?)?;
     let push = cx.helper(value_buf_push_helper(out_elem)?)?;
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
+    taint.set_len(len);
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
@@ -895,7 +970,10 @@ where
     let edv = cx.b.declare_var(types::I64);
     cx.b.def_var(edv, ed);
     bind_scalar_var_with_disc(cx, elem_name.clone(), in_elem, elem_var, edv, elem_id);
-    let cv = body(cx)?;
+    cx.enter_loop();
+    let cv = body(cx);
+    cx.exit_loop();
+    let cv = cv?;
     cx.env.truncate(mark);
     // A tainted body slot (e.g. `elem / 0`) taints the whole HOF
     // result; its placeholder is Null (skipped by the null test).
@@ -936,10 +1014,11 @@ pub fn emit_flat_map_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
     let extend = cx.helper("graphix_value_buf_extend_from_array")?;
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
+    taint.set_len(len);
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
@@ -955,7 +1034,10 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    let body_cv = body(cx)?;
+    cx.enter_loop();
+    let body_cv = body(cx);
+    cx.exit_loop();
+    let body_cv = body_cv?;
     taint.fold(cx, body_cv.disc);
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
@@ -1018,7 +1100,8 @@ where
     // where the node-walk quiesced (findings/hof-connect-jun2026/01,
     // re-caught by the trace oracle after the SlotFlags rework).
     let acc_disc_var = cx.b.declare_var(types::I64);
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
+    taint.set_len(len);
     let init_cv = init(cx)?;
     taint.fold_stale(cx, init_cv.disc);
     cx.b.def_var(acc_var, init_cv.payload);
@@ -1049,7 +1132,10 @@ where
         acc_id,
     );
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    let new_acc = body(cx)?;
+    cx.enter_loop();
+    let new_acc = body(cx);
+    cx.exit_loop();
+    let new_acc = new_acc?;
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
@@ -1090,9 +1176,10 @@ pub fn emit_find_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
+    taint.set_len(len);
     let found_var = cx.b.declare_var(types::I8);
     let zero8 = cx.b.ins().iconst(types::I8, 0);
     cx.b.def_var(found_var, zero8);
@@ -1120,7 +1207,10 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    let keep_cv = pred(cx)?;
+    cx.enter_loop();
+    let keep_cv = pred(cx);
+    cx.exit_loop();
+    let keep_cv = keep_cv?;
     // A tainted predicate slot taints the whole find; its placeholder
     // keep flag is 0, so it never takes.
     taint.fold(cx, keep_cv.disc);
@@ -1206,9 +1296,10 @@ pub fn emit_find_map_loop<'a, 'f, 'c, F>(
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<(ClifValue, ClifValue)>,
 {
-    let taint = SlotFlags::new(cx);
+    let mut taint = SlotFlags::new(cx);
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
+    taint.set_len(len);
     let found_var = cx.b.declare_var(types::I8);
     let zero8 = cx.b.ins().iconst(types::I8, 0);
     cx.b.def_var(found_var, zero8);
@@ -1236,7 +1327,10 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    let (bdisc, bpayload) = body(cx)?;
+    cx.enter_loop();
+    let bp = body(cx);
+    cx.exit_loop();
+    let (bdisc, bpayload) = bp?;
     // The body result is already OWNED (the caller ensures ownership
     // before the merge), so the element and leaves drop safely here.
     drop_owned_leaves(cx, &owned_leaves)?;

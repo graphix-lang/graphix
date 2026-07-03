@@ -847,9 +847,10 @@ async fn list_fold_dynamic_init_converges() {
         init <- select init { 0 => init ~ 100, _ => never() }; \
         list::fold(list::from_array([1, 2, 3]), init, |acc, x| x + acc) \
     }";
-    let (v, ctx) = graphix_package_core::testing::eval_converged(prog, crate::TEST_REGISTER)
-        .await
-        .expect("eval_converged");
+    let (v, ctx) =
+        graphix_package_core::testing::eval_converged(prog, crate::TEST_REGISTER)
+            .await
+            .expect("eval_converged");
     assert_eq!(
         v,
         Value::I64(106),

@@ -188,8 +188,8 @@ impl JitCtx {
 /// and [`ensure_declared`] can't drift.
 fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
     // The leading cycle-context word(s) — currently the `event.init`
-    // flag (see `INIT_WIRE_SLOTS`). Read by every constant's STALE gate.
-    for _ in 0..kernel_abi::INIT_WIRE_SLOTS {
+    // flag (see `CTX_WIRE_SLOTS`). Read by every constant's STALE gate.
+    for _ in 0..kernel_abi::CTX_WIRE_SLOTS {
         sig.params.push(AbiParam::new(types::I64));
     }
     // Every param is two words: a disc (`I64`, carrying #219 taint) and
@@ -289,6 +289,12 @@ pub struct WrappedKernel {
     /// `base`s in different regions — and rides into every `Kernel`
     /// (incl. per-slot `clone_rebind`s, which clone this `Arc`).
     pub dyn_fn_params: std::sync::Arc<[kernel_abi::FnParam]>,
+    /// Number of `u64` cross-invocation state words the parent's ROOT
+    /// body claimed during emission (0 = stateless — the common case).
+    /// The runtime `Kernel` allocates a zeroed per-INSTANCE buffer of
+    /// this size and passes its pointer in wire slot 1 (see
+    /// [`kernel_abi::CTX_WIRE_SLOTS`]).
+    pub state_words: usize,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -392,6 +398,11 @@ struct CachedKernel {
     /// Per-kernel datetime/duration `Value` constants table — same
     /// role and lifetime as `_strings`, baked `*const Value` pointers.
     _values: KernelValues,
+    /// Cross-invocation state words this kernel's body claimed when it
+    /// was defined (see [`WrappedKernel::state_words`]). Recorded here
+    /// so a region whose parent comes back from the cache still learns
+    /// the buffer size its runtime `Kernel` must allocate.
+    state_words: usize,
 }
 
 unsafe impl Send for Jit {}
@@ -448,6 +459,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         // constant base-case arm wrong-bottoms on a non-init dispatch.
         gate_stale: parent_self_call.is_none(),
         lifted,
+        allow_state: true,
     };
     // Assemble the region-wide DynCall slot table: parent `fn_params`
     // first (base 0), then each callee's `fn_params`, in callee order.
@@ -488,6 +500,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     // gates TAINT only — gating STALE would wrong-bottom.
                     gate_stale: false,
                     lifted: &no_lift,
+                    allow_state: false,
                 },
             ))
         })
@@ -656,11 +669,13 @@ fn compile_kernel_with_callees_inner(
                 k.fn_name
             )
         })?;
-        let (strings, values) = define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
+        let (strings, values, state_words) =
+            define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
         *defined += 1;
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base)) {
             cached._strings = strings;
             cached._values = values;
+            cached.state_words = state_words;
         }
     }
     // Phase 3 — compile the uniform wrapper for the parent and
@@ -677,6 +692,16 @@ fn compile_kernel_with_callees_inner(
     // kernel's string table lives in `Jit::by_kernel[key]._strings`
     // (stored in phase 2), since the compiled code outlives this
     // `WrappedKernel` and is owned by the ExecCtx's `Jit`.
+    // The parent's claimed state footprint — from its cache entry, so
+    // a parent that came back from the cache (its body defined by a
+    // prior compile) still sizes the runtime buffer correctly. Only
+    // the parent's ROOT body may claim (callee claims would alias
+    // across call sites), so callees' entries stay 0 by construction.
+    let state_words = jit
+        .by_kernel
+        .get(&(parent_ptr, 0))
+        .map(|e| e.state_words)
+        .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
     Ok(WrappedKernel {
         wrapper_fn_ptr,
         _ctx: None,
@@ -686,6 +711,7 @@ fn compile_kernel_with_callees_inner(
         // `compile_kernel_with_callees_direct` overwrites this with the
         // combined parent++callees list when callees contribute slots.
         dyn_fn_params: kernel.fn_params.iter().cloned().collect(),
+        state_words,
     })
 }
 
@@ -723,6 +749,7 @@ fn ensure_declared(
             // Filled in during phase 2 by `define_kernel_body`.
             _strings: KernelStrings::empty(),
             _values: KernelValues::empty(),
+            state_words: 0,
         },
     );
     to_define.push((k.clone(), base));
@@ -738,7 +765,7 @@ fn define_kernel_body(
     kernel: &std::sync::Arc<KernelSig>,
     funcids: &BTreeMap<usize, (FuncId, Signature)>,
     body_emitter: &dyn BodyEmitter,
-) -> Result<(KernelStrings, KernelValues)> {
+) -> Result<(KernelStrings, KernelValues, usize)> {
     let self_ptr = kernel_abi::kernel_key(kernel);
     let (func_id, sig) = funcids.get(&self_ptr).cloned().ok_or_else(|| {
         anyhow!(
@@ -758,7 +785,7 @@ fn define_kernel_body(
     jit.func_ctx.func.signature = sig;
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
-    let (strings, values) = {
+    let (strings, values, state_words) = {
         // Declare each lambda call site's callee as a FuncRef in this
         // function. Done before constructing the FunctionBuilder
         // because both `declare_func_in_func` and `FunctionBuilder::new`
@@ -812,7 +839,7 @@ fn define_kernel_body(
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        compile_into_function(
+        let state_words = compile_into_function(
             &mut builder,
             kernel,
             &callee_refs,
@@ -831,6 +858,7 @@ fn define_kernel_body(
         (
             KernelStrings::empty().with_lazy(lazy_strings.into_inner()),
             KernelValues::empty().with_lazy(lazy_values.into_inner()),
+            state_words,
         )
     };
     jit.module
@@ -838,7 +866,7 @@ fn define_kernel_body(
         .context("define_function (shared body)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok((strings, values))
+    Ok((strings, values, state_words))
 }
 
 /// Define the (args*, out*) wrapper that adapts the typed kernel to a
@@ -949,7 +977,7 @@ fn define_wrapper_body(
         // at the front of the args buffer, BEFORE the params — load and
         // forward them first so `d.wire_slot` (already offset past them
         // in `abi_params`) indexes the params correctly.
-        for i in 0..kernel_abi::INIT_WIRE_SLOTS {
+        for i in 0..kernel_abi::CTX_WIRE_SLOTS {
             let v =
                 b.ins().load(types::I64, MemFlags::trusted(), args_ptr, (i as i32) * 8);
             typed_args.push(v);
@@ -1096,7 +1124,7 @@ fn compile_into_function(
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
     body_emitter: &dyn BodyEmitter,
-) -> Result<()> {
+) -> Result<usize> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -1111,11 +1139,14 @@ fn compile_into_function(
     // takes &mut self on the FunctionBuilder, which would conflict
     // with the &[Value] returned from block_params.
     let initial_vals: Vec<ClifValue> = b.block_params(entry).to_vec();
-    // The leading cycle-context word: `event.init` (1 on the kernel's
-    // init cycle). Read by `emit_const_node` to gate each constant's
-    // STALE bit (a constant fires only at init). Lives at wire slot 0,
-    // BEFORE the params (`abi_params` wire slots start past it).
+    // The leading cycle-context words (`CTX_WIRE_SLOTS`), BEFORE the
+    // params (`abi_params` wire slots start past them): the
+    // `event.init` flag (1 on the kernel's init cycle — read by
+    // `emit_const_node` to gate each constant's STALE bit) and the
+    // per-instance state-buffer pointer (see
+    // [`BodyCx::claim_state_word`]).
     let init_flag = initial_vals[0];
+    let state_ptr = initial_vals[1];
     // Bind every kernel param into the env in kind-grouped ABI order
     // (see `KernelSig::abi_params`), reading entry-block params from
     // `initial_vals[d.wire_slot..]`. Composite (array/tuple/struct) and
@@ -1221,6 +1252,10 @@ fn compile_into_function(
         fn_index_offset: body_emitter.fn_index_offset(),
         gate_stale_at_return: body_emitter.gate_stale_at_return(),
         lifted: body_emitter.lifted(),
+        state_ptr,
+        state_enabled: body_emitter.allow_state(),
+        state_next: std::cell::Cell::new(0),
+        loop_depth: std::cell::Cell::new(0),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -1294,7 +1329,7 @@ fn compile_into_function(
     // pending_exit). FunctionBuilder requires all blocks be sealed
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
-    Ok(())
+    Ok(lower.state_next.get())
 }
 
 /// Per-kernel storage of the ArcStrs the JIT'd code references via
@@ -1408,6 +1443,27 @@ pub(crate) struct LowerCtx<'a> {
     /// [`BodyCx::init_flag`]) so a constant carries [`STALE`] on every
     /// non-init cycle — it fires only at init, like the node-walk.
     init_flag: ClifValue,
+    /// The per-instance state-buffer pointer (`I64`), loaded from wire
+    /// slot 1 (0 when the kernel claimed no words). See
+    /// [`BodyCx::claim_state_word`].
+    state_ptr: ClifValue,
+    /// Whether THIS function's body may claim state words — true only
+    /// for the region parent's root body (`BodyEmitter::allow_state`).
+    /// A callee is reached from arbitrarily many call sites whose
+    /// claims would alias one buffer offset, so callees never claim
+    /// (their stateful constructs keep the stateless approximation).
+    state_enabled: bool,
+    /// Next unclaimed state word index. The final count becomes
+    /// [`WrappedKernel::state_words`] — the runtime buffer size.
+    state_next: std::cell::Cell<usize>,
+    /// Depth of enclosing scaffold loops at the current emission
+    /// point. State claims are refused inside loops: a loop-body
+    /// construct evaluates once PER SLOT per invocation, so one static
+    /// word can't hold per-slot memory (the node-walk gives each slot
+    /// clone its own state; per-slot kernels get theirs via fresh
+    /// buffers per `clone_rebind`, but an inline loop body is one
+    /// function).
+    loop_depth: std::cell::Cell<u32>,
     /// Cross-kernel call sites resolve their callee's kernel IDENTITY
     /// (`kernel_key` of the site's `info.kernel` Arc) through this map
     /// to a CLIF `FuncRef` — never by name (names shadow, and
@@ -2824,6 +2880,16 @@ trait BodyEmitter {
             std::sync::LazyLock::new(ahash::AHashSet::default);
         &EMPTY
     }
+
+    /// Whether this body may claim per-instance state words (see
+    /// [`BodyCx::claim_state_word`]). `true` only for the region
+    /// parent's root body: a CALLEE is reached from arbitrarily many
+    /// call sites, and one static word offset can't hold per-call-site
+    /// memory — its stateful constructs keep the stateless
+    /// approximation. Default `false`.
+    fn allow_state(&self) -> bool {
+        false
+    }
 }
 
 /// The body emitter — walks the region-root `Node` via `emit_clif`
@@ -2852,6 +2918,10 @@ struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
     gate_stale: bool,
     /// Lifted connect-target bind ids — see [`BodyEmitter::lifted`].
     lifted: &'a ahash::AHashSet<BindId>,
+    /// May this body claim per-instance state words — see
+    /// [`BodyEmitter::allow_state`]. `true` for the region parent's
+    /// root body, `false` for callee bodies.
+    allow_state: bool,
 }
 
 impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
@@ -2910,6 +2980,10 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
     fn lifted(&self) -> &ahash::AHashSet<BindId> {
         self.lifted
     }
+
+    fn allow_state(&self) -> bool {
+        self.allow_state
+    }
 }
 
 /// The open-kernel emission context handed to
@@ -2945,11 +3019,51 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// The `event.init` flag (`I64`, 1 on the kernel's init cycle),
-    /// loaded from wire slot 0 (see [`kernel_abi::INIT_WIRE_SLOTS`]).
+    /// loaded from wire slot 0 (see [`kernel_abi::CTX_WIRE_SLOTS`]).
     /// `emit_const_node` reads it to STALE-gate a constant: a constant
     /// fires only at init, then carries a cached (stale) value.
     pub fn init_flag(&self) -> ClifValue {
         self.ctx.init_flag
+    }
+
+    /// The per-instance state-buffer pointer (`I64`), loaded from wire
+    /// slot 1. Only meaningful at offsets returned by
+    /// [`claim_state_word`](Self::claim_state_word); 0 when the kernel
+    /// claimed nothing (no claimed offset exists to read through it).
+    pub fn state_ptr(&self) -> ClifValue {
+        self.ctx.state_ptr
+    }
+
+    /// Claim one `u64` of per-kernel-INSTANCE cross-invocation memory,
+    /// returning its byte offset from [`state_ptr`](Self::state_ptr) —
+    /// or `None` when state is unavailable here: inside a scaffold
+    /// loop (one static word can't hold per-slot memory) or in a
+    /// callee body (one word can't hold per-call-site memory). Callers
+    /// MUST emit their stateless approximation on `None`.
+    ///
+    /// The buffer is zero-initialized per instance (fresh per
+    /// `clone_rebind`), so consumers store `value + 1` and read 0 as
+    /// "no previous observation" — init semantics fall out of the
+    /// zeroing. See `design/kernel_instance_state.md`.
+    pub fn claim_state_word(&self) -> Option<i32> {
+        if !self.ctx.state_enabled || self.ctx.loop_depth.get() > 0 {
+            return None;
+        }
+        let idx = self.ctx.state_next.get();
+        self.ctx.state_next.set(idx + 1);
+        Some((idx * 8) as i32)
+    }
+
+    /// Bracket scaffold-loop body emission: state claims are refused
+    /// while any loop is open (see [`claim_state_word`](Self::claim_state_word)).
+    pub fn enter_loop(&self) {
+        self.ctx.loop_depth.set(self.ctx.loop_depth.get() + 1);
+    }
+
+    pub fn exit_loop(&self) {
+        let d = self.ctx.loop_depth.get();
+        debug_assert!(d > 0, "exit_loop without a matching enter_loop");
+        self.ctx.loop_depth.set(d.saturating_sub(1));
     }
 
     /// True iff `bind_id` is a LIFTED connect target in this region — a
@@ -5571,11 +5685,19 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // treatment of guarded selects, which fired the select on EVERY
     // kernel invocation — a `count` over a guarded select with an
     // unrelated reactive input in the region counted every event
-    // (interp 1, jit 5). Residual over-fire (deliberate, small): the
-    // node-walk emits on a guard-only event only when the SELECTION
-    // CHANGES; matching that exactly needs cross-invocation selection
-    // state a kernel doesn't have, so a guard-feeder fire with an
-    // unchanged selection still re-emits the current value.
+    // (interp 1, jit 5).
+    //
+    // The guard term is further refined by SELECTION MEMORY when a
+    // per-instance state word is available (root body, outside loops —
+    // see `BodyCx::claim_state_word`): the node-walk emits on a
+    // guard-only event only when the SELECTION changes (verified on
+    // the node-walk 2026-07-03: guard feeder fires, same arm re-taken,
+    // const body → NO emission; every selection change → emission), so
+    // each taken arm compares-and-records its index and the guard term
+    // fires only on a change (fuzz/triage-fuzzer-v2/firing_000005).
+    // Without a word (loop/callee context) the unrefined guard term
+    // stands — a deliberate residual duplicate-fire, never a wrong
+    // value.
     let has_guard = sel.arms.iter().any(|(pat, _)| pat.guard.is_some());
     let guard_stale: Option<ClifValue> = if has_guard {
         let mut ids: Vec<BindId> = Vec::new();
@@ -5604,6 +5726,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     } else {
         None
     };
+    let sel_state_off = if has_guard { cx.claim_state_word() } else { None };
+    let arm_index = std::cell::Cell::new(0usize);
     emit_select_arms(
         cx,
         sel,
@@ -5611,6 +5735,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         scrut_kind,
         &scrut_typ,
         &mut |cx, body, mark| {
+            let idx = arm_index.get();
+            arm_index.set(idx + 1);
             emit_select_value_arm(
                 cx,
                 body,
@@ -5619,6 +5745,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 merge,
                 scrut_disc,
                 guard_stale,
+                sel_state_off.map(|off| (off, idx)),
             )
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
@@ -6503,6 +6630,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge: Block,
     scrut_disc: ClifValue,
     guard_stale: Option<ClifValue>,
+    sel_state: Option<(i32, usize)>,
 ) -> Result<()> {
     use NodeView;
     let body_frozen =
@@ -6614,6 +6742,30 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     let disc = match guard_stale {
         None => propagate_flags(cx.b, base, &[disc, scrut_disc]),
         Some(gw) => {
+            // Selection memory (see `emit_select_node`): with a state
+            // word, the guard term fires only when the SELECTION
+            // changed — compare-and-record this arm's index (stored
+            // as idx+1; 0 = no previous selection, so a fresh
+            // instance's first selection always reads as changed).
+            // The record is skipped for a TAINTED scrutinee: the arm
+            // is taken structurally but the node-walk made no
+            // selection (its output is bottom), and recording it
+            // would mask the next real selection change.
+            let gw = match sel_state {
+                None => gw,
+                Some((off, idx)) => {
+                    let sp = cx.state_ptr();
+                    let stored =
+                        cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+                    let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
+                    let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
+                    let valid = is_untainted(cx.b, scrut_disc);
+                    let recorded = cx.b.ins().select(valid, tag, stored);
+                    cx.b.ins().store(MemFlags::trusted(), recorded, sp, off);
+                    let quiet = cx.b.ins().iconst(types::I64, STALE);
+                    cx.b.ins().select(changed, gw, quiet)
+                }
+            };
             let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
             propagate_stale(cx.b, d, &[disc, scrut_disc, gw])
         }
@@ -6914,13 +7066,16 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     };
     let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len() * 2 + 1);
     let mut drops: Vec<CallArgDrop> = Vec::new();
-    // Leading cycle-context word(s): forward THIS kernel's `event.init`
-    // to the callee (its constants fire when this region inits) — every
-    // kernel signature carries the leading init slot (`push_abi_params`),
-    // so a cross-kernel call must pass it or the call mismatches the sig.
-    for _ in 0..kernel_abi::INIT_WIRE_SLOTS {
-        clif_args.push(cx.init_flag());
-    }
+    // Leading cycle-context words: forward THIS kernel's `event.init`
+    // (the callee's constants fire when this region inits) and state
+    // pointer — every kernel signature carries the leading context
+    // slots (`push_abi_params`), so a cross-kernel call must pass them
+    // or the call mismatches the sig. The state pointer is forwarded
+    // for uniformity only: a callee body never CLAIMS words
+    // (`BodyEmitter::allow_state` is false for callees), so it never
+    // reads through it.
+    clif_args.push(cx.init_flag());
+    clif_args.push(cx.state_ptr());
     // Marshal in canonical `abi_params` order — scalars, then composites
     // (array/tuple/struct), then value-shape (variant/nullable) — two
     // words (disc, payload) each. An Owned composite/value Arg is dropped

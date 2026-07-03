@@ -165,9 +165,10 @@ async fn mutually_referencing_counters() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_counters_summed() -> Result<()> {
     // Two independent counters consumed together in the return.
-    assert_stream("{ let a = 0; let b = 0; a <- a + 1; b <- b + 2; a + b }", &[
-        0, 3, 6, 9, 12,
-    ])
+    assert_stream(
+        "{ let a = 0; let b = 0; a <- a + 1; b <- b + 2; a + b }",
+        &[0, 3, 6, 9, 12],
+    )
     .await
 }
 
@@ -292,11 +293,7 @@ async fn array_connect_const_quiesces() -> Result<()> {
 async fn string_accumulator_grows() -> Result<()> {
     // A string accumulator via interpolation: s grows by one char per
     // cycle; the observed stream is its length.
-    assert_stream(
-        "{ let s = \"\"; s <- \"[s]x\"; str::len(s) }",
-        &[0, 1, 2, 3, 4],
-    )
-    .await
+    assert_stream("{ let s = \"\"; s <- \"[s]x\"; str::len(s) }", &[0, 1, 2, 3, 4]).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
