@@ -444,9 +444,25 @@ pub async fn selfcheck(
     timeout: Duration,
 ) -> Vec<(String, &'static str)> {
     use tokio::task::JoinSet;
+    // Only DETERMINISTIC programs are determinism subjects. The hand
+    // seeds exercising rand / IO vocabulary exist as donor material
+    // for the mutator: rand varies its VALUES by design, and async IO
+    // varies its CYCLE PACING run to run (the first-value V1 oracle
+    // couldn't see pacing; the trace oracle can, and correctly reports
+    // both classes as self-disagreeing — verified 2026-07-03: all 38
+    // flakies of a full sweep were in these classes, zero others).
+    // Campaigns already drop such programs via `check`'s double-run
+    // guard; here they would only be false alarms against the gate's
+    // 100% bar. This is a SUBJECT filter, not an oracle relaxation —
+    // `Trace::agrees_with` stays exact for everything.
+    let deterministic =
+        |p: &str| !["rand::", "sys::", "http::"].iter().any(|m| p.contains(m));
     let mut rng = mutate::Rng::new(seed);
-    let mut progs: Vec<String> =
-        corpus::all_seeds().iter().map(|s| s.to_string()).collect();
+    let mut progs: Vec<String> = corpus::all_seeds()
+        .iter()
+        .filter(|s| deterministic(s))
+        .map(|s| s.to_string())
+        .collect();
     for _ in 0..iters {
         progs.push(generate::gen_program(&mut rng));
     }
