@@ -311,7 +311,10 @@ async fn main() -> Result<()> {
                 "selfcheck: {iters} generated (seed={seed}) + corpus \
                  (≥{total} seeds), twice per mode"
             );
-            let flaky = graphix_fuzz::selfcheck(iters, seed, CAMPAIGN_TIMEOUT).await;
+            // The generous per-run timeout keeps loaded-gate JIT runs
+            // (which pay compile cost under heavy parallelism) from
+            // breaching the backstop and reading as flakes.
+            let flaky = graphix_fuzz::selfcheck(iters, seed, TIMEOUT).await;
             if flaky.is_empty() {
                 println!("selfcheck OK — every trace deterministic in both modes");
             } else {
@@ -350,7 +353,15 @@ async fn main() -> Result<()> {
             // never re-reports a finding it (or a prior run) already saved.
             let iters = parse_iters(args.get(2), if cmd == "fuzz" { 50 } else { 100 });
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let out = std::path::PathBuf::from("fuzz/crashes");
+            // `GRAPHIX_FUZZ_CORPUS` overrides the corpus dir — concurrent
+            // soak campaigns must NOT share one: each process loads the
+            // max index at startup and writes findings with its own
+            // counter, so two campaigns on one dir silently clobber
+            // each other's findings at colliding indices.
+            let out = std::path::PathBuf::from(
+                std::env::var("GRAPHIX_FUZZ_CORPUS")
+                    .unwrap_or_else(|_| "fuzz/crashes".into()),
+            );
             let corpus = Arc::new(Corpus::load(&out));
             println!(
                 "corpus: {} existing divergences loaded from {}/",

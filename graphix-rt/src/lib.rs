@@ -457,6 +457,15 @@ enum ToGX<X: GXExt> {
         id: BindId,
         v: Value,
     },
+    /// Set several variables ATOMICALLY — all delivered in the same
+    /// cycle. Two separate `Set` messages can land in different input
+    /// batches (and so different cycles) depending on scheduler
+    /// timing, which makes "simultaneous" injections nondeterministic;
+    /// one `SetMany` is processed in one batch by construction. See
+    /// [`GXHandle::set_many`].
+    SetMany {
+        sets: SmallVec<[(BindId, Value); 4]>,
+    },
     Call {
         id: CallableId,
         args: ValArray,
@@ -945,6 +954,20 @@ impl<X: GXExt> GXHandle<X> {
     pub fn set<T: Into<Value>>(&self, id: BindId, v: T) -> Result<()> {
         let v = v.into();
         self.0.tx.send(ToGX::Set { id, v }).map_err(|_| anyhow!("runtime is dead"))
+    }
+
+    /// Set several variables ATOMICALLY: every update is delivered to
+    /// the graph in the SAME cycle. Separate [`set`](Self::set) calls
+    /// give no such guarantee — the messages can be batched into
+    /// different cycles depending on scheduler timing — so any caller
+    /// that needs simultaneity (e.g. the fuzzer's injection epochs)
+    /// must use this.
+    pub fn set_many(
+        &self,
+        sets: impl IntoIterator<Item = (BindId, Value)>,
+    ) -> Result<()> {
+        let sets: SmallVec<[(BindId, Value); 4]> = sets.into_iter().collect();
+        self.0.tx.send(ToGX::SetMany { sets }).map_err(|_| anyhow!("runtime is dead"))
     }
 
     /// Call a callable by id with the given arguments

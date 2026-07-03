@@ -521,6 +521,14 @@ impl<X: GXExt> GX<X> {
                     self.ctx.cached.insert(id, v.clone());
                     tasks.push((id, v))
                 }
+                ToGX::SetMany { sets } => {
+                    // One message ⇒ one input batch ⇒ every update
+                    // lands in the same cycle (see GXHandle::set_many).
+                    for (id, v) in sets {
+                        self.ctx.cached.insert(id, v.clone());
+                        tasks.push((id, v))
+                    }
+                }
                 ToGX::DeleteCallable { id } => self.delete_callable(id),
                 ToGX::Call { id, args } => {
                     if let Err(e) = self.call_callable(id, args, tasks) {

@@ -37,6 +37,16 @@ pub fn gen_reactive_program(rng: &mut Rng) -> String {
 }
 
 pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats) {
+    // Runaway programs are generated WITHOUT inputs or epochs: a
+    // free-running program's cycles never pause, so where an injection
+    // lands in its active-cycle stream is wall-clock timing — no driver
+    // protocol can make that deterministic (the extended selfcheck
+    // caught runaway+injection wobbling run-to-run). A single-burst
+    // runaway IS deterministic (cap-cut from the Compiled anchor — the
+    // trace_runaway_cap_determinism probe pins it).
+    if chance(rng, 0.03) {
+        return gen_runaway_burst(rng);
+    }
     let mut ctx = GenCtx::new();
     let mut stats = ReactiveStats::default();
     let mut stmts: Vec<String> = Vec::new();
@@ -67,7 +77,6 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
     // budget never trips and the program burns its whole wall-clock
     // backstop; an observed one is cut by the cap deterministically.
     let mut live: Vec<String> = Vec::new();
-    let mut runaways: Vec<String> = Vec::new();
     let n_templates = 1 + rng.below(3);
     for _ in 0..n_templates {
         if chance(rng, 0.25) {
@@ -85,13 +94,7 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
                 accumulator(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live)
             }
             5..=8 => cross_cycle(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
-            _ => {
-                if chance(rng, 0.30) {
-                    runaway(&mut ctx, &mut stmts, &mut stats, &mut runaways);
-                } else {
-                    sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut live);
-                }
-            }
+            _ => sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut live),
         }
     }
     // If nothing input-driven landed, add one scalar accumulator so
@@ -109,9 +112,6 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
             let n = &i64s[rng.below(i64s.len())];
             let op = ["+", "-", "*"][rng.below(3)];
             t = format!("({t} {op} {n})");
-        }
-        for r in &runaways {
-            t = format!("({t} + {r})");
         }
         t
     };
@@ -319,20 +319,26 @@ fn sample_chain(
     ctx.push(t, GenType::I64);
 }
 
-/// The deliberate runaway — never quiesces; the schedule's cycle
-/// budget cuts it deterministically in both modes.
-fn runaway(
-    ctx: &mut GenCtx,
-    stmts: &mut Vec<String>,
-    st: &mut ReactiveStats,
-    runaways: &mut Vec<String>,
-) {
+/// The deliberate runaway — an INPUT-FREE single burst (no schedule):
+/// it never quiesces, the trace's cycle budget cuts it, and the cut is
+/// deterministic only when nothing races the free-running cycles (see
+/// `gen_reactive_stats`). A bounded counter and a sync tail keep some
+/// vocabulary in the mix.
+fn gen_runaway_burst(rng: &mut Rng) -> (String, ReactiveStats) {
+    let mut ctx = GenCtx::new();
+    let mut stats = ReactiveStats::default();
+    let mut stmts: Vec<String> = Vec::new();
     let r = ctx.fresh();
     stmts.push(format!("let {r} = i64:0"));
     stmts.push(format!("{r} <- {r} + i64:1"));
-    runaways.push(r.clone());
-    ctx.push(r, GenType::I64);
-    st.runaway = true;
+    ctx.push(r.clone(), GenType::I64);
+    stats.runaway = true;
+    if chance(rng, 0.5) {
+        counter(&mut ctx, rng, &mut stmts, &mut stats);
+    }
+    let val = exprs::gen_typed(&ctx, rng, &GenType::I64, 2);
+    let body = format!("{{ {}; ({r} + ({val})) }}", stmts.join("; "));
+    (Schedule::default().render(&body), stats)
 }
 
 #[cfg(test)]

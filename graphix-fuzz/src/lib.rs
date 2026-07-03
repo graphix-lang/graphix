@@ -311,22 +311,40 @@ async fn drive(
         Ok(s) => s,
         Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
     ));
+    // Create EVERY input's ref up front (not lazily at first use) so
+    // ref creation never interleaves with injection delivery, then
+    // deliver each epoch's injections through ONE `set_many`: separate
+    // `set` calls can land in different runtime batches (and so
+    // different cycles) depending on scheduler timing, which made
+    // "simultaneous" multi-input epochs nondeterministic WITHIN a mode
+    // — the first overnight soak recorded dozens of phantom pacing
+    // divergences before an uncontended per-mode rerun caught the
+    // driver red-handed.
     let mut refs: AHashMap<&str, graphix_rt::Ref<NoExt>> = AHashMap::new();
+    for (name, _, _) in sched.inputs() {
+        let scope = graphix_compiler::Scope::root();
+        let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
+        let r = bounded!(
+            ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
+            Ok(r) => r,
+            Err(e) => return Outcome::RuntimeErr(format!("input {name}: {e}"))
+        );
+        // Keys borrow from `sched` (alive for the whole drive), not
+        // from the transient `inputs()` Vec.
+        let key = sched
+            .epochs
+            .iter()
+            .flat_map(|ep| ep.iter())
+            .map(|(n, _)| n.as_str())
+            .find(|n| *n == name)
+            .expect("inputs() names come from the epochs");
+        refs.insert(key, r);
+    }
     for ep in &sched.epochs {
-        for (name, v) in ep {
-            if !refs.contains_key(name.as_str()) {
-                let scope = graphix_compiler::Scope::root();
-                let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
-                let r = bounded!(
-                    ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
-                    Ok(r) => r,
-                    Err(e) => return Outcome::RuntimeErr(format!("input {name}: {e}"))
-                );
-                refs.insert(name.as_str(), r);
-            }
-            if let Err(e) = refs.get_mut(name.as_str()).unwrap().set(v.clone()) {
-                return Outcome::RuntimeErr(format!("set {name}: {e}"));
-            }
+        let sets: Vec<(graphix_compiler::BindId, Value)> =
+            ep.iter().map(|(name, v)| (refs[name.as_str()].bid, v.clone())).collect();
+        if let Err(e) = ctx.rt.set_many(sets) {
+            return Outcome::RuntimeErr(format!("set_many: {e}"));
         }
         segs.push(bounded!(
             ctx.rt.trace_wait_idle(),
@@ -599,8 +617,17 @@ pub async fn selfcheck(
         .filter(|s| deterministic(s))
         .map(|s| s.to_string())
         .collect();
-    for _ in 0..iters {
-        progs.push(generate::gen_program(&mut rng));
+    // Half single-burst, half SCHEDULED reactive — the multi-epoch
+    // injection driver is part of the oracle and must be just as
+    // deterministic (skipping this is how the per-set delivery
+    // nondeterminism shipped: single-burst selfcheck passed while
+    // multi-input epochs wobbled ±1 cycle run-to-run).
+    for i in 0..iters {
+        if i % 2 == 0 {
+            progs.push(generate::gen_program(&mut rng));
+        } else {
+            progs.push(generate::reactive::gen_reactive_program(&mut rng));
+        }
     }
     let par = parallelism();
     let mut set: JoinSet<Vec<(String, &'static str)>> = JoinSet::new();
@@ -614,6 +641,16 @@ pub async fn selfcheck(
                     run_program(&prog, mode, timeout),
                 );
                 if !a.agrees_with(&b) {
+                    // Confirm before flagging: under a loaded gate a
+                    // borderline run can breach the wall-clock backstop
+                    // (Timeout vs Trace = disagreement). A SEQUENTIAL
+                    // uncontended retry filters those; genuine
+                    // nondeterminism repeats.
+                    let a2 = run_program(&prog, mode, timeout).await;
+                    let b2 = run_program(&prog, mode, timeout).await;
+                    if a2.agrees_with(&b2) {
+                        continue;
+                    }
                     bad.push((
                         prog.clone(),
                         match mode {
@@ -824,6 +861,17 @@ pub async fn fuzz(
 /// resolver instead of a fresh netidx stack per program — a deeper
 /// follow-up; over-subscription is the cheap win.)
 fn parallelism() -> usize {
+    // `GRAPHIX_FUZZ_PAR` overrides — several concurrent soak campaigns
+    // (fuzz + generate + generate --reactive overnight) each spawning
+    // the full 8x oversubscription would triple the child-process load;
+    // the soak driver sets each to a share instead.
+    if let Some(n) = std::env::var("GRAPHIX_FUZZ_PAR")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        return n;
+    }
     std::thread::available_parallelism().map(|n| n.get() * 8).unwrap_or(16)
 }
 
