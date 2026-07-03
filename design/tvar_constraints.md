@@ -125,6 +125,16 @@ language decision if mixed-type arith turns out to be rare in practice.
 ## What gets better
 
 - `let f = |a| a + a; let x: f64 = f(f64:1.0)` compiles (observation #3).
+- **Optional-arg builtins with constrained-tvar returns fuse and
+  annotate** (found 2026-07-03): `rand::rand(#clock:1)` — the signature
+  `fn<'a: [Int, Float]>(?#start:'a, ?#end:'a, ...) -> 'a` with both
+  optional args omitted leaves `'a` unbound, so the region silently
+  node-walks (unbound-tvar freeze skip; the
+  `stdlib/graphix-package-rand` `rand_float_default` fixture is the
+  ASPIRE pin), and `let r: f64 = rand::rand(#clock:1)` REJECTS
+  outright — the same annotated-result class as observation #3. With
+  cell constraints + deferred inference, the annotation binds the cell
+  and the defaults' types settle it otherwise.
 - The `never()` gate idiom fuses without annotation: the gate's cell
   stays narrowable, the freeze sees one register class, and
   `gated_scalar_unannotated` flips from ASPIRE/None to Jit — a direct

@@ -6,12 +6,24 @@ const RAND_FLOAT_DEFAULT: &str = r#"
   rand::rand(#clock:1)
 "#;
 
+// ASPIRE(FuseExpect::Jit): with BOTH `?#start`/`?#end` omitted nothing
+// binds the signature's `'a: [Int, Float]`, so the region's return is a
+// constrained-unbound TVar — `freeze_region_return` can't pick a
+// register class and the region silently node-walks (the documented
+// unbound-TVar correct-None denominator; the pre-60804a48 lowering path
+// happened to fuse it, and this package crate's tests were missed by
+// the #139 re-annotation sweep, which covered graphix-tests only).
+// This is exactly design/tvar_constraints.md's target shape — flip to
+// FuseExpect::Jit (the default) when cell constraints let the deferred
+// inference bind 'a from the defaults. Note `let r: f64 =
+// rand::rand(#clock:1)` currently REJECTS for the same reason
+// (observation #3's class).
 run!(rand_float_default, RAND_FLOAT_DEFAULT, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(f)) => *f >= 0.0 && *f < 1.0,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RAND_FLOAT_RANGE: &str = r#"
   rand::rand(#start:10.0, #end:20.0, #clock:1)
