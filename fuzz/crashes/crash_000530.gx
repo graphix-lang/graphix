@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let rec f = |x: i64| select i64:2 {x if x < i64:10 => f(x + i64:42), x => x}; f(i64:0)}

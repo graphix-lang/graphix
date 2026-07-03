@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{ let v0 = [("graphix", u8:255), ("a", u8:1), ("a", u8:0)]; let v1 = "graphix"; let v2 = (((f64:3.14 + f64:0.1) - (f64:0.0 + f64:-1.0)) - (f64:0.0 * (f64:0.1 % f64:1.0))); [true, true] }

@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let source = "\n        let foo = never();\n        let bar = never();\n        select foo { x => bar <- dbg(x) };\n        sys::net::publish(\"/local/test\", 42)\n    "; sys::net::publish("/local/test", source)?; let status = mod test dynamic { sandbox blacklist [ sys::net::publish ]; sig { val foo: string; val bar: string }; source sys::net::subscribe("/local/test")? }; select status {error as e => str::join, null as _ => {test::foo <- dbg("hello world"); test::bar}}}

@@ -1,4 +1,0 @@
-// CRASH: child signal: 6 (SIGABRT) (core dumped) | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace | fatal runtime error: failed to initiate panic, error 5, aborting
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let b = buffer::encode([`Bytes(buffer::from_string("hi")), `Pad(u64:18446744073709551615)]); buffer::len(b)}
