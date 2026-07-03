@@ -110,11 +110,34 @@ pub enum CtlFlag {
     Abort = 2,
 }
 
-/// Lock-free [`CtlFlag`] set over an `AtomicU32`. A loop polls
+/// The default [`Control::max_call_depth`]: the deepest chain of nested
+/// (non-tail) graphix-lambda dispatches either evaluator will enter
+/// before producing bottom instead. Sized from measurement (2026-07-03,
+/// dev profile, 2MiB tokio worker stacks): the node-walk's Rust stack
+/// dies at ≈1,600–1,800 nested dispatches for a small body and
+/// ≈1,300–1,600 for a heavy one (frame cost is dominated by the
+/// dispatch machinery, not body size), so 256 keeps ≥4x headroom below
+/// the worst measured case. Embedders with bigger stacks can raise it
+/// via [`Control::set_max_call_depth`]. Tail self-calls loop in place
+/// in both evaluators and are exempt.
+pub const DEFAULT_MAX_CALL_DEPTH: u32 = 256;
+
+/// Lock-free [`CtlFlag`] set over an `AtomicU32`, plus the shared
+/// call-depth guard both evaluators count against. A loop polls
 /// [`Control::interrupted`] (any flag ⇒ abort); the run loop polls
 /// [`Control::aborted`] (Abort ⇒ shut down). See [`CtlFlag`].
 #[derive(Debug)]
-pub struct Control(AtomicU32);
+pub struct Control {
+    flags: AtomicU32,
+    /// Current nested non-tail lambda-dispatch depth. ONE counter for
+    /// both evaluators — the node-walk pushes in `GXLambda::update`,
+    /// JIT'd kernels push at lambda-call sites via the
+    /// `graphix_depth_push`/`_pop` helpers — so an impure program that
+    /// interleaves kernel frames and node-walk frames is bounded by
+    /// the same limit as either alone.
+    depth: AtomicU32,
+    max_depth: AtomicU32,
+}
 
 impl Default for Control {
     fn default() -> Self {
@@ -124,38 +147,80 @@ impl Default for Control {
 
 impl Control {
     pub fn new() -> Self {
-        Control(AtomicU32::new(0))
+        Control {
+            flags: AtomicU32::new(0),
+            depth: AtomicU32::new(0),
+            max_depth: AtomicU32::new(DEFAULT_MAX_CALL_DEPTH),
+        }
     }
 
     /// Request that in-flight loops abort this cycle; the runtime keeps
     /// running and `do_cycle` clears this at the end of the cycle.
     pub fn interrupt(&self) {
-        self.0.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
+        self.flags.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
     }
 
     /// Request shutdown: in-flight loops abort AND the run loop returns
     /// before the next cycle. Sticky — never cleared.
     pub fn abort(&self) {
-        self.0.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
+        self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
     }
 
     /// True if any control flag is set — the signal a loop polls to
     /// decide whether to abort (both flags break loops).
     pub fn interrupted(&self) -> bool {
-        self.0.load(Ordering::Acquire) != 0
+        self.flags.load(Ordering::Acquire) != 0
     }
 
     /// True if `Abort` is set — the signal the run loop polls before each
     /// cycle to decide whether to shut down.
     pub fn aborted(&self) -> bool {
-        self.0.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
+        self.flags.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
     }
 
     /// Clear the `Interrupt` bit, leaving `Abort` sticky. Called by
     /// `do_cycle` at the end of each cycle so a one-shot `interrupt()`
     /// doesn't persist into the next cycle.
     pub fn clear_interrupt(&self) {
-        self.0.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
+        self.flags.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
+    }
+
+    /// Enter one nested (non-tail) lambda dispatch. `false` = the depth
+    /// limit is reached — the caller must NOT dispatch and must produce
+    /// bottom instead (the counter is not left incremented). Paired
+    /// with [`depth_pop`](Self::depth_pop) after a `true` return.
+    pub fn depth_push(&self) -> bool {
+        let d = self.depth.fetch_add(1, Ordering::Relaxed);
+        if d >= self.max_depth.load(Ordering::Relaxed) {
+            self.depth.fetch_sub(1, Ordering::Relaxed);
+            false
+        } else {
+            true
+        }
+    }
+
+    pub fn depth_pop(&self) {
+        self.depth.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Reset the depth counter to zero. Called by the runtime at the
+    /// end of each cycle — pure insurance against a leaked push (a bug,
+    /// but one that would otherwise ratchet every later cycle toward a
+    /// spurious limit).
+    pub fn depth_reset(&self) {
+        self.depth.store(0, Ordering::Relaxed);
+    }
+
+    /// The non-tail call-depth limit (see [`DEFAULT_MAX_CALL_DEPTH`]).
+    pub fn max_call_depth(&self) -> u32 {
+        self.max_depth.load(Ordering::Relaxed)
+    }
+
+    /// Set the non-tail call-depth limit. Raising it beyond the default
+    /// requires correspondingly larger runtime thread stacks — the
+    /// default keeps ≥4x measured headroom on 2MiB stacks.
+    pub fn set_max_call_depth(&self, n: u32) {
+        self.max_depth.store(n, Ordering::Relaxed);
     }
 }
 

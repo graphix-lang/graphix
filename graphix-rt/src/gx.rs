@@ -430,8 +430,12 @@ impl<X: GXExt> GX<X> {
             tokio::task::block_in_place(run_nodes);
         }
         // The one-shot interrupt is consumed; abort stays sticky for the
-        // run loop's pre-cycle shutdown check.
+        // run loop's pre-cycle shutdown check. The call-depth counter
+        // resets with it — pure insurance against a leaked push, which
+        // would otherwise ratchet every later cycle toward a spurious
+        // depth limit.
         self.ctx.control.clear_interrupt();
+        self.ctx.control.depth_reset();
         if let Some(tr) = self.trace.as_mut() {
             tr.cycle_end(self.cycle);
         }

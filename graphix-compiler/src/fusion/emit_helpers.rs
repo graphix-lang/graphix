@@ -461,6 +461,39 @@ pub fn set_interrupt_ptr(control: &crate::Control) {
     INTERRUPT_PTR.with(|c| c.set(control as *const crate::Control));
 }
 
+/// Enter one nested lambda dispatch against the shared call-depth
+/// guard (`Control::depth_push` — the SAME counter the node-walk's
+/// `GXLambda::update` pushes, so interleaved kernel/node-walk frames
+/// of an impure program are bounded together). Returns 1 when the
+/// dispatch may proceed (pair with `graphix_depth_pop` after the
+/// call), 0 at the limit — the call site must skip the call and abort
+/// the kernel to bottom, the same observable as the node-walk's
+/// guarded dispatch producing nothing. With no cycle in flight (null
+/// ptr) the dispatch proceeds unguarded.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_depth_push() -> i8 {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        if p.is_null() {
+            1
+        } else {
+            // SAFETY: see `graphix_interrupted`.
+            i8::from(unsafe { (*p).depth_push() })
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_depth_pop() {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        if !p.is_null() {
+            // SAFETY: see `graphix_interrupted`.
+            unsafe { (*p).depth_pop() }
+        }
+    })
+}
+
 /// Push a `Value::String(s)` slot. The string is identified by an
 /// `ArcStr` already interned somewhere; we pass the raw pointer
 /// (which is `Arc<str>` data — see `ArcStr::as_ptr`) plus length.
@@ -1669,6 +1702,8 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_dyncall_pending_take", graphix_dyncall_pending_take as *const u8),
         ("graphix_dyncall_set_pending", graphix_dyncall_set_pending as *const u8),
         ("graphix_interrupted", graphix_interrupted as *const u8),
+        ("graphix_depth_push", graphix_depth_push as *const u8),
+        ("graphix_depth_pop", graphix_depth_pop as *const u8),
         (
             "graphix_value_buf_push_array_borrowed",
             graphix_value_buf_push_array_borrowed as *const u8,

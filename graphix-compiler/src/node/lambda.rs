@@ -15,6 +15,7 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
+use log::error;
 use netidx::{pack::Pack, subscriber::Value, utils::Either};
 use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
@@ -202,45 +203,68 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 })
             }
         }
-        if !self.tail_loop.load(Ordering::Relaxed) {
-            return self.body.update(ctx, event);
-        }
-        // Sync self-tail-recursion: loop in place instead of recursing on
-        // the Rust stack (which overflows; the JIT compiles this to a
-        // native loop). A tail-position self-call in the body stashes its
-        // rebind args in `ctx.pending_tail_call` and returns without
-        // dispatching (`CallSite::update`); we take them, rebind the
-        // formals, and re-run the body. `event.init = true` each iteration
-        // makes every pass a "fresh call" — init-gated nodes (Constants)
-        // re-fire, matching both the old fresh-body-per-level node-walk and
-        // the JIT's per-iteration re-execution.
-        loop {
-            // Cooperative interrupt: a wedged tail loop aborts to bottom
-            // when `interrupt()`/`abort()` is requested (`do_cycle` clears
-            // the one-shot Interrupt; Abort additionally shuts down).
-            if ctx.interrupted() {
-                return None;
-            }
-            let prev = mem::replace(&mut event.init, true);
-            let res = self.body.update(ctx, event);
-            event.init = prev;
-            let mine = matches!(
-                &ctx.pending_tail_call,
-                Some(p) if p.lambda == self.id
+        // The call-depth guard: each nested (non-tail) lambda dispatch
+        // counts one against the shared limit; at the limit the
+        // dispatch produces BOTTOM (logged) instead of recursing the
+        // Rust stack to death. One entry = one unit — the tail loop
+        // below iterates inside this frame, so tail recursion is exempt
+        // in exactly the way it is in a JIT'd rebind-and-jump loop.
+        // Bottom (not a catchable error value): the callsite's static
+        // type has no error branch to carry one — the same reasoning as
+        // unchecked-arith overflow and div-by-zero (hot-path failures
+        // log and bottom; see `Control::max_call_depth`).
+        if !ctx.control.depth_push() {
+            error!(
+                "call depth limit ({}) exceeded in {} — deep non-tail \
+                 recursion produces no value (raise via \
+                 Control::set_max_call_depth)",
+                ctx.control.max_call_depth(),
+                self.body.spec()
             );
-            if !mine {
-                return res;
-            }
-            let p = ctx.pending_tail_call.take().unwrap();
-            let prev = mem::replace(&mut event.init, true);
-            for (v, pat) in p.args.iter().zip(self.args.iter()) {
-                pat.bind(v, &mut |id, v| {
-                    ctx.cached.insert(id, v.clone());
-                    event.variables.insert(id, v);
-                })
-            }
-            event.init = prev;
+            return None;
         }
+        let res = if !self.tail_loop.load(Ordering::Relaxed) {
+            self.body.update(ctx, event)
+        } else {
+            // Sync self-tail-recursion: loop in place instead of recursing on
+            // the Rust stack (which overflows; the JIT compiles this to a
+            // native loop). A tail-position self-call in the body stashes its
+            // rebind args in `ctx.pending_tail_call` and returns without
+            // dispatching (`CallSite::update`); we take them, rebind the
+            // formals, and re-run the body. `event.init = true` each iteration
+            // makes every pass a "fresh call" — init-gated nodes (Constants)
+            // re-fire, matching both the old fresh-body-per-level node-walk and
+            // the JIT's per-iteration re-execution.
+            loop {
+                // Cooperative interrupt: a wedged tail loop aborts to bottom
+                // when `interrupt()`/`abort()` is requested (`do_cycle` clears
+                // the one-shot Interrupt; Abort additionally shuts down).
+                if ctx.interrupted() {
+                    break None;
+                }
+                let prev = mem::replace(&mut event.init, true);
+                let res = self.body.update(ctx, event);
+                event.init = prev;
+                let mine = matches!(
+                    &ctx.pending_tail_call,
+                    Some(p) if p.lambda == self.id
+                );
+                if !mine {
+                    break res;
+                }
+                let p = ctx.pending_tail_call.take().unwrap();
+                let prev = mem::replace(&mut event.init, true);
+                for (v, pat) in p.args.iter().zip(self.args.iter()) {
+                    pat.bind(v, &mut |id, v| {
+                        ctx.cached.insert(id, v.clone());
+                        event.variables.insert(id, v);
+                    })
+                }
+                event.init = prev;
+            }
+        };
+        ctx.control.depth_pop();
+        res
     }
 
     fn typecheck0(

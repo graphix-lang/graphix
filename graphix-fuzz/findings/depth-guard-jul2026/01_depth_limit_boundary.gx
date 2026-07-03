@@ -1,0 +1,15 @@
+// bisect: the call-depth guard boundary (DEFAULT_MAX_CALL_DEPTH = 256).
+// f(255) completes (the outer call is depth 1); this f(256) trips the
+// guard in BOTH evaluators at the same logical depth and produces
+// bottom (empty trace) — before the guard (2026-07-03) this program
+// CRASHED the node-walk with a Rust stack overflow at ~1,600 frames
+// (SIGABRT, runtime dead), and deep-enough non-tail JIT recursion was
+// unbounded native stack. Trace-strength agreement pins the boundary
+// alignment: an asymmetric guard regression shows as a divergence, a
+// symmetric one kills the in-process regress run loudly.
+// mutant: hand probe (Phase 4)
+// minimized:
+{
+  let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
+  f(i64:256)
+}

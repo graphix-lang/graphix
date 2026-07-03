@@ -1,0 +1,11 @@
+// bisect: `array::init(i64:MAX, …)` KILLED the process: the node-walk
+// mints one slot per element (capacity-overflow panic in the slot
+// Vec), and the JIT's result-buffer reserve would panic the same way
+// (only NEGATIVE n was clamped). Found by the fuzz campaign (crash
+// corpus, pre-2026-07-03). Fix: one shared limit
+// (node::array::MAX_ARRAY_INIT_LEN = 16M elements) — the node-walk
+// logs+bottoms, the JIT aborts the kernel to bottom, both at the same
+// length, so the trace stays in agreement.
+// mutant: campaign crasher crash_000521
+// minimized:
+{let a = array::init(i64:9223372036854775807, |i| i + i64:1); array::fold(a, i64:0, |acc, x| acc + x)}

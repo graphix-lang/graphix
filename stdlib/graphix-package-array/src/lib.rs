@@ -1522,6 +1522,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         }
         let (size_fired, resized) = match from[0].update(ctx, event) {
             Some(Value::I64(n)) => {
+                // Runaway sizes log + bottom (shared limit with the
+                // JIT's init loop — see MAX_ARRAY_INIT_LEN): building
+                // the per-element slots for `init(i64:MAX, …)` used to
+                // capacity-overflow-panic the slot Vec, killing the
+                // process.
+                if n > graphix_compiler::node::MAX_ARRAY_INIT_LEN {
+                    log::error!(
+                        "array::init: size {n} exceeds the {} element \
+                         limit — producing no value",
+                        graphix_compiler::node::MAX_ARRAY_INIT_LEN
+                    );
+                    return None;
+                }
                 let n = n.max(0) as usize;
                 if n == slen {
                     (true, false)

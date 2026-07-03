@@ -941,3 +941,28 @@ const HOF_CONST_BODY_PREV_LEN: &str = r#"
 run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// The call-depth guard (DEFAULT_MAX_CALL_DEPTH = 256), limit±1 in both
+// modes: each nested non-tail lambda dispatch counts one against the
+// shared Control counter (node-walk GXLambda::update; JIT lambda-call
+// sites), so the outer f(n) call is depth 1 and n = 255 is the deepest
+// argument that completes. At the limit the dispatch produces BOTTOM
+// (logged), like unchecked-arith failures — before the guard this was
+// a runtime-killing stack overflow at ~1,600 frames in the node-walk.
+// Tail self-calls are exempt on both sides (the 5M-deep
+// jit_deep_tail_probe pins that).
+const DEPTH_GUARD_UNDER_LIMIT: &str = r#"
+{
+  let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
+  f(i64:255)
+}
+"#;
+
+run!(depth_guard_under_limit, DEPTH_GUARD_UNDER_LIMIT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(32640)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The at-limit sibling (f(256) → bottom in both modes) lives in the
+// fuzz findings corpus (findings/depth-guard-jul2026/) — empty-trace
+// agreement is a first-class assertion there, while the run! harness
+// has no runtime-bottom expectation (it would wait out its timeout).

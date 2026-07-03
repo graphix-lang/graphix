@@ -1,0 +1,10 @@
+// bisect: `buffer::encode` with a runaway `Pad` KILLED the process:
+// `put_bytes(0, u64:MAX as usize)` capacity-overflow-panicked inside
+// the builtin, and the panic aborted the runtime ("failed to initiate
+// panic, error 5"). Found by the fuzz campaign (crash corpus,
+// pre-2026-07-03). encode returns bare `bytes` (no error union), so
+// the fix is the hot-path convention: pads beyond 64MiB log and
+// produce bottom — both evaluators agree on the empty trace.
+// mutant: campaign crasher crash_000479
+// minimized:
+{let b = buffer::encode([`Bytes(buffer::from_string("hi")), `Pad(u64:18446744073709551615)]); buffer::len(b)}

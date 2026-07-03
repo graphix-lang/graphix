@@ -198,7 +198,25 @@ fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
             "F64" => buf.put_f64(*a.get_as_unchecked::<f64>()),
             "F64LE" => buf.put_f64_le(*a.get_as_unchecked::<f64>()),
             "Bytes" => buf.put_slice(a.get_as_unchecked::<PBytes>()),
-            "Pad" => buf.put_bytes(0, *a.get_as_unchecked::<u64>() as usize),
+            "Pad" => {
+                // A runaway pad (`Pad(u64:MAX)` — the fuzzer's crash
+                // corpus) must not reach `put_bytes`: the reserve
+                // panics on capacity overflow, ABORTING the process
+                // (panic-in-panic through the FFI-ish call path), and
+                // anything short of that OOM-bombs. `encode` returns
+                // bare `bytes` (no error union), so an absurd pad
+                // logs and bottoms like other hot-path failures.
+                const MAX_PAD: u64 = 64 * 1024 * 1024;
+                let n = *a.get_as_unchecked::<u64>();
+                if n > MAX_PAD {
+                    log::error!(
+                        "buffer::encode: Pad({n}) exceeds the {MAX_PAD} \
+                         byte limit — producing no value"
+                    );
+                    return None;
+                }
+                buf.put_bytes(0, n as usize)
+            }
             "Varint" => {
                 netidx_core::pack::encode_varint(*a.get_as_unchecked::<u64>(), buf);
             }

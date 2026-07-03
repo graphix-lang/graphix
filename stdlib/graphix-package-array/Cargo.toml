@@ -17,6 +17,7 @@ default = []
 krb5_iov = ["netidx/krb5_iov"]
 
 [dependencies]
+log.workspace = true
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }

@@ -1938,6 +1938,14 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             // no args; returns i8 (1 = abort the loop, 0 = continue)
             sig.returns.push(AbiParam::new(types::I8));
         }
+        "graphix_depth_push" => {
+            // no args; returns i8 (1 = dispatch may proceed, 0 = at
+            // the call-depth limit — skip the call, abort to bottom)
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        "graphix_depth_pop" => {
+            // no args, no return
+        }
         "graphix_value_buf_push_array_borrowed" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
@@ -7066,6 +7074,28 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     };
     let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len() * 2 + 1);
     let mut drops: Vec<CallArgDrop> = Vec::new();
+    // The call-depth guard (Phase 4): every non-tail lambda dispatch —
+    // cross-kernel calls AND value-position self-calls (native
+    // recursion) — enters one unit against the SHARED
+    // `Control::depth_push` counter the node-walk's `GXLambda::update`
+    // pushes, so both evaluators bottom at the same logical depth and
+    // an impure program's interleaved frames are bounded together. At
+    // the limit the kernel takes its abort path (bottom for this
+    // cycle) — the same observable as the node-walk's guarded dispatch
+    // yielding nothing, and cascaded identically since the whole
+    // region is one result. The check runs BEFORE argument marshalling
+    // so the abort path has nothing of ours in flight (fused arg
+    // evaluation is pure, so skipping it is unobservable — the
+    // node-walk evaluates args in the caller's frame either way).
+    // Tail self-calls are exempt on both sides (rebind-and-jump here,
+    // the in-place loop there).
+    {
+        let push = cx.helper("graphix_depth_push")?;
+        let call = cx.b.ins().call(push, &[]);
+        let ok = cx.b.inst_results(call)[0];
+        let valid = cx.b.ins().icmp_imm(IntCC::NotEqual, ok, 0);
+        emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    }
     // Leading cycle-context words: forward THIS kernel's `event.init`
     // (the callee's constants fire when this region inits) and state
     // pointer — every kernel signature carries the leading context
@@ -7121,6 +7151,14 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             },
         )?;
     let inst = cx.b.ins().call(*func_ref, &clif_args);
+    // Exit the depth-guard unit entered above. A callee that ABORTED
+    // (interrupt / its own deeper depth trip) still returns here
+    // normally (the abort path returns the pending sentinel), so the
+    // pop is unconditional.
+    {
+        let pop = cx.helper("graphix_depth_pop")?;
+        cx.b.ins().call(pop, &[]);
+    }
     // The callee RETURN ABI is unchanged (params went 2-word, returns
     // didn't): scalar/composite return one word, value-shape two. The
     // callee already forced any taint before returning, so a scalar /

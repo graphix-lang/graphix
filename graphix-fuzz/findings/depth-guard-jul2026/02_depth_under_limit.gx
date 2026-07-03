@@ -1,0 +1,11 @@
+// bisect: the call-depth guard's under-limit sibling — f(255) is the
+// deepest argument that completes at DEFAULT_MAX_CALL_DEPTH = 256, and
+// must keep producing 32640 in both modes (a guard that trips a frame
+// early under-fires REAL programs; the graphix-tests run! fixture
+// depth_guard_under_limit pins the value, this pins the trace).
+// mutant: hand probe (Phase 4)
+// minimized:
+{
+  let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
+  f(i64:255)
+}

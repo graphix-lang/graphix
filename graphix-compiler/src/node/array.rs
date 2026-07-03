@@ -52,6 +52,15 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
 /// The runtime semantics of `array[i]` — the single source of truth
 /// shared by the node-walk ([`ArrayRef::update`]) and the JIT (via
 /// `graphix_valarray_index`). On success returns the bare element; on
+/// The largest `n` `array::init(n, f)` will build — 16M elements
+/// (256MB of `Value`s). Beyond it BOTH evaluators log and produce
+/// bottom, like the other hot-path failures: `init(i64:MAX, …)` used
+/// to capacity-overflow-panic the node-walk's slot Vec (ABORTING the
+/// process — the fuzzer's crash corpus) and would panic the JIT's
+/// result-buffer reserve the same way. One shared constant so the two
+/// backends bottom at the same length.
+pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
+
 /// an out-of-bounds index returns the `ArrayIndexError` value (the
 /// access type is `[elem, Error<…>]`, so callers wrap the result in
 /// `Nullable<elem>`).

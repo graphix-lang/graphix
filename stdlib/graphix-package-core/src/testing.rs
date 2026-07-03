@@ -272,7 +272,10 @@ where
 /// first-update return can't observe). Collects updates for a brief window
 /// and returns the LAST value of the result expr. Use for multi-cycle
 /// convergence (e.g. a fold whose init changes via `<-`).
-pub async fn eval_converged(code: &str, register: &[PackageRef]) -> Result<(Value, TestCtx)> {
+pub async fn eval_converged(
+    code: &str,
+    register: &[PackageRef],
+) -> Result<(Value, TestCtx)> {
     let (tx, mut rx) = mpsc::channel(10);
     let gx_code = format!("let result = {code}");
     let tbl = ahash::AHashMap::from_iter([(

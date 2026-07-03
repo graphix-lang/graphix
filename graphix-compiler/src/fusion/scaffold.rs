@@ -719,6 +719,16 @@ where
     let zero_clamp = cx.b.ins().iconst(types::I64, 0);
     let is_neg = cx.b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
     let n_val = cx.b.ins().select(is_neg, zero_clamp, n_widened);
+    // Runaway sizes abort the kernel to bottom, at the SAME limit the
+    // node-walk's `array::init` logs+bottoms at (`MAX_ARRAY_INIT_LEN`):
+    // `buf_new(i64:MAX)` would capacity-overflow-panic the result
+    // buffer's reserve across the extern "C" boundary, killing the
+    // process (the negative clamp above only handles the sign).
+    {
+        let max = cx.b.ins().iconst(types::I64, crate::node::array::MAX_ARRAY_INIT_LEN);
+        let valid = cx.b.ins().icmp(IntCC::SignedLessThanOrEqual, n_val, max);
+        emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    }
     taint.set_len(n_val);
     let call = cx.b.ins().call(buf_new, &[n_val]);
     let buf = cx.b.inst_results(call)[0];

@@ -21,6 +21,7 @@ use std::{cell::RefCell, sync::LazyLock};
 use triomphe::Arc;
 
 pub(crate) mod array;
+pub use array::MAX_ARRAY_INIT_LEN;
 pub(crate) mod bind;
 pub mod callsite;
 pub(crate) mod compiler;
