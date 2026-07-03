@@ -1003,21 +1003,27 @@ where
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let acc_var = cx.b.declare_var(prim_to_clif(acc_prim));
-    // The acc's TAINT is LOOP-CARRIED in its own disc Variable — the
-    // node-walk's per-slot dataflow means a bottom init poisons the
-    // fold ONLY while the callback actually consumes the accumulator
-    // (`|acc, x| x` recovers on the first iteration; `|acc, x| acc + x`
-    // stays bottom). A kernel abort here diverged from the node-walk
-    // (fuzz/triage-fuzzer-v2/divergence_000003: init 1/0, callback
-    // ignoring acc — interp folds to the last element, jit bottomed).
-    // Each carry re-bases on the clean scalar tag so only TAINT rides.
+    // The acc's TAINT and STALE are LOOP-CARRIED in its own disc
+    // Variable — the node-walk's per-slot dataflow means a bottom init
+    // poisons the fold ONLY while the callback actually consumes the
+    // accumulator (`|acc, x| x` recovers on the first iteration;
+    // `|acc, x| acc + x` stays bottom). A kernel abort here diverged
+    // from the node-walk (fuzz/triage-fuzzer-v2/divergence_000003:
+    // init 1/0, callback ignoring acc — interp folds to the last
+    // element, jit bottomed). Each carry re-bases on the clean scalar
+    // tag so only TAINT and STALE ride. STALE must ride too: rebasing
+    // to the always-fired scalar tag made an acc-consuming body read
+    // FIRED on every kernel run, so a fold over a quiet const array
+    // re-fired forever — a `s <- fold(a, …)` self-connect busy-spun
+    // where the node-walk quiesced (findings/hof-connect-jun2026/01,
+    // re-caught by the trace oracle after the SlotFlags rework).
     let acc_disc_var = cx.b.declare_var(types::I64);
     let taint = SlotFlags::new(cx);
     let init_cv = init(cx)?;
     taint.fold_stale(cx, init_cv.disc);
     cx.b.def_var(acc_var, init_cv.payload);
     let base = scalar_disc(cx.b, acc_prim);
-    let t = cx.b.ins().band_imm(init_cv.disc, TAINT);
+    let t = cx.b.ins().band_imm(init_cv.disc, TAINT | STALE);
     let d0 = cx.b.ins().bor(base, t);
     cx.b.def_var(acc_disc_var, d0);
     let i_var = init_counter(cx);
@@ -1050,7 +1056,7 @@ where
     taint.fold(cx, new_acc.disc);
     cx.b.def_var(acc_var, new_acc.payload);
     let base = scalar_disc(cx.b, acc_prim);
-    let t = cx.b.ins().band_imm(new_acc.disc, TAINT);
+    let t = cx.b.ins().band_imm(new_acc.disc, TAINT | STALE);
     let d = cx.b.ins().bor(base, t);
     cx.b.def_var(acc_disc_var, d);
     emit_increment(cx, i_var, i_now, loop_header);

@@ -2405,24 +2405,10 @@ pub fn emit_forced_keep<R: Rt, E: UserEvent>(
 
 /// Bind an EXISTING scalar Variable as a local (a loop counter /
 /// accumulator the scaffold rebinds in place — `bind_local` would
-/// declare a fresh one). Synthesizes a const untainted disc Variable;
-/// use [`bind_scalar_var_with_disc`] when the local's taint must be
-/// loop-carried (fold's accumulator).
-pub(crate) fn bind_scalar_var(
-    cx: &mut BodyCx,
-    name: ArcStr,
-    prim: PrimType,
-    payload_var: Variable,
-    bind_id: Option<BindId>,
-) {
-    let disc = scalar_disc(cx.b, prim);
-    let dv = cx.b.declare_var(types::I64);
-    cx.b.def_var(dv, disc);
-    bind_scalar_var_with_disc(cx, name, prim, payload_var, dv, bind_id)
-}
-
-/// [`bind_scalar_var`] with a caller-owned DISC Variable — reads of the
-/// local see whatever taint the caller loop-carries into it.
+/// declare a fresh one), with a caller-owned DISC Variable: reads of
+/// the local see whatever taint/staleness the caller carries into it
+/// (a fold accumulator's loop-carried taint, an element's
+/// source-inherited STALE bit).
 pub(crate) fn bind_scalar_var_with_disc(
     cx: &mut BodyCx,
     name: ArcStr,

@@ -12,13 +12,17 @@
 //! fusion+JIT (it is far more complex), though the node-walk is the
 //! more-trusted model, not infallible. See `design/graphix_fuzz.md`.
 //!
-//! V1 scope: single-snapshot oracle over pure-synchronous, terminating
-//! programs (the first emitted value of `result`). Reactive trace
-//! comparison is a later milestone.
+//! The observable result is a per-cycle TRACE ([`trace::Trace`]): every
+//! value `result` emits, with its cycle offset — so extra fires,
+//! missing fires, and wrong pacing are divergences, not just wrong
+//! first values. A program that never emits (bottom) is an instant
+//! empty-trace agreement, resolved at runtime quiescence rather than by
+//! waiting out a timeout.
 
 pub mod corpus;
 pub mod generate;
 pub mod mutate;
+pub mod trace;
 
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -29,7 +33,7 @@ use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
 use graphix_rt::{GXEvent, NoExt};
 use netidx::publisher::Value;
 use netidx_core::path::Path;
-use std::time::Duration;
+use std::{future, time::Duration};
 use tokio::sync::mpsc;
 
 /// Every stdlib package, so generated programs can use the whole
@@ -67,29 +71,41 @@ impl Mode {
 /// The result of running one program under one mode.
 #[derive(Debug, Clone)]
 pub enum Outcome {
-    /// Produced a result value.
-    Value(Value),
+    /// Ran to quiescence (or the trace budget): the per-cycle history
+    /// of everything `result` emitted. A bottom program is an empty
+    /// trace — agreement, resolved instantly at quiescence.
+    Trace(trace::Trace),
     /// Did not compile (parse / typecheck error).
     CompileErr(String),
     /// Runtime error / the runtime died before producing a result.
     RuntimeErr(String),
-    /// Produced no result within the timeout (may be a legitimate
-    /// non-terminating program, or a hang).
+    /// The runtime neither quiesced nor hit the trace budget within
+    /// the wall-clock backstop — a wedged evaluator, or a program that
+    /// spins forever without its `result` ever firing (only firing
+    /// cycles count against the budget).
     Timeout,
 }
 
 impl Outcome {
-    /// Whether two outcomes are observably equivalent. Equality of
-    /// values uses graphix's own `Value` equality (total: `-0.0 == 0.0`,
-    /// `NaN == NaN`). Different outcome *kinds* (e.g. Value vs Timeout,
-    /// or Value vs RuntimeErr) always disagree — that is the signal for
-    /// an asymmetric hang or a fusion-introduced error. Same-kind
-    /// non-value outcomes agree without comparing their (mode-dependent)
-    /// messages.
+    /// The trace of a pure synchronous program producing `v` once at
+    /// init — offset 0, single epoch. Test convenience.
+    pub fn single(v: Value) -> Outcome {
+        Outcome::Trace(trace::Trace {
+            epochs: vec![trace::Epoch { events: vec![(0, v)], capped: false }],
+        })
+    }
+
+    /// Whether two outcomes are observably equivalent. Traces compare
+    /// structurally — values (graphix total equality: `-0.0 == 0.0`,
+    /// `NaN == NaN`), relative pacing, and cap flags. Different outcome
+    /// *kinds* (e.g. Trace vs Timeout, or Trace vs RuntimeErr) always
+    /// disagree — that is the signal for an asymmetric hang or a
+    /// fusion-introduced error. Same-kind non-trace outcomes agree
+    /// without comparing their (mode-dependent) messages.
     pub fn agrees_with(&self, other: &Outcome) -> bool {
         use Outcome::*;
         match (self, other) {
-            (Value(a), Value(b)) => a == b,
+            (Trace(a), Trace(b)) => a.agrees_with(b),
             (CompileErr(_), CompileErr(_)) => true,
             (RuntimeErr(_), RuntimeErr(_)) => true,
             (Timeout, Timeout) => true,
@@ -100,7 +116,7 @@ impl Outcome {
     /// Coarse variant discriminant, for the "same bug" bucket key.
     pub fn kind(&self) -> u8 {
         match self {
-            Outcome::Value(_) => 0,
+            Outcome::Trace(_) => 0,
             Outcome::CompileErr(_) => 1,
             Outcome::RuntimeErr(_) => 2,
             Outcome::Timeout => 3,
@@ -108,9 +124,10 @@ impl Outcome {
     }
 }
 
-/// Run `code` (a graphix expression) under `mode`, returning its first
-/// emitted `result` value or why none came. The program is wrapped as
-/// `let result = {code}` and driven to the first update of `result`.
+/// Run `code` (a graphix expression) under `mode`, returning the
+/// per-cycle trace of everything `result` emitted (or why nothing ran).
+/// The program is wrapped as `let result = {code}` and driven to
+/// quiescence or the trace budget.
 ///
 /// A fresh `ExecCtx` + in-process resolver is created per call — fusion
 /// state and the per-context JIT do not leak between runs (matching the
@@ -211,57 +228,43 @@ async fn drive(
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     timeout: Duration,
 ) -> Outcome {
+    // Tracing is armed BEFORE the compile (ToGX messages are FIFO), so
+    // a value emitted during the compile cycle is in the trace — there
+    // is no "already emitted before the watch registered" race, and no
+    // event-stream fallback. The runtime-side `Compiled` marker anchors
+    // epoch 0.
+    if let Err(e) = ctx.rt.trace_start(trace::MAX_EVENTS, trace::MAX_CYCLES) {
+        return Outcome::RuntimeErr(format!("trace_start: {e}"));
+    }
     let compiled =
         match ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await {
             Ok(c) => c,
             Err(e) => return Outcome::CompileErr(format!("{e}")),
         };
     let eid = compiled.exprs[0].id;
-    // Drain any `Updated(eid)` already in `batch`; `Some(v)` = the result.
-    fn take_result(
-        batch: &mut poolshark::global::GPooled<Vec<GXEvent>>,
-        eid: graphix_compiler::expr::ExprId,
-    ) -> Option<Value> {
-        let mut found = None;
-        for e in batch.drain(..) {
-            if let GXEvent::Updated(id, v) = e {
-                if id == eid {
-                    found = Some(v);
-                }
-            }
-        }
-        found
-    }
-    // Quiescence-aware wait (see `GXHandle::wait_result_or_idle`):
-    //   - `Some(v)`  — `result` emitted `v` while the watch was live.
-    //   - `None`     — the runtime went idle with no value for `result`.
-    //                  For a synchronous program the value is normally
-    //                  emitted during the compile cycle, BEFORE the watch is
-    //                  registered, so it lands in `rx` rather than the watch.
-    //                  Drain `rx`: the value there is the result, else the
-    //                  program is genuinely bottom (div-by-zero, filtered, …).
-    // `timeout` is a backstop only — a pure-sync program always settles, but
-    // a future async one could loop forever without ever settling or
-    // emitting `result`.
+    // The wait resolves at quiescence (a bottom program resolves
+    // instantly with an empty trace — no timeout sleep) or when the
+    // trace budget trips (a runaway is cut deterministically). The
+    // event subscription is drained-and-discarded concurrently so a
+    // chatty program can't fill the channel and stall the runtime;
+    // `timeout` is a wall-clock backstop for a wedged evaluator only.
+    let wait = ctx.rt.trace_wait_idle();
+    tokio::pin!(wait);
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let drain = async {
+        while rx.recv().await.is_some() {}
+        future::pending::<()>().await
+    };
+    tokio::pin!(drain);
     tokio::select! {
         biased;
-        r = ctx.rt.wait_result_or_idle(eid) => match r {
-            Ok(Some(v)) => Outcome::Value(v),
-            Ok(None) => {
-                let mut found = None;
-                while let Ok(mut batch) = rx.try_recv() {
-                    if let Some(v) = take_result(&mut batch, eid) {
-                        found = Some(v);
-                    }
-                }
-                match found {
-                    Some(v) => Outcome::Value(v),
-                    None => Outcome::Timeout,
-                }
-            }
-            Err(e) => Outcome::RuntimeErr(format!("wait_result_or_idle: {e}")),
+        r = &mut wait => match r {
+            Ok(seg) => Outcome::Trace(trace::Trace::from_segments(&[seg], eid)),
+            Err(e) => Outcome::RuntimeErr(format!("trace_wait_idle: {e}")),
         },
-        _ = tokio::time::sleep(timeout) => Outcome::Timeout,
+        _ = &mut drain => unreachable!(),
+        _ = &mut deadline => Outcome::Timeout,
     }
 }
 
@@ -311,11 +314,16 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
 }
 
 /// Coarse "same bug" key: the bisection class + the interp/jit outcome
-/// kinds. Two divergences with the same bucket are treated as the same
-/// bug — used by the minimizer to ensure a reduction preserves the bug
-/// rather than reducing bug A into a different bug B.
-fn bucket(d: &Divergence) -> (&'static str, u8, u8) {
-    (d.bisect(), d.interp.kind(), d.jit.kind())
+/// kinds + the trace-difference class. Two divergences with the same
+/// bucket are treated as the same bug — used by the minimizer to ensure
+/// a reduction preserves the bug rather than reducing bug A into a
+/// different bug B (e.g. morphing a missing-fire bug into a value bug).
+fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
+    let td = match (&d.interp, &d.jit) {
+        (Outcome::Trace(a), Outcome::Trace(b)) => a.first_difference(b),
+        _ => None,
+    };
+    (d.bisect(), d.interp.kind(), d.jit.kind(), td)
 }
 
 /// Hierarchical delta-debugging on the typed AST: repeatedly try to
@@ -407,6 +415,72 @@ pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
 /// Number of programs in the embedded regression corpus.
 pub fn regression_corpus_len() -> usize {
     corpus::REGRESSION_CORPUS.len()
+}
+
+/// The oracle-soundness gate: before any interp-vs-jit TRACE finding
+/// is trusted, the trace must be shown deterministic PER MODE — same
+/// program, same mode, twice → identical traces. Otherwise a flaky
+/// trace (a host-timing-dependent cut point, a nondeterministic cycle
+/// offset) would masquerade as a backend divergence. Runs every corpus
+/// seed plus `iters` generated programs, each twice under interp and
+/// twice under jit; returns the programs whose traces disagreed with
+/// themselves, tagged with the mode that flaked. Must be empty.
+pub async fn selfcheck(
+    iters: usize,
+    seed: u64,
+    timeout: Duration,
+) -> Vec<(String, &'static str)> {
+    use tokio::task::JoinSet;
+    let mut rng = mutate::Rng::new(seed);
+    let mut progs: Vec<String> =
+        corpus::all_seeds().iter().map(|s| s.to_string()).collect();
+    for _ in 0..iters {
+        progs.push(generate::gen_program(&mut rng));
+    }
+    let par = parallelism();
+    let mut set: JoinSet<Vec<(String, &'static str)>> = JoinSet::new();
+    let mut next = 0usize;
+    let spawn_one = |set: &mut JoinSet<Vec<(String, &'static str)>>, prog: String| {
+        set.spawn(async move {
+            let mut bad = Vec::new();
+            for mode in [Mode::Interp, Mode::Jit] {
+                let (a, b) = tokio::join!(
+                    run_program(&prog, mode, timeout),
+                    run_program(&prog, mode, timeout),
+                );
+                if !a.agrees_with(&b) {
+                    bad.push((
+                        prog.clone(),
+                        match mode {
+                            Mode::Interp => "interp",
+                            Mode::Jit => "jit",
+                        },
+                    ));
+                }
+            }
+            bad
+        });
+    };
+    while next < progs.len() && set.len() < par {
+        spawn_one(&mut set, progs[next].clone());
+        next += 1;
+    }
+    let mut flaky = Vec::new();
+    let mut done = 0usize;
+    while let Some(res) = set.join_next().await {
+        if let Ok(mut bad) = res {
+            flaky.append(&mut bad);
+        }
+        done += 1;
+        if done % 200 == 0 {
+            eprintln!("  …{done}/{} selfchecked, {} flaky", progs.len(), flaky.len());
+        }
+        if next < progs.len() {
+            spawn_one(&mut set, progs[next].clone());
+            next += 1;
+        }
+    }
+    flaky
 }
 
 /// What a fuzz campaign found.
@@ -1630,7 +1704,7 @@ mod tests {
             stats.failed,
         );
         // sum 1..=5_000_000
-        let expected = Outcome::Value(Value::I64(12_500_002_500_000));
+        let expected = Outcome::single(Value::I64(12_500_002_500_000));
         assert!(
             out.agrees_with(&expected),
             "deep tail loop produced {out:?}, expected {expected:?}"
@@ -1889,5 +1963,230 @@ mod tests {
         // The live coverage number — visible in every `--nocapture`
         // run, no instrumentation ritual required.
         eprintln!("sweep: {fused} regions fused across 120 programs");
+    }
+}
+
+/// Stage-2.1 gate probes for the runtime trace primitives
+/// (`GXHandle::{trace_start, trace_wait_idle}`) — the foundation the
+/// per-cycle trace oracle (Phase 2.2) is built on. Each probe pins a
+/// property the oracle will depend on:
+///   - the compile race is dead (a value emitted during the compile
+///     cycle is IN the trace, unlike `wait_result_or_idle`),
+///   - a bottom program resolves instantly with an anchor-only trace,
+///   - the D4 injection contract (never-gated root input) works under
+///     BOTH modes with identical relative traces AND fuses,
+///   - a runaway `<-` program is cut deterministically by the cycle cap,
+///   - segments drain (each epoch's wait returns only its own events).
+#[cfg(test)]
+mod trace_probes {
+    use super::*;
+    use graphix_compiler::{Scope, expr::ModPath};
+    use graphix_rt::{TraceEvent, TraceSegment};
+
+    /// Drive one traced run: `trace_start` → compile (`prelude`
+    /// top-level decls, then the standard `{ mod test; test::result }`
+    /// wrap over `program` in the VFS) → `trace_wait_idle` (epoch 0),
+    /// then per epoch set every named root input and wait again.
+    /// Returns one segment per epoch and the program's own
+    /// [`FusionStats`] delta.
+    ///
+    /// Input decls go in `prelude` (top level of the compile text), NOT
+    /// inside the module: a `{ … }` wrap compiles under an anonymous
+    /// `do<ExprId>` scope, so module-internal bindings are not reachable
+    /// by name from root — root-level decls are, and the module body
+    /// still sees them lexically.
+    async fn drive_traced(
+        mode: Mode,
+        prelude: &str,
+        program: &str,
+        max_events: usize,
+        max_cycles: u64,
+        epochs: &[&[(&str, i64)]],
+    ) -> (Vec<TraceSegment>, FusionStats) {
+        let (tx, rx) = mpsc::channel(1024);
+        let tbl = AHashMap::from_iter([(
+            Path::from("/test.gx"),
+            graphix_compiler::expr::VfsEntry::from(ArcStr::from(program.to_string())),
+        )]);
+        let resolver = ModuleResolver::VFS(tbl);
+        let ctx =
+            init_with_flags_and_setup(tx, REGISTER, vec![resolver], mode.flags(), |_| {})
+                .await
+                .expect("runtime init");
+        let base = ctx.fusion_stats().await.expect("base stats");
+        ctx.rt.trace_start(max_events, max_cycles).expect("trace_start");
+        let text = format!("{prelude}\n{{ mod test; test::result }}");
+        let comp = ctx.rt.compile(ArcStr::from(text)).await.expect("compile");
+        let mut stats = ctx.fusion_stats().await.expect("stats");
+        stats.attempted -= base.attempted;
+        stats.fused -= base.fused;
+        stats.failed.drain(..base.failed.len());
+        let mut segs = vec![ctx.rt.trace_wait_idle().await.expect("epoch 0")];
+        let mut refs = AHashMap::new();
+        for sets in epochs {
+            for (name, v) in sets.iter() {
+                if !refs.contains_key(name) {
+                    let r = ctx
+                        .rt
+                        .compile_ref_by_name(
+                            &comp.env,
+                            &Scope::root(),
+                            &ModPath::from([*name]),
+                        )
+                        .await
+                        .unwrap_or_else(|e| panic!("no input {name}: {e}"));
+                    refs.insert(*name, r);
+                }
+                refs.get_mut(name).unwrap().set(*v).expect("set");
+            }
+            segs.push(ctx.rt.trace_wait_idle().await.expect("epoch segment"));
+        }
+        // `comp` and the refs hold GXHandle clones — they must drop
+        // BEFORE the channel receiver, or a still-running (runaway)
+        // program spams "could not send batch" into a closed channel
+        // until the last handle finally drops.
+        drop(refs);
+        drop(comp);
+        ctx.shutdown().await;
+        drop(rx);
+        (segs, stats)
+    }
+
+    /// Project a segment onto mode-comparable data: each event as
+    /// (cycle relative to the segment's first event, value), with
+    /// `None` for the `Compiled` anchor. ExprIds are process-local and
+    /// deliberately dropped — cross-mode comparison is over relative
+    /// pacing and values only.
+    fn shape(seg: &TraceSegment) -> Vec<(u64, Option<Value>)> {
+        let base = match seg.events.first() {
+            None => 0,
+            Some(
+                TraceEvent::Compiled { cycle, .. } | TraceEvent::Updated { cycle, .. },
+            ) => *cycle,
+        };
+        seg.events
+            .iter()
+            .map(|e| match e {
+                TraceEvent::Compiled { cycle, .. } => (*cycle - base, None),
+                TraceEvent::Updated { cycle, value, .. } => {
+                    (*cycle - base, Some(value.clone()))
+                }
+            })
+            .collect()
+    }
+
+    fn shapes(segs: &[TraceSegment]) -> Vec<Vec<(u64, Option<Value>)>> {
+        segs.iter().map(shape).collect()
+    }
+
+    /// The compile race is dead: a synchronous program's value is
+    /// emitted during the compile cycle — before any wait could
+    /// register — and it is IN the trace, at offset 0 from the
+    /// `Compiled` anchor, under both modes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_captures_sync_result() {
+        let prog = "let result = i64:2 + i64:3";
+        let (i, _) = drive_traced(Mode::Interp, "", prog, 512, 64, &[]).await;
+        let (j, _) = drive_traced(Mode::Jit, "", prog, 512, 64, &[]).await;
+        let want = vec![vec![(0, None), (0, Some(Value::I64(5)))]];
+        assert_eq!(shapes(&i), want, "interp trace");
+        assert_eq!(shapes(&j), want, "jit trace");
+        for s in i.iter().chain(j.iter()) {
+            assert!(!s.capped_cycles && !s.capped_events, "no caps: {s:?}");
+        }
+    }
+
+    /// A bottom program (div-by-zero) resolves instantly with an
+    /// anchor-only trace — the empty-trace agreement that replaces the
+    /// old full-timeout sleep for bottom programs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_bottom_is_instant_and_empty() {
+        let prog = "let result = i64:1 / i64:0";
+        let (i, _) = drive_traced(Mode::Interp, "", prog, 512, 64, &[]).await;
+        let (j, _) = drive_traced(Mode::Jit, "", prog, 512, 64, &[]).await;
+        let want = vec![vec![(0, None)]];
+        assert_eq!(shapes(&i), want, "interp trace");
+        assert_eq!(shapes(&j), want, "jit trace");
+    }
+
+    /// The D4 injection contract: a root-level `let in0: T = default`
+    /// plus `in0 <- never(default)` is a settable region INPUT — the
+    /// consuming region fuses under Jit (the `<-` marks the binding
+    /// unstable, so fusion binds a kernel param instead of
+    /// const-folding the default), each epoch's set flows through, the
+    /// relative traces agree across modes, and segments DRAIN (each
+    /// wait returns only its own epoch's events).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_d4_injection_contract() {
+        let prelude = "let in0: i64 = 0;\nin0 <- never(0);";
+        let prog = "let result = in0 * i64:2";
+        let epochs: &[&[(&str, i64)]] = &[&[("in0", 21)], &[("in0", 5)]];
+        let (i, _) = drive_traced(Mode::Interp, prelude, prog, 512, 64, epochs).await;
+        let (j, jstats) = drive_traced(Mode::Jit, prelude, prog, 512, 64, epochs).await;
+        let si = shapes(&i);
+        let sj = shapes(&j);
+        assert_eq!(si, sj, "interp vs jit traces");
+        assert_eq!(si.len(), 3, "epoch 0 + 2 injection epochs");
+        // Epoch 0: one `Compiled` anchor per top-level expr (the two
+        // prelude decls + the module block) plus the default flowing
+        // through, all in the init cycle.
+        assert_eq!(
+            si[0],
+            vec![(0, None), (0, None), (0, None), (0, Some(Value::I64(0)))]
+        );
+        // Injection epochs: result and the input-ref's own echo, same
+        // cycle, nothing carried over from the previous epoch. Values
+        // only — the in-cycle event order is pinned by the cross-mode
+        // eq above, not re-asserted here.
+        for (seg, (r, in0)) in si[1..].iter().zip([(42, 21), (10, 5)]) {
+            let vals: Vec<_> = seg.iter().filter_map(|(_, v)| v.clone()).collect();
+            assert_eq!(
+                vals,
+                vec![Value::I64(r), Value::I64(in0)],
+                "epoch events: {seg:?}"
+            );
+            assert!(seg.iter().all(|(c, _)| *c == seg[0].0), "single-cycle epoch");
+        }
+        assert!(
+            jstats.fused > 0,
+            "the never-gated input region must fuse; failures: {:?}",
+            jstats.failed
+        );
+    }
+
+    /// A runaway `x <- x + 1` is cut by the cycle cap at a point that
+    /// is a pure function of the program's own event stream: same
+    /// trace twice under one mode, and the same trace across modes
+    /// (values AND relative pacing — the lifted connect counter's
+    /// per-cycle firing under the JIT vs the node-walk).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_runaway_cap_determinism() {
+        let prog = "let x = i64:0;\nx <- x + i64:1;\nlet result = x";
+        let (i1, _) = drive_traced(Mode::Interp, "", prog, 512, 24, &[]).await;
+        let (i2, _) = drive_traced(Mode::Interp, "", prog, 512, 24, &[]).await;
+        let (j1, _) = drive_traced(Mode::Jit, "", prog, 512, 24, &[]).await;
+        let (j2, _) = drive_traced(Mode::Jit, "", prog, 512, 24, &[]).await;
+        assert_eq!(shapes(&i1), shapes(&i2), "interp self-determinism");
+        assert_eq!(shapes(&j1), shapes(&j2), "jit self-determinism");
+        assert_eq!(shapes(&i1), shapes(&j1), "interp vs jit");
+        let seg = &i1[0];
+        assert!(seg.capped_cycles, "runaway must hit the cycle cap: {seg:?}");
+        let vals: Vec<_> = shape(seg).into_iter().filter_map(|(_, v)| v).collect();
+        assert_eq!(vals.len(), 24, "one value per active cycle up to the cap");
+        assert_eq!(vals[0], Value::I64(0));
+        assert_eq!(vals[23], Value::I64(23));
+    }
+
+    /// `trace_wait_idle` without `trace_start` is an error, not a hang.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_wait_without_start_errors() {
+        let (tx, _rx) = mpsc::channel(64);
+        let ctx =
+            init_with_flags_and_setup(tx, REGISTER, vec![], Mode::Interp.flags(), |_| {})
+                .await
+                .expect("runtime init");
+        let r = ctx.rt.trace_wait_idle().await;
+        assert!(r.is_err(), "expected an error, got {r:?}");
+        ctx.shutdown().await;
     }
 }

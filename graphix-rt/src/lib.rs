@@ -501,12 +501,60 @@ enum ToGX<X: GXExt> {
         id: ExprId,
         res: oneshot::Sender<Option<Value>>,
     },
+    /// Start (or restart) runtime-side tracing. See
+    /// [`GXHandle::trace_start`].
+    TraceStart {
+        max_events: usize,
+        max_cycles: u64,
+    },
+    /// Wait for the runtime to go idle (or a trace cap to trip), then
+    /// take the recorded segment. `None` = no trace is active. See
+    /// [`GXHandle::trace_wait_idle`].
+    TraceWaitIdle {
+        res: oneshot::Sender<Option<TraceSegment>>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum GXEvent {
     Updated(ExprId, Value),
     Env(Env),
+}
+
+/// One entry in a runtime-side trace (see [`GXHandle::trace_start`]).
+/// `cycle` numbers are the runtime's internal cycle counter — they are
+/// NOT deterministic across runs (control messages and startup traffic
+/// shift them), so consumers must compare cycles RELATIVE to an anchor
+/// (the `Compiled` marker, or an input ref's own `Updated`), never
+/// absolutely.
+#[derive(Debug, Clone)]
+pub enum TraceEvent {
+    /// A `compile`/`load` completed for the expression `id`; `cycle` is
+    /// the cycle that will run next — the program's init cycle — so an
+    /// `Updated` produced during init has this same cycle number. This
+    /// marker is recorded runtime-side at the moment the nodes are
+    /// registered, which is what makes it a sound epoch anchor: the
+    /// `Compile` *response* races the compile cycle, the marker does not.
+    Compiled { cycle: u64, id: ExprId },
+    /// The node registered for `id` emitted `value` during `cycle`.
+    Updated { cycle: u64, id: ExprId, value: Value },
+}
+
+/// The events recorded since tracing started (or since the previous
+/// segment was taken), returned by [`GXHandle::trace_wait_idle`].
+#[derive(Debug)]
+pub struct TraceSegment {
+    pub events: GPooled<Vec<TraceEvent>>,
+    /// The runtime cycle at which this segment closed (idle reached or
+    /// a cap tripped). Same non-determinism caveat as
+    /// [`TraceEvent`] cycles — relative use only.
+    pub end_cycle: u64,
+    /// The trace hit its active-cycle budget (a runaway program). Once
+    /// tripped the trace is permanently quiet — see
+    /// [`GXHandle::trace_start`].
+    pub capped_cycles: bool,
+    /// The trace hit its total event budget. Permanently quiet, as above.
+    pub capped_events: bool,
 }
 
 /// A snapshot of the compiler-env binding registry and the runtime
@@ -773,6 +821,47 @@ impl<X: GXExt> GXHandle<X> {
     /// event subscription on `None`.
     pub async fn wait_result_or_idle(&self, id: ExprId) -> Result<Option<Value>> {
         self.exec(|res| ToGX::WaitResultOrIdle { id, res }).await
+    }
+
+    /// Start (or restart) runtime-side tracing. While a trace is
+    /// active, every value emitted by a registered node is recorded as
+    /// a [`TraceEvent::Updated`] and every `compile`/`load` records a
+    /// [`TraceEvent::Compiled`] anchor. Segments are taken with
+    /// [`trace_wait_idle`](Self::trace_wait_idle). Restarting discards
+    /// any recorded events (and cancels a pending waiter). Tracing
+    /// costs one branch per emitted value when off.
+    ///
+    /// Both budgets are declared here, up front, rather than per wait:
+    /// recording must be a pure function of the traced program's own
+    /// event stream for a trace to be comparable across two runs, and a
+    /// per-wait budget would cut a runaway program's recording at a
+    /// point that depends on when the wait message happened to arrive.
+    /// `max_events` bounds the total events recorded across the whole
+    /// trace; `max_cycles` bounds the ACTIVE cycles (cycles in which at
+    /// least one traced node emitted — control-message cycles don't
+    /// count) per segment. When either budget is exhausted the trace
+    /// goes PERMANENTLY quiet (the segment reports `capped_*`), so
+    /// later segments of a capped trace are deterministically empty.
+    pub fn trace_start(&self, max_events: usize, max_cycles: u64) -> Result<()> {
+        self.0
+            .tx
+            .send(ToGX::TraceStart { max_events, max_cycles })
+            .map_err(|_| anyhow!("runtime is dead"))
+    }
+
+    /// Wait until the runtime goes idle (no pending work — quiescent)
+    /// or a trace cap trips, then take everything recorded since the
+    /// trace started (or since the previous segment was taken). Unlike
+    /// [`wait_result_or_idle`](Self::wait_result_or_idle) there is no
+    /// already-emitted race: a value produced before this call was
+    /// serviced is already in the segment. A second concurrent call
+    /// supersedes the first (which resolves as an error). Errors if no
+    /// trace is active.
+    pub async fn trace_wait_idle(&self) -> Result<TraceSegment> {
+        match self.exec(|res| ToGX::TraceWaitIdle { res }).await? {
+            Some(seg) => Ok(seg),
+            None => bail!("no trace is active (call trace_start first)"),
+        }
     }
 
     /// Compile a callable interface to a lambda id

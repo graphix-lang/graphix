@@ -43,8 +43,105 @@ use triomphe::Arc;
 
 use crate::{
     Callable, CallableId, CompExp, CompRes, GXConfig, GXEvent, GXExt, GXHandle, GXRt,
-    Ref, ToGX, UpdateBatch, WriteBatch,
+    Ref, ToGX, TraceEvent, TraceSegment, UpdateBatch, WriteBatch,
 };
+
+static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
+    std::sync::LazyLock::new(|| Pool::new(4, 8192));
+
+/// Runtime-side trace recording (see [`GXHandle::trace_start`]). The
+/// invariant everything here serves: what gets recorded is a pure
+/// function of the traced program's own event stream — never of when
+/// control messages happened to arrive — so two runs of the same
+/// program produce comparable traces. That is why both budgets are
+/// fixed at `trace_start`, why only ACTIVE cycles (cycles in which a
+/// traced node emitted) count against `max_cycles`, and why tripping
+/// either cap silences the trace permanently instead of just closing
+/// the current segment.
+struct TraceState {
+    events: GPooled<Vec<TraceEvent>>,
+    max_events: usize,
+    max_cycles: u64,
+    /// active cycles since the last segment boundary
+    active_cycles: u64,
+    emitted_this_cycle: bool,
+    capped_cycles: bool,
+    capped_events: bool,
+    waiter: Option<oneshot::Sender<Option<TraceSegment>>>,
+}
+
+impl TraceState {
+    fn new(max_events: usize, max_cycles: u64) -> Self {
+        Self {
+            events: TRACE_EVENTS.take(),
+            max_events,
+            max_cycles,
+            active_cycles: 0,
+            emitted_this_cycle: false,
+            capped_cycles: false,
+            capped_events: false,
+            waiter: None,
+        }
+    }
+
+    fn capped(&self) -> bool {
+        self.capped_cycles || self.capped_events
+    }
+
+    fn record(&mut self, cycle: u64, id: ExprId, v: &Value) {
+        if self.capped() {
+            return;
+        }
+        self.emitted_this_cycle = true;
+        if self.events.len() >= self.max_events {
+            self.capped_events = true;
+        } else {
+            self.events.push(TraceEvent::Updated { cycle, id, value: v.clone() });
+        }
+    }
+
+    /// Compile anchors don't count against either budget — they are
+    /// bounded by the caller's own compile calls, not by the program.
+    fn record_compiled(&mut self, cycle: u64, id: ExprId) {
+        if !self.capped() {
+            self.events.push(TraceEvent::Compiled { cycle, id });
+        }
+    }
+
+    /// Bookkeeping at the end of `do_cycle` for the cycle that just ran.
+    fn cycle_end(&mut self, cycle: u64) {
+        if mem::take(&mut self.emitted_this_cycle) {
+            self.active_cycles += 1;
+            if self.active_cycles >= self.max_cycles {
+                self.capped_cycles = true;
+            }
+        }
+        if self.capped() {
+            self.resolve(cycle)
+        }
+    }
+
+    fn wait(&mut self, res: oneshot::Sender<Option<TraceSegment>>, cycle: u64) {
+        self.waiter = Some(res);
+        if self.capped() {
+            self.resolve(cycle)
+        }
+    }
+
+    fn resolve(&mut self, end_cycle: u64) {
+        if let Some(tx) = self.waiter.take() {
+            let seg = TraceSegment {
+                events: mem::replace(&mut self.events, TRACE_EVENTS.take()),
+                end_cycle,
+                capped_cycles: self.capped_cycles,
+                capped_events: self.capped_events,
+            };
+            self.active_cycles = 0;
+            self.emitted_this_cycle = false;
+            let _ = tx.send(Some(seg));
+        }
+    }
+}
 
 fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
     is_output_kind(&n.spec().kind)
@@ -148,6 +245,11 @@ pub(super) struct GX<X: GXExt> {
     /// watched expr emits, or `None` when the runtime next goes idle. See
     /// `GXHandle::wait_result_or_idle`.
     result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
+    /// Index of the currently-running (or next) `do_cycle`. Absolute
+    /// values are not comparable across runs — see [`TraceEvent`].
+    cycle: u64,
+    /// Active trace recording, if any. See [`GXHandle::trace_start`].
+    trace: Option<TraceState>,
 }
 
 impl<X: GXExt> GX<X> {
@@ -189,6 +291,8 @@ impl<X: GXExt> GX<X> {
             flags: cfg.flags,
             commit_tasks: JoinSet::new(),
             result_watch: None,
+            cycle: 0,
+            trace: None,
         };
         let st = Instant::now();
         if let Some(root) = cfg.root {
@@ -306,6 +410,9 @@ impl<X: GXExt> GX<X> {
                                 let _ = tx.send(Some(v.clone()));
                             }
                         }
+                        if let Some(tr) = self.trace.as_mut() {
+                            tr.record(self.cycle, *id, &v);
+                        }
                         batch.push(GXEvent::Updated(*id, v))
                     }
                     for id in clear.drain(..) {
@@ -325,6 +432,10 @@ impl<X: GXExt> GX<X> {
         // The one-shot interrupt is consumed; abort stays sticky for the
         // run loop's pre-cycle shutdown check.
         self.ctx.control.clear_interrupt();
+        if let Some(tr) = self.trace.as_mut() {
+            tr.cycle_end(self.cycle);
+        }
+        self.cycle += 1;
         loop {
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
                 Ok(()) => break,
@@ -368,10 +479,14 @@ impl<X: GXExt> GX<X> {
                     let _ = res.send(self.check(&path, resolvers, initial_scope).await);
                 }
                 ToGX::Compile { text, rt, res } => {
-                    let _ = res.send(self.compile(rt, text).await);
+                    let r = self.compile(rt, text).await;
+                    self.record_compiled(&r);
+                    let _ = res.send(r);
                 }
                 ToGX::Load { path, rt, res } => {
-                    let _ = res.send(self.load(rt, &path).await);
+                    let r = self.load(rt, &path).await;
+                    self.record_compiled(&r);
+                    let _ = res.send(r);
                 }
                 ToGX::Delete { id } => {
                     if let Some(mut n) = self.nodes.shift_remove(&id) {
@@ -441,6 +556,31 @@ impl<X: GXExt> GX<X> {
                     // surfacing as a cancellation to that caller).
                     self.result_watch = Some((id, res));
                 }
+                ToGX::TraceStart { max_events, max_cycles } => {
+                    // Replacing an active trace drops its pending waiter
+                    // (that caller sees a cancellation) and its events.
+                    self.trace = Some(TraceState::new(max_events, max_cycles));
+                }
+                ToGX::TraceWaitIdle { res } => match self.trace.as_mut() {
+                    None => {
+                        let _ = res.send(None);
+                    }
+                    // An already-capped trace resolves here; otherwise
+                    // the waiter resolves at the top-of-loop idle check
+                    // or when a cap trips at the end of a cycle.
+                    Some(tr) => tr.wait(res, self.cycle),
+                },
+            }
+        }
+    }
+
+    /// Record a [`TraceEvent::Compiled`] anchor for each expression of a
+    /// successful `compile`/`load`, at the moment the nodes are
+    /// registered (their init cycle is `self.cycle`, the next to run).
+    fn record_compiled(&mut self, r: &Result<CompRes<X>>) {
+        if let (Ok(cr), Some(tr)) = (r, self.trace.as_mut()) {
+            for e in cr.exprs.iter() {
+                tr.record_compiled(self.cycle, e.id);
             }
         }
     }
@@ -816,6 +956,9 @@ impl<X: GXExt> GX<X> {
             if !ready {
                 if let Some((_, tx)) = self.result_watch.take() {
                     let _ = tx.send(None);
+                }
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.resolve(self.cycle);
                 }
             }
             let mut updates = None;

@@ -56,7 +56,23 @@ async fn print_regression() -> usize {
 
 fn render(o: &Outcome) -> String {
     match o {
-        Outcome::Value(v) => format!("Value({v})"),
+        Outcome::Trace(t) => {
+            let epochs: Vec<String> = t
+                .epochs
+                .iter()
+                .map(|e| {
+                    let evs: Vec<String> =
+                        e.events.iter().map(|(o, v)| format!("{o}:{v}")).collect();
+                    let evs = evs.join(" ");
+                    if e.capped {
+                        format!("[{evs} …capped]")
+                    } else {
+                        format!("[{evs}]")
+                    }
+                })
+                .collect();
+            format!("Trace({})", epochs.join("; "))
+        }
         Outcome::CompileErr(e) => format!("CompileErr({})", first_line(e)),
         Outcome::RuntimeErr(e) => format!("RuntimeErr({})", first_line(e)),
         Outcome::Timeout => "Timeout".to_string(),
@@ -172,6 +188,28 @@ async fn main() -> Result<()> {
         Some("regress") => {
             let n = print_regression().await;
             if n > 0 {
+                std::process::exit(1);
+            }
+        }
+        Some("selfcheck") => {
+            // Oracle-soundness gate: per-mode trace determinism over the
+            // corpus + generated programs. Must be 100% before any
+            // interp-vs-jit trace finding is trusted.
+            let iters = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1000);
+            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let total = regression_corpus_len(); // corpus part; rest generated
+            println!(
+                "selfcheck: {iters} generated (seed={seed}) + corpus \
+                 (≥{total} seeds), twice per mode"
+            );
+            let flaky = graphix_fuzz::selfcheck(iters, seed, CAMPAIGN_TIMEOUT).await;
+            if flaky.is_empty() {
+                println!("selfcheck OK — every trace deterministic in both modes");
+            } else {
+                for (prog, mode) in &flaky {
+                    println!("FLAKY under {mode}: {}", prog.replace('\n', "\\n"));
+                }
+                println!("selfcheck FAILED — {} flaky traces", flaky.len());
                 std::process::exit(1);
             }
         }
@@ -296,7 +334,8 @@ async fn main() -> Result<()> {
         _ => bail!(
             "usage: graphix-fuzz <check|run|minimize> <file>  |  \
              graphix-fuzz <fuzz|generate> [iters] [seed]  |  \
-             graphix-fuzz gen-check [n] [seed]  |  graphix-fuzz regress"
+             graphix-fuzz gen-check [n] [seed]  |  \
+             graphix-fuzz selfcheck [iters] [seed]  |  graphix-fuzz regress"
         ),
     }
     Ok(())
