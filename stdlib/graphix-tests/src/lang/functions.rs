@@ -785,3 +785,29 @@ run!(fold_callback_name_collision, FOLD_CALLBACK_NAME_COLLISION, |v: Result<
     v,
     Ok(Value::I64(21))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// An ABANDONED kernel-closure build (the base arm's select-with-error-
+// arm de-fuses the rec lambda) used to leave declared-but-undefined
+// callee symbols in the shared per-context module; the next successful
+// compile's finalize_definitions then PANICKED cranelift ("can't
+// resolve symbol") and killed the runtime. All three ingredients are
+// load-bearing: the rec (a cross-kernel callee gets declared), the
+// select-with-error-arm base (the abandon), and the UNUSED call
+// binding (a separate region compiles after the abandon and triggers
+// finalize). Abandoned declarations now get trap stubs
+// (emit.rs define_stub_body). Found by fuzzer-v2's generated sweep.
+const ABANDONED_KERNEL_CLOSURE: &str = r#"
+{
+  let rec f = |n: i64| -> i64 select n {
+    m if m <= i64:0 => select (i64:7 +? i64:-100) { error as _ => i64:1, i64 as x => x },
+    m => (m + f(m - i64:1))
+  };
+  let v = f(i64:8);
+  false
+}
+"#;
+
+run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Bool(false))
+); graphix_package_core::testing::FuseExpect::Jit);

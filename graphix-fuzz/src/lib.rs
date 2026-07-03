@@ -1858,15 +1858,6 @@ mod tests {
     /// path, falling back to node-walk on any unsupported shape) must
     /// agree. A scalar program exercises `compile_node`; a non-scalar one
     /// exercises the fallback. Deterministic seed → reproducible.
-    ///
-    /// IGNORED (live bug doc, fuzzer-v2 phase 2.0): this seed's stream
-    /// contains a program that panics cranelift at compile time —
-    /// "can't resolve symbol f__kir_40", an abandoned kernel build
-    /// leaving a declared-but-undefined callee symbol — which kills the
-    /// in-process runtime. Repro + analysis:
-    /// fuzz/triage-fuzzer-v2/divergence_000004_dangling_kernel_symbol.gx.
-    /// Un-ignore when the module-level abandon contract is fixed.
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn jit_generated_sweep() {
         use crate::{generate::gen_program, mutate::Rng};

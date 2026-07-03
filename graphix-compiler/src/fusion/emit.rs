@@ -491,27 +491,82 @@ fn compile_kernel_with_callees_impl(
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     let mut to_define: Vec<(std::sync::Arc<KernelSig>, u32)> = Vec::new();
+    let mut defined = 0usize;
     let r = compile_kernel_with_callees_inner(
         jit,
         kernel,
         callees,
         emitters,
         &mut to_define,
+        &mut defined,
         registry,
     );
     if r.is_err() {
-        // Evict every declared-but-never-defined cache entry. On the
-        // direct path a failed compile is the COMMON "doesn't fuse"
-        // signal (any node without an emit_clif impl), and a kernel
-        // `Arc` can be re-submitted later (lambda kernels are cached
-        // and shared across call sites) — a stale entry would hand
-        // out a `FuncId` whose body was never defined. It would also
-        // pin the kernel `Arc` (and its declared symbol) forever.
-        for (k, base) in &to_define {
-            jit.by_kernel.remove(&(std::sync::Arc::as_ptr(k) as usize, *base));
+        // Evict every freshly-declared cache entry. On the direct path
+        // a failed compile is the COMMON "doesn't fuse" signal (any
+        // node without an emit_clif impl), and a kernel `Arc` can be
+        // re-submitted later (lambda kernels are cached and shared
+        // across call sites) — a stale entry would hand out a `FuncId`
+        // whose body was never defined. It would also pin the kernel
+        // `Arc` (and its declared symbol) forever.
+        //
+        // Entries whose bodies were never defined (`i >= defined`) also
+        // get a TRAP STUB: the module is shared across every fusion
+        // attempt in this ExecCtx, and cranelift's next
+        // `finalize_definitions` — from any LATER successful compile —
+        // panics on a declared-but-undefined Local symbol ("can't
+        // resolve symbol …"), killing the runtime. An already-defined
+        // sibling body from this abandoned attempt may carry a call
+        // relocation to the undefined symbol, so the stub is
+        // load-bearing even though nothing ever calls it (the region
+        // wasn't spliced and the cache entry is gone).
+        for (i, (k, base)) in to_define.iter().enumerate() {
+            let key = (std::sync::Arc::as_ptr(k) as usize, *base);
+            if let Some(entry) = jit.by_kernel.remove(&key)
+                && i >= defined
+                && let Err(se) =
+                    define_stub_body(&mut jit.ctx, entry.func_id, &entry.signature)
+            {
+                log::warn!(
+                    "stub definition for abandoned kernel `{}` failed: {se:?}",
+                    k.fn_name
+                );
+            }
         }
     }
     r
+}
+
+/// Define `fid` as a signature-conformant body that immediately traps.
+/// Used when a kernel-closure build is ABANDONED after declaration: the
+/// shared module must not carry declared-but-undefined Local symbols
+/// into the next `finalize_definitions` (a panic), and a defined
+/// sibling body may hold a call relocation to this symbol. The stub is
+/// never executed — the abandoned region node-walks and its cache
+/// entries are evicted.
+fn define_stub_body(jit: &mut JitCtx, fid: FuncId, sig: &Signature) -> Result<()> {
+    use cranelift_codegen::ir::TrapCode;
+    // Same hygiene as `define_kernel_body`: the failed build that got
+    // us here may have left `func_ctx`/`builder_ctx` mid-function.
+    jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
+    jit.func_ctx.func.signature = sig.clone();
+    jit.func_ctx.func.name = cranelift_codegen::ir::UserFuncName::user(0, fid.as_u32());
+    {
+        let mut b = FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        b.ins().trap(TrapCode::user(1).expect("valid user trap code"));
+        b.finalize();
+    }
+    jit.module
+        .define_function(fid, &mut jit.func_ctx)
+        .context("define_function (abandon stub)")?;
+    jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
+    Ok(())
 }
 
 fn compile_kernel_with_callees_inner(
@@ -520,6 +575,7 @@ fn compile_kernel_with_callees_inner(
     callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32)>,
+    defined: &mut usize,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     // Phase 1 — declare every kernel in the closure (parent + all
@@ -580,6 +636,7 @@ fn compile_kernel_with_callees_inner(
             )
         })?;
         let (strings, values) = define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
+        *defined += 1;
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base)) {
             cached._strings = strings;
             cached._values = values;
@@ -785,6 +842,39 @@ fn define_wrapper(
         .module
         .declare_function(&symbol, Linkage::Local, &sig)
         .context("declare_function (wrapper)")?;
+    // A failure past this point leaves `wrapper_id` declared-but-
+    // undefined in the shared module — stub it so the next
+    // `finalize_definitions` doesn't panic (see `define_stub_body`).
+    match define_wrapper_body(
+        jit,
+        kernel,
+        typed_func_id,
+        registry,
+        wrapper_id,
+        &sig,
+        &symbol,
+    ) {
+        Ok(()) => Ok(wrapper_id),
+        Err(e) => {
+            if let Err(se) = define_stub_body(jit, wrapper_id, &sig) {
+                log::warn!(
+                    "stub definition for abandoned wrapper `{symbol}` failed: {se:?}"
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
+fn define_wrapper_body(
+    jit: &mut JitCtx,
+    kernel: &KernelSig,
+    typed_func_id: FuncId,
+    registry: &AbstractRegistry,
+    wrapper_id: FuncId,
+    sig: &Signature,
+    symbol: &str,
+) -> Result<()> {
     // Defensive clear — see `define_kernel_body`. A prior failed
     // compile must not poison the wrapper build.
     jit.module.clear_context(&mut jit.func_ctx);
@@ -885,14 +975,14 @@ fn define_wrapper(
         b.seal_all_blocks();
         b.finalize();
     }
-    maybe_dump_clif(&jit.func_ctx.func, &symbol);
+    maybe_dump_clif(&jit.func_ctx.func, symbol);
 
     jit.module
         .define_function(wrapper_id, &mut jit.func_ctx)
         .context("define_function (wrapper)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok(wrapper_id)
+    Ok(())
 }
 
 /// Pack a scalar [`Value`] into a u64 slot for passing into a JIT'd
