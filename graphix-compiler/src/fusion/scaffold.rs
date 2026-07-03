@@ -506,12 +506,11 @@ pub fn push_field(
         }
     };
     let push = cx.helper(helper_name)?;
-    // A field's #219 taint forces the kernel to bottom at the producer
-    // (no per-field validity channel) before the push — pushing a
-    // tainted disc would store a corrupt Value (UB on clone/drop).
-    // `is_untainted` folds to const-true for an untainted field.
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    // A tainted slot does NOT abort the kernel — the caller accumulates
+    // it (SlotTaint) into the HOF's RESULT disc (#219). Pushing the
+    // tainted slot is safe: its payload is the helper-safe placeholder,
+    // and every push helper masks the tag byte through the `TagValue`
+    // gateway before the value is cloned or stored.
     // Value-shape fields (Variant/Nullable/DateTime/Duration/Bytes/Map)
     // push both `(disc, payload)` registers; everything else pushes the
     // payload word.
@@ -521,6 +520,41 @@ pub fn push_field(
         cx.b.ins().call(push, &[buf, cv.payload]);
     }
     Ok(())
+}
+
+/// Loop-carried slot-taint accumulator. A tainted (bottom) body /
+/// predicate slot taints the WHOLE HOF result — the node-walk's HOF
+/// node emits nothing while a slot is incomplete — but never the
+/// kernel: unrelated outputs still fire (#219; previously these
+/// paths runtime-aborted the kernel, escalating a locally-unconsumed
+/// bottom into whole-kernel bottom). The pushed slot values are the
+/// helper-safe placeholders, masked at every helper boundary, and the
+/// accumulated word is OR'd into the HOF's result disc after the loop.
+pub struct SlotTaint(Variable);
+
+impl SlotTaint {
+    pub fn new(cx: &mut BodyCx) -> Self {
+        let v = cx.b.declare_var(types::I64);
+        let z = cx.b.ins().iconst(types::I64, 0);
+        cx.b.def_var(v, z);
+        SlotTaint(v)
+    }
+
+    /// Fold one slot's disc into the accumulator (inside the loop).
+    pub fn fold(&self, cx: &mut BodyCx, disc: ClifValue) {
+        let cur = cx.b.use_var(self.0);
+        let t = cx.b.ins().band_imm(disc, TAINT);
+        let n = cx.b.ins().bor(cur, t);
+        cx.b.def_var(self.0, n);
+    }
+
+    /// OR the accumulated taint into the HOF's result disc (after the
+    /// loop).
+    pub fn apply(&self, cx: &mut BodyCx, mut r: CompiledExpr) -> CompiledExpr {
+        let t = cx.b.use_var(self.0);
+        r.disc = cx.b.ins().bor(r.disc, t);
+        r
+    }
 }
 
 /// `array::init(n, |idx| body)` — build an `n_raw`-element array by
@@ -538,10 +572,11 @@ pub fn emit_init_loop<'a, 'f, 'c, F>(
     out_typ: &Type,
     out_src: CompositeSource,
     mut body: F,
-) -> Result<ClifValue>
+) -> Result<(ClifValue, SlotTaint)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
+    let taint = SlotTaint::new(cx);
     let buf_new = cx.helper("graphix_value_buf_new")?;
     let n_widened = widen_to_i64(cx.b, n_raw, n_prim)?;
     let zero_clamp = cx.b.ins().iconst(types::I64, 0);
@@ -565,6 +600,7 @@ where
     let mark = cx.env.mark();
     bind_scalar_var(cx, idx_name.clone(), PrimType::I64, i_var, idx_id);
     let cv = body(cx)?;
+    taint.fold(cx, cv.disc);
     push_field(cx, buf, cv, out_typ, out_src)?;
     cx.env.truncate(mark);
     let i_now = cx.b.use_var(i_var);
@@ -573,7 +609,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    finalize_buf(cx, buf)
+    Ok((finalize_buf(cx, buf)?, taint))
 }
 
 /// `array::map(arr, |x| body)` — push the body result per element. A
@@ -586,10 +622,11 @@ pub fn emit_map_loop<'a, 'f, 'c, F>(
     out_typ: &Type,
     out_src: CompositeSource,
     mut body: F,
-) -> Result<ClifValue>
+) -> Result<(ClifValue, SlotTaint)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
+    let taint = SlotTaint::new(cx);
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     let i_var = init_counter(cx);
@@ -608,6 +645,7 @@ where
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let cv = body(cx)?;
+    taint.fold(cx, cv.disc);
     push_field(cx, buf, cv, out_typ, out_src)?;
     // Leaves drop AFTER the push — a body result may BORROW a leaf local
     // until the push copies it into the buf.
@@ -621,7 +659,7 @@ where
     cx.b.seal_block(loop_exit);
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
-    Ok(result)
+    Ok((result, taint))
 }
 
 /// `array::filter(arr, |x| pred)` — push the ORIGINAL element when
@@ -636,10 +674,11 @@ pub fn emit_filter_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     elem: &HofElem,
     mut pred: F,
-) -> Result<ClifValue>
+) -> Result<(ClifValue, SlotTaint)>
 where
-    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
+    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
+    let taint = SlotTaint::new(cx);
     // The kept element is MOVED into the output; the not-kept edge must DROP
     // an owned element (composite/string/value). A scalar owns nothing.
     let owns_drop = !matches!(
@@ -667,7 +706,12 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
-    let keep = pred(cx)?;
+    let keep_cv = pred(cx)?;
+    taint.fold(cx, keep_cv.disc);
+    // A tainted predicate's placeholder keep flag is 0 (not kept) —
+    // the slot contributes nothing, and the accumulated taint bottoms
+    // the whole result anyway.
+    let keep = keep_cv.payload;
     // Leaves are consumed by the predicate; the kept edge moves only the
     // ELEMENT into the output, so drop leaves once, pre-branch.
     drop_owned_leaves(cx, &owned_leaves)?;
@@ -717,7 +761,7 @@ where
     cx.b.seal_block(loop_exit);
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
-    Ok(result)
+    Ok((result, taint))
 }
 
 /// `array::filter_map(arr, |x| body)` — the body yields a
@@ -732,10 +776,11 @@ pub fn emit_filter_map_loop<'a, 'f, 'c, F>(
     elem_id: Option<crate::BindId>,
     out_elem: PrimType,
     mut body: F,
-) -> Result<ClifValue>
+) -> Result<(ClifValue, SlotTaint)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
+    let taint = SlotTaint::new(cx);
     let get_helper = cx.helper(valarray_get_helper(in_elem)?)?;
     let push = cx.helper(value_buf_push_helper(out_elem)?)?;
     adopt_owned_src(cx, &arr);
@@ -763,10 +808,9 @@ where
     bind_scalar_var(cx, elem_name.clone(), in_elem, elem_var, elem_id);
     let cv = body(cx)?;
     cx.env.truncate(mark);
-    // A tainted body (e.g. `elem / 0`) bottoms the whole HOF (#219);
-    // folds to no branch for an untainted body.
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    // A tainted body slot (e.g. `elem / 0`) taints the whole HOF
+    // result; its placeholder is Null (skipped by the null test).
+    taint.fold(cx, cv.disc);
     let disc = clean_disc(cx.b, cv.disc);
     let payload = cv.payload;
     let is_null = cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
@@ -785,7 +829,7 @@ where
     cx.b.seal_block(loop_exit);
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
-    Ok(result)
+    Ok((result, taint))
 }
 
 /// `array::flat_map(arr, |x| body)` — the body closure returns an
@@ -799,10 +843,11 @@ pub fn emit_flat_map_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     elem: &HofElem,
     mut body: F,
-) -> Result<ClifValue>
+) -> Result<(ClifValue, SlotTaint)>
 where
-    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
+    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
+    let taint = SlotTaint::new(cx);
     let extend = cx.helper("graphix_value_buf_extend_from_array")?;
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
@@ -821,11 +866,12 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
-    let body_ptr = body(cx)?;
+    let body_cv = body(cx)?;
+    taint.fold(cx, body_cv.disc);
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    cx.b.ins().call(extend, &[buf, body_ptr]);
+    cx.b.ins().call(extend, &[buf, body_cv.payload]);
     emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(loop_body);
     cx.b.seal_block(loop_header);
@@ -833,7 +879,7 @@ where
     cx.b.seal_block(loop_exit);
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
-    Ok(result)
+    Ok((result, taint))
 }
 
 /// `array::fold(arr, init, |acc, x| body)` — a scalar accumulator
@@ -860,16 +906,29 @@ pub fn emit_fold_loop<'a, 'f, 'c, I, F>(
     elem: &HofElem,
     init: I,
     mut body: F,
-) -> Result<ClifValue>
+) -> Result<CompiledExpr>
 where
-    I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
-    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
+    I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let acc_var = cx.b.declare_var(prim_to_clif(acc_prim));
-    let init_val = init(cx)?;
-    cx.b.def_var(acc_var, init_val);
+    // The acc's TAINT is LOOP-CARRIED in its own disc Variable — the
+    // node-walk's per-slot dataflow means a bottom init poisons the
+    // fold ONLY while the callback actually consumes the accumulator
+    // (`|acc, x| x` recovers on the first iteration; `|acc, x| acc + x`
+    // stays bottom). A kernel abort here diverged from the node-walk
+    // (fuzz/triage-fuzzer-v2/divergence_000003: init 1/0, callback
+    // ignoring acc — interp folds to the last element, jit bottomed).
+    // Each carry re-bases on the clean scalar tag so only TAINT rides.
+    let acc_disc_var = cx.b.declare_var(types::I64);
+    let init_cv = init(cx)?;
+    cx.b.def_var(acc_var, init_cv.payload);
+    let base = scalar_disc(cx.b, acc_prim);
+    let t = cx.b.ins().band_imm(init_cv.disc, TAINT);
+    let d0 = cx.b.ins().bor(base, t);
+    cx.b.def_var(acc_disc_var, d0);
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
@@ -884,53 +943,77 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    bind_scalar_var(cx, acc_name.clone(), acc_prim, acc_var, acc_id);
+    bind_scalar_var_with_disc(
+        cx,
+        acc_name.clone(),
+        acc_prim,
+        acc_var,
+        acc_disc_var,
+        acc_id,
+    );
     let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
     let new_acc = body(cx)?;
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    cx.b.def_var(acc_var, new_acc);
+    cx.b.def_var(acc_var, new_acc.payload);
+    let base = scalar_disc(cx.b, acc_prim);
+    let t = cx.b.ins().band_imm(new_acc.disc, TAINT);
+    let d = cx.b.ins().bor(base, t);
+    cx.b.def_var(acc_disc_var, d);
     emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(loop_body);
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     drop_owned_src(cx, &arr)?;
-    Ok(cx.b.use_var(acc_var))
+    let payload = cx.b.use_var(acc_var);
+    let disc = cx.b.use_var(acc_disc_var);
+    Ok(CompiledExpr::new(disc, payload))
 }
 
-/// `array::find(arr, |x| pred)` — early-exit on the first element
-/// whose predicate (I8 keep flag) is true; the result is the
-/// `Nullable<elem>` `(disc, payload)` pair (null when none match).
-/// The found / not-found edges merge into a two-block-param exit. A
-/// scalar match packs `(prim_disc, payload)` inline; a composite
-/// match CONSUMES the owned element via `graphix_value_new_from_array`
-/// on the found edge and drops it on the advance edge (matched-once /
-/// not-this-iteration).
+/// `array::find(arr, |x| pred)` — the result is the `Nullable<elem>`
+/// `(disc, payload)` pair for the FIRST element whose predicate (I8
+/// keep flag) is true (null when none match). The loop scans EVERY
+/// element — no early exit: the node-walk's find aggregator requires
+/// every slot's predicate to have completed before it emits, so a
+/// bottom predicate on a slot AFTER the match must still bottom the
+/// whole find (the early-exiting loop returned the match where the
+/// node-walk produced nothing). The first match is stashed in
+/// Variables (wrap CONSUMES the owned element on the take edge; every
+/// other iteration's element drops on the discard edge) and
+/// first-match-wins is enforced by the found flag.
 pub fn emit_find_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
     mut pred: F,
-) -> Result<(ClifValue, ClifValue)>
+) -> Result<((ClifValue, ClifValue), SlotTaint)>
 where
-    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<ClifValue>,
+    F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
+    let taint = SlotTaint::new(cx);
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
+    let found_var = cx.b.declare_var(types::I8);
+    let zero8 = cx.b.ins().iconst(types::I8, 0);
+    cx.b.def_var(found_var, zero8);
+    let rdisc_var = cx.b.declare_var(types::I64);
+    let null_disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
+    cx.b.def_var(rdisc_var, null_disc);
+    let rpay_var = cx.b.declare_var(types::I64);
+    let zero64 = cx.b.ins().iconst(types::I64, 0);
+    cx.b.def_var(rpay_var, zero64);
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
-    let found = cx.b.create_block();
+    let take_block = cx.b.create_block();
+    let discard = cx.b.create_block();
     let advance = cx.b.create_block();
-    let not_found = cx.b.create_block();
-    let exit = cx.b.create_block();
-    cx.b.append_block_param(exit, types::I64); // disc
-    cx.b.append_block_param(exit, types::I64); // payload
+    let loop_exit = cx.b.create_block();
     cx.b.ins().jump(loop_header, &[]);
     cx.b.switch_to_block(loop_header);
-    emit_loop_header(cx, i_var, len, loop_body, not_found);
+    emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
     // Cooperative interrupt poll at the scaffold loop head: a wedged
     // map/fold/filter/… over a huge array aborts to bottom; the in-flight
@@ -939,14 +1022,22 @@ where
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
     let (bound, owned_leaves) = bind_elem(cx, arr.ptr, i_now, elem)?;
-    let keep = pred(cx)?;
-    // Leaves are consumed by the predicate; the found edge moves only
+    let keep_cv = pred(cx)?;
+    // A tainted predicate slot taints the whole find; its placeholder
+    // keep flag is 0, so it never takes.
+    taint.fold(cx, keep_cv.disc);
+    // Leaves are consumed by the predicate; the take edge moves only
     // the ELEMENT into the result, so drop leaves once, pre-branch.
     drop_owned_leaves(cx, &owned_leaves)?;
     cx.env.truncate(mark);
-    cx.b.ins().brif(keep, found, &[], advance, &[]);
-    cx.b.switch_to_block(found);
-    cx.b.seal_block(found);
+    let not_found_yet = {
+        let f = cx.b.use_var(found_var);
+        cx.b.ins().icmp_imm(IntCC::Equal, f, 0)
+    };
+    let take = cx.b.ins().band(keep_cv.payload, not_found_yet);
+    cx.b.ins().brif(take, take_block, &[], discard, &[]);
+    cx.b.switch_to_block(take_block);
+    cx.b.seal_block(take_block);
     let (disc, payload) = match &bound {
         BoundElem::Scalar { var, prim } => {
             let elem_again = cx.b.use_var(*var);
@@ -977,60 +1068,68 @@ where
             (cx.b.use_var(*disc), cx.b.use_var(*payload))
         }
     };
-    cx.b.ins().jump(exit, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
-    cx.b.switch_to_block(advance);
-    // Not matched this iteration — drop an owned composite element.
+    cx.b.def_var(rdisc_var, disc);
+    cx.b.def_var(rpay_var, payload);
+    let one8 = cx.b.ins().iconst(types::I8, 1);
+    cx.b.def_var(found_var, one8);
+    cx.b.ins().jump(advance, &[]);
+    cx.b.switch_to_block(discard);
+    cx.b.seal_block(discard);
+    // Not taken this iteration — drop an owned element.
     drop_owned_elem(cx, &bound)?;
-    emit_increment(cx, i_var, i_now, loop_header);
+    cx.b.ins().jump(advance, &[]);
+    cx.b.switch_to_block(advance);
     cx.b.seal_block(advance);
+    emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(loop_body);
     cx.b.seal_block(loop_header);
-    cx.b.switch_to_block(not_found);
-    cx.b.seal_block(not_found);
-    let null_disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
-    let null_payload = cx.b.ins().iconst(types::I64, 0);
-    cx.b.ins().jump(exit, &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)]);
-    cx.b.switch_to_block(exit);
-    cx.b.seal_block(exit);
-    let disc = cx.b.block_params(exit)[0];
-    let payload = cx.b.block_params(exit)[1];
+    cx.b.switch_to_block(loop_exit);
+    cx.b.seal_block(loop_exit);
+    let disc = cx.b.use_var(rdisc_var);
+    let payload = cx.b.use_var(rpay_var);
     drop_owned_src(cx, &arr)?;
-    Ok((disc, payload))
+    Ok(((disc, payload), taint))
 }
 
-/// `array::find_map(arr, |x| body)` — early-exit on the first
-/// non-null body result; the result is that `Nullable<out>` `(disc,
-/// payload)` pair (or null). Same merge shape as [`emit_find_loop`],
-/// but the body produces the pair directly (not a predicate), and a
-/// composite element is dropped EVERY iteration right after the body
-/// (the result is the body value, never the element). The closure's
-/// pair must be OWNED and independent of the element — the element is
-/// dropped before the null test, and on the found edge the pair
-/// leaves the loop as the kernel's result (like
-/// [`emit_flat_map_loop`]'s owned-ptr requirement).
+/// `array::find_map(arr, |x| body)` — the result is the FIRST
+/// non-null `Nullable<out>` `(disc, payload)` body result (or null).
+/// Like [`emit_find_loop`] the loop scans EVERY element — no early
+/// exit, the node-walk requires every slot complete — stashing the
+/// first non-null pair and DROPPING every other body result (an owned
+/// pair not taken must be freed; dropping the null placeholder is
+/// harmless). The closure's pair must be OWNED and independent of the
+/// element — the element is dropped before the null test.
 pub fn emit_find_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
     mut body: F,
-) -> Result<(ClifValue, ClifValue)>
+) -> Result<((ClifValue, ClifValue), SlotTaint)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<(ClifValue, ClifValue)>,
 {
+    let taint = SlotTaint::new(cx);
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
+    let found_var = cx.b.declare_var(types::I8);
+    let zero8 = cx.b.ins().iconst(types::I8, 0);
+    cx.b.def_var(found_var, zero8);
+    let rdisc_var = cx.b.declare_var(types::I64);
+    let null_disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
+    cx.b.def_var(rdisc_var, null_disc);
+    let rpay_var = cx.b.declare_var(types::I64);
+    let zero64 = cx.b.ins().iconst(types::I64, 0);
+    cx.b.def_var(rpay_var, zero64);
     let i_var = init_counter(cx);
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
-    let found = cx.b.create_block();
+    let take_block = cx.b.create_block();
+    let discard = cx.b.create_block();
     let advance = cx.b.create_block();
-    let not_found = cx.b.create_block();
-    let exit = cx.b.create_block();
-    cx.b.append_block_param(exit, types::I64); // disc
-    cx.b.append_block_param(exit, types::I64); // payload
+    let loop_exit = cx.b.create_block();
     cx.b.ins().jump(loop_header, &[]);
     cx.b.switch_to_block(loop_header);
-    emit_loop_header(cx, i_var, len, loop_body, not_found);
+    emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
     // Cooperative interrupt poll at the scaffold loop head: a wedged
     // map/fold/filter/… over a huge array aborts to bottom; the in-flight
@@ -1045,31 +1144,40 @@ where
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    // A tainted body bottoms the whole HOF (#219); `bdisc` is then clean
-    // on the continue path, so the `== NULL` compare is exact.
-    let valid = is_untainted(cx.b, bdisc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    let is_null = cx.b.ins().icmp_imm(IntCC::Equal, bdisc, value_disc::NULL);
-    // not-null → found; null → advance. `bdisc`/`bpayload`
-    // dominate `found` (computed before the branch).
-    cx.b.ins().brif(is_null, advance, &[], found, &[]);
-    cx.b.switch_to_block(found);
-    cx.b.seal_block(found);
-    cx.b.ins().jump(exit, &[BlockArg::Value(bdisc), BlockArg::Value(bpayload)]);
+    // A tainted body slot taints the whole find_map; its placeholder is
+    // Null (never taken). Clean the disc for the null test.
+    taint.fold(cx, bdisc);
+    let clean = clean_disc(cx.b, bdisc);
+    let non_null = cx.b.ins().icmp_imm(IntCC::NotEqual, clean, value_disc::NULL);
+    let not_found_yet = {
+        let f = cx.b.use_var(found_var);
+        cx.b.ins().icmp_imm(IntCC::Equal, f, 0)
+    };
+    let take = cx.b.ins().band(non_null, not_found_yet);
+    cx.b.ins().brif(take, take_block, &[], discard, &[]);
+    cx.b.switch_to_block(take_block);
+    cx.b.seal_block(take_block);
+    cx.b.def_var(rdisc_var, clean);
+    cx.b.def_var(rpay_var, bpayload);
+    let one8 = cx.b.ins().iconst(types::I8, 1);
+    cx.b.def_var(found_var, one8);
+    cx.b.ins().jump(advance, &[]);
+    cx.b.switch_to_block(discard);
+    cx.b.seal_block(discard);
+    // Not taken — drop the owned pair (a null or placeholder pair
+    // drops harmlessly; `graphix_value_drop` masks the tag).
+    let vdrop = cx.helper("graphix_value_drop")?;
+    cx.b.ins().call(vdrop, &[bdisc, bpayload]);
+    cx.b.ins().jump(advance, &[]);
     cx.b.switch_to_block(advance);
-    emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(advance);
+    emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(loop_body);
     cx.b.seal_block(loop_header);
-    cx.b.switch_to_block(not_found);
-    cx.b.seal_block(not_found);
-    let null_disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
-    let null_payload = cx.b.ins().iconst(types::I64, 0);
-    cx.b.ins().jump(exit, &[BlockArg::Value(null_disc), BlockArg::Value(null_payload)]);
-    cx.b.switch_to_block(exit);
-    cx.b.seal_block(exit);
-    let disc = cx.b.block_params(exit)[0];
-    let payload = cx.b.block_params(exit)[1];
+    cx.b.switch_to_block(loop_exit);
+    cx.b.seal_block(loop_exit);
+    let disc = cx.b.use_var(rdisc_var);
+    let payload = cx.b.use_var(rpay_var);
     drop_owned_src(cx, &arr)?;
-    Ok((disc, payload))
+    Ok(((disc, payload), taint))
 }

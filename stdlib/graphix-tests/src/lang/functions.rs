@@ -811,3 +811,73 @@ run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| mat
     v,
     Ok(Value::Bool(false))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// #219 taint-escalation regressions (fuzz/triage-fuzzer-v2, found by
+// the fuzzer-v2 generated campaigns): a locally-unconsumed bottom used
+// to abort the WHOLE kernel at HOF/composite boundaries where the
+// node-walk bottoms only the consuming path.
+
+// Fold with a bottom init whose callback never READS the accumulator:
+// the node-walk's per-slot dataflow recovers on the first slot (the
+// fold yields the last element). The acc's taint is loop-carried in
+// its own disc now, not kernel-aborted.
+const FOLD_BOTTOM_INIT_UNREAD_ACC: &str = r#"
+{
+  let b = i64:1 / i64:0;
+  array::fold([i64:5, i64:7], b, |acc, x| x)
+}
+"#;
+
+run!(fold_bottom_init_unread_acc, FOLD_BOTTOM_INIT_UNREAD_ACC, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The dual: the callback CONSUMES the bottom acc — stays bottom in
+// both modes (the run! harness sees the interp/jit agreement; the
+// observable is the gate never firing, so pin a program whose tail is
+// independent).
+const UNUSED_BOTTOM_COMPOSITE_WITH_HOF: &str = r#"
+{
+  let v = (array::map([i64:1], |i| i), (i64:1 / i64:0));
+  false
+}
+"#;
+
+run!(
+    unused_bottom_composite_with_hof,
+    UNUSED_BOTTOM_COMPOSITE_WITH_HOF,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// A bottom map SLOT taints the map's result, not the kernel — the
+// unrelated const tail still fires.
+const UNUSED_BOTTOM_MAP_SLOT: &str = r#"
+{
+  let m = array::map([i64:1, i64:0], |x| i64:5 / x);
+  false
+}
+"#;
+
+run!(unused_bottom_map_slot, UNUSED_BOTTOM_MAP_SLOT, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Bool(false))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// find scans ALL slots: a bottom predicate AFTER the matching element
+// still bottoms the find (the node-walk's aggregator requires every
+// slot complete). The early-exiting loop returned the match — the JIT
+// produced a value where the node-walk produced nothing (found while
+// FIXING the escalation class; the opposite failure direction). The
+// observable: the independent tail fires, the find result does not.
+const FIND_BOTTOM_AFTER_MATCH: &str = r#"
+{
+  let r = array::find([i64:1, i64:0], |x| (i64:5 / x) > i64:0);
+  false
+}
+"#;
+
+run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Bool(false))
+); graphix_package_core::testing::FuseExpect::Jit);

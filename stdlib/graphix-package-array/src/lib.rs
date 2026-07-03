@@ -154,7 +154,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug, so
         // Err (abort the kernel), never Ok(None).
-        let arr = emit::emit_forced_keep(cx, array_arg)?;
+        // #219: no runtime abort anywhere — a tainted SOURCE is the
+        // helper-safe empty placeholder (zero iterations) and a tainted
+        // body SLOT is a pushed placeholder; both taint the RESULT (the
+        // scaffold's SlotTaint + inherit_hof_firing's source-taint OR),
+        // never the kernel.
+        let arr = array_arg.emit_clif(cx)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_map_loop(
             cx,
@@ -169,8 +174,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| {
+        .map(|(v, taint)| {
             let r = emit::array_result(cx, v);
+            let r = taint.apply(cx, r);
             Some(emit::inherit_hof_firing(
                 cx,
                 r,
@@ -259,7 +265,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr = emit::emit_forced_keep(cx, array_arg)?;
+        // #219: see MapImpl — result-level taint, no kernel abort.
+        let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_filter_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, owned },
@@ -269,10 +276,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
                 typ: &in_elem,
                 leaves: &leaves,
             },
-            |cx| emit::emit_forced(cx, body),
+            |cx| body.emit_clif(cx),
         )
-        .map(|v| {
+        .map(|(v, taint)| {
             let r = emit::array_result(cx, v);
+            let r = taint.apply(cx, r);
             Some(emit::inherit_hof_firing(
                 cx,
                 r,
@@ -360,7 +368,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr = emit::emit_forced_keep(cx, array_arg)?;
+        // #219: see MapImpl — result-level taint, no kernel abort. The
+        // body's owned-ptr fixup runs on the placeholder too (an empty
+        // ValArray clones/extends harmlessly).
+        let arr = array_arg.emit_clif(cx)?;
         let body_src = emit::node_composite_source(body);
         scaffold::emit_flat_map_loop(
             cx,
@@ -372,12 +383,14 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                 leaves: &leaves,
             },
             |cx| {
-                let p = emit::emit_forced(cx, body)?;
-                emit::ensure_owned_composite_src(cx, body_src, p)
+                let cv = body.emit_clif(cx)?;
+                let p = emit::ensure_owned_composite_src(cx, body_src, cv.payload)?;
+                Ok(CompiledExpr::new(cv.disc, p))
             },
         )
-        .map(|v| {
+        .map(|(v, taint)| {
             let r = emit::array_result(cx, v);
+            let r = taint.apply(cx, r);
             Some(emit::inherit_hof_firing(
                 cx,
                 r,
@@ -455,7 +468,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             };
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr = emit::emit_forced_keep(cx, array_arg)?;
+        // #219: see MapImpl — result-level taint, no kernel abort.
+        let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_filter_map_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, owned },
@@ -465,8 +479,9 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             out_prim,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| {
+        .map(|(v, taint)| {
             let r = emit::array_result(cx, v);
+            let r = taint.apply(cx, r);
             Some(emit::inherit_hof_firing(
                 cx,
                 r,
@@ -559,7 +574,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr = emit::emit_forced_keep(cx, array_arg)?;
+        // #219: see MapImpl — result-level taint, no kernel abort. The
+        // scaffold scans ALL slots (no early exit): a bottom predicate
+        // AFTER the match must still bottom the find, per the
+        // node-walk's all-slots-complete rule.
+        let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_find_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, owned },
@@ -569,10 +588,11 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
                 typ: &in_elem,
                 leaves: &leaves,
             },
-            |cx| emit::emit_forced(cx, body),
+            |cx| body.emit_clif(cx),
         )
-        .map(|(disc, payload)| {
+        .map(|((disc, payload), taint)| {
             let r = CompiledExpr::new(disc, payload);
+            let r = taint.apply(cx, r);
             Some(emit::inherit_hof_firing(
                 cx,
                 r,
@@ -661,9 +681,12 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr = emit::emit_forced_keep(cx, array_arg)?;
+        // #219: see MapImpl — result-level taint, no kernel abort. The
+        // scaffold scans ALL slots (no early exit) per the node-walk's
+        // all-slots-complete rule.
+        let arr = array_arg.emit_clif(cx)?;
         let body_src = emit::node_composite_source(body);
-        let (disc, payload) = scaffold::emit_find_map_loop(
+        let ((disc, payload), taint) = scaffold::emit_find_map_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, owned },
             &scaffold::HofElem {
@@ -678,6 +701,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
             },
         )?;
         let r = CompiledExpr::new(disc, payload);
+        let r = taint.apply(cx, r);
         Ok(Some(emit::inherit_hof_firing(
             cx,
             r,
@@ -703,12 +727,10 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
     /// Direct-path fold loop via `scaffold::emit_fold_loop`. Same
     /// `Ok(None)` gates as `MapImpl::emit_clif`, plus the accumulator
     /// must be a register scalar whose prim the init and body types
-    /// agree on (`scalar_prim(init)` +
-    /// `body == acc` checks). The init and body both route through
-    /// `emit_forced`: a may-bottom init/body fuses and RUNTIME-aborts
-    /// the whole fold to bottom if it taints — faithful, since a bottom
-    /// accumulator poisons every later iteration (the acc slot never
-    /// fires and fold's output blocks == a tainted kernel result).
+    /// agree on (`scalar_prim(init)` + `body == acc` checks). A
+    /// may-bottom init/body TAINTS the accumulator (loop-carried in
+    /// its disc), matching the node-walk's per-slot dataflow: the fold
+    /// bottoms only while the callback consumes the bottom acc.
     fn emit_clif(
         cx: &mut BodyCx,
         array_arg: &Node<R, E>,
@@ -769,7 +791,15 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let arr = emit::emit_forced_keep(cx, array_arg)?;
+        //
+        // #219: neither the source nor the init/body abort on taint.
+        // A tainted source is the helper-safe empty placeholder (zero
+        // iterations) and `inherit_hof_firing` taints the result; the
+        // init/body taint is LOOP-CARRIED in the accumulator's disc —
+        // the node-walk's per-slot dataflow bottoms the fold only
+        // while the callback CONSUMES the bottom acc (`|acc, x| x`
+        // recovers on the first slot).
+        let arr = array_arg.emit_clif(cx)?;
         scaffold::emit_fold_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, owned },
@@ -782,13 +812,10 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
                 typ: &in_elem,
                 leaves: &leaves,
             },
-            // #219: a tainted init / body bottoms the whole fold (a
-            // bottom acc poisons all later iterations).
-            |cx| emit::emit_forced(cx, init_arg),
-            |cx| emit::emit_forced(cx, body),
+            |cx| init_arg.emit_clif(cx),
+            |cx| body.emit_clif(cx),
         )
-        .map(|v| {
-            let r = emit::scalar_result(cx, acc_prim, v);
+        .map(|r| {
             Some(emit::inherit_hof_firing(
                 cx,
                 r,
@@ -1772,7 +1799,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         }
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
-        let n = emit::emit_forced_keep(cx, n_node)?;
+        // #219: a tainted COUNT is the zero placeholder (empty result)
+        // and taints the result via inherit_hof_firing's source-taint
+        // OR (the count is this HOF's "source"); a tainted body slot
+        // rides the scaffold's SlotTaint. No kernel abort.
+        let n = n_node.emit_clif(cx)?;
         let out_src = emit::node_composite_source(body);
         scaffold::emit_init_loop(
             cx,
@@ -1784,8 +1815,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|v| {
+        .map(|(v, taint)| {
             let r = emit::array_result(cx, v);
+            let r = taint.apply(cx, r);
             Some(emit::inherit_hof_firing(cx, r, n.disc, &[body], idx_id, &[], None))
         })
     }

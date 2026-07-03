@@ -1,3 +1,10 @@
+// FIXED (2026-07-02): #219 taint escalation — HOF/composite
+// boundaries now produce RESULT-level taint instead of aborting the
+// kernel (emit_push_field_node / scaffold::push_field / SlotTaint /
+// fold's loop-carried acc disc). Regressions:
+// lang/functions.rs fold_bottom_init_unread_acc,
+// unused_bottom_composite_with_hof, unused_bottom_map_slot,
+// find_bottom_after_match.
 // bisect: fusion/JIT bug (interp != jit)
 // interp: Value(Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [I64(1), Map({String("k1"): String("xyz")})] }) })))))
 // jit:    Timeout

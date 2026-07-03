@@ -2456,13 +2456,20 @@ pub fn inherit_hof_firing<R: Rt, E: UserEvent>(
             stale_srcs.push(cx.b.use_var(dv));
         }
     }
+    // A tainted (bottom) SOURCE array taints the result too — the loop
+    // ran over the helper-safe empty placeholder, so the value is
+    // garbage the consumer must never see. A no-op for callers that
+    // still runtime-abort on source taint (their disc is clean here).
+    result.disc = propagate_taint(cx.b, result.disc, &[source_disc]);
     result.disc = propagate_stale(cx.b, result.disc, &stale_srcs);
     result
 }
 
 /// Bind an EXISTING scalar Variable as a local (a loop counter /
 /// accumulator the scaffold rebinds in place — `bind_local` would
-/// declare a fresh one). Synthesizes a const untainted disc Variable.
+/// declare a fresh one). Synthesizes a const untainted disc Variable;
+/// use [`bind_scalar_var_with_disc`] when the local's taint must be
+/// loop-carried (fold's accumulator).
 pub(crate) fn bind_scalar_var(
     cx: &mut BodyCx,
     name: ArcStr,
@@ -2473,9 +2480,22 @@ pub(crate) fn bind_scalar_var(
     let disc = scalar_disc(cx.b, prim);
     let dv = cx.b.declare_var(types::I64);
     cx.b.def_var(dv, disc);
+    bind_scalar_var_with_disc(cx, name, prim, payload_var, dv, bind_id)
+}
+
+/// [`bind_scalar_var`] with a caller-owned DISC Variable — reads of the
+/// local see whatever taint the caller loop-carries into it.
+pub(crate) fn bind_scalar_var_with_disc(
+    cx: &mut BodyCx,
+    name: ArcStr,
+    prim: PrimType,
+    payload_var: Variable,
+    disc_var: Variable,
+    bind_id: Option<BindId>,
+) {
     cx.env.bind(
         name,
-        ValueVar { disc: dv, payload: payload_var },
+        ValueVar { disc: disc_var, payload: payload_var },
         LocalKind::Scalar(prim),
         bind_id,
     );
@@ -4467,23 +4487,28 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     };
     let push = cx.helper(helper_name)?;
     let cv = field.emit_clif(cx)?;
-    // A composite producer has no per-field validity channel, so a
-    // tainted (bottom) field must propagate to the kernel OUTPUT: abort
-    // to `pending_exit` when invalid, then push the now-valid value.
-    // Pushing a tainted disc would store a corrupt Value (the TAINT bit
-    // is not a clean tag) — UB on a later clone/drop. `is_untainted`
-    // folds to const-true (no branch) for an untainted field.
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    // A tainted (bottom) field does NOT abort the kernel: the node-walk
+    // only bottoms the PRODUCER node (nothing downstream that doesn't
+    // read it is affected), so the composite must come out TAINTED, not
+    // the whole kernel bottom — the caller's `propagate_flags` ORs the
+    // field discs into the result disc, and the output path forces
+    // bottom only if it CONSUMES the tainted composite (#219). Pushing
+    // the tainted field is safe: its payload is the helper-safe
+    // placeholder, and every push helper goes through the `TagValue`
+    // gateway, which MASKS the tag byte before the value is cloned or
+    // stored (a tainted disc can never materialize as a corrupt
+    // `Value`). Previously this aborted to `pending_exit`, escalating a
+    // locally-unconsumed bottom into whole-kernel bottom
+    // (fuzz/triage-fuzzer-v2/divergence_000001: an UNUSED tuple binding
+    // with a bottom element bottomed an unrelated const output).
     if kernel_abi::is_value_shape(cx.registry(), field.typ()) {
         cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
         cx.b.ins().call(push, &[buf, cv.payload]);
     }
-    // Return the field's disc so the composite result can AND-reduce STALE
-    // (a composite fires iff any field fired). The TAINT was already forced
-    // above (a tainted field bottomed the kernel), so only the STALE bit is
-    // live here.
+    // Return the field's disc so the composite result can OR-reduce
+    // TAINT and AND-reduce STALE (a composite bottoms if any field
+    // bottomed, and fires iff any field fired).
     Ok(cv.disc)
 }
 
