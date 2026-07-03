@@ -478,7 +478,14 @@ pub extern "C" fn graphix_depth_push() -> i8 {
             1
         } else {
             // SAFETY: see `graphix_interrupted`.
-            i8::from(unsafe { (*p).depth_push() })
+            let ok = unsafe { (*p).depth_push() };
+            if !ok {
+                // Native code can't push an `RtDiagnostic` — flag the
+                // trip on the Control; `FusedKernel::update` takes it
+                // after the invocation and reports the kernel's spec.
+                unsafe { (*p).set_depth_trip() };
+            }
+            i8::from(ok)
         }
     })
 }

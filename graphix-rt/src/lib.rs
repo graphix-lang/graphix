@@ -519,6 +519,14 @@ enum ToGX<X: GXExt> {
 pub enum GXEvent {
     Updated(ExprId, Value),
     Env(Env),
+    /// A runtime diagnostic (see [`graphix_compiler::RtDiagnostic`]):
+    /// a failure whose value-level outcome is BOTTOM by design (e.g. a
+    /// call-depth-limit trip) — nothing arrives on the value channel,
+    /// so embedders subscribe here to tell the user which expression
+    /// produced nothing and why. `id` is the top-level expression
+    /// whose update produced the diagnostic (`None` for the rare trip
+    /// outside a node update, e.g. a callable invocation).
+    Diagnostic(Option<ExprId>, graphix_compiler::RtDiagnostic),
 }
 
 /// One entry in a runtime-side trace (see [`GXHandle::trace_start`]).

@@ -9,10 +9,16 @@
 // Deterministic (2x2 runs). Surfaced by the Phase-4 depth guard at
 // crash-corpus triage — before the guard both modes crashed/hung, so
 // the asymmetry was invisible.
-// status: OPEN — discuss with Eric. Root-cause hypothesis: the nested
-//   lp's callsite resolution (typecheck1 cascade / bound-instance
-//   firing) differs across modes, so mark_recursion sees different
-//   resolved-site sets. Only observable for runaway (never-quiescing)
-//   recursion; finite programs agree.
+// status: FIXED (2026-07-03, Eric: "tail recursion is just as important
+//   for the node walk"): the root cause was EXACTLY the hypothesis —
+//   the #203 typecheck1 cascade (resolve a callee body's nested sites)
+//   was gated on fusion.enabled, so analyze never tail-marked nested
+//   rec lambdas under FusionDisabled. The cascade now runs in every
+//   mode; this program Timeouts symmetrically (both tail-loop), and
+//   the FINITE nested shape (which had become a value divergence past
+//   the depth guard) is pinned by findings/depth-guard-jul2026/03 +
+//   the nested_tail_loop run! fixture.
+// prior status: OPEN — root-cause hypothesis: nested callsite
+//   resolution differs across modes.
 // mutant: campaign crasher crash_000537
 {let rec f = |v: i64| -> i64 f({let rec lp = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => lp(n - i64:1, acc + n)}; lp(i64:100, i64:0)} + i64:2); f(i64:0)}

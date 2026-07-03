@@ -26,7 +26,7 @@ async fn bind_ref_arith() -> Result<()> {
         Some(mut ev) => {
             for e in ev.drain(..) {
                 match e {
-                    GXEvent::Env(_) => (),
+                    GXEvent::Env(_) | GXEvent::Diagnostic(_, _) => (),
                     GXEvent::Updated(id, v) => {
                         assert_eq!(id, eid);
                         assert_eq!(v, Value::I64(1))

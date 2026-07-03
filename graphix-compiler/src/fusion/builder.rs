@@ -97,7 +97,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // Delegate to Kernel (Apply) — drives the feeders, sets up
         // the DynCall dispatch handle, invokes JIT (or interp), and
         // decodes the return value.
-        self.inner.update(ctx, &mut self.feeders, event)
+        let res = self.inner.update(ctx, &mut self.feeders, event);
+        // A lambda dispatch inside the kernel hit the call-depth limit
+        // (the `graphix_depth_push` helper flagged it — native code
+        // can't push a diagnostic). Report the fused region's spec so
+        // the runtime's event stream can tell the user WHICH
+        // expression bottomed. Node-walk trips (including DynCall'd
+        // node-walk residue) report themselves and don't set the flag.
+        if ctx.control.take_depth_trip() {
+            ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
+                limit: ctx.control.max_call_depth(),
+                spec: self.spec.clone(),
+            });
+        }
+        res
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

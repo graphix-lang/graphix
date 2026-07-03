@@ -623,7 +623,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // back-edge. Leave it `DynamicUnbound` — a self-call is handled by
         // the `self_call` emit mechanism, a mutual back-edge de-fuses cleanly
         // — and don't recurse the drive.
-        if ctx.fusion.enabled && ctx.fusion.resolving.lock().contains(&def.id.inner()) {
+        if ctx.fusion.resolving.lock().contains(&def.id.inner()) {
             return Ok(());
         }
         let scope = self.scope.clone();
@@ -635,13 +635,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // this a call inside the body stays `DynamicUnbound` and can't fuse —
         // the gap that made an HOF callback's `iterate(..)` (and any nested
         // call) un-fusable. Guarded by the in-progress `LambdaId` set (the
-        // back-edge skip above) so recursion terminates; gated on
-        // `fusion.enabled` so node-walk/lsp are unaffected. Errors are
-        // swallowed — a body that fails its first typecheck1 stays
-        // partly-resolved and its calls de-fuse (the interp lazy-binds them);
-        // never a NEW compile failure.
-        if ctx.fusion.enabled
-            && let Some(apply) = self.callee.apply_mut()
+        // back-edge skip above) so recursion terminates. NOT fusion-gated:
+        // `analysis::analyze`'s tail-loop marking only reaches sites with a
+        // `resolved_apply`, and the NODE-WALK consumes those marks — with
+        // the cascade off under `FusionDisabled`, a rec lambda NESTED in
+        // another lambda's body stack-recursed (and, past the depth guard,
+        // bottomed) where the fused path tail-looped: a mode divergence the
+        // depth guard made value-visible (fuzz/triage-fuzzer-v2/
+        // divergence_000008, 2026-07-03). Errors are swallowed — a body
+        // that fails its first typecheck1 stays partly-resolved and its
+        // calls de-fuse (the interp lazy-binds them); never a NEW compile
+        // failure.
+        if let Some(apply) = self.callee.apply_mut()
             && matches!(apply.view(), ApplyView::Lambda(_))
         {
             let lid = def.id.inner();

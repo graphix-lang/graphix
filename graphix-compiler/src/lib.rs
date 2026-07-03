@@ -122,6 +122,38 @@ pub enum CtlFlag {
 /// in both evaluators and are exempt.
 pub const DEFAULT_MAX_CALL_DEPTH: u32 = 256;
 
+/// A runtime diagnostic: a failure whose value-level outcome is BOTTOM
+/// by design (no value this cycle — nothing for `?`/`try` to catch),
+/// surfaced through the runtime's event stream so embedders and the
+/// shell can still tell the user WHICH expression produced nothing and
+/// why. Produced into [`ExecCtx::diagnostics`] at the trip site,
+/// drained by the runtime after each top-level node update.
+#[derive(Debug, Clone)]
+pub enum RtDiagnostic {
+    /// A nested (non-tail) lambda dispatch hit
+    /// [`Control::max_call_depth`] and produced bottom instead of
+    /// recursing. `spec` is the lambda body that was about to dispatch
+    /// (node-walk trip) or the fused region whose kernel aborted (JIT
+    /// trip).
+    CallDepthLimit { limit: u32, spec: Expr },
+}
+
+impl std::fmt::Display for RtDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RtDiagnostic::CallDepthLimit { limit, spec } => {
+                write!(
+                    f,
+                    "call depth limit ({limit}) exceeded — deep non-tail \
+                     recursion produced no value (raise via \
+                     Control::set_max_call_depth), at line {} column {} {}",
+                    spec.pos.line, spec.pos.column, spec.ori
+                )
+            }
+        }
+    }
+}
+
 /// Lock-free [`CtlFlag`] set over an `AtomicU32`, plus the shared
 /// call-depth guard both evaluators count against. A loop polls
 /// [`Control::interrupted`] (any flag ⇒ abort); the run loop polls
@@ -137,6 +169,12 @@ pub struct Control {
     /// the same limit as either alone.
     depth: AtomicU32,
     max_depth: AtomicU32,
+    /// Set by the JIT's `graphix_depth_push` helper when a kernel's
+    /// lambda dispatch hits the limit (native code can't push a
+    /// diagnostic itself); `FusedKernel::update` takes it after each
+    /// invocation and reports the kernel's spec. Node-walk trips
+    /// report directly and never set this.
+    depth_trip: AtomicBool,
 }
 
 impl Default for Control {
@@ -151,7 +189,19 @@ impl Control {
             flags: AtomicU32::new(0),
             depth: AtomicU32::new(0),
             max_depth: AtomicU32::new(DEFAULT_MAX_CALL_DEPTH),
+            depth_trip: AtomicBool::new(false),
         }
+    }
+
+    /// Record that a JIT-side lambda dispatch hit the depth limit —
+    /// see the `depth_trip` field.
+    pub fn set_depth_trip(&self) {
+        self.depth_trip.store(true, Ordering::Relaxed);
+    }
+
+    /// Take (and clear) the JIT depth-trip flag.
+    pub fn take_depth_trip(&self) -> bool {
+        self.depth_trip.swap(false, Ordering::Relaxed)
     }
 
     /// Request that in-flight loops abort this cycle; the runtime keeps
@@ -1562,6 +1612,13 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// handle. Loops poll it via [`Self::interrupted`] to abort a wedge;
     /// the runtime polls `control.aborted()` to shut down. See [`Control`].
     pub control: Arc<Control>,
+    /// Runtime diagnostics produced during the current cycle — failures
+    /// whose value-level outcome is BOTTOM by design (no value, nothing
+    /// to catch) but that users still need to hear about. Trip sites
+    /// push here; the runtime drains after each node update and
+    /// forwards to embedders through its event stream (the shell prints
+    /// them). See [`RtDiagnostic`].
+    pub diagnostics: Vec<RtDiagnostic>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1597,6 +1654,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             control: Arc::new(Control::new()),
+            diagnostics: Vec::new(),
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

@@ -214,13 +214,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // unchecked-arith overflow and div-by-zero (hot-path failures
         // log and bottom; see `Control::max_call_depth`).
         if !ctx.control.depth_push() {
+            let limit = ctx.control.max_call_depth();
             error!(
-                "call depth limit ({}) exceeded in {} — deep non-tail \
+                "call depth limit ({limit}) exceeded in {} — deep non-tail \
                  recursion produces no value (raise via \
                  Control::set_max_call_depth)",
-                ctx.control.max_call_depth(),
                 self.body.spec()
             );
+            // Surface the bottom to the user through the runtime's
+            // event stream (the value channel carries nothing, by
+            // design — see `RtDiagnostic`).
+            ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
+                limit,
+                spec: self.body.spec().clone(),
+            });
             return None;
         }
         let res = if !self.tail_loop.load(Ordering::Relaxed) {

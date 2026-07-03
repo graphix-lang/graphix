@@ -966,3 +966,30 @@ run!(depth_guard_under_limit, DEPTH_GUARD_UNDER_LIMIT, |v: Result<&Value>| {
 // fuzz findings corpus (findings/depth-guard-jul2026/) — empty-trace
 // agreement is a first-class assertion there, while the run! harness
 // has no runtime-bottom expectation (it would wait out its timeout).
+
+// A rec lambda NESTED in another lambda's body tail-loops in BOTH
+// modes: the #203 resolution cascade (drive a resolved callee's body
+// through typecheck1 so nested sites resolve) used to be fusion-gated,
+// so under FusionDisabled `analysis::analyze` never saw lp's callsite
+// as resolved, never tail-marked it, and the interp stack-recursed
+// what the fused path looped — at depth 500 (past the 256 call-depth
+// guard) the interp bottomed while the JIT returned 125251
+// (fuzz/triage-fuzzer-v2/divergence_000008). The cascade now runs in
+// every mode.
+const NESTED_TAIL_LOOP: &str = r#"
+{
+  let f = |x: i64| -> i64 {
+    let rec lp = |n: i64, acc: i64| -> i64 select n { i64:0 => acc, _ => lp(n - i64:1, acc + n) };
+    lp(i64:500, i64:0) + x
+  };
+  f(i64:1)
+}
+"#;
+
+// ASPIRE(FuseExpect::Jit): the shape doesn't fuse (a rec lambda bound
+// inside another lambda's body is the local-lambda-in-body missed-
+// fusion class); what this fixture pins is the MODE PARITY of the
+// tail loop — the node-walk completes depth 500 with the same value.
+run!(nested_tail_loop, NESTED_TAIL_LOOP, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(125251)))
+}; graphix_package_core::testing::FuseExpect::None);

@@ -415,6 +415,12 @@ impl<X: GXExt> GX<X> {
                         }
                         batch.push(GXEvent::Updated(*id, v))
                     }
+                    // Runtime diagnostics the update produced (bottoms
+                    // the user must hear about — depth-limit trips),
+                    // attributed to this top-level expression.
+                    for d in self.ctx.diagnostics.drain(..) {
+                        batch.push(GXEvent::Diagnostic(Some(*id), d));
+                    }
                     for id in clear.drain(..) {
                         self.event.variables.remove(&id);
                     }
@@ -436,6 +442,12 @@ impl<X: GXExt> GX<X> {
         // depth limit.
         self.ctx.control.clear_interrupt();
         self.ctx.control.depth_reset();
+        // Diagnostics produced OUTSIDE a node update (a callable
+        // invocation, an extension cycle) have no top-level expr to
+        // attribute; forward them unattributed rather than drop them.
+        for d in self.ctx.diagnostics.drain(..) {
+            batch.push(GXEvent::Diagnostic(None, d));
+        }
         if let Some(tr) = self.trace.as_mut() {
             tr.cycle_end(self.cycle);
         }

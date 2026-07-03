@@ -500,6 +500,10 @@ macro_rules! run {
                                         for e in batch.drain(..) {
                                             match e {
                                                 ::graphix_rt::GXEvent::Env(_) => (),
+                                                ::graphix_rt::GXEvent::Diagnostic(
+                                                    _,
+                                                    d,
+                                                ) => eprintln!("{d}"),
                                                 ::graphix_rt::GXEvent::Updated(id, v) => {
                                                     eprintln!("{v}");
                                                     assert_eq!(id, eid);

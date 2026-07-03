@@ -370,6 +370,13 @@ impl<X: GXExt> Shell<X> {
                                     env = e;
                                     newenv = Some(env.clone());
                                 }
+                                // A bottom the user must hear about (a
+                                // call-depth-limit trip): nothing
+                                // arrives on the value channel, so
+                                // report it directly.
+                                GXEvent::Diagnostic(_, d) => {
+                                    eprintln!("runtime: {d}")
+                                }
                             }
                         }
                     }
