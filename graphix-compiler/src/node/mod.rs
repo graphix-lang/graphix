@@ -101,6 +101,21 @@ macro_rules! deref_typ {
                         }
                         typ = Some(rt.lookup_ref(&$ctx.env)?);
                     }
+                    // A Set whose members have since become mergeable (a
+                    // union built while a member type still held unbound
+                    // TVars — e.g. a select's arm union over a `$` result —
+                    // never re-collapses on its own). normalize's merge
+                    // sees through bound TVars; if it collapses the set,
+                    // keep dereferencing the merged type.
+                    Some(t @ $crate::typ::Type::Set(_)) => {
+                        let nt = t.normalize();
+                        if matches!(nt, $crate::typ::Type::Set(_)) {
+                            $crate::format_with_flags(PrintFlag::DerefTVars, || {
+                                anyhow::bail!("expected {} not {nt}", $name)
+                            })?
+                        }
+                        typ = Some(nt);
+                    }
                     Some(t) => $crate::format_with_flags(PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,

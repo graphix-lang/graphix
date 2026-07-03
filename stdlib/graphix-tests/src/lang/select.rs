@@ -629,3 +629,75 @@ run!(gated_scalar_unannotated, GATED_SCALAR_UNANNOTATED, |v: Result<&Value>| mat
     v,
     Ok(Value::I64(9))
 ); graphix_package_core::testing::FuseExpect::None);
+
+// A GUARDED arm before a bind-all final was rejected "missing match
+// cases": the bind-all's inferred type predicate is a fresh TVar, and
+// the coverage check's greedy unifying walk bound it to the FIRST
+// scrutinee union member, leaving the rest "uncovered". Coverage now
+// counts an inferred irrefutable pattern as the whole scrutinee type
+// (found by fuzzer-v2 gen-check; guard-first arms are idiomatic — the
+// TUI examples' key handlers are exactly this shape).
+const GUARDED_ARM_THEN_BINDALL: &str = r#"
+{
+  let v: [`A(i64), `B] = `A(i64:1);
+  select v { `A(x) if x > i64:0 => x, y => i64:0 }
+}
+"#;
+
+run!(guarded_arm_then_bindall, GUARDED_ARM_THEN_BINDALL, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// The dual shape: the guarded arm names a DIFFERENT tag than the value.
+const GUARDED_OTHER_TAG_THEN_BINDALL: &str = r#"
+{
+  let v: [`A(i64), `B] = `A(i64:7);
+  select v { `B if true => i64:1, y => i64:2 }
+}
+"#;
+
+run!(
+    guarded_other_tag_then_bindall,
+    GUARDED_OTHER_TAG_THEN_BINDALL,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// A select's result union built over an arm still holding an unbound
+// `$`-result TVar never re-collapsed once the TVar bound: the field
+// access then failed "expected struct not [{..}, {..}]" on two
+// since-identical members. deref_typ! now normalizes a Set through
+// the TVar-aware merge before giving up (found by fuzzer-v2 gen-check).
+const ARM_UNION_TVAR_COLLAPSE: &str = r#"
+{
+  let v0 = select i64:100 {
+    42 => { b: f64:1.0, y: cast<i64>(u8:2)$ },
+    _ => { b: f64:0.0, y: i64:42 }
+  };
+  v0.y
+}
+"#;
+
+run!(arm_union_tvar_collapse, ARM_UNION_TVAR_COLLAPSE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(42))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// Bind-all arm types narrow by position: the value reaching `s` cannot
+// be null (the earlier unguarded irrefutable arm consumed it), so `s`
+// is `string`, usable where a string is required. This came out right
+// before only because the coverage walk happened to greedily bind the
+// wildcard's tvar to the union's first member.
+const BINDALL_NARROWS_BY_POSITION: &str = r#"
+{
+  let o: [string, null] = "x";
+  let n = select o { null as _ => "", s => s };
+  str::len(n)
+}
+"#;
+
+run!(bindall_narrows_by_position, BINDALL_NARROWS_BY_POSITION, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); graphix_package_core::testing::FuseExpect::Jit);

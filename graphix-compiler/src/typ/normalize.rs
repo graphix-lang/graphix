@@ -104,7 +104,7 @@ impl Type {
         }
     }
 
-    pub(crate) fn normalize(&self) -> Self {
+    pub fn normalize(&self) -> Self {
         match self {
             Type::Bottom | Type::Any | Type::Abstract { .. } | Type::Primitive(_) => {
                 self.clone()

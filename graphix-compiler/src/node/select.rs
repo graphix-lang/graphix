@@ -198,11 +198,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let mut itype = Type::Primitive(BitFlags::empty());
         let mut saw_true = false;
         let mut saw_false = false;
+        // An UNGUARDED wildcard (an arm whose pattern is irrefutable
+        // with an INFERRED type predicate — a bind-all / destructure of
+        // binds) matches anything, so its presence makes the select
+        // exhaustive by construction. Its raw predicate is a fresh TVar
+        // (or a composite of them) and must stay OUT of the coverage
+        // unions: `check_contains` is a greedy unifying walk, and fed
+        // the wildcard's tvar it bound it to the FIRST scrutinee union
+        // member it met and reported the rest missing (a guarded arm
+        // followed by a bind-all final was rejected as non-exhaustive);
+        // fed the scrutinee's own not-yet-bound cell it burned that
+        // instead.
+        let mut wildcard = false;
         for (pat, n) in self.arms.iter_mut() {
+            let inferred_irrefutable =
+                !pat.explicit_type_predicate && !pat.structure_predicate.is_refutable();
             match &mut pat.guard {
                 Some(guard) => guard.node.typecheck0(ctx)?,
                 None => {
-                    if !pat.structure_predicate.is_refutable() {
+                    if inferred_irrefutable {
+                        wildcard = true;
+                    } else if !pat.structure_predicate.is_refutable() {
                         mtype = mtype.union(&ctx.env, &pat.type_predicate)?
                     } else if let StructPatternNode::Literal(Value::Bool(b)) =
                         &pat.structure_predicate
@@ -216,28 +232,57 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     }
                 }
             }
-            itype = itype.union(&ctx.env, &pat.type_predicate)?;
+            if !inferred_irrefutable {
+                itype = itype.union(&ctx.env, &pat.type_predicate)?;
+            }
             rtype = rtype.union(&ctx.env, n.node.typ())?;
         }
-        itype.check_contains(&ctx.env, &self.arg.node.typ()).map_err(|e| {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                anyhow!("missing match cases {e}")
-            })
-        })?;
-        mtype.check_contains(&ctx.env, &self.arg.node.typ()).map_err(|e| {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                anyhow!("missing match cases {e}")
-            })
-        })?;
+        if wildcard {
+            // Exhaustive by construction — but still narrow an
+            // under-constrained scrutinee against the union of the
+            // informative arm predicates (a side-effect-only walk, the
+            // bool is discarded). This is where
+            // `|n, acc| select n { 0 => .., _ => .. }` learns n: i64;
+            // without a wildcard the coverage checks below perform the
+            // same narrowing.
+            if itype != Type::Primitive(BitFlags::empty()) {
+                let _ = itype.contains(&ctx.env, &self.arg.node.typ())?;
+            }
+        } else {
+            itype.check_contains(&ctx.env, &self.arg.node.typ()).map_err(|e| {
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    anyhow!("missing match cases {e}")
+                })
+            })?;
+            mtype.check_contains(&ctx.env, &self.arg.node.typ()).map_err(|e| {
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    anyhow!("missing match cases {e}")
+                })
+            })?;
+        }
+        let mut ntype = self.arg.node.typ().clone().normalize();
         for (pat, n) in self.arms.iter_mut() {
             // make sure tvars are aliased properly even if itype was Any.
+            // Alias against the NARROWED scrutinee type — the scrutinee
+            // minus every EARLIER unguarded irrefutable arm's coverage
+            // (the same subtraction the dead-arm walk below performs):
+            // in `select opt { null as _ => "", s => s }` the value
+            // reaching `s` cannot be null, so `s` is `string`, not
+            // `[string, null]`. Aliasing against the full scrutinee
+            // widened every post-narrowing bind (this used to come out
+            // right only when the coverage walk happened to greedily
+            // bind the tvar to the union's first member).
+            //
             // Unify through the `any_as_tvar` VIEW (same TVar cells, `Any`
             // leaves swapped for throwaway fresh TVars): the contains walk
             // short-circuits composite pairs on the first false, and
             // `T.contains(Any)` is false — a `_` slot would otherwise stop
             // the walk and leave every LATER slot's bind TVars un-narrowed.
-            self.arg.node.typ().contains(&ctx.env, &pat.type_predicate.any_as_tvar())?;
+            ntype.contains(&ctx.env, &pat.type_predicate.any_as_tvar())?;
             wrap!(n.node, n.node.typecheck0(ctx))?;
+            if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {
+                ntype = ntype.diff(&ctx.env, &pat.type_predicate)?;
+            }
         }
         let mut atype = self.arg.node.typ().clone().normalize();
         for (pat, _) in self.arms.iter() {
