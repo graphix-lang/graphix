@@ -5615,14 +5615,50 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     };
     cx.b.append_block_param(merge, payload_ty); // payload
     let scrut_disc = scrut.disc();
-    // A select FIRES iff its scrutinee OR the taken arm OR a GUARD fired.
-    // The arm result folds in the scrutinee's STALE (AND) — but a guard
-    // reading an EXTERNAL feeder fires the select too, and we don't fold
-    // the guard's disc, so a guarded select must NOT mark its result STALE
-    // (that would wrong-bottom on a guard-only fire). For a guarded select
-    // we force the result FRESH (an over-fire, safe); unguarded selects
-    // get the faithful AND(arm, scrut) fold.
+    // A select FIRES iff its scrutinee OR the taken arm OR a GUARD
+    // fired. Guards are evaluated inside the pattern chain (only on the
+    // paths that reach them), so "a guard fired" is computed HERE, path-
+    // independently, from the guards' FEEDERS: AND-reduce the STALE bit
+    // of every kernel-visible local any arm's guard reads — the word is
+    // STALE only if no guard input fired. (The node-walk re-matches on
+    // any pattern/guard update, so any guard feeder firing can re-fire
+    // the select.) This replaces the old force-the-result-FRESH
+    // treatment of guarded selects, which fired the select on EVERY
+    // kernel invocation — a `count` over a guarded select with an
+    // unrelated reactive input in the region counted every event
+    // (interp 1, jit 5). Residual over-fire (deliberate, small): the
+    // node-walk emits on a guard-only event only when the SELECTION
+    // CHANGES; matching that exactly needs cross-invocation selection
+    // state a kernel doesn't have, so a guard-feeder fire with an
+    // unchanged selection still re-emits the current value.
     let has_guard = sel.arms.iter().any(|(pat, _)| pat.guard.is_some());
+    let guard_stale: Option<ClifValue> = if has_guard {
+        let mut ids: Vec<BindId> = Vec::new();
+        for (pat, _) in sel.arms.iter() {
+            if let Some(g) = &pat.guard {
+                let mut refs = crate::Refs::default();
+                g.node.refs(&mut refs);
+                refs.with_external_refs(|id| {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                });
+            }
+        }
+        let mut word = cx.b.ins().iconst(types::I64, STALE);
+        for id in ids {
+            // Arm binds aren't in the env yet (the chain binds them per
+            // arm) — their firing is the scrutinee's, already folded.
+            if let Some(dv) = cx.env.lookup_by_id(id).map(|l| l.vv.disc) {
+                let d = cx.b.use_var(dv);
+                let sb = cx.b.ins().band_imm(d, STALE);
+                word = cx.b.ins().band(word, sb);
+            }
+        }
+        Some(word)
+    } else {
+        None
+    };
     emit_select_arms(
         cx,
         sel,
@@ -5637,7 +5673,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 merge_shape,
                 merge,
                 scrut_disc,
-                has_guard,
+                guard_stale,
             )
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
@@ -6521,7 +6557,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge_shape: SelectMerge,
     merge: Block,
     scrut_disc: ClifValue,
-    has_guard: bool,
+    guard_stale: Option<ClifValue>,
 ) -> Result<()> {
     use NodeView;
     let body_frozen =
@@ -6626,15 +6662,16 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     //  - UNGUARDED: STALE = AND(arm, scrut) — fires iff arm or scrut fired.
     //    A stale-CONSTANT arm (`null => true`) must still fire when the
     //    scrutinee fired, else it wrong-bottoms.
-    //  - GUARDED: a guard reading an EXTERNAL feeder fires the select too,
-    //    and we don't fold the guard's disc — so force the result FRESH
-    //    (STALE clear, over-fire, safe) rather than risk a guard-only-fire
-    //    wrong-bottom.
+    //  - GUARDED: additionally AND in the guard-feeder stale word
+    //    computed before the chain — the select also fires when any
+    //    guard input fired (see `emit_select_node`).
     let base = clean_disc(cx.b, disc);
-    let disc = if has_guard {
-        propagate_taint(cx.b, base, &[disc, scrut_disc])
-    } else {
-        propagate_flags(cx.b, base, &[disc, scrut_disc])
+    let disc = match guard_stale {
+        None => propagate_flags(cx.b, base, &[disc, scrut_disc]),
+        Some(gw) => {
+            let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
+            propagate_stale(cx.b, d, &[disc, scrut_disc, gw])
+        }
     };
     cx.env.truncate(mark);
     cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);

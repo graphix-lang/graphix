@@ -701,3 +701,22 @@ run!(bindall_narrows_by_position, BINDALL_NARROWS_BY_POSITION, |v: Result<&Value
     v,
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A GUARDED select used to force its result FRESH on every kernel
+// invocation ("over-fire, safe") — but firing is observable through
+// `count`: with an unrelated reactive input in the region, the fused
+// kernel counted every event (interp 1, jit 5). The select's STALE now
+// also ANDs a guard-feeder word (any arm's guard input fired → the
+// select may fire), computed path-independently before the arm chain.
+const GUARDED_SELECT_FIRING_COUNT: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let sel = select 0 { 0 if true => 42, _ => x };
+  let c = count(sel);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; graphix_package_core::testing::FuseExpect::Jit);
