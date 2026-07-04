@@ -1,0 +1,6 @@
+// bisect: Sample in a per-slot HOF clone woke the wrong root.
+// Sample had no clone_rebind override; the default recompile passed
+// spec().id as top_id, so the clone's set_var wake targeted a root
+// nobody drives — the slot never advanced. FIXED 2026-07-04:
+// structural clone_rebind registering under the original top_id.
+array::map([i64:1], |v| array::group(array::iter([i64:1, i64:2]) ~ "T", |n, _| n == i64:2))

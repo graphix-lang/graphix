@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(4, Map({String("c"): Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 4 }, slice: [String("tweeeenywon!"), String("tweeeenywon!"), String("tweeeenywon!"), String("tweeeenywon!")] }) })))), String("d"): Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 4 }, slice: [String("tweeeenywon!"), String("tweeeenywon!"), String("tweeeenywon!"), String("tweeeenywon!")] }) }))))}))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: {let m = {"a" => i64:1, "b" => i64:2, "c" => i64:3, "d" => i64:4}; map::filter_map(m, |(k, v)| select v {v if v > i64:2 => (k, {let a = [i64:0, i64:1, i64:2, i64:3]; let x = "tweeeenywon!"; array::group(array::iter(a) ~ x, |n, _| n == i64:4)}), _ => null})}
+// minimized:
+{let m = {i64:0 => i64:1, "b" => i64:2, "c" => i64:3, "d" => i64:4}; map::filter_map(m, |(k, v)| select v {v if v > i64:2 => (k, {let a = [i64:0, i64:1, i64:2, i64:3]; let x = "tweeeenywon!"; array::group(array::iter(a) ~ x, |n, _| n == i64:4)}), _ => null})}

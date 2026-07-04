@@ -1290,6 +1290,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         Ok(())
     }
 
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
+        // Structural clone with a fresh internal wake-up id registered
+        // under the ORIGINAL driving `top_id`. The default recompile
+        // passed `spec().id` as top_id, so a per-slot HOF clone's
+        // `set_var(self.id, ..)` woke a root nobody drives — the sample
+        // never delivered and the slot never advanced (soak finding
+        // corpus-fuzz/divergence_000046: `group(iter(a) ~ x, ..)` in a
+        // filter_map callback emitted nothing under jit).
+        let id = BindId::new();
+        ctx.rt.ref_var(id, self.top_id);
+        Box::new(Self {
+            spec: self.spec.clone(),
+            triggered: 0,
+            typ: self.typ.clone(),
+            id,
+            top_id: self.top_id,
+            trigger: self.trigger.clone_rebind(ctx, scope, remap),
+            arg: Cached::new(self.arg.node.clone_rebind(ctx, scope, remap)),
+        })
+    }
+
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Sample(self)
     }

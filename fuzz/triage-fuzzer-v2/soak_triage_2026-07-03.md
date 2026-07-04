@@ -202,12 +202,19 @@ known item 4; buckets reset per campaign run).
     placeholder rework subsumes it (an interior `$` error must produce a
     taint-marked placeholder, not a pending-exit).
 
-12. **HOF + ByRef callback under-fire** (`corpus-fuzz/divergence_000027`):
+12. **SHARPENED (needs a semantics ruling) — HOF + ByRef callback
+    ref-write echo** (`corpus-fuzz/divergence_000027`):
     `array::find(a, |x| {let r = &(1,2); let t = *r; t.0+t.1} > 3)` —
-    interp emits Null at cycles 0 AND 1 (the ByRef/deref residue
-    node-walks and delivers a cycle late; find recomputes and re-emits),
-    jit emits once. Firing divergence at the fused-HOF/node-walk-residue
-    seam (ByRef is correct-None for fusion; the seam's firing isn't).
+    interp emits Null at cycles 0 AND 1, jit once. Root: the
+    node-walk's `&(1,2)` write ECHOES through the runtime (deref gets an
+    init read at cycle 0 AND the delivered write at cycle 1 → the slot
+    pred recomputes → find re-emits the same value); the JIT slot's
+    residue collapses init into one fire. The bare (non-HOF) ref+deref
+    AGREES in both modes, so this is per-slot-residue-specific. The
+    JIT's single emit is arguably the DESIRABLE behavior — matching it
+    exactly means reproducing the node-walk's write echo in cloned
+    residues, or fixing the echo node-walk-side (an overflow-style
+    "model checking checks the model" call). Eric to rule.
 
 13. **FIXED — UB: tainted qop unboxed Null as Array** (SIGABRT crash,
     2026-07-04; triage copy `crash_sigabrt_tainted_qop_unbox.gx`):
@@ -293,7 +300,7 @@ known item 4; buckets reset per campaign run).
     builtin that yields nothing — both belong to the pending/interior-
     bottom rework (item 3).
 
-20. **map::filter_map missing fire** (`corpus-fuzz/divergence_000046`):
+20. **FIXED (2026-07-04) — Sample wake-up mis-rooted in per-slot clones** (was: map::filter_map missing fire) (`corpus-fuzz/divergence_000046`):
     `map::filter_map` over a heterogeneous-key map (`{i64:0 => 1,
     "b" => 2, ...}`) — interp emits the filtered Map at cycle 4, jit
     emits nothing. First map-HOF (CMap-collection) finding of the
@@ -314,3 +321,11 @@ de-weighting the fib seed.
     runtime rule), while the JIT's lifted connect ticks correctly,
     emitting per cycle to the cap. A canonical-side (node-walk/runtime)
     finding — the fuzzer's first. Needs a runtime-scheduling dig.
+
+
+22. **LATENT (same class as 20's fix): ConnectDeref in per-slot clones.**
+    `ConnectDeref` (`*r <- v`) also registers `rt.ref_var(src_id,
+    top_id)` and has NO clone_rebind override — a per-slot clone would
+    recompile with spec().id as the wake root, the same mis-rooting
+    Sample had. No repro yet (needs `*r <- v` inside an HOF callback);
+    fix with the same structural-override pattern when touched.
