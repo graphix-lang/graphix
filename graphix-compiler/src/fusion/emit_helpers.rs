@@ -858,6 +858,22 @@ pub extern "C" fn graphix_value_new_string(s: arcstr::ArcStr) -> TagValue {
 /// owned `*mut String`; caller eventually pairs with
 /// `graphix_string_buf_finalize` (success) or `graphix_string_buf_drop`
 /// (pending path).
+/// The empty-`ArcStr` placeholder for a tainted String position — the
+/// static empty (clone/drop are no-ops on it), returned as the raw
+/// thin-pointer bits the String ABI uses. Helper-safe by construction.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_arcstr_empty() -> u64 {
+    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(arcstr::ArcStr::new()) }
+}
+
+/// The empty-`ValArray` placeholder for a tainted composite position —
+/// a fresh owned box (the consumer chain drops it through the normal
+/// scope machinery). Allocates, but only on the (rare) tainted path.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_valarray_empty_boxed() -> *mut ValArray {
+    Box::into_raw(Box::new(ValArray::from([])))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_string_buf_new() -> *mut String {
     Box::into_raw(Box::new(String::new()))
@@ -1750,6 +1766,8 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_arcstr_clone", graphix_arcstr_clone as *const u8),
         ("graphix_arcstr_drop", graphix_arcstr_drop as *const u8),
         ("graphix_value_new_string", graphix_value_new_string as *const u8),
+        ("graphix_arcstr_empty", graphix_arcstr_empty as *const u8),
+        ("graphix_valarray_empty_boxed", graphix_valarray_empty_boxed as *const u8),
         ("graphix_string_buf_new", graphix_string_buf_new as *const u8),
         ("graphix_string_buf_drop", graphix_string_buf_drop as *const u8),
         ("graphix_string_buf_finalize", graphix_string_buf_finalize as *const u8),

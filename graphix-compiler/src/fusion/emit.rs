@@ -1992,7 +1992,9 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64));
         }
         // () -> *mut String
-        "graphix_string_buf_new" => {
+        "graphix_string_buf_new"
+        | "graphix_arcstr_empty"
+        | "graphix_valarray_empty_boxed" => {
             sig.returns.push(AbiParam::new(types::I64));
         }
         // (buf: i64) -> ()
@@ -4931,6 +4933,100 @@ fn emit_accessor_source_drop(
     Ok(())
 }
 
+/// Like [`emit_accessor_source_node`] but WITHOUT the taint force — for
+/// callers that guard the read themselves
+/// ([`emit_guarded_element_read`]). The returned disc may carry TAINT.
+fn emit_accessor_source_node_unforced<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    want: AbiKind,
+) -> Result<(ClifValue, CompositeSource, ClifValue)> {
+    if kernel_abi::abi_kind(cx.registry(), source.typ()) != Some(want) {
+        return Err(anyhow!(
+            "emit_clif: accessor source of type {:?} isn't {want:?}",
+            source.typ()
+        ));
+    }
+    let src = node_composite_source(source);
+    let cv = source.emit_clif(cx)?;
+    Ok((cv.payload, src, cv.disc))
+}
+
+/// A helper-safe placeholder (payload of `elem`'s CLIF type) plus the
+/// matching TAINTED disc for a skipped read — what a tainted source's
+/// consumer gets instead of an unchecked out-of-bounds read (#219: it
+/// runs harmlessly downstream; the taint gates at the output).
+fn emit_elem_placeholder(cx: &mut BodyCx, elem: &Type) -> Result<CompiledExpr> {
+    match kernel_abi::abi_kind(cx.registry(), elem) {
+        Some(AbiKind::Scalar(p)) => {
+            let disc =
+                cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
+            Ok(CompiledExpr::new(disc, zero_const(cx.b, p)))
+        }
+        Some(AbiKind::String) => {
+            let helper = cx.helper("graphix_arcstr_empty")?;
+            let call = cx.b.ins().call(helper, &[]);
+            let s = cx.b.inst_results(call)[0];
+            let disc = cx.b.ins().iconst(types::I64, value_disc::STRING | TAINT);
+            Ok(CompiledExpr::new(disc, s))
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let helper = cx.helper("graphix_valarray_empty_boxed")?;
+            let call = cx.b.ins().call(helper, &[]);
+            let a = cx.b.inst_results(call)[0];
+            let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
+            Ok(CompiledExpr::new(disc, a))
+        }
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            let disc = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
+            let zero = cx.b.ins().iconst(types::I64, 0);
+            Ok(CompiledExpr::new(disc, zero))
+        }
+        other => Err(anyhow!("emit_clif: no placeholder for shape {other:?}")),
+    }
+}
+
+/// Taint-guarded structural element read: a tainted source carries a
+/// #219 PLACEHOLDER (e.g. the empty array a bottomed `$`/`?` now
+/// produces), which the UNCHECKED read helpers cannot touch at fixed
+/// offsets — so branch: skip the read and produce a tainted shape-safe
+/// placeholder instead (the node-walk's accessor simply doesn't fire;
+/// downstream consumers see taint and the output gates). `is_tainted`
+/// folds to const-false for proven-untainted sources, so the branch
+/// AND the placeholder path fold away entirely on the hot path.
+fn emit_guarded_element_read(
+    cx: &mut BodyCx,
+    arr_ptr: ClifValue,
+    src_disc: ClifValue,
+    idx_val: ClifValue,
+    elem: &Type,
+    struct_access: bool,
+) -> Result<CompiledExpr> {
+    let tainted = is_tainted(cx.b, src_disc);
+    let read_bl = cx.b.create_block();
+    let skip_bl = cx.b.create_block();
+    let merge = cx.b.create_block();
+    let pay_ty = match kernel_abi::abi_kind(cx.registry(), elem) {
+        Some(AbiKind::Scalar(p)) => prim_to_clif(p),
+        _ => types::I64,
+    };
+    cx.b.append_block_param(merge, types::I64);
+    cx.b.append_block_param(merge, pay_ty);
+    cx.b.ins().brif(tainted, skip_bl, &[], read_bl, &[]);
+    cx.b.switch_to_block(read_bl);
+    cx.b.seal_block(read_bl);
+    let rv = compile_element_read(cx.b, arr_ptr, idx_val, elem, struct_access, cx.ctx)?;
+    cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
+    cx.b.switch_to_block(skip_bl);
+    cx.b.seal_block(skip_bl);
+    let ph = emit_elem_placeholder(cx, elem)?;
+    cx.b.ins().jump(merge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
+    cx.b.switch_to_block(merge);
+    cx.b.seal_block(merge);
+    let params = cx.b.block_params(merge);
+    Ok(CompiledExpr::new(params[0], params[1]))
+}
+
 /// `t.<idx>` — a statically-valid index, read through
 /// `compile_element_read` (owned result; Value shape for a value-shape
 /// element, Single otherwise).
@@ -4943,10 +5039,11 @@ pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
     // Node-carried elem types can be Refs to abstract type names
     // (#218) — resolve before the read classifies by abi_kind.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
+    let (arr_ptr, src, src_disc) =
+        emit_accessor_source_node_unforced(cx, source, AbiKind::Tuple)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
     let result =
-        compile_element_read(cx.b, arr_ptr, idx_const, &elem_typ, false, cx.ctx)?;
+        emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, false)?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
     // `t.0` fires iff the source tuple fired (the index is a constant); the
     // element read synthesizes a fresh disc, so the source's STALE gates it.
@@ -4967,9 +5064,10 @@ pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
     // Same abstract-Ref resolution as the tuple read (#218).
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let (arr_ptr, src, src_disc) =
-        emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+        emit_accessor_source_node_unforced(cx, source, AbiKind::Struct)?;
     let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
-    let result = compile_element_read(cx.b, arr_ptr, idx_const, &elem_typ, true, cx.ctx)?;
+    let result =
+        emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, true)?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
     // `s.field` fires iff the source struct fired (the field index is
     // static); fold the source's STALE onto the fresh element read.
@@ -5249,22 +5347,26 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // matching the node-walk's cached qop node.
             Ok(emit_scalar_taint_cache(cx, p, CompiledExpr::new(disc, value)))
         }
-        // String / composite success — keep the branch-abort path.
+        // String / composite success — branch: the bad path (error OR
+        // tainted) produces a tainted shape-safe PLACEHOLDER and
+        // CONTINUES (interior-bottom v2, 2026-07-04) instead of the old
+        // whole-kernel pending-exit, which escalated a locally
+        // unconsumed bottom into no-output-at-all (the live-chain
+        // findings, triage item 11).
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let base_disc = if matches!(
+            let is_string = matches!(
                 kernel_abi::abi_kind(cx.registry(), &success_typ),
                 Some(AbiKind::String)
-            ) {
-                value_disc::STRING
-            } else {
-                value_disc::ARRAY
-            };
-            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+            );
+            let base_disc =
+                if is_string { value_disc::STRING } else { value_disc::ARRAY };
             let value_drop = cx.helper("graphix_value_drop")?;
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
             let pre_pending = cx.b.create_block();
             let continue_block = cx.b.create_block();
-            let pending_exit = pending_exit_block(cx);
+            let qmerge = cx.b.create_block();
+            cx.b.append_block_param(qmerge, types::I64); // disc
+            cx.b.append_block_param(qmerge, types::I64); // payload
             // #219: a TAINTED inner may carry the helper-safe Value::Null
             // placeholder, whose CLEAN disc isn't Error — without folding
             // taint into this branch the success path unboxes Null as an
@@ -5305,9 +5407,25 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             } else if inner_owned {
                 cx.b.ins().call(value_drop, &[clean, payload]);
             }
-            cx.b.ins().call(pending_set, &[]);
-            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().jump(pending_exit, &[]);
+            // Tainted shape-safe placeholder; the inner's STALE carries
+            // (the qop fires iff its inner fired) and TAINT marks
+            // no-value — downstream consumers run harmlessly on the
+            // placeholder and the output gates only if it's consumed.
+            let ph_helper = if is_string {
+                cx.helper("graphix_arcstr_empty")?
+            } else {
+                cx.helper("graphix_valarray_empty_boxed")?
+            };
+            let call = cx.b.ins().call(ph_helper, &[]);
+            let ph = cx.b.inst_results(call)[0];
+            let tainted_base =
+                cx.b.ins().iconst(types::I64, base_disc | TAINT);
+            let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
+            let ph_disc = cx.b.ins().bor(tainted_base, stale_bit);
+            cx.b.ins().jump(
+                qmerge,
+                &[BlockArg::Value(ph_disc), BlockArg::Value(ph)],
+            );
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
             // Extract success T (now known non-error). The unwrap
@@ -5341,20 +5459,26 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             };
             let base = cx.b.ins().iconst(types::I64, base_disc);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
-            Ok(CompiledExpr::new(disc, v))
+            cx.b.ins().jump(qmerge, &[BlockArg::Value(disc), BlockArg::Value(v)]);
+            cx.b.switch_to_block(qmerge);
+            cx.b.seal_block(qmerge);
+            let params = cx.b.block_params(qmerge);
+            Ok(CompiledExpr::new(params[0], params[1]))
         }
-        // Value-shape success. On `Error` disc, drop the owned inner,
-        // signal pending, jump to `pending_exit`; otherwise the
-        // non-error Value IS the result T (its own `(disc, payload)`,
-        // passed through to the consumer which takes ownership).
+        // Value-shape success. The bad path (error) produces a tainted
+        // Value::Null placeholder and CONTINUES (interior-bottom v2);
+        // otherwise the non-error Value IS the result T (its own
+        // `(disc, payload)`, passed through to the consumer which takes
+        // ownership).
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let pending_set = cx.helper("graphix_dyncall_set_pending")?;
             let value_drop = cx.helper("graphix_value_drop")?;
             let src = node_composite_source(inner);
             let inner_owned = src == CompositeSource::Owned;
             let pre_pending = cx.b.create_block();
             let continue_block = cx.b.create_block();
-            let pending_exit = pending_exit_block(cx);
+            let qmerge = cx.b.create_block();
+            cx.b.append_block_param(qmerge, types::I64); // disc
+            cx.b.append_block_param(qmerge, types::I64); // payload
             cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
@@ -5388,9 +5512,17 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             } else if inner_owned {
                 cx.b.ins().call(value_drop, &[clean, payload]);
             }
-            cx.b.ins().call(pending_set, &[]);
-            emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().jump(pending_exit, &[]);
+            // Tainted Value::Null placeholder (helper-safe by
+            // construction); the inner's STALE carries.
+            let tainted_base =
+                cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
+            let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
+            let ph_disc = cx.b.ins().bor(tainted_base, stale_bit);
+            let zero = cx.b.ins().iconst(types::I64, 0);
+            cx.b.ins().jump(
+                qmerge,
+                &[BlockArg::Value(ph_disc), BlockArg::Value(zero)],
+            );
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
             // The non-error Value IS the result T. Ensure it's owned: a
@@ -5402,7 +5534,11 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let (od, op) = ensure_owned_value_src(cx, src, clean, payload)?;
             // `e?` fires iff its operand fired (single input); STALE folds.
             let disc = propagate_flags(cx.b, od, &[cv.disc]);
-            Ok(CompiledExpr::new(disc, op))
+            cx.b.ins().jump(qmerge, &[BlockArg::Value(disc), BlockArg::Value(op)]);
+            cx.b.switch_to_block(qmerge);
+            cx.b.seal_block(qmerge);
+            let params = cx.b.block_params(qmerge);
+            Ok(CompiledExpr::new(params[0], params[1]))
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             Err(anyhow!("emit_clif: `?` with unsupported success type {:?}", success_typ))
