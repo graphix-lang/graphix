@@ -329,3 +329,13 @@ de-weighting the fib seed.
     recompile with spec().id as the wake root, the same mis-rooting
     Sample had. No repro yet (needs `*r <- v` inside an HOF callback);
     fix with the same structural-override pattern when touched.
+
+23. **RESIDUAL (needs a CLIF-dump session): block-single-kernel abort on
+    a tainted-literal index chain.**
+    `{let v0 = [true, ((u8:2 +? u8:255)$ > u8:1)]; let v2 = v0[i64:0]$;
+    let v3: [bool, null] = v2; ""}` — the const output never fires under
+    jit when the whole BLOCK fuses as one kernel; the same lets at
+    module level (separate regions) AGREE. Somewhere in the
+    single-region chain (suspect: the scalar→value-shape widening bind
+    or a remaining pending path) still whole-kernel-aborts. Repro:
+    scratchpad b14d vs b14e shapes; also generate/014, 016, 027.

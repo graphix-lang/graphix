@@ -4977,7 +4977,8 @@ fn emit_elem_placeholder(cx: &mut BodyCx, elem: &Type) -> Result<CompiledExpr> {
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
             Ok(CompiledExpr::new(disc, a))
         }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
+        | Some(AbiKind::Unit) => {
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
             let zero = cx.b.ins().iconst(types::I64, 0);
             Ok(CompiledExpr::new(disc, zero))
@@ -5546,36 +5547,12 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     }
 }
 
-/// #219: force-bottom the kernel when any dyncall arg was tainted —
-/// drop the owned non-scalar result (via `drop_result`), set pending,
-/// run the owned-set cleanup, jump `pending_exit`. Folds to no branch
-/// when every arg disc is an untainted const. A non-scalar dyncall
-/// result can't carry taint past a `let` (composite/string env slots
-/// hold only the value word), so the taint must resolve HERE rather
-/// than deferring to the kernel output.
-fn emit_dyncall_arg_taint_abort(
-    cx: &mut BodyCx,
-    arg_discs: &[ClifValue],
-    drop_result: impl FnOnce(&mut BodyCx) -> Result<()>,
-) -> Result<()> {
-    let zero = cx.b.ins().iconst(types::I64, 0);
-    let acc = propagate_taint(cx.b, zero, arg_discs);
-    let tainted = is_tainted(cx.b, acc);
-    let pending_set = cx.helper("graphix_dyncall_set_pending")?;
-    let pre = cx.b.create_block();
-    let cont = cx.b.create_block();
-    let exit = pending_exit_block(cx);
-    cx.b.ins().brif(tainted, pre, &[], cont, &[]);
-    cx.b.switch_to_block(pre);
-    cx.b.seal_block(pre);
-    drop_result(cx)?;
-    cx.b.ins().call(pending_set, &[]);
-    emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-    cx.b.ins().jump(exit, &[]);
-    cx.b.switch_to_block(cont);
-    cx.b.seal_block(cont);
-    Ok(())
-}
+// (The old `emit_dyncall_arg_taint_abort` — post-call whole-kernel
+// bottom on a tainted arg — is gone: `emit_dyncall_node` now gates the
+// CALL itself and produces a tainted placeholder, so the callee never
+// observes placeholder garbage and live chains keep flowing. Its doc's
+// "taint can't survive a composite/string let" caveat was stale:
+// `bind_local` stores the RHS disc for every LocalKind.)
 
 /// Builtin DynCall — marshal the (marshal-ordered) `args` into a
 /// fresh `LPooled<Vec<Value>>` buf, dispatch via `graphix_dyncall`
@@ -5704,6 +5681,43 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     let region_idx = info.fn_index + cx.fn_index_offset();
     let fn_idx_val = cx.b.ins().iconst(types::I32, region_idx as i64);
     let ret_kind_val = cx.b.ins().iconst(types::I8, ret_kind);
+    // Interior-bottom v2: a tainted arg means the callee must NOT run —
+    // the node-walk's builtin never fires without its inputs, and a
+    // Sync EFFECT (println) must not observe placeholder garbage (the
+    // old post-call abort ran the callee FIRST, then bottomed the whole
+    // kernel — over-broad for live chains AND effect-leaking). Gate the
+    // call: any tainted arg skips it, drops the marshalled buf, and
+    // produces a tainted placeholder result. Each `is_tainted` folds to
+    // const-false for proven-untainted args, so the gate vanishes on
+    // the hot path.
+    let mut any_tainted = cx.b.ins().iconst(types::I8, 0);
+    for d in &arg_taint_discs {
+        let t = is_tainted(cx.b, *d);
+        any_tainted = cx.b.ins().bor(any_tainted, t);
+    }
+    let call_bl = cx.b.create_block();
+    let skip_bl = cx.b.create_block();
+    let dmerge = cx.b.create_block();
+    let pay_ty = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
+        Some(AbiKind::Scalar(p)) => prim_to_clif(p),
+        _ => types::I64,
+    };
+    cx.b.append_block_param(dmerge, types::I64);
+    cx.b.append_block_param(dmerge, pay_ty);
+    // The buf's in-flight cover ends here: the call path CONSUMES it,
+    // the skip path drops it explicitly.
+    cx.ctx.dyncall_buf_stack.borrow_mut().pop();
+    cx.b.ins().brif(any_tainted, skip_bl, &[], call_bl, &[]);
+    cx.b.switch_to_block(skip_bl);
+    cx.b.seal_block(skip_bl);
+    let buf_drop = cx.helper("graphix_value_buf_drop")?;
+    cx.b.ins().call(buf_drop, &[buf]);
+    let ph = emit_elem_placeholder(cx, &info.return_type)?;
+    // Fires iff any arg fired; TAINT is already set on the placeholder.
+    let ph_disc = propagate_flags(cx.b, ph.disc, &arg_taint_discs);
+    cx.b.ins().jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
+    cx.b.switch_to_block(call_bl);
+    cx.b.seal_block(call_bl);
     let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, ret_kind_val]);
     // `graphix_dyncall` has two `I64` returns (disc, payload) so that
     // ret_kind=2 (Value-shape) can deliver both words. For
@@ -5713,29 +5727,24 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let r = cx.b.inst_results(call);
         (r[0], r[1])
     };
-    // `graphix_dyncall` consumed the args buf — pop it off the
-    // in-flight stack before the (possible) pending branch below, so
-    // a `pre_pending` block here doesn't try to double-free it.
-    cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
+    // Call-path results per return shape (args are proven untainted on
+    // this path — the old post-call arg-taint aborts are gone).
+    let (cdisc, cpay) = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => {
             // Scalar return: 0 on pending is a harmless sentinel for
             // downstream scalar arithmetic. No branch needed — the
             // wrapper-level DYNCALL_PENDING check in Kernel::update
             // discards the whole kernel result.
-            // #219: propagate the args' taint into the result disc
-            // (folds to the const scalar disc when no arg was tainted),
-            // resolved at the kernel output.
             let value = cast_u64_to_prim(cx.b, raw0, p);
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &arg_taint_discs);
-            Ok(CompiledExpr::new(disc, value))
+            (disc, value)
         }
         Some(AbiKind::Unit) => {
             // Unit return: dispatcher returned (0, _). The wrapper-
             // level DYNCALL_PENDING check still fires.
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
-            Ok(CompiledExpr::new(disc, raw0))
+            (disc, raw0)
         }
         Some(AbiKind::String) => {
             // String return: `raw0` is the ArcStr's raw thin-pointer
@@ -5746,14 +5755,8 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // `drop_owned_strings` would null-drop it; #214) — so
             // branch exactly like the composite arm.
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            // #219: a tainted arg bottoms the call — drop the owned ArcStr.
-            emit_dyncall_arg_taint_abort(cx, &arg_taint_discs, |cx| {
-                let drop = cx.helper("graphix_arcstr_drop")?;
-                cx.b.ins().call(drop, &[raw0]);
-                Ok(())
-            })?;
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
-            Ok(CompiledExpr::new(disc, raw0))
+            (disc, raw0)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             // Composite return: `raw0` is an owned `*mut ValArray`,
@@ -5763,33 +5766,28 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // `pending_exit`. (`pending_take` READS without clearing,
             // so no re-set is needed.)
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            // #219: a tainted arg bottoms the call — drop the owned array.
-            emit_dyncall_arg_taint_abort(cx, &arg_taint_discs, |cx| {
-                let drop = cx.helper("graphix_valarray_drop")?;
-                cx.b.ins().call(drop, &[raw0]);
-                Ok(())
-            })?;
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-            Ok(CompiledExpr::new(disc, raw0))
+            (disc, raw0)
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             // Value-shape return: both register-words, same pending
             // branch as the composite arm (the boxed Value sentinel is
             // null on pending).
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            // #219: a tainted arg bottoms the call — drop the owned Value.
-            emit_dyncall_arg_taint_abort(cx, &arg_taint_discs, |cx| {
-                let drop = cx.helper("graphix_value_drop")?;
-                cx.b.ins().call(drop, &[raw0, raw1]);
-                Ok(())
-            })?;
-            Ok(CompiledExpr::new(raw0, raw1))
+            (raw0, raw1)
         }
-        Some(AbiKind::Null) | None => Err(anyhow!(
-            "DynCall with bare Null / non-fusable return — \
-             should have widened to Nullable<T> at construction"
-        )),
-    }
+        Some(AbiKind::Null) | None => {
+            return Err(anyhow!(
+                "DynCall with bare Null / non-fusable return — \
+                 should have widened to Nullable<T> at construction"
+            ));
+        }
+    };
+    cx.b.ins().jump(dmerge, &[BlockArg::Value(cdisc), BlockArg::Value(cpay)]);
+    cx.b.switch_to_block(dmerge);
+    cx.b.seal_block(dmerge);
+    let params = cx.b.block_params(dmerge);
+    Ok(CompiledExpr::new(params[0], params[1]))
 }
 
 /// How a `select`'s arms merge into one result — derived from the
