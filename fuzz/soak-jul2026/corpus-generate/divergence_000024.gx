@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [I64(2), I64(0)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v1 = |v0| (((v0 * v0) * v0) * v0); let v2 = v1(f64:-1.0); let v3 = v1(u8:1); let v6 = |v4: bool, v1: f64, v5: f64| -> i64 cast<i64>(u8:0)$; let v5 = |v7: u8| -> u8 (v7 + u8:0); let v8 = |v9: u8| -> u8 (v5(v9) * u8:100); let v5 = u8:2; let v10 = v8((v5 % u8:0)); let v11 = (f64:-1.0 / (f64:0.0 + (f64:3.14 * f64:0.0))); let v12 = v6((!(true && true)), cast<f64>(v8(v10))$, f64:2.5); [((i64:2 % i64:7) + v12), ((v12 + i64:42) * (v12 * i64:7))] }
+// minimized:
+{let v1 = |v0| (v0 * v0) * v0; let v2 = v1(f64:-1.); let v3 = v1(u8:1); let v6 = |v4: bool, v1: f64, v5: f64| -> i64 cast<i64>(u8:0)$; let v5 = |v7: u8| -> u8 (v7 + u8:0); let v8 = |v9: u8| -> u8 (v5(v9) * u8:100); let v5 = u8:2; let v10 = v8((v5 % u8:0)); let v11 = (f64:-1. / (f64:0. + (f64:3.14 * f64:0.))); let v12 = v6((!(true && true)), cast<f64>(v8(v10))$, f64:2.5); [((i64:2 % i64:7) + v12), ((v12 + i64:42) * (v12 * i64:7))]}

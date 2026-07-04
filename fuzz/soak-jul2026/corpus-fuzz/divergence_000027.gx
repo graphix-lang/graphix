@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Null), (1, Null)], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Null)], capped: false }] })
+// mutant: {let a = [i64:1, i64:2, i64:3, i64:4, i64:5]; array::find(a, |x| {let r = &(i64:1, i64:2); let t = *r; t.0 + t.1} > i64:3)}
+// minimized:
+{let a = [i64:0, i64:2, i64:3, i64:4, i64:5]; array::find(a, |x| {let r = &(i64:1, i64:2); let t = *r; t.0 + t.1} > i64:3)}

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("xyz"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: i64 = (-((i64:1 - (i64:0 / i64:100)))); let v1: f64 = select v0 { _ if (!true) => ((f64:-1.0 + f64:3.14) * f64:3.14), i64:1 => (f64:0.0 + (f64:1.0 * f64:-1.0)), _ => cast<f64>((i64:42 / i64:-1))$ }; let v2 = {"k2" => "hello"}; let v3: [i64, null] = select str::len(v2{"a"}$) { i64:2 if str::contains(#part: "hello", "hello") => (i64:-1 - v0), v3 => (-(i64:42)) }; let v4: [`A(string, [bool, null]), `C(bool, u8), `Nil] = `A("xyz", true); let v5: [string, null] = ""; "["xyz"]" }
+// minimized:
+{let v0: i64 = i64:1 - (i64:0 / i64:100); let v1: f64 = select v0 {_ if (!true) => ((f64:-1. + f64:3.14) * f64:3.14), i64:1 => (f64:0. + (f64:1. * f64:-1.)), _ => cast<f64>((i64:42 / i64:-1))$}; let v2 = {"k2" => "hello"}; let v3: [i64, null] = select str::len(v2{"a"}$) {i64:2 if str::contains(#part: "hello", "hello") => (i64:-1 - v0), v3 => (-(i64:42))}; let v4: [`A(string, [bool, null]), `C(bool, u8), `Nil] = `A("xyz", true); let v5: [null, string] = ""; "xyz"}

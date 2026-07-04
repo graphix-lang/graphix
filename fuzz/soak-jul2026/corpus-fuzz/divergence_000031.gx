@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Timeout
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(500000))], capped: false }] })
+// mutant: {let rec count = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => count(n - i64:1, acc + i64:1)}; count(i64:500000, i64:0)}
+// minimized:
+{let rec count = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => count(n - i64:1, i64:0 + i64:1)}; count(i64:500000, i64:0)}

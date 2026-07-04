@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: f64 = select (cast<i64>(u8:255)$ - i64:-100) { i64:1 if (!true) => (f64:2.5 + (f64:-1.0 + f64:1.0)), v0 => ((f64:0.1 * f64:-1.0) + f64:3.14) }; let v0: [string, null] = null; let v3 = |v0: f64, v1: bool, v2: u8| -> string "[(v2 * u8:255)]"; let v4: (u8, i64) = (((u8:0 / u8:0) % (u8:1 / u8:0)), (i64:100 - i64:0)); let v4 = (array::fold([f64:2.5, f64:2.5, f64:2.5], u8:100, |v5, v0| v5) - (v4.0 + u8:100)); let v5 = ((cast<f64>(i64:1)$ *? (-(f64:2.5)))$ % (f64:3.14 * (f64:2.5 +? f64:1.0)$)); select (i64:-1 - (-(i64:0))) { i64:0 => array::fold([i64:42], i64:0, |v6, v1| i64:-1), v6 => ((i64:7 + i64:0) % (-(v6))) } }
+// minimized:
+{u8:255; let v0: [null, string] = null; let v3 = |v0: f64, v1: bool, v2: u8| -> string "[(v2 * u8:255)]"; let v4: (u8, i64) = (((u8:0 / u8:0) % (u8:1 / u8:0)), (i64:100 - i64:0)); let v4 = (array::fold([f64:2.5, f64:2.5, f64:2.5], u8:100, |v5, v0| v5) - (v4.0 + u8:100)); let v5 = ((cast<f64>(i64:1)$ *? (-(f64:2.5)))$ % (f64:3.14 * (f64:2.5 +? f64:1.)$)); select (i64:-1 - (-(i64:0))) {i64:0 => array::fold([i64:42], i64:0, |v6, v1| i64:-1), v6 => ((i64:7 + i64:0) % (-(v6)))}}

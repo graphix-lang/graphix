@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, F64(300.0))], capped: false }] })
+// jit:    RuntimeErr("trace_wait_idle: runtime is dead")
+// mutant: {let f = 'a: Number|x: 'a| -> 'a u8:150; {let a = f(i64:-1); let b = f(f64:2.5); cast<f64>(a)$ + b}}
+// minimized:
+{let f = 'a: Number|x: 'a| -> 'a f64:0.; {let a = f(i64:-1); let b = f(f64:2.5); cast<f64>(a)$ + b}}

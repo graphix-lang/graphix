@@ -4081,12 +4081,26 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
         }
         // Compile-time-only declarations — skip (mirrors emit_do).
         NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
-        // Expression statement — evaluate, discard the result.
-        // (Async machinery can't appear here: any async node
-        // fails its emit and the whole block falls back to the
-        // node-walk.) A discarded may-bottom scalar is fine — the
-        // bottom is never consumed. Owned non-scalar results are
-        // dropped: discarding is consuming.
+        // A CALL in statement position de-fuses the block. The DynCall
+        // path made builtin calls emittable here, but a fire-and-forget
+        // builtin (println) that yields no value sets DYNCALL_PENDING —
+        // and the wrapper-level pending check then discards the WHOLE
+        // kernel result, losing the block's value after the side effect
+        // ran (`{println("hi"); 100}` printed but never yielded 100 —
+        // soak finding 2026-07-04). The node-walk discards a statement's
+        // value INCLUDING its absence; until the pending machinery can
+        // scope that, the block node-walks (effects de-fuse, never
+        // silently skip).
+        NodeView::CallSite(_) => {
+            return Err(anyhow!(
+                "emit_clif: call in statement position — a no-value fire \
+                 would pending-abort the kernel; the block node-walks"
+            ));
+        }
+        // Expression statement — evaluate, discard the result. A
+        // discarded may-bottom scalar is fine — the bottom is never
+        // consumed. Owned non-scalar results are dropped: discarding is
+        // consuming.
         _ => {
             let cv = child.emit_clif(cx)?;
             emit_discard_result(cx, child, cv)?;

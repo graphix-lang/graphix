@@ -214,3 +214,48 @@ known item 4; buckets reset per campaign run).
     never fires), jit emits an array at cycle 2. The fused region around
     the TryCatch/catch-read seam fires when the node-walk wouldn't.
     Unanalyzed beyond classification — queue for a focused session.
+
+16. **Policy: slow-interp Timeout asymmetry** (`corpus-fuzz/
+    divergence_000033` and recurring): a 500k-iteration tail loop
+    exceeds the interp's 10s per-mode timeout while the JIT finishes in
+    ms (the documented ~150x tail-loop gap) → recorded as divergence
+    (asymmetric hang = FAIL by design). Verified NOT a wrong-value (the
+    minimized program returns 0 in both modes; the header's jit value is
+    the pre-minimization mutant's). These will recur whenever mutation
+    produces big-N loops — needs a policy: a distinct PerfAsymmetry
+    verdict, a bigger interp budget, or accept the noise. Item 14 (the
+    overflow fork) is a REAL semantics issue and stands apart.
+
+17. **Shadowed-lambda chain missing fire**
+    (`corpus-generate/divergence_000021`): three successive `let v2 =
+    |...|` lambda rebinds with `v4 = |v5| v2(v5) + 7` capturing the
+    MIDDLE v2; interp I64(735), jit emits nothing. Reproduces 3/3
+    under check-one; the MODULE wrapper is load-bearing (the same
+    program as a plain block agrees in both modes) — module-level binds
+    fuse as separate per-bind regions, so the shadowed `v2`s become
+    distinct kernels and `v4`'s cross-kernel callee resolution for the
+    captured middle `v2` mis-resolves or never fires. Kin of the
+    audit-jul2026 01/02 fixes (callee registry re-keyed on kernel
+    identity) — suspect a residual name-keyed path for module-level
+    binds. Queue for a focused session.
+
+18. **Policy: accepted infinite-tail-recursion asymmetry recorded as
+    divergence** (`corpus-fuzz/divergence_000037`): `f(0) => f(0)` tail
+    base case — the node-walk's per-cycle continue lets the const result
+    fire (interp `false@0`) while the JIT's native loop hangs (Timeout).
+    This is the DOCUMENTED accepted artifact (CLAUDE.md fusion
+    semantics), but the oracle has no verdict class for it — same policy
+    bucket as item 16.
+
+19. **FIXED — statement-position builtin call loses the block's value**
+    (`corpus-fuzz/divergence_000039`): `{println("hi"); i64:100}` under
+    jit printed "hi" but NEVER yielded 100 — println's fire-and-forget
+    None return set DYNCALL_PENDING and the wrapper-level pending check
+    discarded the whole kernel result. The emit_block_stmt discard arm's
+    comment claimed async statements de-fuse; the DynCall path had
+    silently made them emittable. Fix: a top-level CallSite in statement
+    position now Errs (block node-walks — effects de-fuse, never
+    silently skip). LATENT same-family residue: a call NESTED in a
+    discarded statement expression (`(f(x)+1);`) and a connect-RHS
+    builtin that yields nothing — both belong to the pending/interior-
+    bottom rework (item 3).

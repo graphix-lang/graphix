@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(5))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: [`C(u8)] = `C(u8:255); let v2 = 'a: Number |v1: 'a, v0: 'a| -> 'a (((v0 - v0) + v0) * v0); let v3 = {"k0" => {"b" => i64:0}, "a" => {"k1" => i64:1, "k2" => i64:1, "a" => i64:7}}; let v4 = v3{"k1"}$; let v5: [f64, null] = f64:3.14; let v6: i64 = v4{"b"}$; str::len("hello") }
+// minimized:
+{f64:0.; let v2 = 'a: Number|v1: 'a, v0: 'a| -> 'a (((v0 - v0) + v0) * v0); let v3 = {"k0" => {"b" => i64:0}, "a" => {"k1" => i64:1, "k2" => i64:1, "a" => i64:7}}; let v4 = v3{"k1"}$; let v5: [f64, null] = f64:3.14; let v6: i64 = v4{"b"}$; str::len("hello")}
