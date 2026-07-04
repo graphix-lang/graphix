@@ -432,6 +432,23 @@ pub extern "C" fn graphix_dyncall_set_pending() {
     DYNCALL_PENDING.with(|c| c.set(true))
 }
 
+/// Record the not-fresh (`TAINT`/`STALE`) disc bits of a cross-kernel
+/// callee's result. Called by the callee's return path immediately
+/// before `return`; the caller takes the bits right after the call.
+/// See [`CALLEE_RESULT_FLAGS`].
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_callee_flags_set(bits: u64) {
+    CALLEE_RESULT_FLAGS.with(|c| c.set(bits))
+}
+
+/// Take (read and clear) the callee-result flag bits. Called by the
+/// caller immediately after every cross-kernel call returns, keeping
+/// the cell clean call-to-call. See [`CALLEE_RESULT_FLAGS`].
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_callee_flags_take() -> u64 {
+    CALLEE_RESULT_FLAGS.with(|c| c.replace(0))
+}
+
 /// Read the active runtime's interrupt/abort control (set in
 /// `INTERRUPT_PTR` by `do_cycle`). Returns 1 if a wedged loop should
 /// abort (an `interrupt()` or `abort()` is pending), else 0. Emitted at
@@ -630,9 +647,9 @@ pub unsafe extern "C" fn graphix_value_into_array(v: TagValue) -> *mut ValArray 
 pub unsafe extern "C" fn graphix_value_into_array_borrowed(v: TagValue) -> *mut ValArray {
     let ptr = v.with_value(|v| match v {
         Value::Array(a) => Box::into_raw(Box::new(a.clone())),
-        v => panic!(
-            "graphix_value_into_array_borrowed: expected Value::Array, got {v:?}"
-        ),
+        v => {
+            panic!("graphix_value_into_array_borrowed: expected Value::Array, got {v:?}")
+        }
     });
     std::mem::forget(v); // borrowed read — the caller keeps owning it
     ptr
@@ -1127,6 +1144,17 @@ thread_local! {
     /// the wrapper returns; if true, the kernel's result is
     /// discarded and `update` itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
+
+    /// Not-fresh (`TAINT`/`STALE`) disc bits of a cross-kernel CALLEE's
+    /// result. The scalar/composite return ABI carries no disc word, so
+    /// the callee's return path records the bits here and the caller
+    /// takes (reads + clears) them immediately after the call, OR-ing
+    /// them into its synthesized result disc. A bottomed or unfired
+    /// callee RESULT thus rides back as data — bottoming the caller only
+    /// if its taken output path consumes it (#219) — while genuine
+    /// aborts (depth trip, interrupt, an async pend) keep the
+    /// [`DYNCALL_PENDING`] whole-region path.
+    pub static CALLEE_RESULT_FLAGS: Cell<u64> = const { Cell::new(0) };
 
     /// Raw pointer to the active runtime's [`crate::Control`], set per
     /// cycle by `do_cycle` on the thread running the node loop. Read by
@@ -1748,6 +1776,8 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_set_var", graphix_set_var as *const u8),
         ("graphix_dyncall_pending_take", graphix_dyncall_pending_take as *const u8),
         ("graphix_dyncall_set_pending", graphix_dyncall_set_pending as *const u8),
+        ("graphix_callee_flags_set", graphix_callee_flags_set as *const u8),
+        ("graphix_callee_flags_take", graphix_callee_flags_take as *const u8),
         ("graphix_interrupted", graphix_interrupted as *const u8),
         ("graphix_depth_push", graphix_depth_push as *const u8),
         ("graphix_depth_pop", graphix_depth_pop as *const u8),

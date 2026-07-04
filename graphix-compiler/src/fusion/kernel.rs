@@ -28,7 +28,8 @@ use crate::{
             unpack_u64_to_value,
         },
         emit_helpers::{
-            DYN_DISPATCH_HANDLE, DYNCALL_PENDING, DynCallRet, DynDispatchHandle, TagValue,
+            CALLEE_RESULT_FLAGS, DYN_DISPATCH_HANDLE, DYNCALL_PENDING, DynCallRet,
+            DynDispatchHandle, TagValue,
         },
         kernel_abi::{self, BuiltinSlot, FnSource, KernelSig},
     },
@@ -1292,8 +1293,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 // killed the runtime (soak corpus-fuzz/divergence_000003).
                 Some(v) => match pack_value_to_u64(v, p.prim) {
                     Some(bits) => {
-                        let disc =
-                            if param_fired[i] { disc } else { disc | stale };
+                        let disc = if param_fired[i] { disc } else { disc | stale };
                         (disc, bits)
                     }
                     None => {
@@ -1365,8 +1365,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let prev_handle = DYN_DISPATCH_HANDLE.with(|c| c.replace(&handle as *const _));
         // Always reset the pending flag before the call so
         // we can distinguish "this kernel pended" from
-        // "some earlier kernel left the flag set."
+        // "some earlier kernel left the flag set." Same defensive
+        // hygiene for the callee-result flag bits (they are take-after-
+        // every-call clean in well-formed codegen, but a pend path can
+        // skip a take).
         DYNCALL_PENDING.with(|c| c.set(false));
+        CALLEE_RESULT_FLAGS.with(|c| c.set(0));
         unsafe {
             f(slots.as_ptr(), out.as_mut_ptr());
         }

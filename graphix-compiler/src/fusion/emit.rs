@@ -1937,6 +1937,14 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         "graphix_dyncall_set_pending" => {
             // no args, no return — just flips the thread-local flag
         }
+        "graphix_callee_flags_set" => {
+            // (bits: u64) — record a callee result's not-fresh disc bits
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "graphix_callee_flags_take" => {
+            // () -> u64 — read + clear the callee-result flag bits
+            sig.returns.push(AbiParam::new(types::I64));
+        }
         "graphix_interrupted" => {
             // no args; returns i8 (1 = abort the loop, 0 = continue)
             sig.returns.push(AbiParam::new(types::I8));
@@ -2279,8 +2287,7 @@ fn emit_scalar_taint_cache(
     prim: PrimType,
     cv: CompiledExpr,
 ) -> CompiledExpr {
-    let (Some(off_val), Some(off_ok)) =
-        (cx.claim_state_word(), cx.claim_state_word())
+    let (Some(off_val), Some(off_ok)) = (cx.claim_state_word(), cx.claim_state_word())
     else {
         return cv;
     };
@@ -2922,17 +2929,18 @@ trait BodyEmitter {
         0
     }
 
-    /// Whether this body's kernel return gates freshness on STALE (not
-    /// just TAINT). `true` for a PUBLISHED body — the region root / a
-    /// per-slot HOF callback whose result flows through the wrapper to
-    /// `Kernel::update`: a not-fired (stale) result must yield `None`,
+    /// Whether this body's kernel return FORCES on not-fresh
+    /// (TAINT | STALE). `true` for a PUBLISHED body — the region root /
+    /// a per-slot HOF callback whose result flows through the wrapper
+    /// to `Kernel::update`: a not-fresh result must yield `None`,
     /// matching the node-walk's "publish only on Some". `false` for a
-    /// cross-kernel CALLEE body: its scalar return ABI carries only the
-    /// payload (no disc), so the caller synthesizes a fresh disc and
-    /// treats the result as fired — gating STALE there would WRONG-BOTTOM
-    /// the whole kernel on a cycle the node-walk publishes the cached
-    /// callee value. A callee keeps the TAINT-only gate (a genuine bottom
-    /// still bottoms). Default `true`.
+    /// cross-kernel CALLEE body, which never forces: its result's
+    /// not-fresh bits ride back to the caller as DATA — in-band for
+    /// two-word (value-shape) returns, via `CALLEE_RESULT_FLAGS` for
+    /// one-word returns (`emit_flag_not_fresh`) — so a bottomed or
+    /// unfired callee result bottoms only the caller's consumers that
+    /// read it (#219), like a node-walk callsite that produced no
+    /// value. Default `true`.
     fn gate_stale_at_return(&self) -> bool {
         true
     }
@@ -3296,25 +3304,42 @@ fn pending_exit_block(cx: &mut BodyCx) -> Block {
     }
 }
 
-/// Return-path FORCE: if `disc` is NOT fresh (tainted bottom OR STALE —
-/// didn't fire this cycle), drop the owned result (`drop_fn`), set
-/// pending, run the owned-set cleanup, and jump `pending_exit`;
-/// otherwise fall through. On return the builder is positioned in the
-/// fresh (fired-with-value) block. Folds to no branch for a fresh const
-/// disc.
-/// The return-path "this body must bottom" condition. A PUBLISHED body
-/// (`gate_stale_at_return`) bottoms on not-fresh (`TAINT | STALE`): a
-/// stale root means "didn't fire — don't publish." A cross-kernel CALLEE
-/// body bottoms only on TAINT (genuine bottom): its stale result is
-/// returned and the caller synthesizes a fresh disc, so gating STALE
-/// would wrong-bottom the whole kernel. Both fold to a const when the
-/// disc is proven fresh.
-fn return_bottom_cond(cx: &mut BodyCx, disc: ClifValue) -> ClifValue {
-    if cx.ctx.gate_stale_at_return {
-        is_not_fresh(cx.b, disc)
-    } else {
-        is_tainted(cx.b, disc)
-    }
+/// Return-path FORCE for a PUBLISHED body (`gate_stale_at_return`): if
+/// `disc` is NOT fresh (tainted bottom OR STALE — didn't fire this
+/// cycle), drop the owned result (`drop_fn`), set pending, run the
+/// owned-set cleanup, and jump `pending_exit`; otherwise fall through —
+/// a stale root means "didn't fire — don't publish." On return the
+/// builder is positioned in the fresh (fired-with-value) block. Folds
+/// to no branch for a fresh const disc. A cross-kernel CALLEE body
+/// never forces: its result's not-fresh bits ride back to the caller
+/// as data ([`emit_flag_not_fresh`], or in-band for two-word returns).
+
+/// Callee-mode return-path companion to [`emit_force`]: instead of
+/// bottoming the kernel on a not-fresh RESULT, record its `TAINT`/
+/// `STALE` disc bits in [`CALLEE_RESULT_FLAGS`] — the scalar/composite
+/// return ABI has no disc word — and return the value as-is (a tainted
+/// value is already the helper-safe placeholder; a stale value is the
+/// real cached value). The caller takes the bits right after the call
+/// and ORs them into its synthesized result disc, so a bottomed or
+/// unfired callee result rides back as DATA (#219): the caller bottoms
+/// only if its taken output path consumes it — matching the node-walk,
+/// where a callsite arg that never fires silences only the consumers
+/// that read it. Genuine aborts (depth trip, interrupt, async pend)
+/// keep the pending path. Folds to nothing for a fresh const disc.
+fn emit_flag_not_fresh(cx: &mut BodyCx, disc: ClifValue) -> Result<()> {
+    let bits = cx.b.ins().band_imm(disc, TAINT | STALE);
+    let set = cx.helper("graphix_callee_flags_set")?;
+    let do_set = cx.b.create_block();
+    let cont = cx.b.create_block();
+    let nz = cx.b.ins().icmp_imm(IntCC::NotEqual, bits, 0);
+    cx.b.ins().brif(nz, do_set, &[], cont, &[]);
+    cx.b.switch_to_block(do_set);
+    cx.b.seal_block(do_set);
+    cx.b.ins().call(set, &[bits]);
+    cx.b.ins().jump(cont, &[]);
+    cx.b.switch_to_block(cont);
+    cx.b.seal_block(cont);
+    Ok(())
 }
 
 fn emit_force(
@@ -3322,11 +3347,11 @@ fn emit_force(
     disc: ClifValue,
     drop_fn: impl FnOnce(&mut BodyCx) -> Result<()>,
 ) -> Result<()> {
-    // The return-path firing gate: a not-fresh result (bottom OR, for a
-    // published body, didn't-fire-this-cycle) drops the owned result and
-    // bottoms the kernel (returns None), matching the node-walk's
-    // "publish only on Some". Folds to no branch for a fresh const disc.
-    let not_fresh = return_bottom_cond(cx, disc);
+    // The return-path firing gate: a not-fresh result (bottom OR
+    // didn't-fire-this-cycle) drops the owned result and bottoms the
+    // kernel (returns None), matching the node-walk's "publish only on
+    // Some". Folds to no branch for a fresh const disc.
+    let not_fresh = is_not_fresh(cx.b, disc);
     let pending_set = cx.helper("graphix_dyncall_set_pending")?;
     let pre = cx.b.create_block();
     let ret = cx.b.create_block();
@@ -3365,14 +3390,19 @@ fn emit_kernel_return(
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
-            // FORCE at the output — a not-fresh result (bottom OR didn't
-            // fire this cycle) drops the owned value + bottoms the kernel;
-            // else fall through. Folds to no branch for a fresh const disc.
-            emit_force(cx, disc, |cx| {
-                let val_drop = cx.helper("graphix_value_drop")?;
-                cx.b.ins().call(val_drop, &[disc, payload]);
-                Ok(())
-            })?;
+            if cx.ctx.gate_stale_at_return {
+                // FORCE at the output — a not-fresh result (bottom OR
+                // didn't fire this cycle) drops the owned value + bottoms
+                // the kernel; else fall through. Folds to no branch for a
+                // fresh const disc.
+                emit_force(cx, disc, |cx| {
+                    let val_drop = cx.helper("graphix_value_drop")?;
+                    cx.b.ins().call(val_drop, &[disc, payload]);
+                    Ok(())
+                })?;
+            }
+            // Callee mode: the two-word return carries the disc in-band,
+            // so TAINT/STALE ride back as data — no force, no flags.
             emit_return_pending_check(
                 cx.b,
                 cx.env,
@@ -3384,13 +3414,17 @@ fn emit_kernel_return(
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let v = ensure_owned_composite_src(cx, src, cv.payload)?;
-            // #219: a tainted composite output bottoms — drop the owned
-            // array on the tainted path (folds away when untainted).
-            emit_force(cx, cv.disc, |cx| {
-                let d = cx.helper("graphix_valarray_drop")?;
-                cx.b.ins().call(d, &[v]);
-                Ok(())
-            })?;
+            if cx.ctx.gate_stale_at_return {
+                // #219: a tainted composite output bottoms — drop the
+                // owned array on the tainted path (folds when untainted).
+                emit_force(cx, cv.disc, |cx| {
+                    let d = cx.helper("graphix_valarray_drop")?;
+                    cx.b.ins().call(d, &[v]);
+                    Ok(())
+                })?;
+            } else {
+                emit_flag_not_fresh(cx, cv.disc)?;
+            }
             emit_return_pending_check(
                 cx.b,
                 cx.env,
@@ -3403,11 +3437,15 @@ fn emit_kernel_return(
         Some(AbiKind::String) => {
             // String results are owned at production (reads clone);
             // no ensure needed.
-            emit_force(cx, cv.disc, |cx| {
-                let d = cx.helper("graphix_arcstr_drop")?;
-                cx.b.ins().call(d, &[cv.payload]);
-                Ok(())
-            })?;
+            if cx.ctx.gate_stale_at_return {
+                emit_force(cx, cv.disc, |cx| {
+                    let d = cx.helper("graphix_arcstr_drop")?;
+                    cx.b.ins().call(d, &[cv.payload]);
+                    Ok(())
+                })?;
+            } else {
+                emit_flag_not_fresh(cx, cv.disc)?;
+            }
             emit_return_pending_check(
                 cx.b,
                 cx.env,
@@ -3418,11 +3456,15 @@ fn emit_kernel_return(
             cx.b.ins().return_(&[cv.payload]);
         }
         Some(AbiKind::Scalar(_)) => {
-            // FORCE — a not-fresh scalar (bottom OR, for a published body,
-            // didn't fire this cycle) bottoms; else return. A scalar owns
-            // nothing, so the drop is a no-op. Folds to an unconditional
-            // return when the disc is a fresh const.
-            emit_force(cx, cv.disc, |_| Ok(()))?;
+            if cx.ctx.gate_stale_at_return {
+                // FORCE — a not-fresh scalar (bottom OR didn't fire this
+                // cycle) bottoms; else return. A scalar owns nothing, so
+                // the drop is a no-op. Folds to an unconditional return
+                // when the disc is a fresh const.
+                emit_force(cx, cv.disc, |_| Ok(()))?;
+            } else {
+                emit_flag_not_fresh(cx, cv.disc)?;
+            }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().return_(&[cv.payload]);
         }
@@ -4959,8 +5001,7 @@ fn emit_accessor_source_node_unforced<R: Rt, E: UserEvent>(
 fn emit_elem_placeholder(cx: &mut BodyCx, elem: &Type) -> Result<CompiledExpr> {
     match kernel_abi::abi_kind(cx.registry(), elem) {
         Some(AbiKind::Scalar(p)) => {
-            let disc =
-                cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
+            let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
             Ok(CompiledExpr::new(disc, zero_const(cx.b, p)))
         }
         Some(AbiKind::String) => {
@@ -5423,14 +5464,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             };
             let call = cx.b.ins().call(ph_helper, &[]);
             let ph = cx.b.inst_results(call)[0];
-            let tainted_base =
-                cx.b.ins().iconst(types::I64, base_disc | TAINT);
+            let tainted_base = cx.b.ins().iconst(types::I64, base_disc | TAINT);
             let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
             let ph_disc = cx.b.ins().bor(tainted_base, stale_bit);
-            cx.b.ins().jump(
-                qmerge,
-                &[BlockArg::Value(ph_disc), BlockArg::Value(ph)],
-            );
+            cx.b.ins().jump(qmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph)]);
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
             // Extract success T (now known non-error). The unwrap
@@ -5519,15 +5556,11 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             }
             // Tainted Value::Null placeholder (helper-safe by
             // construction); the inner's STALE carries.
-            let tainted_base =
-                cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
+            let tainted_base = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
             let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
             let ph_disc = cx.b.ins().bor(tainted_base, stale_bit);
             let zero = cx.b.ins().iconst(types::I64, 0);
-            cx.b.ins().jump(
-                qmerge,
-                &[BlockArg::Value(ph_disc), BlockArg::Value(zero)],
-            );
+            cx.b.ins().jump(qmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(zero)]);
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
             // The non-error Value IS the result T. Ensure it's owned: a
@@ -7253,10 +7286,14 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// the callee (which bottoms if it consumes it) — no de-fuse. The
 /// result is unpacked per the callee's return ABI: one CLIF result for
 /// scalar / composite-pointer returns, a two-word `(disc, payload)` pair
-/// for variant/nullable — owned. A scalar RETURN is one word (no disc):
-/// the callee already gated its own bottom (a callee that bottomed set
-/// the global `DYNCALL_PENDING` flag → the caller kernel returns `None`),
-/// so the caller synthesizes a fresh disc for the result.
+/// for variant/nullable — owned. A one-word RETURN has no disc: the
+/// callee records its result's not-fresh (TAINT/STALE) bits in
+/// `CALLEE_RESULT_FLAGS` (`emit_flag_not_fresh`) and the caller takes
+/// them here, OR-ing into the synthesized disc — a bottomed or unfired
+/// callee RESULT rides back as data (#219), bottoming only consumers
+/// that read it, exactly like a node-walk callsite whose output didn't
+/// fire. Genuine aborts (depth trip, interrupt, async pend) still ride
+/// `DYNCALL_PENDING` and bottom the whole caller kernel.
 pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
@@ -7450,10 +7487,22 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         let pop = cx.helper("graphix_depth_pop")?;
         cx.b.ins().call(pop, &[]);
     }
-    // The callee RETURN ABI is unchanged (params went 2-word, returns
-    // didn't): scalar/composite return one word, value-shape two. The
-    // callee already forced any taint before returning, so a scalar /
-    // composite result is untainted — synthesize its const disc.
+    // The callee RETURN ABI is one word for scalar/composite, two for
+    // value-shape. A one-word return has no disc, so the callee's
+    // return path records its result's not-fresh (TAINT/STALE) bits in
+    // the CALLEE_RESULT_FLAGS cell (`emit_flag_not_fresh`); take them
+    // here — after EVERY call, keeping the cell clean call-to-call —
+    // and OR them into the synthesized disc. A bottomed or unfired
+    // callee result thus rides into this kernel as a tainted/stale
+    // VALUE (#219) instead of aborting the whole region: it bottoms
+    // only the consumers that read it, like the node-walk. Value-shape
+    // returns carry the disc in-band (the callee never sets flags), so
+    // the OR is a no-op there.
+    let flags = {
+        let take = cx.helper("graphix_callee_flags_take")?;
+        let call = cx.b.ins().call(take, &[]);
+        cx.b.inst_results(call)[0]
+    };
     let one_result = |cx: &mut BodyCx| -> Result<ClifValue> {
         let results = cx.b.inst_results(inst);
         if results.len() != 1 {
@@ -7468,11 +7517,14 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let result = match kernel_abi::abi_kind(reg, ret) {
         Some(AbiKind::Scalar(p)) => {
             let r0 = one_result(cx)?;
-            CompiledExpr::new(scalar_disc(cx.b, p), r0)
+            let base = scalar_disc(cx.b, p);
+            let disc = cx.b.ins().bor(base, flags);
+            CompiledExpr::new(disc, r0)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let r0 = one_result(cx)?;
-            let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            let disc = cx.b.ins().bor(base, flags);
             CompiledExpr::new(disc, r0)
         }
         Some(AbiKind::Variant | AbiKind::Nullable) => {
@@ -7487,7 +7539,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                 }
                 (results[0], results[1])
             };
-            CompiledExpr::new(r0, r1)
+            let disc = cx.b.ins().bor(r0, flags);
+            CompiledExpr::new(disc, r1)
         }
         other => {
             return Err(anyhow!(

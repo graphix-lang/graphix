@@ -340,12 +340,25 @@ de-weighting the fib seed.
     or a remaining pending path) still whole-kernel-aborts. Repro:
     scratchpad b14d vs b14e shapes; also generate/014, 016, 027.
 
-24. **REVISED (probes disprove the general claim)** — cross-kernel
-    calls DO carry per-arg discs and an unused tainted formal works
-    (`f(i64:1, 1/0)` with `|a,b| a-a` AGREEs). generate/016+027 remain
-    un-isolated (poly `'a: Number` + checked chains + guarded selects +
-    formal shadowing in one shape; the re-minimizer can't shrink past
-    it) — both center on polys, so re-evaluate AFTER the tvar work.
+24. **FIXED (2026-07-04) — callee-result bottom escalated the whole
+    caller region.** Post-tvar-work re-evaluation isolated the real
+    shape: not the ARGS (per-arg discs work, as the probes showed) but
+    the callee's RESULT — the scalar/composite return ABI has no disc
+    word, so a TAINTED result took the DYNCALL_PENDING abort path and
+    the caller kernel yielded None even when the outer body never
+    reads that value (`f(u8:1, f(1/0, 2))` with `|v0,v1| v0*v0`:
+    interp u8:1, jit no-event). Fix: `CALLEE_RESULT_FLAGS` thread-local
+    — the callee's return path records the result's TAINT/STALE bits
+    (`emit_flag_not_fresh`) and returns the placeholder normally; the
+    caller takes the bits after every call and ORs them into the
+    synthesized disc, so a bottomed/unfired callee result rides back
+    as data (#219) and the STALE half also replaces the old
+    synthesize-fresh over-fire. Value-shape returns carry the disc
+    in-band (force removed in callee mode). Genuine aborts
+    (depth/interrupt/async pend) keep the pending path. This cleared
+    ALL 10 remaining generate divergences (004/012/013/016/020/024/
+    027/040/046/067) — the whole soak corpus now AGREEs. Pin:
+    findings/callee-flags-jul2026/01. Original notes below.
     Original (superseded) claim:
     (generate/016, 027; supersedes item 23's leftover): the node-walk
     binds lambda formals as ordinary cached nodes, so a body that never

@@ -1,0 +1,15 @@
+// bisect: cross-kernel callee-result bottom escalated to the whole
+// caller region — the callee's scalar return ABI had no disc word, so
+// a TAINTED result took the DYNCALL_PENDING abort path and the caller
+// kernel yielded None, even though the outer call's body never reads
+// the tainted param: interp Trace([0:u8:1]) vs jit Trace([]). The
+// node-walk fires the outer body from v0 alone (v1 simply never
+// arrives). Fixed 2026-07-04: the callee records the result's
+// TAINT/STALE bits in CALLEE_RESULT_FLAGS (emit_flag_not_fresh) and
+// returns the placeholder normally; the caller takes the bits after
+// the call and ORs them into the synthesized disc — a bottomed callee
+// result rides back as data (#219), bottoming only consumers that
+// read it. Distilled from the 8 remaining soak-jul2026 generate
+// divergences (004/012/013/016/020/024/027/040/046/067 class).
+// minimized:
+{let f = 'a: Number |v0: 'a, v1: 'a| -> 'a v0 * v0; f(u8:1, f(u8:1 / u8:0, u8:2))}
