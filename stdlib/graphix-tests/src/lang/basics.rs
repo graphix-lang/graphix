@@ -219,3 +219,25 @@ run!(or_never, OR_NEVER, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+const WRAP_OVERFLOW: &str = r#"
+{
+    let a = i64:9223372036854775807 + i64:1;
+    let b = u8:255 + u8:1;
+    let c = i64:-9223372036854775808 - i64:1;
+    let d = i64:3037000500 * i64:3037000500;
+    select (a, b, c, d) {
+        (i64:-9223372036854775808, u8:0, i64:9223372036854775807, i64:-9223372036709301616) => true,
+        _ => false
+    }
+}
+"#;
+
+// Unchecked integer arith WRAPS on overflow in BOTH modes (the JIT's
+// iadd/isub/imul always did; the node-walk gained the wrapping fast
+// path 2026-07-04 — it previously errored to bottom, which stalled tail
+// loops forever). Checked `+?` keeps its catchable ArithError.
+run!(wrap_overflow, WRAP_OVERFLOW, |v: Result<&Value>| match v {
+    Ok(Value::Bool(true)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

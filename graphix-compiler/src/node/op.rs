@@ -570,6 +570,43 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
     }
 }
 
+/// Unchecked integer `+`/`-`/`*` WRAP on overflow — the documented
+/// semantics, matching the JIT's `iadd`/`isub`/`imul` and [`Neg`]'s
+/// two's-complement `wrapping_neg`. netidx's `Value` operators return an
+/// overflow Error instead, which the unchecked path converts to bottom —
+/// and a bottomed tail-call argument stalls its loop FOREVER (soak
+/// finding 2026-07-04; Eric's ruling: the node-walk was wrong here).
+/// Same-variant integer pairs only; every other shape (floats, mixed
+/// coercions, datetime/duration, div/mod which keep bottom-on-div0)
+/// falls through to the netidx operator.
+fn wrapping_int_arith(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
+    macro_rules! w {
+        ($va:ident, $a:expr, $b:expr) => {
+            match op {
+                BinOp::Add => Some(Value::$va($a.wrapping_add($b))),
+                BinOp::Sub => Some(Value::$va($a.wrapping_sub($b))),
+                BinOp::Mul => Some(Value::$va($a.wrapping_mul($b))),
+                BinOp::Div | BinOp::Mod => None,
+            }
+        };
+    }
+    match (l, r) {
+        (Value::I8(a), Value::I8(b)) => w!(I8, *a, *b),
+        (Value::I16(a), Value::I16(b)) => w!(I16, *a, *b),
+        (Value::I32(a), Value::I32(b)) => w!(I32, *a, *b),
+        (Value::I64(a), Value::I64(b)) => w!(I64, *a, *b),
+        (Value::U8(a), Value::U8(b)) => w!(U8, *a, *b),
+        (Value::U16(a), Value::U16(b)) => w!(U16, *a, *b),
+        (Value::U32(a), Value::U32(b)) => w!(U32, *a, *b),
+        (Value::U64(a), Value::U64(b)) => w!(U64, *a, *b),
+        (Value::V32(a), Value::V32(b)) => w!(V32, *a, *b),
+        (Value::V64(a), Value::V64(b)) => w!(V64, *a, *b),
+        (Value::Z32(a), Value::Z32(b)) => w!(Z32, *a, *b),
+        (Value::Z64(a), Value::Z64(b)) => w!(Z64, *a, *b),
+        _ => None,
+    }
+}
+
 /// Generate the `Update::emit_clif` override for an [`arith_op!`] type.
 /// `$base` is the unchecked [`BinOp`] (`Add` for both `+`
 /// and `+?`). Unchecked ops emit through the shared arith relay;
@@ -661,6 +698,12 @@ macro_rules! arith_op {
                 let lhs = self.lhs.cached.as_ref()?;
                 let rhs = self.rhs.cached.as_ref()?;
                 if lhs_up || rhs_up {
+                    if !$checked {
+                        if let Some(v) = wrapping_int_arith(BinOp::$base, lhs, rhs)
+                        {
+                            return Some(v);
+                        }
+                    }
                     let result = lhs.clone().$method(rhs.clone());
                     if $checked {
                         Some(wrap_arith_error(result))

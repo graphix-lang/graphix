@@ -222,7 +222,7 @@ known item 4; buckets reset per campaign run).
     unreachable_unchecked to defined panics. Verified: repro bottoms
     (matches interp), untainted `$` unchanged.
 
-14. **Unchecked integer-add overflow: node-walk bottoms, JIT wraps**
+14. **FIXED (Eric ruling: node-walk was wrong) — unchecked integer overflow now WRAPS in the node-walk**
     (`corpus-fuzz`, tail-loop `count(500000, i64:MAX)` with `acc + 1`):
     interp = Timeout — the overflow at iteration 1 errors→bottoms in
     node/op.rs, the tail-call argument never arrives, the loop stalls
