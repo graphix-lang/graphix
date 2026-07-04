@@ -921,6 +921,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         }
         let (size_fired, resized) = match from[0].update(ctx, event) {
             Some(Value::I64(n)) => {
+                // Runaway sizes log + bottom (same limit as array::init /
+                // the JIT's init loop): building per-element slots for
+                // `init(i64:MAX, …)` wedges the evaluator un-interruptibly
+                // (soak finding corpus-fuzz/crash_000020).
+                if n > graphix_compiler::node::MAX_ARRAY_INIT_LEN {
+                    log::error!(
+                        "list::init: size {n} exceeds the {} element \
+                         limit — producing no value",
+                        graphix_compiler::node::MAX_ARRAY_INIT_LEN
+                    );
+                    return None;
+                }
                 let n = n.max(0) as usize;
                 if n == slen {
                     (true, false)

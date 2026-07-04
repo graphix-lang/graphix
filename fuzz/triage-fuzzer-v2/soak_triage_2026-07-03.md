@@ -148,3 +148,29 @@ by mtime cutoff; real findings preserved). Two harness fixes landed:
 Pre-swap findings already classified: `corpus-fuzz/divergence_000001` =
 the `sys::fs::tempdir` interp-side async-quiescence flake class (the
 record filter now excludes rand::/sys::/http:: programs).
+
+## Post-restart findings (2026-07-04, fixed binary)
+
+9. **FIXED — `list::init(i64:MAX, …)` wedge** (`corpus-fuzz/crash_000020`):
+   `list::init` lacked the `MAX_ARRAY_INIT_LEN` cap `array::init` got in
+   Phase 4 — building 9e18 slots wedges un-interruptibly. Same log+bottom
+   cap added (graphix-package-list). `seq(0, MAX)` (crash_000010) remains
+   the un-capped representative of the class — it's a stream not an
+   allocation, so it belongs to the interrupt-poll discussion (item 4).
+
+10. **HARNESS artifact — `#[native]` seeds** (divergence_000021, deleted):
+    a mutant embedded a `#[native]`-carrying fixture inside a select arm
+    (where fusion never descends) → CompileErr under jit only, phantom
+    divergence. `#[native]` is deliberately mode-asymmetric test infra;
+    build.rs now strips it from the seed pool.
+
+Also re-recorded post-restart: fib(-1) breadth wedge (crash_000022 —
+known item 4; buckets reset per campaign run).
+
+11. **Post-fix generate stream = the qop-abort residual** (divergence_000013/
+    14/15 and counting): live CHAINS of binds that consume a `$` bottom but
+    never reach the output (`let a = m{k}$; let b = f(a); <output ignoring b>`)
+    still whole-kernel-abort — the dead-stmt fix only eliminates fully-dead
+    binds. Same root as item 3's non-scalar qop error path; the tainted-
+    placeholder rework subsumes it (an interior `$` error must produce a
+    taint-marked placeholder, not a pending-exit).
