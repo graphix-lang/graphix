@@ -2252,6 +2252,57 @@ fn taint_if(b: &mut FunctionBuilder, base: ClifValue, cond: ClifValue) -> ClifVa
     b.ins().select(cond, tainted, base)
 }
 
+/// The interior-bottom cache-substitute (Eric-approved 2026-07-04):
+/// [`TAINT`] must mean "no value EVER seen at this point" — but in the
+/// node-walk every node caches its last value, so a taint ORIGIN (a
+/// div0, a `$`-dropped error) with a PRIOR success doesn't poison its
+/// consumers: they fire with the origin's cached value (node/op.rs
+/// `Cached` operands; the interior-bottom soak family). Kernel INPUTS
+/// already honor this (the runtime hands STALE + the last value after
+/// the first fire); this wraps interior scalar origins the same way.
+///
+/// Wraps an already-computed scalar result: on every UNTAINTED compute
+/// the value + a valid flag are stored to two claimed state words; on a
+/// TAINTED disc with stored history the result becomes (cached value,
+/// scalar base | [`STALE`]) — didn't-fire-this-cycle, exactly the
+/// node-walk — while a genuine no-history taint passes through and
+/// gates at the output as before. Stateless fallback (scaffold loops,
+/// callee bodies): the unwrapped result — the pre-existing conflation,
+/// a documented residual.
+fn emit_scalar_taint_cache(
+    cx: &mut BodyCx,
+    prim: PrimType,
+    cv: CompiledExpr,
+) -> CompiledExpr {
+    let (Some(off_val), Some(off_ok)) =
+        (cx.claim_state_word(), cx.claim_state_word())
+    else {
+        return cv;
+    };
+    let sp = cx.state_ptr();
+    let tainted = is_tainted(cx.b, cv.disc);
+    // Loads FIRST: `have` must reflect history from BEFORE this fire.
+    let cur_val = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off_val);
+    let cur_ok = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off_ok);
+    // Branchless store: keep the old contents when tainted, else the
+    // fresh value + valid=1.
+    let widened = scalar_to_payload_i64(cx.b, prim, cv.payload);
+    let new_val = cx.b.ins().select(tainted, cur_val, widened);
+    let one = cx.b.ins().iconst(types::I64, 1);
+    let new_ok = cx.b.ins().select(tainted, cur_ok, one);
+    cx.b.ins().store(MemFlags::trusted(), new_val, sp, off_val);
+    cx.b.ins().store(MemFlags::trusted(), new_ok, sp, off_ok);
+    // Substitute on tainted-with-history.
+    let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cur_ok, 0);
+    let use_cache = cx.b.ins().band(tainted, have);
+    let cached = cast_u64_to_prim(cx.b, cur_val, prim);
+    let value = cx.b.ins().select(use_cache, cached, cv.payload);
+    let base = scalar_disc(cx.b, prim);
+    let stale = cx.b.ins().bor_imm(base, STALE);
+    let disc = cx.b.ins().select(use_cache, stale, cv.disc);
+    CompiledExpr::new(disc, value)
+}
+
 /// True (I8 bool) iff the disc's [`TAINT`] bit is set.
 fn is_tainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     let t = b.ins().band_imm(disc, TAINT);
@@ -3610,7 +3661,10 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         let zero = cx.b.ins().iconst(types::I64, 0);
         let bad_taint = cx.b.ins().select(bad, taint_word, zero);
         let disc = cx.b.ins().bor(disc, bad_taint);
-        return Ok(CompiledExpr::new(disc, value));
+        // Interior-bottom exactness: with prior history this degrades a
+        // tainted result to STALE + the cached value, matching the
+        // node-walk's cached div node.
+        return Ok(emit_scalar_taint_cache(cx, prim, CompiledExpr::new(disc, value)));
     }
     let value = compile_bin(cx.b, op, prim, l, r)?;
     let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
@@ -5176,7 +5230,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             let disc = taint_if(cx.b, disc, is_err);
-            Ok(CompiledExpr::new(disc, value))
+            // Interior-bottom exactness: a `$`/`?`-dropped error with
+            // prior success degrades to STALE + the cached value,
+            // matching the node-walk's cached qop node.
+            Ok(emit_scalar_taint_cache(cx, p, CompiledExpr::new(disc, value)))
         }
         // String / composite success — keep the branch-abort path.
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {

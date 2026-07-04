@@ -71,7 +71,7 @@ by mtime cutoff; real findings preserved). Two harness fixes landed:
 
 ## Open — needs a decision (Eric)
 
-3. **Interior-bottom semantics family** — 4 findings, one root:
+3. **FIXED (v1, 2026-07-04, Eric-approved design) — interior-bottom semantics family.** emit_scalar_taint_cache: scalar taint ORIGINS (int div/mod, scalar-success `$`/`?`) claim two kernel-state words; untainted computes store value+valid, a tainted disc with history substitutes (cached value, STALE) — TAINT now means "no value ever" at scalar origins. ALL 90 reactive corpus findings AGREE post-fix; pins 08/09/10 in findings/soak-jul2026. V1 RESIDUALS (stateless fallback, still conflated): sources inside HOF scaffold loops (claim refused — the fold findings), non-scalar qop successes (the live-chain value-shape aborts, item 11), DynCall pending, duration value-arith. Original notes:
    - `corpus-reactive/divergence_000001`: `{v0 <- v0+1; v0 + ((100*-100) % (v0-1))}`
      — at v0=1 the modulo div0s. Node-walk: the mod node bottoms, but `+`
      still fires (v0 updated) using the mod's **Cached previous value** →
