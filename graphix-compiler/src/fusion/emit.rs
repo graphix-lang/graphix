@@ -1038,17 +1038,20 @@ fn define_wrapper_body(
 /// wrapper, extracting the scalar according to the declared `prim`.
 /// The bits represent the primitive's value; for narrower primitives
 /// the upper bits are unused (the wrapper loads at the CLIF type and
-/// ignores them). Panics if `v` isn't a scalar of `prim`'s shape — a
-/// kernel built against a typechecker decision the runtime now
-/// disagrees with, which is a bug. (`Z32`/`Z64`/`V32`/`V64` accepted
-/// for the matching fixed-width prim.)
-pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> u64 {
+/// ignores them). `None` if `v` isn't a scalar of `prim`'s shape — a
+/// kernel built against a typechecker decision the runtime disagrees
+/// with (the never-tvar / obs-4 unsoundness class,
+/// fuzz/triage-fuzzer-v2/typecheck_observations.md); the caller
+/// substitutes the tainted missing-input placeholder so the runtime
+/// SURVIVES those programs until the typechecker is sound.
+/// (`Z32`/`Z64`/`V32`/`V64` accepted for the matching fixed-width prim.)
+pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     macro_rules! bad {
         () => {
-            panic!("pack_value_to_u64: {v:?} isn't a {prim:?} scalar")
+            return None
         };
     }
-    match prim {
+    Some(match prim {
         PrimType::I8 => match v {
             Value::I8(x) => *x as i64 as u64,
             _ => bad!(),
@@ -1093,7 +1096,7 @@ pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> u64 {
             Value::Bool(b) => *b as u64,
             _ => bad!(),
         },
-    }
+    })
 }
 
 /// Unpack a u64 slot from a JIT'd wrapper's `out` parameter into the

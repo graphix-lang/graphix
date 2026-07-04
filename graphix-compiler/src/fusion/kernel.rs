@@ -638,7 +638,8 @@ fn dyncall_scalar_return_bits(v: &Value) -> u64 {
     let prim = kernel_abi::scalar_prim_of_value(v).unwrap_or_else(|| {
         panic!("DynCall scalar return: callee produced non-scalar {v:?}")
     });
-    pack_value_to_u64(v, prim)
+    // Infallible: the prim was derived from `v`'s own variant.
+    pack_value_to_u64(v, prim).expect("prim derived from the value itself")
 }
 
 /// Wraps a [`KernelSig`] as an [`Apply<R, E>`] so the runtime can call
@@ -1202,8 +1203,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                     (disc, a.clone())
                 }
                 None => (arr_disc | taint, empty_arr.clone()),
+                // Shape mismatch = the typechecker-unsoundness class —
+                // missing-input placeholder instead of killing the
+                // runtime (see the scalar arm; soak finding
+                // corpus-fuzz/divergence_000006).
                 Some(v) => {
-                    panic!("Kernel: composite param expected Value::Array, got {v:?}")
+                    log::error!(
+                        "kernel composite param: runtime {v:?} isn't an \
+                         Array (typechecker static/dynamic mismatch) — \
+                         treating as bottom"
+                    );
+                    (arr_disc | taint, empty_arr.clone())
                 }
             }
         };
@@ -1226,8 +1236,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                         (d, s.clone())
                     }
                     None => (str_disc | taint, empty_str.clone()),
+                    // Shape mismatch = the typechecker-unsoundness
+                    // class — see the scalar arm.
                     Some(v) => {
-                        panic!("Kernel: string param expected Value::String, got {v:?}")
+                        log::error!(
+                            "kernel string param: runtime {v:?} isn't a \
+                             String (typechecker static/dynamic mismatch) \
+                             — treating as bottom"
+                        );
+                        (str_disc | taint, empty_str.clone())
                     }
                 })
                 .collect();
@@ -1266,10 +1283,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for (i, p) in k.params.iter().enumerate() {
             let disc = prim_to_value_disc(p.prim) as u64;
             let (disc, payload) = match param_opts[i].as_ref() {
-                Some(v) => {
-                    let disc = if param_fired[i] { disc } else { disc | stale };
-                    (disc, pack_value_to_u64(v, p.prim))
-                }
+                // A value that doesn't match the compiled slot shape is
+                // the never-tvar/obs-4 typechecker-unsoundness class
+                // (the static type lied about the runtime value) —
+                // treat it as a MISSING input (tainted placeholder) so
+                // the runtime survives; the divergence stays visible to
+                // the fuzzer as a missing fire. Previously a panic that
+                // killed the runtime (soak corpus-fuzz/divergence_000003).
+                Some(v) => match pack_value_to_u64(v, p.prim) {
+                    Some(bits) => {
+                        let disc =
+                            if param_fired[i] { disc } else { disc | stale };
+                        (disc, bits)
+                    }
+                    None => {
+                        log::error!(
+                            "kernel scalar param {i}: runtime {v:?} doesn't \
+                             match the compiled {:?} slot (typechecker \
+                             static/dynamic mismatch) — treating as bottom",
+                            p.prim
+                        );
+                        (disc | taint, 0)
+                    }
+                },
                 None => (disc | taint, 0),
             };
             slots.push(disc);
@@ -1459,7 +1495,7 @@ mod tests {
             (Value::I8(-1), PrimType::I8),
         ];
         for (v, p) in cases {
-            let bits = pack_value_to_u64(v, *p);
+            let bits = pack_value_to_u64(v, *p).expect("matching prim");
             assert_eq!(unpack_u64_to_value(bits, *p), *v);
         }
     }

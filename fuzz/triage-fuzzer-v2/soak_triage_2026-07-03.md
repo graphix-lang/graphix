@@ -134,7 +134,7 @@ by mtime cutoff; real findings preserved). Two harness fixes landed:
 
 ## Open — concrete JIT bugs (next in queue)
 
-5. **pack_value_to_u64 marshal panic** (emit.rs:1090;
+5. **DEFENDED (2026-07-04; root tracked as task #20) — pack_value_to_u64 marshal panic** (emit.rs:1090;
    `corpus-fuzz/divergence_000003`):
    `{let f = 'a: Number|x: 'a| -> 'a f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}`
    — constrained-poly lambda at two numeric types; a kernel slot declared
@@ -143,7 +143,7 @@ by mtime cutoff; real findings preserved). Two harness fixes landed:
    body is concrete `f64:0.` against return type `'a` (a tvar-constraints
    / task #20 motivating case?).
 
-6. **Composite param gets String** (kernel.rs:1206;
+6. **DEFENDED (2026-07-04) — composite param gets String** (kernel.rs:1206;
    `corpus-fuzz/divergence_000006`, same finding): the window+buffer
    program — `buffer::from_string("hello")` lands a String in a param slot
    the signature classified composite → marshal panic kills the runtime.
