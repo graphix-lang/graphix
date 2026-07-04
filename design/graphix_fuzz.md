@@ -219,27 +219,46 @@ for triage.
 
 ## 4. The oracle
 
-### Comparison, staged
+### Comparison — per-cycle trace (V2, BUILT 2026-07-03)
 
-- **V1 — single-snapshot on a pure-sync, terminating sublanguage.** Reuse the
-  existing `eval` (which returns on the first `Updated` of the result). This is
-  *sound here* because a pure-sync program produces exactly one value and stops;
-  the single-snapshot limitation is invisible when there is only one snapshot.
-  No new runtime code.
-- **V2+ — per-cycle trace.** Add a `DriveToQuiescence` control message (the
-  `ToGX::{MatchShape,DescribeShape,EnvStats}` pattern shows how; `cycle_ready()`
-  already exists as the principled quiescence signal). Step `do_cycle` until
-  `!cycle_ready()` or `max_cycles`, snapshotting the observable per cycle →
-  `Vec<Option<Value>>` where `None` = "emitted nothing this cycle" (strictly
-  stronger than value equality — catches `?`/`$`/`never` drops). Same
-  `(source, schedule)` to both modes → identical cycle indices → comparable
-  traces. Reactive generation (driver-controlled `tick` input via `GXHandle::set`
-  on a designated BindId; bounded `<-` loops) ships *with* the trace oracle, not
-  before it.
+The V1 single-snapshot oracle is gone; every check now compares **full
+per-cycle traces**. Recording is RUNTIME-side (host-side batch counting is
+timing-fragile): `ToGX::TraceStart{max_events,max_cycles}` arms a
+`TraceState` hook next to the `result_watch` site in `run_nodes`; a
+`Compiled` marker recorded in the Compile arm anchors epoch 0 (killing the
+compile-vs-first-cycle race); `ToGX::TraceWaitIdle` resolves at the idle
+check with a `TraceSegment{events, end_cycle, capped_cycles, capped_events}`.
+The fuzz side (`trace.rs`) folds segments into
+`Trace{epochs: Vec<Epoch{events: Vec<(u32 cycle-offset, Value)>, capped}}`
+— offsets are relative to each epoch's anchor (the Compiled marker / the
+input-ref's own fire), because mid-burst relative pacing is deterministic
+while absolute cycle numbers are not. `first_difference()` classifies:
+`EpochCount | ValueMismatch | MissingFire | ExtraFire | Pacing |
+CapMismatch` — the discriminant participates in `bucket()` so the
+minimizer can't morph a firing bug into a value bug. A bottom program is
+instant empty-trace agreement (no sleeps); `Timeout` narrowly means "wedged
+evaluator".
 
-Reactive is complex; we are not claiming to test everything. V1 tests something
-worth testing (pure-sync, where most of the GirOp/JIT surface lives) and we
-expand the horizon as we learn.
+**Injection schedules** ride a one-line comment header on the program text —
+`// schedule-v1: cap=64 events=512; in0=i64:3 in1=f64:1.5; in0=i64:4`
+(`;`-separated epochs, space-separated simultaneous sets; headerless =
+empty schedule, so pre-V2 findings needed zero migration). Inputs follow
+the D4 contract: `let inN: T = <default>` **plus `inN <- never(<default>)`**
+at the top level — the connect makes the binding unstable so fusion binds
+it as a region input instead of const-folding it. Epoch delivery is atomic
+(`ToGX::SetMany` / `GXHandle::set_many`): one message = one input batch =
+one cycle; separate `Set`s batch nondeterministically (the phantom-pacing
+flood that shook out during calibration). Caps are schedule DATA — identical
+in both modes; a cap mismatch is itself a divergence.
+
+**The oracle-soundness gate is `selfcheck`**: interp-vs-interp AND
+jit-vs-jit trace equality over generated + corpus programs (half of them
+scheduled-reactive), 100% required before any interp-vs-jit finding is
+trusted. Nondeterministic subjects (`rand::`, `sys::`, `http::` — async
+IO races trace quiescence; an in-flight tokio task doesn't hold
+`cycle_ready`) are excluded from selfcheck subjects AND from campaign
+divergence recording; HANG-class crashes in those programs are likewise
+environmental (no resolver in a check child) and not recorded.
 
 ### Two modes hot, the third as a free bisector (historical)
 
@@ -434,11 +453,22 @@ reactive trace oracle, process isolation, skeleton bucketing.**
   it's the productionized form of the loop that already found #162–#170. Found
   divergences flow through the same minimize/triage; candidate programs seed the
   corpus.
-- **V2 — isolation + reactive oracle.** Coordinator/worker processes,
-  heartbeat + SIGKILL, crash/asymmetric-hang as divergence (unlocks unattended
-  overnight running, matching the existing parser-proptest cadence). Add
-  `DriveToQuiescence` + per-cycle trace; driver-`tick` reactive generation (the
-  two reactive pieces ship together).
+- **V2 — isolation + reactive oracle. BUILT (fuzzer-V2 plan, landed
+  2026-07-03).** Child-process isolation (§11), the per-cycle trace oracle +
+  injection schedules (§4 as rewritten above), `generate --reactive`
+  (counter/accumulator/cross-cycle/sample-chain templates over the full
+  Phase-1 vocabulary, input-free runaway bursts at ~3%), `selfcheck`, M3
+  schedule mutations, `gen-check` tuning, and a `GRAPHIX_FUZZ_PAR` /
+  `GRAPHIX_FUZZ_CORPUS` campaign-ops surface. Also from the same plan:
+  generator vocabulary S1–S6 (rebinds/shadowing, lambdas + monomorphization
+  + bounded recursion, composites/accessors/casts, HOF callbacks, real
+  select patterns, error ops/strings/builtin table) and the recursion depth
+  guard (shared `Control` counter, both evaluators, log+bottom +
+  `RtDiagnostic`/`GXEvent::Diagnostic` reporting). Triage policy: fix,
+  don't whitelist — zero relaxations are encoded in `Trace::agrees_with`;
+  the child re-exec path is `/proc/self/exe` (a rebuild under a live soak
+  otherwise ENOENTs every spawn) and a spawn IO error hard-aborts the
+  campaign rather than recording garbage findings.
 - **V2.5 — agent harvest (Source B).** Batch Haiku agents solving problems →
   self-validated idiomatic corpus; feed as oracle input *and* as seed/crossover
   donors. (B is breadth/volume; E from V1.5 is depth/targeting — they coexist.)

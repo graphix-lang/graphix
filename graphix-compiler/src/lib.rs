@@ -1019,11 +1019,32 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
                 ctx.env.alias_variable(&scope.lexical, &name, bid);
             }
         }
+        // Recompile into a fresh child scope: compile MUTATES the env, and
+        // this spec was already compiled once into `scope` — a replay there
+        // collides on registrations that reject redefinition (`deftype`:
+        // a typedef in an HOF callback body panicked every per-slot clone)
+        // and stacks shadow binds otherwise. The child scope makes the
+        // replay hermetic: internal registrations land in a scope this
+        // clone alone owns (and its delete alone cleans), while captures
+        // and the aliases above still resolve by walking up to `scope`.
+        // Internal names are lexically invisible to template siblings, so
+        // nothing outside the subtree resolves into the child scope.
+        static REBIND_SCOPE: AtomicU32 = AtomicU32::new(0);
+        let fresh = Scope {
+            lexical: ModPath(scope.lexical.append(
+                compact_str::format_compact!(
+                    "rb{}",
+                    REBIND_SCOPE.fetch_add(1, Ordering::Relaxed)
+                )
+                .as_str(),
+            )),
+            dynamic: scope.dynamic.clone(),
+        };
         compiler::compile(
             ctx,
             enumflags2::BitFlags::empty(),
             self.spec().clone(),
-            scope,
+            &fresh,
             self.spec().id,
         )
         .expect("clone_rebind: recompile from spec failed")

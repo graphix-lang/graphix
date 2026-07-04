@@ -917,13 +917,20 @@ enum PoolResult {
 /// finding and keeps running. (Pre-isolation, one such mutant killed the
 /// whole campaign with no finding saved — twice: #214, then the runaway-
 /// recursion compile-time overflow.)
+/// Path used to re-exec ourselves for child processes. On Linux this is
+/// /proc/self/exe, which resolves to the running binary's inode even after
+/// the file on disk is rebuilt/replaced mid-campaign — `current_exe()`
+/// returns a "... (deleted)" path then and every child spawn ENOENTs.
+fn child_exe() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    return std::path::PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
+    return std::env::current_exe().expect("current_exe");
+}
+
 async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
     use tokio::io::AsyncWriteExt;
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => return PoolResult::Crash(format!("current_exe: {e}")),
-    };
-    let mut cmd = tokio::process::Command::new(exe);
+    let mut cmd = tokio::process::Command::new(child_exe());
     cmd.arg("check-one")
         // The pool already provides the concurrency; small children keep
         // total thread count sane at parallelism() in-flight processes.
@@ -934,7 +941,13 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
         .kill_on_drop(true);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return PoolResult::Crash(format!("spawn: {e}")),
+        // A spawn IO error is a broken HARNESS (fd exhaustion, fork
+        // failure), not a program crash — recording it would flood the
+        // corpus with garbage findings at instant-fail speed. Die loudly.
+        Err(e) => {
+            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
+            std::process::exit(2)
+        }
     };
     if let Some(mut stdin) = child.stdin.take() {
         // A write error means the child died instantly — fall through,
@@ -993,8 +1006,7 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
 /// minimizer).
 async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     use tokio::io::AsyncWriteExt;
-    let exe = std::env::current_exe().ok()?;
-    let mut cmd = tokio::process::Command::new(exe);
+    let mut cmd = tokio::process::Command::new(child_exe());
     cmd.arg("minimize-one")
         .env("TOKIO_WORKER_THREADS", "2")
         .stdin(std::process::Stdio::piped())
@@ -1085,6 +1097,19 @@ async fn run_pool(
                     match res {
                         PoolResult::Agree => {}
                         PoolResult::Crash(status) => {
+                            // A HANG in a program touching IO/async
+                            // modules is environmental, not a bug: the
+                            // child has no resolver, so sys::net
+                            // subscribe/rpc block past the outer
+                            // deadline by design. Signal deaths and
+                            // panics in those programs still record.
+                            if status.contains("HANG")
+                                && ["rand::", "sys::", "http::"]
+                                    .iter()
+                                    .any(|m| prog.contains(m))
+                            {
+                                continue;
+                            }
                             stats.crashes += 1;
                             if corpus.record_crash(&prog, &status) {
                                 println!("CRASH — child {status}");
@@ -1095,6 +1120,24 @@ async fn run_pool(
                             }
                         }
                         PoolResult::Diverge(d) => {
+                            // Programs touching rand / IO / async are
+                            // NOT deterministic subjects (the same
+                            // exclusion selfcheck applies): rand varies
+                            // values, and an async builtin's in-flight
+                            // task RACES trace quiescence — the interp
+                            // itself flakes bottom-vs-value run to run
+                            // (seen: tempdir::create interpolated in a
+                            // mutant; the double-run guard only halves
+                            // the odds). A recorded "divergence" there
+                            // is a timing artifact, so don't record —
+                            // the campaign still exercises the shapes,
+                            // and crashes still record.
+                            if ["rand::", "sys::", "http::"]
+                                .iter()
+                                .any(|m| prog.contains(m))
+                            {
+                                continue;
+                            }
                             stats.divergences += 1;
                             // Bound concurrent minimizations so a regressed
                             // (everything-diverges) run can't pile up

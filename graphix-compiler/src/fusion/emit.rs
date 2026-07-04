@@ -2161,6 +2161,10 @@ pub struct CompiledExpr {
 /// input's disc word.
 pub(crate) const TAINT: i64 = 0x4000_0000_0000_0000;
 
+/// [`TAINT`] as a [`emit_helpers::TagValue`] tag byte, for helpers that
+/// mint a tainted result themselves.
+pub(crate) const TAINT_TAG: u8 = (TAINT >> 56) as u8;
+
 /// The reserved "did not fire this cycle" bit of a [`CompiledExpr`]'s
 /// `disc` (bit 61, inside the JIT tag region [`emit_helpers::TagValue`]
 /// reserves, below [`TAINT`]). Set = "this value carries a CACHED value
@@ -3929,19 +3933,29 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
 /// Conservative effect-freedom for dead-statement elimination: TRUE
 /// only when no node in the subtree could carry an effect the
 /// node-walk would have performed. Connect/ConnectDeref write
-/// variables; a `?` with a catch handler writes the handler's
-/// variable; `$` logs; a CallSite may target an async/effectful
-/// builtin (we can't consult `builtin_effects` at emit time, so ALL
-/// call sites are conservatively effectful). Everything else the
-/// direct emitter can encounter is value-only.
+/// variables; a `?` WITH a catch handler writes the handler's
+/// variable; a CallSite may target an async/effectful builtin (we
+/// can't consult `builtin_effects` at emit time, so ALL call sites
+/// are conservatively effectful). Handler-less `?` and `$` only emit
+/// the swallowed-error diagnostics, which are node-walk-only by
+/// design (a fused kernel drops them even when live) — and treating
+/// them as effects is actively WRONG here: their non-scalar error
+/// paths abort the whole kernel, so emitting a dead `m{k}$` bind
+/// wrong-bottoms the region (soak finding
+/// corpus-generate/divergence_000000, 2026-07-03). Everything else
+/// the direct emitter can encounter is value-only.
 fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| match n.view() {
-        NodeView::Connect(_)
-        | NodeView::ConnectDeref(_)
-        | NodeView::CallSite(_)
-        | NodeView::Qop(_)
-        | NodeView::OrNever(_) => ok = false,
+        NodeView::Connect(_) | NodeView::ConnectDeref(_) | NodeView::CallSite(_) => {
+            ok = false
+        }
+        NodeView::Qop(q) => {
+            if q.id.is_some() {
+                ok = false
+            }
+        }
+        NodeView::OrNever(_) => {}
         _ => {}
     });
     ok
@@ -4496,22 +4510,33 @@ fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
         }
         Some(AbiKind::String) => {
             // Const/Ref/Concat reads all produce an owned ArcStr;
-            // `graphix_value_new_string` consumes it into a Value.
-            // (String taint lands in a later stage.)
+            // `graphix_value_new_string` consumes it into a Value. The
+            // helper mints a flag-free disc — fold the source's
+            // TAINT/STALE back on, else a placeholder input's garbage
+            // ("" at init) computes an untainted result that escapes the
+            // output gate.
             let cv = node.emit_clif(cx)?;
             let helper = cx.helper("graphix_value_new_string")?;
             let call = cx.b.ins().call(helper, &[cv.payload]);
             let r = cx.b.inst_results(call);
-            Ok(CompiledExpr::new(r[0], r[1]))
+            let (rd, rp) = (r[0], r[1]);
+            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, rp))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            // Same flag fold as the String arm: without it, slicing the
+            // EMPTY placeholder of a not-yet-fired array input emitted a
+            // real ArrayIndexError value on the init cycle (soak finding
+            // divergence_000004, 2026-07-03).
             let cv = node.emit_clif(cx)?;
             let ptr =
                 ensure_owned_composite_src(cx, node_composite_source(node), cv.payload)?;
             let helper = cx.helper("graphix_value_new_from_array")?;
             let call = cx.b.ins().call(helper, &[ptr]);
             let r = cx.b.inst_results(call);
-            Ok(CompiledExpr::new(r[0], r[1]))
+            let (rd, rp) = (r[0], r[1]);
+            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, rp))
         }
         other => Err(anyhow!("emit_clif: value operand has unexpected type {other:?}")),
     }

@@ -78,3 +78,26 @@ Design fork, Eric's call:
 (c) accept as documented semantics: bare lambdas' derived results are
     Number-wide; annotate params or use the explicit 'a-form (docs +
     better error message).
+
+## Observation 4 (soak 2026-07-03): explicit 'a-form body unsoundness
+
+`{let f = 'a: Number|x: 'a| -> 'a f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}`
+
+`--check` ACCEPTS this, and the interp runs it: `a` is statically `i64`
+but carries `F64(0.0)` at runtime. The def-time body check unifies the
+body's concrete `f64` INTO the 'a cell; the per-callsite `reset_tvars`
+freshen then loses that lower bound, so the `i64:3` site instantiates
+'a=i64 without ever re-holding the body's `f64:0.` against it. The
+static/dynamic mismatch is invisible to the node-walk (Values are
+dynamically tagged — it just flows the f64) but the JIT derives kernel
+slot types from the STATIC types and panics at marshal
+(`pack_value_to_u64: I64(1) isn't a F64 scalar`, emit.rs:1090, killing
+the runtime — corpus-fuzz/divergence_000003).
+
+This is the dual of Observation 3: there a def-time binding was too
+sticky (return cell bound to the primitive set); here the freshen isn't
+sticky ENOUGH (a body-derived binding must survive as a lower-bound
+constraint on every instantiation). Both want the same machinery:
+tvar CELLS carrying accumulated constraints through reset/freshen —
+design/tvar_constraints.md (task #20). Until then any program in this
+class that fuses can kill the runtime at marshal time.

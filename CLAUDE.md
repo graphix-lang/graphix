@@ -365,18 +365,31 @@ and every feeder the callback body captures fired).
   drift check). Optional `; shape:` asserts the compiled graph via `NodeShape`
   (`node_shape.rs`, currently signature-fact-only — see F4/#213 below).
 - **graphix-fuzz** (`graphix-fuzz/`): the differential model-checking fuzzer —
-  node-walk (trusted) vs JIT (under test), with `check`/`run`/`generate`/`fuzz`/
-  `minimize`/`regress`; the committed `findings/` corpus is the regression gate.
-  `design/graphix_fuzz.md`.
+  node-walk (trusted) vs JIT (under test), with `check`/`run`/`generate`
+  (`--reactive` for multi-cycle programs)/`fuzz`/`minimize`/`regress`/
+  `selfcheck`/`gen-check`; the committed `findings/` corpus is the regression
+  gate. Since V2 (2026-07-03) the oracle compares **per-cycle traces**
+  (runtime-side recording via `ToGX::TraceStart`/`TraceWaitIdle`; a
+  `TraceDiff` class — Missing/ExtraFire, Pacing, etc. — keys dedup), and
+  programs can carry a `// schedule-v1:` header injecting input epochs
+  atomically via `set_many` (inputs use the `let inN = d; inN <- never(d)`
+  contract so fusion binds them as region inputs). `selfcheck`
+  (same-mode-vs-itself, 100% required) gates oracle soundness; `rand::`/
+  `sys::`/`http::` programs are excluded from divergence recording (async
+  IO races trace quiescence). Soak ops: `GRAPHIX_FUZZ_PAR`,
+  `GRAPHIX_FUZZ_CORPUS` (separate corpus dir PER campaign — shared dirs
+  clobber), and NEVER rebuild while campaigns run. `design/graphix_fuzz.md`.
 - **`FusionStats`** (`fusion/mod.rs`): per-`ExecCtx` compile-time counters
   (`attempted`/`fused`/`failed: Vec<(ExprId, reason)>`), exposed via
   `GXHandle::fusion_stats()` / `TestCtx::fusion_stats()`. Read `failed` as a
   blocker profile, not a gap count (the attempt-then-recurse protocol logs
   Module/Bind misses even for a wholly-fused program).
-- **`GRAPHIX_FUSE_AUDIT=1 cargo test -p graphix-tests -- jit --nocapture`** prints
+- **`GRAPHIX_FUSE_AUDIT=1 cargo test --workspace -- jit --nocapture`** prints
   a per-fixture `FUSEAUDIT <name> <expected> <actual> OK|MISMATCH` line plus the
   blocker list — the annotation-vs-reality audit (stdout is captured without
-  `--nocapture`).
+  `--nocapture`). Sweep the WORKSPACE, not just `-p graphix-tests`: the stdlib
+  package crates carry their own `run!` fixtures and drift invisibly otherwise
+  (`rand_float_default::jit` broke for a week unseen — 2026-07-03).
 - A divergence is **at least as likely a fused/JIT bug as a node-walk one** —
   verify the intended semantics against the node-walk before touching it.
 

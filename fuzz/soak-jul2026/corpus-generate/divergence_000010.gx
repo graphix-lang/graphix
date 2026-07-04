@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: {a: [u8, null], c: {c: string}, y: f64} = select i64:1 { i64:-100 => { a: u8:1, c: { c: "hello" }, y: f64:2.5 }, v0 => { a: u8:1, c: { c: "xyz" }, y: (-(f64:2.5)) } }; let v1 = select ((i64:-1 * i64:-1) * i64:7) { i64:1 => { x: u8:255, y: true }, v0 => { x: (u8:0 % u8:0), y: str::ends_with(#sfx: "hello", "graphix") } }; let v2 = select v1 { {x: v2, y: _} if v1.y => ("[""]-["xyz"]", u8:1), {x: u8:100, y: false} if str::contains(#part: "hello", "") => ("a", (u8:0 % u8:1)), {x: v0, y: v2} => ("graphix", v0) }; let v3 = (u8:1 == v1.x); let v4 = ((i64:100 - i64:-1) / ((i64:-1 * i64:42) * str::len("graphix"))); v4 }
+// minimized:
+{i64:0; let v1 = select ((i64:-1 * i64:-1) * i64:7) {i64:1 => { x: u8:255, y: true }, v0 => { x: (u8:0 % u8:0), y: str::ends_with(#sfx: "hello", "graphix") }}; let v2 = select v1 {{x: v2, y: _} if v1.y => ("[""]-xyz", u8:1), {x: u8:100, y: false} if str::contains(#part: "hello", "") => ("a", (u8:0 % u8:1)), {x: v0, y: v2} => ("graphix", v0)}; let v3 = (u8:1 == v1.x); let v4 = ((i64:100 - i64:-1) / ((i64:-1 * i64:42) * str::len("graphix"))); v4}

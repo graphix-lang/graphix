@@ -692,7 +692,19 @@ macro_rules! value_arith_helper {
         pub extern "C" fn $name(l: TagValue, r: TagValue) -> TagValue {
             // Mask both operands (a tainted disc is not a clean tag); the
             // result is a clean netidx Value, the JIT re-applies taint.
-            TagValue::clean(l.value() $op r.value())
+            // An Error result (duration/datetime arith failure) is BOTTOM
+            // for these UNCHECKED ops — the node-walk's BinOp converts
+            // Value::Error to log+None (node/op.rs), so return a tainted
+            // Null, never the Error as a value (soak finding
+            // corpus-fuzz/divergence_000018: `duration:1.s / i64:0`). The
+            // checked `+?` family has its own helpers and keeps its
+            // catchable ArithError.
+            match l.value() $op r.value() {
+                Value::Error(_) => {
+                    TagValue::tagged(Value::Null, crate::fusion::emit::TAINT_TAG)
+                }
+                v => TagValue::clean(v),
+            }
         }
     };
 }

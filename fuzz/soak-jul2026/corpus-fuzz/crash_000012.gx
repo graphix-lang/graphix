@@ -1,0 +1,4 @@
+// CRASH: child HANG (outer deadline)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let a = [i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, i64:7, i64:2]; array::map(a, |v| sys::net::publish("/local/[v]", v)); let v = array::iter(a); let clock: Any = once(v); let q = queue(#clock, v); let out: Primitive = sys::net::subscribe("/local/[q]")?; clock <- out; array::group(out, |n, _| n == i64:8)}
