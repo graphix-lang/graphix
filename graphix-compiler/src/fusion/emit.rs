@@ -5091,8 +5091,12 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         .filter(|p| p.is_integer())
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
     if matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
+        // Unforced: `graphix_valarray_index` is bounds-checked (safe on
+        // a placeholder), and the source's taint folds into the result
+        // disc below — forcing here kernel-bottomed live chains through
+        // a tainted literal (triage item 23).
         let (arr_ptr, src, src_disc) =
-            emit_accessor_source_node(cx, source, AbiKind::Array)?;
+            emit_accessor_source_node_unforced(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;

@@ -339,3 +339,16 @@ de-weighting the fib seed.
     single-region chain (suspect: the scalar→value-shape widening bind
     or a remaining pending path) still whole-kernel-aborts. Repro:
     scratchpad b14d vs b14e shapes; also generate/014, 016, 027.
+
+24. **NEXT FRONTIER — call arguments are chained dataflow too**
+    (generate/016, 027; supersedes item 23's leftover): the node-walk
+    binds lambda formals as ordinary cached nodes, so a body that never
+    READS a formal fires without it (`|a, b| a - a` called with a
+    bottomed `b` yields 0 — proven by 016's interp trace). Every JIT
+    call barrier instead FORCES all args (inline lambda calls,
+    cross-kernel calls, tail-call rebinds — emit.rs:4296's "the
+    node-walk's CallSite wouldn't fire" comment is false for unused
+    formals). Exact fix = bind formals WITH their discs (taint-carry)
+    instead of forcing, per call protocol. Touches the call ABI — a
+    focused session. Item 23's array-index force is FIXED (unforced
+    source; the helper is bounds-checked), which cleared b14*/014.
