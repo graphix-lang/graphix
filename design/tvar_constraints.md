@@ -176,3 +176,94 @@ language decision if mixed-type arith turns out to be rare in practice.
 - The fuzzer is the regression net: gen-check's compile rate (bare
   lambdas are generated organically), the differential campaign for
   value semantics, and the `run!` corpus + FUSE audit for fusion drift.
+
+---
+
+# Holistic execution plan (2026-07-04, Eric-approved direction)
+
+Eric's bar: "go through the whole typecheck process and rethink every
+part of it in the new frame … when it's done, it should be as if we
+always had tvar constraints." This section is the full plan; the design
+above stands, and two soak-week discoveries sharpen it:
+
+- **Observation 4 is the reset semantics itself.** `Type::reset_tvars`
+  replaces EVERY `TVar` leaf with `TVar::empty_named(..)` — bindings
+  included. A def-time body unification (`'a: Number |x:'a| -> 'a
+  f64:0.` binds `'a := f64`) is ERASED at each call site, so `f(i64:3)`
+  type-checks and the static type lies about the runtime value (the JIT
+  marshal-panic class; the runtime now survives it via placeholders, but
+  the acceptance is unsound). In the new frame the operation is
+  **instantiate, not reset**: a BOUND cell is a settled fact and stays;
+  an unbound-constrained cell freshens WITH its constraint. The name
+  `reset_tvars` should die with the old semantics.
+- **The soak corpus is the acceptance net**: 11 recorded findings are
+  this class (generate 004/012/013/020/024/040/046/067, fuzz
+  003/026/032). Post-fix they must either AGREE or reject in BOTH modes
+  at the violating site.
+
+## Phases
+
+**A — the cell.** `constraint: Option<Type>` on `TVarInnerInner`; bind
+sites in `typ/contains.rs` check it; alias sites intersect (empty
+intersection = error at site); every copying walk carries it
+(`alias_tvars`, `resolve_tvars`, `copy`, `normalize`, the new
+`instantiate`); `would_cycle` considers constraint types; printer shows
+`'a: C` for unbound-constrained cells. Unit tests at the typ layer.
+
+**B — constraint producers, re-derived.** The explicit `'a: T |…|` form
+seeds cells at lambda compile (FnType.constraints becomes a DERIVED
+display/interface artifact; the callsite post-hoc check downgrades to a
+debug assert). Arith/cmp/Neg/checked ops CONSTRAIN unbound operands
+instead of binding wide; the `ut` result table defers to typecheck1
+(same-cell aliasing for `a + a`; decision (ii) fresh constrained result
+for `a + b`). Audit every other `contains(<wide set>, …)` init-to site
+(comparisons, builtins' .gx signatures, math package).
+
+**C — the lambda/callsite protocol.** Def-time inference unifies the
+body against param/return cells (bindings that result are FACTS —
+obs-4 rejects at the call site with the constraint named). Call-site
+`reset_tvars` → `instantiate` (fresh unbound-constrained cells only).
+Re-examine: `bind_as`, the two-phase typecheck0/1 division (typecheck1
+is the settle-up pass and gains the deferred `ut`), lambda_ids /
+static-resolution interplay, and fusion's `build_lambda_kernel` cache
+key + refuse-on-disagreement (should become UNREACHABLE for sound
+programs once instantiation is sound — keep as an assert).
+
+**D — every other typecheck feature, rethought.**
+- `select` arm unification: the `any_as_tvar` view exists to make `Any`
+  leaves unify-through-able; an unconstrained fresh cell IS that
+  semantics — evaluate folding the view into the constraint machinery
+  (one mechanism, not two). Pattern `type_predicate`s serve FOUR
+  consumers (unification/exhaustiveness/dead-arm/dispatch) — re-check
+  each against constrained cells.
+- `never()`/`empty_tvar` flows: stay unconstrained; gates narrow at
+  use; `gated_scalar_unannotated` and `rand_float_default` flip to Jit.
+  Re-evaluate `freeze_for_abi_normalized`'s third rung (added for
+  never-Set pollution — may be removable).
+- typedefs/abstract types: `deftype` params already carry
+  `Option<Type>` constraints — unify the representation with cell
+  constraints (one constraint concept everywhere).
+- `frozen` × constraint: freezing a constrained-unbound cell BINDS to
+  the constraint iff it denotes a single register class, else refuses
+  (the terminal fallback mirrors today's wide behavior without lying).
+- Pack/serialization: constraints must round-trip wherever TVars do
+  (packed-AST pattern predicates).
+- Error messages: violations name the constraint and the site; add
+  fixtures asserting message shape.
+
+**E — acceptance + the big test.** Obs-3 probes compile; the 11 corpus
+findings agree-or-both-reject; `gated_scalar_unannotated` +
+`rand_float_default` → `FuseExpect::Jit`; mixed-operand `a + b` pin
+(decision ii); constraint-violation message fixtures; full gates
+(1664+, workspace FUSE audit zero drift, regress 55+); then the
+combined overnight soak (all three campaigns) that gates the whole
+week's work.
+
+## Expected simplification wins (verify, don't assume)
+
+Candidates for the "unexpected wins" Eric predicts: retiring
+`any_as_tvar` (one unification mechanism), removing the freeze third
+rung, deleting the callsite post-hoc constraint check, simplifying
+`static_resolve`'s never/wrapper special cases, and making the fusion
+mono-cache refusal an assert. Each retirement gets its own commit with
+the reasoning, or a note in this doc for why it must stay.

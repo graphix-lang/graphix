@@ -340,7 +340,13 @@ de-weighting the fib seed.
     or a remaining pending path) still whole-kernel-aborts. Repro:
     scratchpad b14d vs b14e shapes; also generate/014, 016, 027.
 
-24. **NEXT FRONTIER — call arguments are chained dataflow too**
+24. **REVISED (probes disprove the general claim)** — cross-kernel
+    calls DO carry per-arg discs and an unused tainted formal works
+    (`f(i64:1, 1/0)` with `|a,b| a-a` AGREEs). generate/016+027 remain
+    un-isolated (poly `'a: Number` + checked chains + guarded selects +
+    formal shadowing in one shape; the re-minimizer can't shrink past
+    it) — both center on polys, so re-evaluate AFTER the tvar work.
+    Original (superseded) claim:
     (generate/016, 027; supersedes item 23's leftover): the node-walk
     binds lambda formals as ordinary cached nodes, so a body that never
     READS a formal fires without it (`|a, b| a - a` called with a
