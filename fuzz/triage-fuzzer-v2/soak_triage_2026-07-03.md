@@ -256,15 +256,21 @@ known item 4; buckets reset per campaign run).
 17. **Shadowed-lambda chain missing fire**
     (`corpus-generate/divergence_000021`): three successive `let v2 =
     |...|` lambda rebinds with `v4 = |v5| v2(v5) + 7` capturing the
-    MIDDLE v2; interp I64(735), jit emits nothing. Reproduces 3/3
-    under check-one; the MODULE wrapper is load-bearing (the same
-    program as a plain block agrees in both modes) — module-level binds
-    fuse as separate per-bind regions, so the shadowed `v2`s become
-    distinct kernels and `v4`'s cross-kernel callee resolution for the
-    captured middle `v2` mis-resolves or never fires. Kin of the
-    audit-jul2026 01/02 fixes (callee registry re-keyed on kernel
-    identity) — suspect a residual name-keyed path for module-level
-    binds. Queue for a focused session.
+    MIDDLE v2; interp I64(735), jit emits nothing. RECLASSIFIED
+    (2026-07-04, post cache-substitute): NOT shadowing — the lambda
+    chain alone AGREEs in every reduction. The load-bearing piece is
+    the fold tail `array::fold([0,7,-1], v4(-100), |v8,v9| (v7/?v9)$)`:
+    slot 0's `/?0` error + `$` taints IN-LOOP, and the scaffold's
+    per-iteration emit_forced on the body result aborts the WHOLE
+    kernel — while the node-walk's chained per-slot instances recover
+    (the callback ignores acc, so later slots fire from the element
+    alone; final = slot 2's 735). Fix direction: the fold scaffold must
+    carry per-iteration taint through the acc disc instead of forcing
+    the body (the body's own propagate_flags already encodes what it
+    consumed — an acc-ignoring callback clears the taint naturally).
+    Note per-slot CACHING in loops genuinely needs per-slot state (the
+    claim refusal is sound — a shared word would alias slots), but this
+    finding needs only non-aborting taint flow, not caches.
 
 18. **Policy: accepted infinite-tail-recursion asymmetry recorded as
     divergence** (`corpus-fuzz/divergence_000037`): `f(0) => f(0)` tail

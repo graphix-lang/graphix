@@ -1149,7 +1149,14 @@ where
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    taint.fold(cx, new_acc.disc);
+    // STALE only — the body's TAINT rides the accumulator carry below,
+    // exactly like the init's (see `fold_stale`): a slot's bottomed body
+    // RECOVERS when a later callback never consumes the acc (the
+    // node-walk's chained per-slot instances fire from the element
+    // alone — soak finding corpus-generate/divergence_000021,
+    // 2026-07-04). Folding it here made slot taint STICKY and bottomed
+    // the recovered result.
+    taint.fold_stale(cx, new_acc.disc);
     cx.b.def_var(acc_var, new_acc.payload);
     let base = scalar_disc(cx.b, acc_prim);
     let t = cx.b.ins().band_imm(new_acc.disc, TAINT | STALE);
