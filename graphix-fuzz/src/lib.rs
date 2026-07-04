@@ -281,7 +281,31 @@ async fn drive(
                 biased;
                 r = &mut f => match r { $on_ok => $ok, $on_err => $err },
                 _ = &mut drain => unreachable!(),
-                _ = &mut deadline => return Outcome::Timeout,
+                _ = &mut deadline => {
+                    // A wedged evaluator may be ABORTABLE: runaway call
+                    // trees and scaffold loops poll the cooperative
+                    // interrupt. Set it and give a grace period — a
+                    // bottom-and-answer becomes a normal outcome
+                    // instead of a killed child slot.
+                    ctx.rt.interrupt();
+                    match tokio::time::timeout(
+                        Duration::from_millis(750),
+                        &mut f,
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            // Re-arm: a completed Sleep must not be
+                            // re-polled, and the remaining steps get a
+                            // fresh budget.
+                            deadline
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + timeout);
+                            match r { $on_ok => $ok, $on_err => $err }
+                        }
+                        Err(_) => return Outcome::Timeout,
+                    }
+                }
             }
         }};
     }

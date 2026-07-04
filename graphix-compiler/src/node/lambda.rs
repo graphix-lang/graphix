@@ -213,6 +213,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // type has no error branch to carry one — the same reasoning as
         // unchecked-arith overflow and div-by-zero (hot-path failures
         // log and bottom; see `Control::max_call_depth`).
+        //
+        // Cooperative interrupt first: exponential-BREADTH recursion is
+        // depth-bounded but time-unbounded (2^n calls each under the
+        // depth limit — the fib-mutant wedge class), and only loop
+        // backedges polled the flag. One atomic load per dispatch makes
+        // a runaway call TREE abortable (Eric approved 2026-07-04; the
+        // JIT twin lives in graphix_depth_push).
+        if ctx.control.interrupted() {
+            return None;
+        }
         if !ctx.control.depth_push() {
             let limit = ctx.control.max_call_depth();
             error!(

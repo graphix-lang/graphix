@@ -477,7 +477,14 @@ pub extern "C" fn graphix_depth_push() -> i8 {
         if p.is_null() {
             1
         } else {
+            // Cooperative interrupt: a runaway call TREE (exponential
+            // breadth under the depth limit) only polled at loop
+            // backedges — checking here makes native non-tail
+            // recursion abortable, twinning GXLambda::update's poll.
             // SAFETY: see `graphix_interrupted`.
+            if unsafe { (*p).interrupted() } {
+                return 0;
+            }
             let ok = unsafe { (*p).depth_push() };
             if !ok {
                 // Native code can't push an `RtDiagnostic` — flag the
