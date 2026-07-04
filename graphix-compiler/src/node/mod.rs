@@ -1021,6 +1021,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         Ok(())
     }
 
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
+        // Structural clone registered under the ORIGINAL driving
+        // `top_id` — the same wake-root fix as [`Sample`]'s override
+        // (the default recompile passed spec().id, waking a root
+        // nobody drives in a per-slot HOF clone). The deref'd source
+        // remaps through the table (a per-slot ref cell gets a fresh
+        // id); absent = a capture, kept as-is.
+        let src_id = remap.get(&self.src_id).copied().unwrap_or(self.src_id);
+        ctx.rt.ref_var(src_id, self.top_id);
+        Box::new(Self {
+            spec: self.spec.clone(),
+            rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope, remap)),
+            src_id,
+            target_id: None,
+            top_id: self.top_id,
+        })
+    }
+
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::ConnectDeref(self)
     }
