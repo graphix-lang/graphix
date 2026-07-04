@@ -234,7 +234,7 @@ known item 4; buckets reset per campaign run).
     cost on the hottest op). Needs a ruling — also note the stalled tail
     loop is itself an un-interruptible wedge shape (ties into item 4).
 
-15. **Nested try/catch over-fire** (divergence_000030.gx, fuzz campaign):
+15. **FIXED (2026-07-04) — phantom checked-op error delivered to catch** (was: nested try/catch over-fire) (divergence_000030.gx, fuzz campaign):
     nested `try try (a[MIN]? /? a[0]?)?; a[6]? catch(e) => select
     e.0.error {...  err1 <- e ...} catch(e) => err0 <- e; [err0, err1]`
     — interp emits NOTHING (both err vars never fire → the producer

@@ -1,0 +1,12 @@
+// bisect: phantom checked-op error delivered to a catch handler.
+// The kernel continues on #219 placeholders after a[BAD]? raises,
+// so the checked div computes 0/?0 and mints a REAL ArithError —
+// which the handler-ful ? then DELIVERED, firing the wrong catch
+// arm. FIXED 2026-07-04: delivers gate on is_err && !tainted.
+{
+  let a = [i64:0, i64:1];
+  let err0: i64 = never();
+  let err1: i64 = never();
+  try try (a[i64:-9223372036854775808]? /? a[i64:0]?)? catch(e) => select e.0.error {`ArithError(_) => err1 <- i64:111, _ => err0 <- i64:222} catch(e) => err0 <- i64:333;
+  [err0, err1]
+}

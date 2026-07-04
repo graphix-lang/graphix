@@ -5204,6 +5204,17 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // taint first — a tainted disc is not a structural Error).
     let clean = clean_disc(cx.b, disc);
     let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, 0x2000_0000_i64);
+    // A TAINTED error is a PHANTOM — computed from #219 placeholders
+    // after an upstream bottom (e.g. `(a[BAD]? /? y)?`: the index raise
+    // taints, the checked div then computes `0 /? 0` on placeholders
+    // and mints a REAL ArithError value). The node-walk never runs the
+    // div at all, so delivering it to a catch handler invents an error
+    // the program never raised (soak finding corpus-fuzz/
+    // divergence_000030: the wrong catch arm fired). Delivers below
+    // gate on `deliverable`; the abort/taint paths still treat it as
+    // no-value.
+    let untainted = is_untainted(cx.b, disc);
+    let deliverable = cx.b.ins().band(is_err, untainted);
     match kernel_abi::abi_kind(cx.registry(), &success_typ) {
         // Prim success — BRANCHLESS per-value taint. The payload word
         // holds the success bits when !is_err; on the error path the
@@ -5220,7 +5231,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             if let Some(site) = handler_site {
                 let deliver_block = cx.b.create_block();
                 let after = cx.b.create_block();
-                cx.b.ins().brif(is_err, deliver_block, &[], after, &[]);
+                cx.b.ins().brif(deliverable, deliver_block, &[], after, &[]);
                 cx.b.switch_to_block(deliver_block);
                 cx.b.seal_block(deliver_block);
                 let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
@@ -5278,7 +5289,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                 let deliver_block = cx.b.create_block();
                 let no_deliver = cx.b.create_block();
                 let merged = cx.b.create_block();
-                cx.b.ins().brif(is_err, deliver_block, &[], no_deliver, &[]);
+                cx.b.ins().brif(deliverable, deliver_block, &[], no_deliver, &[]);
                 cx.b.switch_to_block(deliver_block);
                 cx.b.seal_block(deliver_block);
                 emit_qop_deliver(cx, site, &cv, inner_owned)?;
@@ -5347,15 +5358,33 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
-            // Error path. Handler-ful `?`: deliver the error to the catch
-            // handler (consumes the owned error / clones a borrowed one),
-            // so it replaces the `value_drop`. Handler-less: drop the
-            // owned error before aborting — but ONLY when `inner` is an
-            // owned producer. A Borrowed (Ref) inner is owned by its env
-            // slot, which `emit_pending_cleanup` -> `drop_owned_composites`
-            // already drops; dropping it here too would double-free.
+            // Error path. Handler-ful `?`: deliver a REAL (untainted)
+            // error to the catch handler (consumes the owned error /
+            // clones a borrowed one), so it replaces the `value_drop`;
+            // a PHANTOM (tainted) error must not deliver — see
+            // `deliverable` above — but an owned one still drops.
+            // Handler-less: drop the owned error before aborting — but
+            // ONLY when `inner` is an owned producer. A Borrowed (Ref)
+            // inner is owned by its env slot, which
+            // `emit_pending_cleanup` -> `drop_owned_composites` already
+            // drops; dropping it here too would double-free.
             if let Some(site) = handler_site {
+                let deliver_block = cx.b.create_block();
+                let no_deliver = cx.b.create_block();
+                let merged = cx.b.create_block();
+                cx.b.ins().brif(deliverable, deliver_block, &[], no_deliver, &[]);
+                cx.b.switch_to_block(deliver_block);
+                cx.b.seal_block(deliver_block);
                 emit_qop_deliver(cx, site, &cv, inner_owned)?;
+                cx.b.ins().jump(merged, &[]);
+                cx.b.switch_to_block(no_deliver);
+                cx.b.seal_block(no_deliver);
+                if inner_owned {
+                    cx.b.ins().call(value_drop, &[clean, payload]);
+                }
+                cx.b.ins().jump(merged, &[]);
+                cx.b.switch_to_block(merged);
+                cx.b.seal_block(merged);
             } else if inner_owned {
                 cx.b.ins().call(value_drop, &[clean, payload]);
             }
