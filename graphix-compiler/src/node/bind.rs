@@ -471,7 +471,19 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
         if let Some(v) = self.child.update(ctx, event) {
-            ctx.set_var(self.id, v);
+            if event.init {
+                // Seed the cache WITHOUT queuing a delivery: `Deref`'s
+                // init fallback reads the cache THIS cycle, so the
+                // queued write would arrive next cycle as a duplicate —
+                // every deref (and anything downstream, e.g. an HOF
+                // slot's predicate) re-fired once with the same value
+                // (soak finding corpus-fuzz/divergence_000027; Eric's
+                // ruling 2026-07-04: the echo was the wart, the JIT's
+                // single delivery is correct).
+                ctx.cached.insert(self.id, v);
+            } else {
+                ctx.set_var(self.id, v);
+            }
         }
         if event.init { Some(Value::U64(self.id.inner())) } else { None }
     }
