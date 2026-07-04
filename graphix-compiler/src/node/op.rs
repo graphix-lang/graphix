@@ -476,12 +476,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         // runtime underflow. Output type = operand type.
         let negatable =
             Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal);
-        wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))?;
+        if self.n.typ().with_deref(|t| t.is_some()) {
+            wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))?;
+        } else if let Type::TVar(tv) = self.n.typ() {
+            // constrain, don't bind — the check re-runs at typecheck1
+            // once the cell settles (design/tvar_constraints.md phase B)
+            tv.add_cell_constraint(negatable);
+        }
         wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))
+        wrap!(self.n, self.n.typecheck1(ctx))?;
+        if let Type::TVar(tv) = self.n.typ() {
+            wrap!(self.n, tv.settle(&ctx.env))?;
+        }
+        let negatable =
+            Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal);
+        wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -683,89 +695,14 @@ macro_rules! arith_op {
                 let typ = Type::empty_tvar();
                 Ok(Box::new(Self { spec, typ, lhs, rhs }))
             }
-        }
 
-        impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
-            arith_emit_clif!($checked, $base);
-
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                event: &mut Event<E>,
-            ) -> Option<Value> {
-                let lhs_up = self.lhs.update(ctx, event);
-                let rhs_up = self.rhs.update(ctx, event);
-                let lhs = self.lhs.cached.as_ref()?;
-                let rhs = self.rhs.cached.as_ref()?;
-                if lhs_up || rhs_up {
-                    if !$checked {
-                        if let Some(v) = wrapping_int_arith(BinOp::$base, lhs, rhs)
-                        {
-                            return Some(v);
-                        }
-                    }
-                    let result = lhs.clone().$method(rhs.clone());
-                    if $checked {
-                        Some(wrap_arith_error(result))
-                    } else {
-                        match result {
-                            Value::Error(e) => {
-                                log::error!(
-                                    "arith error in {} at {} {e}",
-                                    self.spec.ori,
-                                    self.spec.pos
-                                );
-                                eprintln!(
-                                    "arith error in {} at {} {e}",
-                                    self.spec.ori, self.spec.pos
-                                );
-                                None
-                            }
-                            v => Some(v),
-                        }
-                    }
-                } else {
-                    None
-                }
-            }
-
-            fn spec(&self) -> &Expr {
-                &self.spec
-            }
-
-            fn typ(&self) -> &Type {
-                &self.typ
-            }
-
-            fn refs(&self, refs: &mut Refs) {
-                self.lhs.node.refs(refs);
-                self.rhs.node.refs(refs);
-            }
-
-            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.node.delete(ctx);
-                self.rhs.node.delete(ctx);
-            }
-
-            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.sleep(ctx);
-                self.rhs.sleep(ctx);
-            }
-
-            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
+            /// The `ut` result-typing table. Runs at typecheck0 when both
+            /// operand types are already known, otherwise deferred to
+            /// typecheck1 after the operand cells settle
+            /// (design/tvar_constraints.md phase B). Idempotent.
+            fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 let lhs = self.lhs.node.typ();
                 let rhs = self.rhs.node.typ();
-                match (lhs.with_deref(|t| t.cloned()), rhs.with_deref(|t| t.cloned())) {
-                    (None, None) | (Some(_), Some(_)) => (),
-                    (Some(t), None) => {
-                        let _ = rhs.contains(&ctx.env, &t);
-                    }
-                    (None, Some(t)) => {
-                        let _ = lhs.contains(&ctx.env, &t);
-                    }
-                }
                 // init types that aren't known by now to Number
                 let typ = Type::Primitive(Typ::number());
                 wrap!(self.lhs.node, typ.contains(&ctx.env, lhs))?;
@@ -830,10 +767,145 @@ macro_rules! arith_op {
                 wrap!(self, self.typ.check_contains(&ctx.env, &ut))?;
                 Ok(())
             }
+        }
+
+        impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
+            arith_emit_clif!($checked, $base);
+
+            fn update(
+                &mut self,
+                ctx: &mut ExecCtx<R, E>,
+                event: &mut Event<E>,
+            ) -> Option<Value> {
+                let lhs_up = self.lhs.update(ctx, event);
+                let rhs_up = self.rhs.update(ctx, event);
+                let lhs = self.lhs.cached.as_ref()?;
+                let rhs = self.rhs.cached.as_ref()?;
+                if lhs_up || rhs_up {
+                    if !$checked {
+                        if let Some(v) = wrapping_int_arith(BinOp::$base, lhs, rhs) {
+                            return Some(v);
+                        }
+                    }
+                    let result = lhs.clone().$method(rhs.clone());
+                    if $checked {
+                        Some(wrap_arith_error(result))
+                    } else {
+                        match result {
+                            Value::Error(e) => {
+                                log::error!(
+                                    "arith error in {} at {} {e}",
+                                    self.spec.ori,
+                                    self.spec.pos
+                                );
+                                eprintln!(
+                                    "arith error in {} at {} {e}",
+                                    self.spec.ori, self.spec.pos
+                                );
+                                None
+                            }
+                            v => Some(v),
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+
+            fn spec(&self) -> &Expr {
+                &self.spec
+            }
+
+            fn typ(&self) -> &Type {
+                &self.typ
+            }
+
+            fn refs(&self, refs: &mut Refs) {
+                self.lhs.node.refs(refs);
+                self.rhs.node.refs(refs);
+            }
+
+            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.node.delete(ctx);
+                self.rhs.node.delete(ctx);
+            }
+
+            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.sleep(ctx);
+                self.rhs.sleep(ctx);
+            }
+
+            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
+                wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
+                {
+                    let lhs = self.lhs.node.typ();
+                    let rhs = self.rhs.node.typ();
+                    match (lhs.with_deref(|t| t.cloned()), rhs.with_deref(|t| t.cloned()))
+                    {
+                        (None, None) | (Some(_), Some(_)) => (),
+                        (Some(t), None) => {
+                            let _ = rhs.contains(&ctx.env, &t);
+                        }
+                        (None, Some(t)) => {
+                            let _ = lhs.contains(&ctx.env, &t);
+                        }
+                    }
+                }
+                let lk = self.lhs.node.typ().with_deref(|t| t.is_some());
+                let rk = self.rhs.node.typ().with_deref(|t| t.is_some());
+                if lk && rk {
+                    return self.typecheck_tail(ctx);
+                }
+                // Constrain, don't bind (design/tvar_constraints.md
+                // phase B): an unbound operand cell records "arithmetic
+                // happened here" as a cell conjunct; the `ut` table runs
+                // at typecheck1 once the cells settle.
+                let num = Type::Primitive(Typ::number());
+                if !lk && let Type::TVar(tv) = self.lhs.node.typ() {
+                    tv.add_cell_constraint(num.clone());
+                }
+                if !rk && let Type::TVar(tv) = self.rhs.node.typ() {
+                    tv.add_cell_constraint(num.clone());
+                }
+                // Result: same-cell operands make arith type-preserving,
+                // so the result IS the operand cell (`|a| a + a` stays
+                // polymorphic). Distinct cells get a fresh
+                // number-constrained result cell that typecheck1's `ut`
+                // narrows.
+                let same_cell = match (self.lhs.node.typ(), self.rhs.node.typ()) {
+                    (Type::TVar(a), Type::TVar(b)) => a.same_cell(b),
+                    _ => false,
+                };
+                let rt = if same_cell {
+                    self.lhs.node.typ().clone()
+                } else {
+                    let rt = Type::empty_tvar();
+                    if let Type::TVar(tv) = &rt {
+                        tv.add_cell_constraint(num);
+                    }
+                    rt
+                };
+                let ut = if $checked {
+                    Type::Set(Arc::from_iter([rt, ARITH_ERR.clone()]))
+                } else {
+                    rt
+                };
+                wrap!(self, self.typ.check_contains(&ctx.env, &ut))
+            }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck1(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck1(ctx))
+                wrap!(self.rhs.node, self.rhs.node.typecheck1(ctx))?;
+                // Settle still-unbound operand cells to their
+                // conjunction, then run the deferred `ut`.
+                if let Type::TVar(tv) = self.lhs.node.typ() {
+                    wrap!(self.lhs.node, tv.settle(&ctx.env))?;
+                }
+                if let Type::TVar(tv) = self.rhs.node.typ() {
+                    wrap!(self.rhs.node, tv.settle(&ctx.env))?;
+                }
+                self.typecheck_tail(ctx)
             }
 
             fn view(&self) -> $crate::NodeView<'_, R, E> {

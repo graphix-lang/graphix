@@ -397,11 +397,13 @@ const KIR_LAZY_THREE_LEVEL: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: unannotated recursive lambdas
+// Fuses since tvar cell constraints (#20): the bare lambdas' operand
+// cells settle to their conjunction witness (i64 from the literals)
+// instead of binding wide, so the whole three-level chain JITs.
 run!(lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Higher-order function with a function-typed argument. Pre-DynCall
 // the kernel build for `combine` would fail because `f: fn(i64) ->

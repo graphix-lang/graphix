@@ -259,6 +259,80 @@ findings agree-or-both-reject; `gated_scalar_unannotated` +
 combined overnight soak (all three campaigns) that gates the whole
 week's work.
 
+## Phase B as built (2026-07-04) — refinements over the plan above
+
+Everything below is LANDED and gate-verified (workspace 1664+ green,
+FUSE audit zero drift, regress 56/56, the 3 fuzz-corpus typecheck
+findings now AGREE). Where it deviates from the sections above, this
+section wins.
+
+- **The conjunction, not `Option<Type>`:** the cell carries
+  `constraints: SmallVec<[Type; 1]>` — a CONJUNCTION every future
+  binding must satisfy. Alias-merge is INFALLIBLE (no Env at alias
+  sites); an unsatisfiable conjunction errors at SETTLE time instead,
+  via the witness rule: settle binds an unbound-constrained cell to the
+  narrowest conjunct every other conjunct contains
+  (`TVar::settle`, typ/contains.rs), and "no witness" is the
+  "unsatisfiable constraints on 'a: i64 & string" error.
+- **Instantiation preserves cell topology.** `reset_tvars` freshens
+  keyed by CELL IDENTITY (one fresh cell per source cell), not by name
+  — `|a| a + a` shares one cell between `'a` and the rtype and every
+  instance now does too. The FnType constraints list comes through the
+  same map, so list entries start out sharing their arg/rtype cells
+  (they previously froze a separate `empty_named` cell and ORPHANED —
+  the root of the first unsound-accept found while building this).
+- **Derived-vs-arg-reachable settle split (replaces the (ii)/(iii)
+  deliberation).** Ground truth discovered: per-site lambda BODIES are
+  recompiled and re-typechecked per call site (`setup_bind` →
+  `rf.typecheck0`, `resolve_static` drives `typecheck1`) but their
+  errors are SWALLOWED — fusion enablers, not acceptance gates. So
+  decision (ii)'s per-site `ut` verify has no unswallowed home, and a
+  freely-narrowable derived result cell would be UNSOUND
+  (`let r: f64 = f2(i64:1, i64:2)` accepted, body computes i64).
+  Resolution: at `CallSite::typecheck0`-end, constrained cells
+  reachable from the rtype/throws but NOT from any arg (derived
+  results) settle eagerly — before an annotation could narrow them;
+  arg-reachable cells stay open through typecheck0 (annotations narrow
+  them and the actual args enforce the narrowing — obs-3, rand). The
+  typecheck1 terminal settles whatever remains, walking the LIVE ftype
+  (never the stored list — orphan hazard). Because the settle witness
+  is the conjunction's narrowest member, a derived cell whose def-time
+  fact was `i64` settles to `i64`, not wide — `g(true) + g(false)`
+  stays precise and fuses.
+- **Arith/Neg constrain-don't-bind** as designed: unbound tvar operands
+  get a `Primitive(Typ::number())` conjunct (exactly the old step-2
+  bind set — no acceptance drift; the wide duration/datetime set stays
+  a known-operand CHECK only), same-cell operands alias the result to
+  the operand cell, distinct-cell deferred results get a fresh
+  number-constrained cell, and the `ut` table re-runs in typecheck1
+  after settling the operand cells (`typecheck_tail`).
+- **`constrain_known` seeds the cell from the def-time binding even for
+  explicitly-listed names** — the obs-4 fix: `'a: Number |x:'a| -> 'a
+  f64:0.` gets conjuncts `[Number, f64]`, so `f(i64:3)` now rejects AT
+  THE ARG with the constraint named. Unbound single-conjunct cells are
+  also pushed to the list for display/interfaces (multi-conjunct cells
+  stay unlisted — one type per list slot, and an approximation could
+  leak into interface matching).
+- **Deleted eager wide-binders:** the `CallSite::typecheck0` post-hoc
+  list loop and `GXLambda::typecheck0`'s per-instance list loop are
+  gone; bind sites (cell checks in contains) plus the two settle points
+  replace them.
+- **Known seams / follow-ups:**
+  - `rand_float_default` and `gated_scalar_unannotated` did NOT flip to
+    Jit yet. rand: default exprs (`= 0.0`) compile per-site inside
+    `try_static_resolve`, which runs AFTER the typecheck1 terminal
+    settle — the settle binds `'a := [Int, Float]` first. Fixing this
+    is an ordering question (settle after static resolution, or default
+    TYPES participating in typecheck0) — phase C territory. gated: the
+    never()-gate narrowing is the phase D item.
+  - Dynamically-dispatched calls (no static resolution) check only the
+    signature; a per-site body inconsistency there de-fuses/lazy-binds
+    rather than rejects — same class as the old per-site swallowing,
+    now confined to dynamic dispatch. The fuzzer's dyncall coverage
+    exercises it.
+  - Bonus coverage win: `lazy_three_level` (three-level bare-lambda
+    chain) flipped None → Jit.
+
 ## Expected simplification wins (verify, don't assume)
 
 Candidates for the "unexpected wins" Eric predicts: retiring

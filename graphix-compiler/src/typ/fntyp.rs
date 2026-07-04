@@ -468,19 +468,55 @@ impl FnType {
         self.collect_tvars(&mut known);
         let mut constraints = self.constraints.write();
         for (name, tv) in known.drain() {
-            if let Some(t) = tv.read().typ.read().typ.as_ref()
-                && t != &Type::Bottom
-                && t != &Type::Any
-            {
-                if !constraints.iter().any(|(tv, _)| tv.name == name) {
+            // clone the binding OUT of the cell guards before acting —
+            // add_cell_constraint write-locks the same cell (lock
+            // discipline, see CLAUDE.md emit contracts)
+            let bound = tv.read().typ.read().typ.clone();
+            let listed = constraints.iter().any(|(ltv, _)| ltv.name == name);
+            match bound {
+                Some(t) if t != Type::Bottom && t != Type::Any => {
                     t.bind_as(&Type::Any);
-                    constraints.push((tv.clone(), t.normalize()));
+                    let tc = t.normalize();
+                    // The def-time binding is a FACT every instance must
+                    // honor (observation #4): seed it as a cell conjunct
+                    // even when the name carries an explicit listed
+                    // constraint. The cell is the semantics — it
+                    // survives the def-time unbind and per-site
+                    // freshening, and argument unification checks it AT
+                    // THE BINDING ARG. The list entry remains the
+                    // display/interface artifact
+                    // (design/tvar_constraints.md phase B).
+                    tv.add_cell_constraint(tc.clone());
+                    if !listed {
+                        constraints.push((tv.clone(), tc));
+                    }
+                }
+                Some(_) | None => {
+                    // Constrained-unbound cells (arith's constrain-don't-
+                    // bind) surface in the signature list for display and
+                    // interface files. Multi-conjunct cells are left
+                    // unlisted — the list holds one type per var and an
+                    // approximation could leak into interface matching.
+                    if !listed {
+                        let cons = tv.cell_constraints();
+                        if let [tc] = &cons[..] {
+                            constraints.push((tv.clone(), tc.clone()));
+                        }
+                    }
                 }
             }
         }
     }
 
     pub fn reset_tvars(&self) -> Self {
+        self.reset_tvars_int(&mut LPooled::take())
+    }
+
+    /// One cell-identity freshening map across the whole signature —
+    /// see [`Type::reset_tvars_int`]. The constraints-list tvars come
+    /// through the same map, so a list entry starts out sharing its
+    /// arg/rtype cell instead of orphaning at birth.
+    pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Self {
         let FnType {
             args,
             vargs,
@@ -490,20 +526,26 @@ impl FnType {
             explicit_throws,
             lambda_ids,
         } = self;
-        let args = Arc::from_iter(
-            args.iter()
-                .map(|a| FnArgType { kind: a.kind.clone(), typ: a.typ.reset_tvars() }),
-        );
-        let vargs = vargs.as_ref().map(|t| t.reset_tvars());
-        let rtype = rtype.reset_tvars();
+        let args = Arc::from_iter(args.iter().map(|a| FnArgType {
+            kind: a.kind.clone(),
+            typ: a.typ.reset_tvars_int(known),
+        }));
+        let vargs = vargs.as_ref().map(|t| t.reset_tvars_int(known));
+        let rtype = rtype.reset_tvars_int(known);
         let constraints = Arc::new(RwLock::new(
             constraints
                 .read()
                 .iter()
-                .map(|(tv, tc)| (TVar::empty_named(tv.name.clone()), tc.reset_tvars()))
+                .map(|(tv, tc)| {
+                    let tv = match Type::TVar(tv.clone()).reset_tvars_int(known) {
+                        Type::TVar(tv) => tv,
+                        _ => unreachable!(),
+                    };
+                    (tv, tc.reset_tvars_int(known))
+                })
                 .collect(),
         ));
-        let throws = throws.reset_tvars();
+        let throws = throws.reset_tvars_int(known);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
         FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }

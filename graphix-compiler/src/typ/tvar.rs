@@ -24,17 +24,15 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
             false
         }
         Type::TVar(t) => {
-            Arc::as_ptr(&t.read().typ).addr() == addr
-                || {
-                    let cell = t.read().typ.clone();
-                    let cell = cell.read();
-                    let in_bind = match &cell.typ {
-                        None => false,
-                        Some(t) => would_cycle_inner(addr, t),
-                    };
-                    in_bind
-                        || cell.constraints.iter().any(|c| would_cycle_inner(addr, c))
-                }
+            Arc::as_ptr(&t.read().typ).addr() == addr || {
+                let cell = t.read().typ.clone();
+                let cell = cell.read();
+                let in_bind = match &cell.typ {
+                    None => false,
+                    Some(t) => would_cycle_inner(addr, t),
+                };
+                in_bind || cell.constraints.iter().any(|c| would_cycle_inner(addr, c))
+            }
         }
         Type::Abstract { id: _, params } => {
             params.iter().any(|t| would_cycle_inner(addr, t))
@@ -241,6 +239,17 @@ impl TVar {
         }))
     }
 
+    /// Add a conjunct to this var's CELL constraints (deduped).
+    pub fn add_cell_constraint(&self, c: Type) {
+        let cell = self.read().typ.clone();
+        cell.write().add_constraint(c);
+    }
+
+    /// The cell's constraint conjunction (cloned out).
+    pub fn cell_constraints(&self) -> smallvec::SmallVec<[Type; 1]> {
+        self.read().typ.read().constraints.clone()
+    }
+
     pub fn read<'a>(&'a self) -> RwLockReadGuard<'a, TVarInnerInner> {
         self.typ.read()
     }
@@ -322,6 +331,16 @@ impl TVar {
 
     pub(super) fn inner_addr(&self) -> usize {
         Arc::as_ptr(&self.read().typ).addr()
+    }
+
+    /// True iff both vars share one binding cell (aliases of each other).
+    pub fn same_cell(&self, other: &Self) -> bool {
+        self.inner_addr() == other.inner_addr()
+    }
+
+    /// Identity of the shared binding cell, for set membership tests.
+    pub(crate) fn cell_addr(&self) -> usize {
+        self.inner_addr()
     }
 }
 
@@ -584,6 +603,16 @@ impl Type {
     /// return a copy of self with all type variables unbound and
     /// unaliased. self will not be modified
     pub fn reset_tvars(&self) -> Type {
+        use poolshark::local::LPooled;
+        self.reset_tvars_int(&mut LPooled::take())
+    }
+
+    /// The freshening map is keyed by CELL identity, not name, so an
+    /// instance preserves the source's alias topology — `|a| a + a`
+    /// shares one cell between `'a` and the rtype, and every instance
+    /// must too (or a narrowing through one leaf silently stops
+    /// reaching the others).
+    pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Type {
         match self {
             Type::Bottom => Type::Bottom,
             Type::Any => Type::Any,
@@ -591,33 +620,50 @@ impl Type {
             Type::Ref(TypeRef { scope, name, params, .. }) => Type::Ref(TypeRef {
                 scope: scope.clone(),
                 name: name.clone(),
-                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars())),
+                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars_int(known))),
                 ..Default::default()
             }),
-            Type::Error(t0) => Type::Error(Arc::new(t0.reset_tvars())),
-            Type::Array(t0) => Type::Array(Arc::new(t0.reset_tvars())),
+            Type::Error(t0) => Type::Error(Arc::new(t0.reset_tvars_int(known))),
+            Type::Array(t0) => Type::Array(Arc::new(t0.reset_tvars_int(known))),
             Type::Map { key, value } => {
-                let key = Arc::new(key.reset_tvars());
-                let value = Arc::new(value.reset_tvars());
+                let key = Arc::new(key.reset_tvars_int(known));
+                let value = Arc::new(value.reset_tvars_int(known));
                 Type::Map { key, value }
             }
-            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.reset_tvars())),
+            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.reset_tvars_int(known))),
             Type::Tuple(ts) => {
-                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.reset_tvars())))
+                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.reset_tvars_int(known))))
             }
             Type::Struct(ts) => Type::Struct(Arc::from_iter(
-                ts.iter().map(|(n, t)| (n.clone(), t.reset_tvars())),
+                ts.iter().map(|(n, t)| (n.clone(), t.reset_tvars_int(known))),
             )),
             Type::Variant(tag, ts) => Type::Variant(
                 tag.clone(),
-                Arc::from_iter(ts.iter().map(|t| t.reset_tvars())),
+                Arc::from_iter(ts.iter().map(|t| t.reset_tvars_int(known))),
             ),
-            Type::TVar(tv) => Type::TVar(TVar::empty_named(tv.name.clone())),
-            Type::Set(s) => Type::Set(Arc::from_iter(s.iter().map(|t| t.reset_tvars()))),
-            Type::Fn(fntyp) => Type::Fn(Arc::new(fntyp.reset_tvars())),
+            Type::TVar(tv) => {
+                // The fresh cell CARRIES the source's constraint
+                // conjunction — instantiation freshens the binding
+                // slot, never the obligations.
+                let addr = tv.cell_addr();
+                if let Some(fresh) = known.get(&addr) {
+                    return Type::TVar(fresh.clone());
+                }
+                let fresh = TVar::empty_named(tv.name.clone());
+                known.insert(addr, fresh.clone());
+                for c in tv.cell_constraints() {
+                    let c = c.reset_tvars_int(known);
+                    fresh.add_cell_constraint(c);
+                }
+                Type::TVar(fresh)
+            }
+            Type::Set(s) => {
+                Type::Set(Arc::from_iter(s.iter().map(|t| t.reset_tvars_int(known))))
+            }
+            Type::Fn(fntyp) => Type::Fn(Arc::new(fntyp.reset_tvars_int(known))),
             Type::Abstract { id, params } => Type::Abstract {
                 id: *id,
-                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars())),
+                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars_int(known))),
             },
         }
     }

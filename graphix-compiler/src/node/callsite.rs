@@ -6,7 +6,7 @@ use crate::{
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
     node::lambda::LambdaDef,
-    typ::{FnArgKind, FnType, Type},
+    typ::{FnArgKind, FnType, TVar, Type},
     wrap,
 };
 use ahash::{AHashMap, AHashSet};
@@ -1027,8 +1027,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        for (tv, tc) in ftype.constraints.read().iter() {
-            wrap!(self, tc.check_contains(&ctx.env, &Type::TVar(tv.clone())))?;
+        // Settle DERIVED result cells (design/tvar_constraints.md phase
+        // B): a constrained cell reachable from the rtype/throws but not
+        // from any arg is produced by the callee's body — narrowing it
+        // from the outside can't be checked against anything, so it
+        // settles to its constraint's witness HERE, before an annotation
+        // could narrow it unsoundly. This is the sound remnant of the
+        // old eager post-hoc constraint loop. Arg-reachable cells stay
+        // open: annotations may narrow them and the args themselves
+        // enforce the narrowing (observations #3/#4).
+        {
+            let mut arg_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            for a in ftype.args.iter() {
+                a.typ.collect_tvars(&mut arg_tvs);
+            }
+            if let Some(t) = &ftype.vargs {
+                t.collect_tvars(&mut arg_tvs);
+            }
+            let arg_cells: LPooled<AHashSet<usize>> =
+                arg_tvs.drain().map(|(_, tv)| tv.cell_addr()).collect();
+            let mut rt_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            ftype.rtype.collect_tvars(&mut rt_tvs);
+            ftype.throws.collect_tvars(&mut rt_tvs);
+            for (_, tv) in rt_tvs.drain() {
+                if !arg_cells.contains(&tv.cell_addr()) {
+                    wrap!(self, tv.settle(&ctx.env))?;
+                }
+            }
         }
         if let Some(t) = ftype.throws.with_deref(|t| t.cloned()) {
             match ctx.env.lookup_catch(&self.scope.dynamic) {
@@ -1093,6 +1118,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             Some(ftype) => ftype.clone(),
             None => return Ok(()),
         };
+        // Terminal settle for still-unbound constrained cells: bind each
+        // to its conjunction's witness. Deferred from typecheck0 (where
+        // the old eager version WAS the wide-binder of observations
+        // #3/#4) so annotations and settled inference get the whole
+        // typecheck0 phase to narrow the cells first. Walks the LIVE
+        // ftype structure, never the stored constraints list — a list
+        // tvar orphans when unification re-points its arg's cell.
+        {
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            ftype.collect_tvars(&mut tvs);
+            for (_, tv) in tvs.drain() {
+                wrap!(self, tv.settle(&ctx.env))?;
+            }
+        }
         let resolved = ftype.resolve_tvars();
         let spec = self.spec.clone();
         // The callee's own identities, against the whole resolved type.

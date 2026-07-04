@@ -295,9 +295,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
         wrap!(self.body, self.body.typecheck0(ctx))?;
         wrap!(self.body, self.typ.rtype.check_contains(&ctx.env, &self.body.typ()))?;
-        for (tv, tc) in self.typ.constraints.read().iter() {
-            tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
-        }
         Ok(())
     }
 
@@ -695,6 +692,15 @@ impl Lambda {
             })
         };
         typ.alias_tvars(&mut LPooled::take());
+        // Seed the CELL constraints — the explicit `'a: T |…|` form is
+        // sugar for a constrained cell; `FnType.constraints` remains as
+        // the display/interface artifact (design/tvar_constraints.md
+        // phase B). Seeding AFTER alias_tvars puts the conjunct in the
+        // one shared cell every same-named leaf now points at.
+        let constraints = typ.constraints.read().clone();
+        for (tv, tc) in constraints.iter() {
+            tv.add_cell_constraint(tc.clone());
+        }
         typ.lambda_ids.set_id(id);
         let _typ = typ.clone();
         let _argspec = argspec.clone();

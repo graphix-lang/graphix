@@ -38,6 +38,53 @@ fn cell_constraints_ok(
     Ok(true)
 }
 
+impl crate::typ::TVar {
+    /// Bind a constrained-unbound cell to its conjunction's witness —
+    /// the narrowest conjunct every other conjunct contains. Bound and
+    /// unconstrained cells are left untouched. No witness means the
+    /// conjunction is unsatisfiable: a type error naming the conjuncts.
+    pub fn settle(&self, env: &Env) -> Result<()> {
+        let cons = {
+            let tv = self.read();
+            let cell = tv.typ.read();
+            if cell.typ.is_some() || cell.constraints.is_empty() {
+                return Ok(());
+            }
+            cell.constraints.clone()
+        };
+        let mut hist = RefHist::new(LPooled::take());
+        let mut witness = None;
+        'cand: for c in cons.iter() {
+            for o in cons.iter() {
+                if !o.contains_int(BitFlags::empty(), env, &mut hist, c)? {
+                    continue 'cand;
+                }
+            }
+            witness = Some(c.clone());
+            break;
+        }
+        match witness {
+            Some(w) => {
+                self.read().typ.write().typ = Some(w);
+                Ok(())
+            }
+            None => {
+                format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                    let mut cs: LPooled<String> = LPooled::take();
+                    for (i, c) in cons.iter().enumerate() {
+                        use std::fmt::Write;
+                        if i > 0 {
+                            cs.push_str(" & ");
+                        }
+                        write!(cs, "{c}")?;
+                    }
+                    bail!("unsatisfiable constraints on '{}: {}", self.name, &*cs)
+                })
+            }
+        }
+    }
+}
+
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
         if self.contains(env, t)? {
