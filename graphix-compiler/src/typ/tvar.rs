@@ -130,7 +130,7 @@ impl fmt::Display for TVar {
                 Some(t) => write!(f, "{t}"),
                 None if cell.constraints.is_empty() => write!(f, "unbound"),
                 None => {
-                    write!(f, "unbound: ")?;
+                    write!(f, "unbound within ")?;
                     for (i, c) in cell.constraints.iter().enumerate() {
                         if i > 0 {
                             write!(f, " & ")?

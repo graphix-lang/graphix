@@ -339,6 +339,57 @@ section wins.
   - Bonus coverage win: `lazy_three_level` (three-level bare-lambda
     chain) flipped None → Jit.
 
+## Phase D evaluations (2026-07-04) — what stays, what needs Eric
+
+Per the plan's rule ("each retirement gets its own commit with the
+reasoning, or a note in this doc for why it must stay"):
+
+- **`any_as_tvar` STAYS.** The view exists because `Any` pattern leaves
+  serve FOUR consumers (unification / exhaustiveness / dead-arm /
+  runtime dispatch) and only the unification wants tvar behavior.
+  Constrained cells don't change that split: replacing `Any` leaves
+  with unconstrained cells at pattern CONSTRUCTION would re-break the
+  other three consumers (the catch4/lazy_no_annotations regression
+  from the first fix attempt). One mechanism would require re-deriving
+  all four consumers off cells — phase-D-scale work with no observed
+  bug behind it. Keep the view.
+- **`gated_scalar_unannotated` (the never()-gate) — NEEDS A RULING.**
+  The gate arm `0 => never()` contributes a bare unbound tvar to the
+  select's union; nothing downstream narrows it, so the union never
+  freezes. Two candidate designs:
+  (a) **Type `never()` (and kin) as `Bottom`** — the honest type of a
+      value that never arrives; unions collapse (`⊥ ∪ i64 = i64`), the
+      gate types as plain `i64`, and every consumer/freeze is exact.
+      Language-level change: anything special-casing Bottom (throws
+      inference uses it as "doesn't throw") needs an audit, and
+      `fn() -> ⊥` becomes a user-visible signature.
+  (b) **Never-arm defers to siblings** at select typecheck (bind the
+      arm's bare tvar to the union of the other arms). Sound for
+      never(), but structurally indistinguishable from a PARAM tvar in
+      arm position — `|a| select x { 0 => a, _ => 1 }` would tighten
+      `a := i64` and reject today-accepted mixed calls. Would need a
+      reliable "fresh, reachable-from-nowhere" test.
+  (a) is the principled one; both are Eric's call. The fixture stays
+  pinned ASPIRE-None either way.
+- **typedef/abstract param constraints STAY SEPARATE** for now: they
+  check at REF LOOKUP (expansion time) with their own `Option<Type>`
+  representation, a different lifecycle from cell conjuncts (which
+  check at BIND time). Unifying them means ref expansion instantiating
+  cells — worth doing when a bug or a feature needs it, not
+  speculatively.
+- **frozen × constraint:** `frozen` only gates ALIASING (a frozen var
+  won't re-point); it does not block binds and `settle` ignores it.
+  The planned "freeze binds iff single register class" applies to the
+  ABI freeze (`freeze_for_abi`), which already refuses multi-class
+  cells — no change needed at the typ layer.
+- **Pack:** constraints round-trip since phase A (serialize.rs encodes
+  (name, binding, constraints)).
+- **Display polish DONE:** a constrained-unbound cell prints
+  `'a: unbound within Number & f64` under DerefTVars.
+- **`reset_tvars` → `instantiate` rename:** deferred until the phase C
+  protocol work settles (the semantics already changed — cell-identity
+  keyed, constraint-carrying; the name is the last artifact).
+
 ## Expected simplification wins (verify, don't assume)
 
 Candidates for the "unexpected wins" Eric predicts: retiring
