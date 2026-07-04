@@ -121,7 +121,7 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
             Type::TVar(tv) => {
                 let mut tv = tv.write();
                 tv.frozen = true;
-                *tv.typ.write() = Some(Type::Bottom)
+                tv.typ.write().typ = Some(Type::Bottom)
             }
             _ => unreachable!(),
         }
@@ -373,11 +373,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             match &bind.typ {
                 Type::TVar(tv) => {
                     let tv = tv.read();
-                    let mut typ = tv.typ.write();
-                    match &mut *typ {
-                        None => *typ = Some(etyp.clone()),
-                        Some(t) => *typ = Some(t.union(&ctx.env, &etyp)?),
-                    }
+                    let mut cell = tv.typ.write();
+                    cell.typ = match &cell.typ {
+                        None => Some(etyp.clone()),
+                        Some(t) => Some(t.union(&ctx.env, &etyp)?),
+                    };
                 }
                 _ => unreachable!(),
             }

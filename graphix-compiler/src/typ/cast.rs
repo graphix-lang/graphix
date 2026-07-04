@@ -36,7 +36,7 @@ impl Type {
             Type::Set(s) | Type::Abstract { id: _, params: s } => Ok(for t in s.iter() {
                 t.check_cast_int(env, hist)?
             }),
-            Type::TVar(tv) => match &*tv.read().typ.read() {
+            Type::TVar(tv) => match &tv.read().typ.read().typ {
                 Some(t) => t.check_cast_int(env, hist),
                 None => bail!("can't cast a value to a free type variable"),
             },
@@ -256,7 +256,7 @@ impl Type {
                 .iter()
                 .find_map(|t| t.cast_value_int(env, hist, v.clone()).ok())
                 .ok_or_else(|| anyhow!("can't cast {v} to {self}")),
-            Type::TVar(tv) => match &*tv.read().typ.read() {
+            Type::TVar(tv) => match &tv.read().typ.read().typ {
                 Some(t) => t.cast_value_int(env, hist, v.clone()),
                 None => Ok(v),
             },
@@ -354,7 +354,7 @@ impl Type {
                 }
                 _ => false,
             },
-            Type::TVar(tv) => match &*tv.read().typ.read() {
+            Type::TVar(tv) => match &tv.read().typ.read().typ {
                 None => true,
                 Some(t) => t.is_a_int(env, hist, flags, v),
             },

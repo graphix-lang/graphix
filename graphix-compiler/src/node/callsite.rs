@@ -1037,8 +1037,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         && let Type::TVar(tv) = &bind.typ
                     {
                         let tv = tv.read();
-                        let mut ty = tv.typ.write();
-                        *ty = match &*ty {
+                        let mut cell = tv.typ.write();
+                        cell.typ = match &cell.typ {
                             None => Some(t),
                             Some(inner) => Some(inner.union(&ctx.env, &t)?),
                         };

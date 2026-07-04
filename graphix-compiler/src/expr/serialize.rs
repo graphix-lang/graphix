@@ -128,25 +128,43 @@ impl Pack for Expr {
 
 impl Pack for TVar {
     fn encoded_len(&self) -> usize {
-        let bound: Option<Type> = self.read().typ.read().clone();
-        self.name.encoded_len() + bound.encoded_len()
+        let (bound, constraints): (Option<Type>, Vec<Type>) = {
+            let cell = self.read().typ.clone();
+            let cell = cell.read();
+            (cell.typ.clone(), cell.constraints.to_vec())
+        };
+        self.name.encoded_len() + bound.encoded_len() + constraints.encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         self.name.encode(buf)?;
-        let bound: Option<Type> = self.read().typ.read().clone();
-        bound.encode(buf)
+        let (bound, constraints): (Option<Type>, Vec<Type>) = {
+            let cell = self.read().typ.clone();
+            let cell = cell.read();
+            (cell.typ.clone(), cell.constraints.to_vec())
+        };
+        bound.encode(buf)?;
+        constraints.encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let name = <ArcStr as Pack>::decode(buf)?;
         let bound = <Option<Type> as Pack>::decode(buf)?;
+        let constraints = <Vec<Type> as Pack>::decode(buf)?;
         // Fresh `TVarId` either way (id is identity-only; the typechecker
         // re-aliases same-named tvars within a scope, so a fresh id is sound).
-        Ok(match bound {
+        let tv = match bound {
             Some(t) => TVar::named(name, t),
             None => TVar::empty_named(name),
-        })
+        };
+        {
+            let cell = tv.read().typ.clone();
+            let mut cell = cell.write();
+            for c in constraints {
+                cell.add_constraint(c);
+            }
+        }
+        Ok(tv)
     }
 }
 

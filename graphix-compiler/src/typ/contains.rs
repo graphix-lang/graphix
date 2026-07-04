@@ -20,6 +20,24 @@ pub enum ContainsFlags {
     InitTVars,
 }
 
+/// True iff binding `t` into the cell would satisfy EVERY conjunct of
+/// the cell's constraint list. Probe flags: the check itself must not
+/// bind or alias anything.
+fn cell_constraints_ok(
+    tv: &crate::typ::TVar,
+    env: &Env,
+    hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+    t: &Type,
+) -> Result<bool> {
+    let cons = tv.read().typ.read().constraints.clone();
+    for c in cons.iter() {
+        if !c.contains_int(BitFlags::empty(), env, hist, t)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
         if self.contains(env, t)? {
@@ -69,20 +87,20 @@ impl Type {
                 }
             }
             (Self::TVar(t0), Self::Bottom) => {
-                if let Some(_) = &*t0.read().typ.read() {
+                if let Some(_) = &t0.read().typ.read().typ {
                     return Ok(true);
                 }
                 if flags.contains(ContainsFlags::InitTVars) {
-                    *t0.read().typ.write() = Some(Self::Bottom);
+                    t0.read().typ.write().typ = Some(Self::Bottom);
                 }
                 Ok(true)
             }
             (Self::Bottom, Self::TVar(t0)) => {
-                if let Some(Type::Bottom) = &*t0.read().typ.read() {
+                if let Some(Type::Bottom) = &t0.read().typ.read().typ {
                     return Ok(true);
                 }
                 if flags.contains(ContainsFlags::InitTVars) {
-                    *t0.read().typ.write() = Some(Self::Bottom);
+                    t0.read().typ.write().typ = Some(Self::Bottom);
                 }
                 Ok(true)
             }
@@ -90,11 +108,14 @@ impl Type {
             (Self::Bottom, _) => Ok(false),
             (_, Self::Bottom) => Ok(true),
             (Self::TVar(t0), Self::Any) => {
-                if let Some(t0) = &*t0.read().typ.read() {
+                if let Some(t0) = &t0.read().typ.read().typ {
                     return t0.contains_int(flags, env, hist, t);
                 }
+                if !cell_constraints_ok(t0, env, hist, &Self::Any)? {
+                    return Ok(false);
+                }
                 if flags.contains(ContainsFlags::InitTVars) {
-                    *t0.read().typ.write() = Some(Self::Any);
+                    t0.read().typ.write().typ = Some(Self::Any);
                 }
                 Ok(true)
             }
@@ -186,7 +207,7 @@ impl Type {
                 if t0.would_cycle(tt1) || t1.would_cycle(tt0) {
                     return Ok(true);
                 }
-                let act = {
+                let (act, bound) = {
                     let t0 = t0.read();
                     let t1 = t1.read();
                     let addr0 = Arc::as_ptr(&t0.typ).addr();
@@ -199,7 +220,7 @@ impl Type {
                     }
                     let t0i = t0.typ.read();
                     let t1i = t1.typ.read();
-                    match (&*t0i, &*t1i) {
+                    match (&t0i.typ, &t1i.typ) {
                         (Some(t0), Some(t1)) => {
                             return t0.contains_int(flags, env, hist, &*t1);
                         }
@@ -207,14 +228,25 @@ impl Type {
                             if t0.frozen && t1.frozen {
                                 return Ok(true);
                             }
-                            if t0.frozen { Act::RightAlias } else { Act::LeftAlias }
+                            if t0.frozen {
+                                (Act::RightAlias, None)
+                            } else {
+                                (Act::LeftAlias, None)
+                            }
                         }
-                        (Some(_), None) => Act::RightCopy,
-                        (None, Some(_)) => Act::LeftCopy,
+                        (Some(b), None) => (Act::RightCopy, Some(b.clone())),
+                        (None, Some(b)) => (Act::LeftCopy, Some(b.clone())),
                     }
                 };
+                // A copy binds the RECEIVING cell to the source's
+                // binding — the receiver's constraints must admit it
+                // (checked lock-free on the cloned-out binding).
                 match act {
                     Act::RightCopy if flags.contains(ContainsFlags::InitTVars) => {
+                        let b = bound.as_ref().expect("copy without binding");
+                        if !cell_constraints_ok(t1, env, hist, b)? {
+                            return Ok(false);
+                        }
                         t1.copy(t0)
                     }
                     Act::RightAlias if flags.contains(ContainsFlags::AliasTVars) => {
@@ -224,6 +256,10 @@ impl Type {
                         t0.alias(t1)
                     }
                     Act::LeftCopy if flags.contains(ContainsFlags::InitTVars) => {
+                        let b = bound.as_ref().expect("copy without binding");
+                        if !cell_constraints_ok(t0, env, hist, b)? {
+                            return Ok(false);
+                        }
                         t0.copy(t1)
                     }
                     Act::RightCopy | Act::RightAlias | Act::LeftAlias | Act::LeftCopy => {
@@ -233,20 +269,30 @@ impl Type {
                 Ok(true)
             }
             (Self::TVar(t0), t1) if !t0.would_cycle(t1) => {
-                if let Some(t0) = &*t0.read().typ.read() {
+                if let Some(t0) = &t0.read().typ.read().typ {
                     return t0.contains_int(flags, env, hist, t1);
                 }
+                // The cell's constraints must admit the binding — a
+                // violation fails the unification HERE, at the site
+                // that tried it, instead of baking a wide binding that
+                // collides somewhere downstream.
+                if !cell_constraints_ok(t0, env, hist, t1)? {
+                    return Ok(false);
+                }
                 if flags.contains(ContainsFlags::InitTVars) {
-                    *t0.read().typ.write() = Some(t1.clone());
+                    t0.read().typ.write().typ = Some(t1.clone());
                 }
                 Ok(true)
             }
             (t0, Self::TVar(t1)) if !t1.would_cycle(t0) => {
-                if let Some(t1) = &*t1.read().typ.read() {
+                if let Some(t1) = &t1.read().typ.read().typ {
                     return t0.contains_int(flags, env, hist, t1);
                 }
+                if !cell_constraints_ok(t1, env, hist, t0)? {
+                    return Ok(false);
+                }
                 if flags.contains(ContainsFlags::InitTVars) {
-                    *t1.read().typ.write() = Some(t0.clone());
+                    t1.read().typ.write().typ = Some(t0.clone());
                 }
                 Ok(true)
             }

@@ -468,7 +468,7 @@ impl FnType {
         self.collect_tvars(&mut known);
         let mut constraints = self.constraints.write();
         for (name, tv) in known.drain() {
-            if let Some(t) = tv.read().typ.read().as_ref()
+            if let Some(t) = tv.read().typ.read().typ.as_ref()
                 && t != &Type::Bottom
                 && t != &Type::Any
             {
@@ -602,7 +602,7 @@ impl FnType {
             || constraints
                 .read()
                 .iter()
-                .any(|(tv, tc)| tv.read().typ.read().is_none() || tc.has_unbound())
+                .any(|(tv, tc)| tv.read().typ.read().typ.is_none() || tc.has_unbound())
             || throws.has_unbound()
     }
 
@@ -626,8 +626,8 @@ impl FnType {
         for (tv, tc) in constraints.read().iter() {
             let tv = tv.read();
             let mut tv = tv.typ.write();
-            if tv.is_none() {
-                *tv = Some(t.clone())
+            if tv.typ.is_none() {
+                tv.typ = Some(t.clone())
             }
             tc.bind_as(t)
         }
@@ -1062,9 +1062,9 @@ impl fmt::Display for FnType {
         }
         match &self.throws {
             Type::Bottom => Ok(()),
-            Type::TVar(tv) if *tv.read().typ.read() == Some(Type::Bottom) => Ok(()),
+            Type::TVar(tv) if tv.read().typ.read().typ == Some(Type::Bottom) => Ok(()),
             Type::TVar(tv)
-                if tv.name.starts_with('_') && tv.read().typ.read().is_none() =>
+                if tv.name.starts_with('_') && tv.read().typ.read().typ.is_none() =>
             {
                 Ok(())
             }
@@ -1144,14 +1144,14 @@ impl PrettyDisplay for FnType {
         match &self.throws {
             Type::Bottom if !self.explicit_throws => Ok(()),
             Type::TVar(tv)
-                if *tv.read().typ.read() == Some(Type::Bottom)
+                if tv.read().typ.read().typ == Some(Type::Bottom)
                     && !self.explicit_throws =>
             {
                 Ok(())
             }
             Type::TVar(tv)
                 if tv.name.starts_with('_')
-                    && tv.read().typ.read().is_none()
+                    && tv.read().typ.read().typ.is_none()
                     && !self.explicit_throws =>
             {
                 Ok(())

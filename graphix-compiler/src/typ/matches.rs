@@ -105,11 +105,11 @@ impl Type {
                 }
                 Ok(false)
             }
-            (Type::TVar(t0), t1) => match &*t0.read().typ.read() {
+            (Type::TVar(t0), t1) => match &t0.read().typ.read().typ {
                 Some(t0) => t0.could_match_int(env, hist, t1),
                 None => Ok(true),
             },
-            (t0, Type::TVar(t1)) => match &*t1.read().typ.read() {
+            (t0, Type::TVar(t1)) => match &t1.read().typ.read().typ {
                 Some(t1) => t0.could_match_int(env, hist, t1),
                 None => Ok(true),
             },

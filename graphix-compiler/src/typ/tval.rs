@@ -104,7 +104,7 @@ impl<'a> TVal<'a> {
                 write!(f, ")")
             }
             (Type::Tuple(_), v) => write!(f, "{}", NakedValue(v)),
-            (Type::TVar(tv), v) => match &*tv.read().typ.read() {
+            (Type::TVar(tv), v) => match &tv.read().typ.read().typ {
                 None => write!(f, "{}", NakedValue(v)),
                 Some(typ) => TVal { env: self.env, typ, v }.fmt_int(f, hist),
             },

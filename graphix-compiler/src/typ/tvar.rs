@@ -25,9 +25,15 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
         }
         Type::TVar(t) => {
             Arc::as_ptr(&t.read().typ).addr() == addr
-                || match &*t.read().typ.read() {
-                    None => false,
-                    Some(t) => would_cycle_inner(addr, t),
+                || {
+                    let cell = t.read().typ.clone();
+                    let cell = cell.read();
+                    let in_bind = match &cell.typ {
+                        None => false,
+                        Some(t) => would_cycle_inner(addr, t),
+                    };
+                    in_bind
+                        || cell.constraints.iter().any(|c| would_cycle_inner(addr, c))
                 }
         }
         Type::Abstract { id: _, params } => {
@@ -68,11 +74,41 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
     }
 }
 
+/// The SHARED binding cell: aliased `TVar`s hold one `Arc` of this, so
+/// the constraint travels with the binding — every alias sees, and
+/// alias-time merging writes into, the same cell.
+///
+/// `constraints` is a CONJUNCTION: everything this cell is ever bound
+/// to must be contained by EVERY member (empty = unconstrained).
+/// Conjunction rather than a single intersected type keeps alias-time
+/// merging infallible (list concatenation, no `Env` needed to resolve
+/// Refs); each bind site checks the conjuncts where an `Env` exists,
+/// so a genuinely unsatisfiable merge errors at the first bind with
+/// the violated constraint named.
+#[derive(Debug, Default)]
+pub struct TCell {
+    pub(crate) typ: Option<Type>,
+    pub(crate) constraints: smallvec::SmallVec<[Type; 1]>,
+}
+
+impl TCell {
+    fn bound(typ: Type) -> Self {
+        TCell { typ: Some(typ), constraints: smallvec::SmallVec::new() }
+    }
+
+    /// Add `c` to the conjunction unless an equal member is present.
+    pub(crate) fn add_constraint(&mut self, c: Type) {
+        if !self.constraints.iter().any(|e| e == &c) {
+            self.constraints.push(c)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TVarInnerInner {
     pub(crate) id: TVarId,
     pub(crate) frozen: bool,
-    pub(crate) typ: Arc<RwLock<Option<Type>>>,
+    pub(crate) typ: Arc<RwLock<TCell>>,
 }
 
 #[derive(Debug)]
@@ -90,9 +126,21 @@ impl fmt::Display for TVar {
             write!(f, "'{}", self.name)
         } else {
             write!(f, "'{}: ", self.name)?;
-            match &*self.read().typ.read() {
+            let cell = self.read().typ.clone();
+            let cell = cell.read();
+            match &cell.typ {
                 Some(t) => write!(f, "{t}"),
-                None => write!(f, "unbound"),
+                None if cell.constraints.is_empty() => write!(f, "unbound"),
+                None => {
+                    write!(f, "unbound: ")?;
+                    for (i, c) in cell.constraints.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " & ")?
+                        }
+                        write!(f, "{c}")?
+                    }
+                    Ok(())
+                }
             }
         }
     }
@@ -119,7 +167,7 @@ impl PartialEq for TVar {
         Arc::ptr_eq(&t0.typ, &t1.typ) || {
             let t0 = t0.typ.read();
             let t1 = t1.typ.read();
-            *t0 == *t1
+            t0.typ == t1.typ
         }
     }
 }
@@ -135,7 +183,7 @@ impl PartialOrd for TVar {
         } else {
             let t0 = t0.typ.read();
             let t1 = t1.typ.read();
-            t0.partial_cmp(&*t1)
+            t0.typ.partial_cmp(&t1.typ)
         }
     }
 }
@@ -149,7 +197,7 @@ impl Ord for TVar {
         } else {
             let t0 = t0.typ.read();
             let t1 = t1.typ.read();
-            t0.cmp(&*t1)
+            t0.typ.cmp(&t1.typ)
         }
     }
 }
@@ -159,7 +207,7 @@ impl std::hash::Hash for TVar {
         // Mirror PartialEq: hash the inner Type. Same lock-pattern.
         let t = self.read();
         let inner = t.typ.read();
-        (*inner).hash(state);
+        inner.typ.hash(state);
     }
 }
 
@@ -177,7 +225,7 @@ impl TVar {
             typ: RwLock::new(TVarInnerInner {
                 id: TVarId::new(),
                 frozen: false,
-                typ: Arc::new(RwLock::new(None)),
+                typ: Arc::new(RwLock::new(TCell::default())),
             }),
         }))
     }
@@ -188,7 +236,7 @@ impl TVar {
             typ: RwLock::new(TVarInnerInner {
                 id: TVarId::new(),
                 frozen: false,
-                typ: Arc::new(RwLock::new(Some(typ))),
+                typ: Arc::new(RwLock::new(TCell::bound(typ))),
             }),
         }))
     }
@@ -201,14 +249,25 @@ impl TVar {
         self.typ.write()
     }
 
-    /// make self an alias for other
+    /// make self an alias for other. Self's constraints MERGE into the
+    /// now-shared cell (a conjunction — both vars' obligations apply to
+    /// whatever the cell is ever bound to).
     pub fn alias(&self, other: &Self) {
         let mut s = self.write();
         if !s.frozen {
             s.frozen = true;
             let o = other.read();
             s.id = o.id;
-            s.typ = Arc::clone(&o.typ);
+            if !Arc::ptr_eq(&s.typ, &o.typ) {
+                let mine = s.typ.read().constraints.clone();
+                {
+                    let mut oc = o.typ.write();
+                    for c in mine {
+                        oc.add_constraint(c);
+                    }
+                }
+                s.typ = Arc::clone(&o.typ);
+            }
         }
     }
 
@@ -216,15 +275,28 @@ impl TVar {
         self.write().frozen = true;
     }
 
-    /// copy self from other
+    /// copy self's binding from other, MERGING constraint lists (self
+    /// keeps its own obligations — the bind-site check has already
+    /// verified the incoming binding against them).
     pub fn copy(&self, other: &Self) {
         let s = self.read();
         let o = other.read();
-        *s.typ.write() = o.typ.read().clone();
+        if Arc::ptr_eq(&s.typ, &o.typ) {
+            return;
+        }
+        let (typ, ocons) = {
+            let oc = o.typ.read();
+            (oc.typ.clone(), oc.constraints.clone())
+        };
+        let mut sc = s.typ.write();
+        sc.typ = typ;
+        for c in ocons {
+            sc.add_constraint(c);
+        }
     }
 
     pub fn normalize(&self) -> Self {
-        match &mut *self.read().typ.write() {
+        match &mut self.read().typ.write().typ {
             None => (),
             Some(t) => {
                 *t = t.normalize();
@@ -233,8 +305,10 @@ impl TVar {
         self.clone()
     }
 
+    /// Clear the binding. The CONSTRAINTS stay — an unbound cell
+    /// returns to constrained-unbound, not to unconstrained.
     pub fn unbind(&self) {
-        *self.read().typ.write() = None
+        self.read().typ.write().typ = None
     }
 
     pub(super) fn would_cycle(&self, t: &Type) -> bool {
@@ -452,7 +526,7 @@ impl Type {
             Type::Tuple(ts) => ts.iter().any(|t| t.has_unbound()),
             Type::Struct(ts) => ts.iter().any(|(_, t)| t.has_unbound()),
             Type::Variant(_, ts) => ts.iter().any(|t| t.has_unbound()),
-            Type::TVar(tv) => tv.read().typ.read().is_none(),
+            Type::TVar(tv) => tv.read().typ.read().typ.is_none(),
             Type::Set(s) => s.iter().any(|t| t.has_unbound()),
             Type::Abstract { id: _, params } => params.iter().any(|t| t.has_unbound()),
             Type::Fn(ft) => ft.has_unbound(),
@@ -489,8 +563,8 @@ impl Type {
             Type::TVar(tv) => {
                 let tv = tv.read();
                 let mut tv = tv.typ.write();
-                if tv.is_none() {
-                    *tv = Some(t.clone());
+                if tv.typ.is_none() {
+                    tv.typ = Some(t.clone());
                 }
             }
             Type::Set(s) => {

@@ -76,7 +76,7 @@ impl Type {
                 params: Arc::from_iter(tr.params.iter().map(|t| t.resolve_tvars())),
                 ..tr.clone()
             }),
-            Type::TVar(tv) => match tv.read().typ.read().as_ref() {
+            Type::TVar(tv) => match tv.read().typ.read().typ.as_ref() {
                 Some(t) => t.resolve_tvars(),
                 None => Type::TVar(TVar::empty_named(tv.name.clone())),
             },
@@ -271,10 +271,10 @@ impl Type {
                 Some(Type::TVar(tv0.clone()))
             }
             (Type::TVar(tv), t) => {
-                tv.read().typ.read().as_ref().and_then(|tv| tv.merge(t))
+                tv.read().typ.read().typ.as_ref().and_then(|tv| tv.merge(t))
             }
             (t, Type::TVar(tv)) => {
-                tv.read().typ.read().as_ref().and_then(|tv| t.merge(tv))
+                tv.read().typ.read().typ.as_ref().and_then(|tv| t.merge(tv))
             }
             (Type::ByRef(_), _)
             | (_, Type::ByRef(_))

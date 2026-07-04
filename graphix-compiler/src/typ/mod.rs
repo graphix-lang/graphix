@@ -261,7 +261,7 @@ impl Type {
             | Self::Ref(TypeRef { .. })
             | Self::Map { .. }
             | Self::Abstract { .. } => true,
-            Self::TVar(tv) => tv.read().typ.read().is_some(),
+            Self::TVar(tv) => tv.read().typ.read().typ.is_some(),
         }
     }
 
@@ -383,7 +383,7 @@ impl Type {
                 }
             }
             Type::TVar(tv) => {
-                if let Some(t) = tv.read().typ.read().as_ref() {
+                if let Some(t) = tv.read().typ.read().typ.as_ref() {
                     t.record_ide_refs(env, fallback_scope);
                 }
             }
@@ -422,7 +422,7 @@ impl Type {
                 None => Some((**t).clone()),
             },
             Type::TVar(tv) => {
-                tv.read().typ.read().as_ref().and_then(|t| t.strip_error_int(env, hist))
+                tv.read().typ.read().typ.as_ref().and_then(|t| t.strip_error_int(env, hist))
             }
             Type::Primitive(p) => {
                 if *p == BitFlags::from(Typ::Error) {
@@ -503,7 +503,7 @@ impl Type {
             | Self::Variant(_, _)
             | Self::Ref(TypeRef { .. })
             | Self::Map { .. } => f(Some(self)),
-            Self::TVar(tv) => match tv.read().typ.read().as_ref() {
+            Self::TVar(tv) => match tv.read().typ.read().typ.as_ref() {
                 Some(t) => t.with_deref(f),
                 None => f(None),
             },
@@ -539,7 +539,7 @@ impl Type {
                 let i = ts.iter().map(|(n, t)| (n.clone(), t.scope_refs(scope)));
                 Type::Struct(Arc::from_iter(i))
             }
-            Type::TVar(tv) => match tv.read().typ.read().as_ref() {
+            Type::TVar(tv) => match tv.read().typ.read().typ.as_ref() {
                 None => Type::TVar(TVar::empty_named(tv.name.clone())),
                 Some(typ) => {
                     let typ = typ.scope_refs(scope);

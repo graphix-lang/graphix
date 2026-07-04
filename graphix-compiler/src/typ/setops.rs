@@ -322,17 +322,17 @@ impl Type {
                 if Arc::ptr_eq(&tv0.read().typ, &tv1.read().typ) {
                     return Ok(Type::Primitive(BitFlags::empty()));
                 }
-                Ok(match (&*tv0.read().typ.read(), &*tv1.read().typ.read()) {
+                Ok(match (&tv0.read().typ.read().typ, &tv1.read().typ.read().typ) {
                     (None, _) => Type::TVar(tv0.clone()),
                     (Some(t0), None) => t0.diff_int(env, hist, t1)?,
                     (Some(t0), Some(t1)) => t0.diff_int(env, hist, t1)?,
                 })
             }
-            (Type::TVar(tv), t) => Ok(match &*tv.read().typ.read() {
+            (Type::TVar(tv), t) => Ok(match &tv.read().typ.read().typ {
                 Some(tv) => tv.diff_int(env, hist, t)?,
                 None => self.clone(),
             }),
-            (t, Type::TVar(tv)) => Ok(match &*tv.read().typ.read() {
+            (t, Type::TVar(tv)) => Ok(match &tv.read().typ.read().typ {
                 Some(tv) => t.diff_int(env, hist, tv)?,
                 None => self.clone(),
             }),
