@@ -318,13 +318,19 @@ section wins.
   gone; bind sites (cell checks in contains) plus the two settle points
   replace them.
 - **Known seams / follow-ups:**
-  - `rand_float_default` and `gated_scalar_unannotated` did NOT flip to
-    Jit yet. rand: default exprs (`= 0.0`) compile per-site inside
-    `try_static_resolve`, which runs AFTER the typecheck1 terminal
-    settle — the settle binds `'a := [Int, Float]` first. Fixing this
-    is an ordering question (settle after static resolution, or default
-    TYPES participating in typecheck0) — phase C territory. gated: the
-    never()-gate narrowing is the phase D item.
+  - `rand_float_default` FLIPPED to Jit (2026-07-04, second commit):
+    the terminal settle now EXEMPTS cells reachable from an
+    omitted-default labeled arg (their type belongs to the default
+    EXPRESSION), and the labeled-default type check moved AFTER
+    `try_static_resolve` — where `setup_bind` has replaced the
+    typecheck0 Nop placeholders with the per-site compiled default
+    nodes — so that check's unification is what binds the cell
+    (`'a := f64` from `0.0`/`1.0`). Builtins were the forcing case:
+    the default `Apply::typecheck0` is a no-op, so nothing else
+    unifies a builtin's per-site defaults. Dynamic sites keep Nops
+    (vacuous check, cell stays unbound, de-fuse).
+    `gated_scalar_unannotated` remains: the never()-gate narrowing is
+    the phase D item.
   - Dynamically-dispatched calls (no static resolution) check only the
     signature; a per-site body inconsistency there de-fuses/lazy-binds
     rather than rejects — same class as the old per-site swallowing,

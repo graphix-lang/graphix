@@ -281,3 +281,102 @@ const CYCLIC_ALIAS: &str = r#"
 
 run!(cyclic_alias, CYCLIC_ALIAS, |v: Result<&Value>| matches!(v, Err(_));
     graphix_package_core::testing::FuseExpect::None);
+
+// ─── #20 tvar cell constraints (design/tvar_constraints.md) ────────
+//
+// `|a| a + a` is type-preserving: the result ALIASES the operand cell,
+// so an annotation at one call site narrows the whole signature
+// instance and the args enforce it (observation #3).
+const SAME_CELL_ANNOTATED: &str = r#"
+{
+  let f = |a| a + a;
+  let x: f64 = f(f64:1.5);
+  x
+}
+"#;
+
+run!(same_cell_annotated, SAME_CELL_ANNOTATED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::F64(f)) if *f == 3.0
+));
+
+// An annotation the operand cell can't satisfy rejects at the ARG (the
+// shared cell is already f64 when the i64 arg tries to bind).
+const SAME_CELL_ANNOTATION_CONFLICT: &str = r#"
+{
+  let f = |a| a + a;
+  let x: f64 = f(1);
+  x
+}
+"#;
+
+run!(
+    same_cell_annotation_conflict,
+    SAME_CELL_ANNOTATION_CONFLICT,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// Mixed-operand acceptance pin (decision (ii)-adjacent): `|a, b| a + b`
+// keeps distinct operand cells, so mixed-type calls stay accepted —
+// the result settles wide, exactly today's semantics.
+const MIXED_OPERAND_ACCEPT: &str = r#"
+{
+  let f = |a, b| a + b;
+  f(1, 2.5)
+}
+"#;
+
+// Correct-None: the mixed call settles the derived result cell to the
+// wide Number set — no single register class, the region node-walks.
+run!(mixed_operand_accept, MIXED_OPERAND_ACCEPT, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::F64(f)) if *f == 3.5
+); graphix_package_core::testing::FuseExpect::None);
+
+// ...and the derived (rtype-only) result cell of a distinct-operand
+// lambda is NOT externally narrowable — the eager derived-cell settle
+// closes it before an annotation could lie about what the body
+// computes (the soundness half of the settle split).
+const DERIVED_RESULT_NOT_NARROWABLE: &str = r#"
+{
+  let f = |a, b| a + b;
+  let x: f64 = f(1, 2);
+  x
+}
+"#;
+
+run!(
+    derived_result_not_narrowable,
+    DERIVED_RESULT_NOT_NARROWABLE,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// Observation #4 (the typecheck unsoundness from the 2026-07 soak): an
+// explicit `'a: Number` with a def-time f64 body FACT must reject an
+// i64 call — the def binding rides the cell as a conjunct and the arg
+// site names it.
+const OBS4_DEF_FACT_REJECTS: &str = r#"
+{
+  let f = 'a: Number |x: 'a| -> 'a f64:0.5;
+  f(3)
+}
+"#;
+
+run!(obs4_def_fact_rejects, OBS4_DEF_FACT_REJECTS, |v: Result<&Value>| matches!(
+    v,
+    Err(_)
+); graphix_package_core::testing::FuseExpect::None);
+
+const OBS4_DEF_FACT_ACCEPTS: &str = r#"
+{
+  let f = 'a: Number |x: 'a| -> 'a f64:0.5;
+  f(1.25)
+}
+"#;
+
+run!(obs4_def_fact_accepts, OBS4_DEF_FACT_ACCEPTS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::F64(f)) if *f == 0.5
+));

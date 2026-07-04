@@ -1125,11 +1125,34 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // typecheck0 phase to narrow the cells first. Walks the LIVE
         // ftype structure, never the stored constraints list — a list
         // tvar orphans when unification re-points its arg's cell.
+        //
+        // Cells reachable from an OMITTED defaulted labeled arg are
+        // exempt: that arg's type belongs to its default EXPRESSION,
+        // which compiles at static resolution (`setup_bind`, driven
+        // from `try_static_resolve` below) and binds the cell through
+        // the apply's own arg unification — settling first would
+        // foreclose it (`rand::rand(#clock:1)` must get `'a := f64`
+        // from the `0.0`/`1.0` defaults, not `[Int, Float]` wide). A
+        // dynamically-dispatched site leaves them unbound: fusion
+        // refuses (de-fuse) and the node-walk is type-tolerant.
         {
+            let mut dtv: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            for farg in ftype.args.iter() {
+                if let FnArgKind::Labeled { name, .. } = &farg.kind
+                    && let Some(a) = self.args.get(&ArgKey::Named(name.clone()))
+                    && a.is_default
+                {
+                    farg.typ.collect_tvars(&mut dtv);
+                }
+            }
+            let defaulted: LPooled<AHashSet<usize>> =
+                dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
             let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             ftype.collect_tvars(&mut tvs);
             for (_, tv) in tvs.drain() {
-                wrap!(self, tv.settle(&ctx.env))?;
+                if !defaulted.contains(&tv.cell_addr()) {
+                    wrap!(self, tv.settle(&ctx.env))?;
+                }
             }
         }
         let resolved = ftype.resolve_tvars();
@@ -1152,13 +1175,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
+        // Fold the former `static_resolve` pass in here: pre-bind the
+        // callee + pre-materialize HOF callbacks now that the index is
+        // complete and this site's callbacks are finalized.
+        self.try_static_resolve(ctx)?;
         // Labeled-default type check — now sound: in this second pass the
         // closure is complete, so `len() == 1` truly means "exactly one
-        // possible callee." The default's type comes straight off the
-        // default node this call site compiled (`a.node`), which is the
-        // same value typecheck0 resolved — no AST cell, and correct
-        // per-call-site (the default Expr is shared across sites, but its
-        // compiled node is not).
+        // possible callee." Runs AFTER static resolution, whose
+        // `setup_bind` replaced the typecheck0 Nop placeholders with the
+        // per-site COMPILED default nodes — so the check reads the real
+        // default's type, and its unification is what binds a
+        // defaulted-arg cell the terminal settle deliberately left open
+        // (`rand::rand(#clock:1)`: `'a := f64` from the `0.0`/`1.0`
+        // defaults). A dynamically-dispatched site still holds Nops here
+        // (typed as the arg's own tvar — the check is vacuous) and the
+        // cell stays unbound.
         if ftype.lambda_ids.ids().len() == 1 {
             for farg in ftype.args.iter() {
                 let name = match &farg.kind {
@@ -1174,10 +1205,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        // Fold the former `static_resolve` pass in here: pre-bind the
-        // callee + pre-materialize HOF callbacks now that the index is
-        // complete and this site's callbacks are finalized.
-        self.try_static_resolve(ctx)?;
         Ok(())
     }
 
