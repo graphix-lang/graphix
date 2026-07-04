@@ -174,3 +174,43 @@ known item 4; buckets reset per campaign run).
     binds. Same root as item 3's non-scalar qop error path; the tainted-
     placeholder rework subsumes it (an interior `$` error must produce a
     taint-marked placeholder, not a pending-exit).
+
+12. **HOF + ByRef callback under-fire** (`corpus-fuzz/divergence_000027`):
+    `array::find(a, |x| {let r = &(1,2); let t = *r; t.0+t.1} > 3)` —
+    interp emits Null at cycles 0 AND 1 (the ByRef/deref residue
+    node-walks and delivers a cycle late; find recomputes and re-emits),
+    jit emits once. Firing divergence at the fused-HOF/node-walk-residue
+    seam (ByRef is correct-None for fusion; the seam's firing isn't).
+
+13. **FIXED — UB: tainted qop unboxed Null as Array** (SIGABRT crash,
+    2026-07-04; triage copy `crash_sigabrt_tainted_qop_unbox.gx`):
+    `{let a = [i64:1, let n = i64:5, i64:3]; let x = a[i64:1..]; x$}` —
+    the `let`-in-element makes the literal's element Bottom-typed →
+    tainted; `x$`'s composite-success arm checked only `is_err` on the
+    CLEAN disc, so the tainted Value::Null placeholder took the success
+    path into `graphix_value_into_array_borrowed` →
+    `unreachable_unchecked` (nounwind abort under debug_assertions,
+    TRUE UB in release). Fix: taint folds into the abort branch
+    (fusion/emit.rs emit_qop_node); both unboxers hardened from
+    unreachable_unchecked to defined panics. Verified: repro bottoms
+    (matches interp), untainted `$` unchanged.
+
+14. **Unchecked integer-add overflow: node-walk bottoms, JIT wraps**
+    (`corpus-fuzz`, tail-loop `count(500000, i64:MAX)` with `acc + 1`):
+    interp = Timeout — the overflow at iteration 1 errors→bottoms in
+    node/op.rs, the tail-call argument never arrives, the loop stalls
+    forever; jit = completes with the correctly WRAPPED value
+    (MIN + 499999). CLAUDE.md's fusion section documents "unchecked
+    wraps" — which matches the JIT, not the canonical node-walk. Either
+    the node-walk should wrap (change the op/netidx add) or bottoms are
+    canonical and every JIT unchecked add needs an overflow check (perf
+    cost on the hottest op). Needs a ruling — also note the stalled tail
+    loop is itself an un-interruptible wedge shape (ties into item 4).
+
+15. **Nested try/catch over-fire** (divergence_000030.gx, fuzz campaign):
+    nested `try try (a[MIN]? /? a[0]?)?; a[6]? catch(e) => select
+    e.0.error {...  err1 <- e ...} catch(e) => err0 <- e; [err0, err1]`
+    — interp emits NOTHING (both err vars never fire → the producer
+    never fires), jit emits an array at cycle 2. The fused region around
+    the TryCatch/catch-read seam fires when the node-walk wouldn't.
+    Unanalyzed beyond classification — queue for a focused session.

@@ -609,7 +609,10 @@ pub unsafe extern "C" fn graphix_value_new_string_from_arcstr(
 pub unsafe extern "C" fn graphix_value_into_array(v: TagValue) -> *mut ValArray {
     match v.value() {
         Value::Array(a) => Box::into_raw(Box::new(a)),
-        _ => unsafe { std::hint::unreachable_unchecked() },
+        // A non-Array here is a CODEGEN bug (the emit's taint/shape gates
+        // failed) — abort defined rather than UB; extern "C" makes the
+        // panic a nounwind abort.
+        v => panic!("graphix_value_into_array: expected Value::Array, got {v:?}"),
     }
 }
 
@@ -620,7 +623,9 @@ pub unsafe extern "C" fn graphix_value_into_array(v: TagValue) -> *mut ValArray 
 pub unsafe extern "C" fn graphix_value_into_array_borrowed(v: TagValue) -> *mut ValArray {
     let ptr = v.with_value(|v| match v {
         Value::Array(a) => Box::into_raw(Box::new(a.clone())),
-        _ => unsafe { std::hint::unreachable_unchecked() },
+        v => panic!(
+            "graphix_value_into_array_borrowed: expected Value::Array, got {v:?}"
+        ),
     });
     std::mem::forget(v); // borrowed read — the caller keeps owning it
     ptr

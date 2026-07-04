@@ -5180,18 +5180,43 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let pre_pending = cx.b.create_block();
             let continue_block = cx.b.create_block();
             let pending_exit = pending_exit_block(cx);
-            cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
+            // #219: a TAINTED inner may carry the helper-safe Value::Null
+            // placeholder, whose CLEAN disc isn't Error — without folding
+            // taint into this branch the success path unboxes Null as an
+            // Array/ArcStr (`unreachable_unchecked` UB in the unboxers;
+            // soak crash 2026-07-04, `x$` of a tainted slice). Tainted =
+            // "no value" = the same abort as the error path.
+            let tainted = is_tainted(cx.b, disc);
+            let bad = cx.b.ins().bor(is_err, tainted);
+            cx.b.ins().brif(bad, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
-            // Error path. Handler-ful `?`: deliver the error to the catch
-            // handler — the deliver CONSUMES the owned error (or clones a
-            // borrowed one), so it replaces the `value_drop` (dropping AND
-            // delivering an owned error would double-free). Handler-less:
-            // drop the owned error (a Borrowed Local is owned by its env
-            // slot, which `emit_pending_cleanup` drops — dropping here too
-            // would double-free).
+            // Abort path. Handler-ful `?`: deliver a REAL error to the
+            // catch handler — the deliver CONSUMES the owned error (or
+            // clones a borrowed one), so it replaces the `value_drop`
+            // (dropping AND delivering an owned error would double-free).
+            // A tainted non-error must NOT deliver (the handler would
+            // receive placeholder garbage) but an owned one still drops.
+            // Handler-less: drop the owned value (a Borrowed Local is
+            // owned by its env slot, which `emit_pending_cleanup` drops —
+            // dropping here too would double-free).
             if let Some(site) = handler_site {
+                let deliver_block = cx.b.create_block();
+                let no_deliver = cx.b.create_block();
+                let merged = cx.b.create_block();
+                cx.b.ins().brif(is_err, deliver_block, &[], no_deliver, &[]);
+                cx.b.switch_to_block(deliver_block);
+                cx.b.seal_block(deliver_block);
                 emit_qop_deliver(cx, site, &cv, inner_owned)?;
+                cx.b.ins().jump(merged, &[]);
+                cx.b.switch_to_block(no_deliver);
+                cx.b.seal_block(no_deliver);
+                if inner_owned {
+                    cx.b.ins().call(value_drop, &[clean, payload]);
+                }
+                cx.b.ins().jump(merged, &[]);
+                cx.b.switch_to_block(merged);
+                cx.b.seal_block(merged);
             } else if inner_owned {
                 cx.b.ins().call(value_drop, &[clean, payload]);
             }
