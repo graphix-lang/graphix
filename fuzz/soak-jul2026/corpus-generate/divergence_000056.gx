@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("hello"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: (i64, {a: bool, b: bool, c: u8}, u8) = (cast<i64>((u8:100 % u8:0))$, { a: false, b: false, c: u8:100 }, (u8:1 + (u8:2 +? u8:255)$)); let v0 = v0.0; let v1: [bool, null] = select v0 { v1 if (true && false) => (u8:0 < u8:2), v1 => null }; let v2: Map<string, bool> = {"k1" => (cast<i64>(u8:100)$ != cast<i64>(u8:1)$)}; "["hello"]" }
+// minimized:
+{let v0: (i64, {a: bool, b: bool, c: u8}, u8) = (i64:0, { a: true, b: false, c: u8:100 }, (u8:1 + (u8:2 +? u8:255)$)); let v0 = v0.0; let v1: [bool, null] = select v0 {v1 if (true && false) => (u8:0 < u8:2), v1 => null}; let v2: Map<string, bool> = {"k1" => (cast<i64>(u8:100)$ != cast<i64>(u8:1)$)}; "hello"}

@@ -1,0 +1,7 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Timeout
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Bytes(PBytes(PooledBytes(b"\x01")))), (1, Bytes(PBytes(PooledBytes(b"\x01")))), (2, Bytes(PBytes(PooledBytes(b"\x01")))), (3, Bytes(PBytes(PooledBytes(b"\x01")))), (4, Bytes(PBytes(PooledBytes(b"\x01")))), (5, Bytes(PBytes(PooledBytes(b"\x01")))), (6, Bytes(PBytes(PooledBytes(b"\x01")))), (7, Bytes(PBytes(PooledBytes(b"\x01")))), (8, Bytes(PBytes(PooledBytes(b"\x01")))), (9, Bytes(PBytes(PooledBytes(b"\x01")))), (10, Bytes(PBytes(PooledBytes(b"\x01")))), (11, Bytes(PBytes(PooledBytes(b"\x01")))), (12, Bytes(PBytes(PooledBytes(b"\x01")))), (13, Bytes(PBytes(PooledBytes(b"\x01")))), (14, Bytes(PBytes(PooledBytes(b"\x01")))), (15, Bytes(PBytes(PooledBytes(b"\x01"))))], capped: true }, Epoch { events: [], capped: true }] })
+// mutant: // schedule-v1: cap=16 events=128; in0=i64:1
+{let x = i64:0; x <- x + i64:1; buffer::encode([`U8(u8:1)])}
+// minimized:
+{let x = i64:0; x <- x; buffer::encode([`U8(u8:1)])}

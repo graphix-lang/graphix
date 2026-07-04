@@ -4,6 +4,33 @@ Three campaigns (fuzz / generate / generate --reactive), PAR=24, corpus dirs
 under `fuzz/soak-jul2026/`. This file is the running classification; raw
 findings stay in the corpus dirs.
 
+
+## MORNING SUMMARY (2026-07-04 ~07:30)
+
+**~570k programs checked across the night** (fuzz 116k, generate 228k,
+reactive 229k in the final stretch alone; several earlier stretches).
+**7 fixes landed + gate-verified, 4 commits** (28dc795b, 2243beb1, the
+tainted-qop UB fix, the stmt-call fix): clone_rebind typedef panic,
+owned-operand taint drop, dead-`$` abort, duration-div0 error-as-value,
+list::init cap, tainted-qop UB (release-mode UB!), and
+statement-position calls losing the block's value (`{println(x); v}` —
+the user-facing worst). Regression corpus 34 → 41 pins, all green.
+
+**Dominant open root** (most of the ~80 corpus divergences): the
+interior-bottom family, item 3 — the cache-substitute design awaits
+your sign-off. **Your rulings needed on**: item 3 (bottom semantics),
+item 14 (unchecked overflow: node-walk bottoms+stalls vs JIT wraps vs
+CLAUDE.md says wraps), item 4 (interrupt poll for breadth
+recursion/seq(0,MAX) wedges — fib mutants cost ~13 crash slots/night),
+items 16/18 (oracle verdict classes for perf-asymmetry and the accepted
+infinite-tail artifact). **Queued concrete bugs**: 5 (mono marshal panic
+/ typecheck obs-4 → tvar work), 6 (buffer String-in-composite), 12
+(HOF+ByRef under-fire), 15 (nested try/catch over-fire), 17
+(module-level shadowed-lambda missing fire, repro 3/3), 20
+(map::filter_map missing fire), 21 (**node-walk wedge on `x <- x`** —
+the fuzzer's first canonical-side find; same-cycle self-delivery
+suspected).
+
 ## Harness incident (resolved)
 
 Rebuilding `graphix-fuzz` under the live soaks broke every child spawn:
@@ -259,3 +286,25 @@ known item 4; buckets reset per campaign run).
     discarded statement expression (`(f(x)+1);`) and a connect-RHS
     builtin that yields nothing — both belong to the pending/interior-
     bottom rework (item 3).
+
+20. **map::filter_map missing fire** (`corpus-fuzz/divergence_000046`):
+    `map::filter_map` over a heterogeneous-key map (`{i64:0 => 1,
+    "b" => 2, ...}`) — interp emits the filtered Map at cycle 4, jit
+    emits nothing. First map-HOF (CMap-collection) finding of the
+    campaign. Unanalyzed — queue.
+
+Note: the fib fixture is a mutation ATTRACTOR — 6 of this run's 6
+crashes are breadth-wedge fib mutants re-recorded under distinct
+buckets, each costing an outer-deadline slot. The interrupt-poll fix
+(item 4) turns them all into fast finds; until then consider
+de-weighting the fib seed.
+
+21. **NODE-WALK wedge on identity self-connect**
+    (`corpus-fuzz/divergence_000061`): `{let x = i64:0; x <- x;
+    buffer::encode([`U8(u8:1)])}` — interp = Timeout (the evaluator
+    wedges: the trace's 64-cycle cap never resolves, so cycles aren't
+    COMPLETING — suspect the self-delivery lands in the SAME cycle,
+    violating the "same-variable updates queue for the next cycle"
+    runtime rule), while the JIT's lifted connect ticks correctly,
+    emitting per cycle to the cap. A canonical-side (node-walk/runtime)
+    finding — the fuzzer's first. Needs a runtime-scheduling dig.

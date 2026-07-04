@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [I64(0), I64(23)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: Array<[i64, null]> = [i64:2]; let v1 = { n: (i64:2, false, i64:42), x: (cast<i64>(u8:100)$ % i64:0), y: array::fold([u8:255], u8:2, |v1, v0| u8:255) }; let v2 = ((i64:-1 - (i64:2 / i64:42)), "[str::replace(#pat: "", #rep: "graphix", "")]-[u8:1]", ((u8:2 * u8:100) * v1.y)); let v3 = (-(cast<f64>(cast<i64>(f64:3.14)$)$)); let v5 = |v4: i64, v3: string| -> u8 ((u8:100 - u8:0) % (u8:1 + u8:1)); [str::len(str::concat("", "")), ((i64:100 % i64:42) - (-(i64:7)))] }
+// minimized:
+{i64:0; let v1 = { n: (i64:2, false, i64:42), x: (cast<i64>(u8:100)$ % i64:0), y: array::fold([u8:255], u8:2, |v1, v0| u8:255) }; let v2 = ((i64:-1 - (i64:2 / i64:42)), "[str::replace(#pat: "", #rep: "graphix", "")]-[u8:1]", ((u8:2 * u8:100) * v1.y)); let v3 = (-(cast<f64>(cast<i64>(f64:3.14)$)$)); let v5 = |v4: i64, v3: string| -> u8 ((u8:100 - u8:0) % (u8:1 + u8:1)); [str::len(str::concat("", "")), ((i64:100 % i64:42) - (-(i64:7)))]}

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// jit:    RuntimeErr("trace_wait_idle: runtime is dead")
+// mutant: {let xs = {let rec f = |x: i64| select x {x if x < i64:10 => f(x + i64:1), x => x}; f(i64:0)}; array::fold(xs, i64:7, |acc, x| acc + x)}
+// minimized:
+{let xs = {let rec f = |x: i64| f; f(i64:0)}; array::fold(xs, i64:7, |acc, x| acc + x)}

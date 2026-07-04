@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(7))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: {c: i64} = { c: ((i64:1 + i64:42) % i64:0) }; let v1: ((i64, bool, i64), (f64, string)) = ((i64:7, true, i64:0), (f64:2.5, "graphix")); let v1 = v0.c; let v2: string = ""; let v3: i64 = (v1 / v0.c); let v4 = select v0 { {c: v4} if str::ends_with(#sfx: "graphix", "graphix") => ((false || false), (u8:2 + u8:1)), {c: _} if (true && true) => ((!false), (u8:255 % u8:2)), {c: v4} => (false, (u8:255 % u8:255)) }; i64:7 }
+// minimized:
+{let v0: {c: i64} = { c: i64:42 % i64:0 }; let v1: ((i64, bool, i64), (f64, string)) = ((i64:7, true, i64:0), (f64:2.5, "graphix")); let v1 = v0.c; let v2: string = ""; let v3: i64 = (v1 / v0.c); let v4 = select v0 {{c: v4} if str::ends_with(#sfx: "graphix", "graphix") => ((false || false), (u8:2 + u8:1)), {c: _} if (true && true) => ((!false), (u8:255 % u8:2)), {c: v4} => (false, (u8:255 % u8:255))}; i64:7}

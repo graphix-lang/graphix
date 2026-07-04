@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(false))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = array::fold([{"b" => u8:100, "a" => u8:0}, {"b" => u8:100}, {"k0" => u8:100, "k2" => u8:100}], u8:0, |v0, v1| v1{"k2"}$); let v1 = (((u8:255 / v0) - (v0 % u8:1)) > (v0 + (u8:0 + v0))); let v2 = select v1 { _ if (v0 < u8:0) => v1, v2 if v1 => ((!v2) || (!false)), v0 => true }; select v0 { v3 => false } }
+// minimized:
+{let v0 = array::fold([{"b" => u8:100, "a" => u8:0}, {"b" => u8:100}, {"k0" => u8:100, "k2" => u8:100}], u8:0, |v0, v1| v1{"k2"}$); let v1 = (((u8:255 / v0) - (v0 % u8:1)) > (v0 + (u8:0 + v0))); let v2 = select v1 {_ if (v0 < u8:0) => v1, v2 if v1 => ((!v2) || (!false)), v0 => true}; select v0 {v3 => false}}

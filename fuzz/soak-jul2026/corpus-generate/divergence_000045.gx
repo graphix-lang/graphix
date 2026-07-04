@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(true))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v1 = |v0| ((v0 * v0) - v0); let v2 = v1(i64:0); let v3 = v1(u8:1); let v4: i64 = array::fold([[i64:-1], [i64:42, i64:7, i64:-1]], cast<i64>(f64:-1.0)$, |v4, v5| v5[1]$); let v5: [`B, `C, `Nil(string, (u8, string, string))] = `C; let v1 = (str::concat("a", "xyz"), { x: (u8:100 *? u8:255)$ }); select ((v4 * v4) / v4) { v6 => true } }
+// minimized:
+{let v1 = |v0| v0 * v0; let v2 = v1(i64:0); let v3 = v1(u8:1); let v4: i64 = array::fold([[i64:-1], [i64:42, i64:7, i64:-1]], cast<i64>(f64:-1.)$, |v4, v5| v5[i64:1]$); let v5: [`B, `C, `Nil(string, (u8, string, string))] = `C; let v1 = (str::concat("a", "xyz"), { x: (u8:100 *? u8:255)$ }); select ((v4 * v4) / v4) {v6 => true}}
