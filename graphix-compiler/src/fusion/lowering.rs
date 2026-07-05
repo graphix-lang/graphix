@@ -759,6 +759,9 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let n_formal = typ.args.len();
     let mut inputs: Vec<(ArcStr, RegionInputKind, Option<BindId>)> =
         Vec::with_capacity(n_formal);
+    // The frozen kernel-ABI slot type of each formal, kept for the
+    // recursive-self-call ABI check below (#21).
+    let mut formal_kts: Vec<Type> = Vec::with_capacity(n_formal);
     for fa in typ.args.iter() {
         let name = match &fa.kind {
             FnArgKind::Positional { name: Some(n) } => n.clone(),
@@ -770,8 +773,10 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             &ec.fusion.abstract_registry,
             &arg_typ,
         )?;
-        let kind = type_to_region_input_kind(&ec.fusion.abstract_registry, kt)?;
+        let kind =
+            type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone())?;
         inputs.push((name, kind, None));
+        formal_kts.push(kt);
     }
     // Closure conversion: every binding the body references but
     // doesn't bind itself is a capture. Lift each value-typed capture
@@ -879,6 +884,22 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // those kinds; otherwise self-calls stay plain native recursion
     // (correct, native stack depth).
     let is_rec = self_bind.is_some_and(|sb| external.iter().any(|id| *id == sb));
+    // A recursive self-call is a SECOND source of values for the formals
+    // (besides the outer call). If inference resolved a formal to the
+    // outer call's type but the self-call feeds it a differently-shaped
+    // value — the union the formal should have had was dropped by the
+    // swallowed body recheck — the kernel would marshal that value under
+    // the wrong ABI (a composite pointer read as a scalar leaks it; a
+    // scalar deref'd as a pointer crashes). Refuse to fuse such a lambda;
+    // the call node-walks, which is canonical and correct (#21, soak
+    // jul04). Well-typed recursion (self-call args match the formals)
+    // passes this check untouched.
+    if is_rec
+        && let Some(sb) = self_bind
+        && !self_calls_abi_consistent(g.body(), sb, &formal_kts, ec)
+    {
+        return None;
+    }
     // The native-loop gate is the SHARED structural predicate — the same
     // one `analysis::analyze` uses (sync-gated) for the interpreter's
     // tail-loop, so the two backends can't disagree on which lambdas loop.
@@ -1292,6 +1313,56 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
         }
         _ => false,
     }
+}
+
+/// A recursive lambda's self-call is a second value source for its
+/// formals (besides the outer call). Verify every self-call in the body
+/// feeds each positional formal a value whose frozen type is contained
+/// in that formal's kernel-ABI slot type (`formal_kts`). A mismatch
+/// means the formal's inferred type was narrower than the union it
+/// should have had (the swallowed body recheck dropped the self-call's
+/// contribution), so the kernel ABI would be a lie — return `false` and
+/// the caller de-fuses (#21). Conservative: an arg that can't be frozen,
+/// or a self-call that doesn't map 1:1 onto the positional formals, both
+/// count as inconsistent. Descends the body via `for_each_node` (which
+/// skips nested lambda bodies — a self-call buried in a nested closure
+/// stays a fusion gap, not a soundness hole, since that closure fuses
+/// under its own build).
+fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
+    body: &Node<R, E>,
+    self_bind: BindId,
+    formal_kts: &[Type],
+    ec: &ExecCtx<R, E>,
+) -> bool {
+    let reg = &ec.fusion.abstract_registry;
+    let mut ok = true;
+    fusion::for_each_node(body, &mut |n| {
+        if !ok {
+            return;
+        }
+        let NodeView::CallSite(cs) = n.view() else { return };
+        if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind) {
+            return;
+        }
+        for (i, formal_kt) in formal_kts.iter().enumerate() {
+            let Some(arg) = cs.arg_positional(i) else {
+                ok = false;
+                return;
+            };
+            let Some(arg_kt) = kernel_abi::freeze_for_abi_normalized(
+                reg,
+                &resolve_abstract(reg, arg.typ(), &ec.env),
+            ) else {
+                ok = false;
+                return;
+            };
+            if formal_kt.check_contains(&ec.env, &arg_kt).is_err() {
+                ok = false;
+                return;
+            }
+        }
+    });
+    ok
 }
 
 /// Per-input slot classification. Mirrors the param shapes
