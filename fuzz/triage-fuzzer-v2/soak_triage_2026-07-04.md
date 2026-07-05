@@ -440,3 +440,23 @@ Still open (harness batch): items 6 (run_pool refill leak), 10
 (record newline escaping + strip_header schedule preservation +
 Schedule::parse comment-skip), 12-14 (crash dedup key normalization);
 then the item-3/4 interp-Timeout uncontended re-runs.
+
+## Harness batch resolution (2026-07-05, same session)
+
+Committed as `fuzz: harness batch — pool refill leak, record escaping,
+schedule preservation, crash dedup`. Items 6, 10, 12-14 all fixed; the
+five damaged corpus-reactive records repaired in place (now genuinely
+re-check with real injections — all AGREE post-#9).
+
+Items 3/4 CLOSED as accepted-family, NOT flakes: both still diverge
+uncontended on 32 idle cores (interp Timeout vs jit [0:8]). Mechanism:
+the queuefn drain re-wakes the graph each cycle and the interp
+re-enters the infinite tail loop with cached args — one one-shot
+interrupt per cycle can't drain it, while the jit kernel aborts once
+and never re-fires (const inputs stay STALE). This is the
+infinite-loop mode-asymmetry Eric accepted on 07-04. OPEN QUESTION for
+Eric: encode interp-Timeout-vs-jit-quiesced as a global oracle
+relaxation in Trace::agrees_with (stops the corpus collecting this
+shape), or keep the oracle strict and live with occasional re-findings?
+Per the 2.3 calibration policy this needs explicit sign-off — default
+remains zero relaxations.
