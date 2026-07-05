@@ -258,8 +258,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // passive re-poll — one spurious result emit per cycle whenever
             // any unrelated event flowed (#8, soak jul04; the JIT, which
             // gates the kernel on its inputs' fired bits, was right).
+            // The loop's per-iteration rebinds below are INTERNAL loop
+            // state, but `pat.bind` writes them into `ctx.cached`, which
+            // outlives the call. Snapshot the formals' cached entries and
+            // restore them after the loop, so a later call whose arg is
+            // quiet re-reads the ARG's value — not the previous loop's
+            // final iteration (a `g(in0, i64:0)` accumulated across calls:
+            // the const seed never re-fires, so the formal kept the last
+            // loop's leftover acc; the JIT, whose formals live in
+            // registers seeded fresh from the args each invocation, was
+            // right — soak jul04 follow-up).
+            let mut saved: LPooled<Vec<(BindId, Option<Value>)>> = LPooled::take();
+            for pat in self.args.iter() {
+                pat.ids(&mut |id| {
+                    saved.push((id, ctx.cached.get(&id).cloned()));
+                });
+            }
             let mut reentered = false;
-            loop {
+            let res = loop {
                 // Cooperative interrupt: a wedged tail loop aborts to bottom
                 // when `interrupt()`/`abort()` is requested (`do_cycle` clears
                 // the one-shot Interrupt; Abort additionally shuts down).
@@ -289,7 +305,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     })
                 }
                 event.init = prev;
+            };
+            if reentered {
+                for (id, v) in saved.drain(..) {
+                    match v {
+                        Some(v) => {
+                            ctx.cached.insert(id, v);
+                        }
+                        None => {
+                            ctx.cached.remove(&id);
+                        }
+                    }
+                }
             }
+            res
         };
         ctx.control.depth_pop();
         res

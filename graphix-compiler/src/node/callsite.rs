@@ -773,13 +773,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // body, don't bind/dispatch (which would recurse on the Rust stack
         // and overflow). Instead stash the just-evaluated rebind args and
         // return — the enclosing `GXLambda::update` loop rebinds the
-        // formals and re-runs the body, looping in place. The args were
-        // cached above this cycle; if any didn't fire we fall through to
-        // the normal (recursive) path rather than loop on a stale value.
+        // formals and re-runs the body, looping in place.
+        //
+        // Gated on this being a GENUINE call this cycle: an arg fired
+        // (`set`), or we're under an init-forced view (the callsite's
+        // first dispatch, a loop re-entry, an arm wake). The cached
+        // back-fill below then completes any quiet args (combineLatest,
+        // e.g. a capture in `f(n - 1, cap)`). Ungated, a PASSIVE re-poll
+        // (nothing fired) collected an entire arg set from stale cache
+        // and re-entered the loop — an infinite pure tail loop re-wedged
+        // on EVERY cycle any event flowed, needing one interrupt per
+        // cycle where the JIT wedges once and quiesces (soak jul04
+        // items 3/4). A quiet tail self-call contributes nothing this
+        // cycle — return None WITHOUT dispatching: falling through to
+        // the normal path would consume the callee's first-dispatch
+        // init-forcing and re-create the wedge one level deeper.
         if self.is_self_tail_call.load(Ordering::Relaxed) {
             let order = self.tail_arg_order.lock();
             let lambda = *self.callee_lambda_id.lock();
             if let (Some(order), Some(lambda)) = (order.as_ref(), lambda) {
+                if !event.init && set.is_empty() {
+                    return None;
+                }
                 let args: SmallVec<[Value; 4]> =
                     order.iter().filter_map(|id| ctx.cached.get(id).cloned()).collect();
                 if args.len() == order.len() {
