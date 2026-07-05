@@ -460,3 +460,32 @@ relaxation in Trace::agrees_with (stops the corpus collecting this
 shape), or keep the oracle strict and live with occasional re-findings?
 Per the 2.3 calibration policy this needs explicit sign-off — default
 remains zero relaxations.
+
+## Items 3/4 follow-up (2026-07-05, Eric's push): FIXED, not accepted
+
+Eric challenged the "not fixable / accepted family" assessment on the
+interp-Timeout findings — correctly. Pulling the thread exposed a
+FOUR-bug knot around tail loops, two per backend, all fixed
+(commits `interp: tail loops — genuine-call gating and loop-local
+formal state` + `fusion: tail loops carry firing — rebind the disc,
+fold scrutinee STALE`):
+
+- interp: tail interception looped on stale ctx.cached args on
+  passive re-polls (the item-3/4 wedge — one interrupt per cycle,
+  Timeout). Now gated on a genuine call (arg fired / init view);
+  quiet self-tail-calls produce None without dispatching. Items 3/4
+  now genuinely AGREE — the Timeout-vs-quiesced oracle-relaxation
+  question is MOOT.
+- interp: loop pat.bind rebinds leaked through ctx.cached into the
+  next call's quiet args (g(in0, i64:0) accumulated across epochs).
+  Snapshot/restore around the loop.
+- jit: emit_tail_rebind_jump rebound payloads only — loop-carried
+  discs stuck at entry (const seed's STALE) → fired once ever.
+- jit: tail-position selects never folded scrutinee firing into the
+  return (no merge point) → all-const value chains stayed quiet even
+  with a fired loop bound. LowerCtx::tail_scrut_stale.
+
+Pins: findings/tailloop-firing-jul2026/{01,02}. Neither generator
+produced live-input-driven `let rec` (the reactive generator has no
+recursion vocabulary) — a generator gap worth closing in the next
+fuzzer iteration.
