@@ -387,3 +387,56 @@ regression gates 57/57 on all three.
     select-over-iter preamble is a red herring feeding a multi-cycle
     tick; the divergence is the item-8 tail-loop init over-fire.
     Second corpus entry for the item-8 fix.
+
+## Resolution (2026-07-05, fix session)
+
+All 7 distinct bugs FIXED, committed individually on unified-fusion-proto:
+
+- item 16 (+20): `typ: #16 — arith tc0 rejects a known-incompatible
+  operand at def time` — tc0 constrain path containment-checks known
+  operands; both flavors now CompileErr in both modes.
+- item 21: `fusion: #21 — recursive self-call args must match the
+  formals' kernel ABI` — self_calls_abi_consistent de-fuse guard; the
+  leak and both crash variants AGREE; well-typed recursion still fuses.
+- item 9 (+11,15,17,19): `fusion: #9 — fold's firing channel is the
+  acc carry (the chain), exactly` — result_is_firing on SlotFlags;
+  full matrix (p46-p54, p89-p93, d15/d19) + hof-connect pin verified.
+  First fix attempt (authoritative strip) traded the MissingFire for
+  an ExtraFire on init-only fires — the node-walk's chain-propagation
+  semantics (fires only through actual acc consumption) is the spec;
+  the carry IS its kernel mirror.
+- item 8 (+22): `interp: #8 — tail-loop honors real init on the first
+  pass` — the JIT was the correct side (node-walk over-fire).
+- item 5: `compiler: #5 — recompile clone_rebind resolves captures via
+  remap+alias` — unconditional remap-resolved alias into the fresh rb
+  scope. First attempt (alias without remap consultation) broke
+  per-slot feeder resolution — the initiator's remap is the contract.
+- item 1: `interp: #1 — Deref gets the structural clone_rebind
+  override` — third sibling of Sample/ConnectDeref; needed #5's
+  remap-aware aliasing too.
+- item 18: root cause three layers deep — setup_bind's swallowed
+  per-site typecheck0 ran against the DEF's FnType cells
+  (lambda.rs init closure passed _typ to GXLambda, `resolved` only to
+  builtins): site 1 bound def-'a := i64 permanently; site 2's
+  swallowed recheck pushed i64 through the bound def cell into the
+  caller's still-open select-result cell (swallowed ERRORS, permanent
+  WRITES); fusion froze the f64-valued binding as Prim(I64); the
+  runtime marshal treated the F64 payload as absent; #219 gated the
+  output forever. Fix: the instance's signature is the site's
+  `resolved` ftype (fallback to the def's on structural mismatch —
+  late binding/arg subtyping). Two rejected variants recorded for the
+  record: def-typ + non-binding recheck (kills monomorphization —
+  fusion RELIES on the site binding the instance cells) and
+  reset_tvars fresh cells (never-bound cells de-fused every
+  cross-kernel call — caught by jit_lambda_call_probes).
+  Diagnosed via GRAPHIX_DUMP_CLIF + a new permanent GRAPHIX_DBG_REGION
+  dump (region input wiring: name/BindId/type/constraints/kind).
+
+Gates at end: workspace 2146+ passed / 0 failed, FUSE audit zero
+MISMATCH, regress 63/63 (first fully-green corpus), selfcheck 300+corpus
+OK, 3000-program generate smoke: 0 divergences 0 crashes.
+
+Still open (harness batch): items 6 (run_pool refill leak), 10
+(record newline escaping + strip_header schedule preservation +
+Schedule::parse comment-skip), 12-14 (crash dedup key normalization);
+then the item-3/4 interp-Timeout uncontended re-runs.

@@ -895,6 +895,32 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                 "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
                 inputs.len()
             );
+            // `GRAPHIX_DBG_REGION`: dump each fused region's input wiring
+            // (name, BindId, declared vs deref'd type, cell constraints,
+            // derived slot kind). The region-side complement of
+            // `GRAPHIX_DUMP_CLIF` — a kernel gated forever on a "missing"
+            // input usually means an input here froze under a lied-about
+            // type (#18 was diagnosed with exactly this dump).
+            if std::env::var_os("GRAPHIX_DBG_REGION").is_some() {
+                for (i, fv) in inputs.iter().enumerate() {
+                    let deref = crate::format_with_flags(
+                        crate::PrintFlag::DerefTVars,
+                        || compact_str::format_compact!("{}", fv.typ),
+                    );
+                    let cons = match &fv.typ {
+                        crate::typ::Type::TVar(tv) => {
+                            let cs = tv.cell_constraints();
+                            compact_str::format_compact!("{cs:?}")
+                        }
+                        _ => compact_str::format_compact!("-"),
+                    };
+                    eprintln!(
+                        "DBGREGION {source_id:?} input[{i}] name={} bind={:?} \
+                         typ={} deref={deref} cons={cons} kind={:?}",
+                        fv.name, fv.bind_id, fv.typ, fv.kind
+                    );
+                }
+            }
             ctx.fusion.stats.fused += 1;
             ctx.fusion.stats.fused_ids.push(source_id);
             Ok(Some(n))

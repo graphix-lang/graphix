@@ -733,17 +733,49 @@ impl Lambda {
                         dynamic: scope.dynamic.clone(),
                         lexical: _scope.lexical.clone(),
                     };
-                    GXLambda::new(
-                        ctx,
-                        flags,
-                        id,
-                        _typ.clone(),
-                        _argspec.clone(),
-                        args,
-                        &scope,
-                        tid,
-                        body.clone(),
-                    )
+                    // The instance's signature is the CALL SITE's resolved
+                    // ftype when the site provides one — NOT the def's
+                    // shared cells. `setup_bind` runs a swallowed
+                    // `typecheck0` on the fresh instance, and against the
+                    // def's ftype those writes were PERMANENT def
+                    // contamination: site 1 (`f(i64:2)`) bound the def's
+                    // 'a := i64 through this path, then site 2's swallowed
+                    // recheck pushed that i64 into ITS caller's still-open
+                    // argument cell — no error anywhere, and the fusion
+                    // ABI later froze an f64-valued binding as an I64 slot
+                    // (#18, soak jul04: the kernel input marshalled as
+                    // absent forever and the output gated). The
+                    // site-resolved signature makes the recheck unify the
+                    // site's own cells — idempotent by construction — and
+                    // it is also the correct monomorphized signature for
+                    // fusion's kernel derivation. (A fully-fresh
+                    // `reset_tvars` instance is NOT usable instead: the
+                    // never-bound cells de-fuse every cross-kernel call.)
+                    //
+                    // Fallback: a LATE-bound lambda's structure can
+                    // legitimately differ from the site's static view
+                    // (arg subtyping, `[fn_a, fn_b]`-typed bindings), and
+                    // building the instance against the site view then
+                    // fails — retry with the def's own signature, exactly
+                    // the pre-#18 behavior for dynamic binds.
+                    let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
+                        GXLambda::new(
+                            ctx,
+                            flags,
+                            id,
+                            typ,
+                            _argspec.clone(),
+                            args,
+                            &scope,
+                            tid,
+                            body.clone(),
+                        )
+                    };
+                    match resolved {
+                        Some(r) => build(ctx, Arc::new(r.clone()))
+                            .or_else(|_| build(ctx, _typ.clone())),
+                        None => build(ctx, _typ.clone()),
+                    }
                     .map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
                 }
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
