@@ -857,6 +857,30 @@ macro_rules! arith_op {
                 if lk && rk {
                     return self.typecheck_tail(ctx);
                 }
+                // A KNOWN operand paired with an unbound one still has to
+                // be arith-compatible — check it NOW (pure containment,
+                // binds nothing). typecheck_tail's full `ut` narrowing is
+                // deferred to typecheck1, but the def-time acceptance gate
+                // for a lambda body is typecheck0 only (typecheck1 on the
+                // body runs only in swallowed per-site rechecks), so a
+                // known-incompatible operand like `x + "hello"` must be
+                // rejected here or it never is — the JIT would otherwise
+                // emit an i64 add on the string's payload word and leak a
+                // pointer (#16, soak jul04).
+                let arith =
+                    Type::Primitive(Typ::number() | Typ::Duration | Typ::DateTime);
+                if lk {
+                    wrap!(
+                        self.lhs.node,
+                        arith.check_contains(&ctx.env, self.lhs.node.typ())
+                    )?;
+                }
+                if rk {
+                    wrap!(
+                        self.rhs.node,
+                        arith.check_contains(&ctx.env, self.rhs.node.typ())
+                    )?;
+                }
                 // Constrain, don't bind (design/tvar_constraints.md
                 // phase B): an unbound operand cell records "arithmetic
                 // happened here" as a cell conjunct; the `ut` table runs
