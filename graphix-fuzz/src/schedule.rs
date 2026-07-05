@@ -133,14 +133,35 @@ impl Schedule {
     /// Split a wrapper into its schedule and body. No header → the
     /// empty schedule and the whole text. A malformed header is an
     /// error (a generator or minimizer bug — never silently a comment).
+    ///
+    /// The header may sit BELOW other leading `//` comment lines (a
+    /// pinned finding's provenance block) — the scan walks the leading
+    /// comment block and stops at the first non-comment line. When the
+    /// header is found mid-block, the returned body starts AFTER it
+    /// (the provenance comments above it stay in the file, not the
+    /// compiled body). Previously only line 1 was checked, so a
+    /// finding file with its schedule below the `// bisect:` header ran
+    /// with ZERO injections — a vacuous re-check (soak jul04 item 10).
     pub fn parse(text: &str) -> Result<(Schedule, &str), String> {
-        let t = text.trim_start_matches(['\n', ' ']);
-        if !t.starts_with(HEADER_PREFIX) {
+        let mut cursor = text;
+        let (line, rest) = loop {
+            let t = cursor.trim_start_matches(['\n', ' ']);
+            if t.starts_with(HEADER_PREFIX) {
+                break match t.split_once('\n') {
+                    Some((l, r)) => (l, r),
+                    None => (t, ""),
+                };
+            }
+            if t.starts_with("//") {
+                match t.split_once('\n') {
+                    Some((_, r)) => {
+                        cursor = r;
+                        continue;
+                    }
+                    None => return Ok((Schedule::default(), text)),
+                }
+            }
             return Ok((Schedule::default(), text));
-        }
-        let (line, rest) = match t.split_once('\n') {
-            Some((l, r)) => (l, r),
-            None => (t, ""),
         };
         let spec = &line[HEADER_PREFIX.len()..];
         let mut sections = spec.split(';');

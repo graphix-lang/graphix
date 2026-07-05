@@ -1,8 +1,7 @@
 // bisect: fusion/JIT bug (interp != jit)
 // interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0)), (1, I64(99))], capped: false }, Epoch { events: [(1, I64(198))], capped: false }, Epoch { events: [(1, I64(297))], capped: false }, Epoch { events: [(1, I64(396))], capped: false }, Epoch { events: [(1, I64(495))], capped: false }] })
 // jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(0)), (1, I64(41))], capped: false }, Epoch { events: [(1, I64(82))], capped: false }, Epoch { events: [(1, I64(123))], capped: false }, Epoch { events: [(1, I64(164))], capped: false }, Epoch { events: [(1, I64(205))], capped: false }] })
-// mutant: // schedule-v1: cap=64 events=512; in0=i64:-1; in0=i64:0; in0=i64:7; in0=i64:2
-{ let v0 = in0 ~ (i64:2); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, i64:42, |v3, v4| i64:100); ((v2 * v3) - v2) }
+// mutant: // schedule-v1: cap=64 events=512; in0=i64:-1; in0=i64:0; in0=i64:7; in0=i64:2\n{ let v0 = in0 ~ (i64:2); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, i64:42, |v3, v4| i64:100); ((v2 * v3) - v2) }
 // minimized:
 // schedule-v1: cap=64 events=512; in0=i64:1
 {let v0 = in0 ~ (i64:2); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, i64:42, |v3, v4| i64:100); ((v2 * v3) - v2)}

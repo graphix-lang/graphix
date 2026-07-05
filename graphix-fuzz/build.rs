@@ -49,18 +49,32 @@ fn walk_dir(dir: &Path, out: &mut Vec<String>) {
 }
 
 /// Strip the leading `//`-comment header (and blank lines) from a saved
-/// finding so only the graphix program remains.
+/// finding so only the graphix program remains — EXCEPT a
+/// `// schedule-v1:` line, which is oracle DATA (the injection
+/// schedule), not commentary: it is re-attached above the program so
+/// the embedded regression entry replays the finding's inputs.
+/// Stripping it ran every reactive pin with zero injections — a
+/// quiesced-at-init program in both modes, a vacuously-green gate
+/// (soak jul04 item 10).
 fn strip_header(s: &str) -> String {
+    let mut schedule: Option<&str> = None;
     let mut lines = s.lines().peekable();
     while let Some(l) = lines.peek() {
         let t = l.trim_start();
-        if t.starts_with("//") || t.is_empty() {
+        if t.starts_with("// schedule-v1:") {
+            schedule = Some(t);
+            lines.next();
+        } else if t.starts_with("//") || t.is_empty() {
             lines.next();
         } else {
             break;
         }
     }
-    lines.collect::<Vec<_>>().join("\n")
+    let prog = lines.collect::<Vec<_>>().join("\n");
+    match schedule {
+        Some(h) if !prog.trim().is_empty() => format!("{h}\n{prog}"),
+        _ => prog,
+    }
 }
 
 /// Walk `findings/**/*.gx`, collecting (relative-name, program) pairs.

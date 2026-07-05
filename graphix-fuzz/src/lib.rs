@@ -756,8 +756,8 @@ impl Corpus {
                         seen.insert(m);
                     } else if let Some((_, p)) = body.split_once("// mutant:\n") {
                         // Crash finding (no minimized form) — dedup by
-                        // the program text, same key `record_crash` uses.
-                        seen.insert(format!("CRASH:{}", p.trim()));
+                        // the same normalized key `record_crash` uses.
+                        seen.insert(crash_key(p));
                     }
                 }
                 if let Some(n) = path
@@ -802,13 +802,20 @@ impl Corpus {
             }
         }
         let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The mutant is COMMENT data — escape its newlines so a
+        // multi-line mutant (a reactive schedule header + program) can't
+        // land a bare program line mid-header. Un-escaped, the leading-
+        // comment strip in `check <file>` / build.rs took the mutant's
+        // body as the program and the real schedule became an interior
+        // comment: the recorded finding re-checked as a vacuous
+        // CompileErr==CompileErr AGREE (soak jul04 item 10).
         let body = format!(
             "// bisect: {}\n// interp: {:?}\n// jit:    {:?}\n\
              // mutant: {}\n// minimized:\n{}\n",
             d.bisect(),
             d.interp,
             d.jit,
-            mutant,
+            mutant.replace('\n', "\\n"),
             minimized,
         );
         let _ = std::fs::write(self.dir.join(format!("divergence_{n:06}.gx")), body);
@@ -824,7 +831,7 @@ impl Corpus {
     /// embedded regression corpus runs IN-process — an unfixed crasher
     /// there kills the regress gate) until the underlying bug is fixed.
     pub fn record_crash(&self, prog: &str, status: &str) -> bool {
-        let key = format!("CRASH:{}", prog.trim());
+        let key = crash_key(prog);
         {
             let mut seen = self.seen.lock().unwrap();
             if !seen.insert(key) {
@@ -846,6 +853,30 @@ impl Corpus {
 /// marker) from a recorded divergence file, trimmed — the dedup key.
 fn extract_minimized(body: &str) -> Option<String> {
     body.split_once("// minimized:\n").map(|(_, m)| m.trim().to_string())
+}
+
+/// The crash-dedup key: the program with every digit run collapsed to
+/// one `N`. The mutator perturbs integer literals toward edge values,
+/// so keying on raw text minted a fresh corpus slot per literal variant
+/// of one crash SHAPE — the accepted `array::group(seq(lo, hi), …)`
+/// runaway claimed four slots in one night (soak jul04 items 2/12-14).
+/// Shared by `record_crash` and `Corpus::load` so restart dedup matches.
+fn crash_key(prog: &str) -> String {
+    let mut key = String::with_capacity(prog.len() + 6);
+    key.push_str("CRASH:");
+    let mut in_digits = false;
+    for c in prog.trim().chars() {
+        if c.is_ascii_digit() {
+            if !in_digits {
+                key.push('N');
+                in_digits = true;
+            }
+        } else {
+            in_digits = false;
+            key.push(c);
+        }
+    }
+    key
 }
 
 /// Source-A campaign: mutate corpus seeds and run each mutant through the
@@ -1109,6 +1140,17 @@ async fn run_pool(
         tokio::select! {
             biased;
             Some(res) = checks.join_next() => {
+                // Refill FIRST, before any result handling: `continue`
+                // inside this arm targets the enclosing `loop`, and the
+                // excluded-module paths below use it — with the refill at
+                // the bottom, every excluded result permanently leaked a
+                // worker slot, and after `par` leaks the pool drained and
+                // a `forever` campaign exited "done" (soak jul04 item 6:
+                // the fuzz campaign bled out nine times overnight).
+                if want(launched) {
+                    spawn_check(&mut checks, next_prog());
+                    launched += 1;
+                }
                 if let Ok((prog, res)) = res {
                     stats.run += 1;
                     if stats.run % 1000 == 0 {
@@ -1192,10 +1234,6 @@ async fn run_pool(
                             });
                         }
                     }
-                }
-                if want(launched) {
-                    spawn_check(&mut checks, next_prog());
-                    launched += 1;
                 }
             }
             Some(_) = minims.join_next() => {}
