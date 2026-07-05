@@ -622,4 +622,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Deref(self)
     }
+
+    fn clone_rebind(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        remap: &mut RebindMap,
+    ) -> Node<R, E> {
+        // Structural clone under the ORIGINAL driving `top_id` — the
+        // third sibling of the Sample / ConnectDeref wake-root fix (the
+        // default recompile passed spec().id, so a per-slot HOF clone's
+        // `*r` subscribed a root nobody drives and the counter's writes
+        // never woke it — soak jul04 finding 1). `id: None`: the
+        // runtime wake-up registers LAZILY in `update` when the child
+        // delivers the ref id, now under this clone's own view of
+        // `top_id` (the clone's first dispatch is init-forced, so the
+        // child re-emits its cached ByRef id immediately).
+        Box::new(Self {
+            spec: self.spec.clone(),
+            typ: self.typ.clone(),
+            child: self.child.clone_rebind(ctx, scope, remap),
+            id: None,
+            top_id: self.top_id,
+        })
+    }
 }
