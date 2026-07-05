@@ -602,13 +602,21 @@ run!(gated_string_builtin, GATED_STRING_BUILTIN, |v: Result<&Value>| matches!(
     Ok(Value::I64(8))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — the residue of the gate idiom: an
-// UNANNOTATED scalar gate. Arith's contains(Number, TVar) binds the
-// never-TVar to the WIDE Number set, which genuinely denotes multiple
-// register classes — no freeze can soundly pick one, and the
-// contaminated type propagates into every downstream arith result, so
-// nothing in this minimal program fuses (silently, at the return
-// gate). Annotating the let (`let m: i64 = ...`) fixes it. Pinned so
+// ASPIRE: Jit (currently None) — the UNANNOTATED scalar gate, the
+// fixture that motivated typing `never()` as Bottom (2026-07-05).
+// The ⊥ typing fixed the SEMANTIC story (⊥ unifies everywhere, the
+// connect-seed idiom works, `f(never(), 5)` accepts) but the fusion
+// blocker turned out to be one level deeper: the never arm's call-
+// site cell stays OPEN through the select's union (the (TVar, ⊥)
+// rule deliberately doesn't bind — the seed idiom needs the cell
+// open for writers), and the downstream arith's containment walk
+// then binds it to the WIDE Number set — multiple register classes,
+// no sound freeze. The remaining fix is converting the
+// (Primitive, TVar-unbound) wide-bind rule to constrain-don't-bind
+// (the next Phase-B-style conversion, design/tvar_constraints.md);
+// with a Number CONJUNCT instead of a wide binding, the terminal
+// settle would ⊥ the never cell and the union would collapse.
+// Annotating the let (`let m: i64 = ...`) fuses today. Pinned so
 // drift in either direction surfaces.
 const GATED_SCALAR_UNANNOTATED: &str = r#"
 {

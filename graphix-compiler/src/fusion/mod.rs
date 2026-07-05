@@ -978,6 +978,15 @@ pub(crate) fn freeze_region_return(
     env: &Env,
 ) -> Option<Type> {
     use kernel_abi::AbiKind;
+    if std::env::var_os("GRAPHIX_DBG_FREEZE").is_some() {
+        let d = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            compact_str::format_compact!("{typ}")
+        });
+        eprintln!(
+            "DBGFREEZE typ={typ} deref={d} resolved={:?}",
+            typ.resolve_tvars().normalize()
+        );
+    }
     let return_type = match freeze_for_abi_normalized(reg, typ) {
         Some(t) => t,
         None => {

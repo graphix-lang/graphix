@@ -64,6 +64,18 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     if typ.has_unbound() {
         return None;
     }
+    // A ⊥-settled target is just as unusable as an unbound one: ⊥
+    // means "nothing ever constrained this cell" (never-as-Bottom's
+    // terminal settle), so there is no type to DIRECT the
+    // deserialization — and the value WOULD flow at runtime, laundering
+    // it under the never-arrives type into positions that trust the
+    // type system completely. Reject → the builtin's "type must be
+    // known, annotations needed" error, exactly as for unbound.
+    if matches!(typ.with_deref(|t| t.cloned()), Some(Type::Bottom))
+        || matches!(typ, Type::Bottom)
+    {
+        return None;
+    }
     Some(typ)
 }
 

@@ -82,6 +82,10 @@ run!(shuffle_array, SHUFFLE_ARRAY, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// Fuses since never-as-Bottom (2026-07-05): the empty array
+// literal's element cell used to stay an unbound tvar nothing could
+// freeze; the terminal settle now ⊥-defaults it and Array<⊥> freezes
+// (an empty array vacuously has any element type).
 const SHUFFLE_EMPTY: &str = r#"
   rand::shuffle([])
 "#;
@@ -91,4 +95,4 @@ run!(shuffle_empty, SHUFFLE_EMPTY, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);

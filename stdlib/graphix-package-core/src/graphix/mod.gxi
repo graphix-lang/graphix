@@ -149,8 +149,12 @@ val queuefn: fn(?#count:&[i64, null], #trigger:Any, f: 'a) -> 'a;
 /// through immediatly when they happen.
 val hold: fn(#clock:Any, v: 'a) -> 'a;
 
-/// ignore updates to any argument and never return anything
-val never: fn(@args: Any) -> 'a;
+/// ignore updates to any argument and never return anything. The
+/// return type is bottom — the honest type of a value that never
+/// arrives: it unifies into any position (`T ∪ ⊥ = T`, `⊥ ⊆ T`), so a
+/// `never()` select arm contributes nothing to the select's type and
+/// a never-initialized field satisfies any annotation.
+val never: fn(@args: Any) -> _;
 
 /// when v updates, return it, but also print it along
 /// with the position of the expression to the specified sink

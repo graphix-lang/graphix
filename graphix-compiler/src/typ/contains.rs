@@ -83,6 +83,33 @@ impl crate::typ::TVar {
             }
         }
     }
+
+    /// TERMINAL settle: like [`Self::settle`], but an UNCONSTRAINED
+    /// unbound cell binds to ⊥. By terminal-settle time every writer
+    /// has had the whole typecheck0 phase (args, annotations, connect
+    /// targets) and the constrained path its witness — a cell still
+    /// open with no constraints means nothing ever produced or bounded
+    /// it, and the honest type of a value that never arrives is Bottom
+    /// (`never()`'s result cell is the canonical case: its declared
+    /// rtype is the LITERAL ⊥, which unifies without binding, so the
+    /// call-site cell reaches here open). Only the terminal walk uses
+    /// this; the tc0-time derived settle keeps plain `settle` so it
+    /// can't foreclose writers that haven't typechecked yet.
+    pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
+        {
+            let tv = self.read();
+            let cell = tv.typ.read();
+            if cell.typ.is_some() {
+                return Ok(());
+            }
+            if cell.constraints.is_empty() {
+                drop(cell);
+                tv.typ.write().typ = Some(Type::Bottom);
+                return Ok(());
+            }
+        }
+        self.settle(env)
+    }
 }
 
 impl Type {
@@ -133,15 +160,20 @@ impl Type {
                     }
                 }
             }
-            (Self::TVar(t0), Self::Bottom) => {
-                if let Some(_) = &t0.read().typ.read().typ {
-                    return Ok(true);
-                }
-                if flags.contains(ContainsFlags::InitTVars) {
-                    t0.read().typ.write().typ = Some(Self::Bottom);
-                }
-                Ok(true)
-            }
+            // ⊥ fits into anything an open cell may later become
+            // (⊥ ⊆ T for every T), so binding here would gain no
+            // information and FORECLOSE the cell's writers: with
+            // never() typed ⊥, an eager bind broke both
+            // `f(never(), i64:5)` (the shared 'a instance bound ⊥
+            // first, then rejected the i64) and the connect-seed idiom
+            // (`let res = never(); res <- v` — the binding shares the
+            // call site's cell, and a ⊥-pinned binding rejects every
+            // write). Accept and leave the cell open; writers refine it
+            // during typecheck0, and a cell NOBODY refines defaults to
+            // ⊥ at the terminal settle (`TVar::settle_or_bottom`) — so
+            // the never-arm/union pollution still collapses, just one
+            // phase later.
+            (Self::TVar(_), Self::Bottom) => Ok(true),
             (Self::Bottom, Self::TVar(t0)) => {
                 if let Some(Type::Bottom) = &t0.read().typ.read().typ {
                     return Ok(true);

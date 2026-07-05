@@ -13,6 +13,7 @@ impl Type {
         let mut iters: LPooled<Vec<Box<dyn Iterator<Item = Self>>>> =
             LPooled::from_iter([init]);
         let mut acc: LPooled<Vec<Self>> = LPooled::take();
+        let mut saw_bottom = false;
         loop {
             match iters.last_mut() {
                 None => break,
@@ -26,6 +27,11 @@ impl Type {
                         iters.push(Box::new(v.into_iter()))
                     }
                     Some(Type::Any) => return Type::Any,
+                    // ⊥ ∪ X = X: a ⊥ member (a never() select arm, a
+                    // ⊥-settled cell after resolve_tvars) contributes
+                    // nothing to a union — drop it. An ALL-⊥ set is ⊥
+                    // itself (see the exit match).
+                    Some(Type::Bottom) => saw_bottom = true,
                     Some(t) => {
                         acc.push(t);
                         let mut i = 0;
@@ -55,6 +61,7 @@ impl Type {
         }
         acc.sort();
         match &**acc {
+            [] if saw_bottom => Type::Bottom,
             [] => Type::Primitive(BitFlags::empty()),
             [t] => t.clone(),
             _ => Type::Set(Arc::from_iter(acc.drain(..))),

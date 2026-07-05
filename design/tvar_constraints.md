@@ -353,24 +353,41 @@ reasoning, or a note in this doc for why it must stay"):
   from the first fix attempt). One mechanism would require re-deriving
   all four consumers off cells — phase-D-scale work with no observed
   bug behind it. Keep the view.
-- **`gated_scalar_unannotated` (the never()-gate) — NEEDS A RULING.**
-  The gate arm `0 => never()` contributes a bare unbound tvar to the
-  select's union; nothing downstream narrows it, so the union never
-  freezes. Two candidate designs:
-  (a) **Type `never()` (and kin) as `Bottom`** — the honest type of a
-      value that never arrives; unions collapse (`⊥ ∪ i64 = i64`), the
-      gate types as plain `i64`, and every consumer/freeze is exact.
-      Language-level change: anything special-casing Bottom (throws
-      inference uses it as "doesn't throw") needs an audit, and
-      `fn() -> ⊥` becomes a user-visible signature.
-  (b) **Never-arm defers to siblings** at select typecheck (bind the
-      arm's bare tvar to the union of the other arms). Sound for
-      never(), but structurally indistinguishable from a PARAM tvar in
-      arm position — `|a| select x { 0 => a, _ => 1 }` would tighten
-      `a := i64` and reject today-accepted mixed calls. Would need a
-      reliable "fresh, reachable-from-nowhere" test.
-  (a) is the principled one; both are Eric's call. The fixture stays
-  pinned ASPIRE-None either way.
+- **`gated_scalar_unannotated` (the never()-gate) — RULED (a) and
+  BUILT (2026-07-05, Eric: "we both agree that never should be
+  bottom, it's just obvious").** `never: fn(@args: Any) -> _` — the
+  surface syntax for ⊥ is `_` (typexp.rs:322). Three pieces landed:
+  1. `(TVar-unbound, ⊥)` in contains is NO-BIND: ⊥ ⊆ anything the
+     cell may become, so binding gains nothing and forecloses the
+     cell's writers. This makes BOTH `f(never(), i64:5)` (the shared
+     'a instance takes i64 from the other arg) and the connect-seed
+     idiom (`let res = never(); res <- v` — the binding shares the
+     call site's open cell; the connect refines it at ITS tc0) work.
+     The eager-bind variant was tried first and broke both.
+  2. `TVar::settle_or_bottom` — TERMINAL-only settle: an
+     unconstrained cell still unbound after the whole tc0 phase
+     binds ⊥ ("nothing ever produced or constrained it"). Wired into
+     CallSite::typecheck1's terminal walk + the site's own rtype
+     cell (never's declared rtype is LITERAL ⊥, so the site cell
+     never appears in the ftype walk). The tc0-time derived settle
+     keeps plain `settle` — it must not foreclose writers that
+     haven't typechecked yet. The tc0-before-tc1 phase order is what
+     makes writers-refine vs ⊥-default compose.
+  3. `flatten_set` drops ⊥ members (⊥ ∪ X = X; an all-⊥ set is ⊥),
+     so resolve+normalize collapses never arms out of unions.
+  Union already collapsed literal ⊥ (setops.rs:70), and select's
+  rtype IS a union fold — a never() arm contributes nothing to the
+  select's type, per Eric's first concern.
+  **The FUSION win remains ASPIRE**: the never cell stays open
+  through the select union (by design, piece 1) and the downstream
+  arith's containment walk binds it to the WIDE Number set at tc0 —
+  before the terminal settle can ⊥ it. The remaining fix is
+  converting the `(Primitive, TVar-unbound)` WIDE-BIND rule to
+  constrain-don't-bind (the next Phase-B-style conversion): with a
+  Number CONJUNCT instead of a wide binding, the terminal settle
+  ⊥-defaults the never cell and the union collapses. That conversion
+  is the natural continuation of this document's program and needs
+  its own gate run.
 - **typedef/abstract param constraints STAY SEPARATE** for now: they
   check at REF LOOKUP (expansion time) with their own `Option<Type>`
   representation, a different lifecycle from cell conjuncts (which
