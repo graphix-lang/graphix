@@ -1218,6 +1218,26 @@ fn compile_into_function(
     // locals are dropped, the params stay.
     let param_mark = env.mark();
 
+    // Control-dependence firing accumulator for TAIL-position selects
+    // (`emit_select_node_tail` ANDs each scrutinee's STALE bit in;
+    // `emit_kernel_return` folds it into the returned disc). A tail
+    // select's arms terminate individually — there is no merge point
+    // where the value-position emitter would fold the scrutinee's
+    // firing — so without this a result whose VALUE chain is all-stale
+    // (const-seeded acc + const capture) read quiet even when the
+    // scrutinee (the loop bound) fired: `g(in0, i64:0)` with
+    // `|n, acc| select n {0 => acc, _ => g(n-1, acc+cap)}` fired only
+    // at init. Initialized to STALE-set (the AND identity): a kernel
+    // with no tail select folds as a no-op. Defined in the ENTRY block
+    // so it dominates every use (including loop-carried ones — once a
+    // fired scrutinee clears it, band keeps it cleared).
+    let tail_scrut_stale = {
+        let v = b.declare_var(types::I64);
+        let init = b.ins().iconst(types::I64, STALE);
+        b.def_var(v, init);
+        v
+    };
+
     let loop_head = if kernel.has_tail_loop {
         // A separate loop_head lets multiple TailCall arms branch back
         // to a single point. We can't seal it until the body's been
@@ -1242,6 +1262,7 @@ fn compile_into_function(
         callee_refs,
         helper_refs,
         tail_call_slots,
+        tail_scrut_stale,
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
@@ -1488,6 +1509,14 @@ pub(crate) struct LowerCtx<'a> {
     /// without a tail loop (or that hand-built fixtures leave
     /// empty).
     tail_call_slots: Option<&'a [kernel_abi::TailCallSlot]>,
+    /// Control-dependence firing accumulator: the AND over every
+    /// TAIL-position select scrutinee's STALE bit on the executed path
+    /// (`emit_select_node_tail` folds each in; STALE-set = no tail
+    /// select fired). `emit_kernel_return` ANDs it into the returned
+    /// disc's STALE so a result whose value chain is all-stale still
+    /// fires when the arm-selecting scrutinee fired — the tail-arm
+    /// mirror of the value-position select's merge-point fold.
+    tail_scrut_stale: Variable,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
     /// pops it once `graphix_dyncall` has consumed it. A composite-
@@ -2584,6 +2613,17 @@ pub(crate) fn bind_scalar_var_with_disc(
 /// `new_vals` are the already-evaluated replacement values for the
 /// leading `new_vals.len()` tail-call slots — the FORMALS; trailing
 /// capture slots stay bound (loop-invariant within one invocation).
+/// Each rebind writes BOTH registers of the slot's ValueVar — the
+/// payload AND the disc. The disc carry is load-bearing for firing:
+/// the loop's terminating arm returns a formal, and its disc at that
+/// point must be the LAST iteration's computed fired-ness (the kernel
+/// mirror of the interp loop's per-iteration `pat.bind`). Rebinding
+/// payloads only left every formal's disc at its ENTRY value, so a
+/// constant-seeded accumulator (`g(in0, i64:0)`) returned the seed's
+/// non-init STALE on every later invocation — the callee flagged
+/// not-fresh, the caller forced bottom, and a live-input-driven tail
+/// loop fired exactly once (soak jul04 follow-up; the same
+/// carry-the-disc lesson as fold/#9).
 /// `sources[i]` classifies each arg's composite provenance so a
 /// Borrowed pointer is refcount-bumped before the old slot value
 /// drops. Drops every owned non-slot local above the param mark
@@ -2593,7 +2633,7 @@ fn emit_tail_rebind_jump(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
     ctx: &LowerCtx,
-    new_vals: Vec<ClifValue>,
+    new_vals: Vec<CompiledExpr>,
     sources: &[CompositeSource],
 ) -> Result<()> {
     let head = ctx.loop_head.ok_or_else(|| {
@@ -2601,13 +2641,12 @@ fn emit_tail_rebind_jump(
     })?;
     // Back-compat: hand-built test kernels leave `tail_call_slots`
     // empty and assume all params are scalar in declaration order.
-    // Drive the rebind positionally in that case. Payload only — the
-    // formals' discs stay (valid by the arg force in
-    // `emit_self_tail_call`).
+    // Drive the rebind positionally in that case.
     if ctx.tail_call_slots.is_none() {
         debug_assert_eq!(new_vals.len(), ctx.param_mark);
         for (i, v) in new_vals.iter().enumerate() {
-            b.def_var(env.locals[i].vv.payload, *v);
+            b.def_var(env.locals[i].vv.payload, v.payload);
+            b.def_var(env.locals[i].vv.disc, v.disc);
         }
         env.truncate(ctx.param_mark);
         b.ins().jump(head, &[]);
@@ -2627,44 +2666,44 @@ fn emit_tail_rebind_jump(
         .helper_refs
         .get("graphix_valarray_clone")
         .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
-    let mut new_vals: Vec<ClifValue> = new_vals;
+    let mut new_vals: Vec<CompiledExpr> = new_vals;
     for (i, slot) in slots.iter().take(new_vals.len()).enumerate() {
         if matches!(slot.kind, TailCallSlotKind::ValArray)
             && sources[i] == CompositeSource::Borrowed
         {
             // Clone (refcount bump) so the next iteration holds an
             // owned reference, separate from any other live alias.
-            let call = b.ins().call(clone_helper, &[new_vals[i]]);
-            new_vals[i] = b.inst_results(call)[0];
+            let call = b.ins().call(clone_helper, &[new_vals[i].payload]);
+            new_vals[i].payload = b.inst_results(call)[0];
         }
     }
     for (slot, v) in slots.iter().zip(new_vals.iter()) {
         match slot.kind {
             TailCallSlotKind::Scalar(_) => {
-                let pv = env
+                let vv = env
                     .lookup_name(&slot.name)
                     .ok_or_else(|| {
                         anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
                     })?
-                    .vv
-                    .payload;
-                b.def_var(pv, *v);
+                    .vv;
+                b.def_var(vv.payload, v.payload);
+                b.def_var(vv.disc, v.disc);
             }
             TailCallSlotKind::ValArray => {
                 // Composite rebind: drop the previously-owned pointer
                 // in the slot, then store the new owned
                 // `*mut ValArray`. This closes the leak we had in
                 // Phase 2.
-                let pv = env
+                let vv = env
                     .lookup_name(&slot.name)
                     .ok_or_else(|| {
                         anyhow!("TailCall: composite slot `{}` not in env", slot.name)
                     })?
-                    .vv
-                    .payload;
-                let old = b.use_var(pv);
+                    .vv;
+                let old = b.use_var(vv.payload);
                 b.ins().call(drop_helper, &[old]);
-                b.def_var(pv, *v);
+                b.def_var(vv.payload, v.payload);
+                b.def_var(vv.disc, v.disc);
             }
             TailCallSlotKind::Variant => {
                 return Err(anyhow!("JIT: variant tail-call rebind not yet supported"));
@@ -3384,9 +3423,21 @@ fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
 fn emit_kernel_return(
     cx: &mut BodyCx,
     return_type: &Type,
-    cv: CompiledExpr,
+    mut cv: CompiledExpr,
     src: CompositeSource,
 ) -> Result<()> {
+    // Apply the tail-selects' control-dependence firing (see
+    // `LowerCtx::tail_scrut_stale`): the result fires if its value
+    // chain fired OR any tail-select scrutinee on the executed path
+    // did. With no tail select the accumulator is the STALE-set
+    // identity and this folds to the value's own bit.
+    {
+        let acc = cx.b.use_var(cx.ctx.tail_scrut_stale);
+        let vs = cx.b.ins().band_imm(cv.disc, STALE);
+        let folded = cx.b.ins().band(vs, acc);
+        let cleaned = cx.b.ins().band_imm(cv.disc, !STALE);
+        cv.disc = cx.b.ins().bor(cleaned, folded);
+    }
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
@@ -4283,6 +4334,17 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // scrutinee, emitting no branch (#219).
     let valid = is_untainted(cx.b, scrut.disc());
     emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+    // Fold this scrutinee's firing into the kernel's tail-firing
+    // accumulator (see `LowerCtx::tail_scrut_stale`): the arms
+    // terminate individually, so the return path is where the
+    // scrutinee's control-dependence firing gets applied. band keeps
+    // a cleared (fired) bit cleared across loop iterations.
+    {
+        let cur = cx.b.use_var(cx.ctx.tail_scrut_stale);
+        let ss = cx.b.ins().band_imm(scrut.disc(), STALE);
+        let n = cx.b.ins().band(cur, ss);
+        cx.b.def_var(cx.ctx.tail_scrut_stale, n);
+    }
     emit_select_arms(
         cx,
         sel,
@@ -4332,11 +4394,11 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         // kernel-wide bottom (the node-walk's CallSite wouldn't fire).
         // `is_untainted` folds to const-true for an untainted disc, so a
         // normal arg emits no branch. The rebind protocol covers
-        // scalar/composite slots (payload word) only — a value-shape
-        // formal is refused by the tail-loop gate at build.
+        // scalar/composite slots — the full (disc, payload) pair; a
+        // value-shape formal is refused by the tail-loop gate at build.
         let valid = is_untainted(cx.b, cv.disc);
         emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-        new_vals.push(cv.payload);
+        new_vals.push(cv);
         sources.push(node_composite_source(arg));
     }
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, new_vals, &sources)
