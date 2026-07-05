@@ -248,10 +248,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // native loop). A tail-position self-call in the body stashes its
             // rebind args in `ctx.pending_tail_call` and returns without
             // dispatching (`CallSite::update`); we take them, rebind the
-            // formals, and re-run the body. `event.init = true` each iteration
-            // makes every pass a "fresh call" — init-gated nodes (Constants)
-            // re-fire, matching both the old fresh-body-per-level node-walk and
-            // the JIT's per-iteration re-execution.
+            // formals, and re-run the body. `event.init = true` on each
+            // RE-ENTERED pass makes it a "fresh call" — init-gated nodes
+            // (Constants) re-fire, matching both the old fresh-body-per-level
+            // node-walk and the JIT's per-iteration re-execution. The FIRST
+            // pass honors the event's real init flag: it is an ordinary
+            // call/poll, exactly like the non-tail-loop path above, and
+            // forcing init there re-fired the body's constants on every
+            // passive re-poll — one spurious result emit per cycle whenever
+            // any unrelated event flowed (#8, soak jul04; the JIT, which
+            // gates the kernel on its inputs' fired bits, was right).
+            let mut reentered = false;
             loop {
                 // Cooperative interrupt: a wedged tail loop aborts to bottom
                 // when `interrupt()`/`abort()` is requested (`do_cycle` clears
@@ -259,7 +266,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 if ctx.interrupted() {
                     break None;
                 }
-                let prev = mem::replace(&mut event.init, true);
+                let prev = event.init;
+                if reentered {
+                    event.init = true;
+                }
                 let res = self.body.update(ctx, event);
                 event.init = prev;
                 let mine = matches!(
@@ -269,6 +279,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 if !mine {
                     break res;
                 }
+                reentered = true;
                 let p = ctx.pending_tail_call.take().unwrap();
                 let prev = mem::replace(&mut event.init, true);
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
