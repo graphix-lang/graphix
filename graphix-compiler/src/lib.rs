@@ -993,42 +993,43 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// **Capture-safe.** `compile` re-resolves every `Ref` by name, but a
     /// CAPTURE was resolved in an *outer* scope not lexically visible from
     /// `scope`, so a naive recompile would fail ("not defined"). So first
-    /// alias each *unresolved* external ref's name → its original id into
-    /// `scope`; the recompile then resolves it back to the same outer
-    /// binding. Internal refs re-minted into `scope` already resolve and
-    /// are left alone (the alias would wrongly shadow the fresh id).
+    /// alias EVERY external ref's name — resolved through `remap` — into
+    /// the fresh child scope below. Unconditional and deepest-wins:
+    /// resolution by recorded IDENTITY, immune to same-named env
+    /// pollution. The remap consultation is load-bearing: a per-slot HOF
+    /// initiator seeds `remap` with its feeder rebindings (analysis
+    /// element id → this slot's fresh id), so a feeder ref aliases to
+    /// THIS slot's binding, while a true capture (absent from the table)
+    /// aliases to its original outer binding — the same contract the
+    /// structural clone spine honors. (The old conditional — alias into
+    /// the SHARED `scope`, only when `lookup_bind` found nothing — was
+    /// the #5 soak-jul04 bug: a sibling slot clone's re-minted bind
+    /// under the same name made the lookup succeed, the alias was
+    /// skipped, and the recompiled body read the sibling's binding. It
+    /// also resolved slot feeders by name-lookup luck instead of the
+    /// remap.) Internal refs still resolve to their re-minted binds: the
+    /// replayed compile registers each internal binder in the child
+    /// scope as it goes, shadowing the alias for everything lexically
+    /// after it — exactly the original scoping. Known residual: two
+    /// same-named external captures with distinct ids (only reachable
+    /// via a `use` re-pointing the name mid-subtree) collapse to the
+    /// later alias; that limitation predates this fix.
     fn clone_rebind(
         &self,
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
-        _remap: &mut RebindMap,
+        remap: &mut RebindMap,
     ) -> Node<R, E> {
-        let mut refs = Refs::default();
-        self.refs(&mut refs);
-        for id in refs.refed.iter() {
-            if refs.bound.contains(id) {
-                continue;
-            }
-            let bid = *id;
-            let name = match ctx.env.by_id.get(&bid) {
-                Some(b) => b.name.clone(),
-                None => continue,
-            };
-            let mp = ModPath::from_iter([name.as_str()]);
-            if ctx.env.lookup_bind(&scope.lexical, &mp).is_none() {
-                ctx.env.alias_variable(&scope.lexical, &name, bid);
-            }
-        }
         // Recompile into a fresh child scope: compile MUTATES the env, and
         // this spec was already compiled once into `scope` — a replay there
         // collides on registrations that reject redefinition (`deftype`:
         // a typedef in an HOF callback body panicked every per-slot clone)
         // and stacks shadow binds otherwise. The child scope makes the
-        // replay hermetic: internal registrations land in a scope this
-        // clone alone owns (and its delete alone cleans), while captures
-        // and the aliases above still resolve by walking up to `scope`.
-        // Internal names are lexically invisible to template siblings, so
-        // nothing outside the subtree resolves into the child scope.
+        // replay hermetic: internal registrations (and the capture aliases
+        // above) land in a scope this clone alone owns (and its delete
+        // alone cleans). Internal names are lexically invisible to template
+        // siblings, so nothing outside the subtree resolves into the child
+        // scope.
         static REBIND_SCOPE: AtomicU32 = AtomicU32::new(0);
         let fresh = Scope {
             lexical: ModPath(
@@ -1042,6 +1043,19 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
             ),
             dynamic: scope.dynamic.clone(),
         };
+        let mut refs = Refs::default();
+        self.refs(&mut refs);
+        for id in refs.refed.iter() {
+            if refs.bound.contains(id) {
+                continue;
+            }
+            let bid = remap.get(id).copied().unwrap_or(*id);
+            let name = match ctx.env.by_id.get(&bid) {
+                Some(b) => b.name.clone(),
+                None => continue,
+            };
+            ctx.env.alias_variable(&fresh.lexical, &name, bid);
+        }
         compiler::compile(
             ctx,
             enumflags2::BitFlags::empty(),
