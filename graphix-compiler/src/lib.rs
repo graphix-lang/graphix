@@ -1031,13 +1031,15 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
         // nothing outside the subtree resolves into the child scope.
         static REBIND_SCOPE: AtomicU32 = AtomicU32::new(0);
         let fresh = Scope {
-            lexical: ModPath(scope.lexical.append(
-                compact_str::format_compact!(
-                    "rb{}",
-                    REBIND_SCOPE.fetch_add(1, Ordering::Relaxed)
-                )
-                .as_str(),
-            )),
+            lexical: ModPath(
+                scope.lexical.append(
+                    compact_str::format_compact!(
+                        "rb{}",
+                        REBIND_SCOPE.fetch_add(1, Ordering::Relaxed)
+                    )
+                    .as_str(),
+                ),
+            ),
             dynamic: scope.dynamic.clone(),
         };
         compiler::compile(

@@ -1,0 +1,28 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([]) — runtime arith error, bottom
+// jit:    Trace([0:i64:<heap pointer>]) — string payload word added
+//         to 0 and LEAKED as i64 (value varies per run)
+// Found by the jul04 combined soak, fuzz campaign seed 70410
+// (corpus-fuzz/divergence_000008, ~07:39 on 07-05).
+// root_cause: #20 Phase B regression (6ed57925). Arith typecheck0's
+// constrain-don't-bind path returns early when an operand is an
+// unbound constrained tvar — WITHOUT checking the OTHER, KNOWN
+// operand against number() (the old code ran typecheck_tail's ut
+// check inline at tc0 and rejected). The deferred typecheck_tail at
+// typecheck1 only ever runs inside SWALLOWED per-site body rechecks
+// (the def-time acceptance gate is faux typecheck0 + signature
+// unification only), so `'a: Number` + `x + "hello"` compiles.
+// Node-walk survives via runtime checked-add (error -> bottom); the
+// JIT trusts the types and emits i64 add on the ArcStr payload word
+// — a pointer leak. Version-skew proof: the 13:32 pre-Phase-B shell
+// binary rejects this exact program; the 17:00 all-phases fuzz
+// binary accepts. Boundary probes: known+known (p58) still rejects
+// at tc0; string ARG to a Number param (p60) still rejects via cell-
+// conjunct arg enforcement — the hole is exactly tvar-operand +
+// known-incompatible-operand inside a lambda body.
+// fix: in the tc0 constrain path, check each KNOWN operand against
+// Primitive(Typ::number()) immediately (pure containment, binds no
+// tvar); audit Neg (negatable) for the same hole. After the fix this
+// pin becomes CompileErr in both modes (AGREE).
+// minimized:
+{let f = 'a: Number|x: 'a, y: 'a| -> 'a x + "hello"; f(i64:0, i64:2)}

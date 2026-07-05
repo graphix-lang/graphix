@@ -1421,8 +1421,7 @@ fn struct_ref_chain() {
 
 #[test]
 fn tuple_ref_chain() {
-    let a0 =
-        ExprKind::TupleRef { source: Arc::new(refx("a")), field: 0 }.to_expr_nopos();
+    let a0 = ExprKind::TupleRef { source: Arc::new(refx("a")), field: 0 }.to_expr_nopos();
     let a01 = ExprKind::TupleRef { source: Arc::new(a0), field: 1 }.to_expr_nopos();
     assert_eq!(a01, parse_one("a.0.1").unwrap());
 }
@@ -1444,25 +1443,18 @@ fn apply_chain() {
 
 #[test]
 fn array_ref_chain() {
-    let ai = ExprKind::ArrayRef {
-        source: Arc::new(refx("a")),
-        i: Arc::new(refx("i")),
-    }
-    .to_expr_nopos();
-    let aij =
-        ExprKind::ArrayRef { source: Arc::new(ai), i: Arc::new(refx("j")) }
-            .to_expr_nopos();
+    let ai = ExprKind::ArrayRef { source: Arc::new(refx("a")), i: Arc::new(refx("i")) }
+        .to_expr_nopos();
+    let aij = ExprKind::ArrayRef { source: Arc::new(ai), i: Arc::new(refx("j")) }
+        .to_expr_nopos();
     assert_eq!(aij, parse_one("a[i][j]").unwrap());
 }
 
 #[test]
 fn map_then_struct_chain() {
     // m{k}.f  =>  StructRef(MapRef(m, k), f)
-    let mk = ExprKind::MapRef {
-        source: Arc::new(refx("m")),
-        key: Arc::new(refx("k")),
-    }
-    .to_expr_nopos();
+    let mk = ExprKind::MapRef { source: Arc::new(refx("m")), key: Arc::new(refx("k")) }
+        .to_expr_nopos();
     let mkf = ExprKind::StructRef { source: Arc::new(mk), field: literal!("f") }
         .to_expr_nopos();
     assert_eq!(mkf, parse_one("m{k}.f").unwrap());
@@ -1524,8 +1516,8 @@ fn print_bare_chains_round_trip() {
         ("a[i][j]", "a[i][j]"),
         ("m{k}.f", "m{k}.f"),
         ("f(x){k}", "f(x){k}"),
-        ("(a + b).c", "(a + b).c"),     // non-chain source stays parenthesized
-        ("(42).0", "(i64:42).0"),       // constant source stays parenthesized
+        ("(a + b).c", "(a + b).c"), // non-chain source stays parenthesized
+        ("(42).0", "(i64:42).0"),   // constant source stays parenthesized
     ] {
         let e = parse_one(src).unwrap();
         let printed = format!("{e}");
@@ -1676,4 +1668,3 @@ fn parenthesized_connect_round_trips() {
     let e2 = parse_one(&e.to_string()).unwrap();
     assert_eq!(e.kind, e2.kind);
 }
-

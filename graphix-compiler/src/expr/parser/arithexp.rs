@@ -143,7 +143,8 @@ where
                 (exprs.drain(..).next().unwrap(), Some(()))
             } else {
                 (
-                    ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }.to_expr(pos),
+                    ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }
+                        .to_expr(pos),
                     None,
                 )
             }

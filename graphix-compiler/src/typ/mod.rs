@@ -421,9 +421,13 @@ impl Type {
                 Some(t) => Some(t),
                 None => Some((**t).clone()),
             },
-            Type::TVar(tv) => {
-                tv.read().typ.read().typ.as_ref().and_then(|t| t.strip_error_int(env, hist))
-            }
+            Type::TVar(tv) => tv
+                .read()
+                .typ
+                .read()
+                .typ
+                .as_ref()
+                .and_then(|t| t.strip_error_int(env, hist)),
             Type::Primitive(p) => {
                 if *p == BitFlags::from(Typ::Error) {
                     Some(Type::Any)

@@ -67,9 +67,8 @@ where
         sptoken(']'),
         (position(), spaces()).then(|(pos, _)| {
             choice((
-                attempt(idx().skip(look_ahead(sptoken(']')))).map(move |idx| {
-                    Either::Right(ExprKind::Constant(idx).to_expr(pos))
-                }),
+                attempt(idx().skip(look_ahead(sptoken(']'))))
+                    .map(move |idx| Either::Right(ExprKind::Constant(idx).to_expr(pos))),
                 attempt(
                     (
                         optional(idx()).skip(spstring("..")),

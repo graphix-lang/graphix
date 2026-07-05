@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Timeout
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(8))], capped: false }] })
+// mutant: {let depth = i64:0; let qf = queuefn(#count: &depth, #trigger: never(), |x| -> i64 x * i64:100); qf(i64:1); qf(i64:2); qf({let rec f = |v| -> i64 f(v + i64:1); f(i64:0)}); i64:8}
+// minimized:
+{let depth = i64:0; let qf = queuefn(#count: &depth, #trigger: never(), |x| -> i64 x * i64:100); qf(i64:1); qf(i64:2); qf({let rec f = |v| -> i64 f(v + i64:1); f(i64:0)}); i64:8}

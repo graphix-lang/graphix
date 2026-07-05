@@ -1,0 +1,23 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:i64:1 1:i64:1 2:i64:1]) — re-fires per cycle
+// jit:    Trace([0:i64:1]) — CORRECT (matches non-rec baseline)
+// Found by the jul04 combined soak, fuzz campaign (seed 70404),
+// corpus-fuzz/divergence_000004 (original used queuefn; any
+// multi-cycle statement works — reduced to seq).
+// root_cause: NODE-WALK over-fire. GXLambda::update's tail_loop
+// branch (lambda.rs:262) forces `event.init = true` on EVERY body
+// pass — including the first pass of a passive re-poll with an
+// unrelated event. Init-gated Constants re-fire, the select re-emits
+// its arm value, the callsite returns Some, the enclosing block
+// re-emits — one spurious result fire per cycle with any event
+// flowing. Needs `let rec` + self-TAIL-call (tail_loop set) + select
+// with a const-bearing arm (init-gated node): non-rec (p42), rec
+// without self-call (p43), and non-select bodies (p36/p37) all agree.
+// Genuine repeated calls DON'T need the first-pass forcing: the
+// non-rec path never forces init on re-calls and agrees with the jit
+// (p44), and rec under re-firing args also agrees (p45). The forced
+// init exists to make tail-loop RE-ENTRIES look like fresh calls
+// (fresh-body-per-level emulation) — it must apply only to passes
+// AFTER a pending_tail_call rebind, never the first.
+// minimized:
+{seq(i64:0, i64:2); {let rec g = |n: i64| -> i64 select n {i64:0 => cast<i64>(true)$, _ => g(n - i64:1)}; g(i64:0)}}
