@@ -444,7 +444,10 @@ macro_rules! escape_fn {
                     match &self.args.0[0] {
                         Some(esc) => match build_escape(esc.clone()) {
                             Err(e) => {
-                                return Some(errf!(TAG, "escape: invalid argument {e:?}"));
+                                return Some(errf!(
+                                    TAG,
+                                    "escape: invalid argument {e:?}"
+                                ));
                             }
                             Ok(esc) => self.escape = Some(esc),
                         },
@@ -795,7 +798,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
                 }
                 Some(Value::String(ArcStr::from(&self.0)))
             }
-            v => Some(errf!(literal!("SubError"), "sub args must be non negative {v:?}")),
+            v @ [Some(_), Some(_), Some(_)] => {
+                Some(errf!(literal!("SubError"), "sub args must be non negative {v:?}"))
+            }
+            _ => None,
         }
     }
 }
