@@ -950,6 +950,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             },
         );
         let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);
+        // While this def's body is checked, a self-call site must knot
+        // to the def's own ftype cells (see `ExecCtx::rec_defs`).
+        ctx.rec_defs.insert(def.id);
         let res = (def.init)(&def.scope, ctx, &mut faux_args, None, ExprId::new())
             .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
@@ -985,6 +988,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             ftyp.constrain_known();
             Ok(())
         });
+        ctx.rec_defs.remove(&def.id);
         ctx.env.by_id.remove_cow(&faux_id);
         match prev_catch {
             Some(id) => ctx.env.catch.insert_cow(def.scope.dynamic.clone(), id),

@@ -1635,6 +1635,19 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// `body == Either::Right(name)`. User-lambda bindings leave
     /// no entry here; only builtin lambdas appear.
     pub builtin_bindings: AHashMap<(ModPath, CompactString), BuiltinBindInfo>,
+    /// `LambdaId`s whose def-time body typecheck is IN PROGRESS
+    /// (`Lambda::typecheck0`'s faux instantiation). A `CallSite` whose
+    /// callee ftype carries one of these ids is a recursive self-call
+    /// inside the very body being checked: it must unify against the
+    /// def's OWN ftype cells instead of a `reset_tvars` freshening —
+    /// monomorphic recursion. The knot makes the μ-equation collapse
+    /// (`'r ⊇ [T, 'r]` binds `'r := T` through the same-cell rule) and
+    /// makes a self-call arg mismatch a def-time error, exactly as it
+    /// is for the non-recursive twin. A freshened self-call instead
+    /// leaves an orphan cell in the arm union that `constrain_known`
+    /// widens to `Any` — the recursive lambda's checked signature
+    /// silently degrades (soak jul05 items 11/17).
+    pub(crate) rec_defs: nohash::IntSet<LambdaId>,
     /// All state owned by the fusion subsystem — the JIT module,
     /// kernel caches, abstract-type registry, builtin effects, and the
     /// compile-time fusion flags/counters. Grouped into one struct so
@@ -1688,6 +1701,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             bind_to_lambda: IntMap::default(),
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
+            rec_defs: nohash::IntSet::default(),
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             control: Arc::new(Control::new()),

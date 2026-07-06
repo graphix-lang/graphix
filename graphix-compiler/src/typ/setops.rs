@@ -196,8 +196,24 @@ impl Type {
             (f @ Type::Fn(_), t) | (t, f @ Type::Fn(_)) => {
                 Ok(Type::Set(Arc::from_iter([f.clone(), t.clone()])))
             }
-            (t0 @ Type::TVar(_), t1 @ Type::TVar(_)) => {
-                if t0 == t1 {
+            (t0 @ Type::TVar(tv0), t1 @ Type::TVar(tv1)) => {
+                // `TVar::eq` calls two UNBOUND cells equal (None ==
+                // None), but they are not the same type — either cell
+                // may bind later, and collapsing here silently drops
+                // the discarded cell's future binding (a select arm's
+                // `Error<_>` vanished from the arm union this way and
+                // an ill-typed body compiled). Collapse only when the
+                // tvars share a cell or are bound to equal types.
+                let same = {
+                    let t0i = tv0.read();
+                    let t1i = tv1.read();
+                    Arc::ptr_eq(&t0i.typ, &t1i.typ) || {
+                        let t0b = t0i.typ.read();
+                        let t1b = t1i.typ.read();
+                        t0b.typ.is_some() && t0b.typ == t1b.typ
+                    }
+                };
+                if same {
                     Ok(t0.clone())
                 } else {
                     Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))

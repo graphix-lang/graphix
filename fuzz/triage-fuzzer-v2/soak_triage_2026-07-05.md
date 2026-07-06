@@ -127,19 +127,27 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     same missing de-fuse gate, same SIGABRT. Second repro for the
     item-5 fix's regression tests.
 
-11. **OPEN (root-caused, fix when campaigns stop) — recursive lambda
-    rtype annotation NOT enforced against its body; JIT leaks a
-    pointer** — corpus-fuzz/divergence_000010. Pinned at
+11. **FIXED (2026-07-05) — recursive lambda rtype annotation NOT
+    enforced against its body; JIT leaks a pointer** — corpus-fuzz/
+    divergence_000010. Pinned at
     findings/rec-rtype-unchecked-jul2026/01. `|n, acc| -> i64 select
-    n {0 => acc, _ => error(i64:0)}` compiles (should reject — the
-    non-rec twin j16 DOES reject); fusion builds a scalar-i64 return
-    slot, an Error Value flows out, scalar kernel leaks the payload
-    ptr. #18's swallowed-recursion-typing family, RETURN-type flavor
-    (my #21 guard only covered self-call args). fix: enforce the rec
-    rtype vs body non-swallowed. SIXTH real bug of the round, second
-    memory-safety one (with item 5). Needs a rebuild to pinpoint WHY
-    the rec rtype check is evaded — the GXLambda::typecheck0
-    rtype.check_contains should fire at def time.
+    n {0 => acc, _ => error(i64:0)}` compiled; fusion built a
+    scalar-i64 return slot, an Error Value flowed out, scalar kernel
+    leaked the payload ptr. ROOT CAUSE (deeper than the triage
+    hypothesis — the def-time check was NEVER swallowed): `TVar::eq`
+    calls two DISTINCT unbound cells equal (None == None), and
+    `Type::union_int`'s (TVar, TVar) arm collapsed on bare `==` — so
+    the select's arm union DROPPED the error arm's not-yet-bound
+    rtype cell, and the def-time rtype check bound the lone surviving
+    tvar to i64 vacuously. By the time `error(i64:0)` resolved to
+    `Error<i64>`, the body type no longer referenced its cell. The
+    non-rec twin only "rejected" when arm 0 was concrete; with an
+    unannotated second formal BOTH twins compiled. FIX: union_int
+    collapses two tvars only same-cell or bound-equal
+    (typ/setops.rs). Both twins now reject at def time. run!
+    fixtures: rtype_rejects_error_arm, rec_rtype_rejects_error_arm,
+    arm_union_keeps_both_tvars (positive control) in
+    lang/functions.rs.
 
 12. **OPEN — REAL CRASH (SIGABRT/stack overflow), fix when campaigns
     stop — JIT depth guard NOT emitted for a VARIANT-return non-tail
@@ -203,32 +211,39 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     reactive fold, not just the minimal repro. Second regression
     case for the item-9 fix.
 
-17. **OPEN — REAL CRASH (SIGABRT), fix when campaigns stop — #21
-    guard HOLE: rec self-call arg mismatch when the FORMAL resolved
-    to the recursion's type** — corpus-fuzz/crash_000016. probe j31:
+17. **FIXED (2026-07-05) — REAL CRASH (SIGABRT) — #21 guard HOLE: rec
+    self-call arg mismatch when the FORMAL resolved to the
+    recursion's type** — corpus-fuzz/crash_000016. probe j31:
     `|n, acc| select n {0 => acc, _ => sum_to(buffer::to_string(...),
-    acc + n)}; sum_to(i64:100, i64:0)`. The self-call passes a String
-    for n; interp survives (type-tolerant: acc + "hello" logs an
-    arith error, bottoms → Trace([])); the JIT aborts (the marshal
-    tries to PARSE "hello" into the i64 slot — "Unexpected h"). My #21
+    acc + n)}; sum_to(i64:100, i64:0)`. The self-call passed a String
+    for n; interp survived (type-tolerant: acc + "hello" logs an
+    arith error, bottoms → Trace([])); the JIT aborted (the marshal
+    tried to PARSE "hello" into the i64 slot — "Unexpected h"). My #21
     self_calls_abi_consistent guard checks self-call args vs formals,
-    but here the FORMAL n resolved to the recursion's type (so
-    self-call arg == formal, guard passes) and it's the OUTER call's
-    i64:100 that mismatches — a hole the guard structurally can't see
-    (it never checks the entry call).
+    but the FORMAL n resolved to the recursion's type (self-call arg
+    == formal, guard passes) and it was the ENTRY call's i64:100 that
+    mismatched — a hole the guard structurally can't see.
 
-    UNIFYING ROOT (with item 11): the recursion typing admits an
-    ill-typed body (arg here, RETURN in item 11) — a non-recursive
-    twin would be REJECTED at compile. #21's fusion-side guard is a
-    band-aid with holes. The principled fix Eric has pushed toward
-    ("get the typechecker wrong → things explode"): enforce the
-    recursive lambda's body typecheck NON-SWALLOWED at def time (args
-    AND return), rejecting items 11 + 17 at compile exactly as the
-    non-rec twins are, and making the #21 guard redundant
-    defense-in-depth. This is the highest-leverage fix of the round —
-    one typecheck change closes two memory-safety crashes and a
-    guard hole. Ninth real bug (counting the guard-hole distinctly);
-    fifth crash.
+    FIX (with item 11's union fix as prerequisite): MONOMORPHIC
+    RECURSION — the tc0 knot. During the def-time faux body check
+    (`Lambda::typecheck0`), a self-call site's `CallSite::typecheck0`
+    now unifies against the def's OWN ftype cells instead of a
+    `reset_tvars` freshening (`ExecCtx::rec_defs` tracks in-progress
+    def checks; the callee ftype's `lambda_ids` identify the self-
+    call). Effects: (a) the μ-equation collapses — `'r ⊇ [T, 'r]`
+    binds `'r := T` through the same-cell rule, so an unannotated rec
+    lambda's return type resolves concretely instead of orphaning a
+    cell that `constrain_known` widened to Any (that widening also
+    DE-FUSED lazy_no_annotations once the union fix kept the orphan
+    alive — the knot restores its fusion); (b) a self-call arg that
+    disagrees with the entry narrowing is a DEF-TIME compile error in
+    both modes, exactly like the non-rec twin — j31/j48 now reject.
+    Pinned at findings/rec-selfcall-argtype-jul2026/01; run! fixture
+    rec_selfcall_arg_mismatch in lang/functions.rs. NOTE the language-
+    semantics consequence: `let rec` is now monomorphic-recursive (a
+    self-call cannot instantiate the lambda at a different type) —
+    the ML-family standard; the prior "poly" admission was unsound
+    (it widened the signature to Any and crashed the JIT).
 
 18. **OPEN (root-caused, fix when campaigns stop) — union struct field
     with a DynCall-produced arm leaks the string under the other

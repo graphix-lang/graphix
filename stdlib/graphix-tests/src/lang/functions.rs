@@ -217,11 +217,14 @@ const RECURSIVE_LAMBDA0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: recursive lambda lazy fusion
+// Was ASPIRE (blocked on recursive lambda lazy fusion) until the
+// monomorphic-recursion tc0 knot: the self-call's orphaned rtype cell
+// used to leave the signature unresolvable; knotted to the def's own
+// cells it μ-collapses to i64 and the tail loop fuses.
 run!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
     Ok(Value::I64(10)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Fusion smoke test: a fully-annotated arithmetic lambda. With
 // fusion wired through Lambda::compile, this should run via
@@ -994,4 +997,89 @@ const NESTED_TAIL_LOOP: &str = r#"
 // tail loop — the node-walk completes depth 500 with the same value.
 run!(nested_tail_loop, NESTED_TAIL_LOOP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(125251)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// An `-> i64` rtype annotation must reject an error-producing arm.
+// This compiled for a while: `Type::union` collapsed two DISTINCT
+// unbound tvars into one (`TVar::eq` calls None == None equal), so
+// the select's arm union dropped the error arm's not-yet-bound
+// rtype cell — by the time `error(i64:0)` resolved to `Error<i64>`
+// the body type no longer referenced its cell, and the def-time
+// rtype check bound the lone survivor to i64 vacuously. The JIT then
+// froze a scalar i64 return slot and leaked the Error payload as a
+// pointer (fuzz soak jul05 item 11, divergence_000010).
+const RTYPE_REJECTS_ERROR_ARM: &str = r#"
+{
+  let countdown = |n: i64, acc| -> i64 select n {
+    i64:0 => acc,
+    _ => error(i64:0)
+  };
+  countdown(i64:100, i64:0)
+}
+"#;
+
+run!(rtype_rejects_error_arm, RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// The `let rec` twin of the above — recursion typing must not admit
+// what the non-recursive form rejects.
+const REC_RTYPE_REJECTS_ERROR_ARM: &str = r#"
+{
+  let rec countdown = |n: i64, acc| -> i64 select n {
+    i64:0 => acc,
+    _ => error(i64:0)
+  };
+  countdown(i64:100, i64:0)
+}
+"#;
+
+run!(rec_rtype_rejects_error_arm, REC_RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// Monomorphic recursion: a self-call unifies against the def's OWN
+// ftype cells (the tc0 knot in `CallSite::typecheck0` /
+// `ExecCtx::rec_defs`), so a self-call arg that disagrees with the
+// entry call's narrowing is a DEF-TIME error — exactly as it is for a
+// non-recursive twin. Before the knot the self-call site freshened its
+// cells, the arm union carried an orphan tvar, `constrain_known`
+// widened it to Any, and the JIT's marshal tried to PARSE the string
+// into the i64 slot — SIGABRT (fuzz soak jul05 item 17,
+// crash_000016). The freshening also silently degraded every rec
+// lambda's checked signature to Any (lazy_no_annotations de-fused).
+const REC_SELFCALL_ARG_MISMATCH: &str = r#"
+{
+  let rec sum_to = |n, acc| select n {
+    i64:0 => acc,
+    _ => sum_to("hello", acc + n)
+  };
+  sum_to(i64:100, i64:0)
+}
+"#;
+
+run!(rec_selfcall_arg_mismatch, REC_SELFCALL_ARG_MISMATCH, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// The positive control for the union fix: two distinct unbound tvars
+// in an arm union must NOT collapse — each arm's cell binds later and
+// both bindings must survive into the select's type. `pick`'s body
+// union is ['a-from-a, 'b-from-b]; both resolve at the call site and
+// the mixed-type call stays typeable. (Wrapping the call in a
+// type-dispatch select is a separate, PRE-EXISTING limitation — the
+// scrutinee's rtype isn't resolved at select-tc0 time — so this pins
+// the direct-return shape only.)
+const ARM_UNION_KEEPS_BOTH_TVARS: &str = r#"
+{
+  let pick = |which: bool, a, b| select which {
+    true => a,
+    false => b
+  };
+  pick(true, i64:1, "x")
+}
+"#;
+
+run!(arm_union_keeps_both_tvars, ARM_UNION_KEEPS_BOTH_TVARS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::None);

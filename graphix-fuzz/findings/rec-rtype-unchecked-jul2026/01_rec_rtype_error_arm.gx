@@ -18,5 +18,9 @@
 // lambda's rtype against its body non-swallowed (rejects this, like
 // the non-rec twin, killing the leak). node-walk-is-canonical: the
 // intended behavior is the COMPILE ERROR the non-rec twin gives.
+// FIXED: `Type::union` no longer collapses two DISTINCT unbound
+// tvars (TVar::eq's None==None), so the error arm's cell survives
+// into the body union and the def-time rtype check rejects — a
+// COMPILE ERROR in both modes, outcome agreement.
 // minimized:
 {let rec countdown = |n: i64, acc| -> i64 select n {i64:0 => acc, _ => error(i64:0)}; countdown(i64:100, i64:0)}

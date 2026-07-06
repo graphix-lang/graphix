@@ -946,8 +946,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let ftype = deref_typ!("fn", ctx, self.fnode.typ(),
                     Some(Type::Fn(ftype)) => Ok(ftype.clone())
                 )?;
-                let ftype = ftype.reset_tvars();
-                ftype.alias_tvars(&mut LPooled::take());
+                // A self-call inside the def-time body check unifies
+                // against the def's OWN cells — monomorphic recursion
+                // (see `ExecCtx::rec_defs`). Every other site freshens
+                // for per-site monomorphization.
+                let is_rec_self_call = !ctx.rec_defs.is_empty()
+                    && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
+                let ftype = if is_rec_self_call {
+                    // A shallow clone shares every TVar cell with the
+                    // def's ftype — the knot.
+                    (*ftype).clone()
+                } else {
+                    let ftype = ftype.reset_tvars();
+                    ftype.alias_tvars(&mut LPooled::take());
+                    ftype
+                };
                 self.ftype = Some(ftype.clone());
                 let ftype = self.ftype.as_ref().unwrap();
                 if ftype.args.len() < self.args.len() && ftype.vargs.is_none() {

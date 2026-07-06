@@ -1,0 +1,18 @@
+// bisect: REAL CRASH (SIGABRT) — pre-fix the JIT's kernel marshal
+// tried to PARSE "hello" into the i64 formal slot ("Unexpected h")
+// while the interp survived type-tolerantly (arith error → bottom).
+// Found by soak-jul05 (corpus-fuzz/crash_000016, triage item 17).
+// The #21 self_calls_abi_consistent guard couldn't see it: the FORMAL
+// resolved to the recursion's own type, so self-call arg == formal —
+// it was the ENTRY call's i64:100 that mismatched.
+// FIXED by monomorphic recursion (the tc0 knot, ExecCtx::rec_defs):
+// a self-call unifies against the def's own ftype cells, so the
+// string self-call arg vs the i64-narrowed formal is a DEF-TIME
+// compile error in both modes — outcome agreement.
+{
+  let rec sum_to = |n, acc| select n {
+    i64:0 => acc,
+    _ => sum_to(buffer::to_string(buffer::from_string("hello")), acc + n)
+  };
+  sum_to(i64:100, i64:0)
+}
