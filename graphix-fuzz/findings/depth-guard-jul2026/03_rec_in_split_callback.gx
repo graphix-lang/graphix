@@ -1,0 +1,17 @@
+// bisect: MODE DIVERGENCE under fusion — soak jul06d (divergence_000000
+// /000001, first catch of the extended generator: rec-in-fold COMPOSED
+// with an error consumer). A deep tail-recursive `let rec` plus a
+// try/catch (or checked-arith error-arm select) in the SAME fold
+// callback: the error consumer splits the callback, the rec runs in
+// the split's NODE-WALK RESIDUE — cloned per slot from MapQ's
+// analysis_pred, which `analysis::analyze` NEVER REACHED
+// (collect_resolved_sites descends resolved-lambda callees only; an
+// HOF BUILTIN's off-graph callback body was invisible) — so its tail
+// sites were unmarked and each tail call stack-dispatched into the 256
+// call-depth guard: fused mode bottomed the whole program where
+// --no-fusion (genn::apply slots + the bind()-time cascade) tail-looped
+// to the value. Threshold 254 agree / 255 diverge. FIXED:
+// collect_resolved_sites descends `callee_apply().
+// for_each_hof_callback_body` (analysis.rs); marks flow analysis_pred →
+// fused_template → per-slot clones via clone_rebind.
+{let v0 = array::fold([i64:-1], i64:255, |v1, v0| {let rec v2 = |v3: i64, v4: i64| -> i64 select v3 {i64:0 => v4, _ => v2(v3 - i64:1, v4 + v3)}; (v2(i64:256, i64:0) * i64:0) + (try ((v0 /? i64:-1))? catch(e) => i64:42)}); [i64:7 + v0]}

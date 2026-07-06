@@ -1144,3 +1144,25 @@ run!(rec_in_hof_callback, REC_IN_HOF_CALLBACK, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(125250))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// The split-callback twin of REC_IN_HOF_CALLBACK: a try/catch in the
+// same fold callback splits it (TryCatch is async), so the rec runs in
+// the split's node-walk residue — cloned per slot from MapQ's
+// analysis_pred, which the analysis pass must descend (via
+// for_each_hof_callback_body) or the residue's unmarked tail sites
+// stack-dispatch into the 256 call-depth guard under fusion only
+// (soak-jul06d, findings/depth-guard-jul2026/03).
+const REC_IN_SPLIT_CALLBACK: &str = r#"
+{
+  let v0 = array::fold([i64:-1], i64:255, |acc, x| {
+    let rec lp = |n: i64, a: i64| -> i64 select n {i64:0 => a, _ => lp(n - i64:1, a + n)};
+    (lp(i64:500, i64:0) * i64:0) + (try ((x /? i64:-1))? catch(e) => i64:42)
+  });
+  [i64:7 + v0]
+}
+"#;
+
+run!(rec_in_split_callback, REC_IN_SPLIT_CALLBACK, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(8)]),
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
