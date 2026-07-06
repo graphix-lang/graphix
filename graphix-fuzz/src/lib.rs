@@ -309,6 +309,36 @@ async fn drive(
             }
         }};
     }
+    // The wall-clock-breached twin of `bounded!` for the VERDICT-
+    // carrying wait steps: a deadline breach IS `Timeout`, always. The
+    // interrupt + grace still run — but only so the runtime unwinds
+    // cleanly, never to reclassify. `bounded!`'s reclassification (an
+    // interrupted step that then completes reports its normal result)
+    // is right for the compile steps — a slow stdlib compile under gate
+    // load must not read as a wedged program — but on a wait step it
+    // made the verdict a RACE: `interrupt()` is a one-shot flag cleared
+    // at cycle end, so for a fast-cycling reactive runaway (the
+    // deref-echo class, soak jul05 items 3/20/24) it lands in a poll
+    // window only sometimes — the same program flipped between Timeout
+    // (interrupt lost, grace expired) and Trace([]) (echo died, idle
+    // resolved) run-to-run, in BOTH modes independently.
+    macro_rules! wait_bounded {
+        ($fut:expr, $on_ok:pat => $ok:expr, $on_err:pat => $err:expr) => {{
+            let f = $fut;
+            tokio::pin!(f);
+            tokio::select! {
+                biased;
+                r = &mut f => match r { $on_ok => $ok, $on_err => $err },
+                _ = &mut drain => unreachable!(),
+                _ = &mut deadline => {
+                    ctx.rt.interrupt();
+                    let _ =
+                        tokio::time::timeout(Duration::from_millis(750), &mut f).await;
+                    return Outcome::Timeout;
+                }
+            }
+        }};
+    }
     // Tracing is armed BEFORE the compile (ToGX messages are FIFO), so
     // a value emitted during the compile cycle is in the trace — there
     // is no "already emitted before the watch registered" race, and no
@@ -330,7 +360,7 @@ async fn drive(
     );
     let eid = compiled.exprs.last().expect("compile returned no exprs").id;
     let mut segs = Vec::with_capacity(1 + sched.epochs.len());
-    segs.push(bounded!(
+    segs.push(wait_bounded!(
         ctx.rt.trace_wait_idle(),
         Ok(s) => s,
         Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
@@ -370,7 +400,7 @@ async fn drive(
         if let Err(e) = ctx.rt.set_many(sets) {
             return Outcome::RuntimeErr(format!("set_many: {e}"));
         }
-        segs.push(bounded!(
+        segs.push(wait_bounded!(
             ctx.rt.trace_wait_idle(),
             Ok(s) => s,
             Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))

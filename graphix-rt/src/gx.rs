@@ -191,6 +191,27 @@ async fn or_never(b: bool) {
     }
 }
 
+/// The idle-grace re-poll: when armed, wake the main loop after a
+/// short delay so the idle verdict is confirmed on a SECOND pass. A
+/// spawned task that is mid-flight (scheduled on another worker,
+/// about to deliver a var update) is invisible to every drainable
+/// queue, so a single-pass idle test raced it — the deref-echo class
+/// (soak jul05 items 3/20/24): the same program's trace verdict
+/// flipped between Timeout and empty run-to-run, in both modes
+/// independently. The grace gives an in-flight local task the
+/// scheduler time to land; a genuinely idle runtime just resolves one
+/// grace-delay later. Long-running tasks (timers, IO) still read as
+/// idle — deliberately: the oracle excludes genuinely-async programs,
+/// and counting any outstanding task as busy would Timeout every
+/// timer program forever.
+async fn idle_grace(armed: bool) {
+    if armed {
+        time::sleep(Duration::from_millis(2)).await
+    } else {
+        future::pending().await
+    }
+}
+
 async fn join_or_wait<T: 'static>(
     js: &mut JoinSet<(BindId, T)>,
 ) -> result::Result<(BindId, T), JoinError> {
@@ -962,6 +983,9 @@ impl<X: GXExt> GX<X> {
         let mut custom_tasks = vec![];
         let mut input = vec![];
         let mut rpcs = vec![];
+        // Consecutive apparently-idle passes — the two-pass idle
+        // confirmation (see `idle_grace`). Reset by any ready work.
+        let mut idle_passes: u32 = 0;
         let onemin = Duration::from_secs(60);
         'main: loop {
             // Abort/shutdown: if the handle was dropped or `abort()` was
@@ -973,18 +997,6 @@ impl<X: GXExt> GX<X> {
                 return Ok(());
             }
             let now = Instant::now();
-            let ready = self.cycle_ready();
-            // A `WaitResultOrIdle` watcher whose expr didn't emit during the
-            // previous cycle resolves to `None` the moment the runtime goes
-            // idle — no future cycle can produce its result.
-            if !ready {
-                if let Some((_, tx)) = self.result_watch.take() {
-                    let _ = tx.send(None);
-                }
-                if let Some(tr) = self.trace.as_mut() {
-                    tr.resolve(self.cycle);
-                }
-            }
             let mut updates = None;
             let mut writes = None;
             macro_rules! peek {
@@ -1045,7 +1057,60 @@ impl<X: GXExt> GX<X> {
                     $(peek!($item));+
                 }};
             }
+            // Drain every non-blocking source BEFORE the idle test: a
+            // queued-but-undelivered update (a var write in flight
+            // through a watch channel — the deref-echo class, soak
+            // jul05 items 3/20/24) is pending work, but the collections
+            // `cycle_ready` inspects don't see it until a drain.
+            // Sampling idleness pre-drain resolved the trace / result
+            // watchers a cycle early, NONDETERMINISTICALLY (it raced
+            // the writer task) — a selfcheck-class oracle hole: the
+            // same program's verdict flipped between Timeout and an
+            // empty trace run-to-run, in both modes independently.
+            peek!(
+                updates,
+                writes,
+                watches,
+                tasks,
+                var_watches,
+                custom_tasks,
+                rpcs,
+                input
+            );
+            let ready = self.cycle_ready()
+                || updates.is_some()
+                || writes.is_some()
+                || !tasks.is_empty()
+                || !custom_tasks.is_empty()
+                || !rpcs.is_empty()
+                || !input.is_empty();
+            // A `WaitResultOrIdle` watcher whose expr didn't emit during
+            // the previous cycle resolves to `None` when the runtime goes
+            // idle — no future cycle can produce its result. Idle is
+            // confirmed on a SECOND consecutive pass (the `idle_grace`
+            // re-poll arms the wake-up): the first apparently-idle pass
+            // may be racing an in-flight spawned task whose delivery no
+            // drain can see yet.
+            if !ready {
+                let waiter = self.result_watch.is_some() || self.trace.is_some();
+                if waiter && idle_passes == 0 {
+                    idle_passes = 1;
+                } else {
+                    if let Some((_, tx)) = self.result_watch.take() {
+                        let _ = tx.send(None);
+                    }
+                    if let Some(tr) = self.trace.as_mut() {
+                        tr.resolve(self.cycle);
+                    }
+                    idle_passes = 0;
+                }
+            } else {
+                idle_passes = 0;
+            }
             select! {
+                _ = idle_grace(idle_passes > 0 && !ready) => {
+                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
+                },
                 rp = maybe_next(
                     self.ctx.rt.rpc_overflow.is_empty(),
                     &mut self.ctx.rt.rpcs

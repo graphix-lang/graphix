@@ -26,32 +26,36 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
    digit-normalized crash dedup (jul04 harness batch) collapses
    further literal variants into it.
 
-3. **OPEN (runtime/oracle-soundness, fix when campaigns stop) —
-   quiescence detection races the deref-echo loop** — corpus-fuzz/
-   divergence_000002 (~17:2x):
-
-   ```graphix
-   {let f = |x: &i64| *x <- *x * i64:5; let v = i64:41; f(&v);
-    array::group(v, |n, _| i64:1 == i64:2)}
-   ```
-
-   Semantically an infinite self-multiplying counter through a ref —
-   the plain analog (`v <- v * 5`, probe j4) stably Timeouts in BOTH
-   modes (correct: infinite counters tick forever). The ref-mediated
-   version flips verdicts PER RUN in BOTH modes independently
-   (6 samples: 3× both-Timeout, 2× jit-Trace([]), 1× interp-
-   Trace([])). Both evaluators acquitted; the shared suspect is
-   `trace_wait_idle`'s idle predicate sampling a moment where the
-   echo's next var write is in flight through the rt channel (queued,
-   not yet a pending cycle) — the deref hop exposes an idle-looking
-   gap the direct connect doesn't have. Consequences: (a) the
-   recorded divergence's interp/jit assignment is meaningless — a
-   coin flip; (b) this is a SELFCHECK-class oracle bug (same mode,
-   same program, different verdicts). Fix direction: strengthen the
-   runtime idle predicate to count queued-but-undelivered var
-   updates (the ToGX/rt channel) as not-idle, or have the tracer
-   drain one more cycle after apparent idleness before resolving.
-   Also worth re-running selfcheck with a deref-echo seed once fixed.
+3. **FIXED (2026-07-06) — quiescence verdict raced the interrupt
+   grace (oracle soundness)** — corpus-fuzz/divergence_000002
+   (~17:2x): the ref-echo + group shape flipped verdicts PER RUN in
+   BOTH modes independently. The queued-write hypothesis was wrong
+   twice over: the deref echo is fully synchronous (set_var →
+   var_updates; a WAKE-arm trace showed zero task/watch wakes), and
+   neither a drain-before-idle-check reorder nor a 2ms two-pass idle
+   grace changed the flap. The REAL race was in the DRIVER's verdict
+   plumbing: `bounded!`'s wall-clock deadline arm interrupts the
+   runtime and, if the step completes within the 750ms grace,
+   reports the step's normal result — but `interrupt()` is a
+   one-shot flag cleared at each cycle end, so for a fast-cycling
+   reactive runaway it lands in a poll window only sometimes:
+   interrupt-lost → grace expires → Timeout; interrupt-landed → echo
+   dies → idle → Trace([]). A coin flip per run per mode. (The cycle
+   cap can't save these programs: max_cycles counts ACTIVE cycles —
+   traced-node emissions — and a runaway whose result never emits
+   never caps.) FIX: `wait_bounded!` — the two verdict-carrying
+   `trace_wait_idle` steps report Timeout on ANY wall-clock breach;
+   the interrupt+grace still run but only to unwind cleanly. The
+   compile steps keep `bounded!`'s reclassification (a slow stdlib
+   compile under gate load must not read as a wedge). Kept from the
+   investigation (defense in depth, both real ordering holes even if
+   not this flap's cause): the runtime's idle test now drains every
+   non-blocking source first and counts drained batches as ready,
+   and idle is confirmed on a second pass via a 2ms `idle_grace`
+   re-poll. Probes s1 (echo+group) 10/10 and s4 (item 24's
+   const-result echo) 6/6 deterministic both-Timeout; timer programs
+   (q7/qc) unaffected; selfcheck green. Pinned at
+   findings/quiesce-verdict-jul2026/01.
 
 4. **FIXED with item 1 (same root)** — corpus-fuzz/
    divergence_000003 (~17:4x): `s <- cast<i64>(true)$` SELF-WAKE
@@ -303,7 +307,7 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     trigger is the DynCall (cast$) arm + any string arm, independent
     of the string's producer. Second regression case for item 18.
 
-20. **DUPLICATE of item 3 (no new action)** — corpus-fuzz/
+20. **DUPLICATE of item 3 (FIXED with it)** — corpus-fuzz/
     divergence_000019: `f = |x: &i64| *x <- *x + i64:1; ...;
     array::group(v, ...)` — the ref-echo quiescence race again (`+1`
     vs item 3's `*5`), this run landing interp-Trace([])/jit-Timeout
@@ -345,7 +349,7 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     operator/predicate-insensitive key for the group(seq(...)) shape
     (harness backlog) is the real cure.
 
-24. **DUPLICATE of item 3 (no new action) + strengthens its
+24. **DUPLICATE of item 3 (FIXED with it) + strengthened its
     diagnosis** — corpus-fuzz/divergence_000023:
     `{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v);
     "_test"}`. The const "_test" result makes the flip visible in a
