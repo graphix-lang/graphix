@@ -1,0 +1,12 @@
+// bisect: REAL DIVERGENCE (fusion/JIT wrong value) — soak jul06.
+// A COMPUTED bool (here a total-order float comparison, whose x86 `setcc`
+// leaves the upper register bits dirty) pushed as a composite field read
+// back as `true` even when the comparison was `false`: interp {x: false},
+// jit {x: true}. Root: `graphix_value_buf_push_bool`'s `i8` AbiParam
+// carried no ArgumentExtension, so cranelift passed the arg unextended
+// while the `extern "C" fn(v: u8)` helper is compiled under the C ABI's
+// zeroext contract (reads the full register) — `v != 0` saw the garbage.
+// A CONST bool folds to a clean `iconst`, which is why only computed
+// comparisons in composites diverged. FIXED: narrow-int helper params
+// now carry uext/sext (helper_signature, fusion/emit.rs).
+{ x: f64:0.1 < f64:0.1 }

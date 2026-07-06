@@ -42,6 +42,30 @@ run!(tuple_duration_field, TUPLE_DURATION_FIELD, |v: Result<&Value>| match v {
     _ => false,
 });
 
+// A COMPUTED bool as a composite field. A total-order float comparison
+// lowers to `setcc`, which leaves the upper register bits dirty; the
+// result was pushed straight into the struct via
+// `graphix_value_buf_push_bool`, whose `i8` AbiParam carried no
+// ArgumentExtension. The `extern "C" fn(v: u8)` helper is compiled under
+// the C ABI's zeroext contract (it may read the full register), so
+// `v != 0` saw the garbage and returned `true` for a `false` comparison —
+// {x: false} node-walk vs {x: true} jit. A CONST bool folds to a clean
+// `iconst`, so only computed comparisons in composites diverged. Fixed by
+// uext/sext on the narrow-int helper params (helper_signature, soak jul06).
+const STRUCT_COMPUTED_BOOL_FIELD: &str = r#"
+{ x: f64:0.1 < f64:0.1 }
+"#;
+
+run!(struct_computed_bool_field, STRUCT_COMPUTED_BOOL_FIELD, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => matches!(
+        &a[..],
+        [Value::Array(f)]
+            if matches!(&f[..], [Value::String(_), Value::Bool(false)])
+    ),
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit;
+   shape: NodeShape::contains_fused(KernelMatcher::new()));
+
 const TUPLES1: &str = r#"
 {
   let t: (string, Number, Number) = ("foo", 42, 23.5);

@@ -1660,6 +1660,18 @@ impl HelperFuncIds {
 
 fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
     let mut sig = Signature::new(module.isa().default_call_conv());
+    // The C ABI requires an integer argument narrower than the register
+    // width (i8/i16) to be zero-/sign-extended by the CALLER; the
+    // `extern "C"` helper is compiled to read the full register under that
+    // contract. Cranelift only emits the extension when the AbiParam
+    // records it, so a bool/int the kernel COMPUTES (e.g. a comparison,
+    // whose x86 `setcc` leaves the upper register bits dirty) reaches the
+    // helper unextended and is misread — a `false` comparison pushed into a
+    // composite comes back `true`. Match the Rust param's signedness:
+    // bool/unsigned → uext, signed → sext. (i32/u32 need no extension — a
+    // 32-bit register write clears the upper bits.)
+    let uext = |ty| AbiParam::new(ty).uext();
+    let sext = |ty| AbiParam::new(ty).sext();
     // Manual per-helper signature wiring — explicit is clearer than
     // a clever scheme when adding new helpers means revisiting this
     // anyway.
@@ -1762,15 +1774,21 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::F32));
         }
-        "graphix_value_buf_push_bool"
-        | "graphix_value_buf_push_i8"
-        | "graphix_value_buf_push_u8" => {
+        "graphix_value_buf_push_bool" | "graphix_value_buf_push_u8" => {
             sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I8));
+            sig.params.push(uext(types::I8));
         }
-        "graphix_value_buf_push_i16" | "graphix_value_buf_push_u16" => {
+        "graphix_value_buf_push_i8" => {
             sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I16));
+            sig.params.push(sext(types::I8));
+        }
+        "graphix_value_buf_push_u16" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(uext(types::I16));
+        }
+        "graphix_value_buf_push_i16" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(sext(types::I16));
         }
         "graphix_value_buf_push_u64" => {
             sig.params.push(AbiParam::new(types::I64));
@@ -1952,7 +1970,7 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         "graphix_dyncall" => {
             sig.params.push(AbiParam::new(types::I32));
             sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I8));
+            sig.params.push(uext(types::I8)); // ret_kind: u8
             sig.returns.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
@@ -2064,16 +2082,22 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I32));
         }
         // (buf: i64, v: i16) -> ()
-        "graphix_string_buf_push_i16" | "graphix_string_buf_push_u16" => {
+        "graphix_string_buf_push_u16" => {
             sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I16));
+            sig.params.push(uext(types::I16));
+        }
+        "graphix_string_buf_push_i16" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(sext(types::I16));
         }
         // (buf: i64, v: i8) -> ()
-        "graphix_string_buf_push_i8"
-        | "graphix_string_buf_push_u8"
-        | "graphix_string_buf_push_bool" => {
+        "graphix_string_buf_push_u8" | "graphix_string_buf_push_bool" => {
             sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I8));
+            sig.params.push(uext(types::I8));
+        }
+        "graphix_string_buf_push_i8" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(sext(types::I8));
         }
         // (buf: i64, v: f64) -> ()
         "graphix_string_buf_push_f64" => {
