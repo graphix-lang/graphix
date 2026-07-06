@@ -337,6 +337,16 @@ async fn main() -> Result<()> {
             };
             println!("VERDICT\t{verdict}");
         }
+        // Hidden: the isolated selfcheck worker (program on stdin, one
+        // `SELFCHECK\t<mode>` line per flaky mode on stdout). Child-per-
+        // subject keeps the deliberate JIT leak from accumulating in the
+        // gate process — see lib.rs `selfcheck_isolated`.
+        Some("selfcheck-one") => {
+            let code = read_stdin()?;
+            for mode in graphix_fuzz::selfcheck_one(code.trim(), TIMEOUT).await {
+                println!("SELFCHECK\t{mode}");
+            }
+        }
         // Hidden: the isolated minimizer (program on stdin, the reduced
         // program after a MINIMIZED marker on stdout). A reduction that
         // crashes kills only this process — the parent falls back to

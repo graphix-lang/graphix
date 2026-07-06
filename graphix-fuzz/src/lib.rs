@@ -705,33 +705,11 @@ pub async fn selfcheck(
     let mut next = 0usize;
     let spawn_one = |set: &mut JoinSet<Vec<(String, &'static str)>>, prog: String| {
         set.spawn(async move {
-            let mut bad = Vec::new();
-            for mode in [Mode::Interp, Mode::Jit] {
-                let (a, b) = tokio::join!(
-                    run_program(&prog, mode, timeout),
-                    run_program(&prog, mode, timeout),
-                );
-                if !a.agrees_with(&b) {
-                    // Confirm before flagging: under a loaded gate a
-                    // borderline run can breach the wall-clock backstop
-                    // (Timeout vs Trace = disagreement). A SEQUENTIAL
-                    // uncontended retry filters those; genuine
-                    // nondeterminism repeats.
-                    let a2 = run_program(&prog, mode, timeout).await;
-                    let b2 = run_program(&prog, mode, timeout).await;
-                    if a2.agrees_with(&b2) {
-                        continue;
-                    }
-                    bad.push((
-                        prog.clone(),
-                        match mode {
-                            Mode::Interp => "interp",
-                            Mode::Jit => "jit",
-                        },
-                    ));
-                }
-            }
-            bad
+            selfcheck_isolated(&prog, timeout)
+                .await
+                .into_iter()
+                .map(|mode| (prog.clone(), mode))
+                .collect()
         });
     };
     while next < progs.len() && set.len() < par {
@@ -1057,6 +1035,86 @@ fn child_exe() -> std::path::PathBuf {
     return std::path::PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]
     return std::env::current_exe().expect("current_exe");
+}
+
+/// The per-subject determinism check — the `selfcheck-one` child body:
+/// each mode run twice concurrently, with a sequential uncontended
+/// confirm-retry before flagging (under a loaded gate a borderline run
+/// can breach the wall-clock backstop and read Timeout-vs-Trace; genuine
+/// nondeterminism repeats). Returns the modes that stayed flaky.
+pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
+    let mut bad = Vec::new();
+    for mode in [Mode::Interp, Mode::Jit] {
+        let (a, b) = tokio::join!(
+            run_program(prog, mode, timeout),
+            run_program(prog, mode, timeout),
+        );
+        if !a.agrees_with(&b) {
+            let a2 = run_program(prog, mode, timeout).await;
+            let b2 = run_program(prog, mode, timeout).await;
+            if a2.agrees_with(&b2) {
+                continue;
+            }
+            bad.push(match mode {
+                Mode::Interp => "interp",
+                Mode::Jit => "jit",
+            });
+        }
+    }
+    bad
+}
+
+/// Run one selfcheck subject in a CHILD process (`graphix-fuzz
+/// selfcheck-one`) — the campaign pool's isolation, needed here for
+/// memory as much as crash containment: every in-process `run_program`
+/// leaks its context's JIT pages BY DESIGN (spliced kernels' pointers
+/// must survive resets — see the arena note in graphix-compiler
+/// fusion/emit.rs), so the old in-process selfcheck accumulated the
+/// whole stdlib's fused kernels per subject and a full gate run peaked
+/// >20GiB resident. The child pays the leak and exits.
+async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> {
+    use tokio::io::AsyncWriteExt;
+    let mut cmd = tokio::process::Command::new(child_exe());
+    cmd.arg("selfcheck-one")
+        .env("TOKIO_WORKER_THREADS", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        // A spawn IO error is a broken HARNESS — die loudly, exactly as
+        // `check_isolated` does.
+        Err(e) => {
+            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
+            std::process::exit(2)
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prog.as_bytes()).await;
+    }
+    // Up to 8 in-child runs (2 modes × 2 + confirm retries), each
+    // bounded by the per-run timeout; margin for pool contention.
+    let deadline = timeout * 10 + Duration::from_secs(30);
+    let out = match tokio::time::timeout(deadline, child.wait_with_output()).await {
+        Ok(Ok(out)) => out,
+        // A dead or wedged child is nondeterminism by definition (the
+        // gate demands clean determinism from every subject) — surface
+        // it rather than dropping the subject silently.
+        Ok(Err(_)) | Err(_) => return vec!["crash"],
+    };
+    if !out.status.success() {
+        return vec!["crash"];
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .filter_map(|l| match l.strip_prefix("SELFCHECK\t") {
+            Some("interp") => Some("interp"),
+            Some("jit") => Some("jit"),
+            _ => None,
+        })
+        .collect()
 }
 
 async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
