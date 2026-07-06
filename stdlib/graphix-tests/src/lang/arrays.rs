@@ -331,3 +331,16 @@ run!(fold_filtered_empty, FOLD_FILTERED_EMPTY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(7))
 ));
+
+// find over an EMPTY array must yield Null in both evaluators. The
+// node-walk's MapQ empty-input shortcut returned the projected empty
+// collection (the array itself) without consulting FindImpl::finish —
+// soak-jul06c B7, findings/hof-empty-input-jul2026.
+const FIND_EMPTY: &str = r#"
+array::find({let a: Array<i64> = []; a}, |x| true)
+"#;
+
+run!(find_empty, FIND_EMPTY, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Null)
+); graphix_package_core::testing::FuseExpect::Jit);

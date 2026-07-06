@@ -957,7 +957,16 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             }
             self.cur = a.clone();
             if a.len() == 0 {
-                return Some(T::Collection::project(a));
+                // The empty answer is per-impl, not the projected empty
+                // collection: map/filter/… agree with `project`, but
+                // find/find_map must yield Null (`finish` over zero
+                // slots). Returning `project(a)` here handed
+                // `array::find([], p)` the empty array itself while the
+                // JIT's find loop correctly produced Null (soak-jul06c
+                // B7). The early return itself must stay: on a
+                // first-fire empty input nothing below fires (`up`
+                // stays false).
+                return self.t.finish(&mut &self.slots, &self.cur);
             }
         }
         let init = event.init;
