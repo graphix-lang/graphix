@@ -182,3 +182,88 @@ const QOP_NESTED_UNION_STRING: &str = r#"
 run!(qop_nested_union_string, QOP_NESTED_UNION_STRING, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A Sync builtin that returns no value (`buffer::encode`'s 64MB Pad
+// guard logs + bottoms) bound to an UNCONSUMED local. The node-walk
+// keeps that bottom local — the block's unrelated result still emits.
+// The fused kernel used to whole-kernel pending-abort, killing the
+// f64:0. output (soak jul05 item 28, divergence_000025); the pend now
+// converts to a #219 tainted placeholder at the DynCall site and only
+// consumers bottom. (The error log line each fire is the guard's —
+// expected noise.)
+const DYNCALL_PENDING_UNCONSUMED: &str = r#"
+{
+  let b = buffer::encode([`Pad(u64:18446744073709551615)]);
+  f64:0.
+}
+"#;
+
+run!(dyncall_pending_unconsumed, DYNCALL_PENDING_UNCONSUMED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::F64(f)) if *f == 0.)
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The same pend in STATEMENT position. A call statement used to
+// de-fuse the whole block ("a no-value fire would pending-abort the
+// kernel"); with the pend riding as discardable taint the block fuses
+// and the statement's bottom is discarded exactly like the node-walk.
+const DYNCALL_PENDING_STATEMENT: &str = r#"
+{
+  buffer::encode([`Pad(u64:18446744073709551615)]);
+  7
+}
+"#;
+
+run!(dyncall_pending_statement, DYNCALL_PENDING_STATEMENT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The pended value CONSUMED by another DynCall (`buffer::len`), whose
+// tainted-arg skip path produces a tainted scalar — but the local `n`
+// is itself unconsumed, so the tuple result still emits. Chains
+// pend → placeholder → arg-taint skip → locality.
+const DYNCALL_PENDING_CONSUMED_LOCAL: &str = r#"
+{
+  let b = buffer::encode([`Pad(u64:18446744073709551615)]);
+  let n = buffer::len(b);
+  (1, 2).0
+}
+"#;
+
+run!(
+    dyncall_pending_consumed_local,
+    DYNCALL_PENDING_CONSUMED_LOCAL,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// The pend INSIDE a cross-kernel callee (scalar return): the callee's
+// DynCall site converts it to taint, and the not-fresh bits ride back
+// through CALLEE_RESULT_FLAGS as data — the callee must NOT abort to
+// pending_exit (the caller would read the null sentinel; pre-fix the
+// wrapper check silenced the 5 too).
+const DYNCALL_PENDING_CALLEE: &str = r#"
+{
+  let f = |n: u64| buffer::len(buffer::encode([`Pad(n)]));
+  let x = f(u64:18446744073709551615);
+  5
+}
+"#;
+
+run!(dyncall_pending_callee, DYNCALL_PENDING_CALLEE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(5)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The pend INSIDE a HOF callback slot: the tainted element rides the
+// loop's SlotFlags accumulator into the map result's disc — the map
+// local bottoms (node-walk: the aggregate never fires) while the
+// block's unrelated output still emits.
+const DYNCALL_PENDING_HOF_SLOT: &str = r#"
+{
+  let m = array::map([u64:18446744073709551615], |n| buffer::encode([`Pad(n)]));
+  9
+}
+"#;
+
+run!(dyncall_pending_hof_slot, DYNCALL_PENDING_HOF_SLOT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(9)))
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -372,13 +372,21 @@ enforces it):**
   debugging swallowed errors.
 - `a[i]` / `a[i..j]` / `bytes[i]` / `m{key}` are bounds-checked through shared
   `node::array` / `node::map` helpers — one semantic seam, all backends agree.
-- **Bottom** ("no value this cycle" — div0, `?`-error, an unfired input) is
-  `None`-from-`update` in the node-walk. In the JIT it is the **taint channel**
-  (#219): a missing/unfired input becomes a taint-marked, helper-safe placeholder
-  (`Value::Null` / empty `ValArray` / empty `ArcStr`), taint propagates through
-  pure ops (`propagate_taint`), and the kernel forces bottom (emits `None`) only
-  if the taken output path *consumes* a tainted value (`is_tainted`) — so a
-  missing input no longer de-fuses the whole region. `design/representable_bottom.md`.
+- **Bottom** ("no value this cycle" — div0, `?`-error, an unfired input, a Sync
+  builtin returning `None`) is `None`-from-`update` in the node-walk. In the JIT
+  it is the **taint channel** (#219): a missing/unfired input becomes a
+  taint-marked, helper-safe placeholder (`Value::Null` / empty `ValArray` /
+  empty `ArcStr`), taint propagates through pure ops (`propagate_taint`), and
+  the kernel forces bottom (emits `None`) only if the taken output path
+  *consumes* a tainted value (`is_tainted`) — so a missing input no longer
+  de-fuses the whole region. A **pended DynCall** (the builtin returned no
+  value — `buffer::encode`'s Pad guard) rides the same channel since 2026-07-06:
+  each site take-and-clears `DYNCALL_PENDING` and continues with the tainted
+  placeholder, so `DYNCALL_PENDING` reaching `Kernel::update` means only a
+  GENUINE whole-kernel abort (interrupt poll, depth trip, return-gate force,
+  callee abort propagated at the call site by `emit_lambda_call_node`). Known
+  residual of the old behavior: the `array::init` runaway-length guard still
+  whole-kernel aborts (scaffold.rs). `design/representable_bottom.md`.
 - An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield to
   the scheduler) — accepted/correct; the reactive node-walk's per-cycle
   "continue" is the artifact.

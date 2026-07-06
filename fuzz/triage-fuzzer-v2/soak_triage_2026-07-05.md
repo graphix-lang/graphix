@@ -404,14 +404,28 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     unrelated const result never emits, while the node-walk emits it
     (the bind's bottom stays local to the discarded statement). This
     is a statement-position interior-bottom class: any Sync builtin
-    that returns None (`filter`!) inside a fused region kills outputs
-    that don't consume it. Fix direction (NEXT round — a semantics
-    change too large for this one's tail): convert the DynCall
-    pending path from the whole-kernel pending_exit abort to the
-    #219 taint protocol — a tainted shape-safe placeholder that
-    CONTINUES, exactly like the tainted-ARG skip path already does;
-    the output gate then bottoms only consumers. Recorded as the
-    opening item of the next round's queue.
+    that returns None inside a fused region kills outputs that don't
+    consume it. FIXED (2026-07-06, the next round's opener): every
+    DynCall site now take-and-CLEARS `DYNCALL_PENDING`
+    (`graphix_dyncall_pending_take_clear`) and converts a pend to a
+    #219 tainted shape-safe placeholder that CONTINUES — scalar/unit
+    via `taint_if` (+ the scalar cache-substitute on the merged
+    result), pointer/two-word shapes via the same placeholder branch
+    the tainted-ARG skip path uses. The pending flag now means only
+    GENUINE whole-kernel aborts (interrupt, depth trip, return-gate
+    force), which `emit_lambda_call_node` also checks right after
+    every cross-kernel call (a callee abort used to return a null
+    sentinel the caller deref'd/dropped — latent crash, closed).
+    `emit_dyncall_pending_branch`/`emit_return_pending_check` deleted
+    (provably dead); statement-position CallSites un-de-fused
+    (`{buffer::encode(...); 7}` fuses; println still de-fuses via its
+    bare-Null return). Fixtures: lang/errors.rs dyncall_pending_*
+    (unconsumed / statement / consumed-local / callee / hof-slot);
+    pins findings/dyncall-pending-taint-jul2026/01-02. KNOWN RESIDUAL
+    of the same class: the `array::init` runaway-length guard
+    (scaffold.rs `emit_bottom_abort`) still aborts the whole kernel
+    where the node-walk logs+bottoms locally — cold path, candidate
+    follow-up.
 
 29. **DUPLICATE of item 9 (FIXED with it)** — corpus-fuzz/
     divergence_000028: another windowed/never-gated/count-gated empty

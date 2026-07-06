@@ -404,23 +404,36 @@ pub unsafe extern "C" fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
 }
 
 /// Read the `DYNCALL_PENDING` thread-local *without clearing it*.
-/// JIT-emitted code calls this:
-///   * after every `graphix_dyncall` to branch into `pre_pending_<n>`
-///     (cleanup + jump to `pending_exit`),
-///   * at every kernel return to drop the about-to-return result
-///     and jump to `pending_exit` instead of returning a leaked
-///     allocation (when an earlier scalar DynCall pended silently
-///     and the kernel's return path produced an owned heap value).
-///
-/// The flag stays set so that `Kernel::update`'s wrapper-level
-/// check sees it and returns `None`. `Kernel::update` resets the
-/// flag to `false` at the top of every kernel invocation, so a
-/// stale `true` from a previous run never leaks across.
+/// JIT-emitted code calls this after every cross-kernel lambda call:
+/// a set flag means the CALLEE genuinely aborted (interrupt, depth
+/// trip) and returned the pending sentinel, so the caller drops its
+/// owned set and jumps to its own `pending_exit`. The flag stays set
+/// so that `Kernel::update`'s wrapper-level check sees it and returns
+/// `None`. `Kernel::update` resets the flag to `false` at the top of
+/// every kernel invocation, so a stale `true` from a previous run
+/// never leaks across.
 ///
 /// Returns 1 if pending was set, 0 otherwise.
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_dyncall_pending_take() -> u8 {
     DYNCALL_PENDING.with(|c| if c.get() { 1 } else { 0 })
+}
+
+/// Read AND clear the `DYNCALL_PENDING` thread-local. JIT-emitted
+/// code calls this immediately after every builtin `graphix_dyncall`:
+/// a set flag means THIS dispatch returned no value ("bottom this
+/// cycle" — e.g. `buffer::encode`'s Pad guard), which the site
+/// converts to a #219 tainted placeholder that CONTINUES — bottoming
+/// only the consumers that read it, like the node-walk, where a
+/// builtin's `None` silences only its downstream. Clearing is what
+/// keeps the pending flag meaning "genuine whole-kernel abort"
+/// (interrupt, depth trip, the return-gate force) for
+/// `Kernel::update`'s wrapper check.
+///
+/// Returns 1 if pending was set, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_dyncall_pending_take_clear() -> u8 {
+    DYNCALL_PENDING.with(|c| if c.replace(false) { 1 } else { 0 })
 }
 
 /// Set `DYNCALL_PENDING` to true. Called by the JIT-emitted code
@@ -1069,19 +1082,17 @@ pub extern "C" fn graphix_variant_payload_bool(v: TagValue, payload_idx: usize) 
 //   3. The wrapper runs. JIT'd code emits calls to `graphix_dyncall`
 //      with `fn_index` + an args buffer. The helper reads the
 //      handle and calls its `dispatch` function pointer.
-//   4. If the inner Apply returns `None` (callee not ready this
-//      cycle), `dispatch` returns 0 and sets `DYNCALL_PENDING`.
-//      Otherwise it returns the scalar result's raw u64 bits.
+//   4. If the inner Apply returns `None` ("no value this cycle" —
+//      e.g. `buffer::encode`'s Pad guard), `dispatch` returns
+//      `(0, 0)` and sets `DYNCALL_PENDING`. The JIT'd call site
+//      take-and-CLEARS the flag right after the call and converts
+//      it to a #219 tainted placeholder that continues — only the
+//      consumers of that result bottom, matching the node-walk.
 //   5. After the wrapper returns, Kernel::update checks
-//      `DYNCALL_PENDING` (and resets it). If set, the kernel
-//      result is discarded and Kernel::update returns `None` so
-//      the runtime re-fires next cycle.
-//
-// Restrictions: this v1 only supports DynCalls where both args
-// and return are scalar primitives (no composite/variant args or
-// returns). The kernel itself must also have scalar return — a
-// pending DynCall produces garbage 0s downstream, and a composite
-// kernel return would mean reading a null pointer.
+//      `DYNCALL_PENDING` (and resets it). A set flag now only means
+//      a GENUINE whole-kernel abort (interrupt poll, depth trip,
+//      the return-gate force): the kernel result is discarded and
+//      Kernel::update returns `None`.
 
 use std::cell::Cell;
 
@@ -1139,10 +1150,15 @@ thread_local! {
     pub static DYN_DISPATCH_HANDLE: Cell<*const DynDispatchHandle> =
         const { Cell::new(std::ptr::null()) };
 
-    /// Sticky flag set by `dispatch_typed` when an inner Apply
-    /// returns `None`. Read and reset by `Kernel::update` after
-    /// the wrapper returns; if true, the kernel's result is
-    /// discarded and `update` itself returns `None`.
+    /// Sticky abort flag. `dispatch_typed` sets it when an inner
+    /// Apply returns `None`, but the JIT'd call site immediately
+    /// take-and-clears that and converts it to a #219 tainted
+    /// placeholder — so by the time `Kernel::update` reads (and
+    /// resets) the flag after the wrapper returns, a set flag only
+    /// means a GENUINE whole-kernel abort (interrupt poll, depth
+    /// trip, the return-gate force, a callee abort propagated at the
+    /// call site): the kernel's result is discarded and `update`
+    /// itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
 
     /// Not-fresh (`TAINT`/`STALE`) disc bits of a cross-kernel CALLEE's
@@ -1775,6 +1791,10 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_dyncall", graphix_dyncall as *const u8),
         ("graphix_set_var", graphix_set_var as *const u8),
         ("graphix_dyncall_pending_take", graphix_dyncall_pending_take as *const u8),
+        (
+            "graphix_dyncall_pending_take_clear",
+            graphix_dyncall_pending_take_clear as *const u8,
+        ),
         ("graphix_dyncall_set_pending", graphix_dyncall_set_pending as *const u8),
         ("graphix_callee_flags_set", graphix_callee_flags_set as *const u8),
         ("graphix_callee_flags_take", graphix_callee_flags_take as *const u8),
@@ -1860,5 +1880,25 @@ mod tests {
         );
         // Tidy up so other tests don't see a stale set flag.
         DYNCALL_PENDING.with(|c| c.set(false));
+    }
+
+    /// `graphix_dyncall_pending_take_clear` must read AND clear —
+    /// it converts a per-site "this dispatch returned no value" into
+    /// a #219 tainted placeholder, and leaving the flag set would
+    /// make `Kernel::update`'s wrapper check discard the whole
+    /// kernel result (the item-28 whole-kernel bottom this variant
+    /// exists to prevent).
+    #[test]
+    fn pending_take_clear_clears() {
+        DYNCALL_PENDING.with(|c| c.set(false));
+        assert_eq!(graphix_dyncall_pending_take_clear(), 0, "clear on cleared flag");
+        DYNCALL_PENDING.with(|c| c.set(true));
+        assert_eq!(graphix_dyncall_pending_take_clear(), 1, "reads the set flag");
+        assert_eq!(
+            graphix_dyncall_pending_take_clear(),
+            0,
+            "second take sees the flag cleared by the first"
+        );
+        assert!(!DYNCALL_PENDING.with(|c| c.get()), "flag is clear after take_clear");
     }
 }

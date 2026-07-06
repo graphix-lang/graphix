@@ -591,6 +591,10 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
         },
         None => {
+            // "No value this cycle" — the JIT'd call site
+            // take-and-clears this immediately and converts it to a
+            // #219 tainted placeholder that continues, so the bottom
+            // stays local to the result's consumers (item 28).
             DYNCALL_PENDING.with(|c| c.set(true));
             DynCallRet { word0: 0, word1: 0 }
         }
@@ -1386,11 +1390,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         DYN_DISPATCH_HANDLE.with(|c| c.set(prev_handle));
         let pending = DYNCALL_PENDING.with(|c| c.replace(false));
         if pending {
-            // The kernel's *out slot is either a garbage
-            // scalar (no deref needed) or a null pointer
-            // (for composite returns; the JIT emitted a
-            // sentinel from the pre_pending block). Either
-            // way, discard and re-fire next cycle.
+            // A GENUINE whole-kernel abort (interrupt poll, depth
+            // trip, the return-gate force, a propagated callee
+            // abort) — value-level DynCall pends were converted to
+            // #219 taint at their sites and never reach here. The
+            // kernel's *out slot holds the pending_exit sentinel
+            // (garbage scalar / null pointer); every abort path
+            // dropped the owned set before jumping there, so
+            // discard and re-fire next cycle.
             return None;
         }
         // Decode the wrapper's *out slot(s) according to the

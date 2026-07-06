@@ -1,0 +1,14 @@
+// bisect: agreement pin (multi-cycle companion to 01/02). Epoch 1's
+// Pad(u64:MAX) pends the encode; epoch 2 fires only in1, and the `+`
+// must emit with buffer::len's CACHED epoch-0 value (1 + 20) — the
+// node-walk's Cached-operand sampling. In the kernel that is the full
+// #219 chain: pend → tainted Value placeholder (encode) → tainted-arg
+// skip (len) → emit_scalar_taint_cache substitutes STALE + cached 1 →
+// propagate_stale fires the add off in1. Pre-fix the pend
+// whole-kernel aborted and epoch 2 was a MissingFire.
+// schedule-v1: cap=64 events=512; in0=u64:1 in1=u64:10; in0=u64:18446744073709551615; in1=u64:20
+let in0: u64 = u64:1;
+in0 <- never(u64:1);
+let in1: u64 = u64:10;
+in1 <- never(u64:10);
+buffer::len(buffer::encode([`Pad(in0)])) + in1

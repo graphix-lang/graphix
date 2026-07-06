@@ -1,0 +1,15 @@
+// bisect: REAL DIVERGENCE (MissingFire) — soak jul05 item 28
+// (corpus-fuzz/divergence_000025, probe t1). `buffer::encode`'s 64MB
+// Pad guard logs + returns no value; the node-walk keeps that bottom
+// local to the unused bind `b`, so the unrelated f64:0. still emits
+// (interp Trace([0:f64:0.])). The fused kernel routed the DynCall
+// pend through the whole-kernel pending_exit abort — jit Trace([]).
+// FIXED: every DynCall site take-and-clears DYNCALL_PENDING and
+// converts a pend to a #219 tainted shape-safe placeholder that
+// CONTINUES (exactly the tainted-ARG skip path); the output gate
+// bottoms only consumers. The pending flag now means only genuine
+// whole-kernel aborts (interrupt, depth trip, return-gate force).
+{
+  let b = buffer::encode([`Pad(u64:18446744073709551615)]);
+  f64:0.
+}

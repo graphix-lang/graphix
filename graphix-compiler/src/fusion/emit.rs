@@ -1296,11 +1296,12 @@ fn compile_into_function(
         b.seal_block(head);
     }
 
-    // If any composite-return DynCall site created the lazy
-    // `pending_exit` block, emit its body now: a sentinel of the
-    // kernel's return type plus `return`. All `pre_pending_<n>`
-    // blocks already dropped the owned set before jumping here, so
-    // `pending_exit` itself owns nothing.
+    // If any forced-bottom path (the return-gate force, an interrupt
+    // poll, a bottom abort, a callee genuine-abort check) created the
+    // lazy `pending_exit` block, emit its body now: a sentinel of the
+    // kernel's return type plus `return`. All abort paths already
+    // dropped the owned set before jumping here, so `pending_exit`
+    // itself owns nothing.
     //
     // The kernel result on the pending path is discarded by
     // `Kernel::update` (which checks `DYNCALL_PENDING` after the
@@ -1519,14 +1520,12 @@ pub(crate) struct LowerCtx<'a> {
     tail_scrut_stale: Variable,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
-    /// pops it once `graphix_dyncall` has consumed it. A composite-
-    /// return DynCall that pends emits a `pre_pending` block that
-    /// drops whatever is still on this stack (= the args bufs of
-    /// OUTER, not-yet-dispatched DynCalls) plus every owned
-    /// composite/variant local. Producer-op bufs never appear here:
-    /// a composite-return DynCall can't lexically sit inside a
-    /// producer op's scalar fields/body, so no producer buf is ever
-    /// in flight at a composite-DynCall pending point.
+    /// pops it once `graphix_dyncall` has consumed it. A forced-bottom
+    /// abort (interrupt poll, return-gate force, bottom abort, callee
+    /// genuine-abort check) drops whatever is still on this stack
+    /// (= the args bufs of OUTER, not-yet-dispatched DynCalls) plus
+    /// every owned composite/variant local via
+    /// [`emit_pending_cleanup`].
     dyncall_buf_stack: std::cell::RefCell<Vec<Variable>>,
     /// Owned HOF input arrays in flight (fresh producers — a literal,
     /// slice, or inlined-HOF result consumed by a loop scaffold).
@@ -1547,11 +1546,14 @@ pub(crate) struct LowerCtx<'a> {
     /// is individually boxed so its address survives Vec growth.
     lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
-    /// Lazily-created single `pending_exit` block. Created on the
-    /// first composite-return DynCall site; its body (sentinel +
-    /// `return`) is emitted at the end of `compile_into_function`.
-    /// All `pre_pending_<n>` blocks jump here after dropping the
-    /// owned set.
+    /// Lazily-created single `pending_exit` block — the target of
+    /// every genuine whole-kernel abort (interrupt poll, return-gate
+    /// force, bottom abort, callee genuine-abort check). Its body
+    /// (sentinel + `return`) is emitted at the end of
+    /// `compile_into_function`. All abort paths jump here after
+    /// dropping the owned set. A pended DynCall does NOT come here —
+    /// it converts to a #219 tainted placeholder at its own site and
+    /// continues.
     pending_exit: std::cell::RefCell<Option<Block>>,
     /// Discovered sync-builtin Apply sites for the direct path
     /// (`Some` only when a [`BodyEmitter`] supplies them) — keyed by
@@ -1961,6 +1963,9 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
         }
         "graphix_dyncall_pending_take" => {
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        "graphix_dyncall_pending_take_clear" => {
             sig.returns.push(AbiParam::new(types::I8));
         }
         "graphix_dyncall_set_pending" => {
@@ -3315,14 +3320,6 @@ pub fn ensure_owned_value_src(
     }
 }
 
-/// Emit the kernel return. Borrowed results
-/// (a `Ref` still owned by the env, possibly through parens / block
-/// tails) are cloned so the scope-exit / kernel-exit drops below don't
-/// free the buffer the caller is about to receive. Value / composite /
-/// string returns run the pending check (an earlier DynCall that
-/// pended means the caller discards the result — drop it instead of
-/// leaking); a possibly-bottom scalar routes its validity through the
-/// pending exit (the OUTPUT-consumes-bottom rule).
 /// Get (or lazily create) the kernel's single `pending_exit` block —
 /// where every forced-bottom path jumps after dropping the owned set.
 /// Its body (sentinel + `return`) is emitted at the end of
@@ -3483,12 +3480,6 @@ fn emit_kernel_return(
             }
             // Callee mode: the two-word return carries the disc in-band,
             // so TAINT/STALE ride back as data — no force, no flags.
-            emit_return_pending_check(
-                cx.b,
-                cx.env,
-                cx.ctx,
-                ReturnDropShape::Value { disc, payload },
-            )?;
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().return_(&[disc, payload]);
         }
@@ -3505,12 +3496,6 @@ fn emit_kernel_return(
             } else {
                 emit_flag_not_fresh(cx, cv.disc)?;
             }
-            emit_return_pending_check(
-                cx.b,
-                cx.env,
-                cx.ctx,
-                ReturnDropShape::Composite(v),
-            )?;
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().return_(&[v]);
         }
@@ -3526,12 +3511,6 @@ fn emit_kernel_return(
             } else {
                 emit_flag_not_fresh(cx, cv.disc)?;
             }
-            emit_return_pending_check(
-                cx.b,
-                cx.env,
-                cx.ctx,
-                ReturnDropShape::String(cv.payload),
-            )?;
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().return_(&[cv.payload]);
         }
@@ -4262,26 +4241,17 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
         }
         // Compile-time-only declarations — skip (mirrors emit_do).
         NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
-        // A CALL in statement position de-fuses the block. The DynCall
-        // path made builtin calls emittable here, but a fire-and-forget
-        // builtin (println) that yields no value sets DYNCALL_PENDING —
-        // and the wrapper-level pending check then discards the WHOLE
-        // kernel result, losing the block's value after the side effect
-        // ran (`{println("hi"); 100}` printed but never yielded 100 —
-        // soak finding 2026-07-04). The node-walk discards a statement's
-        // value INCLUDING its absence; until the pending machinery can
-        // scope that, the block node-walks (effects de-fuse, never
-        // silently skip).
-        NodeView::CallSite(_) => {
-            return Err(anyhow!(
-                "emit_clif: call in statement position — a no-value fire \
-                 would pending-abort the kernel; the block node-walks"
-            ));
-        }
         // Expression statement — evaluate, discard the result. A
         // discarded may-bottom scalar is fine — the bottom is never
         // consumed. Owned non-scalar results are dropped: discarding is
-        // consuming.
+        // consuming. This includes a CALL in statement position: a
+        // no-value fire is a #219 tainted placeholder now, so
+        // discarding it discards the bottom exactly like the
+        // node-walk (`{println("hi"); 100}` used to pending-abort the
+        // kernel and lose the 100 — soak finding 2026-07-04, item 28).
+        // Effects that can't emit (println's bare-Null return) still
+        // Err out of `emit_dyncall_node` and de-fuse the region —
+        // effects de-fuse, never silently skip.
         _ => {
             let cv = child.emit_clif(cx)?;
             emit_discard_result(cx, child, cv)?;
@@ -5400,6 +5370,11 @@ fn emit_qop_deliver(
     // ret_kind=3 (Unit): QopDeliverApply returns Value::Null; discarded.
     let ret_kind = cx.b.ins().iconst(types::I8, 3);
     cx.b.ins().call(dyncall, &[fn_idx, buf, ret_kind]);
+    // `QopDeliverApply::update` structurally returns `Some(Null)` (the
+    // marshalled arg is always present), but every dyncall site clears
+    // the pending flag so it can only ever mean "genuine abort".
+    let take = cx.helper("graphix_dyncall_pending_take_clear")?;
+    cx.b.ins().call(take, &[]);
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
     Ok(())
 }
@@ -5705,7 +5680,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
 /// against the `FnSource::Builtin` slot at `info.fn_index`, then
 /// decode the return per shape: scalar / unit / string / composite
 /// returns the unwrapped value, a Value-shape return passes the
-/// (disc, payload) pair through.
+/// (disc, payload) pair through. A dispatch that PENDS (the builtin
+/// returned no value this cycle) is converted at this site to a #219
+/// tainted shape-safe placeholder that continues — never a
+/// whole-kernel abort (item 28).
 pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     info: &BuiltinCallSiteInfo,
@@ -5873,63 +5851,93 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let r = cx.b.inst_results(call);
         (r[0], r[1])
     };
+    // Take AND clear the pending flag: set means THIS dispatch
+    // returned no value ("bottom this cycle" — e.g. `buffer::encode`'s
+    // Pad guard). Converted HERE to a #219 tainted result that
+    // CONTINUES — the node-walk's builtin `None` silences only its
+    // consumers, so the whole-kernel pending abort it used to trigger
+    // killed unrelated outputs (soak jul05 item 28). Clearing keeps
+    // the flag meaning "genuine abort" for `Kernel::update`.
+    let pend = {
+        let take = cx.helper("graphix_dyncall_pending_take_clear")?;
+        let c = cx.b.ins().call(take, &[]);
+        cx.b.inst_results(c)[0]
+    };
     // Call-path results per return shape (args are proven untainted on
     // this path — the old post-call arg-taint aborts are gone).
-    let (cdisc, cpay) = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
+    match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => {
-            // Scalar return: 0 on pending is a harmless sentinel for
-            // downstream scalar arithmetic. No branch needed — the
-            // wrapper-level DYNCALL_PENDING check in Kernel::update
-            // discards the whole kernel result.
+            // Scalar return: the 0 sentinel on pending is a harmless
+            // payload for downstream scalar arithmetic — no branch,
+            // just fold the pend bit into TAINT.
             let value = cast_u64_to_prim(cx.b, raw0, p);
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &arg_taint_discs);
-            (disc, value)
+            let disc = taint_if(cx.b, disc, pend);
+            cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(value)]);
         }
         Some(AbiKind::Unit) => {
-            // Unit return: dispatcher returned (0, _). The wrapper-
-            // level DYNCALL_PENDING check still fires.
+            // Unit return: dispatcher returned (0, _). The result is
+            // discarded by the statement position; the pend bit still
+            // rides so a bound unit local reads as bottom.
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
-            (disc, raw0)
+            let disc = taint_if(cx.b, disc, pend);
+            cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(raw0)]);
         }
-        Some(AbiKind::String) => {
-            // String return: `raw0` is the ArcStr's raw thin-pointer
-            // bits (transferred ownership), or the null sentinel on
-            // pending. Null bits are NOT inert downstream the way a
-            // scalar 0 is — every String position assumes a valid
-            // owned ArcStr (`emit_return_pending_check` / scope-exit
-            // `drop_owned_strings` would null-drop it; #214) — so
-            // branch exactly like the composite arm.
-            emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
-            let disc = propagate_flags(cx.b, base, &arg_taint_discs);
-            (disc, raw0)
-        }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            // Composite return: `raw0` is an owned `*mut ValArray`,
-            // or null on pending. Null can't be deref'd by downstream
-            // ops, so we branch: on pending, drop every owned local +
-            // every outer in-flight DynCall buf, then jump to
-            // `pending_exit`. (`pending_take` READS without clearing,
-            // so no re-set is needed.)
-            emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-            let disc = propagate_flags(cx.b, base, &arg_taint_discs);
-            (disc, raw0)
-        }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            // Value-shape return: both register-words, same pending
-            // branch as the composite arm (the boxed Value sentinel is
-            // null on pending). `raw0` is a REAL (flag-free) Value
-            // disc from the dispatcher — fold the args' firing in like
-            // every other arm, else the result reads as always-fired:
-            // a const `buffer::from_string(...)`/`cast<T>(x)$` re-fired
-            // on every kernel wake, and a consume-always connect of
-            // one SELF-WOKE its own kernel forever (soak jul05
-            // items 1/4/25 — the ExtraFire/Timeout family).
-            emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            let disc = propagate_flags(cx.b, raw0, &arg_taint_discs);
-            (disc, raw1)
+        Some(
+            AbiKind::String
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value,
+        ) => {
+            // Pointer-carrying / two-word returns: the pending
+            // sentinel (null / `(0, 0)`) is NOT inert — every String
+            // position assumes a valid owned ArcStr (#214), a null
+            // `*mut ValArray` can't be deref'd, and a zero Value disc
+            // is not a real tag. Branch: on pend, produce the same
+            // tainted shape-safe placeholder the tainted-ARG skip
+            // path produces and continue to the merge.
+            let pend_bl = cx.b.create_block();
+            let ok_bl = cx.b.create_block();
+            cx.b.ins().brif(pend, pend_bl, &[], ok_bl, &[]);
+            cx.b.switch_to_block(pend_bl);
+            cx.b.seal_block(pend_bl);
+            let ph = emit_elem_placeholder(cx, &info.return_type)?;
+            let ph_disc = propagate_flags(cx.b, ph.disc, &arg_taint_discs);
+            cx.b.ins()
+                .jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
+            cx.b.switch_to_block(ok_bl);
+            cx.b.seal_block(ok_bl);
+            let (disc, pay) = match kernel_abi::abi_kind(cx.registry(), &info.return_type)
+            {
+                Some(AbiKind::String) => {
+                    // `raw0` is the ArcStr's raw thin-pointer bits
+                    // (transferred ownership).
+                    let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
+                    (propagate_flags(cx.b, base, &arg_taint_discs), raw0)
+                }
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                    // `raw0` is an owned `*mut ValArray`.
+                    let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+                    (propagate_flags(cx.b, base, &arg_taint_discs), raw0)
+                }
+                _ => {
+                    // Value-shape: both register-words. `raw0` is a
+                    // REAL (flag-free) Value disc from the dispatcher —
+                    // fold the args' firing in like every other arm,
+                    // else the result reads as always-fired: a const
+                    // `buffer::from_string(...)`/`cast<T>(x)$` re-fired
+                    // on every kernel wake, and a consume-always
+                    // connect of one SELF-WOKE its own kernel forever
+                    // (soak jul05 items 1/4/25 — the ExtraFire/Timeout
+                    // family).
+                    (propagate_flags(cx.b, raw0, &arg_taint_discs), raw1)
+                }
+            };
+            cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
         }
         Some(AbiKind::Null) | None => {
             return Err(anyhow!(
@@ -5937,12 +5945,19 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                  should have widened to Nullable<T> at construction"
             ));
         }
-    };
-    cx.b.ins().jump(dmerge, &[BlockArg::Value(cdisc), BlockArg::Value(cpay)]);
+    }
     cx.b.switch_to_block(dmerge);
     cx.b.seal_block(dmerge);
     let params = cx.b.block_params(dmerge);
-    Ok(CompiledExpr::new(params[0], params[1]))
+    let merged = CompiledExpr::new(params[0], params[1]);
+    // Interior-bottom exactness (scalar returns): a pended dispatch, a
+    // tainted-arg skip, with PRIOR success degrades to STALE + the
+    // cached value — matching the node-walk, where consumers sample
+    // the builtin node's cached last output when it doesn't fire.
+    match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
+        Some(AbiKind::Scalar(p)) => Ok(emit_scalar_taint_cache(cx, p, merged)),
+        _ => Ok(merged),
+    }
 }
 
 /// How a `select`'s arms merge into one result — derived from the
@@ -7621,6 +7636,32 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         let call = cx.b.ins().call(take, &[]);
         cx.b.inst_results(call)[0]
     };
+    // A callee that genuinely ABORTED (interrupt, depth trip) left
+    // `DYNCALL_PENDING` set and returned the pending sentinel — a null
+    // pointer / zero pair, NOT a real value. Propagate the abort at
+    // the call site: drop the owned call args, drop this kernel's
+    // owned set, and jump to `pending_exit` with the flag still set
+    // (peek, not clear) so `Kernel::update` discards. Without this the
+    // sentinel would flow into downstream derefs and drops. Value-
+    // level bottoms never take this path — a callee's pended DynCall
+    // converts to a #219 tainted result at its own site and rides
+    // back through `CALLEE_RESULT_FLAGS` / the in-band disc.
+    {
+        let peek = cx.helper("graphix_dyncall_pending_take")?;
+        let call = cx.b.ins().call(peek, &[]);
+        let pending = cx.b.inst_results(call)[0];
+        let abort_bl = cx.b.create_block();
+        let cont_bl = cx.b.create_block();
+        cx.b.ins().brif(pending, abort_bl, &[], cont_bl, &[]);
+        cx.b.switch_to_block(abort_bl);
+        cx.b.seal_block(abort_bl);
+        emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
+        let exit = pending_exit_block(cx);
+        emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
+        cx.b.ins().jump(exit, &[]);
+        cx.b.switch_to_block(cont_bl);
+        cx.b.seal_block(cont_bl);
+    }
     let one_result = |cx: &mut BodyCx| -> Result<ClifValue> {
         let results = cx.b.inst_results(inst);
         if results.len() != 1 {
@@ -7792,148 +7833,14 @@ fn emit_pending_cleanup(
     drop_owned_composites(b, env, ctx)
 }
 
-/// The site-level pending branch shared by every non-scalar DynCall
-/// result (composite / Value-shape / String): peek `DYNCALL_PENDING`;
-/// if the dispatch pended, the result word(s) hold the null sentinel —
-/// drop everything the kernel owns (`emit_pending_cleanup`) and jump
-/// to `pending_exit`, so the sentinel never flows into downstream
-/// code whose derefs and drops assume validity. Falls through on the
-/// non-pending path. (`pending_take` READS without clearing, so the
-/// wrapper-level check in `Kernel::update` still fires.)
-///
-/// Register-scalar results don't branch — their 0 sentinel is inert
-/// for downstream arithmetic and the wrapper discards the kernel
-/// result wholesale.
-fn emit_dyncall_pending_branch(
-    b: &mut FunctionBuilder,
-    env: &mut JitEnv,
-    ctx: &LowerCtx,
-) -> Result<()> {
-    let pending_take = ctx
-        .helper_refs
-        .get("graphix_dyncall_pending_take")
-        .ok_or_else(|| anyhow!("missing graphix_dyncall_pending_take"))?;
-    let call = b.ins().call(pending_take, &[]);
-    let pending = b.inst_results(call)[0];
-    let pre_pending = b.create_block();
-    let continue_block = b.create_block();
-    let pending_exit = {
-        let mut slot = ctx.pending_exit.borrow_mut();
-        match *slot {
-            Some(blk) => blk,
-            None => {
-                let blk = b.create_block();
-                *slot = Some(blk);
-                blk
-            }
-        }
-    };
-    b.ins().brif(pending, pre_pending, &[], continue_block, &[]);
-    b.switch_to_block(pre_pending);
-    b.seal_block(pre_pending);
-    emit_pending_cleanup(b, env, ctx)?;
-    b.ins().jump(pending_exit, &[]);
-    b.switch_to_block(continue_block);
-    b.seal_block(continue_block);
-    Ok(())
-}
-
-/// Shape of the about-to-return result that
-/// [`emit_return_pending_check`] drops if `DYNCALL_PENDING` fires.
-/// Scalar / Unit returns don't need this — there's no allocation,
-/// so no leak risk — and so don't have a `ReturnDropShape` variant.
-#[derive(Debug, Clone, Copy)]
-enum ReturnDropShape {
-    /// Owned `*mut ValArray` — drop via `graphix_valarray_drop`.
-    Composite(ClifValue),
-    /// Owned Value-shape `(disc, payload)` pair — drop via
-    /// `graphix_value_drop`.
-    Value { disc: ClifValue, payload: ClifValue },
-    /// Owned `ArcStr` (thin pointer as `i64`) — drop via
-    /// `graphix_arcstr_drop`. String returns are leak-prone on the
-    /// pending path the same way composite/Value returns are: every
-    /// string constant / concat / local read produces an owned
-    /// ArcStr whose refcount would never decrement if
-    /// `Kernel::update` discards the wrapper result.
-    String(ClifValue),
-}
-
-/// At every composite / Value-shape kernel return, emit a
-/// `DYNCALL_PENDING` peek. If pending fired earlier (e.g., a scalar
-/// DynCall deep in the body that doesn't short-circuit on
-/// its own), the about-to-return result is an owned heap allocation
-/// that `Kernel::update`'s wrapper-level pending check would
-/// discard — leaking it. On pending: drop the result, run
-/// `emit_pending_cleanup` to drop env / in-flight DynCall bufs,
-/// jump to `pending_exit` (which emits a sentinel and returns).
-/// `Kernel::update` then sees `DYNCALL_PENDING` (still set —
-/// `pending_take` no longer clears) and returns `None`. On the
-/// non-pending fall-through, control returns to the caller, which
-/// emits its own `drop_owned_composites + return`.
-fn emit_return_pending_check(
-    b: &mut FunctionBuilder,
-    env: &mut JitEnv,
-    ctx: &LowerCtx,
-    drop_shape: ReturnDropShape,
-) -> Result<()> {
-    let pending_take = ctx
-        .helper_refs
-        .get("graphix_dyncall_pending_take")
-        .ok_or_else(|| anyhow!("missing graphix_dyncall_pending_take"))?;
-    let call = b.ins().call(pending_take, &[]);
-    let pending = b.inst_results(call)[0];
-
-    let drop_block = b.create_block();
-    let continue_block = b.create_block();
-    let pending_exit = {
-        let mut slot = ctx.pending_exit.borrow_mut();
-        match *slot {
-            Some(blk) => blk,
-            None => {
-                let blk = b.create_block();
-                *slot = Some(blk);
-                blk
-            }
-        }
-    };
-    b.ins().brif(pending, drop_block, &[], continue_block, &[]);
-
-    // drop_block: drop the about-to-return result, then run the
-    // normal pre_pending cleanup (env drops + in-flight DynCall
-    // bufs), then jump to pending_exit.
-    b.switch_to_block(drop_block);
-    b.seal_block(drop_block);
-    match drop_shape {
-        ReturnDropShape::Composite(ptr) => {
-            let arr_drop = ctx
-                .helper_refs
-                .get("graphix_valarray_drop")
-                .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-            b.ins().call(arr_drop, &[ptr]);
-        }
-        ReturnDropShape::Value { disc, payload } => {
-            let val_drop = ctx
-                .helper_refs
-                .get("graphix_value_drop")
-                .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-            b.ins().call(val_drop, &[disc, payload]);
-        }
-        ReturnDropShape::String(ptr) => {
-            let str_drop = ctx
-                .helper_refs
-                .get("graphix_arcstr_drop")
-                .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
-            b.ins().call(str_drop, &[ptr]);
-        }
-    }
-    emit_pending_cleanup(b, env, ctx)?;
-    b.ins().jump(pending_exit, &[]);
-
-    // continue: caller proceeds with the non-pending return path.
-    b.switch_to_block(continue_block);
-    b.seal_block(continue_block);
-    Ok(())
-}
+// (The old `emit_dyncall_pending_branch` / `emit_return_pending_check`
+// pair — the site-level and return-level whole-kernel aborts for a
+// pended DynCall — is gone: every dyncall site now take-and-CLEARS the
+// pending flag and converts a pend to a #219 tainted placeholder that
+// continues, and a cross-kernel callee's genuine abort is checked and
+// propagated at the call site in `emit_lambda_call_node`. No path can
+// leave the flag set and keep executing, so a return-time peek would
+// always read false.)
 
 /// Map a [`PrimType`] to the `graphix_value_buf_push_<T>` helper.
 fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {

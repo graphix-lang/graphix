@@ -480,10 +480,9 @@ fn finalize_buf(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
 /// the push half of [`super::compile_and_push_field`]. Helper choice
 /// per shape:
 /// - **Scalar**: `graphix_value_buf_push_<T>` per the prim. A
-///   may-bottom (tainted-disc) field aborts the kernel to pending
-///   via [`super::emit_bottom_abort`] before the push (a composite
-///   producer has no per-field validity channel, so a bottom field
-///   must propagate to the kernel OUTPUT).
+///   may-bottom (tainted-disc) slot does NOT abort — the caller
+///   accumulates its taint into the HOF result disc (see the body
+///   comment below).
 /// - **Array/Tuple/Struct**: `graphix_value_buf_push_array` (owned)
 ///   or `_borrowed` (refcount-bumped), by `src`.
 /// - **Variant/Nullable/Value**: `graphix_value_buf_push_value` or
@@ -492,7 +491,7 @@ fn finalize_buf(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
 /// - **String**: `graphix_value_buf_push_string`, UNCONDITIONALLY —
 ///   `src` is ignored because string SSA is always owned (every
 ///   producer on both paths — ConstStr, Concat, Local/Ref reads —
-///   hands out a fresh refcount; see `ReturnDropShape::String`). The
+///   hands out a fresh refcount). The
 ///   bits are the ArcStr's raw thin pointer, NOT a pointer to an
 ///   ArcStr struct — `_push_arcstr` would dereference them as one
 ///   (UAF/UB); `_push_string` takes the ArcStr by value (consumes).
