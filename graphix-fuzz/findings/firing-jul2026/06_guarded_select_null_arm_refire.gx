@@ -1,0 +1,13 @@
+// bisect: fusion/JIT OVER-FIRE — soak jul06c (divergence_000006, B3).
+// A guarded select taking a NULL-literal arm: interp fires null once
+// (init); jit re-fired it on EVERY in0 injection. in0 feeds arm 0's
+// guard, but arm 0's pattern (i64:0) can never match the const
+// scrutinee (i64:5), so the node-walk never evaluates the guard and
+// in0 events don't wake the select. The kernel's selection memory
+// correctly quieted the guard word (same arm re-taken), but the
+// null-arm's hand-built disc carried NO STALE gate (unlike
+// emit_const_node's const_stale_gate), so the STALE AND-fold read the
+// arm as always-fired. FIXED: the null-literal select arm applies the
+// same const_stale_gate (emit_select_value_arm, fusion/emit.rs).
+// schedule-v1: cap=64 events=512; in0=i64:1
+select i64:5 {i64:0 if in0 % i64:2 == i64:0 => i64:1, _ => null}

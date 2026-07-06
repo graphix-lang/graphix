@@ -7158,7 +7158,14 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                             ));
                         }
                     }
+                    // Same STALE gate as `emit_const_node`: a literal
+                    // fires only at init. A raw (always-FRESH) disc here
+                    // made the STALE AND-fold below unable to sleep the
+                    // arm, so a guarded select taking a null arm re-fired
+                    // on every kernel invocation (soak-jul06c B3).
+                    let init = cx.init_flag();
                     let d = cx.b.ins().iconst(types::I64, value_disc::NULL);
+                    let d = const_stale_gate(cx.b, init, d);
                     let p = cx.b.ins().iconst(types::I64, 0);
                     (d, p)
                 }
