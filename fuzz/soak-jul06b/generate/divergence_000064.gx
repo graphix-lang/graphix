@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("2-false"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, String("2-true"))], capped: false }] })
+// mutant: { let v3 = |v0: bool, v1: u8, v2: bool| -> bool (false || (f64:0.0 != f64:-1.0)); let v4 = |v5: i64| -> i64 (v5 * i64:1); let v6 = |v7: i64| -> i64 (v4(v7) + i64:42); let v4 = |v8: i64| -> i64 (v8 - i64:1); let v9 = v6((-(i64:7))); let v6: string = select v9 { v10 => "[u8:2]-[(v9 == i64:1)]" }; v6 }
+// minimized:
+{f64:0.; let v4 = |v5: i64| -> i64 (v5 * i64:1); let v6 = |v7: i64| -> i64 (v4(v7) + i64:42); let v4 = |v8: i64| -> i64 (v8 - i64:1); let v9 = v6((-(i64:7))); let v6: string = select v9 {v10 => "[u8:2]-[(v9 == i64:1)]"}; v6}

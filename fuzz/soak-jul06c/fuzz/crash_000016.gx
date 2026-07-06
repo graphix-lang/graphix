@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) | thread 'tokio-rt-worker' (199254) has overflowed its stack | fatal runtime error: stack overflow, aborting
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let f = |x: Array<'a>, y: Array<'a>| -> Array<Array<'a>> [{let f = |x: Array<'a>, y: Array<'a>| -> Array<Array<'a>> [x, y]; f([i64:1, i64:2, i64:3], [i64:1, i64:2, i64:3])}, y]; f([i64:1, i64:2, i64:3], [u32:1, i64:2, i64:3])}

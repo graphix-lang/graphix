@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [Map({String("b"): String(""), String("k0"): String("graphix")}), F64(0.0), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [Bool(false)] }) }))))] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [Map({String("b"): String(""), String("k0"): String("graphix")}), F64(0.0), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [Bool(true)] }) }))))] }) })))))], capped: false }] })
+// mutant: { let rec v0 = |v1: i64| -> i64 select v1 { v2 if v2 <= i64:0 => i64:-100, v2 => (v0(v2 - i64:1) + v0(v2 - i64:2)) }; let v3 = v0(i64:7); let v3: {b: i64} = { b: (cast<i64>(u8:2)$ /? v3)$ }; ({"k0" => "graphix", "b" => ""}, f64:0.0, [(f64:2.5 >= f64:3.14)]) }
+// minimized:
+(true, i64:0, [f64:0. >= f64:3.14])

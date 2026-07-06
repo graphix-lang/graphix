@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("false-true"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, String("true-true"))], capped: false }] })
+// mutant: { let v1 = |v0| ((v0 - v0) + v0); let v2 = v1(i64:2); let v3 = v1(f64:0.1); "[(f64:0.1 <= f64:0.0)]-["[true]"]" }
+// minimized:
+"[f64:0.1 <= f64:0.][i64:0]["[true]"]"

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(false))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Bool(true))], capped: false }] })
+// mutant: { let v0 = select i64:0 { v0 if (true && false) => { a: false, c: i64:-100, x: {"k0" => f64:0.0} }, v0 => { a: (f64:1.0 >= f64:3.14), c: (-(i64:0)), x: {"k0" => f64:2.5, "k2" => f64:0.0} } }; let v1: Map<string, f64> = v0.x; let v4 = |v2: f64, v1: string| -> string { let v3 = "[(u8:0 * u8:1)]"; v3 }; let v5 = f64:0.1; let v3: [f64, null] = f64:3.14; select v0 { {a: v6, c: i64:100, x: _} if (!v6) => v6, {a: v6, c: v7, x: _} => ((v6 || false) && (v6 || false)) } }
+// minimized:
+{let v0 = { a: f64:0. >= f64:3.14, c: (-(i64:0)), x: {"k0" => f64:2.5, "k2" => f64:0.} }; let v1: Map<string, f64> = v0.x; let v4 = |v2: f64, v1: string| -> string {let v3 = "[(u8:0 * u8:1)]"; v3}; let v5 = f64:0.1; let v3: [f64, null] = f64:3.14; select v0 {{a: v6, c: i64:100, x: _} if (!v6) => v6, {a: v6, c: v7, x: _} => ((v6 || false) && (v6 || false))}}

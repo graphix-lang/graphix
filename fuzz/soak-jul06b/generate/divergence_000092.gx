@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("false"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, String("true"))], capped: false }] })
+// mutant: { let v3 = |v0: bool, v1: bool| -> u8 { let v2 = f64:2.5; u8:1 }; let v1 = (((f64:1.0 + f64:-1.0) % (f64:-1.0 / f64:0.0)) * ((try ((f64:3.14 +? f64:3.14))? catch(e) => f64:0.1) + (-(f64:-1.0)))); let v4 = |v3: u8| -> string { let v3 = (select (u8:1 %? v3) { error as _ => v3, u8 as n => n } + (v3 % v3)); "graphix" }; let v4 = |v5| ((v5 - v5) - v5); let v6 = v4(i64:7); let v7 = v4(f64:0.0); let v8 = (((i64:7 * i64:1) + str::len("")) * (try ((i64:-100 *? (try ((i64:-100 -? i64:2))? catch(e) => i64:1)))? catch(e) => (i64:7 - i64:100))); let v10 = |v9, v8| ((v9 + v9) - v8); let v11 = v10(f64:2.5, f64:2.5); let v12 = v10(u8:100, u8:0); "[(f64:3.14 <= f64:0.1)]" }
+// minimized:
+"[f64:3.14 <= f64:0.]"

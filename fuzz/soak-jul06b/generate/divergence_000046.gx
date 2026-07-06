@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("a"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, String(""))], capped: false }] })
+// mutant: { let rec v0 = |v1: i64, v3: i64| -> i64 select v1 { v2 if v2 <= i64:0 => (v2 % v2), v2 => v0(v2 - i64:1, v3 + v2) }; let v4 = v0(i64:3, i64:0); let v0 = select v4 { i64:-100 if (!true) => v4, i64:2 if (!true) => select (v4 /? (v4 + i64:1)) { error as _ => (v4 + i64:7), i64 as n => n }, i64:1 => str::len(str::trim("graphix")), _ => ((i64:2 + v4) - (v4 * i64:0)) }; let v4: [`C, `Nil(i64, bool)] = `Nil((cast<i64>(u8:100)$ + cast<i64>(u8:255)$), (f64:2.5 < f64:2.5)); select v4 { `Nil(_, false) if true => "a", `C => str::replace(#pat: "hello", #rep: "a", "graphix"), `Nil(v5, v2) => "" } }
+// minimized:
+{|v1: i64, v3: i64| -> i64 i64:0; let v4 = i64:3; let v0 = select v4 {i64:-100 if (!true) => v4, i64:2 if (!true) => select (v4 /? (v4 + i64:1)) {error as _ => (v4 + i64:7), i64 as n => n}, i64:1 => str::len(str::trim("graphix")), _ => ((i64:2 + v4) - (v4 * i64:0))}; let v4: [`C, `Nil(i64, bool)] = `Nil((cast<i64>(u8:100)$ + cast<i64>(u8:255)$), (f64:2.5 < f64:2.5)); select v4 {`Nil(_, false) if true => "a", `C => str::replace(#pat: "hello", #rep: "a", "graphix"), `Nil(v5, v2) => ""}}

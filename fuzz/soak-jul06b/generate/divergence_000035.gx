@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(false), Bool(false)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(true), Bool(true)] }) })))))], capped: false }] })
+// mutant: { let v0 = select str::len("") { v0 => (-(cast<f64>(v0)$)) }; let v1: i64 = array::fold([i64:0, i64:-100], i64:42, |v1, v2| v1); (((v1 *? v1)$ == (i64:2 + v1)), ((f64:1.0 - f64:1.0) > cast<f64>(u8:2)$)) }
+// minimized:
+{str::len(""); let v1: i64 = array::fold([i64:0, i64:0], i64:42, |v1, v2| v1); (((v1 *? v1)$ == (i64:2 + v1)), ((f64:1. - f64:1.) > cast<f64>(u8:2)$))}

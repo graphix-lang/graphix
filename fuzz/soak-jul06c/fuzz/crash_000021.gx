@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) | thread 'tokio-rt-worker' (198240) has overflowed its stack | fatal runtime error: stack overflow, aborting
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let a = [i64:1, i64:2, i64:3, i64:4]; a <- [i64:5, a, i64:7, i64:8]; let clock: Any = once(null); let v = array::iterq(#clock, a); i64:1; filter(v, |x| x == i64:8)}

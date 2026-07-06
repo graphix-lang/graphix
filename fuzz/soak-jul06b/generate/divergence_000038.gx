@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Map({String("k0"): F64(0.1), String("k1"): F64(1.0)}), Bool(false)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Map({String("k0"): F64(0.1), String("k1"): F64(1.0)}), Bool(true)] }) })))))], capped: false }] })
+// mutant: select ((i64:2 + i64:100) / i64:42) { v0 if true => ({"k1" => f64:1.0, "k0" => f64:0.1}, (f64:3.14 <= f64:0.1)), v0 => ({"k1" => f64:1.0}, (!false)) }
+// minimized:
+("k1", f64:3.14 <= f64:0.)

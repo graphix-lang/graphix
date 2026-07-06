@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(5, String("[\"1\", \"5\", \"6\", \"40\", \"50\"][duration:3600.s, i64:20, i64:30]"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(5, String("[\"1\", \"5\", \"6\", \"40\", \"50\"][3600.s, 20, 30]"))], capped: false }] })
+// mutant: {let words = [[duration:3600.s, i64:20, i64:30], {let tick = array::iter([i64:1, i64:2, i64:3, i64:4]); let acc = ""; acc <- tick ~ "[acc]x"; let s = select str::len(acc) {i64:0 => never(), _ => acc}; let l = str::len(s) * i64:2; select count(l) {i64:4 => l, _ => never()}}]; "[list::to_array(list::sort(#numeric: true, list::from_array(["5", "50", "6", "40", "1"])))][words[i64:0]]"}
+// minimized:
+{let words = [[i64:0, i64:20, i64:30], {let tick = array::iter([i64:1, i64:2, i64:3, i64:4]); let acc = ""; acc <- tick ~ "[acc]x"; let s = select str::len(acc) {i64:0 => never(), _ => acc}; let l = str::len(s) * i64:2; select count(l) {i64:4 => l, _ => never()}}]; "[list::to_array(list::sort(#numeric: true, list::from_array(["5", "50", "6", "40", "1"])))][words[i64:0]]"}

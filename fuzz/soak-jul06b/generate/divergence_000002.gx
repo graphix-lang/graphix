@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [String("x"), Bool(false)] }) }))))] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [String("x"), Bool(true)] }) }))))] }) })))))], capped: false }] })
+// mutant: { let v2 = |v0: i64, v1: f64| -> i64 ((v0 % i64:100) * (i64:-100 % v0)); let v2 = ("xyz", [f64:1.0], array::fold([i64:-1, i64:-100, i64:100], i64:100, |v3, v4| i64:0)); { x: ((f64:0.1 + f64:0.0) < (f64:0.1 + f64:0.0)) } }
+// minimized:
+{ x: f64:0.1 < f64:0.1 }

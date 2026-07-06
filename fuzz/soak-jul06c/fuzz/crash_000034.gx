@@ -1,0 +1,4 @@
+// CRASH: child no VERDICT line (exit status: 0)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let out = sys::io::stdout(null); let written = sys::io::write_exact(out, buffer::from_string("a")); let flushed = sys::io::flush(written? ~ out); !is_err(flushed)}
