@@ -254,19 +254,28 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     the ML-family standard; the prior "poly" admission was unsound
     (it widened the signature to Any and crashed the JIT).
 
-18. **OPEN (root-caused, fix when campaigns stop) — union struct field
-    with a DynCall-produced arm leaks the string under the other
-    arm's ABI** — corpus-fuzz/divergence_000017. Pinned at
-    findings/union-struct-field-jul2026/01. `{y: [i64, string]}` from
-    two select arms (cast<i64>$ vs buffer::to_string); jit marshals
-    the taken string arm as i64 → pointer leak. Discriminator: a
-    LITERAL i64 arm 1 de-fuses correctly (j35 AGREES); the DYNCALL
-    (cast$) arm tips it into fusing (j34 leaks). #21 union-ABI family,
-    struct-field flavor, crossed with the item-1/4 DynCall-type path.
-    fix: struct-field freeze must reject a union field regardless of
-    arm production. TENTH real bug of the round.
+18. **FIXED (2026-07-06) — union struct field with a DynCall-produced
+    arm leaked the string under the other arm's ABI** — corpus-fuzz/
+    divergence_000017. Pinned at findings/union-struct-field-jul2026/
+    01. `{y: [i64, string]}` from two select arms (cast<i64>$ vs
+    buffer::to_string); jit marshalled the taken string arm as i64 →
+    pointer leak. ROOT: the item-11 disease ONE LEVEL UP —
+    `union_int`'s composite arms decided collapse via derived
+    `Type::eq`, which recurses into `TVar::eq`'s None == None, so
+    `{y: 'a} ∪ {y: 'b}` collapsed to ONE struct while both DynCall
+    rtype cells were still unresolved; the string arm's type vanished
+    and the narrow (wrongly-i64) field froze and fused. Literal arms
+    bind at compile → structs differ → honest Set → de-fuse — which
+    is why only the DynCall shape leaked. FIX: `union_identical`
+    (typ/setops.rs) — Type::eq except two unbound tvars are identical
+    only same-cell — now decides every union_int collapse
+    (Array/Map/Struct/Tuple/ByRef/Abstract + the item-11 TVar arm
+    refactored onto it). The honest `[{y:i64}, {y:string}]` union
+    doesn't freeze → the region de-fuses (n1/n3 AGREE); the SAME-type
+    two-DynCall control still fuses (normalize's deref-merge collapses
+    bound-equal members — n2 fused=2). TENTH real bug of the round.
 
-19. **DUPLICATE of item 18 (no new action)** — corpus-fuzz/
+19. **DUPLICATE of item 18 (FIXED with it; probe n3 AGREES)** — corpus-fuzz/
     divergence_000018: identical `{y: [i64, string]}` union field,
     arm 1 cast<i64>$, arm 2 a string — only the string PRODUCER
     differs (nested `select {0 => "zero", n => "other"}` vs item 18's

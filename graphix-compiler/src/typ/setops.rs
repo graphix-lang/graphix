@@ -10,6 +10,82 @@ use poolshark::local::LPooled;
 use std::iter;
 use triomphe::Arc;
 
+/// Structural identity for union-collapse decisions. Exactly
+/// `Type::eq` EXCEPT that two unbound TVars are identical only when
+/// they share a cell: `TVar::eq` calls None == None equal, and a
+/// collapse on that verdict discards a cell whose future binding may
+/// diverge from the survivor's. The direct (TVar, TVar) hole dropped a
+/// select arm's `Error<_>` from the arm union (soak jul05 item 11);
+/// the same hole one level down — derived `Type::eq` recursing into
+/// `TVar::eq` — collapsed `{y: 'a} ∪ {y: 'b}` while both DynCall arms
+/// were still unresolved, the string arm's type vanished, and the
+/// fused field read leaked the string payload as an i64 (item 18).
+/// `Fn` keeps plain equality: two structurally-equal signatures are
+/// the same type (alpha equivalence), and fn-typed values don't fuse.
+fn union_identical(t0: &Type, t1: &Type) -> bool {
+    match (t0, t1) {
+        (Type::TVar(a), Type::TVar(b)) => {
+            let ai = a.read();
+            let bi = b.read();
+            Arc::ptr_eq(&ai.typ, &bi.typ) || {
+                let ab = ai.typ.read();
+                let bb = bi.typ.read();
+                match (&ab.typ, &bb.typ) {
+                    (Some(x), Some(y)) => union_identical(x, y),
+                    _ => false,
+                }
+            }
+        }
+        (Type::Bottom, Type::Bottom) | (Type::Any, Type::Any) => true,
+        (Type::Primitive(a), Type::Primitive(b)) => a == b,
+        (
+            Type::Abstract { id: i0, params: p0 },
+            Type::Abstract { id: i1, params: p1 },
+        ) => {
+            i0 == i1
+                && p0.len() == p1.len()
+                && p0.iter().zip(p1.iter()).all(|(a, b)| union_identical(a, b))
+        }
+        (Type::Ref(r0), Type::Ref(r1)) => {
+            r0.scope == r1.scope
+                && r0.name == r1.name
+                && r0.params.len() == r1.params.len()
+                && r0
+                    .params
+                    .iter()
+                    .zip(r1.params.iter())
+                    .all(|(a, b)| union_identical(a, b))
+        }
+        (Type::Set(s0), Type::Set(s1)) => {
+            s0.len() == s1.len()
+                && s0.iter().zip(s1.iter()).all(|(a, b)| union_identical(a, b))
+        }
+        (Type::Error(a), Type::Error(b)) => union_identical(a, b),
+        (Type::Array(a), Type::Array(b)) => union_identical(a, b),
+        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+            union_identical(k0, k1) && union_identical(v0, v1)
+        }
+        (Type::ByRef(a), Type::ByRef(b)) => union_identical(a, b),
+        (Type::Tuple(a), Type::Tuple(b)) => {
+            a.len() == b.len()
+                && a.iter().zip(b.iter()).all(|(x, y)| union_identical(x, y))
+        }
+        (Type::Struct(a), Type::Struct(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|((n0, x), (n1, y))| n0 == n1 && union_identical(x, y))
+        }
+        (Type::Variant(tg0, a), Type::Variant(tg1, b)) => {
+            tg0 == tg1
+                && a.len() == b.len()
+                && a.iter().zip(b.iter()).all(|(x, y)| union_identical(x, y))
+        }
+        (Type::Fn(f0), Type::Fn(f1)) => f0 == f1,
+        _ => false,
+    }
+}
+
 impl Type {
     fn union_int(
         &self,
@@ -60,10 +136,11 @@ impl Type {
                     }
                 }
             }
-            (
-                Type::Abstract { id: id0, params: p0 },
-                Type::Abstract { id: id1, params: p1 },
-            ) if id0 == id1 && p0 == p1 => Ok(self.clone()),
+            (t0 @ Type::Abstract { .. }, t1 @ Type::Abstract { .. })
+                if union_identical(t0, t1) =>
+            {
+                Ok(self.clone())
+            }
             (t0 @ Type::Abstract { .. }, t1) | (t0, t1 @ Type::Abstract { .. }) => {
                 Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
             }
@@ -90,8 +167,8 @@ impl Type {
                 Type::Primitive(*p),
                 Type::Array(t.clone()),
             ]))),
-            (t @ Type::Array(t0), u @ Type::Array(t1)) => {
-                if t0 == t1 {
+            (t @ Type::Array(t0), u @ Type::Array(_)) => {
+                if union_identical(t, u) {
                     Ok(Type::Array(t0.clone()))
                 } else {
                     Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
@@ -110,11 +187,8 @@ impl Type {
                     Type::Map { key: key.clone(), value: value.clone() },
                 ])))
             }
-            (
-                t @ Type::Map { key: k0, value: v0 },
-                u @ Type::Map { key: k1, value: v1 },
-            ) => {
-                if k0 == k1 && v0 == v1 {
+            (t @ Type::Map { key: k0, value: v0 }, u @ Type::Map { .. }) => {
+                if union_identical(t, u) {
                     Ok(Type::Map { key: k0.clone(), value: v0.clone() })
                 } else {
                     Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
@@ -135,8 +209,8 @@ impl Type {
             (e @ Type::Error(_), t) | (t, e @ Type::Error(_)) => {
                 Ok(Type::Set(Arc::from_iter([e.clone(), t.clone()])))
             }
-            (t @ Type::ByRef(t0), u @ Type::ByRef(t1)) => {
-                if t0 == t1 {
+            (t @ Type::ByRef(t0), u @ Type::ByRef(_)) => {
+                if union_identical(t, u) {
                     Ok(Type::ByRef(t0.clone()))
                 } else {
                     Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
@@ -148,8 +222,8 @@ impl Type {
             (Type::Set(s), t) | (t, Type::Set(s)) => Ok(Type::Set(Arc::from_iter(
                 s.iter().cloned().chain(iter::once(t.clone())),
             ))),
-            (u @ Type::Struct(t0), t @ Type::Struct(t1)) => {
-                if t0.len() == t1.len() && t0 == t1 {
+            (u @ Type::Struct(_), t @ Type::Struct(_)) => {
+                if union_identical(u, t) {
                     Ok(u.clone())
                 } else {
                     Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
@@ -158,8 +232,8 @@ impl Type {
             (u @ Type::Struct(_), t) | (t, u @ Type::Struct(_)) => {
                 Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
             }
-            (u @ Type::Tuple(t0), t @ Type::Tuple(t1)) => {
-                if t0 == t1 {
+            (u @ Type::Tuple(_), t @ Type::Tuple(_)) => {
+                if union_identical(u, t) {
                     Ok(u.clone())
                 } else {
                     Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
@@ -196,24 +270,11 @@ impl Type {
             (f @ Type::Fn(_), t) | (t, f @ Type::Fn(_)) => {
                 Ok(Type::Set(Arc::from_iter([f.clone(), t.clone()])))
             }
-            (t0 @ Type::TVar(tv0), t1 @ Type::TVar(tv1)) => {
-                // `TVar::eq` calls two UNBOUND cells equal (None ==
-                // None), but they are not the same type — either cell
-                // may bind later, and collapsing here silently drops
-                // the discarded cell's future binding (a select arm's
-                // `Error<_>` vanished from the arm union this way and
-                // an ill-typed body compiled). Collapse only when the
-                // tvars share a cell or are bound to equal types.
-                let same = {
-                    let t0i = tv0.read();
-                    let t1i = tv1.read();
-                    Arc::ptr_eq(&t0i.typ, &t1i.typ) || {
-                        let t0b = t0i.typ.read();
-                        let t1b = t1i.typ.read();
-                        t0b.typ.is_some() && t0b.typ == t1b.typ
-                    }
-                };
-                if same {
+            (t0 @ Type::TVar(_), t1 @ Type::TVar(_)) => {
+                // See `union_identical` — a bare `t0 == t1` here
+                // collapsed two DISTINCT unbound cells and dropped the
+                // discarded cell's future binding (item 11).
+                if union_identical(t0, t1) {
                     Ok(t0.clone())
                 } else {
                     Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
