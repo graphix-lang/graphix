@@ -1122,3 +1122,25 @@ const SELECT_VARIANT_NONEXHAUSTIVE: &str = r#"
 run!(select_variant_nonexhaustive, SELECT_VARIANT_NONEXHAUSTIVE, |v: Result<&Value>| {
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
+
+// A tail-recursive `let rec` INSIDE an HOF callback, deep enough
+// (500 > the 256 call-depth guard) that the node-walk must tail-loop
+// it. The per-slot pred lazy-binds at runtime; before the bind()-time
+// typecheck1 cascade + analyze_bound_callee (soak-jul06c B8,
+// findings/depth-guard-jul2026/02) the fresh body's tail sites were
+// never marked, each tail call was a nested dispatch, and the guard
+// bottomed the whole program where the JIT looped to the value.
+const REC_IN_HOF_CALLBACK: &str = r#"
+{
+  let a = array::init(i64:1, |x: i64| -> i64 {
+    let rec lp = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => lp(n - i64:1, acc + n)};
+    lp(i64:500, i64:0) + x
+  });
+  array::fold(a, i64:0, |acc, x| acc + x)
+}
+"#;
+
+run!(rec_in_hof_callback, REC_IN_HOF_CALLBACK, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(125250))
+); graphix_package_core::testing::FuseExpect::Jit);

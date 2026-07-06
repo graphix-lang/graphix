@@ -570,6 +570,37 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             });
         })?;
         self.callee = Callee::DynamicBound { def: fv, apply };
+        // The lazy-bound body was compiled fresh AFTER the program-wide
+        // typecheck1 + `analysis::analyze` passes, so its nested call
+        // sites are unresolved and nothing in the subtree carries
+        // effect/recursion/tail facts. Mirror `resolve_static`'s #203
+        // cascade (resolve the body's own call sites; errors swallowed —
+        // an unresolved inner call just stays lazy), then run the
+        // analysis over the fresh subtree. Without this a tail-recursive
+        // `let rec` nested in the body (e.g. inside an HOF callback
+        // slot) stack-recursed into the call-depth guard and bottomed at
+        // ~256 where the JIT — and a compile-time-resolved node-walk
+        // site — tail-looped to the value (soak-jul06c B8).
+        if let Some(apply) = self.callee.apply_mut()
+            && matches!(apply.view(), ApplyView::Lambda(_))
+        {
+            let lid = f.id.inner();
+            let resolving = ctx.fusion.resolving.clone();
+            if resolving.lock().insert(lid) {
+                let ftype = f.typ.clone();
+                if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype, &[]) {
+                    log::trace!("bind: lazy-bound callee body typecheck1 failed: {e:#}");
+                }
+                resolving.lock().remove(&lid);
+            }
+            if let ApplyView::Lambda(g) = apply.view() {
+                let self_bind = match self.fnode.view() {
+                    NodeView::Ref(r) => Some(r.id),
+                    _ => None,
+                };
+                crate::analysis::analyze_bound_callee(g, self_bind, ctx);
+            }
+        }
         // Ensure all arg values are available for the init cycle.
         // Defaults need to be updated for the first time (with init=true
         // since Constant only fires on init); existing args may not have

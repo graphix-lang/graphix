@@ -63,6 +63,31 @@ pub fn analyze<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// Analyze a callee bound at RUNTIME (`CallSite::bind`): the lazy-bound
+/// apply compiles its body fresh, AFTER the program-wide [`analyze`]
+/// pass ran, so nothing in that subtree carries effect/recursion/tail
+/// facts — a tail-recursive `let rec` nested in the body stack-recursed
+/// into the call-depth guard (bottom at ~256) where the same lambda
+/// dispatched through a compile-time-resolved site tail-looped
+/// (soak-jul06c B8: rec lambda inside an HOF callback slot). Same three
+/// phases as [`analyze`], seeded with the outer `(callee, self_bind)`
+/// pair — a lazy-bound site is `DynamicBound`, which
+/// `collect_resolved_sites` skips.
+pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    self_bind: Option<BindId>,
+    ctx: &ExecCtx<R, E>,
+) {
+    let mut sites = collect_resolved_sites(g.body());
+    if let Some(sb) = self_bind {
+        sites.push((g, sb));
+    }
+    infer_effects(&sites, ctx);
+    for (g, sb) in &sites {
+        mark_recursion(g, *sb, ctx);
+    }
+}
+
 /// Every reachable resolved-lambda call site, as `(callee, self_bind)`.
 /// Mirrors `fusion::discover_lambda_calls`' traversal: walk with
 /// `for_each_node` (which does NOT descend lambda bodies), and at each
