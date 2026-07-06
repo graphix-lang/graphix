@@ -839,12 +839,31 @@ impl Corpus {
         // body as the program and the real schedule became an interior
         // comment: the recorded finding re-checked as a vacuous
         // CompileErr==CompileErr AGREE (soak jul04 item 10).
+        // The outcome header lines are for the human triager; a chatty
+        // trace (a runaway that emitted thousands of events before its
+        // cap) rendered a 5MB header over a 60-byte program (soak
+        // jul05, divergence_000020). Clip — the full traces are
+        // reproducible from the program text below.
+        fn clip(s: String) -> String {
+            const MAX: usize = 2048;
+            if s.len() <= MAX {
+                s
+            } else {
+                let mut i = MAX;
+                while !s.is_char_boundary(i) {
+                    i -= 1;
+                }
+                let mut c = s[..i].to_string();
+                c.push_str(" …clipped");
+                c
+            }
+        }
         let body = format!(
-            "// bisect: {}\n// interp: {:?}\n// jit:    {:?}\n\
+            "// bisect: {}\n// interp: {}\n// jit:    {}\n\
              // mutant: {}\n// minimized:\n{}\n",
             d.bisect(),
-            d.interp,
-            d.jit,
+            clip(format!("{:?}", d.interp)),
+            clip(format!("{:?}", d.jit)),
             mutant.replace('\n', "\\n"),
             minimized,
         );
@@ -895,8 +914,18 @@ fn crash_key(prog: &str) -> String {
     let mut key = String::with_capacity(prog.len() + 6);
     key.push_str("CRASH:");
     let mut in_digits = false;
-    for c in prog.trim().chars() {
-        if c.is_ascii_digit() {
+    let mut chars = prog.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit()
+            || (c == '-' && chars.peek().is_some_and(|n| n.is_ascii_digit()))
+        {
+            // A leading `-` folds into the digit run: `seq(-N, M)` and
+            // `seq(N, M)` are the same crash shape, but keying the sign
+            // separately doubled every runaway family (soak jul05
+            // item 7). A `-` NOT followed by a digit (subtraction of a
+            // variable, `->`) still keys literally. `x-1` keys the same
+            // as `x - 1` — acceptable: dedup keys trade precision for
+            // family collapse by design.
             if !in_digits {
                 key.push('N');
                 in_digits = true;
@@ -1277,6 +1306,18 @@ async fn run_pool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crash_key_sign_fold() {
+        // A leading minus folds into the digit run — `-N` and `N` key
+        // identically (soak jul05 item 7's family doubling)...
+        assert_eq!(crash_key("seq(-9223372036854775808, 4)"), crash_key("seq(0, 4)"));
+        // ...while operator variants stay distinct...
+        assert_ne!(crash_key("n <= 1"), crash_key("n == 1"));
+        // ...and a minus NOT followed by a digit keys literally.
+        assert_ne!(crash_key("a - b"), crash_key("a b"));
+        assert_eq!(crash_key("x -> y"), crash_key("x -> y"));
+    }
 
     /// Per-shape JIT probes (grown stage-by-stage during the fusion
     /// buildout, `design/distributed_jit.md`). Each pins the JIT

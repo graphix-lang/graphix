@@ -389,24 +389,29 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
 27. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000027:
     seq-runaway, predicate `n == i64:-1`. Seventh operator variant.
 
-28. **OPEN — real-bug CANDIDATE (needs ASAN, pathological-input-gated),
-    investigate carefully when campaigns stop — buffer::encode Pad
-    length overflow / probable buffer overrun** — corpus-fuzz/
+28. **RESOLVED as two separate things (2026-07-06)** — corpus-fuzz/
     divergence_000025: `{let b = buffer::encode([`Pad(u64:MAX)]);
-    f64:0.}`. The result is a LITERAL f64:0. yet interp reads it back
-    as 5e-324 (smallest subnormal, bit 0x1) and jit emits empty. A
-    literal flipping by one bit = adjacent-value corruption, i.e.
-    buffer::encode wrote past a buffer whose length calc overflowed on
-    the 2^64-1 Pad. DISTINCT from the seq family (that's iteration
-    runaway; this is an ALLOCATION-SIZE overflow with memory
-    corruption). Pad(4) AGREES (probe j40), so it's the huge-Pad path
-    only. DO NOT reproduce the full 2^64 alloc casually (OOM risk);
-    investigate under ASAN with a Pad near usize::MAX to find the
-    unchecked length in buffer::encode's Pad handling. Likely a
-    checked_mul/with_capacity fix + reject/clamp oversized Pad. Also
-    generator-cappable (Pad size in the size-cap set). Eleventh real
-    bug CANDIDATE of the round (memory-safety, low-priority: needs an
-    absurd input, but the corruption is real).
+    f64:0.}`. (a) The MEMORY-CORRUPTION half was a MIRAGE: the
+    "interp reads f64:0. back as 5e-324" observation came from the
+    ORIGINAL mutant, whose literal IS `f64:0.000…0005` — a genuine
+    subnormal the minimizer then reduced to `f64:0.`; the interp
+    faithfully emitted the subnormal. No corruption; the existing
+    64MB Pad guard (buffer.rs MAX_PAD, log + bottom) is sound — no
+    ASAN needed. (b) What REMAINS is a real, deterministic FIRING
+    divergence (interp Trace([0:f64:0.]) / jit Trace([]) ×3, probe
+    t1): the Pad guard's `None` becomes DYNCALL_PENDING in the fused
+    kernel, and the pending protocol bottoms the WHOLE kernel — the
+    unrelated const result never emits, while the node-walk emits it
+    (the bind's bottom stays local to the discarded statement). This
+    is a statement-position interior-bottom class: any Sync builtin
+    that returns None (`filter`!) inside a fused region kills outputs
+    that don't consume it. Fix direction (NEXT round — a semantics
+    change too large for this one's tail): convert the DynCall
+    pending path from the whole-kernel pending_exit abort to the
+    #219 taint protocol — a tainted shape-safe placeholder that
+    CONTINUES, exactly like the tainted-ARG skip path already does;
+    the output gate then bottoms only consumers. Recorded as the
+    opening item of the next round's queue.
 
 29. **DUPLICATE of item 9 (FIXED with it)** — corpus-fuzz/
     divergence_000028: another windowed/never-gated/count-gated empty

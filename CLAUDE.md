@@ -260,6 +260,24 @@ Usage in the compiler: `callsite.rs` has `if trace() { ... }` guards that print 
 
 The trace facility solves a critical problem: the compiler typechecks the entire stdlib on every compilation, which produces gigabytes of debug output if you just add `eprintln!`. To debug a specific expression, use `with_trace` to enable tracing only during that expression's compilation/typecheck, so only the relevant output appears.
 
+### Permanent debug env vars (fusion/typecheck)
+
+- `GRAPHIX_DBG_BIND=1` — print every `InitTVars` tvar bind in `contains`
+  (name, cell addr, bound type). The tool for "who bound this cell" —
+  found the select-arm greedy narrowing (soak jul05 item 12) twice.
+- `GRAPHIX_DBG_KERNELS=1` — print each lambda kernel built by
+  `build_lambda_kernel` (name + frozen return type + AbiKind). Locates
+  which per-slot/cross-kernel callee actually compiled.
+- `GRAPHIX_DBG_INVOKE=1` — print each fused-kernel runtime invocation
+  (kernel name, `event.init`, per-input fired/present). Pins WHICH
+  kernel a JIT crash happened in (the frame is unsymbolized native code).
+- `GRAPHIX_DBG_REGION=1` — dump fused-region input wiring (name/BindId/
+  type+deref/constraints/slot kind).
+- `GRAPHIX_DBG_FREEZE=1` — dump region freeze outcomes.
+- `GRAPHIX_DUMP_CLIF=1` — dump every compiled kernel's CLIF (note: the
+  display shows `u0:N` func indices, not helper names; map N to the
+  registration order of the helper table in `emit_helpers.rs`).
+
 ### Type Alias Expansion in Contains
 
 When `contains` encounters a `Type::Ref` (e.g. `Result<T, E>`), the Ref case at `contains.rs:56` expands both sides via `lookup_ref(env)` before recursing. This means TVar bindings established during `contains` store the **expanded** form (e.g. `[T, Error<E>]` instead of `Result<T, E>`). Code that inspects resolved types must handle both the `Type::Ref` form and the expanded `Type::Set` form — see `extract_cast_type` in `graphix-package-core/src/lib.rs` for an example.
@@ -323,6 +341,22 @@ enums are *not* ABI (shared by node-walk and JIT) and live in `node::op`, which
 **Semantics — node-walk and JIT must agree bit-for-bit (the differential fuzzer
 enforces it):**
 
+- `let rec` is **MONOMORPHIC-recursive** (2026-07-06): during the def-time
+  body check a self-call unifies against the def's OWN ftype cells
+  (`ExecCtx::rec_defs`, the tc0 knot in `CallSite::typecheck0`) — the
+  μ-equation collapses (`'r ⊇ [T, 'r]` binds `'r := T`) and a self-call arg
+  that disagrees with the entry call's narrowing is a def-time compile error.
+  The prior "polymorphic" admission was unsound (the orphaned cell widened
+  the signature to Any and crashed the JIT).
+- `select` **exhaustiveness is enforced for bare-variant arm sets**
+  (2026-07-06): `` `A ``/`` `B `` arms are NOT wildcards
+  (`StructPatternNode::matches_anything` drives the wildcard test, not
+  `is_refutable`, whose payload-only contract refutable-`let` depends on) —
+  a select over `` [`A, `B] `` missing a tag is a compile error.
+- Union COLLAPSE requires strict tvar identity (`union_identical`,
+  typ/setops.rs): `TVar::eq` calls two distinct UNBOUND cells equal
+  (None == None — fine for interface/alpha equivalence), but a union that
+  collapses on that verdict drops the discarded cell's future binding.
 - `&&`/`||` are **STRICT** — both operands required, `false && ⊥ = ⊥`. Not
   short-circuit (a dataflow value reflects all its inputs).
 - Float comparison uses graphix's **TOTAL order** (`Value::partial_cmp`):
