@@ -1337,11 +1337,19 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
+        // Did a result-feeding input (the array or the init) fire THIS
+        // cycle? The empty-array arm below gates on it: the kernel's
+        // zero-iteration loop yields init with the STALE fold of the
+        // src+init discs (fires iff either fired), and the node-walk
+        // must agree — returning the held init unconditionally re-fired
+        // it on every wake (soak jul05 items 9/16/29).
+        let mut fired = false;
         let init = match from[0].update(ctx, event).and_then(|v| T::Collection::select(v))
         {
             None => self.nodes.len(),
             Some(a) if a.len() == self.binds.len() => {
                 self.arr_present = true;
+                fired = true;
                 for (id, v) in self.binds.iter().zip(a.iter_values()) {
                     ctx.cached.insert(*id, v.clone());
                     event.variables.insert(*id, v.clone());
@@ -1350,6 +1358,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             }
             Some(a) => {
                 self.arr_present = true;
+                fired = true;
                 let vals = a.iter_values().collect::<LPooled<Vec<Value>>>();
                 let init_idx = self.nodes.len();
                 // Grow: bind this slot's "acc" + "x" AND build the node
@@ -1442,6 +1451,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         };
         if let Some(v) = from[1].update(ctx, event) {
             self.init = Some(v.clone());
+            fired = true;
             // Slot 0's accumulator input IS the init value — fire it.
             if let Some(&acc0) = self.accids.first() {
                 ctx.cached.insert(acc0, v.clone());
@@ -1509,9 +1519,13 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         // identity) — there are no element nodes, so `inits.last()` is
         // None; fall back to `init`. A never-fired (bottom) array keeps
         // `arr_present == false` and stays bottom. The JIT fold loop
-        // agrees (acc starts at init, zero iterations → init).
+        // agrees (acc starts at init, zero iterations → init), and its
+        // result fires iff the array or init fired this cycle — the
+        // `fired` gate here is the node-walk's side of that agreement
+        // (the non-empty arm gets the same discipline for free:
+        // `inits[i]` resets to None on a slot that didn't fire).
         if self.nodes.is_empty() && self.arr_present {
-            self.init.clone()
+            if fired { self.init.clone() } else { None }
         } else {
             self.inits.last().and_then(|v| v.clone())
         }

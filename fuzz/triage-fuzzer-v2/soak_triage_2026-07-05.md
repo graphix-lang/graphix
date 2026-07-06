@@ -116,17 +116,21 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
    fix plus (if it keeps annoying) an operator-insensitive key for
    the group(seq(...)) shape would zero it out.
 
-9. **OPEN (root-caused, fix when campaigns stop) — FoldQ's empty-array
-   arm re-emits init every cycle (node-walk over-fire)** —
-   corpus-fuzz/divergence_000008 (~18:2x). Pinned at
+9. **FIXED (2026-07-06) — FoldQ's empty-array arm re-emitted init
+   every cycle (node-walk over-fire)** — corpus-fuzz/
+   divergence_000008 (~18:2x). Pinned at
    findings/foldq-empty-overfire-jul2026/01 (probe j14: seq driver →
-   interp 6 emits, jit 1). The original finding's [42,42,42] came
-   from a queuefn feedback loop's cycles letting array::group close
-   at count 3 in the interp only. FoldQ::update returns
-   `self.init.clone()` unconditionally when nodes.is_empty() &&
-   arr_present — must gate on the array/init args having fired this
-   cycle (the kernel's src∧empty rule is the spec). Same
+   interp 6 emits, jit 1). FoldQ::update returned `self.init.clone()`
+   unconditionally when nodes.is_empty() && arr_present. FIX exactly
+   as diagnosed: a `fired` flag set when the array (either Some arm)
+   or the init input fires this cycle gates the empty arm — the
+   kernel's zero-iteration loop fires iff src∨init fired, and the
+   node-walk now agrees (the non-empty arm always had the discipline
+   for free: `inits[i]` resets on a non-firing slot). Same
    fix-the-node-walk verdict as #8; fifth real bug of the round.
+   With this the pin corpus is FULLY GREEN — 76/76, the first
+   all-green regress of the soak-jul05 fix round. Probes r1-r3
+   (clocked empty fold, plain fold, static empty fold) AGREE.
 
 10. **FIXED with item 5 (same root)** — corpus-fuzz/crash_000009:
     `array::filter_map(a, |x| [x, x + i64:1])` — composite-returning
@@ -224,7 +228,7 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     OOB `$`, handler-ful `?` — probes q7-q13 AGREE; the original fs
     crasher AGREEs). Eighth real bug of the round, fourth crash.
 
-16. **DUPLICATE of item 9 (no new action) — and NEVER-AS-⊥ EXONERATED**
+16. **DUPLICATE of item 9 (FIXED with it) — and NEVER-AS-⊥ EXONERATED**
     — corpus-fuzz/divergence_000015. The window + never-gate +
     count-gate all reduce away: j29 (plain array::push accumulator
     fold, NO never() anywhere) diverges identically — jit misses the
@@ -400,7 +404,7 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     bug CANDIDATE of the round (memory-safety, low-priority: needs an
     absurd input, but the corruption is real).
 
-29. **DUPLICATE of item 9 (no new action)** — corpus-fuzz/
+29. **DUPLICATE of item 9 (FIXED with it)** — corpus-fuzz/
     divergence_000028: another windowed/never-gated/count-gated empty
     fold. Reduces (probe j42: `iter` clock + empty fold, NO never/
     window/gate) to the FoldQ empty-arm over-fire — interp re-emits
