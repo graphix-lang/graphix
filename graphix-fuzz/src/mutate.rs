@@ -588,6 +588,11 @@ pub fn mutate_wrapper(
     max_muts: usize,
 ) -> Option<String> {
     let (mut sched, body) = crate::schedule::Schedule::parse(seed).ok()?;
+    // File sections split off before the AST round-trip (which drops
+    // comment lines — the markers are wrapper DATA, like the schedule
+    // header) and ride through unchanged: only the MAIN body mutates.
+    // Mutating module internals is a possible future M-op.
+    let (body, files) = crate::files::split(body).ok()?;
     let sched_op = !sched.epochs.is_empty() && rng.below(100) < 40;
     let body_only_keep = sched_op && rng.below(100) < 50;
     let new_body = if body_only_keep {
@@ -598,7 +603,7 @@ pub fn mutate_wrapper(
     if sched_op {
         mutate_schedule(&mut sched, rng);
     }
-    Some(sched.render(&new_body))
+    Some(sched.render(&crate::files::render(&new_body, &files)))
 }
 
 /// One M3 schedule op. Epoch structure stays valid by construction

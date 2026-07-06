@@ -20,6 +20,7 @@
 //! waiting out a timeout.
 
 pub mod corpus;
+pub mod files;
 pub mod generate;
 pub mod mutate;
 pub mod schedule;
@@ -169,12 +170,22 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
         Ok(x) => x,
         Err(e) => return Some(format!("schedule header: {e}")),
     };
+    let (body, files) = match files::split(body) {
+        Ok(x) => x,
+        Err(e) => return Some(format!("file section: {e}")),
+    };
     let (tx, _rx) = mpsc::channel(64);
     let wrapped = format!("let result = {body}");
-    let tbl = AHashMap::from_iter([(
+    let mut tbl = AHashMap::from_iter([(
         Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
     )]);
+    for (name, text) in &files {
+        tbl.insert(
+            Path::from(format!("/{name}")),
+            graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
+        );
+    }
     let resolver = ModuleResolver::VFS(tbl);
     let ctx = match init_with_flags_and_setup(
         tx,
@@ -188,7 +199,11 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
         Ok(c) => c,
         Err(e) => return Some(format!("runtime init failed: {e}")),
     };
-    let text = format!("{}{{ mod test; test::result }}", sched.decls());
+    let text = format!(
+        "{}{}{{ mod test; test::result }}",
+        sched.decls(),
+        files::mod_decls(&files)
+    );
     let res = ctx.rt.compile(ArcStr::from(text)).await;
     ctx.shutdown().await;
     match res {
@@ -223,12 +238,27 @@ pub async fn run_program_with_stats(
             );
         }
     };
+    let (body, files) = match files::split(body) {
+        Ok(x) => x,
+        Err(e) => {
+            return (
+                Outcome::CompileErr(format!("file section: {e}")),
+                FusionStats::default(),
+            );
+        }
+    };
     let (tx, mut rx) = mpsc::channel(64);
     let wrapped = format!("let result = {body}");
-    let tbl = AHashMap::from_iter([(
+    let mut tbl = AHashMap::from_iter([(
         Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
     )]);
+    for (name, text) in &files {
+        tbl.insert(
+            Path::from(format!("/{name}")),
+            graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
+        );
+    }
     let resolver = ModuleResolver::VFS(tbl);
     let ctx = match init_with_flags_and_setup(
         tx,
@@ -248,7 +278,7 @@ pub async fn run_program_with_stats(
         }
     };
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let outcome = drive(&ctx, &mut rx, &sched, timeout).await;
+    let outcome = drive(&ctx, &mut rx, &sched, &files::mod_decls(&files), timeout).await;
     // A Timeout means the evaluator may be WEDGED in sync code (a
     // runaway native loop, a huge node-walk loop) — a wedged runtime
     // never answers another request, so an un-timeouted await here
@@ -276,6 +306,7 @@ async fn drive(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     sched: &schedule::Schedule,
+    mods: &str,
     timeout: Duration,
 ) -> Outcome {
     // The whole multi-epoch drive shares one wall-clock deadline (a
@@ -369,7 +400,7 @@ async fn drive(
     // Injected-input decls sit at the compile text's TOP LEVEL (the D4
     // contract; see `schedule::Schedule::decls`), before the module
     // wrap, where `compile_ref_by_name` can reach them from root.
-    let text = format!("{}{{ mod test; test::result }}", sched.decls());
+    let text = format!("{}{mods}{{ mod test; test::result }}", sched.decls());
     let compiled = bounded!(
         ctx.rt.compile(ArcStr::from(text)),
         Ok(c) => c,
@@ -507,6 +538,9 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
     let Ok((mut sched, body)) = schedule::Schedule::parse(code) else {
         return (code.to_string(), 1);
     };
+    let Ok((body, mut files)) = files::split(body) else {
+        return (code.to_string(), 1);
+    };
     let mut current = match mutate::parse(body) {
         Some(e) => e,
         None => return (code.to_string(), 1),
@@ -514,7 +548,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
     let mut calls = 1;
     // Phase 1 — schedule reductions.
     'sched: while calls < budget {
-        let body_text = current.to_string();
+        let body_text = files::render(&current.to_string(), &files);
         for cand in schedule_reductions(&sched) {
             if calls >= budget {
                 break 'sched;
@@ -529,8 +563,28 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
         }
         break;
     }
+    // Phase 1.5 — file-section reductions: drop each module's section
+    // pair, then each interface alone (no .gxi = everything public —
+    // the divergence often survives the simpler layout).
+    'files: while calls < budget && !files.is_empty() {
+        let body_text = current.to_string();
+        for cand in file_reductions(&files) {
+            if calls >= budget {
+                break 'files;
+            }
+            calls += 1;
+            let text = sched.render(&files::render(&body_text, &cand));
+            if let Some(d) = check(&text, timeout).await {
+                if bucket(&d) == target {
+                    files = cand;
+                    continue 'files; // restart from the smaller file set
+                }
+            }
+        }
+        break;
+    }
     // Phase 2 — body AST HDD, every candidate re-wrapped in the
-    // (now minimal) schedule.
+    // (now minimal) schedule + file set.
     loop {
         let n = mutate::node_count(&current);
         let cur_text = current.to_string();
@@ -545,7 +599,8 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                     continue;
                 }
                 calls += 1;
-                if let Some(d) = check(&sched.render(&cand), timeout).await {
+                let text = sched.render(&files::render(&cand, &files));
+                if let Some(d) = check(&text, timeout).await {
                     if bucket(&d) == target {
                         if let Some(e) = mutate::parse(&cand) {
                             current = e;
@@ -560,7 +615,38 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
             break;
         }
     }
-    (sched.render(&current.to_string()), calls)
+    (sched.render(&files::render(&current.to_string(), &files)), calls)
+}
+
+/// The file-section shrink candidates for one greedy round, most
+/// aggressive first: no sections at all, each module's section pair
+/// dropped, each interface dropped alone. Section TEXT is never edited
+/// (the body HDD can't reach it) — module internals only shrink by
+/// whole-file drops, a deliberate v1 limit.
+fn file_reductions(files: &[(String, String)]) -> Vec<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    out.push(Vec::new());
+    let stems: Vec<&str> =
+        files.iter().filter_map(|(n, _)| n.strip_suffix(".gx")).collect();
+    for stem in &stems {
+        if stems.len() > 1 {
+            out.push(
+                files
+                    .iter()
+                    .filter(|(n, _)| {
+                        n != &format!("{stem}.gx") && n != &format!("{stem}.gxi")
+                    })
+                    .cloned()
+                    .collect(),
+            );
+        }
+        let no_intf: Vec<_> =
+            files.iter().filter(|(n, _)| n != &format!("{stem}.gxi")).cloned().collect();
+        if no_intf.len() != files.len() {
+            out.push(no_intf);
+        }
+    }
+    out
 }
 
 /// The schedule-shrink candidates for one greedy round, most

@@ -30,6 +30,7 @@
 
 mod exprs;
 mod funcs;
+mod modules;
 mod patterns;
 pub mod reactive;
 mod types;
@@ -78,6 +79,16 @@ pub struct GenCfg {
     /// merging an ok arm with `error(...)` as a lambda's return — the
     /// soak-jul06c B5 shape) plus a consumed call.
     pub p_error_lambda: f64,
+    /// A statement slot emits a MODULE — wrapper file sections
+    /// (`m{i}.gx` + usually `m{i}.gxi`) whose public lambdas enter the
+    /// callable vocabulary as `m{i}::f`.
+    pub p_module: f64,
+    /// A generated module carries an abstract-type round-trip
+    /// (`type T;` in the interface, hidden concrete def in the impl).
+    pub p_abstract: f64,
+    /// A generated module omits its `.gxi` entirely (bare module —
+    /// everything public).
+    pub p_bare_module: f64,
     /// Statement slots per program: 0..=max_lets (template slots may
     /// emit several statements).
     pub max_lets: usize,
@@ -98,6 +109,9 @@ impl Default for GenCfg {
             p_lambda_shadow_template: 0.05,
             p_variant: 0.08,
             p_error_lambda: 0.06,
+            p_module: 0.12,
+            p_abstract: 0.4,
+            p_bare_module: 0.2,
             max_lets: 6,
         }
     }
@@ -122,6 +136,8 @@ pub struct GenStats {
     pub rec: bool,
     /// The error-arm-lambda template was emitted (B5 shape).
     pub error_lambda: bool,
+    /// A module (wrapper file sections) was emitted.
+    pub module: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -171,17 +187,21 @@ impl GenCtx {
     }
 
     fn push(&mut self, name: String, ty: GenType) {
-        if !self.collision_pool.contains(&name) {
+        // Path-qualified module callables (`m0::f`) are REFERENCE-only
+        // vocabulary: never a shadow/collision candidate (`let m0::f`
+        // doesn't parse).
+        if !name.contains("::") && !self.collision_pool.contains(&name) {
             self.collision_pool.push(name.clone());
         }
         self.vars.push((name, ty));
     }
 
-    /// Distinct visible names, innermost first.
+    /// Distinct visible names, innermost first — SHADOW candidates, so
+    /// path-qualified module callables are excluded (not bindable).
     fn visible_names(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
         for (n, _) in self.vars.iter().rev() {
-            if !out.contains(&n.as_str()) {
+            if !n.contains("::") && !out.contains(&n.as_str()) {
                 out.push(n.as_str());
             }
         }
@@ -270,9 +290,16 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut ctx = GenCtx::new();
     let mut stats = GenStats::default();
     let mut stmts = Vec::new();
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut nmodules = 0usize;
     let nslots = rng.below(cfg.max_lets + 1);
     for _ in 0..nslots {
-        if chance(rng, cfg.p_rec) {
+        if chance(rng, cfg.p_module) {
+            let m = modules::gen_module(&mut ctx, rng, cfg, &mut stats, nmodules);
+            nmodules += 1;
+            files.extend(m.files);
+            stmts.extend(m.stmts);
+        } else if chance(rng, cfg.p_rec) {
             stmts.extend(funcs::gen_rec_lambda(&mut ctx, rng, cfg, &mut stats));
         } else if chance(rng, cfg.p_error_lambda) {
             stmts.extend(funcs::gen_error_arm_lambda(&mut ctx, rng, cfg, &mut stats));
@@ -316,6 +343,7 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     } else {
         format!("{{ {}; {} }}", stmts.join("; "), tail)
     };
+    let prog = if files.is_empty() { prog } else { crate::files::render(&prog, &files) };
     (prog, stats)
 }
 
@@ -384,7 +412,8 @@ mod test {
     fn audit_bug_shapes_reachable() {
         let cfg = GenCfg::default();
         let mut rng = Rng::new(3);
-        let (mut rebind, mut mono, mut collision, mut rec, mut errl) = (0, 0, 0, 0, 0);
+        let (mut rebind, mut mono, mut collision, mut rec, mut errl, mut module) =
+            (0, 0, 0, 0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -393,6 +422,7 @@ mod test {
             collision += s.collision_local as usize;
             rec += s.rec as usize;
             errl += s.error_lambda as usize;
+            module += s.module as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
@@ -400,6 +430,7 @@ mod test {
             ("collision local (bug 3)", collision),
             ("let rec", rec),
             ("error-arm lambda (B5 shape)", errl),
+            ("module with interface", module),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }
