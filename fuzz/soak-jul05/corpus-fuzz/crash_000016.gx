@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) |         included from expr { mod test; test::result } at line: 1, column: 126 "Parse error at line: 1, column: 1\nUnexpected `h`\nExpected u8, u16, u32, i8, i16, i32, v32, z32, f32, f64, `-`, `0`, true, false, null, decimal, datetime, whitespaces, u64, i64, v64, z64, `[`, `{`, `\"`, bytes, abstract, error or duration\n" | arith error in 
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let rec sum_to = |n, acc| select n {i64:0 => acc, _ => sum_to(buffer::to_string(buffer::from_string("hello")), acc + n)}; sum_to(i64:100, i64:0)}

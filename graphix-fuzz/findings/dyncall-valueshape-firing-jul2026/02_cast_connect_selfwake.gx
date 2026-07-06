@@ -1,0 +1,18 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:f64:0.]) — result fires once, connect writes once,
+//         quiesce
+// jit:    Timeout — SELF-WAKE WEDGE: the kernel loops forever
+// Found by soak-jul05, fuzz campaign seed 70501 (corpus-fuzz/
+// divergence_000003). SAME ROOT as 01: cast<i64> returns the 2-word
+// nullable shape ([i64, Error]) via DynCall, and the in-band return
+// disc never folds the call's arg STALE bits — so `cast<i64>(true)$`
+// reads FRESH on every kernel invocation. The consume-always connect
+// then writes s unconditionally, the write wakes the kernel (s is
+// its own lifted feeder), and the program spins forever where the
+// interp quiesces after one write. Discriminator: `s <- i64:1`
+// (plain const RHS, probe j6) AGREES — the connect's stale-gating is
+// fine; the poisoned disc is the DynCall's. Severity upgrade over
+// 01: this wedges any fused `x <- cast<T>(v)$` over quiet inputs
+// permanently, not just double-fires a value.
+// minimized:
+{f64:0.; let s = i64:0; s <- cast<i64>(true)$; f64:0.}

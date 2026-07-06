@@ -1,0 +1,18 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:42 1:42 2:42 3:42 4:42 5:42]) — re-emits EVERY cycle
+// jit:    Trace([0:42]) — CORRECT (fires when its inputs fired: once)
+// Found by soak-jul05, fuzz campaign seed 70501 (corpus-fuzz/
+// divergence_000008 — the original rode a queuefn feedback loop whose
+// cycles made an array::group close at count 3 in the interp only).
+// root_cause: NODE-WALK over-fire. FoldQ::update's empty-array arm
+// (`if self.nodes.is_empty() && self.arr_present { self.init.clone() }`,
+// graphix-package-core) returns Some(init) UNCONDITIONALLY on every
+// update call once the empty array has arrived — one spurious emit
+// per cycle any event flows anywhere in the graph. The kernel's
+// firing rule for the same shape is `src-fired ∧ empty` (+ init fire
+// via the chain), which is the fired-bit-principled behavior — the
+// same family as the #8 tail-loop over-fire and the same verdict:
+// fix the node-walk. The empty arm must emit only when the array arg
+// or the init arg actually fired this cycle.
+// minimized:
+{seq(i64:0, i64:5)$; array::fold(array::init(i64:0, |i: i64| i), i64:42, |a, x| a + x)}

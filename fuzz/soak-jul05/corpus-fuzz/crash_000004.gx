@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{type T = (string, i64); let a: Array<T> = [("foo", i64:1), ("bar", i64:2), ("baz", i64:3)]; array::find_map(a, |(k, v): T| a)}

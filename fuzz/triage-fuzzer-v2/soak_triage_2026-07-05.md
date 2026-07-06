@@ -1,0 +1,360 @@
+# soak-jul05 triage
+
+Campaigns: fuzz/generate/reactive, seeds 70501-3, PAR=16, corpus under
+fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
+(post never-as-⊥). Startup gates 65/65 ×3.
+
+1. **OPEN (root-cause hypothesis, fix when campaigns stop) —
+   value-shape DynCall results never go STALE** — corpus-fuzz/
+   divergence_000000 (~16:59). Pinned at
+   findings/dyncall-valueshape-firing-jul2026/01. jit ExtraFires a
+   const `buffer::len(buffer::from_string("hello"))` whenever any
+   feeder wakes the kernel (probe j3: an infinite counter → fires
+   every cycle; interp: once). str::len over the same const AGREES
+   (scalar DynCall synthesis folds arg discs). Suspect: the in-band
+   2-word return disc from graphix_dyncall is a real Value disc — no
+   STALE bit — and the emit never ANDs the call's arg STALE bits in.
+   Fix at the value-shape DynCall return synthesis in emit.rs.
+
+2. **ACCEPTED CLASS (no action)** — corpus-fuzz/crash_000001:
+   `array::group(seq(0, i64::MAX), ...)` — the seq-runaway hang,
+   Eric's 07-04 ruling. One entry expected per fresh corpus; the
+   digit-normalized crash dedup (jul04 harness batch) collapses
+   further literal variants into it.
+
+3. **OPEN (runtime/oracle-soundness, fix when campaigns stop) —
+   quiescence detection races the deref-echo loop** — corpus-fuzz/
+   divergence_000002 (~17:2x):
+
+   ```graphix
+   {let f = |x: &i64| *x <- *x * i64:5; let v = i64:41; f(&v);
+    array::group(v, |n, _| i64:1 == i64:2)}
+   ```
+
+   Semantically an infinite self-multiplying counter through a ref —
+   the plain analog (`v <- v * 5`, probe j4) stably Timeouts in BOTH
+   modes (correct: infinite counters tick forever). The ref-mediated
+   version flips verdicts PER RUN in BOTH modes independently
+   (6 samples: 3× both-Timeout, 2× jit-Trace([]), 1× interp-
+   Trace([])). Both evaluators acquitted; the shared suspect is
+   `trace_wait_idle`'s idle predicate sampling a moment where the
+   echo's next var write is in flight through the rt channel (queued,
+   not yet a pending cycle) — the deref hop exposes an idle-looking
+   gap the direct connect doesn't have. Consequences: (a) the
+   recorded divergence's interp/jit assignment is meaningless — a
+   coin flip; (b) this is a SELFCHECK-class oracle bug (same mode,
+   same program, different verdicts). Fix direction: strengthen the
+   runtime idle predicate to count queued-but-undelivered var
+   updates (the ToGX/rt channel) as not-idle, or have the tracer
+   drain one more cycle after apparent idleness before resolving.
+   Also worth re-running selfcheck with a deref-echo seed once fixed.
+
+4. **SAME ROOT as item 1, severity upgrade** — corpus-fuzz/
+   divergence_000003 (~17:4x): `s <- cast<i64>(true)$` SELF-WAKE
+   WEDGES the jit (Timeout vs interp's clean quiesce). cast<T>
+   returns the 2-word nullable shape via DynCall; the never-STALE
+   in-band disc makes the consume-always connect write on every
+   invocation, and the write wakes its own kernel. Plain `s <- i64:1`
+   agrees (probe j6) — the connect gating is fine, the DynCall disc
+   is the poison. Pinned as
+   findings/dyncall-valueshape-firing-jul2026/02. The item-1 fix
+   (AND arg STALE bits into 2-word DynCall return discs — Nullable
+   AND Value shapes) covers both; this repro makes it the top fix of
+   the round.
+
+5. **OPEN — REAL CRASH (SIGABRT/core dump), fix when campaigns stop —
+   find_map/filter_map don't de-fuse a COMPOSITE-returning callback**
+   — corpus-fuzz/crash_000004. Minimal (probe j11), deterministic
+   1/1 crash:
+
+   ```graphix
+   {let a = [i64:1, i64:2]; array::find_map(a, |x: i64| a)}
+   ```
+
+   The callback returns an Array (the option's success type is
+   Array<i64>, not a scalar). The find_map/filter_map scaffold is
+   SCALAR-ONLY (per FilterMapImpl's own comment) but the gate that
+   should refuse a composite success type is missing/wrong — it
+   FUSES and emits native code that treats the returned *ValArray
+   pointer* as a scalar/nullable word, corrupting memory → allocator
+   SIGABRT. INTERP survives and is correct
+   (find_map → [1,2]; filter_map → [[1,2],[1,2]]), so the JIT is the
+   only broken side. filter_map crashes identically (probe j13);
+   scalar-option returns (j9) and element returns (j10) are fine.
+   fix: gate find_map/filter_map emit on a scalar (or properly-
+   handled) option success type — de-fuse (Ok(None)) when the
+   success member freezes to a composite, mirroring the fold acc's
+   scalar check. NOT pinned in findings/ (crasher kills the
+   in-process regress gate); minimal repro recorded here. Highest
+   severity of the round — a memory-safety hole in fused code,
+   reachable from a plausibly-mistyped find_map.
+
+6. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000005:
+   `array::group(seq(MIN, 4), |n,_| n <= 1)` — seq-runaway with a
+   structurally different predicate (`<=` vs `==`), so the digit-
+   normalized dedup correctly didn't collapse it. Family entries are
+   now bounded by operator vocabulary, not literals — a handful per
+   soak at worst.
+
+7. **ACCEPTED CLASS (item 2 family) + dedup refinement note** —
+   corpus-fuzz/crash_000006: differs from item 2's entry ONLY by the
+   `-` on the seq bound — the digit normalization doesn't fold signs,
+   so `-N` and `N` key differently. Harness backlog: include an
+   optional leading `-` in the digit-run collapse (crash_key), which
+   caps this family at one entry per predicate operator.
+
+8. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000007:
+   seq-runaway, predicate `n > 0`. Third operator variant; as
+   predicted the family growth is one-per-operator. The item-7 sign
+   fix plus (if it keeps annoying) an operator-insensitive key for
+   the group(seq(...)) shape would zero it out.
+
+9. **OPEN (root-caused, fix when campaigns stop) — FoldQ's empty-array
+   arm re-emits init every cycle (node-walk over-fire)** —
+   corpus-fuzz/divergence_000008 (~18:2x). Pinned at
+   findings/foldq-empty-overfire-jul2026/01 (probe j14: seq driver →
+   interp 6 emits, jit 1). The original finding's [42,42,42] came
+   from a queuefn feedback loop's cycles letting array::group close
+   at count 3 in the interp only. FoldQ::update returns
+   `self.init.clone()` unconditionally when nodes.is_empty() &&
+   arr_present — must gate on the array/init args having fired this
+   cycle (the kernel's src∧empty rule is the spec). Same
+   fix-the-node-walk verdict as #8; fifth real bug of the round.
+
+10. **item-5 family (same fix)** — corpus-fuzz/crash_000009:
+    `array::filter_map(a, |x| [x, x + i64:1])` — composite-returning
+    callback via a FRESH array literal (vs item 5's captured array),
+    same missing de-fuse gate, same SIGABRT. Second repro for the
+    item-5 fix's regression tests.
+
+11. **OPEN (root-caused, fix when campaigns stop) — recursive lambda
+    rtype annotation NOT enforced against its body; JIT leaks a
+    pointer** — corpus-fuzz/divergence_000010. Pinned at
+    findings/rec-rtype-unchecked-jul2026/01. `|n, acc| -> i64 select
+    n {0 => acc, _ => error(i64:0)}` compiles (should reject — the
+    non-rec twin j16 DOES reject); fusion builds a scalar-i64 return
+    slot, an Error Value flows out, scalar kernel leaks the payload
+    ptr. #18's swallowed-recursion-typing family, RETURN-type flavor
+    (my #21 guard only covered self-call args). fix: enforce the rec
+    rtype vs body non-swallowed. SIXTH real bug of the round, second
+    memory-safety one (with item 5). Needs a rebuild to pinpoint WHY
+    the rec rtype check is evaded — the GXLambda::typecheck0
+    rtype.check_contains should fire at def time.
+
+12. **OPEN — REAL CRASH (SIGABRT/stack overflow), fix when campaigns
+    stop — JIT depth guard NOT emitted for a VARIANT-return non-tail
+    recursive lambda** — corpus-fuzz/crash_000011. Minimal (probe
+    j19), 1/1 crash:
+
+    ```graphix
+    {let rec f = |n| select i64:3 {i64:0 => `Varint(u64:127), _ => n + f(n - i64:1)}; f(i64:3)}
+    ```
+
+    "failed to initiate panic, error 5" = stack overflow. The interp
+    hits the Phase-4 depth guard cleanly (limit 256 → Trace([])), and
+    so does the JIT for the SCALAR (j21) and NULLABLE-union (j20)
+    return variants — only the Variant return overflows. So the JIT's
+    native-recursion depth-guard emission is keyed off return ABI
+    kind and skips AbiKind::Variant. Distinct from item 11 (that was
+    an rtype-annotation leak; this is a guard-emission gap → crash).
+    fix: emit the depth-guard counter check on the variant-return
+    recursion path too (or de-fuse it). Crash — not pinned in
+    findings/. Seventh real bug of the round, third crash.
+
+13. **item-5 family, LIST package — REAL CRASH (SIGSEGV)** —
+    corpus-fuzz/crash_000012: `list::find_map(l, |x| (i64:1, i64:2))`
+    — composite (tuple) return segfaults (probe j22, rc=139). Same
+    missing composite-return de-fuse gate as item 5, but in
+    graphix-package-list's OWN find_map scaffold — the item-5 fix
+    must cover BOTH array and list HOF impls (and probably map's).
+    Audit all collection HOF scaffolds for the scalar-return gate.
+
+14. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000013:
+    seq-runaway, predicate `n != i64:-1`. Fifth operator variant.
+
+15. **OPEN — REAL CRASH (SIGABRT), fix when campaigns stop — pending-
+    sentinel String reaches graphix_arcstr_drop** — corpus-fuzz/
+    crash_000014. Panic site: emit_helpers.rs:849, the assert
+    `graphix_arcstr_drop: null ArcStr — JIT codegen bug (a pending
+    sentinel leaked into a drop)` — the guard doing its job, aborting
+    at the extern "C" boundary instead of the #214 SIGSEGV. NOT
+    environmental: sys::fs is incidental (it produces the String
+    result path). root_cause: the JIT emits an unconditional drop of
+    a String slot on a path where it still holds the ZERO pending
+    sentinel (the async read_all result inside an owned [...] literal,
+    gated by `~`, dropped on the not-fired edge). Reduction resisted
+    the two obvious non-async String-pending shapes (probes j25/j26
+    agree clean), so the async-residue String-in-composite drop path
+    is implicated — needs a rebuild to instrument. fix family: gate
+    the owned-String scope-exit / composite-slot drop on the value
+    having actually been produced (untainted, non-pending), same
+    "don't drop what was never made" invariant as the #219 taint
+    aborts. Eighth real bug of the round, fourth crash.
+
+16. **DUPLICATE of item 9 (no new action) — and NEVER-AS-⊥ EXONERATED**
+    — corpus-fuzz/divergence_000015. The window + never-gate +
+    count-gate all reduce away: j29 (plain array::push accumulator
+    fold, NO never() anywhere) diverges identically — jit misses the
+    epoch-1 fire where the empty fold re-emits its init 0.; j30
+    (window + array::len, no fold) AGREES. Same FoldQ empty-arm
+    over-fire as item 9, interp side. Confirms (a) the never-as-⊥
+    commit is CLEAN — the fold firing bug is orthogonal and predates
+    it, and (b) item 9's blast radius includes every windowed/gated
+    reactive fold, not just the minimal repro. Second regression
+    case for the item-9 fix.
+
+17. **OPEN — REAL CRASH (SIGABRT), fix when campaigns stop — #21
+    guard HOLE: rec self-call arg mismatch when the FORMAL resolved
+    to the recursion's type** — corpus-fuzz/crash_000016. probe j31:
+    `|n, acc| select n {0 => acc, _ => sum_to(buffer::to_string(...),
+    acc + n)}; sum_to(i64:100, i64:0)`. The self-call passes a String
+    for n; interp survives (type-tolerant: acc + "hello" logs an
+    arith error, bottoms → Trace([])); the JIT aborts (the marshal
+    tries to PARSE "hello" into the i64 slot — "Unexpected h"). My #21
+    self_calls_abi_consistent guard checks self-call args vs formals,
+    but here the FORMAL n resolved to the recursion's type (so
+    self-call arg == formal, guard passes) and it's the OUTER call's
+    i64:100 that mismatches — a hole the guard structurally can't see
+    (it never checks the entry call).
+
+    UNIFYING ROOT (with item 11): the recursion typing admits an
+    ill-typed body (arg here, RETURN in item 11) — a non-recursive
+    twin would be REJECTED at compile. #21's fusion-side guard is a
+    band-aid with holes. The principled fix Eric has pushed toward
+    ("get the typechecker wrong → things explode"): enforce the
+    recursive lambda's body typecheck NON-SWALLOWED at def time (args
+    AND return), rejecting items 11 + 17 at compile exactly as the
+    non-rec twins are, and making the #21 guard redundant
+    defense-in-depth. This is the highest-leverage fix of the round —
+    one typecheck change closes two memory-safety crashes and a
+    guard hole. Ninth real bug (counting the guard-hole distinctly);
+    fifth crash.
+
+18. **OPEN (root-caused, fix when campaigns stop) — union struct field
+    with a DynCall-produced arm leaks the string under the other
+    arm's ABI** — corpus-fuzz/divergence_000017. Pinned at
+    findings/union-struct-field-jul2026/01. `{y: [i64, string]}` from
+    two select arms (cast<i64>$ vs buffer::to_string); jit marshals
+    the taken string arm as i64 → pointer leak. Discriminator: a
+    LITERAL i64 arm 1 de-fuses correctly (j35 AGREES); the DYNCALL
+    (cast$) arm tips it into fusing (j34 leaks). #21 union-ABI family,
+    struct-field flavor, crossed with the item-1/4 DynCall-type path.
+    fix: struct-field freeze must reject a union field regardless of
+    arm production. TENTH real bug of the round.
+
+19. **DUPLICATE of item 18 (no new action)** — corpus-fuzz/
+    divergence_000018: identical `{y: [i64, string]}` union field,
+    arm 1 cast<i64>$, arm 2 a string — only the string PRODUCER
+    differs (nested `select {0 => "zero", n => "other"}` vs item 18's
+    buffer::to_string). jit leaks the string as i64. Confirms the
+    trigger is the DynCall (cast$) arm + any string arm, independent
+    of the string's producer. Second regression case for item 18.
+
+20. **DUPLICATE of item 3 (no new action)** — corpus-fuzz/
+    divergence_000019: `f = |x: &i64| *x <- *x + i64:1; ...;
+    array::group(v, ...)` — the ref-echo quiescence race again (`+1`
+    vs item 3's `*5`), this run landing interp-Trace([])/jit-Timeout
+    (one of the coin-flip outcomes). Same oracle-soundness hole; the
+    idle-predicate fix (item 3) covers it. NOTE: this shape will keep
+    recurring until item 3 is fixed — it's a corpus magnet. Consider,
+    at fix time, an oracle-side skip for ref-write-echo programs
+    (like the rand/sys/http divergence exclusion) as a stopgap.
+
+21. **ACCEPTED CLASS (performance asymmetry, no compiler action) +
+    two harness notes** — corpus-fuzz/divergence_000020:
+    `array::init(i64:500000, |i| i64:0)`. interp empty, jit the full
+    500k array. NOT a correctness bug: the interp is O(n) in per-slot
+    node-graph instantiation (~1000x the JIT native loop, per the
+    bench corpus), so 500k slots exceed the trace oracle's deadline
+    and it records empty; at 200k the interp completes and AGREES
+    (probe j38). The interp would produce the identical array given
+    time. Same finite-perf-asymmetry as the seq-runaway family.
+    HARNESS NOTES: (a) the generator should cap array::init/seq/
+    window sizes (a large-literal→small-literal remap in the size
+    position, or a hard cap) — same fix shape as the seq-span cap;
+    (b) this finding SERIALIZED A 5.2MB TRACE into the corpus (the
+    full 500k array in the comment header) — record() should cap
+    the interp/jit trace repr length in the finding file (truncate
+    with an elision marker) so a big-array finding doesn't bloat the
+    corpus / OOM a reader.
+
+22. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000021:
+    seq-runaway, predicate `n < i64:4`. Sixth comparison-operator
+    variant (== <= > != <, and one signed bound). The family is now
+    demonstrably operator-enumerating and near-exhausted; the item-7
+    sign-fold + an operator-normalized key would zero it.
+
+23. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000022:
+    seq-runaway; the predicate is dressed with a div0/select block but
+    the outer shape is the same `array::group(seq(MIN, 4), ...)` hang.
+    The predicate body is a red herring (the group never closes because
+    seq floods). Different-enough text to dodge the digit dedup; an
+    operator/predicate-insensitive key for the group(seq(...)) shape
+    (harness backlog) is the real cure.
+
+24. **DUPLICATE of item 3 (no new action) + strengthens its
+    diagnosis** — corpus-fuzz/divergence_000023:
+    `{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v);
+    "_test"}`. The const "_test" result makes the flip visible in a
+    SINGLE mode: 6 interp-only runs gave 3× Timeout, 2× Trace([_test])
+    (1 outer-timeout). Same-mode non-determinism = the item-3
+    quiescence race, now proven selfcheck-class (not just interp-vs-
+    jit). Mechanism confirmed: trace_wait_idle races the deref-echo
+    counter's queued-but-undelivered write — sometimes an idle-looking
+    gap (declares quiescence, fires the const), sometimes mid-tick
+    (keeps waiting, Timeout). The item-3 idle-predicate fix
+    (count queued rt-channel var writes as not-idle) covers this.
+    NOTE: this shape should be added to the `selfcheck` corpus once
+    fixed — it's a ready-made same-mode-determinism regression test.
+
+25. **item-1 family (same root) + infinite-reschedule wrinkle** —
+    corpus-fuzz/divergence_000024:
+    `{let x = i64:0; x <- x; buffer::from_string("hello stderr\n")}`.
+    buffer::from_string returns Bytes (value-shape 2-word DynCall);
+    its disc never goes STALE (item 1), so the jit re-emits the const
+    bytes every cycle the kernel wakes. Here the waker is `x <- x` —
+    an infinite no-op self-reschedule (schedules x:=x forever), so the
+    interp wedges (Timeout) where the jit streams the const. Two
+    things tangled: the item-1 value-shape ExtraFire (the real fix
+    target) and `x <- x` as an infinite reschedule (accepted infinite-
+    loop asymmetry; the interp Timeout is canonical). The item-1 fix
+    (AND arg STALE into value-shape DynCall discs) removes the
+    ExtraFire; the x<-x wedge then agrees (both infinite). Third
+    regression case for item 1.
+
+26. **ACCEPTED CLASS (item 2 family, OOM variant)** — corpus-fuzz/
+    crash_000026: `{let m = {"outer" => seq(MIN,4)}; m{"outer"}}` —
+    SIGKILL (signal 9) = the OOM killer; the ~2^63 seq allocated until
+    killed. Same seq-runaway family, OOM manifestation (vs HANG). The
+    generator size-cap (harness backlog) covers it.
+
+27. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000027:
+    seq-runaway, predicate `n == i64:-1`. Seventh operator variant.
+
+28. **OPEN — real-bug CANDIDATE (needs ASAN, pathological-input-gated),
+    investigate carefully when campaigns stop — buffer::encode Pad
+    length overflow / probable buffer overrun** — corpus-fuzz/
+    divergence_000025: `{let b = buffer::encode([`Pad(u64:MAX)]);
+    f64:0.}`. The result is a LITERAL f64:0. yet interp reads it back
+    as 5e-324 (smallest subnormal, bit 0x1) and jit emits empty. A
+    literal flipping by one bit = adjacent-value corruption, i.e.
+    buffer::encode wrote past a buffer whose length calc overflowed on
+    the 2^64-1 Pad. DISTINCT from the seq family (that's iteration
+    runaway; this is an ALLOCATION-SIZE overflow with memory
+    corruption). Pad(4) AGREES (probe j40), so it's the huge-Pad path
+    only. DO NOT reproduce the full 2^64 alloc casually (OOM risk);
+    investigate under ASAN with a Pad near usize::MAX to find the
+    unchecked length in buffer::encode's Pad handling. Likely a
+    checked_mul/with_capacity fix + reject/clamp oversized Pad. Also
+    generator-cappable (Pad size in the size-cap set). Eleventh real
+    bug CANDIDATE of the round (memory-safety, low-priority: needs an
+    absurd input, but the corruption is real).
+
+29. **DUPLICATE of item 9 (no new action)** — corpus-fuzz/
+    divergence_000028: another windowed/never-gated/count-gated empty
+    fold. Reduces (probe j42: `iter` clock + empty fold, NO never/
+    window/gate) to the FoldQ empty-arm over-fire — interp re-emits
+    init 0. every cycle, jit fires once. Third reactive-dressing
+    regression case for item 9; the never-as-⊥ gate is again
+    incidental (j42 has none). item 9's blast radius = any empty fold
+    under a reactive clock.

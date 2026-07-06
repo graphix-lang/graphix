@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("abc"))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(140292834144176))], capped: false }] })
+// mutant: {let v0 = select i64:100 {i64:42 => { b: f64:1., y: cast<i64>(u8:2)$ }, _ => { b: f64:0., y: {let b = buffer::from_string("abc"); let arr = buffer::to_array(b); buffer::to_string(buffer::from_array(arr))} }}; v0.y}
+// minimized:
+{let v0 = select i64:0 {i64:42 => { b: f64:0., y: cast<i64>(u8:2)$ }, _ => { b: f64:0., y: {let b = buffer::from_string("abc"); let arr = buffer::to_array(b); buffer::to_string(buffer::from_array(arr))} }}; v0.y}

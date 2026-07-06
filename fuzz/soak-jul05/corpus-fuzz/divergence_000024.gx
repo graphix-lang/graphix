@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Timeout
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (1, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (2, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (3, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (4, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (5, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (6, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (7, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (8, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (9, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (10, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (11, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (12, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (13, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (14, Bytes(PBytes(PooledBytes(b"hello stderr\n")))), (15, Bytes(PBytes(PooledBytes(b"hello stderr\n"))))], capped: true }, Epoch { events: [], capped: true }] })
+// mutant: // schedule-v1: cap=16 events=128; in0=i64:1\n{let x = i64:0; x <- x + i64:3; buffer::from_string("hello stderr\n")}
+// minimized:
+{let x = i64:0; x <- x; buffer::from_string("hello stderr\n")}

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U64(5))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, U64(5)), (1, U64(5))], capped: false }] })
+// mutant: {let a = [i64:1, i64:2, i64:3]; let s = i64:0; s <- array::fold(a, i64:0, |acc, e| acc + e); buffer::len(buffer::from_string("hello"))}
+// minimized:
+{let a = [i64:0, i64:0, i64:0]; let s = i64:0; s <- array::fold(a, i64:0, |acc, e| acc + e); buffer::len(buffer::from_string("hello"))}

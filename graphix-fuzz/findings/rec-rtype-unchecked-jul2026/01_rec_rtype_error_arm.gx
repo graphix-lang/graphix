@@ -1,0 +1,22 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:error:i64:0]) — yields the Error value (type-tolerant)
+// jit:    Trace([0:i64:<heap ptr>]) — Error's 2-word payload read as
+//         an i64 scalar → pointer leak
+// Found by soak-jul05, fuzz campaign seed 70501 (corpus-fuzz/
+// divergence_000010). SHOULD BE A COMPILE ERROR: the non-recursive
+// twin `|n| -> i64 select n {0 => 1, _ => error(i64:0)}` is correctly
+// REJECTED (`-> i64` doesn't contain `Error<i64>`, probe j16), but
+// the recursive version compiles.
+// root_cause: #18's family — the recursive lambda's def-time rtype
+// check (GXLambda::typecheck0: rtype.check_contains(body.typ())) is
+// evaded when the body is recursive (the arm's Error type isn't
+// enforced against the `-> i64` annotation). Fusion then builds a
+// scalar-i64 return slot; at runtime an Error (2-word Value) flows
+// out and the scalar kernel return reads only the payload word.
+// My #21 self_calls_abi_consistent guard covers self-call ARGS, not
+// the RETURN — this is the return-type flavor. fix: enforce the rec
+// lambda's rtype against its body non-swallowed (rejects this, like
+// the non-rec twin, killing the leak). node-walk-is-canonical: the
+// intended behavior is the COMPILE ERROR the non-rec twin gives.
+// minimized:
+{let rec countdown = |n: i64, acc| -> i64 select n {i64:0 => acc, _ => error(i64:0)}; countdown(i64:100, i64:0)}

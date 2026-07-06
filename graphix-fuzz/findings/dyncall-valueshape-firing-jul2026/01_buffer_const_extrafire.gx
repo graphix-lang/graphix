@@ -1,0 +1,21 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:u64:5])
+// jit:    Trace([0:u64:5 1:u64:5]) — ExtraFire on the connect's cycle
+// Found by soak-jul05, fuzz campaign seed 70501 (corpus-fuzz/
+// divergence_000000, 44 minutes in — first finding of the round).
+// root_cause (hypothesis, verify at fix time): a VALUE-SHAPE (2-word)
+// DynCall result (`buffer::from_string`) carries its disc in-band
+// from the runtime helper — a freshly-constructed Value with no STALE
+// bit — so the call's ARG staleness (the const "hello", STALE on
+// non-init cycles) never folds into the returned disc. Everything
+// downstream (buffer::len's scalar synthesis folds its ARG discs —
+// which are the poisoned fresh one) reads fired-forever, and the
+// kernel emits its const output every time any feeder wakes it (here
+// the lifted connect target s landing at cycle 1; probe j3 with an
+// infinite counter fires EVERY cycle). Scalar-return DynCalls
+// (str::len over the same const) synthesize from arg discs and AGREE.
+// fix direction: the value-shape DynCall return path must AND the
+// call's arg STALE bits into the in-band disc, same as the scalar
+// synthesis.
+// minimized:
+{let a = [i64:0, i64:0, i64:0]; let s = i64:0; s <- array::fold(a, i64:0, |acc, e| acc + e); buffer::len(buffer::from_string("hello"))}

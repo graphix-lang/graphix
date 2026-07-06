@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) |   13:     0x7f770c009178 - <unknown> | thread caused non-unwinding panic. aborting.
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let t = [{let temp = sys::fs::tempdir::create(null)?; let path = sys::join_path(sys::fs::tempdir::path(temp), "write_read_test.txt"); let write_result = sys::fs::write_all(#path, "Test content"); sys::fs::read_all(write_result ~ path)}]; t[i64:0]$}

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 500000 }, slice: [I64(-100), I64(-100), I64(-100), I64(-100), I64(-100), I64(-100), I64(-100), I64(-100),  …[trace truncated for corpus]
+// mutant: array::init(i64:500000, |i| i64:-100)
+// minimized:
+array::init(i64:500000, |i| i64:0)

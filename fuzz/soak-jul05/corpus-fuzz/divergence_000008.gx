@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(2, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(42), I64(42), I64(42)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: {let feedback: Any = never(); let qf = queuefn(#trigger: feedback, |x: i64, y: i64| -> i64 x + y * i64:100); let xs = array::iter([i64:1, i64:3, i64:5]); let ys = array::iter([i64:2, i64:4, i64:9223372036854775807]); let out = qf(xs, ys); feedback <- out; array::group({let xs = array::init(i64:0, |idx: i64| idx); array::fold(xs, i64:42, |acc, x| acc + x)}, |n, _| n == i64:3)}
+// minimized:
+{let feedback: Any = i64:0; let qf = queuefn(#trigger: feedback, |x: i64, y: i64| -> i64 x + y * i64:100); let xs = array::iter([i64:1, i64:3, i64:5]); let ys = array::iter([i64:2, i64:4, i64:9223372036854775807]); let out = qf(xs, ys); feedback <- out; array::group({let xs = array::init(i64:0, |idx: i64| idx); array::fold(xs, i64:42, |acc, x| acc + x)}, |n, _| n == i64:3)}
