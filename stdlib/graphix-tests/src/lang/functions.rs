@@ -1083,3 +1083,42 @@ const ARM_UNION_KEEPS_BOTH_TVARS: &str = r#"
 run!(arm_union_keeps_both_tvars, ARM_UNION_KEEPS_BOTH_TVARS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::None);
+
+// An UNANNOTATED variant-returning non-tail rec lambda infers its
+// honest union. Broken two ways before: (a) pre-knot, the orphaned
+// self-call rtype widened the signature to Any (item 12's crasher
+// fused a laundered type and stack-overflowed); (b) post-knot, bare
+// variant arms classified as select WILDCARDS (`is_refutable` is
+// payload-only — the tag test lives in the TYPE predicate), so
+// coverage never ran and the first arm's narrowing walk greedily
+// bound the knotted open scrutinee cell to `A alone — a spurious
+// dead-arm reject. `matches_anything` now classifies wildcards;
+// variant arms join the coverage unions.
+const REC_VARIANT_UNION_INFERS: &str = r#"
+{
+  let rec f = |n: i64| select n {
+    i64:0 => `A,
+    _ => select f(n - i64:1) { `A => `B, `B => `A }
+  };
+  select f(i64:5) { `A => i64:1, `B => i64:2 }
+}
+"#;
+
+run!(rec_variant_union_infers, REC_VARIANT_UNION_INFERS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// The exhaustiveness soundness hole the wildcard misclassification
+// hid: a select over [`A, `B] missing the `B arm COMPILED (all-bare-
+// variant arm sets bypassed the coverage checks entirely). Now a
+// compile error.
+const SELECT_VARIANT_NONEXHAUSTIVE: &str = r#"
+{
+  let x: [`A, `B] = `A;
+  select x { `A => i64:1 }
+}
+"#;
+
+run!(select_variant_nonexhaustive, SELECT_VARIANT_NONEXHAUSTIVE, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);

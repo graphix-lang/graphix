@@ -359,6 +359,13 @@ impl Type {
                     return Ok(false);
                 }
                 if flags.contains(ContainsFlags::InitTVars) {
+                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                        eprintln!(
+                            "BIND lhs '{}({:x}) := {t1:?}",
+                            t0.name,
+                            t0.cell_addr()
+                        );
+                    }
                     t0.read().typ.write().typ = Some(t1.clone());
                 }
                 Ok(true)
@@ -371,6 +378,13 @@ impl Type {
                     return Ok(false);
                 }
                 if flags.contains(ContainsFlags::InitTVars) {
+                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                        eprintln!(
+                            "BIND rhs '{}({:x}) := {t0:?}",
+                            t1.name,
+                            t1.cell_addr()
+                        );
+                    }
                     t1.read().typ.write().typ = Some(t0.clone());
                 }
                 Ok(true)

@@ -156,25 +156,40 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     arm_union_keeps_both_tvars (positive control) in
     lang/functions.rs.
 
-12. **OPEN — REAL CRASH (SIGABRT/stack overflow), fix when campaigns
-    stop — JIT depth guard NOT emitted for a VARIANT-return non-tail
-    recursive lambda** — corpus-fuzz/crash_000011. Minimal (probe
-    j19), 1/1 crash:
+12. **FIXED (2026-07-06) — REAL CRASH (SIGABRT/stack overflow) —
+    variant-return non-tail recursive lambda overflowed the JIT** —
+    corpus-fuzz/crash_000011. Minimal (probe j19):
 
     ```graphix
     {let rec f = |n| select i64:3 {i64:0 => `Varint(u64:127), _ => n + f(n - i64:1)}; f(i64:3)}
     ```
 
-    "failed to initiate panic, error 5" = stack overflow. The interp
-    hits the Phase-4 depth guard cleanly (limit 256 → Trace([])), and
-    so does the JIT for the SCALAR (j21) and NULLABLE-union (j20)
-    return variants — only the Variant return overflows. So the JIT's
-    native-recursion depth-guard emission is keyed off return ABI
-    kind and skips AbiKind::Variant. Distinct from item 11 (that was
-    an rtype-annotation leak; this is a guard-emission gap → crash).
-    fix: emit the depth-guard counter check on the variant-return
-    recursion path too (or de-fuse it). Crash — not pinned in
-    findings/. Seventh real bug of the round, third crash.
+    The guard-emission hypothesis was WRONG — the crash channel was
+    the recursion type-launder: `n + f(...)` where f can return a
+    variant is ILL-TYPED, but the pre-knot orphan-cell widening let
+    it compile with a laundered signature, and a kernel fused over
+    the wrong ABI recursed natively past any guard. The program now
+    REJECTS at compile in both modes (the #31 knot + honest unions).
+    Fixing the reject's over-strict twin exposed a SECOND pre-existing
+    bug: bare variant arms (`` `A `` — payload-empty) classified as
+    select WILDCARDS (`is_refutable` is payload-only; the tag test
+    lives in the type predicate), so (a) all-bare-variant selects
+    BYPASSED exhaustiveness — `select x: [`A,`B] { `A => .. }`
+    compiled with a missing tag (a latent soundness hole, probe p7) —
+    and (b) with the knot's OPEN scrutinee cell, the first arm's
+    narrowing walk greedily bound it to `A alone (spurious dead-arm
+    reject of well-typed variant recursion, probe p2). FIX:
+    `StructPatternNode::matches_anything` (bind-all test, distinct
+    from `is_refutable` whose payload-only contract refutable-`let`
+    depends on) now drives the select wildcard classification;
+    variant arms join the coverage unions. Well-typed variant-return
+    non-tail recursion infers its honest union, DE-FUSES (no native
+    path — nothing to guard), and bottoms at the call-depth guard in
+    both modes (depth-1M probes p2/p8 agree empty-trace). ALSO
+    permanent: GRAPHIX_DBG_BIND=1 traces every tvar bind (the tool
+    that found the greedy narrowing). Fixtures
+    rec_variant_union_infers + select_variant_nonexhaustive
+    (lang/functions.rs); pin variant-rec-depth-jul2026/01.
 
 13. **FIXED with item 5 (same root)** — corpus-fuzz/crash_000012:
     `list::find_map(l, |x| (i64:1, i64:2))` — tuple return, SIGSEGV

@@ -211,8 +211,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // instead.
         let mut wildcard = false;
         for (pat, n) in self.arms.iter_mut() {
-            let inferred_irrefutable =
-                !pat.explicit_type_predicate && !pat.structure_predicate.is_refutable();
+            let inferred_irrefutable = !pat.explicit_type_predicate
+                && pat.structure_predicate.matches_anything();
             match &mut pat.guard {
                 Some(guard) => guard.node.typecheck0(ctx)?,
                 None => {

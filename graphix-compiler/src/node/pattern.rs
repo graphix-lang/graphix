@@ -717,6 +717,35 @@ impl StructPatternNode {
         }
     }
 
+    /// True when the pattern matches ANY value of the scrutinee's type
+    /// — a bind-all / destructure of binds whose inferred type
+    /// predicate is a fresh TVar (or a composite of them) carrying no
+    /// information. This is `Select`'s wildcard test. NOT the same as
+    /// `!is_refutable()`: a variant pattern with an all-bind payload is
+    /// structure-irrefutable GIVEN its tag matched (`is_refutable`'s
+    /// contract — a `let` over a single-variant type depends on it),
+    /// but its inferred type predicate carries the TAG test, so as a
+    /// select arm it must join the coverage unions, not bypass them.
+    /// Classifying `` `A ``/`` `B `` arms as wildcards skipped
+    /// exhaustiveness entirely (a select missing a tag compiled) and
+    /// left an OPEN scrutinee cell (a knotted rec self-call's rtype)
+    /// to be greedily bound by the first arm's narrowing walk.
+    pub fn matches_anything(&self) -> bool {
+        match &self {
+            Self::Bind(_) | Self::Ignore => true,
+            Self::Literal(_) | Self::Variant { .. } => false,
+            Self::Slice { tuple: true, all: _, binds } => {
+                binds.iter().all(|p| p.matches_anything())
+            }
+            Self::Struct { all: _, binds } => {
+                binds.iter().all(|(_, _, p)| p.matches_anything())
+            }
+            Self::Slice { tuple: false, .. }
+            | Self::SlicePrefix { .. }
+            | Self::SliceSuffix { .. } => false,
+        }
+    }
+
     pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
         match self {
             Self::Ignore | Self::Literal(_) => (),
