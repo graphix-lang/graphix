@@ -74,6 +74,10 @@ pub struct GenCfg {
     /// A value let binds a TAG-UNION variant (always annotated — a
     /// bare variant literal's type is its single tag).
     pub p_variant: f64,
+    /// A statement slot emits the error-arm-lambda template (a select
+    /// merging an ok arm with `error(...)` as a lambda's return — the
+    /// soak-jul06c B5 shape) plus a consumed call.
+    pub p_error_lambda: f64,
     /// Statement slots per program: 0..=max_lets (template slots may
     /// emit several statements).
     pub max_lets: usize,
@@ -93,6 +97,7 @@ impl Default for GenCfg {
             p_rec: 0.06,
             p_lambda_shadow_template: 0.05,
             p_variant: 0.08,
+            p_error_lambda: 0.06,
             max_lets: 6,
         }
     }
@@ -115,6 +120,8 @@ pub struct GenStats {
     pub collision_local: bool,
     /// A `let rec` was emitted.
     pub rec: bool,
+    /// The error-arm-lambda template was emitted (B5 shape).
+    pub error_lambda: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -267,6 +274,8 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     for _ in 0..nslots {
         if chance(rng, cfg.p_rec) {
             stmts.extend(funcs::gen_rec_lambda(&mut ctx, rng, cfg, &mut stats));
+        } else if chance(rng, cfg.p_error_lambda) {
+            stmts.extend(funcs::gen_error_arm_lambda(&mut ctx, rng, cfg, &mut stats));
         } else if chance(rng, cfg.p_lambda_shadow_template) {
             stmts.extend(funcs::gen_shadowed_lambda_template(
                 &mut ctx, rng, cfg, &mut stats,
@@ -375,7 +384,7 @@ mod test {
     fn audit_bug_shapes_reachable() {
         let cfg = GenCfg::default();
         let mut rng = Rng::new(3);
-        let (mut rebind, mut mono, mut collision, mut rec) = (0, 0, 0, 0);
+        let (mut rebind, mut mono, mut collision, mut rec, mut errl) = (0, 0, 0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -383,12 +392,14 @@ mod test {
             mono += s.mono_pair as usize;
             collision += s.collision_local as usize;
             rec += s.rec as usize;
+            errl += s.error_lambda as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
             ("monomorphization pair (bug 2)", mono),
             ("collision local (bug 3)", collision),
             ("let rec", rec),
+            ("error-arm lambda (B5 shape)", errl),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }

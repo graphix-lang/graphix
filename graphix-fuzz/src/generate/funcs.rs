@@ -249,6 +249,54 @@ pub(super) fn gen_shadowed_lambda_template(
     stmts
 }
 
+/// A lambda whose select merges an ok arm with an `error(...)` arm —
+/// its return type is the union `[T, Error<E>]` — plus a call-site
+/// binding taking either arm, consumed by one of the three legal error
+/// consumers. This is the soak-jul06c B5 shape (the error arm's payload
+/// pointer marshalled through a return frozen as Scalar(I64) — a class
+/// only reachable when a lambda RETURN carries the error union), which
+/// generation could never produce before: `error()` was not in the
+/// vocabulary at all.
+pub(super) fn gen_error_arm_lambda(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+) -> Vec<String> {
+    stats.error_lambda = true;
+    let f = ctx.name_for_bind(rng, cfg);
+    // Mask any shadowed binding; the union return keeps f out of the
+    // callable vocabulary (try_call would use the bare ok type).
+    ctx.push(f.clone(), GenType::Opaque);
+    let n = ctx.fresh();
+    let ret = types::scalar_type(rng);
+    let mark = ctx.mark();
+    ctx.push(n.clone(), GenType::I64);
+    let ok = exprs::gen_typed(ctx, rng, &ret, 1);
+    ctx.truncate(mark);
+    let pty = types::scalar_type(rng);
+    let payload = types::literal(rng, &pty);
+    let lam = format!(
+        "let {f} = |{n}: i64| select {n} {{ i64:0 => {ok}, _ => error({payload}) }}"
+    );
+    // Call so the ok arm or the ERROR arm is taken, then consume the
+    // union with `$`, an error-arm select, or `?` under try.
+    let arg = if rng.below(2) == 0 { "i64:0" } else { "i64:1" };
+    let dflt = exprs::gen_typed(ctx, rng, &ret, 1);
+    let consume = match rng.below(3) {
+        0 => format!("{f}({arg})$"),
+        1 => format!(
+            "select {f}({arg}) {{ error as _ => {dflt}, {} as x => x }}",
+            ret.render()
+        ),
+        _ => format!("(try ({f}({arg}))? catch(e) => {dflt})"),
+    };
+    let call = ctx.fresh();
+    let stmts = vec![lam, format!("let {call} = {consume}")];
+    ctx.push(call, ret);
+    stmts
+}
+
 /// A guaranteed-terminating `let rec` plus a call-site binding. The
 /// base arm's `<= 0` guard terminates any argument sign; call args are
 /// small literals (mutation perturbs them toward the edges later —

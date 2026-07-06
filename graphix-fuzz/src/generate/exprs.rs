@@ -234,6 +234,16 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("array::init({n}, |{binder}| {body})"))
             }
         },
+        // find: the union return `[e, null]` IS the Nullable type. The
+        // empty/no-match answer (Null) is the soak-jul06c B7 seam
+        // (MapQ's empty-input shortcut vs the JIT find loop).
+        GenType::Nullable(e) if e.is_scalar() => {
+            let src = gen_typed(ctx, rng, &GenType::Array(Box::new((**e).clone())), d);
+            let mut inner = ctx.clone();
+            let binder = callback_binder(&mut inner, rng, e, &[]);
+            let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+            Some(format!("array::find({src}, |{binder}| {body})"))
+        }
         _ if ty.is_scalar() => {
             let d_ty =
                 if rng.below(2) == 0 { ty.clone() } else { types::random_type(rng, 1) };
@@ -243,7 +253,26 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             let acc = callback_param(&mut inner, rng, &[]);
             inner.push(acc.clone(), ty.clone());
             let binder = callback_binder(&mut inner, rng, &d_ty, &[acc.clone()]);
-            let body = gen_typed(&inner, rng, ty, d.min(2));
+            let body = if *ty == GenType::I64 && rng.below(8) == 0 {
+                // A terminating tail-recursive `let rec` INSIDE the
+                // callback: the per-slot pred lazy-binds at runtime, a
+                // dispatch path with its own resolution/marking pipeline
+                // (soak-jul06c B8 — the rec-in-HOF-slot depth-guard trip
+                // was unreachable while recs only appeared at statement
+                // level).
+                let lp = inner.fresh();
+                let ln = inner.fresh();
+                let la = inner.fresh();
+                let depth = 200 + rng.below(200);
+                let combine = gen_typed(&inner, rng, ty, 1);
+                format!(
+                    "{{ let rec {lp} = |{ln}: i64, {la}: i64| -> i64 \
+                     select {ln} {{ i64:0 => {la}, _ => {lp}({ln} - i64:1, {la} + {ln}) }}; \
+                     ({lp}(i64:{depth}, i64:0) * i64:0) + {combine} }}"
+                )
+            } else {
+                gen_typed(&inner, rng, ty, d.min(2))
+            };
             Some(format!("array::fold({src}, {init}, |{acc}, {binder}| {body})"))
         }
         _ => None,
@@ -350,13 +379,21 @@ pub(super) fn gen_typed(
             _ => format!("(!{})", gen_typed(ctx, rng, &GenType::Bool, d)),
         },
         GenType::Str => match rng.below(3) {
-            // Computed interpolation: 1-2 [expr] parts over scalars,
-            // occasionally with escaped literal brackets around them.
+            // Computed interpolation: 1-2 [expr] parts, mostly scalar
+            // but occasionally COMPOSITE (array/tuple/struct/map/
+            // nullable — the type-directed TVal formatting walk, whose
+            // union/fallback paths type-prefixed nested numerics until
+            // soak-jul06c B4), occasionally with escaped literal
+            // brackets around them.
             0 => {
                 let n = 1 + rng.below(2);
                 let parts: Vec<_> = (0..n)
                     .map(|_| {
-                        let t = types::scalar_type(rng);
+                        let t = if rng.below(4) == 0 {
+                            types::random_type(rng, 1)
+                        } else {
+                            types::scalar_type(rng)
+                        };
                         format!("[{}]", gen_typed(ctx, rng, &t, d.min(1)))
                     })
                     .collect();
@@ -371,6 +408,12 @@ pub(super) fn gen_typed(
             format!("({})", parts.join(", "))
         }
         GenType::Array(elem) => {
+            // Occasionally EMPTY (annotated via a block binding — a bare
+            // `[]` doesn't infer): the zero-length path through HOFs,
+            // slices, and folds (array::find([]) was soak-jul06c B7).
+            if rng.below(10) == 0 {
+                return format!("{{ let mt: {} = []; mt }}", ty.render());
+            }
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
             format!("[{}]", parts.join(", "))
@@ -452,10 +495,26 @@ fn try_str_builtin(
             let s = gen_typed(ctx, rng, &GenType::Str, d);
             Some(format!("str::{f}(#{lbl}: {needle}, {s})"))
         }
-        GenType::Str => match rng.below(4) {
+        GenType::Str => match rng.below(5) {
             0 => {
                 let f = pick(rng, &["to_upper", "to_lower", "trim"]);
                 Some(format!("str::{f}({})", gen_typed(ctx, rng, &GenType::Str, d)))
+            }
+            // sub: labeled args + a Result return consumed by `$`.
+            // Occasionally a labeled arg is itself `$`-consumed checked
+            // arith that never fires (div0 → error → `$` drops it) — a
+            // builtin invoked with a PERMANENTLY missing labeled arg
+            // must not fire at all (soak-jul06c B6: the node-walk fired
+            // str::sub with len=None and returned its SubError).
+            4 => {
+                let start = rng.below(3);
+                let len = if rng.below(6) == 0 {
+                    "(i64:0 /? i64:0)$".to_string()
+                } else {
+                    format!("i64:{}", rng.below(4))
+                };
+                let s = gen_typed(ctx, rng, &GenType::Str, d);
+                Some(format!("str::sub(#start: i64:{start}, #len: {len}, {s})$"))
             }
             1 => {
                 let pat = types::literal(rng, &GenType::Str);

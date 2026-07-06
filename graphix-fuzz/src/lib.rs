@@ -110,6 +110,23 @@ impl Outcome {
             (CompileErr(_), CompileErr(_)) => true,
             (RuntimeErr(_), RuntimeErr(_)) => true,
             (Timeout, Timeout) => true,
+            // Both-non-productive: one side wedged (a pure runaway
+            // recursion the node-walk can't interrupt / a native loop),
+            // the other side produced NO events at all (the depth-guard
+            // or runaway-guard bottom). Neither produced a value, so
+            // there is no observable VALUE divergence — only the known,
+            // accepted liveness difference between the backends' runaway
+            // handling (the B1 fib-mutant wedge class, soak jul06: 39 of
+            // 49 findings were this noise, and the minimizer kept
+            // shrinking real programs INTO it by deleting base-case
+            // arms). A trace with any event still disagrees with a
+            // Timeout — an asymmetric hang after partial output is a
+            // real signal.
+            (Timeout, Trace(t)) | (Trace(t), Timeout)
+                if t.epochs.iter().all(|e| e.events.is_empty()) =>
+            {
+                true
+            }
             _ => false,
         }
     }
