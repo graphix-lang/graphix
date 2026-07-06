@@ -132,6 +132,22 @@ impl Outcome {
         }
     }
 
+    /// [`Self::agrees_with`] at a chosen [`OracleTier`]: Exact compares
+    /// whole traces; FinalValues compares per-epoch settled values
+    /// ([`trace::Trace::agrees_final`]); non-Trace outcome pairs (and
+    /// the both-non-productive guard) follow the exact rules at every
+    /// tier. Excluded never reaches a comparison (`check` returns
+    /// early), but compares exactly if asked.
+    pub fn agrees_with_at(&self, other: &Outcome, tier: OracleTier) -> bool {
+        match tier {
+            OracleTier::Exact | OracleTier::Excluded => self.agrees_with(other),
+            OracleTier::FinalValues => match (self, other) {
+                (Outcome::Trace(a), Outcome::Trace(b)) => a.agrees_final(b),
+                _ => self.agrees_with(other),
+            },
+        }
+    }
+
     /// Coarse variant discriminant, for the "same bug" bucket key.
     pub fn kind(&self) -> u8 {
         match self {
@@ -278,7 +294,15 @@ pub async fn run_program_with_stats(
         }
     };
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let outcome = drive(&ctx, &mut rx, &sched, &files::mod_decls(&files), timeout).await;
+    let outcome = drive(
+        &ctx,
+        &mut rx,
+        &sched,
+        &files::mod_decls(&files),
+        oracle_tier(code),
+        timeout,
+    )
+    .await;
     // A Timeout means the evaluator may be WEDGED in sync code (a
     // runaway native loop, a huge node-walk loop) — a wedged runtime
     // never answers another request, so an un-timeouted await here
@@ -307,6 +331,7 @@ async fn drive(
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     sched: &schedule::Schedule,
     mods: &str,
+    tier: OracleTier,
     timeout: Duration,
 ) -> Outcome {
     // The whole multi-epoch drive shares one wall-clock deadline (a
@@ -387,6 +412,43 @@ async fn drive(
             }
         }};
     }
+    // One epoch's segment, SETTLED. `trace_wait_idle` sees an in-flight
+    // async IO task as idle (it isn't runtime work until its value
+    // lands), so for the FinalValues tier quiescence alone races IO
+    // completion — the /dev/null probe's read landed after the wait in
+    // some runs and the epoch "final" was a coin flip. Grace rounds:
+    // sleep, re-wait, merge any late activity into the SAME epoch;
+    // stop on the first quiet round. Exact-tier programs skip the
+    // settle entirely (pure programs have no in-flight IO, and the
+    // 150ms/epoch tax would slow every campaign check).
+    macro_rules! wait_settled {
+        () => {{
+            let mut seg = wait_bounded!(
+                ctx.rt.trace_wait_idle(),
+                Ok(s) => s,
+                Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
+            );
+            if tier == OracleTier::FinalValues {
+                for _ in 0..8 {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    let more = wait_bounded!(
+                        ctx.rt.trace_wait_idle(),
+                        Ok(s) => s,
+                        Err(e) => {
+                            return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
+                        }
+                    );
+                    if more.events.is_empty() {
+                        break;
+                    }
+                    seg.events.extend(more.events.iter().cloned());
+                    seg.capped_cycles |= more.capped_cycles;
+                    seg.capped_events |= more.capped_events;
+                }
+            }
+            seg
+        }};
+    }
     // Tracing is armed BEFORE the compile (ToGX messages are FIFO), so
     // a value emitted during the compile cycle is in the trace — there
     // is no "already emitted before the watch registered" race, and no
@@ -408,11 +470,7 @@ async fn drive(
     );
     let eid = compiled.exprs.last().expect("compile returned no exprs").id;
     let mut segs = Vec::with_capacity(1 + sched.epochs.len());
-    segs.push(wait_bounded!(
-        ctx.rt.trace_wait_idle(),
-        Ok(s) => s,
-        Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
-    ));
+    segs.push(wait_settled!());
     // Create EVERY input's ref up front (not lazily at first use) so
     // ref creation never interleaves with injection delivery, then
     // deliver each epoch's injections through ONE `set_many`: separate
@@ -448,13 +506,52 @@ async fn drive(
         if let Err(e) = ctx.rt.set_many(sets) {
             return Outcome::RuntimeErr(format!("set_many: {e}"));
         }
-        segs.push(wait_bounded!(
-            ctx.rt.trace_wait_idle(),
-            Ok(s) => s,
-            Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
-        ));
+        segs.push(wait_settled!());
     }
     Outcome::Trace(trace::Trace::from_segments(&segs, eid))
+}
+
+/// Which comparison strength a program's oracle runs at, decided from
+/// its TEXT — deterministic, so every protocol (campaign / minimize /
+/// regress / selfcheck) recomputes the same tier and findings need no
+/// strength tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleTier {
+    /// Pure/deterministic programs: exact per-cycle trace agreement.
+    Exact,
+    /// Value-deterministic ASYNC: IO pacing races trace quiescence (the
+    /// same mode paces differently run to run), but each epoch's
+    /// SETTLED value at quiescence is deterministic — compare per-epoch
+    /// finals (Eric's ruling 2026-07-06: "we can verify that the final
+    /// output is the same, we just can't verify they are cycle
+    /// identical").
+    FinalValues,
+    /// Value-NONDETERMINISTIC: rand varies values, wall time and
+    /// tempdir paths leak into results — no value comparison is sound
+    /// at any strength. The shapes still run (crashes surface via
+    /// child death); divergences never record.
+    Excluded,
+}
+
+/// Classify a program. Markers are matched on the whole wrapper text.
+/// The Excluded list is EMPIRICAL — selfcheck polices it: a marker
+/// missing from it shows up as a final-strength flake (that is how
+/// `sys::net` earned its place: `list` returns a registration-timing
+/// snapshot, and a subscribe racing its publish takes the error arm in
+/// some runs — value-visible races even at quiescence. Promoting
+/// netidx needs sequenced publish/subscribe contracts in the harness —
+/// the dynamic-modules work).
+pub fn oracle_tier(code: &str) -> OracleTier {
+    // Value-nondeterministic sources: random values, wall-clock time
+    // (timers deliver it, `now()` returns it), generated temp paths,
+    // netidx registration timing.
+    if ["rand::", "sys::time", "sys::net", "tempdir"].iter().any(|m| code.contains(m)) {
+        return OracleTier::Excluded;
+    }
+    if ["sys::", "http::"].iter().any(|m| code.contains(m)) {
+        return OracleTier::FinalValues;
+    }
+    OracleTier::Exact
 }
 
 /// A detected disagreement between the reference (interp = node-walk)
@@ -464,6 +561,7 @@ pub struct Divergence {
     pub code: String,
     pub interp: Outcome,
     pub jit: Outcome,
+    pub tier: OracleTier,
 }
 
 impl Divergence {
@@ -473,13 +571,20 @@ impl Divergence {
     /// there's no interpreter-only mode to bisect against) produced a
     /// different result from the canonical node-walk.
     pub fn bisect(&self) -> &'static str {
-        "fusion/JIT bug (interp != jit)"
+        match self.tier {
+            OracleTier::FinalValues => "fusion/JIT bug (final values, interp != jit)",
+            _ => "fusion/JIT bug (interp != jit)",
+        }
     }
 }
 
 /// Run `code` under interp (node-walk) and jit (fusion + cranelift); if
-/// they disagree, return the `Divergence`. `None` means they agree.
+/// they disagree AT THE PROGRAM'S ORACLE TIER, return the `Divergence`.
+/// `None` means they agree (or the program is tier-Excluded — it still
+/// ran, for shape exercise and crash coverage, but no value comparison
+/// is sound for it).
 pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
+    let tier = oracle_tier(code);
     // The two evaluators must agree, or it's a divergence. Each mode
     // spins up its own runtime, so run them concurrently — `join!`
     // overlaps their (mostly I/O-bound) execution on one task.
@@ -487,29 +592,38 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
         run_program(code, Mode::Interp, timeout),
         run_program(code, Mode::Jit, timeout),
     );
-    if interp.agrees_with(&jit) {
+    if tier == OracleTier::Excluded {
+        return None;
+    }
+    if interp.agrees_with_at(&jit, tier) {
         return None;
     }
     // Suspected divergence — but first rule out nondeterminism: a value
     // whose identity/Display isn't deterministic (a lambda or abstract
-    // value's id, leaked rand/time/etc.) would diverge between any two
-    // runs, not just across backends. Re-run interp; if it disagrees with
-    // itself, the program is nondeterministic, not a backend bug.
+    // value's id, a leaked environmental value the tier markers missed)
+    // would diverge between any two runs, not just across backends.
+    // Re-run interp AT THE SAME TIER; if it disagrees with itself, the
+    // program is nondeterministic there, not a backend bug.
     let interp2 = run_program(code, Mode::Interp, timeout).await;
-    if !interp.agrees_with(&interp2) {
+    if !interp.agrees_with_at(&interp2, tier) {
         return None;
     }
-    Some(Divergence { code: code.to_string(), interp, jit })
+    Some(Divergence { code: code.to_string(), interp, jit, tier })
 }
 
 /// Coarse "same bug" key: the bisection class + the interp/jit outcome
-/// kinds + the trace-difference class. Two divergences with the same
-/// bucket are treated as the same bug — used by the minimizer to ensure
-/// a reduction preserves the bug rather than reducing bug A into a
-/// different bug B (e.g. morphing a missing-fire bug into a value bug).
+/// kinds + the trace-difference class (final-strength for final-tier
+/// divergences — the exact TraceDiff is pacing-sensitive there and
+/// would flake the minimizer's target bucket). Two divergences with the
+/// same bucket are treated as the same bug — used by the minimizer to
+/// ensure a reduction preserves the bug rather than reducing bug A into
+/// a different bug B (e.g. morphing a missing-fire bug into a value bug).
 fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
     let td = match (&d.interp, &d.jit) {
-        (Outcome::Trace(a), Outcome::Trace(b)) => a.first_difference(b),
+        (Outcome::Trace(a), Outcome::Trace(b)) => match d.tier {
+            OracleTier::FinalValues => a.first_final_difference(b),
+            _ => a.first_difference(b),
+        },
         _ => None,
     };
     (d.bisect(), d.interp.kind(), d.jit.kind(), td)
@@ -755,19 +869,16 @@ pub async fn selfcheck(
     timeout: Duration,
 ) -> Vec<(String, &'static str)> {
     use tokio::task::JoinSet;
-    // Only DETERMINISTIC programs are determinism subjects. The hand
-    // seeds exercising rand / IO vocabulary exist as donor material
-    // for the mutator: rand varies its VALUES by design, and async IO
-    // varies its CYCLE PACING run to run (the first-value V1 oracle
-    // couldn't see pacing; the trace oracle can, and correctly reports
-    // both classes as self-disagreeing — verified 2026-07-03: all 38
-    // flakies of a full sweep were in these classes, zero others).
-    // Campaigns already drop such programs via `check`'s double-run
-    // guard; here they would only be false alarms against the gate's
-    // 100% bar. This is a SUBJECT filter, not an oracle relaxation —
-    // `Trace::agrees_with` stays exact for everything.
-    let deterministic =
-        |p: &str| !["rand::", "sys::", "http::"].iter().any(|m| p.contains(m));
+    // Subjects are everything with a SOUND comparison at some tier:
+    // pure programs at exact strength, value-deterministic async at
+    // final strength (`selfcheck_one` compares at the program's own
+    // tier). Only tier-Excluded programs (rand / wall time / temp
+    // paths — nondeterministic VALUES, unfixable by any relaxation)
+    // are non-subjects; they exist as donor material for the mutator.
+    // The gate's 100% bar now also polices the tier LIST itself: a
+    // marker missing from `oracle_tier`'s Excluded set shows up here
+    // as a final-strength flake.
+    let deterministic = |p: &str| oracle_tier(p) != OracleTier::Excluded;
     let mut rng = mutate::Rng::new(seed);
     let mut progs: Vec<String> = corpus::all_seeds()
         .iter()
@@ -1124,21 +1235,23 @@ fn child_exe() -> std::path::PathBuf {
 }
 
 /// The per-subject determinism check — the `selfcheck-one` child body:
-/// each mode run twice concurrently, with a sequential uncontended
-/// confirm-retry before flagging (under a loaded gate a borderline run
-/// can breach the wall-clock backstop and read Timeout-vs-Trace; genuine
-/// nondeterminism repeats). Returns the modes that stayed flaky.
+/// each mode run twice concurrently AT THE PROGRAM'S ORACLE TIER, with
+/// a sequential uncontended confirm-retry before flagging (under a
+/// loaded gate a borderline run can breach the wall-clock backstop and
+/// read Timeout-vs-Trace; genuine nondeterminism repeats). Returns the
+/// modes that stayed flaky.
 pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
+    let tier = oracle_tier(prog);
     let mut bad = Vec::new();
     for mode in [Mode::Interp, Mode::Jit] {
         let (a, b) = tokio::join!(
             run_program(prog, mode, timeout),
             run_program(prog, mode, timeout),
         );
-        if !a.agrees_with(&b) {
+        if !a.agrees_with_at(&b, tier) {
             let a2 = run_program(prog, mode, timeout).await;
             let b2 = run_program(prog, mode, timeout).await;
-            if a2.agrees_with(&b2) {
+            if a2.agrees_with_at(&b2, tier) {
                 continue;
             }
             bad.push(match mode {
@@ -1406,24 +1519,12 @@ async fn run_pool(
                             }
                         }
                         PoolResult::Diverge(d) => {
-                            // Programs touching rand / IO / async are
-                            // NOT deterministic subjects (the same
-                            // exclusion selfcheck applies): rand varies
-                            // values, and an async builtin's in-flight
-                            // task RACES trace quiescence — the interp
-                            // itself flakes bottom-vs-value run to run
-                            // (seen: tempdir::create interpolated in a
-                            // mutant; the double-run guard only halves
-                            // the odds). A recorded "divergence" there
-                            // is a timing artifact, so don't record —
-                            // the campaign still exercises the shapes,
-                            // and crashes still record.
-                            if ["rand::", "sys::", "http::"]
-                                .iter()
-                                .any(|m| prog.contains(m))
-                            {
-                                continue;
-                            }
+                            // No tier filter here: `check` compares at
+                            // the program's own oracle tier (exact for
+                            // pure programs, per-epoch finals for
+                            // value-deterministic async, nothing for
+                            // Excluded), so a Diverge from the child is
+                            // a real finding at its tier.
                             stats.divergences += 1;
                             // Bound concurrent minimizations so a regressed
                             // (everything-diverges) run can't pile up

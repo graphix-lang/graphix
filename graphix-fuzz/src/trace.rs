@@ -80,6 +80,48 @@ impl Trace {
         self == other
     }
 
+    /// Per-epoch FINAL value: the last event's value, `None` for a
+    /// quiet epoch.
+    pub fn final_values(&self) -> Vec<Option<&Value>> {
+        self.epochs.iter().map(|e| e.events.last().map(|(_, v)| v)).collect()
+    }
+
+    /// The relaxed agreement for VALUE-DETERMINISTIC ASYNC programs
+    /// (`OracleTier::FinalValues`): each epoch drives to quiescence, so
+    /// its SETTLED value is a deterministic function of the inputs even
+    /// though intra-epoch pacing — and the intermediate values async
+    /// arrival order produces — varies run to run. Per-epoch finals
+    /// must agree; everything before them may differ. A capped trace
+    /// never quiesced (its "final" is wherever the budget cut it, which
+    /// IS pacing-dependent), so any cap on either side falls back to
+    /// exact agreement.
+    pub fn agrees_final(&self, other: &Trace) -> bool {
+        if self.epochs.iter().chain(other.epochs.iter()).any(|e| e.capped) {
+            return self.agrees_with(other);
+        }
+        self.epochs.len() == other.epochs.len()
+            && self.final_values() == other.final_values()
+    }
+
+    /// [`Self::first_difference`]'s twin at final strength — the bucket
+    /// key for final-tier divergences. The exact `TraceDiff` is
+    /// pacing-sensitive for async programs (the same bug can classify
+    /// differently run to run), so it can't key a stable bucket there;
+    /// the epoch index of the first final mismatch can.
+    pub fn first_final_difference(&self, other: &Trace) -> Option<TraceDiff> {
+        if self.epochs.iter().chain(other.epochs.iter()).any(|e| e.capped) {
+            return self.first_difference(other);
+        }
+        if self.epochs.len() != other.epochs.len() {
+            return Some(TraceDiff::EpochCount);
+        }
+        self.final_values()
+            .iter()
+            .zip(other.final_values().iter())
+            .position(|(a, b)| a != b)
+            .map(TraceDiff::FinalValue)
+    }
+
     /// Classify the first difference, `self` = the node-walk reference,
     /// `other` = the JIT under test. `None` when the traces agree.
     pub fn first_difference(&self, other: &Trace) -> Option<TraceDiff> {
@@ -127,6 +169,9 @@ pub enum TraceDiff {
     /// One mode hit the trace budget where the other quiesced — a
     /// deterministic budget makes this a real firing divergence.
     CapMismatch,
+    /// Final-tier only: the epoch whose SETTLED value differs (see
+    /// [`Trace::first_final_difference`]).
+    FinalValue(usize),
 }
 
 #[cfg(test)]
@@ -165,5 +210,32 @@ mod tests {
         // A difference in a common epoch wins over the epoch count.
         let g = tr(vec![vec![(0, 9), (1, 2)], vec![]]);
         assert_eq!(a.first_difference(&g), Some(TraceDiff::ValueMismatch));
+    }
+
+    #[test]
+    fn final_strength() {
+        // Same settled value per epoch — pacing and intermediates
+        // differ, finals agree.
+        let a = tr(vec![vec![(0, 1), (1, 2), (2, 7)], vec![(0, 9)]]);
+        let b = tr(vec![vec![(0, 2), (3, 7)], vec![(1, 9)]]);
+        assert!(a.agrees_final(&b));
+        assert!(!a.agrees_with(&b));
+        assert_eq!(a.first_final_difference(&b), None);
+        // A different settled value in epoch 1.
+        let c = tr(vec![vec![(0, 7)], vec![(0, 8)]]);
+        assert!(!a.agrees_final(&c));
+        assert_eq!(a.first_final_difference(&c), Some(TraceDiff::FinalValue(1)));
+        // Quiet-vs-fired epochs disagree at final strength.
+        let d = tr(vec![vec![(0, 7)], vec![]]);
+        assert!(!a.agrees_final(&d));
+        assert_eq!(a.first_final_difference(&d), Some(TraceDiff::FinalValue(1)));
+        // Epoch count still matters.
+        let e = tr(vec![vec![(0, 7)]]);
+        assert_eq!(a.first_final_difference(&e), Some(TraceDiff::EpochCount));
+        // Any cap on either side falls back to EXACT agreement.
+        let mut f = b.clone();
+        f.epochs[0].capped = true;
+        assert!(!a.agrees_final(&f));
+        assert_eq!(a.first_final_difference(&f), a.first_difference(&f));
     }
 }
