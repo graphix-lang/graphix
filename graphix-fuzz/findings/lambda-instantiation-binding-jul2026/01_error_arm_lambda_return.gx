@@ -1,0 +1,14 @@
+// bisect: REAL DIVERGENCE (fusion/JIT wrong value) — soak jul06c
+// (divergence_000033/58/60). A lambda whose select merges a scalar arm
+// with an `error(...)` arm, called so the ERROR arm is taken: interp
+// yielded the error value, jit yielded i64:<heap pointer> — the Error's
+// payload pointer marshalled as a scalar. Root: `reset_tvars` (call-site
+// instantiation of the def's FnType) freshened BOUND tvar cells to
+// unbound, discarding def-body facts ('a := f64 inside the rtype
+// constraint `Error<'a>`); the gutted union member terminal-settled to
+// ⊥, normalize merged [i64, ⊥] → i64, and the kernel return froze as
+// Scalar(I64). FIXED: reset_tvars preserves bindings (a bound cell
+// freshens to a fresh cell bound to the reset of its binding) —
+// typ/tvar.rs. The kernel now freezes ret=[i64, Error<f64>] (Nullable)
+// and still fuses.
+{let f = |n: i64| select n {i64:0 => i64:0, _ => error(f64:0.)}; f(i64:1)}

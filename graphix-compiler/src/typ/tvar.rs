@@ -600,8 +600,11 @@ impl Type {
         }
     }
 
-    /// return a copy of self with all type variables unbound and
-    /// unaliased. self will not be modified
+    /// Return a copy of self with fresh, unaliased type variable
+    /// cells: unbound (quantified) cells freshen unbound, while a
+    /// bound cell freshens to a fresh cell bound to the reset of its
+    /// binding — solved def-body facts survive instantiation. self
+    /// will not be modified.
     pub fn reset_tvars(&self) -> Type {
         use poolshark::local::LPooled;
         self.reset_tvars_int(&mut LPooled::take())
@@ -654,6 +657,24 @@ impl Type {
                 for c in tv.cell_constraints() {
                     let c = c.reset_tvars_int(known);
                     fresh.add_cell_constraint(c);
+                }
+                // A BOUND source cell is a solved fact (def-body
+                // inference — instances never write def cells, see the
+                // #18 note in lambda.rs InitFn), not a quantified
+                // variable: the fresh cell must carry the binding or
+                // every instance forgets it. `|n: i64| error(f64:0.)`
+                // binds `'a := f64` inside the def's rtype constraint;
+                // resetting that to unbound left the site's rtype to
+                // terminal-settle as ⊥ and fusion froze the return of
+                // `[i64, Error<f64>]` as bare i64 — the error arm's
+                // payload pointer marshalled as a scalar
+                // (soak-jul06c B5). Clone the binding out before
+                // recursing (lock discipline), through the same `known`
+                // map so alias topology is preserved.
+                let bound = tv.read().typ.read().typ.clone();
+                if let Some(t) = bound {
+                    let t = t.reset_tvars_int(known);
+                    fresh.read().typ.write().typ = Some(t);
                 }
                 Type::TVar(fresh)
             }

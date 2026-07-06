@@ -267,3 +267,22 @@ const DYNCALL_PENDING_HOF_SLOT: &str = r#"
 run!(dyncall_pending_hof_slot, DYNCALL_PENDING_HOF_SLOT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(9)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A lambda whose select merges a scalar arm with an error arm, called
+// so the ERROR arm is taken. The kernel return must freeze as the
+// union [i64, Error<f64>] (Nullable), not Scalar(I64): the def-time
+// binding 'a := f64 inside the rtype's Error<'a> constraint has to
+// survive call-site instantiation (reset_tvars preserves bound cells)
+// or the union member terminal-settles to ⊥, [i64, ⊥] normalizes to
+// i64, and the JIT marshals the error value's payload pointer as a
+// scalar (soak-jul06c B5, findings/lambda-instantiation-binding-jul2026).
+const ERROR_ARM_LAMBDA_RETURN: &str = r#"
+{
+  let f = |n: i64| select n {i64:0 => i64:0, _ => error(f64:0.)};
+  f(i64:1)
+}
+"#;
+
+run!(error_arm_lambda_return, ERROR_ARM_LAMBDA_RETURN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::F64(f) if *f == 0.0))
+}; graphix_package_core::testing::FuseExpect::Jit);
