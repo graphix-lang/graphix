@@ -62,32 +62,39 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
    AND Value shapes) covers both; this repro makes it the top fix of
    the round.
 
-5. **OPEN — REAL CRASH (SIGABRT/core dump), fix when campaigns stop —
-   find_map/filter_map don't de-fuse a COMPOSITE-returning callback**
-   — corpus-fuzz/crash_000004. Minimal (probe j11), deterministic
-   1/1 crash:
+5. **FIXED (2026-07-06) — REAL CRASH (SIGABRT/core dump) —
+   find_map/filter_map with a COMPOSITE-returning callback** —
+   corpus-fuzz/crash_000004. Minimal (probe j11):
 
    ```graphix
    {let a = [i64:1, i64:2]; array::find_map(a, |x: i64| a)}
    ```
 
-   The callback returns an Array (the option's success type is
-   Array<i64>, not a scalar). The find_map/filter_map scaffold is
-   SCALAR-ONLY (per FilterMapImpl's own comment) but the gate that
-   should refuse a composite success type is missing/wrong — it
-   FUSES and emits native code that treats the returned *ValArray
-   pointer* as a scalar/nullable word, corrupting memory → allocator
-   SIGABRT. INTERP survives and is correct
-   (find_map → [1,2]; filter_map → [[1,2],[1,2]]), so the JIT is the
-   only broken side. filter_map crashes identically (probe j13);
-   scalar-option returns (j9) and element returns (j10) are fine.
-   fix: gate find_map/filter_map emit on a scalar (or properly-
-   handled) option success type — de-fuse (Ok(None)) when the
-   success member freezes to a composite, mirroring the fold acc's
-   scalar check. NOT pinned in findings/ (crasher kills the
-   in-process regress gate); minimal repro recorded here. Highest
-   severity of the round — a memory-safety hole in fused code,
-   reachable from a plausibly-mistyped find_map.
+   ROOT CAUSE (not the direct-path scaffold — its gates were sound
+   and correctly de-fused these): the PER-SLOT TEMPLATE kernel
+   (`build_lambda_kernel` via `fuse_callsite`). The callback's
+   declared rtype `['b, null]` freezes to `AbiKind::Nullable` — the
+   in-band 2-word `(disc, payload)` Value return — but a composite
+   body emits the COMPOSITE convention (`payload = *mut ValArray`
+   box pointer). `emit_kernel_return` passed the raw pair through
+   and the runtime's `TagValue::from_raw` decoded the box pointer
+   as the in-band ValArray word — allocator SIGABRT / misaligned
+   ThinArc deref at trace render. FIX (better than the de-fuse gate
+   originally proposed): `emit_return_from_node` — when the kernel's
+   return type is value-shape, the body widens through
+   `emit_owned_value_operand_node` (the same conversion select arms
+   and value operands already used: composites via
+   `graphix_value_new_from_array`, strings via
+   `graphix_value_new_string`, scalars inline-packed) — so these
+   callbacks now FUSE AND RETURN CORRECTLY instead of crashing.
+   Covers both `NodeBodyEmitter::emit` (plain bodies) and
+   `emit_body_tail` (tail-select arms). Pinned at
+   findings/hof-composite-return-jul2026/01-03; run! fixtures
+   find_map_captured_array / filter_map_fresh_array /
+   find_map_tuple_arm (lib_tests/array.rs) + list_find_map_tuple
+   (lib_tests/list.rs). GRAPHIX_DBG_KERNELS=1 (new, permanent)
+   prints each built kernel's name + frozen return kind — the tool
+   that located this.
 
 6. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000005:
    `array::group(seq(MIN, 4), |n,_| n <= 1)` — seq-runaway with a
@@ -121,11 +128,11 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
    cycle (the kernel's src∧empty rule is the spec). Same
    fix-the-node-walk verdict as #8; fifth real bug of the round.
 
-10. **item-5 family (same fix)** — corpus-fuzz/crash_000009:
+10. **FIXED with item 5 (same root)** — corpus-fuzz/crash_000009:
     `array::filter_map(a, |x| [x, x + i64:1])` — composite-returning
-    callback via a FRESH array literal (vs item 5's captured array),
-    same missing de-fuse gate, same SIGABRT. Second repro for the
-    item-5 fix's regression tests.
+    callback via a FRESH array literal (vs item 5's captured array).
+    Pinned at findings/hof-composite-return-jul2026/02; fixture
+    filter_map_fresh_array.
 
 11. **FIXED (2026-07-05) — recursive lambda rtype annotation NOT
     enforced against its body; JIT leaks a pointer** — corpus-fuzz/
@@ -169,13 +176,15 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     recursion path too (or de-fuse it). Crash — not pinned in
     findings/. Seventh real bug of the round, third crash.
 
-13. **item-5 family, LIST package — REAL CRASH (SIGSEGV)** —
-    corpus-fuzz/crash_000012: `list::find_map(l, |x| (i64:1, i64:2))`
-    — composite (tuple) return segfaults (probe j22, rc=139). Same
-    missing composite-return de-fuse gate as item 5, but in
-    graphix-package-list's OWN find_map scaffold — the item-5 fix
-    must cover BOTH array and list HOF impls (and probably map's).
-    Audit all collection HOF scaffolds for the scalar-return gate.
+13. **FIXED with item 5 (same root)** — corpus-fuzz/crash_000012:
+    `list::find_map(l, |x| (i64:1, i64:2))` — tuple return, SIGSEGV
+    (probe j22, rc=139). The list package has no direct-path
+    scaffold, so its callbacks ALWAYS go through the per-slot
+    template — the same value-shape-return path as item 5; one fix
+    covers array/list/map because the bug was in the shared kernel
+    return emission, not the per-package scaffolds (map probe k8
+    verified). Pinned at findings/hof-composite-return-jul2026/03;
+    fixture list_find_map_tuple.
 
 14. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000013:
     seq-runaway, predicate `n != i64:-1`. Fifth operator variant.

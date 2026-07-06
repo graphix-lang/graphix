@@ -858,3 +858,16 @@ async fn list_fold_dynamic_init_converges() {
     );
     ctx.shutdown().await;
 }
+
+// Tuple-returning find_map callback — the list package has no
+// direct-path scaffold, so the callback always runs through the
+// per-slot template kernel: the composite-body-under-value-shape-
+// return crash family (soak jul05 item 13, crash_000012). Fixed by
+// emit_return_from_node; see lib_tests/array.rs's
+// find_map_captured_array for the family note.
+const LIST_FIND_MAP_TUPLE: &str = r#"
+{type T = (string, i64); let l: list::List<T> = list::from_array([("foo", i64:1), ("bar", i64:2)]); list::find_map(l, |(k, v): T| (i64:1, i64:2))}
+"#;
+run!(list_find_map_tuple, LIST_FIND_MAP_TUPLE, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<(i64, i64)>()), Ok(Ok((1, 2))))
+}; graphix_package_core::testing::FuseExpect::Jit);

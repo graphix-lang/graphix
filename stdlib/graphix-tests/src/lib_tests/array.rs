@@ -1109,3 +1109,41 @@ run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 1]>()),
     Ok(Ok([20]))
 ));
+
+// COMPOSITE-returning callbacks through the per-slot template kernel
+// (soak jul05 items 5/10/13). The callback's declared rtype
+// `['b, null]` freezes to the value-shape (in-band 2-word) return
+// convention, but a composite body emits the composite convention
+// (payload = *mut ValArray box pointer) — returning the raw pair
+// handed the runtime decode a box pointer as the in-band ValArray
+// word: SIGSEGV/SIGABRT. `emit_return_from_node` now widens the body
+// to a genuine owned Value pair (via graphix_value_new_from_array),
+// so these fuse AND return correctly.
+const FIND_MAP_CAPTURED_ARRAY: &str = r#"
+{let a = [i64:1, i64:2]; array::find_map(a, |x: i64| a)}
+"#;
+run!(find_map_captured_array, FIND_MAP_CAPTURED_ARRAY, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<[i64; 2]>()), Ok(Ok([1, 2])))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const FILTER_MAP_FRESH_ARRAY: &str = r#"
+{
+  let a = [i64:1, i64:2, i64:3];
+  array::filter_map(a, |x| [x, x + i64:1])
+}
+"#;
+run!(filter_map_fresh_array, FILTER_MAP_FRESH_ARRAY, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<[[i64; 2]; 3]>()),
+        Ok(Ok([[1, 2], [2, 3], [3, 4]])))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The select-arm variant: null in one arm, a tuple in the other — the
+// widening runs per tail-select arm (emit_body_tail → the same
+// emit_return_from_node seam).
+const FIND_MAP_TUPLE_ARM: &str = r#"
+{let a = [i64:1, i64:2]; array::find_map(a, |x: i64| select x { i64:1 => null, _ => (x, "s") })}
+"#;
+run!(find_map_tuple_arm, FIND_MAP_TUPLE_ARM, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<(i64, ArcStr)>()),
+        Ok(Ok((2, s))) if &*s == "s")
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -1,0 +1,8 @@
+// bisect: same family as 01 (triage item 10, corpus-fuzz/crash_000009)
+// — a FRESH array-literal return from a filter_map callback took the
+// same raw composite-pair-as-Value return path. SIGSEGV at trace
+// render (corrupt inner pointers). Fixed by emit_return_from_node.
+{
+  let a = [i64:1, i64:2, i64:3];
+  array::filter_map(a, |x| [x, x + i64:1])
+}

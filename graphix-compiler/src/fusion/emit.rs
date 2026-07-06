@@ -3054,11 +3054,7 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
             // value-position emission below: per-arm returns would be
             // equivalent codegen but churn every existing kernel.)
             Some(_) => emit_body_tail(&mut cx, self.root, self.return_type),
-            None => {
-                let cv = self.root.emit_clif(&mut cx)?;
-                let src = node_composite_source(self.root);
-                emit_kernel_return(&mut cx, self.return_type, cv, src)
-            }
+            None => emit_return_from_node(&mut cx, self.return_type, self.root),
         }
     }
 
@@ -3418,6 +3414,39 @@ fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
     emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
     cx.b.ins().jump(exit, &[]);
     Ok(())
+}
+
+/// Emit `node` as the kernel's result and return it under
+/// `return_type`'s convention. When the return is VALUE-SHAPE
+/// (Variant/Nullable/Value — the in-band 2-word `(disc, payload)`
+/// pair) the body node's own shape may differ: a callback declared
+/// `fn(x: 'a) -> ['b, null]` whose body is a tuple literal emits the
+/// COMPOSITE convention (`payload = *mut ValArray`, a box pointer),
+/// and returning that pair raw hands `TagValue::from_raw` a box
+/// pointer as the in-band `ValArray` word — the runtime decode then
+/// dereferences garbage (soak jul05 items 5/10/13, SIGSEGV/SIGABRT).
+/// Route through `emit_owned_value_operand_node` — the same widening
+/// select arms and value operands use — which converts each body
+/// shape to a genuine owned Value pair (composites via
+/// `graphix_value_new_from_array`, strings via
+/// `graphix_value_new_string`, scalars by inline packing, value-shape
+/// pass-through).
+fn emit_return_from_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    return_type: &Type,
+    node: &Node<R, E>,
+) -> Result<()> {
+    match kernel_abi::abi_kind(cx.registry(), return_type) {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            let cv = emit_owned_value_operand_node(cx, node)?;
+            emit_kernel_return(cx, return_type, cv, CompositeSource::Owned)
+        }
+        _ => {
+            let cv = node.emit_clif(cx)?;
+            let src = node_composite_source(node);
+            emit_kernel_return(cx, return_type, cv, src)
+        }
+    }
 }
 
 fn emit_kernel_return(
@@ -4305,11 +4334,7 @@ fn emit_body_tail<R: Rt, E: UserEvent>(
         }
         NodeView::ExplicitParens(ep) => emit_body_tail(cx, &ep.n, ret),
         NodeView::Select(s) => emit_select_node_tail(cx, s, ret),
-        _ => {
-            let cv = node.emit_clif(cx)?;
-            let src = node_composite_source(node);
-            emit_kernel_return(cx, ret, cv, src)
-        }
+        _ => emit_return_from_node(cx, ret, node),
     }
 }
 

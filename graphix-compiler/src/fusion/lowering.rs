@@ -933,6 +933,16 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let mut discovery = BuiltinCallDiscovery::default();
     walk_node_for_builtin_calls(g.body(), ec, &mut discovery);
     sig.fn_params = discovery.fn_params;
+    if std::env::var("GRAPHIX_DBG_KERNELS").is_ok() {
+        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            eprintln!(
+                "KERNEL BUILT {kernel_name}: ret={return_typ} kind={:?}",
+                kernel_abi::abi_kind(&ec.fusion.abstract_registry, &return_typ)
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+    }
     let signature = KnownFusedFn { arg_types, return_type: return_typ, self_bind };
     let cached = CachedKernel {
         fn_name: kernel_name.clone(),
