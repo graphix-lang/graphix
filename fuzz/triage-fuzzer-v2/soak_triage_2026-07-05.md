@@ -4,17 +4,21 @@ Campaigns: fuzz/generate/reactive, seeds 70501-3, PAR=16, corpus under
 fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
 (post never-as-⊥). Startup gates 65/65 ×3.
 
-1. **OPEN (root-cause hypothesis, fix when campaigns stop) —
-   value-shape DynCall results never go STALE** — corpus-fuzz/
-   divergence_000000 (~16:59). Pinned at
-   findings/dyncall-valueshape-firing-jul2026/01. jit ExtraFires a
+1. **FIXED (2026-07-06) — value-shape DynCall results never went
+   STALE** — corpus-fuzz/divergence_000000 (~16:59). Pinned at
+   findings/dyncall-valueshape-firing-jul2026/01. jit ExtraFired a
    const `buffer::len(buffer::from_string("hello"))` whenever any
-   feeder wakes the kernel (probe j3: an infinite counter → fires
-   every cycle; interp: once). str::len over the same const AGREES
-   (scalar DynCall synthesis folds arg discs). Suspect: the in-band
-   2-word return disc from graphix_dyncall is a real Value disc — no
-   STALE bit — and the emit never ANDs the call's arg STALE bits in.
-   Fix at the value-shape DynCall return synthesis in emit.rs.
+   feeder woke the kernel (probe j3: an infinite counter → fired
+   every cycle; interp: once). Root cause exactly as suspected: the
+   in-band 2-word return disc from graphix_dyncall is a REAL Value
+   disc — no STALE bit — and `emit_dyncall_node`'s value-shape arm
+   never folded the args' firing in (the scalar arm always did, via
+   `propagate_flags`). FIX: all three non-scalar return arms
+   (String / Composite / value-shape) now run `propagate_flags`
+   over `arg_taint_discs`, same as the scalar arm — the String and
+   Composite const discs had the identical always-fired hole,
+   caught by inspection during this fix. Regress pins 01+02 both
+   green; item-25's `x <- x` wedge now agrees (both Timeout).
 
 2. **ACCEPTED CLASS (no action)** — corpus-fuzz/crash_000001:
    `array::group(seq(0, i64::MAX), ...)` — the seq-runaway hang,
@@ -49,18 +53,14 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
    drain one more cycle after apparent idleness before resolving.
    Also worth re-running selfcheck with a deref-echo seed once fixed.
 
-4. **SAME ROOT as item 1, severity upgrade** — corpus-fuzz/
+4. **FIXED with item 1 (same root)** — corpus-fuzz/
    divergence_000003 (~17:4x): `s <- cast<i64>(true)$` SELF-WAKE
-   WEDGES the jit (Timeout vs interp's clean quiesce). cast<T>
+   WEDGED the jit (Timeout vs interp's clean quiesce). cast<T>
    returns the 2-word nullable shape via DynCall; the never-STALE
-   in-band disc makes the consume-always connect write on every
-   invocation, and the write wakes its own kernel. Plain `s <- i64:1`
-   agrees (probe j6) — the connect gating is fine, the DynCall disc
-   is the poison. Pinned as
-   findings/dyncall-valueshape-firing-jul2026/02. The item-1 fix
-   (AND arg STALE bits into 2-word DynCall return discs — Nullable
-   AND Value shapes) covers both; this repro makes it the top fix of
-   the round.
+   in-band disc made the consume-always connect write on every
+   invocation, and the write woke its own kernel. Pinned as
+   findings/dyncall-valueshape-firing-jul2026/02 — green after the
+   item-1 fix.
 
 5. **FIXED (2026-07-06) — REAL CRASH (SIGABRT/core dump) —
    find_map/filter_map with a COMPOSITE-returning callback** —
@@ -331,7 +331,8 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
     NOTE: this shape should be added to the `selfcheck` corpus once
     fixed — it's a ready-made same-mode-determinism regression test.
 
-25. **item-1 family (same root) + infinite-reschedule wrinkle** —
+25. **FIXED with item 1 (same root; verified both-Timeout agree
+    post-fix) + infinite-reschedule wrinkle** —
     corpus-fuzz/divergence_000024:
     `{let x = i64:0; x <- x; buffer::from_string("hello stderr\n")}`.
     buffer::from_string returns Bytes (value-shape 2-word DynCall);

@@ -5879,7 +5879,8 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // `drop_owned_strings` would null-drop it; #214) — so
             // branch exactly like the composite arm.
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            let disc = propagate_flags(cx.b, base, &arg_taint_discs);
             (disc, raw0)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -5890,15 +5891,23 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // `pending_exit`. (`pending_take` READS without clearing,
             // so no re-set is needed.)
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            let disc = propagate_flags(cx.b, base, &arg_taint_discs);
             (disc, raw0)
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             // Value-shape return: both register-words, same pending
             // branch as the composite arm (the boxed Value sentinel is
-            // null on pending).
+            // null on pending). `raw0` is a REAL (flag-free) Value
+            // disc from the dispatcher — fold the args' firing in like
+            // every other arm, else the result reads as always-fired:
+            // a const `buffer::from_string(...)`/`cast<T>(x)$` re-fired
+            // on every kernel wake, and a consume-always connect of
+            // one SELF-WOKE its own kernel forever (soak jul05
+            // items 1/4/25 — the ExtraFire/Timeout family).
             emit_dyncall_pending_branch(cx.b, cx.env, cx.ctx)?;
-            (raw0, raw1)
+            let disc = propagate_flags(cx.b, raw0, &arg_taint_discs);
+            (disc, raw1)
         }
         Some(AbiKind::Null) | None => {
             return Err(anyhow!(
