@@ -1057,6 +1057,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         if !any_updated {
             return None;
         }
+        if std::env::var("GRAPHIX_DBG_INVOKE").is_ok() {
+            eprintln!(
+                "KERNEL INVOKE {} init={} fired={:?} present={:?}",
+                self.kernel.fn_name,
+                event.init,
+                &fired_this_cycle[..],
+                self.args.iter().map(|a| a.is_some()).collect::<Vec<_>>()
+            );
+        }
         // Test instrumentation: a fused kernel has committed to
         // running this cycle (JIT or interp). Bump the fused-kernel
         // execution counter so the test harness can distinguish

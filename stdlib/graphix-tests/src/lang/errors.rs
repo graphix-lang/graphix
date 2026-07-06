@@ -155,3 +155,30 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// A `$` over a NESTED fallible union: t[0]'s inner type is
+// [[string, Error<E>], Error<ArrayIndexError>], and the qop node's
+// static type strips EVERY error member of the flattened union
+// (string) — matching the node-walk, which drops ANY error value.
+// The emit used to arm-select on the inner's ONE-LAYER option
+// success ([string, Error<E>] — value-shape) and minted the
+// value-shape (Null, 0) placeholder on the not-fired init cycle;
+// the String-conventioned kernel return force-dropped payload 0 —
+// graphix_arcstr_drop(NULL) SIGABRT (soak jul05 item 15,
+// crash_000014). emit_qop_node now arm-selects on the node's own
+// frozen static type. The timer delays the element one epoch so the
+// init cycle exercises the placeholder path before the value lands.
+const QOP_NESTED_UNION_STRING: &str = r#"
+{
+  let s: [string, Error<`E(string)>] = {
+    let tm = sys::time::timer(duration:0.05s, false);
+    tm ~ "hello"
+  };
+  let t = [s];
+  t[i64:0]$
+}
+"#;
+
+run!(qop_nested_union_string, QOP_NESTED_UNION_STRING, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "hello")
+}; graphix_package_core::testing::FuseExpect::Jit);

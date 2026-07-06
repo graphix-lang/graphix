@@ -204,24 +204,25 @@ fuzz/soak-jul05/. Launched ~16:15 on the all-bugs-fixed build
 14. **ACCEPTED CLASS (item 2 family)** — corpus-fuzz/crash_000013:
     seq-runaway, predicate `n != i64:-1`. Fifth operator variant.
 
-15. **OPEN — REAL CRASH (SIGABRT), fix when campaigns stop — pending-
-    sentinel String reaches graphix_arcstr_drop** — corpus-fuzz/
-    crash_000014. Panic site: emit_helpers.rs:849, the assert
-    `graphix_arcstr_drop: null ArcStr — JIT codegen bug (a pending
-    sentinel leaked into a drop)` — the guard doing its job, aborting
-    at the extern "C" boundary instead of the #214 SIGSEGV. NOT
-    environmental: sys::fs is incidental (it produces the String
-    result path). root_cause: the JIT emits an unconditional drop of
-    a String slot on a path where it still holds the ZERO pending
-    sentinel (the async read_all result inside an owned [...] literal,
-    gated by `~`, dropped on the not-fired edge). Reduction resisted
-    the two obvious non-async String-pending shapes (probes j25/j26
-    agree clean), so the async-residue String-in-composite drop path
-    is implicated — needs a rebuild to instrument. fix family: gate
-    the owned-String scope-exit / composite-slot drop on the value
-    having actually been produced (untainted, non-pending), same
-    "don't drop what was never made" invariant as the #219 taint
-    aborts. Eighth real bug of the round, fourth crash.
+15. **FIXED (2026-07-06) — REAL CRASH (SIGABRT) — null ArcStr reached
+    graphix_arcstr_drop** — corpus-fuzz/crash_000014. The pending-
+    sentinel hypothesis was WRONG (the DynCall pending paths were
+    sound); reduced to a timer shape (findings/qop-nested-union-
+    jul2026/01) and pinned by CLIF inspection (GRAPHIX_DUMP_CLIF +
+    the new GRAPHIX_DBG_INVOKE kernel-invocation trace): the `$`
+    node's STATIC type strips EVERY error member of the flattened
+    inner union (`[[string, Error<E>], Error<AIE>]$` -> string — the
+    node-walk drops ANY error value), but `emit_qop_node` arm-
+    selected on the inner's ONE-LAYER option success ([string,
+    Error<E>] — value-shape) and minted the value-shape (Null, 0)
+    placeholder on the error path. The String-conventioned kernel
+    return then force-dropped payload 0 on the not-fired init cycle —
+    graphix_arcstr_drop(NULL) abort. FIX: the qop emit arm-selects on
+    the node's own frozen static type (result_typ threaded from the
+    Qop/OrNever nodes); the passthrough gate stays on the inner. All
+    flavors verified (string/scalar/composite nested unions, plain
+    OOB `$`, handler-ful `?` — probes q7-q13 AGREE; the original fs
+    crasher AGREEs). Eighth real bug of the round, fourth crash.
 
 16. **DUPLICATE of item 9 (no new action) — and NEVER-AS-⊥ EXONERATED**
     — corpus-fuzz/divergence_000015. The window + never-gate +

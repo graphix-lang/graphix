@@ -5409,9 +5409,23 @@ fn emit_qop_deliver(
 /// None branch). Scalar / string / composite success returns the
 /// unwrapped element; Value-shape success returns the (disc, payload)
 /// pair.
+///
+/// `result_typ` is the qop NODE's static type — the arm selection
+/// keys on it, NOT on the inner's one-layer option success. The
+/// typechecker (and the node-walk, which drops ANY error value)
+/// strips EVERY error member of the flattened inner union — so for a
+/// nested fallible union like `[[string, Error<E>], Error<AIE>]` the
+/// node's type is `string` and every consumer (the kernel return
+/// included) expects the STRING convention, while the inner's
+/// one-layer success `[string, Error<E>]` freezes value-shape. Arm-
+/// selecting on the latter minted the value-shape `(Null, 0)`
+/// placeholder on the error path, and the String-conventioned
+/// consumer dropped payload 0 — `graphix_arcstr_drop(NULL)` SIGABRT
+/// (soak jul05 item 15, crash_000014).
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
+    result_typ: &Type,
     handler_site: Option<ExprId>,
 ) -> Result<CompiledExpr> {
     // Lockstep with the discovery-side freeze (lowering.rs
@@ -5425,9 +5439,17 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             inner.typ()
         ));
     };
-    let Some(success_typ) = kernel_abi::nullable_inner(cx.registry(), &inner_typ) else {
+    if kernel_abi::nullable_inner(cx.registry(), &inner_typ).is_none() {
         // No error possible — passthrough; the handler (if any) never fires.
         return inner.emit_clif(cx);
+    }
+    let Some(success_typ) =
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), result_typ)
+    else {
+        return Err(anyhow!(
+            "emit_clif: `?` result type {:?} doesn't freeze concrete",
+            result_typ
+        ));
     };
     let cv = inner.emit_clif(cx)?;
     let (disc, payload) = (cv.disc, cv.payload);
