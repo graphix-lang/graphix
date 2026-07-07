@@ -595,18 +595,21 @@ pub fn push_field(
 /// STALE (firing): the node-walk's HOF aggregation is SLOT-DRIVEN
 /// (MapQ::update: emit iff resized or any slot pred emitted, and all
 /// slots determined; plus an unconditional emit when the source fires
-/// while EMPTY). With a per-instance state word (top-level HOF in the
-/// root body — `BodyCx::claim_state_word`) `apply` implements that
-/// rule EXACTLY: the word remembers the previous source length, so
-/// "resized" is real and a same-length source fire with all-quiet
-/// (const-callback) slots stays quiet, matching the node-walk
-/// (fuzz/triage-fuzzer-v2/firing_000007). Without a word (a nested
-/// HOF inside another loop) the stateless approximation stands — the
-/// result fires iff the SOURCE fired or ANY slot body fired — a
-/// deliberate residual duplicate-fire, never a wrong value
-/// (suppressing source-only fires without length memory would
-/// under-fire the shrink-with-unchanged-prefix case: no slot fires
-/// but the shorter array MUST emit).
+/// while EMPTY). With a per-instance state word (a top-level HOF in
+/// the root body — `BodyCx::claim_state_word` — or a NESTED one whose
+/// source is loop-invariant, see [`Self::src_invariant`]) `apply`
+/// implements that rule EXACTLY: the word remembers the previous
+/// source length, so "resized" is real and a same-length source fire
+/// with all-quiet (const-callback) slots stays quiet, matching the
+/// node-walk (fuzz/triage-fuzzer-v2/firing_000007; the nested-
+/// invariant case is findings/firing-jul2026/03). Without a word (a
+/// nested HOF over a loop-VARIANT source — an element, an in-loop
+/// let) the stateless approximation stands — the result fires iff the
+/// SOURCE fired or ANY slot body fired — a deliberate residual
+/// duplicate-fire, never a wrong value (suppressing source-only fires
+/// without length memory would under-fire the
+/// shrink-with-unchanged-prefix case: no slot fires but the shorter
+/// array MUST emit).
 pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
@@ -620,6 +623,14 @@ pub struct SlotFlags {
     /// consumption), not the `stale` slots-word. See
     /// [`Self::result_is_firing`].
     result_is_firing: bool,
+    /// The source is LOOP-INVARIANT w.r.t. every ENCLOSING scaffold
+    /// loop (`emit::node_loop_invariant_ref`) — a nested HOF may then
+    /// claim a state word despite being inside a loop: every iteration
+    /// observes the SAME source, so one shared word tracks one length
+    /// and the exact resize rule holds. Set by the HOF's `emit_clif`
+    /// (which has the source Node); irrelevant at the top level, where
+    /// the plain claim already succeeds.
+    src_invariant: bool,
 }
 
 impl SlotFlags {
@@ -631,7 +642,18 @@ impl SlotFlags {
         // All-stale start: an empty loop contributes no firing.
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags { taint, stale, len: None, result_is_firing: false }
+        SlotFlags {
+            taint,
+            stale,
+            len: None,
+            result_is_firing: false,
+            src_invariant: false,
+        }
+    }
+
+    /// Mark the source loop-invariant — see [`Self::src_invariant`].
+    pub fn set_src_invariant(&mut self) {
+        self.src_invariant = true;
     }
 
     /// Fold's firing channel is its loop-carried acc disc — the exact
@@ -718,7 +740,18 @@ impl SlotFlags {
         // family hands a fresh STALE-clear disc in (no-op strip).
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
         let exact = match self.len {
-            Some(len) => cx.claim_state_word().map(|off| (len, off)),
+            Some(len) => {
+                // A nested HOF with a loop-invariant source shares one
+                // word across the enclosing iterations — still exact
+                // (see `src_invariant`); otherwise in-loop claims are
+                // refused and the approximation below stands.
+                let claim = if self.src_invariant {
+                    cx.claim_state_word_loop_invariant()
+                } else {
+                    cx.claim_state_word()
+                };
+                claim.map(|off| (len, off))
+            }
             None => None,
         };
         match exact {
@@ -834,8 +867,8 @@ where
     };
     let idv = cx.b.declare_var(types::I64);
     cx.b.def_var(idv, idisc);
-    bind_scalar_var_with_disc(cx, idx_name.clone(), PrimType::I64, i_var, idv, idx_id);
     cx.enter_loop();
+    bind_scalar_var_with_disc(cx, idx_name.clone(), PrimType::I64, i_var, idv, idx_id);
     let cv = body(cx);
     cx.exit_loop();
     let cv = cv?;
@@ -885,8 +918,8 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     cx.enter_loop();
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let cv = body(cx);
     cx.exit_loop();
     let cv = cv?;
@@ -953,8 +986,8 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     cx.enter_loop();
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let keep_cv = pred(cx);
     cx.exit_loop();
     let keep_cv = keep_cv?;
@@ -1066,8 +1099,8 @@ where
     };
     let edv = cx.b.declare_var(types::I64);
     cx.b.def_var(edv, ed);
-    bind_scalar_var_with_disc(cx, elem_name.clone(), in_elem, elem_var, edv, elem_id);
     cx.enter_loop();
+    bind_scalar_var_with_disc(cx, elem_name.clone(), in_elem, elem_var, edv, elem_id);
     let cv = body(cx);
     cx.exit_loop();
     let cv = cv?;
@@ -1132,8 +1165,8 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     cx.enter_loop();
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let body_cv = body(cx);
     cx.exit_loop();
     let body_cv = body_cv?;
@@ -1232,6 +1265,7 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
+    cx.enter_loop();
     bind_scalar_var_with_disc(
         cx,
         acc_name.clone(),
@@ -1241,7 +1275,6 @@ where
         acc_id,
     );
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    cx.enter_loop();
     let new_acc = body(cx);
     cx.exit_loop();
     let new_acc = new_acc?;
@@ -1322,8 +1355,8 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     cx.enter_loop();
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let keep_cv = pred(cx);
     cx.exit_loop();
     let keep_cv = keep_cv?;
@@ -1444,8 +1477,8 @@ where
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let mark = cx.env.mark();
-    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     cx.enter_loop();
+    let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
     let bp = body(cx);
     cx.exit_loop();
     let (bdisc, bpayload) = bp?;

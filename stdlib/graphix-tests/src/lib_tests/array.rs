@@ -49,6 +49,32 @@ run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// Nested map with a CONST callback body over a loop-invariant captured
+// source: the inner loop claims a state word despite being nested
+// (`SlotFlags::src_invariant` — `b` is identical on every outer
+// iteration), giving it MapQ's exact firing rule instead of the
+// stateless approximation that over-fired when `b` was stream-fed
+// (findings/firing-jul2026/03). This fixture asserts the shape still
+// FUSES with the claim in place; the multi-cycle firing parity is the
+// findings pin's job.
+const ARRAY_MAP_NESTED_CONST: &str = r#"
+{
+  let a = [1, 2];
+  let b = [3, 4];
+  array::map(a, |x| array::map(b, |y| 7))
+}
+"#;
+
+run!(array_map_nested_const, ARRAY_MAP_NESTED_CONST, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<[[i64; 2]; 2]>() {
+            Ok([[7, 7], [7, 7]]) => true,
+            _ => false,
+        },
+        Err(_) => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // Composite-output `array::map`: the body produces a tuple per element,
 // so the output is `Array<(i64, i64)>`. Exercises the map loop's
 // composite-output push (`compile_and_push_field`) without nesting.

@@ -163,6 +163,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
         // the static-refs capture walk that over-fired on captures read
         // only by sleeping select arms.
         let arr = array_arg.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, array_arg);
         let out_src = emit::node_composite_source(body);
         scaffold::emit_map_loop(
             cx,
@@ -177,7 +178,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapImpl {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, flags)| {
+        .map(|(v, mut flags)| {
+            if src_inv {
+                flags.set_src_invariant();
+            }
             let r = emit::array_result(cx, v);
             Some(flags.apply(cx, r, &[arr.disc]))
         })
@@ -261,6 +265,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
         // de-fuse, so Err (abort the kernel), never Ok(None).
         // #219: see MapImpl — result-level taint, no kernel abort.
         let arr = array_arg.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, array_arg);
         scaffold::emit_filter_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
@@ -272,7 +277,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterImpl {
             },
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, flags)| {
+        .map(|(v, mut flags)| {
+            if src_inv {
+                flags.set_src_invariant();
+            }
             let r = emit::array_result(cx, v);
             Some(flags.apply(cx, r, &[arr.disc]))
         })
@@ -357,6 +365,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
         // body's owned-ptr fixup runs on the placeholder too (an empty
         // ValArray clones/extends harmlessly).
         let arr = array_arg.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, array_arg);
         let body_src = emit::node_composite_source(body);
         scaffold::emit_flat_map_loop(
             cx,
@@ -373,7 +382,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FlatMapImpl {
                 Ok(CompiledExpr::new(cv.disc, p))
             },
         )
-        .map(|(v, flags)| {
+        .map(|(v, mut flags)| {
+            if src_inv {
+                flags.set_src_invariant();
+            }
             let r = emit::array_result(cx, v);
             Some(flags.apply(cx, r, &[arr.disc]))
         })
@@ -446,6 +458,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
         // de-fuse, so Err (abort the kernel), never Ok(None).
         // #219: see MapImpl — result-level taint, no kernel abort.
         let arr = array_arg.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, array_arg);
         scaffold::emit_filter_map_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
@@ -455,7 +468,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FilterMapImpl {
             out_prim,
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, flags)| {
+        .map(|(v, mut flags)| {
+            if src_inv {
+                flags.set_src_invariant();
+            }
             let r = emit::array_result(cx, v);
             Some(flags.apply(cx, r, &[arr.disc]))
         })
@@ -546,6 +562,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
         // AFTER the match must still bottom the find, per the
         // node-walk's all-slots-complete rule.
         let arr = array_arg.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, array_arg);
         scaffold::emit_find_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
@@ -557,7 +574,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindImpl {
             },
             |cx| body.emit_clif(cx),
         )
-        .map(|((disc, payload), flags)| {
+        .map(|((disc, payload), mut flags)| {
+            if src_inv {
+                flags.set_src_invariant();
+            }
             let r = CompiledExpr::new(disc, payload);
             Some(flags.apply(cx, r, &[arr.disc]))
         })
@@ -643,6 +663,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
         // scaffold scans ALL slots (no early exit) per the node-walk's
         // all-slots-complete rule.
         let arr = array_arg.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, array_arg);
         let body_src = emit::node_composite_source(body);
         let ((disc, payload), flags) = scaffold::emit_find_map_loop(
             cx,
@@ -658,6 +679,10 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for FindMapImpl {
                 emit::ensure_owned_value_src(cx, body_src, cv.disc, cv.payload)
             },
         )?;
+        let mut flags = flags;
+        if src_inv {
+            flags.set_src_invariant();
+        }
         let r = CompiledExpr::new(disc, payload);
         Ok(Some(flags.apply(cx, r, &[arr.disc])))
     }
@@ -749,6 +774,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         // while the callback CONSUMES the bottom acc (`|acc, x| x`
         // recovers on the first slot).
         let arr = array_arg.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, array_arg);
         scaffold::emit_fold_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
@@ -764,7 +790,12 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
             |cx| init_arg.emit_clif(cx),
             |cx| body.emit_clif(cx),
         )
-        .map(|(r, flags)| Some(flags.apply(cx, r, &[arr.disc])))
+        .map(|(r, mut flags)| {
+            if src_inv {
+                flags.set_src_invariant();
+            }
+            Some(flags.apply(cx, r, &[arr.disc]))
+        })
     }
 }
 
@@ -1757,6 +1788,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
         // HOF's "source"); a tainted body slot rides the accumulator.
         // No kernel abort.
         let n = n_node.emit_clif(cx)?;
+        let src_inv = emit::node_loop_invariant_ref(cx, n_node);
         let out_src = emit::node_composite_source(body);
         scaffold::emit_init_loop(
             cx,
@@ -1769,7 +1801,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             out_src,
             |cx| body.emit_clif(cx),
         )
-        .map(|(v, flags)| {
+        .map(|(v, mut flags)| {
+            if src_inv {
+                flags.set_src_invariant();
+            }
             let r = emit::array_result(cx, v);
             Some(flags.apply(cx, r, &[n.disc]))
         })

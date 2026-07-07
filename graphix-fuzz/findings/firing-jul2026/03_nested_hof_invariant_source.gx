@@ -1,0 +1,24 @@
+// bisect: HOF FIRING over-fire, the NESTED variant of 02: a map with a
+// CONST callback body nested INSIDE another map's callback, over a
+// loop-invariant captured source (`b`, stream-fed by array::iter so it
+// fires per cycle at the same length). The node-walk stays quiet after
+// init (no const pred re-fires, no resize), but the nested kernel loop
+// had no state word (`claim_state_word` refuses inside an open loop —
+// one word can't hold per-slot memory) and fell back to the stateless
+// "source fired ∨ slot fired" rule: interp Trace([1:[[0.2,0.2],
+// [0.2,0.2]]]) vs jit Trace([1:… 2:…]).
+// Found by soak-jul08c fuzz campaign (divergence_000000, 2026-07-07).
+// root_cause: the in-loop state refusal is only load-bearing for
+//   loop-VARIANT sources (per-iteration lengths can't share one word:
+//   suppressing on a stale shared length would under-fire the
+//   shrink-with-unchanged-prefix case — a wrong value). An INVARIANT
+//   source (a kernel input / region-level let — `Local::depth` 0) is
+//   the same array on every iteration: one shared word observes one
+//   length and the exact rule holds.
+// fix: `claim_state_word_loop_invariant` + `SlotFlags::src_invariant`,
+//   set by the array HOF emitters when `emit::node_loop_invariant_ref`
+//   proves the source; scaffold loops now bracket their element/acc/
+//   index binds INSIDE enter_loop so the depth stamp is truthful.
+// mutant: {let a = [i64:1, i64:-9223372036854775808]; let b = [array::iter(a), i64:2]; array::map(a, |x| array::map(b, |y| f32:0.2))}
+// minimized:
+{let a = [i64:0, i64:-9223372036854775808]; let b = [array::iter(a), i64:2]; array::map(a, |x| array::map(b, |y| f32:0.2))}

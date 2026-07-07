@@ -2542,6 +2542,12 @@ struct Local {
     /// class). `None` for synthetic locals (e.g. an HOF loop element
     /// bound only by name).
     bind_id: Option<BindId>,
+    /// Scaffold-loop nesting depth at bind time. 0 = bound outside
+    /// every loop (a kernel param or a region-level let) — such a
+    /// binding is LOOP-INVARIANT: identical on every iteration of
+    /// every open loop. Loop elements/indices/accs bind at depth ≥ 1
+    /// (the scaffolds bracket their binds inside `enter_loop`).
+    depth: u32,
 }
 
 pub(crate) struct JitEnv {
@@ -2550,11 +2556,15 @@ pub(crate) struct JitEnv {
     /// the single Vec length — a block / select-arm / loop-body scope
     /// pops back to its entry length on exit.
     locals: Vec<Local>,
+    /// Current scaffold-loop nesting depth (mirrors the EmitCtx
+    /// counter; bumped by `BodyCx::enter_loop`/`exit_loop`). Stamped
+    /// on each `Local` at bind time — see [`Local::depth`].
+    loop_depth: u32,
 }
 
 impl JitEnv {
     fn new() -> Self {
-        Self { locals: Vec::with_capacity(8) }
+        Self { locals: Vec::with_capacity(8), loop_depth: 0 }
     }
 
     fn bind(
@@ -2564,7 +2574,8 @@ impl JitEnv {
         kind: LocalKind,
         bind_id: Option<BindId>,
     ) {
-        self.locals.push(Local { name, vv, kind, bind_id });
+        let depth = self.loop_depth;
+        self.locals.push(Local { name, vv, kind, bind_id, depth });
     }
 
     /// Resolve a local BindId-first (exact under shadowing), then by
@@ -3284,16 +3295,35 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Some((idx * 8) as i32)
     }
 
-    /// Bracket scaffold-loop body emission: state claims are refused
-    /// while any loop is open (see [`claim_state_word`](Self::claim_state_word)).
-    pub fn enter_loop(&self) {
-        self.ctx.loop_depth.set(self.ctx.loop_depth.get() + 1);
+    /// [`claim_state_word`](Self::claim_state_word) for a claimant
+    /// whose observed quantity is LOOP-INVARIANT — identical on every
+    /// iteration of every open scaffold loop (see
+    /// [`node_loop_invariant_ref`]) — so sharing one word across the
+    /// iterations is exact and the in-loop refusal is waived. Callee
+    /// bodies still refuse (one word can't hold per-call-site memory).
+    pub fn claim_state_word_loop_invariant(&self) -> Option<i32> {
+        if !self.ctx.state_enabled {
+            return None;
+        }
+        let idx = self.ctx.state_next.get();
+        self.ctx.state_next.set(idx + 1);
+        Some((idx * 8) as i32)
     }
 
-    pub fn exit_loop(&self) {
+    /// Bracket scaffold-loop body emission (INCLUDING the loop's own
+    /// element/index/acc binds — their `Local::depth` stamp is what
+    /// [`node_loop_invariant_ref`] keys on): state claims are refused
+    /// while any loop is open (see [`claim_state_word`](Self::claim_state_word)).
+    pub fn enter_loop(&mut self) {
+        self.ctx.loop_depth.set(self.ctx.loop_depth.get() + 1);
+        self.env.loop_depth += 1;
+    }
+
+    pub fn exit_loop(&mut self) {
         let d = self.ctx.loop_depth.get();
         debug_assert!(d > 0, "exit_loop without a matching enter_loop");
         self.ctx.loop_depth.set(d.saturating_sub(1));
+        self.env.loop_depth = self.env.loop_depth.saturating_sub(1);
     }
 
     /// True iff `bind_id` is a LIFTED connect target in this region — a
@@ -3385,6 +3415,39 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
                 None => return CompositeSource::Owned,
             },
             _ => return CompositeSource::Owned,
+        }
+    }
+}
+
+/// True iff `node` is a plain `Ref` whose binding is LOOP-INVARIANT at
+/// this emission point: a kernel input or a local bound outside every
+/// open scaffold loop (`Local::depth` 0) — its value is identical on
+/// every iteration of every open loop. A nested HOF whose SOURCE
+/// passes this test qualifies for the exact (state-word) firing rule
+/// via [`SlotFlags::src_invariant`]: one word shared across the
+/// enclosing iterations observes one length, so "resized" stays real.
+/// Everything else (loop elements, in-loop lets, computed sources) is
+/// conservatively variant. Transparent through parens/blocks like
+/// [`node_composite_source`].
+pub fn node_loop_invariant_ref<R: Rt, E: UserEvent>(
+    cx: &BodyCx,
+    node: &Node<R, E>,
+) -> bool {
+    let mut n: &dyn Update<R, E> = &**node;
+    loop {
+        match n.view() {
+            NodeView::Ref(r) => {
+                let Some(name) = ref_local_name(n.spec()) else {
+                    return false;
+                };
+                return cx.env.lookup(r.id, name).is_some_and(|l| l.depth == 0);
+            }
+            NodeView::ExplicitParens(p) => n = &*p.n,
+            NodeView::Block(blk) => match blk.children.last() {
+                Some(tail) => n = &**tail,
+                None => return false,
+            },
+            _ => return false,
         }
     }
 }
