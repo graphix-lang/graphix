@@ -1,0 +1,10 @@
+// bisect: the under-limit sibling of 04 — f(254) is 255 dispatches,
+// plus the HOF callback unit = 256, exactly AT the limit: both modes
+// must COMPLETE with 42285. Bounds the fused loop's depth accounting
+// from above (a kernel charging TWO units per loop — or charging the
+// fold's init emit — trips here where the node-walk completes); 04
+// bounds it from below. Together they pin "exactly one unit per HOF
+// callback level".
+// mutant: hand probe (04 investigation)
+// minimized:
+{let rec f = |n: i64| -> i64 select n {i64:0 => {f64:0.; let xs = array::init(i64:100, |idx: i64| idx); array::fold(xs, i64:0, |acc, x| acc + x * i64:2)}, _ => n + f(n - i64:1)}; f(i64:254)}

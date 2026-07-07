@@ -972,6 +972,33 @@ run!(depth_guard_under_limit, DEPTH_GUARD_UNDER_LIMIT, |v: Result<&Value>| {
 // agreement is a first-class assertion there, while the run! harness
 // has no runtime-bottom expectation (it would wait out its timeout).
 
+// A fused HOF loop's inlined callback charges ONE depth unit, same as
+// the node-walk's per-element dispatch (`emit_depth_unit` around each
+// scaffold loop — soak jul07c, findings/depth-guard-jul2026/04+05):
+// f(254) is 255 dispatches, the base arm's HOF unit is the 256th, so
+// this completes at exactly the limit in both modes. A kernel that
+// stops charging the unit completes f(255)+HOF where the node-walk
+// bottoms (the 04 corpus pin); one that charges two trips HERE.
+const DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT: &str = r#"
+{
+  let rec f = |n: i64| -> i64 select n {
+    i64:0 => {
+      let xs = array::init(i64:100, |idx: i64| idx);
+      array::fold(xs, i64:0, |acc, x| acc + x * i64:2)
+    },
+    _ => n + f(n - i64:1)
+  };
+  f(i64:254)
+}
+"#;
+
+run!(
+    depth_guard_hof_unit_under_limit,
+    DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42285))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
 // A rec lambda NESTED in another lambda's body tail-loops in BOTH
 // modes: the #203 resolution cascade (drive a resolved callee's body
 // through typecheck1 so nested sites resolve) used to be fusion-gated,

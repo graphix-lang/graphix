@@ -249,6 +249,20 @@ impl Control {
         }
     }
 
+    /// Enter the callback-dispatch level a fused HOF loop's inlined
+    /// body runs at — the kernel twin of the node-walk's per-element
+    /// `depth_push` in `GXLambda::update`. One unit covers the whole
+    /// loop: sequential element dispatches all sit at the same level,
+    /// so the per-element push/pop pairs collapse to one. Increments
+    /// UNCONDITIONALLY (pair with an unconditional
+    /// [`depth_pop`](Self::depth_pop) — no branchy cleanup); `false` =
+    /// the limit is reached and the loop must not run, its result
+    /// tainted (the node-walk's per-element trip observable).
+    pub fn depth_enter(&self) -> bool {
+        let d = self.depth.fetch_add(1, Ordering::Relaxed);
+        d < self.max_depth.load(Ordering::Relaxed)
+    }
+
     pub fn depth_pop(&self) {
         self.depth.fetch_sub(1, Ordering::Relaxed);
     }

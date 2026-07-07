@@ -2006,6 +2006,11 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             // the call-depth limit — skip the call, abort to bottom)
             sig.returns.push(AbiParam::new(types::I8));
         }
+        "graphix_depth_enter" => {
+            // no args; returns i8 (1 = the HOF loop may run, 0 = at
+            // the call-depth limit — skip the loop, taint its result)
+            sig.returns.push(AbiParam::new(types::I8));
+        }
         "graphix_depth_pop" => {
             // no args, no return
         }

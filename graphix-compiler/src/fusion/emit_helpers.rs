@@ -527,6 +527,31 @@ pub extern "C" fn graphix_depth_push() -> i8 {
     })
 }
 
+/// The fused HOF-loop twin of [`graphix_depth_push`]: enter the
+/// callback-dispatch level a scaffold loop's inlined body runs at
+/// (`Control::depth_enter`). UNCONDITIONAL increment — pair with an
+/// unconditional `graphix_depth_pop` after the loop closes. 0 = the
+/// limit is reached: the loop must be skipped (bound zeroed) and its
+/// result tainted, matching the node-walk's per-element dispatch trip.
+/// The interrupt is not polled here — the loop head polls per
+/// iteration.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_depth_enter() -> i8 {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        if p.is_null() {
+            1
+        } else {
+            // SAFETY: see `graphix_interrupted`.
+            let ok = unsafe { (*p).depth_enter() };
+            if !ok {
+                unsafe { (*p).set_depth_trip() };
+            }
+            i8::from(ok)
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_depth_pop() {
     INTERRUPT_PTR.with(|c| {
@@ -1800,6 +1825,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_callee_flags_take", graphix_callee_flags_take as *const u8),
         ("graphix_interrupted", graphix_interrupted as *const u8),
         ("graphix_depth_push", graphix_depth_push as *const u8),
+        ("graphix_depth_enter", graphix_depth_enter as *const u8),
         ("graphix_depth_pop", graphix_depth_pop as *const u8),
         (
             "graphix_value_buf_push_array_borrowed",
