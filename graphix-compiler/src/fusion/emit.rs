@@ -7646,22 +7646,44 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // `Control::depth_push` counter the node-walk's `GXLambda::update`
     // pushes, so both evaluators bottom at the same logical depth and
     // an impure program's interleaved frames are bounded together. At
-    // the limit the kernel takes its abort path (bottom for this
-    // cycle) — the same observable as the node-walk's guarded dispatch
-    // yielding nothing, and cascaded identically since the whole
-    // region is one result. The check runs BEFORE argument marshalling
-    // so the abort path has nothing of ours in flight (fused arg
-    // evaluation is pure, so skipping it is unobservable — the
-    // node-walk evaluates args in the caller's frame either way).
-    // Tail self-calls are exempt on both sides (rebind-and-jump here,
-    // the in-place loop there).
+    // the limit the CALL bottoms LOCALLY: skip the dispatch and
+    // continue with a #219 tainted, shape-safe placeholder — the same
+    // observable as the node-walk's guarded dispatch yielding nothing
+    // (its bottom silences only the call's consumers; a fold whose
+    // callback ignores the tripped value RECOVERS — the former
+    // whole-kernel abort here bottomed unrelated outputs, soak jul07h).
+    // The check runs BEFORE argument marshalling so the trip path has
+    // nothing of ours in flight (fused arg evaluation is pure, so
+    // skipping it is unobservable — the node-walk evaluates args in
+    // the caller's frame either way). A failed push does not
+    // increment, so the trip path must NOT pop. Tail self-calls are
+    // exempt on both sides (rebind-and-jump here, the in-place loop
+    // there).
+    let ret = &info.kernel.return_type;
+    let ret_pay_ty = match kernel_abi::abi_kind(reg, ret) {
+        Some(AbiKind::Scalar(p)) => prim_to_clif(p),
+        _ => types::I64,
+    };
+    let call_bl = cx.b.create_block();
+    let trip_bl = cx.b.create_block();
+    let dmerge = cx.b.create_block();
+    cx.b.append_block_param(dmerge, types::I64);
+    cx.b.append_block_param(dmerge, ret_pay_ty);
     {
         let push = cx.helper("graphix_depth_push")?;
         let call = cx.b.ins().call(push, &[]);
         let ok = cx.b.inst_results(call)[0];
         let valid = cx.b.ins().icmp_imm(IntCC::NotEqual, ok, 0);
-        emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+        cx.b.ins().brif(valid, call_bl, &[], trip_bl, &[]);
     }
+    cx.b.switch_to_block(trip_bl);
+    cx.b.seal_block(trip_bl);
+    {
+        let ph = emit_elem_placeholder(cx, ret)?;
+        cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
+    }
+    cx.b.switch_to_block(call_bl);
+    cx.b.seal_block(call_bl);
     // Leading cycle-context words: forward THIS kernel's `event.init`
     // (the callee's constants fire when this region inits) and state
     // pointer — every kernel signature carries the leading context
@@ -7777,7 +7799,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         }
         Ok(results[0])
     };
-    let ret = &info.kernel.return_type;
     let result = match kernel_abi::abi_kind(reg, ret) {
         Some(AbiKind::Scalar(p)) => {
             let r0 = one_result(cx)?;
@@ -7813,8 +7834,18 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             ));
         }
     };
+    // Owned-arg drops belong to the CALL path (the trip path never
+    // marshalled), then meet the trip placeholder at the merge.
     emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
-    Ok(result)
+    cx.b.ins().jump(
+        dmerge,
+        &[BlockArg::Value(result.disc), BlockArg::Value(result.payload)],
+    );
+    cx.b.switch_to_block(dmerge);
+    cx.b.seal_block(dmerge);
+    let disc = cx.b.block_params(dmerge)[0];
+    let payload = cx.b.block_params(dmerge)[1];
+    Ok(CompiledExpr::new(disc, payload))
 }
 
 /// Emit the post-call drops for owned composite/value call args. The

@@ -999,6 +999,26 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
+// A depth trip bottoms the CALL, not the kernel: the tripping f(256)
+// sits in fold's init argument inside the fused region, and the
+// callback ignores the accumulator — the node-walk's per-dispatch
+// bottom lets the fold recover to 42, so the fused version must too
+// (the former whole-kernel abort swallowed it — soak jul07h,
+// findings/depth-guard-jul2026/06).
+const DEPTH_TRIP_LOCAL_RECOVERY: &str = r#"
+{
+  let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
+  array::fold([i64:41], f(i64:256), |acc, x| x + i64:1)
+}
+"#;
+
+run!(
+    depth_trip_local_recovery,
+    DEPTH_TRIP_LOCAL_RECOVERY,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
 // A rec lambda NESTED in another lambda's body tail-loops in BOTH
 // modes: the #203 resolution cascade (drive a resolved callee's body
 // through typecheck1 so nested sites resolve) used to be fusion-gated,
