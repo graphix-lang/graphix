@@ -143,3 +143,98 @@ pub(super) fn gen_module(
     }
     GenModule { files, stmts }
 }
+
+/// Emit a DYNAMIC module: a raw-string-literal source compiled at
+/// runtime against a declared sig inside a sandbox, consumed through
+/// the status gate (`select status { error => fallback, null =>
+/// d0::f(...) }` — the hand-seed discipline). Every outcome is
+/// deterministic at EXACT oracle strength — load, sig mismatch,
+/// sandbox violation, and source syntax errors all settle the same
+/// way in both modes (probed 2026-07-07) — so no netidx plumbing and
+/// no tier demotion is needed. Negative variants (a sig val the
+/// source doesn't define; a core-only sandbox under a vocabulary that
+/// may reach array::/str::) exercise the error arm as a first-class
+/// deterministic outcome.
+pub(super) fn gen_dynamic_module(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+    idx: usize,
+) -> Vec<String> {
+    stats.dynamic_module = true;
+    let dname = format!("d{idx}");
+    let mut inner = ctx.clone();
+    inner.truncate(0);
+    let mut src = String::new();
+    // Optional hidden binding, used through capture — never in the sig.
+    if chance(rng, 0.4) {
+        let h = inner.fresh();
+        let v = exprs::gen_typed(&inner, rng, &GenType::I64, 1);
+        src.push_str(&format!("let {h} = {v};\n"));
+        inner.push(h, GenType::I64);
+    }
+    let nfns = 1 + rng.below(2);
+    let mut sig = String::new();
+    let mut public: Vec<(String, GenType)> = Vec::new();
+    for i in 0..nfns {
+        let fname = format!("g{i}");
+        let arity = 1 + rng.below(2);
+        let params: Vec<GenType> = (0..arity).map(|_| types::scalar_type(rng)).collect();
+        let ret = types::scalar_type(rng);
+        let names: Vec<String> = (0..arity).map(|_| inner.fresh()).collect();
+        let m = inner.mark();
+        for (n, t) in names.iter().zip(params.iter()) {
+            inner.push(n.clone(), t.clone());
+        }
+        let body = exprs::gen_typed(&inner, rng, &ret, 2);
+        inner.truncate(m);
+        let sigp: Vec<String> = names
+            .iter()
+            .zip(params.iter())
+            .map(|(n, t)| format!("{n}: {}", t.render()))
+            .collect();
+        src.push_str(&format!(
+            "let {fname} = |{}| -> {} {body};\n",
+            sigp.join(", "),
+            ret.render()
+        ));
+        let fty = GenType::Fn { params, ret: Box::new(ret) };
+        sig.push_str(&format!("val {fname}: {}; ", fty.render()));
+        public.push((fname, fty));
+    }
+    // Negative variant: the sig demands a val the source never defines
+    // — the load must take the error arm, identically in both modes.
+    let sig_mismatch = chance(rng, 0.12);
+    if sig_mismatch {
+        sig.push_str("val absent: fn(x: i64) -> i64; ");
+    }
+    // The generated bodies may reach array::/str:: through gen_typed's
+    // vocabulary; a narrow sandbox turns those loads into deterministic
+    // error-arm outcomes rather than invalid programs, so both
+    // whitelists are healthy to emit.
+    let whitelist = if chance(rng, 0.25) { "[core]" } else { "[core, array, str]" };
+    let src = src.trim_end().trim_end_matches(';');
+    debug_assert!(!src.contains('\''), "raw-string source must not contain '");
+    let status = ctx.fresh();
+    let mut stmts = vec![format!(
+        "let {status} = mod {dname} dynamic {{ sandbox whitelist {whitelist}; \
+         sig {{ {} }}; source r'{src}' }}",
+        sig.trim_end().trim_end_matches(';')
+    )];
+    // Consume ONE public fn through the status gate; the result enters
+    // the main vocabulary.
+    let (fname, fty) = &public[rng.below(public.len())];
+    let GenType::Fn { params, ret } = fty else { unreachable!() };
+    let args: Vec<String> =
+        params.iter().map(|t| exprs::gen_typed(ctx, rng, t, 1)).collect();
+    let fallback = exprs::gen_typed(ctx, rng, ret, 1);
+    let v = ctx.fresh();
+    stmts.push(format!(
+        "let {v} = select {status} {{ error as _ => {fallback}, null as _ => \
+         {dname}::{fname}({}) }}",
+        args.join(", ")
+    ));
+    ctx.push(v, (**ret).clone());
+    stmts
+}

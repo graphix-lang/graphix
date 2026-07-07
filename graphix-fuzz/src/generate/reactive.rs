@@ -28,6 +28,7 @@ pub struct ReactiveStats {
     pub accumulators: usize,
     pub cross_cycle: usize,
     pub runaway: bool,
+    pub dyn_reload: bool,
 }
 
 /// Generate one reactive WRAPPER (schedule header + body) with the
@@ -77,6 +78,7 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
     // budget never trips and the program burns its whole wall-clock
     // backstop; an observed one is cut by the cap deterministically.
     let mut live: Vec<String> = Vec::new();
+    let mut ndyn = 0usize;
     let n_templates = 1 + rng.below(3);
     for _ in 0..n_templates {
         if chance(rng, 0.25) {
@@ -93,8 +95,9 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
             2..=4 => {
                 accumulator(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live)
             }
-            5..=8 => cross_cycle(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
-            _ => sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut live),
+            5..=7 => cross_cycle(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
+            8 => sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut live),
+            _ => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
         }
     }
     // If nothing input-driven landed, add one scalar accumulator so
@@ -317,6 +320,58 @@ fn sample_chain(
     stmts.push(format!("let {t} = {input} ~ ({val})"));
     live.push(t.clone());
     ctx.push(t, GenType::I64);
+}
+
+/// A HOT-RELOADING dynamic module: the source is selected from an
+/// array of raw-string variants by an INJECTED index, so each epoch
+/// can swap the module's implementation and downstream values must
+/// re-settle — the runtime recompile path under the differential
+/// oracle. `srcs[in % n]$` is total for ANY injected i64 (graphix's
+/// negative indexing spans -n..n-1 and `%` follows the dividend's
+/// sign), so mutated edge values (MIN/MAX) stay in-bounds. Probed
+/// deterministic in both modes 2026-07-07 (epoch finals and pacing).
+/// The result is NOT pushed into `live`: two injections can select the
+/// SAME source (idx mod n collides), and an unchanged source need not
+/// re-fire downstream — live demands fire-per-injection.
+fn dyn_reload(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    inputs: &[(String, GenType)],
+    stmts: &mut Vec<String>,
+    stats: &mut ReactiveStats,
+    ndyn: &mut usize,
+) {
+    let Some((iname, _)) = inputs.iter().find(|(_, t)| *t == GenType::I64) else {
+        return;
+    };
+    stats.dyn_reload = true;
+    let dname = format!("dr{ndyn}");
+    *ndyn += 1;
+    let n_srcs = 2 + rng.below(2);
+    let mut inner = ctx.clone();
+    inner.truncate(0);
+    let srcs: Vec<String> = (0..n_srcs)
+        .map(|_| {
+            let p = inner.fresh();
+            let m = inner.mark();
+            inner.push(p.clone(), GenType::I64);
+            let body = exprs::gen_typed(&inner, rng, &GenType::I64, 1);
+            inner.truncate(m);
+            format!("r'let f = |{p}: i64| -> i64 {body}'")
+        })
+        .collect();
+    let srcs_name = ctx.fresh();
+    stmts.push(format!("let {srcs_name} = [{}]", srcs.join(", ")));
+    let status = ctx.fresh();
+    stmts.push(format!(
+        "let {status} = mod {dname} dynamic {{ sandbox whitelist [core];          sig {{ val f: fn(x: i64) -> i64 }};          source {srcs_name}[{iname} % i64:{n_srcs}]$ }}"
+    ));
+    let arg = exprs::gen_typed(ctx, rng, &GenType::I64, 1);
+    let v = ctx.fresh();
+    stmts.push(format!(
+        "let {v} = select {status} {{ error as _ => i64:-1, null as _ =>          {dname}::f({arg}) }}"
+    ));
+    ctx.push(v, GenType::I64);
 }
 
 /// The deliberate runaway — an INPUT-FREE single burst (no schedule):

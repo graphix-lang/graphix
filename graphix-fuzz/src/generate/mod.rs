@@ -89,6 +89,10 @@ pub struct GenCfg {
     /// A generated module omits its `.gxi` entirely (bare module —
     /// everything public).
     pub p_bare_module: f64,
+    /// A statement slot emits a DYNAMIC module (raw-string source
+    /// compiled at runtime against a sig in a sandbox, consumed
+    /// through the status gate).
+    pub p_dynmod: f64,
     /// Statement slots per program: 0..=max_lets (template slots may
     /// emit several statements).
     pub max_lets: usize,
@@ -112,6 +116,7 @@ impl Default for GenCfg {
             p_module: 0.12,
             p_abstract: 0.4,
             p_bare_module: 0.2,
+            p_dynmod: 0.08,
             max_lets: 6,
         }
     }
@@ -138,6 +143,8 @@ pub struct GenStats {
     pub error_lambda: bool,
     /// A module (wrapper file sections) was emitted.
     pub module: bool,
+    /// A DYNAMIC module was emitted.
+    pub dynamic_module: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -292,6 +299,7 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut stmts = Vec::new();
     let mut files: Vec<(String, String)> = Vec::new();
     let mut nmodules = 0usize;
+    let mut ndynmods = 0usize;
     let nslots = rng.below(cfg.max_lets + 1);
     for _ in 0..nslots {
         if chance(rng, cfg.p_module) {
@@ -299,6 +307,10 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
             nmodules += 1;
             files.extend(m.files);
             stmts.extend(m.stmts);
+        } else if chance(rng, cfg.p_dynmod) {
+            let n = ndynmods;
+            ndynmods += 1;
+            stmts.extend(modules::gen_dynamic_module(&mut ctx, rng, cfg, &mut stats, n));
         } else if chance(rng, cfg.p_rec) {
             stmts.extend(funcs::gen_rec_lambda(&mut ctx, rng, cfg, &mut stats));
         } else if chance(rng, cfg.p_error_lambda) {
@@ -414,6 +426,7 @@ mod test {
         let mut rng = Rng::new(3);
         let (mut rebind, mut mono, mut collision, mut rec, mut errl, mut module) =
             (0, 0, 0, 0, 0, 0);
+        let mut dynmod = 0;
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -423,6 +436,7 @@ mod test {
             rec += s.rec as usize;
             errl += s.error_lambda as usize;
             module += s.module as usize;
+            dynmod += s.dynamic_module as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
@@ -431,6 +445,7 @@ mod test {
             ("let rec", rec),
             ("error-arm lambda (B5 shape)", errl),
             ("module with interface", module),
+            ("dynamic module", dynmod),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }
