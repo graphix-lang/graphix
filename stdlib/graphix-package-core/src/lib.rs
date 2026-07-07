@@ -1367,6 +1367,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         // must agree — returning the held init unconditionally re-fired
         // it on every wake (soak jul05 items 9/16/29).
         let mut fired = false;
+        let mut resized = false;
         let init = match from[0].update(ctx, event).and_then(|v| T::Collection::select(v))
         {
             None => self.nodes.len(),
@@ -1382,6 +1383,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             Some(a) => {
                 self.arr_present = true;
                 fired = true;
+                resized = true;
                 let vals = a.iter_values().collect::<LPooled<Vec<Value>>>();
                 let init_idx = self.nodes.len();
                 // Grow: bind this slot's "acc" + "x" AND build the node
@@ -1553,7 +1555,22 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         if self.nodes.is_empty() && self.arr_present {
             if fired { self.init.clone() } else { None }
         } else {
-            self.inits.last().and_then(|v| v.clone())
+            match self.inits.last().and_then(|v| v.clone()) {
+                Some(v) => Some(v),
+                // A RESIZE is itself a firing event (the fused loop
+                // re-runs every slot and fires — SlotFlags' `resized`
+                // channel). A SHRINK can leave every remaining slot
+                // quiet (a closed callback whose inputs didn't change),
+                // so the chain gate is empty — emit the held chain
+                // state instead: a quiet slot's `held` IS the value the
+                // re-run computes (its inputs are unchanged). A bottomed
+                // chain has no held tail and stays silent, like the
+                // kernel's tainted carry (soak jul07f — shrink 2→1 in a
+                // [0,2,1,4] size sequence emitted nothing where the JIT
+                // emitted the recomputed fold).
+                None if resized => self.held.last().and_then(|v| v.clone()),
+                None => None,
+            }
         }
     }
 

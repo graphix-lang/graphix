@@ -521,6 +521,29 @@ run!(fold_reactive_size, FOLD_REACTIVE_SIZE, |v: Result<&Value>| {
     }
 });
 
+// The SHRINK sibling: sizes [1, 2, 1, 4] shrink mid-stream. After a
+// shrink every remaining slot is quiet (closed callback), so the chain
+// gate is empty — FoldQ must emit the HELD chain tail (a resize is a
+// firing event; the fused loop re-runs and fires). Pinned at
+// findings/foldq-reactive-size-jul2026/02.
+const FOLD_REACTIVE_SHRINK: &str = r#"
+{
+  let a = array::init(array::iter([1, 2, 1, 4]), |i| i + 1);
+  let f = array::fold(a, 0, |acc, x| acc + 2);
+  array::group(f, |n, _| n == 4)
+}
+"#;
+
+run!(fold_reactive_shrink, FOLD_REACTIVE_SHRINK, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(2), Value::I64(4), Value::I64(2), Value::I64(8)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
 const ARRAY_FOLD1: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
