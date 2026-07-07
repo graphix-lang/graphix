@@ -12,7 +12,16 @@ macro_rules! dirs_builtin {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            const EFFECT: EffectKind = EffectKind::Sync;
+            // NOT `Sync`: these fire ONCE per instance (the `fired`
+            // latch below), so they are not REPLAYABLE — a fused HOF
+            // loop dispatches one DynCall slot instance per element,
+            // and every element after the first got `None` → pend →
+            // the whole map tainted to bottom while the node-walk's
+            // per-slot instances each fired (soak jul07b, the
+            // final-values tier's first catch). Async de-fuses them;
+            // the node-walk's once-per-instance firing is the correct
+            // reactive shape (a constant-like init fire).
+            const EFFECT: EffectKind = EffectKind::Async;
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(

@@ -212,7 +212,11 @@ struct Parse {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // NOT Sync: fires once per instance (the `fired` latch) — not
+    // replayable, so a fused HOF loop's shared DynCall slot instance
+    // would pend after the first element (the sys::dirs class, soak
+    // jul07b). Async de-fuses it.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "args_parse";
 
     fn init<'a, 'b, 'c, 'd>(

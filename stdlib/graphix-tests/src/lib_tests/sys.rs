@@ -10,7 +10,9 @@ const ARGS_EMPTY: &str = r#"
 run!(args_empty, ARGS_EMPTY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a.is_empty(),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
+// ^ None: sys::args is once-latched → Async → de-fused (the sys::dirs
+// class, soak jul07b).
 
 #[tokio::test(flavor = "current_thread")]
 async fn args_injected() -> Result<()> {

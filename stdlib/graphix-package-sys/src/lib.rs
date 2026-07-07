@@ -415,8 +415,12 @@ pub(crate) struct Args {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
-    // Fires once on init with the cmd-line args. Same-cycle output.
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Fires once on init with the cmd-line args — same-cycle output,
+    // but NOT replayable (the `fired` latch), so it must not be Sync:
+    // a fused HOF loop's shared DynCall slot instance would pend after
+    // the first element (the sys::dirs class, soak jul07b). Async
+    // de-fuses it.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_args";
 
     fn init<'a, 'b, 'c, 'd>(
