@@ -854,11 +854,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self,
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
-        // Unused: a lambda VALUE recompiles from spec (below), and its
-        // captures resolve by the alias-into-scope dance — the
-        // recompile path has no remap channel (see the trait doc's
-        // recompile note).
-        _remap: &mut RebindMap,
+        // The id table is unused (a lambda VALUE recompiles from spec,
+        // and its captures resolve by the alias-into-scope dance below)
+        // — only the remap's driving `top_id` is consumed.
+        remap: &mut RebindMap,
     ) -> Node<R, E> {
         // `Lambda::refs` is intentionally empty (a lambda VALUE has no
         // runtime refs until it is applied), so the recompile-default
@@ -904,7 +903,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 }
             }
         }
-        compile(ctx, BitFlags::empty(), self.spec.clone(), scope, self.spec.id)
+        // Recompile under the clone destination's DRIVING top (see
+        // `RebindMap::top_id`) — the same wake-root discipline as the
+        // Sample / ConnectDeref / Deref structural clones. Falls back
+        // to this node's own original top; never `spec.id` (not a
+        // driven top — subscriptions registered under it wake nobody,
+        // soak jul07g fuzz/divergence_000000).
+        let top_id = remap.top_id.unwrap_or(self.top_id);
+        compile(ctx, BitFlags::empty(), self.spec.clone(), scope, top_id)
             .expect("Lambda::clone_rebind recompile failed")
     }
 

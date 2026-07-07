@@ -1,0 +1,21 @@
+// bisect: fusion-mode FIRING bug in the CLONE machinery (the effect
+// itself node-walked — no kernel involved) — soak jul07g
+// fuzz/divergence_000000. The HOF callback contains an infinite
+// self-connect through a reference (`f = |x: &i64| *x <- *x + 1;
+// f(&v)`), so the program NEVER quiesces: interp Timeout is the
+// correct observable. Under fusion it emitted once and went quiet —
+// the per-slot template clone recompiled the callback's `&v` (ByRef
+// has no structural clone_rebind → the trait's recompile default)
+// under `spec().id`, an ExprId the runtime never drives, so the
+// connect's write-back subscription woke a dead top: the loop ran one
+// iteration and died. The fourth+fifth siblings of the
+// Sample/ConnectDeref/Deref wake-root fix, one level up: the
+// recompile-default `clone_rebind` AND `Lambda::clone_rebind` now
+// register under the clone destination's DRIVING top, threaded
+// through `RebindMap::top_id` by every clone initiator (per-slot
+// HOFs, build_fused_template). Post-fix both modes spin forever →
+// Timeout/Timeout agreement; a regression (the loop dying under
+// fusion again) shows as Timeout-vs-Trace and is caught here.
+// mutant: {let a = [i64:1, i64:2]; array::flat_map(a, |x| [{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); array::group}, x + i64:1])}
+// minimized:
+{let a = [f64:0., i64:2]; array::flat_map(a, |x| [{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); array::group}, x + i64:1])}

@@ -921,6 +921,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                         Some(t) => {
                             let scope = self.scope.clone();
                             let mut remap = graphix_compiler::RebindMap::default();
+                            remap.top_id = Some(self.top_id);
                             if let Some(ap) = &self.analysis_pred {
                                 remap.insert(ap.id, id);
                             }
@@ -1415,6 +1416,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                         Some(t) => {
                             let scope = self.scope.clone();
                             let mut remap = graphix_compiler::RebindMap::default();
+                            remap.top_id = Some(self.top_id);
                             if let Some(ap) = &self.analysis_pred {
                                 remap.insert(ap.acc_id, acc_id);
                                 remap.insert(ap.elem_id, elem_id);

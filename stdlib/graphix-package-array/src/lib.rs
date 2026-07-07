@@ -1569,6 +1569,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
                             Some(t) => {
                                 let scope = self.scope.clone();
                                 let mut remap = graphix_compiler::RebindMap::default();
+                                remap.top_id = Some(self.top_id);
                                 if let Some(ap) = &self.analysis_pred {
                                     remap.insert(ap.id, id);
                                 }

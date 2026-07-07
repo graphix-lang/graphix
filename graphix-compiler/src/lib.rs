@@ -389,7 +389,38 @@ atomic_id!(BindId);
 /// every node: re-minted bindings record themselves, `Ref`s resolve
 /// through it (an id not in the table is a capture and passes through
 /// unchanged). See [`Update::clone_rebind`].
-pub type RebindMap = nohash::IntMap<BindId, BindId>;
+///
+/// `top_id` is the DRIVING top of the clone destination — set by the
+/// clone initiator (a per-slot HOF, `build_fused_template`) so
+/// recompile-based clones (`Update::clone_rebind`'s default,
+/// `Lambda::clone_rebind`) register their subtree's runtime
+/// subscriptions (`ref_var`) under a top the runtime actually drives.
+/// Recompiling under the node's own `spec().id` orphaned every wake
+/// the cloned subtree needed: a per-slot callback's connect loop wrote
+/// its variable, the notify went to an undriven top, and the loop ran
+/// once and died under fusion where `--no-fusion` (fresh slot binds
+/// under the real top) looped forever (soak jul07g
+/// fuzz/divergence_000000). `None` (a clone walk nobody parameterized)
+/// falls back to the old spec-id behavior.
+#[derive(Debug, Default)]
+pub struct RebindMap {
+    map: nohash::IntMap<BindId, BindId>,
+    pub top_id: Option<ExprId>,
+}
+
+impl std::ops::Deref for RebindMap {
+    type Target = nohash::IntMap<BindId, BindId>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl std::ops::DerefMut for RebindMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
+}
 
 impl From<u64> for BindId {
     fn from(v: u64) -> Self {
@@ -1070,12 +1101,17 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
             };
             ctx.env.alias_variable(&fresh.lexical, &name, bid);
         }
+        // Register the recompiled subtree's runtime subscriptions under
+        // the clone destination's DRIVING top (see [`RebindMap::top_id`]) —
+        // `spec().id` is not a driven top, so any reactive residue in the
+        // clone (a connect's write-back read, a Deref subscription) would
+        // wake nobody and go permanently quiet.
         compiler::compile(
             ctx,
             enumflags2::BitFlags::empty(),
             self.spec().clone(),
             &fresh,
-            self.spec().id,
+            remap.top_id.unwrap_or_else(|| self.spec().id),
         )
         .expect("clone_rebind: recompile from spec failed")
     }

@@ -1104,6 +1104,7 @@ pub fn build_fused_template<R: Rt, E: UserEvent>(
     // template's feeders keep the ANALYSIS ids — the per-slot
     // clone_rebind seeds {analysis id -> slot id} to redirect them.
     let mut remap = crate::RebindMap::default();
+    remap.top_id = Some(top_id);
     let mut t = pred.clone_rebind(ctx, scope, &mut remap);
     {
         let any: &mut dyn std::any::Any = &mut *t;
