@@ -2553,12 +2553,25 @@ impl JitEnv {
     }
 
     /// Resolve a local BindId-first (exact under shadowing), then by
-    /// name (id-less synthetic locals). Walks back-to-front.
+    /// name — but ONLY to id-LESS (synthetic) locals. A same-named
+    /// local carrying a DIFFERENT real id is a distinct binding: a
+    /// capture whose id missed must fail here (the site Errs and the
+    /// region de-fuses — a perf loss, never a wrong answer), not
+    /// silently read an unrelated variable. The unrestricted fallback
+    /// let a fold callback's captured `x` resolve to the fold ELEMENT
+    /// (which FoldQ name-binds as "x") whenever the capture's
+    /// instantiation id drifted — a nondeterministic wrong VALUE
+    /// (interp 19 / jit 17, soak jul07h fuzz/divergence_000001; the
+    /// same never-by-name discipline as audit-jul2026/03 in
+    /// clone_rebind). Walks back-to-front.
     fn lookup(&self, id: BindId, name: &str) -> Option<&Local> {
         if let Some(l) = self.locals.iter().rev().find(|l| l.bind_id == Some(id)) {
             return Some(l);
         }
-        self.lookup_name(name)
+        self.locals
+            .iter()
+            .rev()
+            .find(|l| l.bind_id.is_none() && l.name.as_str() == name)
     }
 
     /// Resolve a local by name only — for sites with no BindId (string /
