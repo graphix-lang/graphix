@@ -472,6 +472,17 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ## Stdlib package notes
 
+- **`sys::process` draft (PR #13, `unified-fusion-proto`).** Managed child
+  processes live in the opaque `Proc` value and use weak polling plus
+  `kill_on_drop`; the public Graphix API provides `options` and `stdio` named
+  argument constructors. Stdio is an explicit `Pipe`/`Inherit`/`Null` variant
+  and defaults to `Inherit`. The polling task is the sole child reaper; `wait`
+  subscribes to its watch status so concurrent waits and kill-during-wait work.
+  Rust wire conversion uses `netidx-derive`; the one
+  exception is `SpawnOptions.env`, because `immutable_chunkmap::Map` does not
+  implement `FromValue`, so a derived wire struct validates and extracts its
+  `Value::Map`. Shell-based tests are Unix-gated, with `cmd.exe` equivalents
+  for stdout and exit-status behavior on Windows.
 - **GUI** (`graphix-package-gui`, iced 0.14): uses the iced sub-crates directly
   (`iced_core`/`iced_wgpu`/`iced_widget`/…) not the umbrella crate, for
   render-pipeline control. `iced_renderer` needs both `wgpu` and `wgpu-bare`

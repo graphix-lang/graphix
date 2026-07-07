@@ -4,12 +4,10 @@ use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{PBytes, Value};
 use std::sync::Arc;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 
-use crate::{STREAM_WRAPPER, StreamKind, StreamValue, get_stream};
+use crate::{get_stream, wrap_stream, StreamKind};
 
 // ── IoRead ─────────────────────────────────────────────────────
 
@@ -176,12 +174,6 @@ impl EvalCachedAsync for IoFlushEv {
 }
 
 pub(crate) type IoFlush = CachedArgsAsync<IoFlushEv>;
-
-// ── Stdio constructors ────────────────────────────────────────
-
-fn wrap_stream(kind: StreamKind) -> Value {
-    STREAM_WRAPPER.wrap(StreamValue { inner: Arc::new(Mutex::new(Some(kind))) })
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct IoStdinEv;

@@ -44,6 +44,7 @@
   - [sys](./stdlib/sys.md)
     - [io](./stdlib/sys/io.md)
     - [fs](./stdlib/sys/fs.md)
+    - [process](./stdlib/sys/process.md)
     - [tcp](./stdlib/sys/tcp.md)
     - [tls](./stdlib/sys/tls.md)
     - [net](./stdlib/sys/net.md)

@@ -4,14 +4,15 @@ The `sys::io` module provides a unified `Stream` type for all I/O
 operations. The phantom type parameter constrains which stream kind is
 accepted — `sys::fs::open` returns `Stream<\`File>`, `sys::tcp::connect`
 returns `Stream<\`Tcp>`, `sys::tls::connect` returns `Stream<\`Tls>`,
-and `stdin`/`stdout`/`stderr` return `Stream<\`Stdio>`.
+`stdin`/`stdout`/`stderr` return `Stream<\`Stdio>`, and child process
+stdio pipes return `Stream<\`Pipe>`.
 
 ```graphix
 /// An opaque handle to an I/O stream. The phantom type parameter indicates
 /// the underlying stream kind, constraining which operations are valid.
 /// Stream<`File> for files, Stream<`Tcp> for TCP, Stream<`Tls> for TLS,
-/// Stream<`Stdio> for stdin/stdout/stderr.
-type Stream<'a: [`File, `Tcp, `Tls, `Stdio]>;
+/// Stream<`Stdio> for stdin/stdout/stderr, Stream<`Pipe> for child pipes.
+type Stream<'a: [`File, `Tcp, `Tls, `Stdio, `Pipe]>;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
