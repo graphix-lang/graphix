@@ -1,0 +1,26 @@
+// bisect: fusion-mode RESOLUTION bug in the clone machinery,
+// PRE-EXISTING (verified against a pre-jul07 build) — soak jul08a
+// fuzz/divergence_000000. A nested map-of-map whose inner callback
+// streams `filter(array::iter(a), |x| x > 7)` emitted NOTHING under
+// fusion while the node-walk emitted both event waves.
+// `Lambda::clone_rebind`'s capture-alias dance was CONDITIONAL (skip
+// any name that already resolves in the clone scope) — but a per-slot
+// clone scope is rooted in the ARRAY PACKAGE (#168), where `filter`
+// resolves to array::filter, so the alias to the definition env's
+// core `filter` was skipped and the recompiled callback bound the
+// WRONG function: array::filter over iter's element STREAM collects
+// nothing (its input is never an Array), so the callback never
+// produced and the maps never emitted. The same conditional-alias
+// hazard the trait-default clone fixed unconditionally (#5,
+// soak-jul04) — Lambda was the straggler. FIXED: alias every free
+// name to its definition-env binding, resolved through `remap`
+// (slot feeders reach this slot's fresh binding; internal binders
+// re-register during the recompile and shadow the alias). Two
+// sibling fixes rode the same investigation: structural clones adopt
+// `RebindMap::top_id` (c586f3bf — a cloned DynamicUnbound builtin
+// re-binds under the driving top, so async residue's stream wakes a
+// LIVE top), diagnosed with GRAPHIX_DBG-style probes on
+// notify_set/ref_var and a per-MapQ slot-state trace.
+// mutant: {let a = [i64:1, i64:2]; let b = [i64:1, i64:2]; array::map(a, |x| array::map(b, |y| {let a = [i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, `Modify, i64:8]; filter(array::iter(a), |x| x > i64:7)}))}
+// minimized:
+{let a = [f64:0., i64:2]; let b = [i64:1, i64:2]; array::map(a, |x| array::map(b, |y| {let a = [i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, `Modify, i64:8]; filter(array::iter(a), |x| x > i64:7)}))}

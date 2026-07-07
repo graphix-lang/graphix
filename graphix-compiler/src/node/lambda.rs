@@ -890,14 +890,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                         }
                     }
                 });
+                // Alias UNCONDITIONALLY, resolved through `remap` — the
+                // same discipline as the trait-default clone (its comment
+                // records why the old conditional was the #5 soak-jul04
+                // bug). The conditional here ("skip if the name resolves
+                // in the clone scope") had the same failure with MODULE
+                // names: a per-slot clone scope is rooted in the array
+                // package (#168), where a stdlib name like `filter`
+                // resolves — to array::filter — so the alias to the
+                // definition env's binding (core `filter`) was skipped
+                // and the recompiled callback bound the WRONG function: a
+                // nested callback's `filter(array::iter(..), p)` became
+                // array::filter over a STREAM, which collects nothing —
+                // the map emitted NOTHING under fusion (soak jul08a
+                // fuzz/divergence_000000). A slot feeder resolves through
+                // `remap` to THIS slot's fresh binding; internal binders
+                // (params, lets) re-register during the recompile and
+                // shadow the alias, exactly the original scoping.
                 for base in names.iter() {
                     let mp = expr::ModPath::from_iter([base.as_str()]);
-                    if ctx.env.lookup_bind(&scope.lexical, &mp).is_some() {
-                        continue;
-                    }
                     let cap_id =
                         def.env.lookup_bind(&def.scope.lexical, &mp).map(|(_, b)| b.id);
                     if let Some(id) = cap_id {
+                        let id = remap.get(&id).copied().unwrap_or(id);
                         ctx.env.alias_variable(&scope.lexical, base.as_str(), id);
                     }
                 }
