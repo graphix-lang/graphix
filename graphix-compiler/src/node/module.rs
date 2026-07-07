@@ -423,6 +423,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 v => return Some(errf!(ERR_TAG, "unexpected {v}")),
             }
             compiled = true;
+            // Prime the fresh nodes' EXTERNAL refs from `ctx.cached` —
+            // exactly what the lazy `CallSite::bind` does for a
+            // runtime-compiled lambda body. The events that carried
+            // outer-binding values (a stdlib lambda like `str::len`'s
+            // `len`, bound at startup) are long gone, and `Ref::update`
+            // reads only `event.variables`, so without this a
+            // module-level builtin CALL in a dynamically loaded module
+            // never saw its callee value and never fired — while the
+            // module's status still reported success (soak-jul07b's
+            // first dynamic-module findings).
+            let mut refs = Refs::default();
+            for n in self.nodes.iter() {
+                n.refs(&mut refs);
+            }
+            refs.with_external_refs(|id| {
+                if let Some(v) = ctx.cached.get(&id) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        event.variables.entry(id)
+                    {
+                        e.insert(v.clone());
+                    }
+                }
+            });
         }
         let init = event.init;
         if compiled {
