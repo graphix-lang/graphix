@@ -344,3 +344,21 @@ run!(find_empty, FIND_EMPTY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::Null)
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// An OVERSIZE array::init (> MAX_ARRAY_INIT_LEN) bottoms LOCALLY: the
+// node-walk logs and emits nothing for the init while unrelated
+// outputs in the same region still fire, and the JIT's runaway guard
+// must match by riding the #219 taint (a tainted empty placeholder)
+// instead of whole-kernel aborting — item 28's last residual, fixed
+// after soak jul06h re-found it (findings/foldq-empty-overfire-
+// jul2026/02).
+const INIT_RUNAWAY_LOCAL_BOTTOM: &str = r#"
+{
+  array::init(i64:9223372036854775807, |idx: i64| f64:0.);
+  array::fold([i64:2, i64:1, i64:10], i64:42, |acc, x| acc + x)
+}
+"#;
+
+run!(init_runaway_local_bottom, INIT_RUNAWAY_LOCAL_BOTTOM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(55)))
+}; graphix_package_core::testing::FuseExpect::Jit);

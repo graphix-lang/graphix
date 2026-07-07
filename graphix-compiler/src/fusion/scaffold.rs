@@ -752,16 +752,25 @@ where
     let zero_clamp = cx.b.ins().iconst(types::I64, 0);
     let is_neg = cx.b.ins().icmp(IntCC::SignedLessThan, n_widened, zero_clamp);
     let n_val = cx.b.ins().select(is_neg, zero_clamp, n_widened);
-    // Runaway sizes abort the kernel to bottom, at the SAME limit the
-    // node-walk's `array::init` logs+bottoms at (`MAX_ARRAY_INIT_LEN`):
-    // `buf_new(i64:MAX)` would capacity-overflow-panic the result
-    // buffer's reserve across the extern "C" boundary, killing the
-    // process (the negative clamp above only handles the sign).
-    {
+    // Runaway sizes yield a TAINTED empty result (the #219 placeholder
+    // contract) at the SAME limit the node-walk's `array::init`
+    // logs+bottoms at (`MAX_ARRAY_INIT_LEN`): `buf_new(i64:MAX)` would
+    // capacity-overflow-panic the result buffer's reserve across the
+    // extern "C" boundary (the negative clamp above only handles the
+    // sign). The node-walk's bottom is LOCAL — an unrelated output in
+    // the same region still fires — so the former whole-kernel abort
+    // here was a firing divergence (item 28's last residual, re-found
+    // by soak jul06h): clamp the loop to zero and let the TAINT ride
+    // the RESULT, bottoming only its consumers.
+    let n_val = {
         let max = cx.b.ins().iconst(types::I64, crate::node::array::MAX_ARRAY_INIT_LEN);
-        let valid = cx.b.ins().icmp(IntCC::SignedLessThanOrEqual, n_val, max);
-        emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    }
+        let oversize = cx.b.ins().icmp(IntCC::SignedGreaterThan, n_val, max);
+        let stale = cx.b.ins().iconst(types::I64, STALE);
+        let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
+        let synth = cx.b.ins().select(oversize, tainted, stale);
+        taint.fold(cx, synth);
+        cx.b.ins().select(oversize, zero_clamp, n_val)
+    };
     taint.set_len(n_val);
     let call = cx.b.ins().call(buf_new, &[n_val]);
     let buf = cx.b.inst_results(call)[0];

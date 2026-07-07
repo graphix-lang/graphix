@@ -1,0 +1,11 @@
+// bisect: fusion/JIT FIRING divergence — item 28's last residual,
+// re-found by soak jul06h (divergence_000001) after being on the books
+// since jul05. An OVERSIZE `array::init` (> MAX_ARRAY_INIT_LEN)
+// bottoms LOCALLY in the node-walk (logs + emits nothing; the
+// unrelated fold in the same region still fires 55), but the JIT's
+// runaway-length guard whole-kernel ABORTED — nothing fired. FIXED:
+// the guard now clamps the loop to zero and folds TAINT into the
+// result's SlotFlags (the #219 placeholder contract — a tainted empty
+// array), so only CONSUMERS of the init result bottom
+// (fusion/scaffold.rs emit_init_loop).
+{array::init(i64:9223372036854775807, |idx: i64| f64:0.); array::fold([i64:2, i64:1, i64:10], i64:42, |acc, x| acc + x)}
