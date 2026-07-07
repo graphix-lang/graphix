@@ -4498,14 +4498,6 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
-    // Tail position: FORCE the scrutinee up front — a missing scrutinee
-    // bottoms the whole kernel (the tail select IS the kernel result, so
-    // there's no dead-select hazard, unlike value position). The arms
-    // then run on a known-valid scrutinee, so the final-arm miss is
-    // unreachable. `is_untainted` folds to const-true for an untainted
-    // scrutinee, emitting no branch (#219).
-    let valid = is_untainted(cx.b, scrut.disc());
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
     // Fold this scrutinee's firing into the kernel's tail-firing
     // accumulator (see `LowerCtx::tail_scrut_stale`): the arms
     // terminate individually, so the return path is where the
@@ -4516,6 +4508,29 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         let ss = cx.b.ins().band_imm(scrut.disc(), STALE);
         let n = cx.b.ins().band(cur, ss);
         cx.b.def_var(cx.ctx.tail_scrut_stale, n);
+    }
+    // Tail position: a missing (tainted) scrutinee RETURNS the tainted
+    // placeholder early — a value-level bottom. In a callee it rides
+    // back through CALLEE_RESULT_FLAGS and bottoms only the call's
+    // consumers (the node-walk's select-on-⊥ produces nothing for THIS
+    // result only: a recursive callee's depth-tripped tail select used
+    // to emit_bottom_abort here, which the caller escalated to a
+    // whole-kernel abort — soak-jul08c dv1, where the node-walk's fold
+    // recovered from the bottomed init). In a gated parent the return
+    // force bottoms the kernel — the same observable as the abort this
+    // replaces. The arms then run on a known-valid scrutinee, so the
+    // final-arm miss is unreachable.
+    {
+        let valid = is_untainted(cx.b, scrut.disc());
+        let arms_bl = cx.b.create_block();
+        let taint_bl = cx.b.create_block();
+        cx.b.ins().brif(valid, arms_bl, &[], taint_bl, &[]);
+        cx.b.switch_to_block(taint_bl);
+        cx.b.seal_block(taint_bl);
+        let ph = emit_elem_placeholder(cx, ret)?;
+        emit_kernel_return(cx, ret, ph, CompositeSource::Owned)?;
+        cx.b.switch_to_block(arms_bl);
+        cx.b.seal_block(arms_bl);
     }
     emit_select_arms(
         cx,
