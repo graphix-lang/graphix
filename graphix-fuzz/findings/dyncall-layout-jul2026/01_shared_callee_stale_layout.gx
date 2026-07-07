@@ -1,0 +1,25 @@
+// bisect: JIT cache-soundness bug — soak jul07c generate/crash_000000
+// (SIGABRT: "index out of bounds" in dispatch_typed, panic across the
+// JIT FFI boundary → "failed to initiate panic"). The `by_kernel`
+// cache keyed compiled bodies by `(KernelSig ptr, DynCall base)` under
+// the invariant "a callee's lambda-site map is empty" — dead since the
+// #203 cascade resolves callee inner sites: `f0` (no DynCalls of its
+// own → base pinned 0 → SHARED across regions) bakes a CLIF call to
+// `h0`'s FuncId, and `h0` (one DynCall: str::len) gets a DIFFERENT
+// base per region layout. Region A compiled the shared `f0` → it
+// called h0@baseA; region B's combined slot table put h0 elsewhere →
+// f0's stale index ran off region B's table (or, in range, would
+// dispatch the WRONG slot silently). Needs the triangle below: f0
+// called from a select arm (one region), f0 called again in a later
+// statement (second region), plus a region with its own DynCall slots
+// (the cast-select tail) so the layouts differ. FIXED: the cache key
+// carries an interned region LAYOUT id (the ordered (kernel, base)
+// list); identical layouts share, different layouts compile fresh;
+// kernels that bake neither fn_indices nor sibling FuncIds stay
+// layout-independent (layout 0) and share everywhere.
+// mutant: soak jul07c generate/crash_000000 (multi-file)
+// minimized:
+{ let v0: bool = select str::len("a") { i64:2 => true, _ => m0::f0(true) > i64:0 }; let v1 = (m0::f0(false) - i64:7); (cast<f64>(select (u8:100 %? u8:0) { error as _ => u8:100, u8 as n => n })$ + cast<f64>(v1)$) }
+// file-v1: m0.gx
+let h0 = |v0: i64| -> i64 str::len("a");
+let f0 = |v1: bool| -> i64 h0(i64:-100) + (i64:1)

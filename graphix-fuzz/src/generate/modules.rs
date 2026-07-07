@@ -158,7 +158,7 @@ pub(super) fn gen_module(
 pub(super) fn gen_dynamic_module(
     ctx: &mut GenCtx,
     rng: &mut Rng,
-    cfg: &GenCfg,
+    _cfg: &GenCfg,
     stats: &mut GenStats,
     idx: usize,
 ) -> Vec<String> {

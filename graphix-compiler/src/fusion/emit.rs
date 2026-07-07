@@ -338,7 +338,7 @@ impl WrappedKernel {
 // alone aren't unique enough — two distinct programs can both have a
 // binding `foo` with a different fused kernel.
 //
-// The `base` is the SOUNDNESS half of the key (Stage 2 — transitive
+// The `base` is a SOUNDNESS half of the key (Stage 2 — transitive
 // callee builtins). A callee body bakes `iconst(base + local_fn_index)`
 // for each of its DynCalls, where `base` is the callee's offset into the
 // COMBINED region-wide `dyn_slots` table (parent `fn_params` ++ each
@@ -351,6 +351,23 @@ impl WrappedKernel {
 // they still share one compilation across regions; the parent is always
 // base 0 and unique per region.
 //
+// The `layout` id is the OTHER soundness half (soak jul07c
+// generate/crash_000000). Since the #203 cascade resolves a callee's
+// inner call sites, a callee body may bake CLIF calls to SIBLING
+// kernels' FuncIds — and which FuncId a sibling resolves to depends on
+// the whole region's slot layout (`f0` with no DynCalls of its own,
+// pinned at base 0 and shared, called `h0@baseA` from region A's
+// compilation; region B's table put `h0` at a different base, and the
+// shared `f0` body dispatched region A's index into region B's table —
+// OOB panic across the JIT FFI boundary, or a silent wrong-slot
+// dispatch when the stale index happens to be in range). The region's
+// interned layout — the ordered `(kernel ptr, base)` list, parent
+// first — is therefore part of the key: identical layouts resolve every
+// sibling to the same FuncId and may share; different layouts compile
+// fresh. Kernels that bake NEITHER fn_indices nor sibling FuncIds
+// (empty `fn_params`, no non-self lambda sites) are layout-INDEPENDENT
+// and use layout 0 — a true leaf shares one compilation everywhere.
+//
 // (Was a process-global `SHARED_JIT` static before May 2026; moved
 // to per-context to align with the runtime's documented "multiple
 // ExecCtxes can hold different modes without racing on shared
@@ -359,13 +376,20 @@ impl WrappedKernel {
 pub struct Jit {
     ctx: JitCtx,
     /// Per-kernel cache: `(Arc<KernelSig> raw pointer, DynCall base
-    /// offset)` → cached entry. We keep the Arc alive in the entry so
-    /// the raw pointer key stays valid for the lifetime of the ExecCtx.
-    /// Without it, Arc-allocator reuse could land a different KernelSig
-    /// at the same address and we'd return a stale FuncId pointing at
-    /// code with the wrong signature. See the module comment above for
-    /// why `base` is part of the key.
-    by_kernel: BTreeMap<(usize, u32), CachedKernel>,
+    /// offset, interned region layout)` → cached entry. We keep the Arc
+    /// alive in the entry so the raw pointer key stays valid for the
+    /// lifetime of the ExecCtx. Without it, Arc-allocator reuse could
+    /// land a different KernelSig at the same address and we'd return a
+    /// stale FuncId pointing at code with the wrong signature. See the
+    /// module comment above for why `base` and the layout are part of
+    /// the key.
+    by_kernel: BTreeMap<(usize, u32, u32), CachedKernel>,
+    /// Interned region layouts (the ordered `(kernel ptr, base)` list,
+    /// parent first) → layout id. Ids start at 1; 0 is reserved for
+    /// layout-INDEPENDENT kernels (see the module comment). The keyed
+    /// pointers stay valid because every layout's kernels are pinned by
+    /// their `by_kernel` entries' `_kernel` Arcs.
+    layouts: BTreeMap<Vec<(usize, u32)>, u32>,
 }
 
 impl Jit {
@@ -373,7 +397,12 @@ impl Jit {
     /// module + ISA. Returns `Err` if cranelift initialization fails
     /// (rare; only happens if the target ISA isn't supported).
     pub fn new() -> Result<Self> {
-        Ok(Self { ctx: JitCtx::new()?, by_kernel: BTreeMap::new() })
+        Ok(Self { ctx: JitCtx::new()?, by_kernel: BTreeMap::new(), layouts: BTreeMap::new() })
+    }
+
+    fn intern_layout(&mut self, layout: Vec<(usize, u32)>) -> u32 {
+        let next = self.layouts.len() as u32 + 1;
+        *self.layouts.entry(layout).or_insert(next)
     }
 }
 
@@ -524,7 +553,7 @@ fn compile_kernel_with_callees_impl(
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
-    let mut to_define: Vec<(std::sync::Arc<KernelSig>, u32)> = Vec::new();
+    let mut to_define: Vec<(std::sync::Arc<KernelSig>, u32, u32)> = Vec::new();
     let mut defined = 0usize;
     let r = compile_kernel_with_callees_inner(
         jit,
@@ -554,8 +583,8 @@ fn compile_kernel_with_callees_impl(
         // relocation to the undefined symbol, so the stub is
         // load-bearing even though nothing ever calls it (the region
         // wasn't spliced and the cache entry is gone).
-        for (i, (k, base)) in to_define.iter().enumerate() {
-            let key = (std::sync::Arc::as_ptr(k) as usize, *base);
+        for (i, (k, base, layout)) in to_define.iter().enumerate() {
+            let key = (std::sync::Arc::as_ptr(k) as usize, *base, *layout);
             if let Some(entry) = jit.by_kernel.remove(&key)
                 && i >= defined
                 && let Err(se) =
@@ -608,7 +637,7 @@ fn compile_kernel_with_callees_inner(
     kernel: &std::sync::Arc<KernelSig>,
     callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
-    to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32)>,
+    to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
     defined: &mut usize,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
@@ -628,15 +657,42 @@ fn compile_kernel_with_callees_inner(
     // the `(ptr, base)` cache key and the compiled body agree by
     // construction.
     let parent_ptr = kernel_abi::kernel_key(kernel);
+    // The region's layout — the ordered `(ptr, base)` list, parent
+    // first — interned once; each kernel keys on it UNLESS its body is
+    // layout-independent (bakes neither fn_indices nor sibling
+    // FuncIds), which keys on the shared layout 0. See the module
+    // comment on `by_kernel`.
+    let layout_id = {
+        let mut layout: Vec<(usize, u32)> = Vec::with_capacity(callees.len() + 1);
+        layout.push((parent_ptr, 0));
+        for (ptr, _) in callees {
+            if *ptr == parent_ptr {
+                continue;
+            }
+            layout.push((*ptr, emitters.get(ptr).map_or(0, |e| e.fn_index_offset())));
+        }
+        jit.intern_layout(layout)
+    };
+    let layout_of = |k: &std::sync::Arc<KernelSig>| -> u32 {
+        let self_ptr = kernel_abi::kernel_key(k);
+        let ext_sites = emitters.get(&self_ptr).is_some_and(|e| {
+            e.lambda_call_sites().is_some_and(|m| {
+                m.values().any(|info| kernel_abi::kernel_key(&info.kernel) != self_ptr)
+            })
+        });
+        if k.fn_params.is_empty() && !ext_sites { 0 } else { layout_id }
+    };
+    let parent_layout = layout_of(kernel);
     let mut funcids: BTreeMap<usize, (FuncId, Signature)> = BTreeMap::new();
-    let parent_entry = ensure_declared(jit, kernel, 0, to_define, registry)?;
+    let parent_entry = ensure_declared(jit, kernel, 0, parent_layout, to_define, registry)?;
     funcids.insert(parent_ptr, parent_entry.clone());
     for (ptr, k) in callees {
         if *ptr == parent_ptr {
             continue;
         }
         let base = emitters.get(ptr).map_or(0, |e| e.fn_index_offset());
-        let entry = ensure_declared(jit, k, base, to_define, registry)?;
+        let layout = layout_of(k);
+        let entry = ensure_declared(jit, k, base, layout, to_define, registry)?;
         funcids.insert(*ptr, entry);
     }
     // Phase 2 — define each freshly-declared body. Bodies that came
@@ -657,7 +713,7 @@ fn compile_kernel_with_callees_inner(
     // `discover_lambda_calls` records a body for every callee it
     // returns; the check guards the invariant rather than a known
     // path.
-    for (k, base) in to_define.iter() {
+    for (k, base, layout) in to_define.iter() {
         let ptr = std::sync::Arc::as_ptr(k) as usize;
         // The emitter is keyed by pointer identity (it's the same body
         // regardless of base); the `fn_index_offset` it carries (== base)
@@ -672,7 +728,7 @@ fn compile_kernel_with_callees_inner(
         let (strings, values, state_words) =
             define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
         *defined += 1;
-        if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base)) {
+        if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base, *layout)) {
             cached._strings = strings;
             cached._values = values;
             cached.state_words = state_words;
@@ -699,7 +755,7 @@ fn compile_kernel_with_callees_inner(
     // across call sites), so callees' entries stay 0 by construction.
     let state_words = jit
         .by_kernel
-        .get(&(parent_ptr, 0))
+        .get(&(parent_ptr, 0, parent_layout))
         .map(|e| e.state_words)
         .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
     Ok(WrappedKernel {
@@ -724,10 +780,11 @@ fn ensure_declared(
     jit: &mut Jit,
     k: &std::sync::Arc<KernelSig>,
     base: u32,
-    to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32)>,
+    layout: u32,
+    to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
     registry: &AbstractRegistry,
 ) -> Result<(FuncId, Signature)> {
-    let key = (std::sync::Arc::as_ptr(k) as usize, base);
+    let key = (std::sync::Arc::as_ptr(k) as usize, base, layout);
     if let Some(e) = jit.by_kernel.get(&key) {
         return Ok((e.func_id, e.signature.clone()));
     }
@@ -752,7 +809,7 @@ fn ensure_declared(
             state_words: 0,
         },
     );
-    to_define.push((k.clone(), base));
+    to_define.push((k.clone(), base, layout));
     Ok((fid, sig))
 }
 
