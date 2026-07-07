@@ -418,7 +418,12 @@ and every feeder the callback body captures fired).
   contract so fusion binds them as region inputs). `selfcheck`
   (same-mode-vs-itself, 100% required) gates oracle soundness; `rand::`/
   `sys::`/`http::` programs are excluded from divergence recording (async
-  IO races trace quiescence). Soak ops: `GRAPHIX_FUZZ_PAR`,
+  IO races trace quiescence). `detcheck [n] [seed]` is the fusion-shape
+  DETERMINISM gate (#19): every Exact-tier corpus program (+n generated)
+  runs to quiescence in two fresh child processes (fresh ASLR each) with
+  `GRAPHIX_DUMP_CLIF=1`, and the counter-normalized dumps must match — a
+  flap means the compiled shape depends on allocation order somewhere in
+  typing/resolution/fusion. Soak ops: `GRAPHIX_FUZZ_PAR`,
   `GRAPHIX_FUZZ_CORPUS` (separate corpus dir PER campaign — shared dirs
   clobber), and NEVER rebuild while campaigns run. `design/graphix_fuzz.md`.
 - **`FusionStats`** (`fusion/mod.rs`): per-`ExecCtx` compile-time counters
