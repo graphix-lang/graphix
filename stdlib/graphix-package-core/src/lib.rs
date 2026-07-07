@@ -2566,6 +2566,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         if self.args.update(ctx, from, event) {
             match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
+                    // Range guard (the array::init precedent, same
+                    // shared cap): each element is one queued set_var —
+                    // an unbounded range is a synchronous,
+                    // uninterruptible loop and a memory bomb
+                    // (seq(i64::MIN, 4) wedged its evaluator past every
+                    // deadline — soak jul06g). i128: j - i overflows
+                    // i64 for exactly the ranges being rejected.
+                    let e = literal!("SeqError");
+                    if *j as i128 - *i as i128
+                        > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
+                    {
+                        return Some(errf!(
+                            e,
+                            "seq range {i}..{j} exceeds the {} element limit",
+                            graphix_compiler::node::MAX_ARRAY_INIT_LEN
+                        ));
+                    }
                     for v in *i..*j {
                         ctx.rt.set_var(self.id, Value::I64(v));
                     }
