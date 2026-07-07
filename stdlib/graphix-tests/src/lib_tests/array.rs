@@ -495,6 +495,32 @@ run!(fold_into_connect, FOLD_INTO_CONNECT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 });
 
+// A fold whose input array GROWS each cycle (reactive-size init) must
+// re-emit per resize. FoldQ conflated the per-cycle emit gate with the
+// held chain state in `inits`: a resize left the old slots quiet
+// (closed callback — `x` unused), the reset wiped the chain, and the
+// fold went permanently silent after its first emission while the JIT
+// re-ran the loop per resize (soak jul07e, pinned
+// findings/foldq-reactive-size-jul2026/01). The separate `held` vec
+// primes new slots from their predecessor's last produced acc.
+const FOLD_REACTIVE_SIZE: &str = r#"
+{
+  let a = array::init(array::iter([1, 2, 3, 4]), |i| i + 1);
+  let f = array::fold(a, 0, |acc, x| acc + 2);
+  array::group(f, |n, _| n == 4)
+}
+"#;
+
+run!(fold_reactive_size, FOLD_REACTIVE_SIZE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(2), Value::I64(4), Value::I64(6), Value::I64(8)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+});
+
 const ARRAY_FOLD1: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];

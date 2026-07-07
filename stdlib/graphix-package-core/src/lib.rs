@@ -1188,6 +1188,19 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     binds: Vec<BindId>,
     nodes: Vec<Node<R, E>>,
     inits: Vec<Option<Value>>,
+    /// Per-slot HELD accumulator output — the last value slot i actually
+    /// produced. `inits[i]` is the per-cycle EMIT gate (reset to None on
+    /// a quiet slot so a closed callback doesn't re-fire the chain);
+    /// this survives quiet cycles so a GROWTH can prime the first new
+    /// slot's acc from its predecessor's held result (the
+    /// interior-bottom cache-substitute discipline: a prior success is
+    /// never destroyed by a later no-fire). Conflating the two in
+    /// `inits` broke reactive-size folds: a resize left the old slots
+    /// quiet, the reset wiped the chain state, and the fold went
+    /// permanently silent (soak jul07e fuzz/divergence_000000 —
+    /// `fold(init(iter([1,2,3,4]), |i| i+1), 0, |acc, x| acc + 2)`
+    /// emitted once in the node-walk where the JIT emitted per resize).
+    held: Vec<Option<Value>>,
     /// Per-slot accumulator-INPUT bindings, name-bound "acc". Slot i's acc
     /// is fed from slot i-1's result (chain), or `init` for slot 0; the
     /// callback's acc ref resolves "acc" to `accids[i]` per slot.
@@ -1235,6 +1248,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
                     binds: vec![],
                     nodes: vec![],
                     inits: vec![],
+                    held: vec![],
                     accids: vec![],
                     initid: BindId::new(),
                     fid: BindId::new(),
@@ -1436,6 +1450,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                     self.accids.push(acc_id);
                     self.binds.push(elem_id);
                     self.inits.push(None);
+                    self.held.push(None);
                     self.nodes.push(pred);
                 }
                 while a.len() < self.binds.len() {
@@ -1446,6 +1461,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                         ctx.cached.remove(&id);
                     }
                     self.inits.pop();
+                    self.held.pop();
                     if let Some(mut n) = self.nodes.pop() {
                         n.delete(ctx);
                     }
@@ -1496,7 +1512,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                         ctx.cached.insert(self.accids[0], v.clone());
                         e.insert(v);
                     }
-                } else if let Some(v) = self.inits[i - 1].clone() {
+                } else if let Some(v) = self.held[i - 1].clone() {
                     ctx.cached.insert(self.accids[i], v.clone());
                     event.variables.insert(self.accids[i], v);
                 }
@@ -1504,6 +1520,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             match self.nodes[i].update(ctx, event) {
                 Some(v) => {
                     self.inits[i] = Some(v.clone());
+                    self.held[i] = Some(v.clone());
                     // Chain: feed the NEXT slot's accumulator input (+cache
                     // it, so the held acc is available when only that slot's
                     // element fires a later cycle).
@@ -1590,6 +1607,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.init = None;
         for v in &mut self.inits {
+            *v = None
+        }
+        for v in &mut self.held {
             *v = None
         }
         for n in &mut self.nodes {
