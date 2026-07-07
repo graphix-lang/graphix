@@ -334,6 +334,72 @@ async fn main() -> Result<()> {
         // program that kills the evaluator kills only this process
         // (any other status) — the parent records a crash finding.
         // See lib.rs `check_isolated`.
+        // Hidden: the detcheck child (program on stdin; the parent sets
+        // GRAPHIX_DUMP_CLIF=1 and reads the dump from OUR stderr). The
+        // program is DRIVEN to quiescence, not just compiled: per-slot
+        // HOF kernels compile lazily as slots populate at runtime, and
+        // a compile-only child raced the runtime's first cycles against
+        // shutdown — whether those kernels appeared in the dump was a
+        // scheduling coin flip. Driving every epoch to quiescence
+        // saturates the lazy-compile set, which for an Exact-tier
+        // program is a pure function of the text (the parent only feeds
+        // Exact tier). Exit 0 = ran, 3 = compile reject (the reject
+        // message prints to stderr and is part of the compared output —
+        // rejection must be deterministic too), 4 = wall-clock timeout
+        // (the cut is inherently racy; the parent skips the pair).
+        Some("detcheck-one") => {
+            let code = read_stdin()?;
+            match graphix_fuzz::run_program(code.trim(), Mode::Jit, TIMEOUT).await {
+                graphix_fuzz::Outcome::CompileErr(e) => {
+                    eprintln!("COMPILE REJECT: {e}");
+                    std::process::exit(3);
+                }
+                graphix_fuzz::Outcome::Timeout => std::process::exit(4),
+                graphix_fuzz::Outcome::Trace(_)
+                | graphix_fuzz::Outcome::RuntimeErr(_) => std::process::exit(0),
+            }
+        }
+        // The determinism gate: run every Exact-tier corpus finding
+        // (plus N generated programs) in TWO fresh child processes each
+        // — each child gets its own ASLR — and compare normalized CLIF
+        // dumps. Fusion shape must be a pure function of the program
+        // text; a flap here is an allocation-order dependence in
+        // typing/resolution/fusion (the #19 class). Non-Exact tiers are
+        // skipped: IO pacing legitimately varies which slots ever
+        // populate, so their lazy-compile set is not a function of the
+        // text alone.
+        Some("detcheck") => {
+            let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
+            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let mut programs: Vec<(String, String)> = graphix_fuzz::corpus::REGRESSION_CORPUS
+                .iter()
+                .map(|(name, prog)| (name.to_string(), prog.to_string()))
+                .collect();
+            {
+                let mut rng = graphix_fuzz::mutate::Rng::new(seed);
+                for i in 0..n {
+                    programs.push((format!("gen#{i}"), gen_one(&mut rng)));
+                }
+            }
+            let total = programs.len();
+            programs.retain(|(_, prog)| {
+                graphix_fuzz::oracle_tier(prog) == graphix_fuzz::OracleTier::Exact
+            });
+            let skipped = total - programs.len();
+            let flaps = graphix_fuzz::detcheck(programs, TIMEOUT).await;
+            for (name, detail) in &flaps {
+                println!("FLAP {name}: {detail}");
+            }
+            println!(
+                "detcheck: {total} programs ({} corpus + {n} generated, \
+                 {skipped} non-Exact skipped), {} flaps",
+                total - n,
+                flaps.len()
+            );
+            if !flaps.is_empty() {
+                std::process::exit(1);
+            }
+        }
         Some("check-one") => {
             let code = read_stdin()?;
             let status = match check(code.trim(), CAMPAIGN_TIMEOUT).await {

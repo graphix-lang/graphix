@@ -1332,6 +1332,216 @@ async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> 
     }
 }
 
+/// Normalize a CLIF dump for structural comparison ACROSS PROCESSES:
+/// drop log lines, blind pointer-magnitude constants (interned
+/// string/value table addresses, helper addresses — ASLR varies them
+/// per process), and CANONICALIZE ExprIds to first-seen order (the id
+/// counter is global and the runtime-init stdlib compile consumes a
+/// per-process-varying number before the program's own ids, so raw
+/// numbers differ while the structure is identical). What remains is
+/// the structural shape: kernel identity (in canonical order),
+/// instruction sequences, fn_index constants, slot layouts.
+/// Over-blinding a large program LITERAL is harmless — both dumps
+/// blind identically.
+pub fn normalize_clif(s: &str) -> String {
+    let mut ids: AHashMap<String, usize> = AHashMap::new();
+    let mut out = String::with_capacity(s.len());
+    for line in s.lines() {
+        // env_logger lines: `[2026-07-08T...Z LEVEL target] ...`
+        if line.starts_with('[') {
+            continue;
+        }
+        // Canonicalize every per-process COUNTER to first-seen order:
+        // ExprIds (global counter offset by the runtime-init stdlib
+        // compile), FuncIds (`u0:N` — module declaration order), the
+        // wrapper counter (`kir_N`) and lambda ids (`lambda#N`). Raw
+        // numbers differ across processes while the structure is
+        // identical; after canonicalization any remaining difference
+        // is REAL shape drift (a kernel fused in one process and not
+        // the other, a call binding a different callee).
+        let line = &{
+            let mut r = String::with_capacity(line.len());
+            let mut rest = line;
+            'outer: loop {
+                let mut best: Option<(usize, &str)> = None;
+                for pat in ["ExprId(", "u0:", "kir_", "lambda#"] {
+                    if let Some(pos) = rest.find(pat) {
+                        if best.map_or(true, |(b, _)| pos < b) {
+                            best = Some((pos, pat));
+                        }
+                    }
+                }
+                let Some((pos, pat)) = best else {
+                    r.push_str(rest);
+                    break 'outer;
+                };
+                let (pre, tail) = rest.split_at(pos + pat.len());
+                r.push_str(pre);
+                let end = tail
+                    .char_indices()
+                    .find(|(_, c)| !c.is_ascii_digit())
+                    .map(|(i, _)| i)
+                    .unwrap_or(tail.len());
+                if end == 0 {
+                    // pattern not followed by digits — emit as-is
+                    rest = tail;
+                    continue;
+                }
+                let key = format!("{pat}{}", &tail[..end]);
+                let next = ids.len();
+                let k = *ids.entry(key).or_insert(next);
+                r.push_str(&format!("#{k}"));
+                rest = &tail[end..];
+            }
+            r
+        };
+        let mut chars = line.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c == '0' && matches!(chars.peek(), Some((_, 'x'))) {
+                chars.next();
+                let mut n = 0;
+                while let Some(&(_, h)) = chars.peek() {
+                    if h.is_ascii_hexdigit() || h == '_' {
+                        chars.next();
+                        n += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if n >= 8 {
+                    out.push_str("PTR");
+                } else {
+                    let end = chars.peek().map(|&(j, _)| j).unwrap_or(line.len());
+                    out.push_str(&line[i..end]);
+                }
+            } else if c.is_ascii_digit() {
+                let mut n = 1;
+                while let Some(&(_, d)) = chars.peek() {
+                    if d.is_ascii_digit() {
+                        chars.next();
+                        n += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if n >= 9 {
+                    out.push_str("BIGNUM");
+                } else {
+                    let end = chars.peek().map(|&(j, _)| j).unwrap_or(line.len());
+                    out.push_str(&line[i..end]);
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The first line where two normalized dumps disagree, for the flap
+/// report.
+fn first_clif_difference(a: &str, b: &str) -> String {
+    for (i, (la, lb)) in a.lines().zip(b.lines()).enumerate() {
+        if la != lb {
+            return format!("line {}: `{la}` vs `{lb}`", i + 1);
+        }
+    }
+    format!("length: {} vs {} lines", a.lines().count(), b.lines().count())
+}
+
+/// The determinism gate (detcheck): RUN `prog` to quiescence in TWO
+/// fresh child processes — each gets its own ASLR — with
+/// GRAPHIX_DUMP_CLIF=1, and compare the normalized dumps and exit
+/// codes. Fusion SHAPE must be a pure function of the program text
+/// (predictable performance is a core graphix value): any
+/// cross-process difference means an allocation-order/pointer-order
+/// dependence somewhere in typing, static resolution, or fusion — the
+/// #19 class (the stale-layout kernel cache, the by-name clone capture
+/// resolution, and the pointer-ordered callee fn-index assignment all
+/// manifested exactly this way). Driving to quiescence (rather than
+/// compile-only) covers the runtime-lazy per-slot HOF kernels AND
+/// removes the compile-vs-shutdown race that made their dumps a coin
+/// flip. A wall-clock timeout on either side (exit 4) skips the pair —
+/// the cut point is inherently racy. `Some(detail)` = FLAP.
+pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> {
+    async fn compile_child(
+        prog: &str,
+        timeout: Duration,
+    ) -> std::result::Result<(Option<i32>, String), String> {
+        use tokio::io::AsyncWriteExt;
+        let mut cmd = tokio::process::Command::new(child_exe());
+        cmd.arg("detcheck-one")
+            .env("TOKIO_WORKER_THREADS", "2")
+            .env("GRAPHIX_DUMP_CLIF", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(prog.as_bytes()).await;
+        }
+        let deadline = timeout * 2 + Duration::from_secs(30);
+        let out = tokio::time::timeout(deadline, child.wait_with_output())
+            .await
+            .map_err(|_| "HANG (compile)".to_string())?
+            .map_err(|e| format!("wait: {e}"))?;
+        Ok((out.status.code(), normalize_clif(&String::from_utf8_lossy(&out.stderr))))
+    }
+    let (a, b) =
+        tokio::join!(compile_child(prog, timeout), compile_child(prog, timeout));
+    match (a, b) {
+        (Ok((ca, da)), Ok((cb, db))) => {
+            if ca == Some(4) || cb == Some(4) {
+                return None;
+            }
+            if ca != cb {
+                return Some(format!("verdicts differ: {ca:?} vs {cb:?}"));
+            }
+            if da != db {
+                return Some(first_clif_difference(&da, &db));
+            }
+            None
+        }
+        (Err(e), _) | (_, Err(e)) => Some(format!("harness: {e}")),
+    }
+}
+
+/// Run [`detcheck_one_pair`] over `programs`, `parallelism()/2` pairs
+/// in flight (each pair is two children). Returns the flaps.
+pub async fn detcheck(
+    programs: Vec<(String, String)>,
+    timeout: Duration,
+) -> Vec<(String, String)> {
+    use tokio::task::JoinSet;
+    let par = (parallelism() / 2).max(1);
+    let mut set: JoinSet<(String, Option<String>)> = JoinSet::new();
+    let mut next = 0usize;
+    let spawn_one = |set: &mut JoinSet<_>, i: usize| {
+        let (name, prog) = programs[i].clone();
+        set.spawn(async move {
+            let r = detcheck_one_pair(&prog, timeout).await;
+            (name, r)
+        });
+    };
+    while next < programs.len() && set.len() < par {
+        spawn_one(&mut set, next);
+        next += 1;
+    }
+    let mut flaps = Vec::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok((name, Some(detail))) = res {
+            flaps.push((name, detail));
+        }
+        if next < programs.len() {
+            spawn_one(&mut set, next);
+            next += 1;
+        }
+    }
+    flaps
+}
+
 async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(child_exe());
