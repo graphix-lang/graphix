@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v2 = |v0: u8, v1: bool| -> i64 i64:7; let v3: ([string, null], bool) = ("xyz", false); let v4 = (-(select (f64:-1.0 *? f64:2.5) { error as _ => (f64:0.1 - f64:1.0), f64 as n => n })); let v2: [string, null] = null; let rec v2 = |v5: i64| -> i64 select v5 { v6 if v6 <= i64:0 => v6, v6 => v2(v6 - i64:1) }; let v7 = v2(i64:2); array::fold([i64:42, i64:7, i64:42], cast<i64>(u8:1)$, |v8, v9| { let rec v10 = |v11: i64, v12: i64| -> i64 select v11 { i64:0 => v12, _ => v10(v11 - i64:1, v12 + v11) }; (v10(i64:343, i64:0) * i64:0) + (try ((i64:-100 %? i64:2))? catch(e) => v8) }) }
+// minimized:
+array::fold([i64:0, i64:7, i64:42], cast<i64>(u8:1)$, |v8, v9| {let rec v10 = |v11: i64, v12: i64| -> i64 select v11 {i64:0 => v12, _ => v10(v11 - i64:1, v12 + v11)}; (v10(i64:343, i64:0) * i64:0) + (try ((i64:-100 %? i64:2))? catch(e) => v8)})

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [I64(8)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: bool = select array::fold([{"b" => u8:100, "k0" => u8:255}], i64:42, |v0, v1| v0) { _ if (!true) => true, i64:100 if (!false) => (!(!true)), _ => (!(false || true)) }; let v0 = array::fold([i64:-1], cast<i64>(u8:255)$, |v1, v0| { let rec v2 = |v3: i64, v4: i64| -> i64 select v3 { i64:0 => v4, _ => v2(v3 - i64:1, v4 + v3) }; (v2(i64:256, i64:0) * i64:0) + (try ((v0 /? i64:-1))? catch(e) => i64:42) }); let v1: string = "a"; let v2: [u8, null] = select v1 { _ => u8:100 }; [((i64:7 * i64:1) + v0)] }
+// minimized:
+{f64:0.; let v0 = array::fold([i64:-1], cast<i64>(u8:255)$, |v1, v0| {let rec v2 = |v3: i64, v4: i64| -> i64 select v3 {i64:0 => v4, _ => v2(v3 - i64:1, v4 + v3)}; (v2(i64:256, i64:0) * i64:0) + (try ((v0 /? i64:-1))? catch(e) => i64:42)}); let v1: string = "a"; let v2: [u8, null] = select v1 {_ => u8:100}; [((i64:7 * i64:1) + v0)]}
