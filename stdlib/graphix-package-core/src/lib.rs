@@ -2097,20 +2097,27 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_min";
 
+    // VALUE-LEVEL: each argument is compared as a whole value under
+    // graphix's total order — no recursive flattening. The flatten was
+    // a bscript holdover that contradicted the declared type
+    // (`fn(a: 'a, @args: 'a) -> 'a` resolves 'a := Array<i64> for
+    // `min([1,2], [3])` and promises an array back; the flattened
+    // scalar broke the JIT's return ABI — soak jul07b). Eric's ruling
+    // 2026-07-08: the impl does what the type says.
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = None;
-        for v in from.flat_iter() {
+        let mut res: Option<&Value> = None;
+        for v in from.0.iter() {
             match (res, v) {
-                (None, None) | (Some(_), None) => return None,
-                (None, Some(v)) => {
-                    res = Some(v);
-                }
+                (_, None) => return None,
+                (None, Some(v)) => res = Some(v),
                 (Some(v0), Some(v)) => {
-                    res = if v < v0 { Some(v) } else { Some(v0) };
+                    if v < v0 {
+                        res = Some(v)
+                    }
                 }
             }
         }
-        res
+        res.cloned()
     }
 }
 
@@ -2123,20 +2130,21 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_max";
 
+    // VALUE-LEVEL, no flattening — see `MinEv`.
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = None;
-        for v in from.flat_iter() {
+        let mut res: Option<&Value> = None;
+        for v in from.0.iter() {
             match (res, v) {
-                (None, None) | (Some(_), None) => return None,
-                (None, Some(v)) => {
-                    res = Some(v);
-                }
+                (_, None) => return None,
+                (None, Some(v)) => res = Some(v),
                 (Some(v0), Some(v)) => {
-                    res = if v > v0 { Some(v) } else { Some(v0) };
+                    if v > v0 {
+                        res = Some(v)
+                    }
                 }
             }
         }
-        res
+        res.cloned()
     }
 }
 

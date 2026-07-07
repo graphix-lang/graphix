@@ -237,6 +237,33 @@ run!(divide, DIVIDE, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// min/max are VALUE-LEVEL (Eric's ruling 2026-07-08): each argument
+// compares as a whole value under graphix's total order — the old
+// recursive flatten was a bscript holdover that contradicted the
+// declared type (`min([1,2],[3])` promised an Array and returned a
+// scalar, breaking the JIT return ABI — soak jul07b).
+const MIN_VALUE_LEVEL: &str = r#"
+   min([1, 9], [3, 4])
+"#;
+
+run!(min_value_level, MIN_VALUE_LEVEL, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(9)]),
+        _ => false,
+    }
+});
+
+const MAX_VALUE_LEVEL: &str = r#"
+   max([1, 9], [3, 4])
+"#;
+
+run!(max_value_level, MAX_VALUE_LEVEL, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(4)]),
+        _ => false,
+    }
+});
+
 const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
 "#;
