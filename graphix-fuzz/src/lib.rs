@@ -544,8 +544,21 @@ pub enum OracleTier {
 pub fn oracle_tier(code: &str) -> OracleTier {
     // Value-nondeterministic sources: random values, wall-clock time
     // (timers deliver it, `now()` returns it), generated temp paths,
-    // netidx registration timing.
-    if ["rand::", "sys::time", "sys::net", "tempdir"].iter().any(|m| code.contains(m)) {
+    // netidx registration timing, and OS-assigned socket addresses
+    // (generated programs bind port 0, so the addr getters read back
+    // an ephemeral port — the same environmental-value leak as a
+    // tempdir path; soak jul08d found `local_addr(s)? <= addr` as a
+    // coin flip that passed the interp-self-agreement filter).
+    let excluded = [
+        "rand::",
+        "sys::time",
+        "sys::net",
+        "tempdir",
+        "listener_addr",
+        "local_addr",
+        "peer_addr",
+    ];
+    if excluded.iter().any(|m| code.contains(m)) {
         return OracleTier::Excluded;
     }
     if ["sys::", "http::"].iter().any(|m| code.contains(m)) {
@@ -571,9 +584,23 @@ impl Divergence {
     /// there's no interpreter-only mode to bisect against) produced a
     /// different result from the canonical node-walk.
     pub fn bisect(&self) -> &'static str {
-        match self.tier {
-            OracleTier::FinalValues => "fusion/JIT bug (final values, interp != jit)",
-            _ => "fusion/JIT bug (interp != jit)",
+        match (&self.interp, &self.jit) {
+            // Survived check()'s 8x interp retry: either the JIT
+            // fabricated a value the reference never produces (a real
+            // bug), or the node-walk is >8x-budget slower on a heavy
+            // terminating program (the accepted perf gap — soak jul06g,
+            // jul08d fib(33)). Verify by hand: run the node-walk
+            // unbudgeted and compare its value.
+            (Outcome::Timeout, Outcome::Trace(t))
+                if t.epochs.iter().any(|e| !e.events.is_empty()) =>
+            {
+                "asymmetric timeout (interp exceeded 8x budget; JIT produced a value — \
+                 verify the node-walk terminates and agrees before reading this as a JIT bug)"
+            }
+            _ => match self.tier {
+                OracleTier::FinalValues => "fusion/JIT bug (final values, interp != jit)",
+                _ => "fusion/JIT bug (interp != jit)",
+            },
         }
     }
 }
@@ -1489,8 +1516,7 @@ pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> 
             .map_err(|e| format!("wait: {e}"))?;
         Ok((out.status.code(), normalize_clif(&String::from_utf8_lossy(&out.stderr))))
     }
-    let (a, b) =
-        tokio::join!(compile_child(prog, timeout), compile_child(prog, timeout));
+    let (a, b) = tokio::join!(compile_child(prog, timeout), compile_child(prog, timeout));
     match (a, b) {
         (Ok((ca, da)), Ok((cb, db))) => {
             if ca == Some(4) || cb == Some(4) {
@@ -1811,6 +1837,23 @@ async fn run_pool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addr_getters_are_excluded_tier() {
+        // OS-assigned ephemeral ports (port-0 binds) leak into values
+        // through the addr getters — soak jul08d recorded
+        // `local_addr(server)? <= addr` as a phantom divergence (a coin
+        // flip that happened to pass the interp-self-agreement filter).
+        for getter in ["listener_addr", "local_addr", "peer_addr"] {
+            let prog = format!("{{let a = sys::tcp::{getter}(s)?; a}}");
+            assert_eq!(oracle_tier(&prog), OracleTier::Excluded);
+        }
+        // Plain tcp IO without addr readback keeps final-value coverage.
+        assert_eq!(
+            oracle_tier("sys::tcp::connect(\"127.0.0.1:5000\")"),
+            OracleTier::FinalValues
+        );
+    }
 
     #[test]
     fn crash_key_sign_fold() {
