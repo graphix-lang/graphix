@@ -160,3 +160,9 @@ members = [
     "stdlib/graphix-tests",
     "ide/tree-sitter-graphix"
 ]
+
+# Local immutable-chunkmap with the deep-nesting drop guard (Node::drop
+# re-entrancy deferral) until 2.2 is published — see the netidx-value
+# deep-value work (arbitrary value nesting must not overflow the stack).
+[patch.crates-io]
+immutable-chunkmap = { path = "../immutable-chunkmap" }

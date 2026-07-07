@@ -24,7 +24,16 @@ def read_workspace():
     with open(ROOT / "Cargo.toml", "rb") as f:
         root = tomllib.load(f)
     ws = root.get("workspace", {})
-    return ws.get("dependencies", {}), ws.get("members", [])
+    # [patch.crates-io] path entries replace registry crates with local
+    # checkouts; cargo vendor skips them (they resolve as path deps), so
+    # they must ride the external-path-dep pass or the vendored registry
+    # replacement is missing the crate entirely.
+    patches = {
+        name: dep
+        for name, dep in root.get("patch", {}).get("crates-io", {}).items()
+        if isinstance(dep, dict) and "path" in dep
+    }
+    return ws.get("dependencies", {}), ws.get("members", []), patches
 
 
 def format_toml_value(v):
@@ -265,7 +274,7 @@ def vendor_external_path_deps(ws_deps, vendor_dir):
 
 
 def main():
-    ws_deps, members = read_workspace()
+    ws_deps, members, patches = read_workspace()
     vendor_dir = ROOT / "vendor"
 
     # Step 1: cargo vendor for crates.io deps
@@ -285,8 +294,9 @@ def main():
     for member in members:
         vendor_workspace_member(member, ws_deps, vendor_dir)
 
-    # Step 3: vendor external path deps (e.g. netidx)
-    vendor_external_path_deps(ws_deps, vendor_dir)
+    # Step 3: vendor external path deps (e.g. netidx) and
+    # [patch.crates-io] path overrides (e.g. a local immutable-chunkmap)
+    vendor_external_path_deps({**ws_deps, **patches}, vendor_dir)
 
     # Step 4: write .cargo/config.toml
     cargo_dir = ROOT / ".cargo"

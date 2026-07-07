@@ -1,0 +1,25 @@
+// bisect: RUNTIME-KILLER, fixed in netidx-value + immutable_chunkmap
+// (soaks jul07c/d/e, crash_00000x — kept unpromoted until fixed). A
+// self-referential connect grows array nesting one level per cycle at
+// full cycle speed; every recursive Value operation then overflowed
+// the Rust stack at ~20-40k levels (a few MB of heap — far below any
+// OOM): ValArrayBase::drop at teardown, chunkmap Node::drop for map
+// nesting, and eq/hash/Display/Pack while tracing — SIGABRT, whole
+// process dead. The same recursion made cons-style recursive ADTs
+// (depth = list LENGTH) undroppable at ~100k elements, and Pack
+// DECODE was a remote crash surface (nesting arrives from the wire).
+// FIXED (Eric's ruling 2026-07-08, full sweep): re-entrancy-guarded
+// deferred drops (ValArrayBase::drop; chunkmap Node::drop, local
+// patch until 2.2 publishes) + iterative eq/ord/hash (op.rs), Display
+// (print.rs), and Pack encoded_len/encode/decode (wire format
+// unchanged; decode builds via heap construction frames). Pinned by
+// netidx-value's deep_value_operations_bounded_stack (200k levels ×
+// array/map/mixed × every op on a 1MiB stack) and chunkmap's
+// test_deeply_nested_map_drop; THIS entry pins the graphix-level
+// observable: the runaway program is a normal non-productive run
+// (both modes grow until the harness cap — agreement), not a process
+// abort. Known-remaining recursive paths: derived Debug, serde
+// derive, the value-literal parser.
+// mutant: soak jul07c fuzz/crash_000001
+// minimized:
+{let a = [i64:100, null, i64:3, i64:4]; a <- [i64:5, i64:6, a, sys::fs::tempdir::create]; let clock: Any = let tm = sys::time::timer(duration:0.05s, false); let v = array::iterq(#clock, a); clock <- v; filter(v, |x| x == i64:8)}
