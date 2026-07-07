@@ -326,36 +326,53 @@ async fn main() -> Result<()> {
             }
         }
         // Hidden: the isolated-check worker the campaign pool spawns
-        // (program on stdin, one VERDICT line on stdout). A program that
-        // kills the evaluator kills only this process — the parent
-        // records a crash finding. See lib.rs `check_isolated`.
+        // (program on stdin). The verdict rides the EXIT CODE (0 =
+        // agree, 10 = diverge), NOT stdout: the program under test can
+        // write to stdout itself (`sys::io::stdout`) and corrupt any
+        // in-band line protocol — a write_exact mutant read as "no
+        // VERDICT line" and recorded a false crash (soak jul06g). A
+        // program that kills the evaluator kills only this process
+        // (any other status) — the parent records a crash finding.
+        // See lib.rs `check_isolated`.
         Some("check-one") => {
             let code = read_stdin()?;
-            let verdict = match check(code.trim(), CAMPAIGN_TIMEOUT).await {
-                None => "AGREE",
-                Some(_) => "DIVERGE",
+            let status = match check(code.trim(), CAMPAIGN_TIMEOUT).await {
+                None => 0,
+                Some(_) => 10,
             };
-            println!("VERDICT\t{verdict}");
+            std::process::exit(status);
         }
-        // Hidden: the isolated selfcheck worker (program on stdin, one
-        // `SELFCHECK\t<mode>` line per flaky mode on stdout). Child-per-
-        // subject keeps the deliberate JIT leak from accumulating in the
-        // gate process — see lib.rs `selfcheck_isolated`.
+        // Hidden: the isolated selfcheck worker (program on stdin;
+        // verdict in the EXIT CODE for the same stdout-pollution
+        // reason: 0 = clean, 40+mask with bit 1 = interp flaky, bit 2 =
+        // jit flaky). Child-per-subject keeps the deliberate JIT leak
+        // from accumulating in the gate process — see lib.rs
+        // `selfcheck_isolated`.
         Some("selfcheck-one") => {
             let code = read_stdin()?;
+            let mut mask = 0;
             for mode in graphix_fuzz::selfcheck_one(code.trim(), TIMEOUT).await {
-                println!("SELFCHECK\t{mode}");
+                match mode {
+                    "interp" => mask |= 1,
+                    "jit" => mask |= 2,
+                    _ => mask |= 3,
+                }
             }
+            std::process::exit(if mask == 0 { 0 } else { 40 + mask });
         }
         // Hidden: the isolated minimizer (program on stdin, the reduced
-        // program after a MINIMIZED marker on stdout). A reduction that
-        // crashes kills only this process — the parent falls back to
-        // recording the unminimized mutant.
+        // program written to the FILE named by the extra argument —
+        // stdout can be polluted by the programs the minimizer runs). A
+        // reduction that crashes kills only this process — the parent
+        // falls back to recording the unminimized mutant.
         Some("minimize-one") => {
+            let out_path = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("minimize-one requires an output path"))?;
             let code = read_stdin()?;
             let (min, _) = minimize(code.trim(), CAMPAIGN_TIMEOUT, 80).await;
-            println!("MINIMIZED");
-            println!("{min}");
+            std::fs::write(&out_path, min)?;
         }
         Some(cmd @ ("generate" | "fuzz")) => {
             // `iters` may be `forever`/`0` to run until killed, surfacing new

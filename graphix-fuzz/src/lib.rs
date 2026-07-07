@@ -598,6 +598,25 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     if interp.agrees_with_at(&jit, tier) {
         return None;
     }
+    // Reference-side Timeout with a VALUE-BEARING jit trace: as likely
+    // "the node-walk is orders of magnitude slower than native on a
+    // heavy but terminating program" (the quasi-polynomial
+    // `fib(n-1)/fib(n/2)` tree finished instantly under the JIT and
+    // wedged the interp — soak jul06g) as a wrongly-terminating JIT.
+    // Escalate: retry interp once at 8x the budget (fits the isolated
+    // child's outer deadline of timeout*4+30s); completion + agreement
+    // clears it. Still-Timeout keeps the finding — a JIT that
+    // fabricates a value for a program the reference can't finish
+    // deserves eyes. (An EMPTY jit trace against a Timeout is the
+    // both-non-productive class, already agreed above.)
+    if matches!(&interp, Outcome::Timeout)
+        && matches!(&jit, Outcome::Trace(t) if t.epochs.iter().any(|e| !e.events.is_empty()))
+    {
+        let slow = run_program(code, Mode::Interp, timeout * 8).await;
+        if slow.agrees_with_at(&jit, tier) {
+            return None;
+        }
+    }
     // Suspected divergence — but first rule out nondeterminism: a value
     // whose identity/Display isn't deterministic (a lambda or abstract
     // value's id, a leaked environmental value the tier markers missed)
@@ -1302,18 +1321,15 @@ async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> 
         // it rather than dropping the subject silently.
         Ok(Err(_)) | Err(_) => return vec!["crash"],
     };
-    if !out.status.success() {
-        return vec!["crash"];
+    // Verdict in the EXIT CODE (stdout is program-pollutable): 0 =
+    // clean, 40+mask flags the flaky modes.
+    match out.status.code() {
+        Some(0) => Vec::new(),
+        Some(41) => vec!["interp"],
+        Some(42) => vec!["jit"],
+        Some(43) => vec!["interp", "jit"],
+        _ => vec!["crash"],
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout
-        .lines()
-        .filter_map(|l| match l.strip_prefix("SELFCHECK\t") {
-            Some("interp") => Some("interp"),
-            Some("jit") => Some("jit"),
-            _ => None,
-        })
-        .collect()
 }
 
 async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
@@ -1353,52 +1369,62 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
         // Future dropped → kill_on_drop reaps the child.
         Err(_) => return PoolResult::Crash("HANG (outer deadline)".into()),
     };
-    if !out.status.success() {
-        // Include the child's last stderr lines — the std stack-overflow
-        // handler / panic hook message is the triage signal that
-        // distinguishes "node-walk overflow (known class)" from "SIGSEGV
-        // in JIT'd frames (real codegen bug, prints nothing)".
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let tail: Vec<&str> = stderr.lines().rev().take(2).collect();
-        let mut status = out.status.to_string();
-        for l in tail.into_iter().rev() {
-            status.push_str(" | ");
-            status.push_str(l);
-        }
-        return PoolResult::Crash(status);
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    match stdout.lines().rev().find_map(|l| l.strip_prefix("VERDICT\t")) {
-        Some("AGREE") => PoolResult::Agree,
+    // The verdict is the EXIT CODE (0 = agree, 10 = diverge): a line
+    // protocol on stdout is corruptible by the program under test
+    // (sys::io::stdout — soak jul06g false crash). Anything else is a
+    // crash.
+    match out.status.code() {
+        Some(0) => PoolResult::Agree,
         // The child proved the program diverges WITHOUT dying, so an
         // in-process re-check of the SAME program is safe — re-run it
         // here to get the full Divergence for the record pipeline.
-        Some("DIVERGE") => match check(prog, timeout).await {
+        Some(10) => match check(prog, timeout).await {
             Some(d) => PoolResult::Diverge(d),
             // Flaky (borderline timeout) — drop it rather than record
             // an unreproducible finding.
             None => PoolResult::Agree,
         },
-        _ => PoolResult::Crash(format!("no VERDICT line ({})", out.status)),
+        _ => {
+            // Include the child's last stderr lines — the std
+            // stack-overflow handler / panic hook message is the triage
+            // signal that distinguishes "node-walk overflow (known
+            // class)" from "SIGSEGV in JIT'd frames (real codegen bug,
+            // prints nothing)".
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(2).collect();
+            let mut status = out.status.to_string();
+            for l in tail.into_iter().rev() {
+                status.push_str(" | ");
+                status.push_str(l);
+            }
+            PoolResult::Crash(status)
+        }
     }
 }
 
 /// Minimize a diverging program in a CHILD process (`graphix-fuzz
-/// minimize-one`: program on stdin, the reduced program after a
-/// `MINIMIZED` marker line on stdout). Minimization is the one place a
-/// proven-non-crashing divergence can still kill the evaluator: a
-/// REDUCTION may itself be a crasher (e.g. dropping a recursive
-/// function's base case → runaway), and the minimizer checks candidates
-/// in-process. `None` = the child died or wedged — the caller records
-/// the unminimized mutant instead (a finding is never lost to the
-/// minimizer).
+/// minimize-one <out-path>`: program on stdin, the reduced program
+/// written to `<out-path>` — NOT stdout, which the programs the
+/// minimizer runs can pollute with their own writes). Minimization is
+/// the one place a proven-non-crashing divergence can still kill the
+/// evaluator: a REDUCTION may itself be a crasher (e.g. dropping a
+/// recursive function's base case → runaway), and the minimizer checks
+/// candidates in-process. `None` = the child died or wedged — the
+/// caller records the unminimized mutant instead (a finding is never
+/// lost to the minimizer).
 async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     use tokio::io::AsyncWriteExt;
+    let out_path = std::env::temp_dir().join(format!(
+        "graphix-fuzz-min-{}-{}",
+        std::process::id(),
+        MIN_OUT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let mut cmd = tokio::process::Command::new(child_exe());
     cmd.arg("minimize-one")
+        .arg(&out_path)
         .env("TOKIO_WORKER_THREADS", "2")
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     let mut child = cmd.spawn().ok()?;
@@ -1409,15 +1435,22 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     // per-mode timeout — bound it generously, the minims pool is
     // concurrent and a kill falls back to the unminimized mutant.
     let deadline = timeout * 2 * 80 + Duration::from_secs(60);
-    let out = match tokio::time::timeout(deadline, child.wait_with_output()).await {
-        Ok(Ok(out)) if out.status.success() => out,
-        _ => return None,
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let (_, min) = stdout.split_once("MINIMIZED\n")?;
-    let min = min.trim();
-    if min.is_empty() { None } else { Some(min.to_string()) }
+    let ok = matches!(
+        tokio::time::timeout(deadline, child.wait_with_output()).await,
+        Ok(Ok(out)) if out.status.success()
+    );
+    let min = if ok { std::fs::read_to_string(&out_path).ok() } else { None };
+    let _ = std::fs::remove_file(&out_path);
+    let min = min.map(|m| m.trim().to_string());
+    match min {
+        Some(m) if !m.is_empty() => Some(m),
+        _ => None,
+    }
 }
+
+/// Uniquifies `minimize_isolated`'s per-child output files (parallel
+/// minimizations in one campaign process).
+static MIN_OUT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Worker pool. Keeps `parallelism()` oracle checks in flight over fresh
 /// programs from `next_prog`. Checks run in ISOLATED child processes by
