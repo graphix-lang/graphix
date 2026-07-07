@@ -4882,8 +4882,20 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     let call = cx.b.ins().call(finalize, &[buf]);
     let payload = cx.b.inst_results(call)[0];
     // The composite fires iff any field fired → STALE = AND(field stales).
+    // ZERO fields (`[]`) is a constant: fires at init only, like
+    // `emit_const_node` — the bare ARRAY disc read as fired-every-
+    // invocation, so an empty literal feeding a HOF re-fired the HOF's
+    // `src_fired ∧ empty` rule on every unrelated kernel input event
+    // (soak jul07d divergence_000000: a dead select arm's captured
+    // async feeder re-fired `find([], …)` through the enclosing map —
+    // interp 1, jit 5).
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-    let disc = propagate_flags(cx.b, disc, &field_discs);
+    let disc = if field_discs.is_empty() {
+        let init = cx.init_flag();
+        const_stale_gate(cx.b, init, disc)
+    } else {
+        propagate_flags(cx.b, disc, &field_discs)
+    };
     Ok(CompiledExpr::new(disc, payload))
 }
 
