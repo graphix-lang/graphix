@@ -1447,6 +1447,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 Arg { id: new_id, node, is_default: arg.is_default },
             );
         }
+        // The clone lives under the destination's DRIVING top when the
+        // initiator provided one (`RebindMap::top_id`) — the top this
+        // clone's registrations use, and the top a re-bind of a
+        // DynamicUnbound callee passes to `BuiltIn::init` (an async
+        // builtin like `array::iter` registers its stream variable
+        // there; an analysis-built tree's original top was never
+        // driven, so the stream woke nothing — soak jul08a
+        // fuzz/divergence_000000, the nested-HOF async residue).
+        let top_id = remap.top_id.unwrap_or(self.top_id);
         let arg_refs: Vec<Node<R, E>> = self
             .arg_refs
             .iter()
@@ -1455,12 +1464,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     .downcast_ref::<Ref>()
                     .expect("arg_ref must be a Ref");
                 let id = id_remap.get(&old.id).copied().unwrap_or(old.id);
-                ctx.rt.ref_var(id, self.top_id);
+                ctx.rt.ref_var(id, top_id);
                 Box::new(Ref {
                     spec: old.spec.clone(),
                     typ: old.typ.clone(),
                     id,
-                    top_id: self.top_id,
+                    top_id,
                 }) as Node<R, E>
             })
             .collect();
@@ -1516,7 +1525,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             callee,
             flags: self.flags,
             scope: self.scope.clone(),
-            top_id: self.top_id,
+            top_id,
             is_self_tail_call: AtomicBool::new(
                 self.is_self_tail_call.load(Ordering::Relaxed),
             ),

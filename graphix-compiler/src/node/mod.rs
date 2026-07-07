@@ -1027,20 +1027,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         scope: &Scope,
         remap: &mut RebindMap,
     ) -> Node<R, E> {
-        // Structural clone registered under the ORIGINAL driving
-        // `top_id` — the same wake-root fix as [`Sample`]'s override
-        // (the default recompile passed spec().id, waking a root
-        // nobody drives in a per-slot HOF clone). The deref'd source
-        // remaps through the table (a per-slot ref cell gets a fresh
-        // id); absent = a capture, kept as-is.
+        // Structural clone registered under the clone destination's
+        // DRIVING top (`RebindMap::top_id`), falling back to this
+        // node's original — the same wake-root discipline as
+        // [`Sample`]'s override (see its comment; an analysis-built
+        // tree's "original" top was never driven, soak jul08a). The
+        // deref'd source remaps through the table (a per-slot ref cell
+        // gets a fresh id); absent = a capture, kept as-is.
+        let top_id = remap.top_id.unwrap_or(self.top_id);
         let src_id = remap.get(&self.src_id).copied().unwrap_or(self.src_id);
-        ctx.rt.ref_var(src_id, self.top_id);
+        ctx.rt.ref_var(src_id, top_id);
         Box::new(Self {
             spec: self.spec.clone(),
             rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope, remap)),
             src_id,
             target_id: None,
-            top_id: self.top_id,
+            top_id,
         })
     }
 
@@ -1320,20 +1322,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         remap: &mut RebindMap,
     ) -> Node<R, E> {
         // Structural clone with a fresh internal wake-up id registered
-        // under the ORIGINAL driving `top_id`. The default recompile
-        // passed `spec().id` as top_id, so a per-slot HOF clone's
-        // `set_var(self.id, ..)` woke a root nobody drives — the sample
-        // never delivered and the slot never advanced (soak finding
-        // corpus-fuzz/divergence_000046: `group(iter(a) ~ x, ..)` in a
-        // filter_map callback emitted nothing under jit).
+        // under the clone destination's DRIVING top (`RebindMap::top_id`,
+        // set by the per-slot initiator), falling back to this node's
+        // original top. The default recompile once passed `spec().id` as
+        // top_id, so a per-slot HOF clone's `set_var(self.id, ..)` woke a
+        // root nobody drives — the sample never delivered and the slot
+        // never advanced (soak finding corpus-fuzz/divergence_000046) —
+        // and keeping the ORIGINAL top has the same failure one level up
+        // when the cloned tree was itself built in an ANALYSIS context
+        // (its "original" top was never driven — soak jul08a
+        // fuzz/divergence_000000, the nested-HOF async residue).
+        let top_id = remap.top_id.unwrap_or(self.top_id);
         let id = BindId::new();
-        ctx.rt.ref_var(id, self.top_id);
+        ctx.rt.ref_var(id, top_id);
         Box::new(Self {
             spec: self.spec.clone(),
             triggered: 0,
             typ: self.typ.clone(),
             id,
-            top_id: self.top_id,
+            top_id,
             trigger: self.trigger.clone_rebind(ctx, scope, remap),
             arg: Cached::new(self.arg.node.clone_rebind(ctx, scope, remap)),
         })

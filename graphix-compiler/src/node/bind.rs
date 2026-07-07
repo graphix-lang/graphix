@@ -416,14 +416,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         // NEVER by name — the walk threads one flat scope, so a name
         // lookup conflates lexically-distinct same-named bindings (a
         // local aliased to a cloned callee's parameter,
-        // audit-jul2026/03).
+        // audit-jul2026/03). The subscription registers under the clone
+        // destination's DRIVING top when the initiator provided one
+        // (`RebindMap::top_id`) — an analysis-built tree's original top
+        // was never driven (soak jul08a).
+        let top_id = remap.top_id.unwrap_or(self.top_id);
         let new_id = remap.get(&self.id).copied().unwrap_or(self.id);
-        ctx.rt.ref_var(new_id, self.top_id);
+        ctx.rt.ref_var(new_id, top_id);
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
             id: new_id,
-            top_id: self.top_id,
+            top_id,
         })
     }
 }
@@ -629,21 +633,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         scope: &Scope,
         remap: &mut RebindMap,
     ) -> Node<R, E> {
-        // Structural clone under the ORIGINAL driving `top_id` — the
-        // third sibling of the Sample / ConnectDeref wake-root fix (the
-        // default recompile passed spec().id, so a per-slot HOF clone's
-        // `*r` subscribed a root nobody drives and the counter's writes
-        // never woke it — soak jul04 finding 1). `id: None`: the
-        // runtime wake-up registers LAZILY in `update` when the child
-        // delivers the ref id, now under this clone's own view of
-        // `top_id` (the clone's first dispatch is init-forced, so the
-        // child re-emits its cached ByRef id immediately).
+        // Structural clone under the clone destination's DRIVING top
+        // (`RebindMap::top_id`), falling back to this node's original —
+        // the wake-root discipline shared with Sample / ConnectDeref
+        // (see Sample's comment: spec().id was never driven, and an
+        // analysis-built tree's "original" top wasn't either — soak
+        // jul08a). `id: None`: the runtime wake-up registers LAZILY in
+        // `update` when the child delivers the ref id, now under this
+        // clone's own view of `top_id` (the clone's first dispatch is
+        // init-forced, so the child re-emits its cached ByRef id
+        // immediately).
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
             child: self.child.clone_rebind(ctx, scope, remap),
             id: None,
-            top_id: self.top_id,
+            top_id: remap.top_id.unwrap_or(self.top_id),
         })
     }
 }
