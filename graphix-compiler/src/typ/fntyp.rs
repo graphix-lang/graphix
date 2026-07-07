@@ -393,23 +393,24 @@ impl Default for FnType {
 }
 
 impl FnType {
-    pub(super) fn normalize(&self) -> Self {
+    pub(super) fn normalize_int(&self, seen: &mut IntSet<usize>) -> Self {
         let Self { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids } =
             self;
-        let args = Arc::from_iter(
-            args.iter()
-                .map(|a| FnArgType { kind: a.kind.clone(), typ: a.typ.normalize() }),
-        );
-        let vargs = vargs.as_ref().map(|t| t.normalize());
-        let rtype = rtype.normalize();
+        let args =
+            Arc::from_iter(args.iter().map(|a| FnArgType {
+                kind: a.kind.clone(),
+                typ: a.typ.normalize_int(seen),
+            }));
+        let vargs = vargs.as_ref().map(|t| t.normalize_int(seen));
+        let rtype = rtype.normalize_int(seen);
         let constraints = Arc::new(RwLock::new(
             constraints
                 .read()
                 .iter()
-                .map(|(tv, t)| (tv.clone(), t.normalize()))
+                .map(|(tv, t)| (tv.clone(), t.normalize_int(seen)))
                 .collect(),
         ));
-        let throws = throws.normalize();
+        let throws = throws.normalize_int(seen);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
         FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
@@ -418,6 +419,10 @@ impl FnType {
     /// Deep-clone with all bound TVars replaced by their concrete types.
     /// Constraints are emptied since all TVars are resolved.
     pub fn resolve_tvars(&self) -> Self {
+        self.resolve_tvars_seen_int(&mut poolshark::local::LPooled::take())
+    }
+
+    pub(super) fn resolve_tvars_seen_int(&self, seen: &mut IntSet<usize>) -> Self {
         let Self {
             args,
             vargs,
@@ -427,14 +432,14 @@ impl FnType {
             explicit_throws,
             lambda_ids,
         } = self;
-        let args = Arc::from_iter(
-            args.iter()
-                .map(|a| FnArgType { kind: a.kind.clone(), typ: a.typ.resolve_tvars() }),
-        );
-        let vargs = vargs.as_ref().map(|t| t.resolve_tvars());
-        let rtype = rtype.resolve_tvars();
+        let args = Arc::from_iter(args.iter().map(|a| FnArgType {
+            kind: a.kind.clone(),
+            typ: a.typ.resolve_tvars_seen_int(seen),
+        }));
+        let vargs = vargs.as_ref().map(|t| t.resolve_tvars_seen_int(seen));
+        let rtype = rtype.resolve_tvars_seen_int(seen);
         let constraints = Arc::new(RwLock::new(LPooled::take()));
-        let throws = throws.resolve_tvars();
+        let throws = throws.resolve_tvars_seen_int(seen);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
         FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }

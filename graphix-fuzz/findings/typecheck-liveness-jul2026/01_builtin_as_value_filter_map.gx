@@ -1,0 +1,15 @@
+// bisect: NONDETERMINISTIC COMPILE LIVENESS (typechecker deadlock /
+// stack overflow, ~2-4 of 6 runs, ASLR-order dependent via the Set
+// sort) — soak jul06h crash_000000. A polymorphic BUILTIN as a
+// first-class array element (its Ref exposes the def signature's live
+// cells) + a filter_map-class HOF + the element flowing into the
+// callback return entangles same-named signature cells; walks then
+// revisited cells under held guards (parking_lot locks are
+// non-reentrant → self-deadlock) or recursed forever on cell-merge
+// cycles. FIXED in layers: contains.rs deref arms clone bindings out
+// before recursing; TVar::normalize clone-out/write-back;
+// normalize/resolve_tvars carry visited sets; TVar::settle occurs-
+// checks its witnesses; TVar::{alias,copy} occurs-check cell merges
+// (THE cycle vectors); TVar Display carries a print-stack guard. Now
+// compiles deterministically, 24/24, and both modes agree.
+{let a = [i64:100, array::find_map, i64:3]; array::filter_map(a, |x| [x, i64:1 * i64:1])}

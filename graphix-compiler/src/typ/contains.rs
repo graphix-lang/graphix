@@ -54,7 +54,22 @@ impl crate::typ::TVar {
         };
         let mut hist = RefHist::new(LPooled::take());
         let mut witness = None;
+        let addr = self.cell_addr();
+        let mut all_self_referential = true;
         'cand: for c in cons.iter() {
+            // The occurs check every BIND site has, which settle was
+            // missing: a conjunct can reach THIS cell (name-aliased
+            // fn-signature cells merge when a polymorphic builtin is
+            // used as a first-class value), and binding the cell to a
+            // witness containing itself creates a CYCLIC binding that
+            // every later type walk recurses on forever — the compile
+            // deadlocked (walks under non-reentrant cell guards) or
+            // stack-overflowed (soak jul06h). An infinite type has no
+            // materializable witness; skip the conjunct.
+            if would_cycle_inner(addr, c) {
+                continue;
+            }
+            all_self_referential = false;
             for o in cons.iter() {
                 if !o.contains_int(BitFlags::empty(), env, &mut hist, c)? {
                     continue 'cand;
@@ -62,6 +77,14 @@ impl crate::typ::TVar {
             }
             witness = Some(c.clone());
             break;
+        }
+        // Every conjunct reaches the cell itself: no finite witness
+        // exists. Leave the cell OPEN rather than erroring — writers
+        // may still refine it, and an unrefined cell terminal-settles
+        // to ⊥ (fusion refuses unbound cells; the node-walk is
+        // type-tolerant).
+        if witness.is_none() && all_self_referential {
+            return Ok(());
         }
         match witness {
             Some(w) => {
@@ -187,7 +210,18 @@ impl Type {
             (Self::Bottom, _) => Ok(false),
             (_, Self::Bottom) => Ok(true),
             (Self::TVar(t0), Self::Any) => {
-                if let Some(t0) = &t0.read().typ.read().typ {
+                // Clone the binding OUT of the guards before recursing
+                // (here and in every deref arm below): an `if let` over
+                // `&t0.read().typ.read().typ` keeps BOTH read guards
+                // alive for the whole body, the recursion can revisit
+                // THIS cell (entangled fn-sig cells appear at several
+                // depths), and its bind arm write-locks it —
+                // parking_lot locks are non-reentrant, so the thread
+                // deadlocks ITSELF (soak jul06h: a polymorphic builtin
+                // as a first-class array element wedged the compile,
+                // ASLR-order dependent via the Set sort).
+                let bound = t0.read().typ.read().typ.clone();
+                if let Some(t0) = bound {
                     return t0.contains_int(flags, env, hist, t);
                 }
                 if !cell_constraints_ok(t0, env, hist, &Self::Any)? {
@@ -286,7 +320,15 @@ impl Type {
                 if t0.would_cycle(tt1) || t1.would_cycle(tt0) {
                     return Ok(true);
                 }
-                let (act, bound) = {
+                // Both-bound recursion happens OUTSIDE the guard block:
+                // recursing with these four guards held self-deadlocks
+                // when the walk revisits either cell and binds it (see
+                // the `(TVar, Any)` arm's note).
+                enum ActOrRecurse {
+                    Act(Act, Option<Type>),
+                    Recurse(Type, Type),
+                }
+                let act = {
                     let t0 = t0.read();
                     let t1 = t1.read();
                     let addr0 = Arc::as_ptr(&t0.typ).addr();
@@ -301,21 +343,31 @@ impl Type {
                     let t1i = t1.typ.read();
                     match (&t0i.typ, &t1i.typ) {
                         (Some(t0), Some(t1)) => {
-                            return t0.contains_int(flags, env, hist, &*t1);
+                            ActOrRecurse::Recurse(t0.clone(), t1.clone())
                         }
                         (None, None) => {
                             if t0.frozen && t1.frozen {
                                 return Ok(true);
                             }
                             if t0.frozen {
-                                (Act::RightAlias, None)
+                                ActOrRecurse::Act(Act::RightAlias, None)
                             } else {
-                                (Act::LeftAlias, None)
+                                ActOrRecurse::Act(Act::LeftAlias, None)
                             }
                         }
-                        (Some(b), None) => (Act::RightCopy, Some(b.clone())),
-                        (None, Some(b)) => (Act::LeftCopy, Some(b.clone())),
+                        (Some(b), None) => {
+                            ActOrRecurse::Act(Act::RightCopy, Some(b.clone()))
+                        }
+                        (None, Some(b)) => {
+                            ActOrRecurse::Act(Act::LeftCopy, Some(b.clone()))
+                        }
                     }
+                };
+                let (act, bound) = match act {
+                    ActOrRecurse::Recurse(a, b) => {
+                        return a.contains_int(flags, env, hist, &b);
+                    }
+                    ActOrRecurse::Act(act, bound) => (act, bound),
                 };
                 // A copy binds the RECEIVING cell to the source's
                 // binding — the receiver's constraints must admit it
@@ -348,7 +400,10 @@ impl Type {
                 Ok(true)
             }
             (Self::TVar(t0), t1) if !t0.would_cycle(t1) => {
-                if let Some(t0) = &t0.read().typ.read().typ {
+                // Deref-clone before recursing — see the `(TVar, Any)`
+                // arm's guard-across-recursion note.
+                let bound = t0.read().typ.read().typ.clone();
+                if let Some(t0) = bound {
                     return t0.contains_int(flags, env, hist, t1);
                 }
                 // The cell's constraints must admit the binding — a
@@ -371,8 +426,11 @@ impl Type {
                 Ok(true)
             }
             (t0, Self::TVar(t1)) if !t1.would_cycle(t0) => {
-                if let Some(t1) = &t1.read().typ.read().typ {
-                    return t0.contains_int(flags, env, hist, t1);
+                // Deref-clone before recursing — see the `(TVar, Any)`
+                // arm's guard-across-recursion note.
+                let bound = t1.read().typ.read().typ.clone();
+                if let Some(t1) = bound {
+                    return t0.contains_int(flags, env, hist, &t1);
                 }
                 if !cell_constraints_ok(t1, env, hist, t0)? {
                     return Ok(false);

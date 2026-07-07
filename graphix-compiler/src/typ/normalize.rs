@@ -71,76 +71,117 @@ impl Type {
     /// Deep-clone the type tree, replacing every bound TVar with its
     /// concrete binding (recursively). Unbound TVars are kept as fresh
     /// named TVars. This produces a snapshot that is independent of the
-    /// original TVar cells.
+    /// original TVar cells. Carries a visited set keyed by cell address
+    /// — a revisited cell snapshots as a fresh unbound (the same
+    /// convention as unbound cells), so pathological cell sharing can't
+    /// re-walk exponentially and a cyclic binding can't recurse forever
+    /// (defense in depth: the cycle VECTORS are closed at
+    /// `TVar::{alias, copy, settle}`, but a walk this hot must not hang
+    /// on one that slips through).
     pub fn resolve_tvars(&self) -> Self {
+        self.resolve_tvars_seen(&mut LPooled::take())
+    }
+
+    pub(super) fn resolve_tvars_seen_int(
+        &self,
+        seen: &mut nohash::IntSet<usize>,
+    ) -> Self {
+        self.resolve_tvars_seen(seen)
+    }
+
+    fn resolve_tvars_seen(&self, seen: &mut nohash::IntSet<usize>) -> Self {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => self.clone(),
             Type::Abstract { id, params } => Type::Abstract {
                 id: *id,
-                params: Arc::from_iter(params.iter().map(|t| t.resolve_tvars())),
+                params: Arc::from_iter(params.iter().map(|t| t.resolve_tvars_seen(seen))),
             },
             Type::Ref(tr) => Type::Ref(TypeRef {
-                params: Arc::from_iter(tr.params.iter().map(|t| t.resolve_tvars())),
+                params: Arc::from_iter(
+                    tr.params.iter().map(|t| t.resolve_tvars_seen(seen)),
+                ),
                 ..tr.clone()
             }),
-            Type::TVar(tv) => match tv.read().typ.read().typ.as_ref() {
-                Some(t) => t.resolve_tvars(),
-                None => Type::TVar(TVar::empty_named(tv.name.clone())),
-            },
-            Type::Set(s) => {
-                Type::Set(Arc::from_iter(s.iter().map(|t| t.resolve_tvars())))
+            Type::TVar(tv) => {
+                if !seen.insert(tv.cell_addr()) {
+                    return Type::TVar(TVar::empty_named(tv.name.clone()));
+                }
+                let bound = tv.read().typ.read().typ.clone();
+                let r = match bound {
+                    Some(t) => t.resolve_tvars_seen(seen),
+                    None => Type::TVar(TVar::empty_named(tv.name.clone())),
+                };
+                seen.remove(&tv.cell_addr());
+                r
             }
-            Type::Error(t) => Type::Error(Arc::new(t.resolve_tvars())),
-            Type::Array(t) => Type::Array(Arc::new(t.resolve_tvars())),
+            Type::Set(s) => {
+                Type::Set(Arc::from_iter(s.iter().map(|t| t.resolve_tvars_seen(seen))))
+            }
+            Type::Error(t) => Type::Error(Arc::new(t.resolve_tvars_seen(seen))),
+            Type::Array(t) => Type::Array(Arc::new(t.resolve_tvars_seen(seen))),
             Type::Map { key, value } => Type::Map {
-                key: Arc::new(key.resolve_tvars()),
-                value: Arc::new(value.resolve_tvars()),
+                key: Arc::new(key.resolve_tvars_seen(seen)),
+                value: Arc::new(value.resolve_tvars_seen(seen)),
             },
-            Type::ByRef(t) => Type::ByRef(Arc::new(t.resolve_tvars())),
+            Type::ByRef(t) => Type::ByRef(Arc::new(t.resolve_tvars_seen(seen))),
             Type::Tuple(t) => {
-                Type::Tuple(Arc::from_iter(t.iter().map(|t| t.resolve_tvars())))
+                Type::Tuple(Arc::from_iter(t.iter().map(|t| t.resolve_tvars_seen(seen))))
             }
             Type::Struct(t) => Type::Struct(Arc::from_iter(
-                t.iter().map(|(n, t)| (n.clone(), t.resolve_tvars())),
+                t.iter().map(|(n, t)| (n.clone(), t.resolve_tvars_seen(seen))),
             )),
             Type::Variant(tag, t) => Type::Variant(
                 tag.clone(),
-                Arc::from_iter(t.iter().map(|t| t.resolve_tvars())),
+                Arc::from_iter(t.iter().map(|t| t.resolve_tvars_seen(seen))),
             ),
-            Type::Fn(ft) => Type::Fn(Arc::new(ft.resolve_tvars())),
+            Type::Fn(ft) => Type::Fn(Arc::new(ft.resolve_tvars_seen_int(seen))),
         }
     }
 
+    /// Normalization walks CELLS as well as structure, and one cell can
+    /// be reachable along many paths (aliased tvars share a cell;
+    /// entangled fn-sig unions repeat cells across members), so the
+    /// walk carries a visited set keyed by cell address: without it the
+    /// re-walk was exponential in the sharing depth — a polymorphic
+    /// builtin used as a first-class array element wedged the whole
+    /// compile (soak jul06h), ASLR-order dependent via the Set sort.
+    /// A revisited cell is returned as-is; the first visit normalizes
+    /// its binding.
     pub fn normalize(&self) -> Self {
+        self.normalize_int(&mut LPooled::take())
+    }
+
+    pub(super) fn normalize_int(&self, seen: &mut nohash::IntSet<usize>) -> Self {
         match self {
             Type::Bottom | Type::Any | Type::Abstract { .. } | Type::Primitive(_) => {
                 self.clone()
             }
             Type::Ref(tr) => {
-                let params = Arc::from_iter(tr.params.iter().map(|t| t.normalize()));
+                let params =
+                    Arc::from_iter(tr.params.iter().map(|t| t.normalize_int(seen)));
                 Type::Ref(TypeRef { params, ..tr.clone() })
             }
-            Type::TVar(tv) => Type::TVar(tv.normalize()),
-            Type::Set(s) => Self::flatten_set(s.iter().map(|t| t.normalize())),
-            Type::Error(t) => Type::Error(Arc::new(t.normalize())),
-            Type::Array(t) => Type::Array(Arc::new(t.normalize())),
+            Type::TVar(tv) => Type::TVar(tv.normalize_int(seen)),
+            Type::Set(s) => Self::flatten_set(s.iter().map(|t| t.normalize_int(seen))),
+            Type::Error(t) => Type::Error(Arc::new(t.normalize_int(seen))),
+            Type::Array(t) => Type::Array(Arc::new(t.normalize_int(seen))),
             Type::Map { key, value } => {
-                let key = Arc::new(key.normalize());
-                let value = Arc::new(value.normalize());
+                let key = Arc::new(key.normalize_int(seen));
+                let value = Arc::new(value.normalize_int(seen));
                 Type::Map { key, value }
             }
-            Type::ByRef(t) => Type::ByRef(Arc::new(t.normalize())),
+            Type::ByRef(t) => Type::ByRef(Arc::new(t.normalize_int(seen))),
             Type::Tuple(t) => {
-                Type::Tuple(Arc::from_iter(t.iter().map(|t| t.normalize())))
+                Type::Tuple(Arc::from_iter(t.iter().map(|t| t.normalize_int(seen))))
             }
             Type::Struct(t) => Type::Struct(Arc::from_iter(
-                t.iter().map(|(n, t)| (n.clone(), t.normalize())),
+                t.iter().map(|(n, t)| (n.clone(), t.normalize_int(seen))),
             )),
             Type::Variant(tag, t) => Type::Variant(
                 tag.clone(),
-                Arc::from_iter(t.iter().map(|t| t.normalize())),
+                Arc::from_iter(t.iter().map(|t| t.normalize_int(seen))),
             ),
-            Type::Fn(ft) => Type::Fn(Arc::new(ft.normalize())),
+            Type::Fn(ft) => Type::Fn(Arc::new(ft.normalize_int(seen))),
         }
     }
 

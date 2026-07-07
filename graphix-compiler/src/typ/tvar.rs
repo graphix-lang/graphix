@@ -123,23 +123,47 @@ impl fmt::Display for TVar {
         if !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
             write!(f, "'{}", self.name)
         } else {
-            write!(f, "'{}: ", self.name)?;
-            let cell = self.read().typ.clone();
-            let cell = cell.read();
-            match &cell.typ {
-                Some(t) => write!(f, "{t}"),
-                None if cell.constraints.is_empty() => write!(f, "unbound"),
-                None => {
-                    write!(f, "unbound within ")?;
-                    for (i, c) in cell.constraints.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " & ")?
-                        }
-                        write!(f, "{c}")?
-                    }
-                    Ok(())
-                }
+            // Cycle guard: a cell can be reachable from its own
+            // CONSTRAINTS (name-aliased fn-signature cells merge when
+            // a polymorphic builtin is used as a first-class value —
+            // soak jul06h), and the deref print recurses through both
+            // the binding and the constraint list — printing a type
+            // ERROR then overflowed the stack before any message got
+            // out. Track the cells on the current print stack; a
+            // revisit elides. Cell contents are cloned OUT before the
+            // recursive writes (never recurse under the cell guard).
+            thread_local! {
+                static PRINTING: std::cell::RefCell<nohash::IntSet<usize>> =
+                    std::cell::RefCell::new(nohash::IntSet::default());
             }
+            let addr = self.cell_addr();
+            if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
+                return write!(f, "'{}: …", self.name);
+            }
+            let r = (|| {
+                write!(f, "'{}: ", self.name)?;
+                let (typ, cons) = {
+                    let cell = self.read().typ.clone();
+                    let cell = cell.read();
+                    (cell.typ.clone(), cell.constraints.clone())
+                };
+                match typ {
+                    Some(t) => write!(f, "{t}"),
+                    None if cons.is_empty() => write!(f, "unbound"),
+                    None => {
+                        write!(f, "unbound within ")?;
+                        for (i, c) in cons.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, " & ")?
+                            }
+                            write!(f, "{c}")?
+                        }
+                        Ok(())
+                    }
+                }
+            })();
+            PRINTING.with_borrow_mut(|s| s.remove(&addr));
+            r
         }
     }
 }
@@ -262,6 +286,31 @@ impl TVar {
     /// now-shared cell (a conjunction — both vars' obligations apply to
     /// whatever the cell is ever bound to).
     pub fn alias(&self, other: &Self) {
+        // Occurs check on the MERGE: if other's cell (through its
+        // binding or constraints) reaches self's cell — or self's
+        // constraints (about to move into other's cell) reach other's —
+        // the merged cell becomes reachable from its own contents: an
+        // infinite type that every later walk (contains deref,
+        // normalize, resolve_tvars, Display) recurses on forever.
+        // Cell merges had no such check while every BIND site did —
+        // the cycle vector behind soak jul06h's compile wedge
+        // (name-aliased fn-signature cells entangled by a polymorphic
+        // builtin used as a first-class value). Skip the merge instead:
+        // unlinked cells only keep inference looser, which at worst
+        // rejects — never hangs.
+        {
+            let self_addr = Arc::as_ptr(&self.read().typ).addr();
+            let other_addr = Arc::as_ptr(&other.read().typ).addr();
+            if self_addr != other_addr {
+                if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+                    return;
+                }
+                let scons = self.read().typ.read().constraints.clone();
+                if scons.iter().any(|c| would_cycle_inner(other_addr, c)) {
+                    return;
+                }
+            }
+        }
         let mut s = self.write();
         if !s.frozen {
             s.frozen = true;
@@ -288,6 +337,15 @@ impl TVar {
     /// keeps its own obligations — the bind-site check has already
     /// verified the incoming binding against them).
     pub fn copy(&self, other: &Self) {
+        // Same occurs check as [`Self::alias`]: a binding that reaches
+        // self's cell would make the cell cyclic. Skip rather than
+        // hang every later walk.
+        {
+            let self_addr = Arc::as_ptr(&self.read().typ).addr();
+            if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+                return;
+            }
+        }
         let s = self.read();
         let o = other.read();
         if Arc::ptr_eq(&s.typ, &o.typ) {
@@ -305,10 +363,24 @@ impl TVar {
     }
 
     pub fn normalize(&self) -> Self {
-        match &mut self.read().typ.write().typ {
-            None => (),
-            Some(t) => {
-                *t = t.normalize();
+        use poolshark::local::LPooled;
+        self.normalize_int(&mut LPooled::take())
+    }
+
+    pub(super) fn normalize_int(&self, seen: &mut nohash::IntSet<usize>) -> Self {
+        // First visit only (`seen` is keyed by cell address — the walk
+        // reaches one cell along many paths through aliases and shared
+        // subterms, and re-walking is exponential; see
+        // `Type::normalize`). Clone the binding out, normalize
+        // UNLOCKED, write back — never recurse under the cell's write
+        // guard: parking_lot locks are non-reentrant, so recursing
+        // under the guard deadlocked the whole compile (soak jul06h,
+        // the other half of the same wedge).
+        if seen.insert(self.cell_addr()) {
+            let bound = self.read().typ.read().typ.clone();
+            if let Some(t) = bound {
+                let n = t.normalize_int(seen);
+                self.read().typ.write().typ = Some(n);
             }
         }
         self.clone()
