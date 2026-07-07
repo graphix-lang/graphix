@@ -874,9 +874,10 @@ const HOLD_MULTIPLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// The hold call itself node-walks (hold is deliberately Async: it is
+// update-history-sensitive and the DynCall protocol re-delivers every
+// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
+// the scalar sub-regions around it fuse.
 run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -890,9 +891,10 @@ const HOLD_NO_TRIGGER: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// The hold call itself node-walks (hold is deliberately Async: it is
+// update-history-sensitive and the DynCall protocol re-delivers every
+// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
+// the scalar sub-regions around it fuse.
 run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
@@ -907,9 +909,10 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// The hold call itself node-walks (hold is deliberately Async: it is
+// update-history-sensitive and the DynCall protocol re-delivers every
+// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
+// the scalar sub-regions around it fuse.
 run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     Ok(Value::I64(300)) => true,
     _ => false,

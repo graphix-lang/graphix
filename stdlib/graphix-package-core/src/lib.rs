@@ -2477,12 +2477,16 @@ struct Hold {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
-    // Hold takes (trigger, value); it caches state across cycles
-    // (triggered count, latest value) but each emission lands on the
-    // same cycle as the most recent input that completed the
-    // (trigger-arrived, value-arrived) pairing. State becomes a
-    // kernel-local register; no cycle-shifted output.
-    const EFFECT: EffectKind = EffectKind::Sync;
+    // Async, deliberately (the F2 flip, same as Uniq below): hold is
+    // UPDATE-HISTORY-SENSITIVE — `current` is take()n on emission and
+    // re-arms only when `v` ACTUALLY updates, and `triggered` counts
+    // clock updates. The fused DynCall dispatch protocol re-delivers
+    // EVERY arg as a fresh update on every dispatch, so a fused hold
+    // re-latched `v` each clock tick and re-emitted the same value on
+    // every trigger (soak jul07c: interp emitted once, jit once per
+    // clock). Async = fusion boundary = the node-walk runs it with
+    // exact per-arg update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_hold";
 
     fn init<'a, 'b, 'c, 'd>(
