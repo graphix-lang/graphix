@@ -36,6 +36,7 @@ use crate::{
     node::{bind::Ref, compiler::compile, lambda::LambdaDef},
     typ::FnType,
 };
+use log::error;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::sync::Arc;
@@ -540,10 +541,23 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                         word0: Box::into_raw(Box::new(arr)) as u64,
                         word1: 0,
                     },
-                    other => panic!(
-                        "DynCall return ABI: ret_kind=1 (ValArray) but \
-                         got {other:?}"
-                    ),
+                    // An ABI-shape mismatch is a COMPILER bug (the
+                    // resolved type promised an array), but this is an
+                    // `extern "C"` frame: a panic cannot unwind through
+                    // the JIT code and ABORTS THE PROCESS ("failed to
+                    // initiate panic" — soak jul07b, `max([..MAX..])`
+                    // under the mistyped variadic sig). Log loudly and
+                    // take the pend path instead: the call site
+                    // converts it to a #219 tainted placeholder and the
+                    // bottom stays local.
+                    other => {
+                        error!(
+                            "DynCall return ABI: ret_kind=1 (ValArray) but \
+                             got {other:?} — compiler bug, result bottoms"
+                        );
+                        DYNCALL_PENDING.with(|c| c.set(true));
+                        DynCallRet { word0: 0, word1: 0 }
+                    }
                 }
             }
             2 => {
@@ -582,13 +596,28 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
                         };
                         DynCallRet { word0: bits, word1: 0 }
                     }
-                    other => panic!(
-                        "DynCall return ABI: ret_kind=4 (String) but \
-                         got {other:?}"
-                    ),
+                    // See the ret_kind=1 arm: never panic across the
+                    // JIT boundary — log + pend.
+                    other => {
+                        error!(
+                            "DynCall return ABI: ret_kind=4 (String) but \
+                             got {other:?} — compiler bug, result bottoms"
+                        );
+                        DYNCALL_PENDING.with(|c| c.set(true));
+                        DynCallRet { word0: 0, word1: 0 }
+                    }
                 }
             }
-            _ => panic!("DynCall return ABI: bad ret_kind {ret_kind}"),
+            _ => {
+                // See the ret_kind=1 arm: never panic across the JIT
+                // boundary — log + pend.
+                error!(
+                    "DynCall return ABI: bad ret_kind {ret_kind} — compiler \
+                     bug, result bottoms"
+                );
+                DYNCALL_PENDING.with(|c| c.set(true));
+                DynCallRet { word0: 0, word1: 0 }
+            }
         },
         None => {
             // "No value this cycle" — the JIT'd call site
