@@ -580,14 +580,18 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
 ) -> (
     nohash::IntMap<ExprId, LambdaCallInfo>,
-    std::collections::BTreeMap<usize, std::sync::Arc<KernelSig>>,
+    Vec<(usize, std::sync::Arc<KernelSig>)>,
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
 ) {
-    // Keyed by kernel IDENTITY (`kernel_key`), like `bodies` — names
-    // shadow and monomorphizations share a name, so a name-keyed map
-    // here bound call sites to the wrong kernel (audit-jul2026 01/02).
-    let mut callees: std::collections::BTreeMap<usize, std::sync::Arc<KernelSig>> =
-        std::collections::BTreeMap::new();
+    // Identified by kernel IDENTITY (`kernel_key`), like `bodies` —
+    // names shadow and monomorphizations share a name, so a name-keyed
+    // map here bound call sites to the wrong kernel (audit-jul2026
+    // 01/02). Kept as a Vec in DISCOVERY order: emission iterates this
+    // list to assign fn indices, DynCall slot bases, and the region
+    // layout, and a pointer-ordered map made all of those
+    // ASLR-dependent — the compiled shape of the same program differed
+    // across processes (#19).
+    let mut callees: Vec<(usize, std::sync::Arc<KernelSig>)> = Vec::new();
     let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
         std::collections::BTreeMap::new();
     // Bodies still to scan; the second field says where the body's
@@ -642,12 +646,13 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                 return;
             };
             let ptr = kernel_abi::kernel_key(&cached.kernel);
-            callees.entry(ptr).or_insert_with(|| cached.kernel.clone());
-            // First time we reach this callee: record its body + self-call
-            // info and enqueue it for transitive scanning. A repeat (its
-            // own self-call, or a mutual back-edge) records the site below
-            // but does NOT re-enqueue — that's the termination guard.
+            // First time we reach this callee: record it (discovery
+            // order), record its body + self-call info, and enqueue it
+            // for transitive scanning. A repeat (its own self-call, or
+            // a mutual back-edge) records the site below but does NOT
+            // re-enqueue — that's the termination guard.
             if !bodies.contains_key(&ptr) {
+                callees.push((ptr, cached.kernel.clone()));
                 let self_call = cached.is_rec.then(|| {
                     (
                         cached.self_bind.expect(

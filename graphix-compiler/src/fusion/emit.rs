@@ -452,7 +452,7 @@ unsafe impl Send for Jit {}
 pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
-    callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
+    callees: &[(usize, std::sync::Arc<KernelSig>)],
     root: &Node<R, E>,
     apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     lambda_sites: &nohash::IntMap<ExprId, LambdaCallInfo>,
@@ -491,21 +491,22 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         allow_state: true,
     };
     // Assemble the region-wide DynCall slot table: parent `fn_params`
-    // first (base 0), then each callee's `fn_params`, in callee order.
-    // Each callee's `base` (its offset here) is stamped on its emitter as
-    // `fn_index_offset` — what its body bakes into DynCalls AND the cache
-    // key's `base` half. A callee with no DynCalls (empty `fn_params`)
-    // bakes nothing, so it's pinned at base 0 to share one compilation
-    // across regions. A callee that IS the parent (a self-recursive
-    // per-slot callback) shares the parent's FuncId/body (its slots ARE
-    // the parent's, already at base 0) — skip it, matching the phase-1
-    // declare loop.
+    // first (base 0), then each callee's `fn_params`, in callee
+    // DISCOVERY order (`callees` is discovery-ordered — pointer order
+    // was ASLR-dependent, #19). Each callee's `base` (its offset here)
+    // is stamped on its emitter as `fn_index_offset` — what its body
+    // bakes into DynCalls AND the cache key's `base` half. A callee
+    // with no DynCalls (empty `fn_params`) bakes nothing, so it's
+    // pinned at base 0 to share one compilation across regions. A
+    // callee that IS the parent (a self-recursive per-slot callback)
+    // shares the parent's FuncId/body (its slots ARE the parent's,
+    // already at base 0) — skip it, matching the phase-1 declare loop.
     let parent_ptr = kernel_abi::kernel_key(kernel);
     let mut combined: Vec<kernel_abi::FnParam> = kernel.fn_params.to_vec();
     let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>)> = callees
-        .values()
-        .filter_map(|k| {
-            let key = kernel_abi::kernel_key(k);
+        .iter()
+        .filter_map(|(key, k)| {
+            let key = *key;
             if key == parent_ptr {
                 return None;
             }
@@ -549,7 +550,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
 fn compile_kernel_with_callees_impl(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
-    callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
+    callees: &[(usize, std::sync::Arc<KernelSig>)],
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
@@ -635,7 +636,7 @@ fn define_stub_body(jit: &mut JitCtx, fid: FuncId, sig: &Signature) -> Result<()
 fn compile_kernel_with_callees_inner(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
-    callees: &BTreeMap<usize, std::sync::Arc<KernelSig>>,
+    callees: &[(usize, std::sync::Arc<KernelSig>)],
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
     defined: &mut usize,
@@ -683,9 +684,13 @@ fn compile_kernel_with_callees_inner(
         if k.fn_params.is_empty() && !ext_sites { 0 } else { layout_id }
     };
     let parent_layout = layout_of(kernel);
-    let mut funcids: BTreeMap<usize, (FuncId, Signature)> = BTreeMap::new();
+    // Insertion-ordered (parent first, then callee discovery order):
+    // `define_kernel_body` imports FuncRefs by walking this list, and
+    // funcref indices (fn0, fn1, …) are assigned in import order — a
+    // pointer-ordered map here made the numbering ASLR-dependent (#19).
+    let mut funcids: Vec<(usize, (FuncId, Signature))> = Vec::new();
     let parent_entry = ensure_declared(jit, kernel, 0, parent_layout, to_define, registry)?;
-    funcids.insert(parent_ptr, parent_entry.clone());
+    funcids.push((parent_ptr, parent_entry.clone()));
     for (ptr, k) in callees {
         if *ptr == parent_ptr {
             continue;
@@ -693,7 +698,7 @@ fn compile_kernel_with_callees_inner(
         let base = emitters.get(ptr).map_or(0, |e| e.fn_index_offset());
         let layout = layout_of(k);
         let entry = ensure_declared(jit, k, base, layout, to_define, registry)?;
-        funcids.insert(*ptr, entry);
+        funcids.push((*ptr, entry));
     }
     // Phase 2 — define each freshly-declared body. Bodies that came
     // back from the cache already had `define_function` called for
@@ -820,17 +825,21 @@ fn ensure_declared(
 fn define_kernel_body(
     jit: &mut JitCtx,
     kernel: &std::sync::Arc<KernelSig>,
-    funcids: &BTreeMap<usize, (FuncId, Signature)>,
+    funcids: &[(usize, (FuncId, Signature))],
     body_emitter: &dyn BodyEmitter,
 ) -> Result<(KernelStrings, KernelValues, usize)> {
     let self_ptr = kernel_abi::kernel_key(kernel);
-    let (func_id, sig) = funcids.get(&self_ptr).cloned().ok_or_else(|| {
-        anyhow!(
-            "define_kernel_body: missing FuncId for kernel `{}` \
+    let (func_id, sig) = funcids
+        .iter()
+        .find(|(p, _)| *p == self_ptr)
+        .map(|(_, e)| e.clone())
+        .ok_or_else(|| {
+            anyhow!(
+                "define_kernel_body: missing FuncId for kernel `{}` \
                  (phase-1 declare must have populated `funcids` first)",
-            kernel.fn_name
-        )
-    })?;
+                kernel.fn_name
+            )
+        })?;
     // Defensive: a *prior* kernel compile that returned `Err` before
     // its end-of-function `clear_context` leaves `func_ctx` dirty,
     // which makes the next `FunctionBuilder::new` panic
@@ -856,8 +865,8 @@ fn define_kernel_body(
         // targets and sibling monomorphizations each resolve to their
         // OWN FuncId. The kernel itself is excluded from sites; a
         // self-recursive body imports its own FuncRef via `self_call`.
-        let needed: std::collections::BTreeSet<usize> = {
-            let mut s: std::collections::BTreeSet<usize> = body_emitter
+        let needed: ahash::AHashSet<usize> = {
+            let mut s: ahash::AHashSet<usize> = body_emitter
                 .lambda_call_sites()
                 .map(|m| {
                     m.values()
@@ -871,18 +880,24 @@ fn define_kernel_body(
             }
             s
         };
+        // Import in `funcids` order (parent first, then callee
+        // discovery order): funcref indices (fn0, fn1, …) are assigned
+        // by import order, and iterating `needed` directly — a set of
+        // POINTERS — made the numbering ASLR-dependent (#19).
         let mut callee_refs: BTreeMap<usize, FuncRef> = BTreeMap::new();
-        for ptr in needed {
-            let target_fid = funcids.get(&ptr).map(|(f, _)| *f).ok_or_else(|| {
-                anyhow!(
-                    "define_kernel_body: kernel `{}` calls a kernel with \
-                         no entry in funcids",
-                    kernel.fn_name
-                )
-            })?;
-            let fref =
-                jit.module.declare_func_in_func(target_fid, &mut jit.func_ctx.func);
-            callee_refs.insert(ptr, fref);
+        for (ptr, (fid, _)) in funcids {
+            if !needed.contains(ptr) {
+                continue;
+            }
+            let fref = jit.module.declare_func_in_func(*fid, &mut jit.func_ctx.func);
+            callee_refs.insert(*ptr, fref);
+        }
+        if callee_refs.len() != needed.len() {
+            return Err(anyhow!(
+                "define_kernel_body: kernel `{}` calls a kernel with \
+                     no entry in funcids",
+                kernel.fn_name
+            ));
         }
         // Lazy interning arenas — filled during emission via
         // `BodyCx::interned_str` / `interned_value`, merged into the
