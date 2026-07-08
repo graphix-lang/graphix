@@ -38,11 +38,16 @@ pub(super) fn gen_module(
 ) -> GenModule {
     stats.module = true;
     let mname = format!("m{idx}");
-    // The module's own scope: params and locals only. Names come from
-    // the SHARED collision pool (a module-private binding aliasing a
-    // main-body name is exactly the name-vs-identity surface).
+    // The module's own scope: params, locals, and EARLIER modules'
+    // path-qualified publics — `mod m0;` is declared before `mod m1;`
+    // in the compile text, so m1's body calling `m0::f` resolves
+    // (probed both directions 2026-07-08: forward works, backward is a
+    // compile error). Main-body bindings are dropped (a root-mounted
+    // module can't see them); names still come from the SHARED
+    // collision pool (a module-private binding aliasing a main-body
+    // name is exactly the name-vs-identity surface).
     let mut inner = ctx.clone();
-    inner.truncate(0);
+    inner.vars.retain(|(n, _)| n.contains("::"));
     let mut gx = String::new();
     let mut gxi = String::new();
     let mut public: Vec<(String, GenType)> = Vec::new();
@@ -84,6 +89,27 @@ pub(super) fn gen_module(
             types::random_variant(rng, 1)
         }
     };
+    // Cross-module wiring (later modules): pick an EARLIER module's
+    // public fn, pin f0's return type to the callee's, and splice the
+    // call into f0's body. Organic draws alone leave the shape under
+    // the presence gate (~0.6% — it needs ≥2 modules in one program
+    // AND `try_call` landing on the import).
+    let cross = if idx > 0 && chance(rng, 0.6) {
+        let cands: Vec<(String, Vec<GenType>, GenType)> = inner
+            .visible_entries()
+            .into_iter()
+            .filter(|(n, _)| n.contains("::"))
+            .filter_map(|(n, t)| match t {
+                GenType::Fn { params, ret } => {
+                    Some((n.to_string(), params.clone(), (**ret).clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        (!cands.is_empty()).then(|| cands[rng.below(cands.len())].clone())
+    } else {
+        None
+    };
     // 1-3 public typed lambdas.
     let nfns = 1 + rng.below(3);
     for i in 0..nfns {
@@ -91,7 +117,10 @@ pub(super) fn gen_module(
         let arity = 1 + rng.below(2);
         let params: Vec<GenType> =
             (0..arity).map(|_| iface_type(rng, stats)).collect();
-        let ret = iface_type(rng, stats);
+        let ret = match (i, &cross) {
+            (0, Some((_, _, rty))) => rty.clone(),
+            _ => iface_type(rng, stats),
+        };
         let names: Vec<String> = (0..arity).map(|_| inner.fresh()).collect();
         let m = inner.mark();
         for (n, t) in names.iter().zip(params.iter()) {
@@ -100,6 +129,16 @@ pub(super) fn gen_module(
         // Earlier PUBLIC module fns are callable from later bodies
         // (registered plain-named in the module scope).
         let mut body = exprs::gen_typed(&inner, rng, &ret, 2);
+        if i == 0
+            && let Some((callee, ptys, _)) = &cross
+        {
+            let args: Vec<String> =
+                ptys.iter().map(|t| exprs::gen_typed(&inner, rng, t, 1)).collect();
+            let call = format!("{callee}({})", args.join(", "));
+            // Merge with the organic body where `+` is defined;
+            // otherwise the call IS the body.
+            body = if ret.is_numeric() { format!("({call} + ({body}))") } else { call };
+        }
         if i == 0
             && let Some((h, ht)) = &helper
             && *ht == ret
@@ -151,6 +190,12 @@ pub(super) fn gen_module(
         let v = ctx.fresh();
         stmts.push(format!("let {v} = {mname}::un({mname}::mk({arg}))"));
         ctx.push(v, I64);
+    }
+    // Cross-module call presence — textual, but exact: `m<j>::` for an
+    // earlier j can only appear in this module's body through a
+    // vocabulary reference.
+    if (0..idx).any(|j| gx.contains(&format!("m{j}::"))) {
+        stats.cross_module_call = true;
     }
     // Register the public lambdas in MAIN under their absolute paths.
     // With the bare-module variant (no .gxi) everything is public —

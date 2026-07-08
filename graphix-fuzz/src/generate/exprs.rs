@@ -295,7 +295,10 @@ pub(super) fn gen_typed(
         return types::literal(rng, ty);
     }
     let d = depth - 1;
-    if ty.is_scalar() && rng.below(5) == 0 {
+    // Any type — a composite-returning lambda (module interfaces carry
+    // them since the composite-iface stage) is only exercised if calls
+    // generate at composite-typed positions too.
+    if rng.below(5) == 0 {
         if let Some(call) = try_call(ctx, rng, ty, d) {
             return call;
         }
