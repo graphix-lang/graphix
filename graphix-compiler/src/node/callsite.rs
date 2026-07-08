@@ -4,8 +4,11 @@ use crate::{
     NodeView, PendingTailCall, PrintFlag, RebindMap, Refs, Rt, Scope, StaticFnArg,
     Update, UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
-    fusion::emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
-    node::lambda::LambdaDef,
+    fusion::{
+        self,
+        emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
+    },
+    node::lambda::{GXLambda, LambdaDef},
     typ::{FnArgKind, FnType, TVar, Type},
     wrap,
 };
@@ -171,7 +174,24 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// Bound to a callee that may still change cycle-to-cycle. `def` is the
     /// `LambdaDef`-wrapped Value, kept for the per-cycle IDENTITY check
     /// against `fnode.update()`; when it differs we re-`bind()`.
-    DynamicBound { def: Value, apply: Box<dyn Apply<R, E>> },
+    /// `transient` marks a recursive-unfold binding whose instance is a
+    /// pure activation record (see [`transient_body_ok`]): `update()`
+    /// deletes it when its dispatch returns, transitioning to
+    /// [`Callee::TransientParked`]. Never survives across `update()`
+    /// calls — a transient bind and its parking happen in the same one.
+    DynamicBound { def: Value, apply: Box<dyn Apply<R, E>>, transient: bool },
+    /// A transient recursive callee, parked between calls. The instance
+    /// built by `bind()` was DELETED when its dispatch returned — a
+    /// qualifying Sync body re-entered recursively is a pure activation
+    /// record, and retaining one per dynamic call held the whole call
+    /// TREE alive, O(2^depth) memory (fib(28) = 1M instances / 9.6GB).
+    /// `def` is kept because the `fnode` Ref delivers the LambdaDef only
+    /// once — the next genuine call re-`bind()`s from it. `ext_refs` are
+    /// the deleted instance's external refs (captures): a retained
+    /// instance is reactively LIVE to its captures, so a capture firing
+    /// must also trigger the re-bind (the JIT twin: captures are kernel
+    /// inputs).
+    TransientParked { def: Value, ext_refs: Box<[BindId]> },
     /// Pre-bound at compile time by [`CallSite::try_static_resolve`]:
     /// `fnode` provably resolves to one `LambdaDef`, so the per-cycle
     /// identity check + lazy bind is skipped (`fnode.update()` still runs
@@ -183,12 +203,12 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Callee<R, E> {
     fn is_bound(&self) -> bool {
-        !matches!(self, Callee::DynamicUnbound)
+        !matches!(self, Callee::DynamicUnbound | Callee::TransientParked { .. })
     }
 
     fn apply(&self) -> Option<&dyn Apply<R, E>> {
         match self {
-            Callee::DynamicUnbound => None,
+            Callee::DynamicUnbound | Callee::TransientParked { .. } => None,
             Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
                 Some(&**apply)
             }
@@ -197,7 +217,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 
     fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R, E> + 'static)> {
         match self {
-            Callee::DynamicUnbound => None,
+            Callee::DynamicUnbound | Callee::TransientParked { .. } => None,
             Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
                 Some(&mut **apply)
             }
@@ -205,14 +225,99 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
     }
 
     /// Reset to `DynamicUnbound`, returning the bound apply for deletion.
+    /// A `TransientParked` def is discarded — the callers replace the
+    /// binding wholesale (a fresh `bind`, or `delete`).
     fn take_apply(&mut self) -> Option<Box<dyn Apply<R, E>>> {
         match mem::replace(self, Callee::DynamicUnbound) {
-            Callee::DynamicUnbound => None,
+            Callee::DynamicUnbound | Callee::TransientParked { .. } => None,
             Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
                 Some(apply)
             }
         }
     }
+}
+
+/// Whether a recursively-bound Sync callee instance is a pure
+/// activation record — deletable when its dispatch returns (parked
+/// [`Callee::TransientParked`]) with no observable difference from
+/// today's retained instance. True iff the instance body —
+/// transitively through every already-bound callee body — holds no
+/// cross-dispatch state or obligations:
+///
+/// - no builtin call sites: a builtin `Apply` may hold per-instance
+///   state (`count`, `sum`, `min`, …) that today accumulates across
+///   calls; there is no stateless-vs-stateful declaration to consult,
+///   so ALL builtins refuse (a `STATELESS` marker can widen this
+///   later),
+/// - no `connect` (plain or deref): the write target and its
+///   next-cycle delivery live in the instance,
+/// - no `&x`: a reference to an instance-local binding can escape the
+///   instance's lifetime.
+///
+/// An UNBOUND inner call site is fine only when it provably targets a
+/// stable, known user lambda — that is exactly a `#203` recursive
+/// back-edge (its target is an ancestor of this walk, whose own body
+/// this walk covers, and its unfolds gate themselves at their own
+/// bind). Anything dynamic refuses. The Sync gate in `bind()` already
+/// excludes async bodies, `~`/`any`/`try` (classified Async), and
+/// fn-typed-parameter calls (dynamic callees are Async).
+fn transient_body_ok<R: Rt, E: UserEvent>(
+    root: &GXLambda<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> bool {
+    let mut seen: LPooled<nohash::IntSet<LambdaId>> = LPooled::take();
+    seen.insert(root.id());
+    let mut ok = true;
+    let mut stack: LPooled<Vec<&Node<R, E>>> = LPooled::take();
+    stack.push(root.body());
+    while let Some(node) = stack.pop() {
+        if !ok {
+            break;
+        }
+        let mut to_descend: LPooled<Vec<&Node<R, E>>> = LPooled::take();
+        fusion::for_each_node(node, &mut |n| {
+            if !ok {
+                return;
+            }
+            match n.view() {
+                NodeView::Connect(_) | NodeView::ConnectDeref(_) | NodeView::ByRef(_) => {
+                    ok = false
+                }
+                NodeView::CallSite(cs) => match cs.callee_apply() {
+                    Some(a) => match a.view() {
+                        ApplyView::Lambda(g) => {
+                            if seen.insert(g.id()) {
+                                to_descend.push(g.body());
+                            }
+                        }
+                        ApplyView::BuiltIn => ok = false,
+                    },
+                    None => {
+                        let known = match cs.fnode().view() {
+                            NodeView::Ref(r) => {
+                                !ctx.unstable_bindings.contains(&r.id)
+                                    && ctx
+                                        .bind_to_lambda
+                                        .get(&r.id)
+                                        .or_else(|| ctx.cached.get(&r.id))
+                                        .map(|v| {
+                                            v.downcast_ref::<LambdaDef<R, E>>().is_some()
+                                        })
+                                        .unwrap_or(false)
+                            }
+                            _ => false,
+                        };
+                        if !known {
+                            ok = false;
+                        }
+                    }
+                },
+                _ => (),
+            }
+        });
+        stack.extend(to_descend.drain(..));
+    }
+    ok
 }
 
 #[derive(Debug)]
@@ -422,6 +527,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // re-created in the arg_refs loop below.
         self.args.retain(|_, arg| {
             if arg.is_default {
+                ctx.cached.remove(&arg.id);
                 if let Some(mut n) = arg.node.take() {
                     n.delete(ctx);
                 }
@@ -544,6 +650,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(rf)
     }
 
+    /// Release the runtime var registrations a [`Callee::TransientParked`]
+    /// binding holds for its wake-set (see the parking block in
+    /// [`Update::update`]). Idempotent-by-construction callers: `bind()`
+    /// (the fresh instance re-registers its own refs) and `delete()`.
+    fn release_parked(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Callee::TransientParked { ext_refs, .. } = &self.callee {
+            for id in ext_refs.iter() {
+                ctx.rt.unref_var(*id, self.top_id);
+            }
+        }
+    }
+
     fn bind(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -554,6 +672,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         event: &mut Event<E>,
         set: &mut Vec<BindId>,
     ) -> Result<()> {
+        self.release_parked(ctx);
         // Build arg_refs + InitFn + typecheck. The closure primes
         // each freshly-compiled default's external refs into
         // `event.variables` from `ctx.cached`, so the bound function
@@ -569,7 +688,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             });
         })?;
-        self.callee = Callee::DynamicBound { def: fv, apply };
+        self.callee = Callee::DynamicBound { def: fv, apply, transient: false };
         // The lazy-bound body was compiled fresh AFTER the program-wide
         // typecheck1 + `analysis::analyze` passes, so its nested call
         // sites are unresolved and nothing in the subtree carries
@@ -599,6 +718,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     _ => None,
                 };
                 crate::analysis::analyze_bound_callee(g, self_bind, ctx);
+            }
+        }
+        // Transient-recursion gate: this bind is a recursive unfold
+        // (the def is already active on the dispatch stack — the
+        // enclosing body IS an activation of the same lambda) and the
+        // fresh instance is a pure activation record. Mark it
+        // transient: `update()` deletes it when the dispatch returns
+        // and parks the def, so the recursion holds O(depth) instances
+        // instead of one per dynamic call (the full call tree).
+        if ctx.active_lambdas.contains_key(&f.id) && f.intrinsic_effect.lock().is_sync() {
+            let ok = match self.callee.apply() {
+                Some(a) => match a.view() {
+                    ApplyView::Lambda(g) => transient_body_ok(g, ctx),
+                    ApplyView::BuiltIn => false,
+                },
+                None => false,
+            };
+            if ok && let Callee::DynamicBound { transient, .. } = &mut self.callee {
+                *transient = true;
             }
         }
         // Ensure all arg values are available for the init cycle.
@@ -866,10 +1004,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 None => false,
                 Some(v) => {
                     // The immutable `matches!` borrow ends before `self.bind`'s
-                    // `&mut self` below.
+                    // `&mut self` below. A parked def is "same" too — the
+                    // wake gate below decides whether it re-binds this cycle.
                     let same = matches!(
                         &self.callee,
-                        Callee::DynamicBound { def, .. } if def == &v
+                        Callee::DynamicBound { def, .. }
+                        | Callee::TransientParked { def, .. } if def == &v
                     );
                     if same {
                         false
@@ -895,20 +1035,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         };
-        match self.callee.apply_mut() {
-            None => {
-                for id in set.drain(..) {
-                    event.variables.remove(&id);
+        // A parked transient callee (see `Callee::TransientParked`)
+        // re-binds from its stashed def on a GENUINE call: an arg fired
+        // this cycle, an init-forced view (an enclosing fresh bind's
+        // first dispatch, an arm wake), or one of the deleted instance's
+        // captures fired — the retained instance this replaces was
+        // reactively live to its captures. Quiet cycles stay parked:
+        // the retained twin's passive re-poll produced nothing either.
+        let bound = match &self.callee {
+            Callee::TransientParked { def, ext_refs } => {
+                let wake = event.init
+                    || !set.is_empty()
+                    || ext_refs.iter().any(|id| event.variables.contains_key(id));
+                if wake {
+                    let fv = def.clone();
+                    let lb = fv
+                        .downcast_ref::<LambdaDef<R, E>>()
+                        .expect("parked def must be a lambda");
+                    let scope = self.scope.clone();
+                    self.bind(ctx, scope, self.flags, fv.clone(), lb, event, &mut set)
+                        .expect("failed to re-bind parked lambda");
+                    true
+                } else {
+                    bound
                 }
-                None
             }
-            Some(f) if !bound => {
-                let res = f.update(ctx, &mut self.arg_refs, event);
-                for id in set.drain(..) {
-                    event.variables.remove(&id);
-                }
-                res
-            }
+            _ => bound,
+        };
+        let res = match self.callee.apply_mut() {
+            None => None,
+            Some(f) if !bound => f.update(ctx, &mut self.arg_refs, event),
             Some(f) => {
                 let init = mem::replace(&mut event.init, true);
                 let mut refs = Refs::default();
@@ -923,20 +1079,56 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 });
                 let res = f.update(ctx, &mut self.arg_refs, event);
                 event.init = init;
-                for id in set.drain(..) {
-                    event.variables.remove(&id);
-                }
                 res
             }
+        };
+        // Park a transient binding: the dispatch above was this call —
+        // stash the instance's external refs (its capture wake-set,
+        // minus the fnode's own target: a re-delivered identical def
+        // must stay a quiet no-op, as it is for a retained instance),
+        // take over their runtime registrations so capture events keep
+        // flowing to this top, then delete the instance. `transient`
+        // never survives an update — bind and park happen in the same
+        // call.
+        if matches!(&self.callee, Callee::DynamicBound { transient: true, .. }) {
+            let Callee::DynamicBound { def, mut apply, .. } =
+                mem::replace(&mut self.callee, Callee::DynamicUnbound)
+            else {
+                unreachable!()
+            };
+            let fnode_id = match self.fnode.view() {
+                NodeView::Ref(r) => Some(r.id),
+                _ => None,
+            };
+            let mut refs = Refs::default();
+            apply.refs(&mut refs);
+            let mut ext: LPooled<Vec<BindId>> = LPooled::take();
+            refs.with_external_refs(|id| {
+                if Some(id) != fnode_id {
+                    ext.push(id);
+                }
+            });
+            for id in ext.iter() {
+                ctx.rt.ref_var(*id, self.top_id);
+            }
+            apply.delete(ctx);
+            self.callee =
+                Callee::TransientParked { def, ext_refs: ext.drain(..).collect() };
         }
+        for id in set.drain(..) {
+            event.variables.remove(&id);
+        }
+        res
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.release_parked(ctx);
         if let Some(mut f) = self.callee.take_apply() {
             f.delete(ctx)
         }
         self.fnode.delete(ctx);
         for arg in self.args.values_mut() {
+            ctx.cached.remove(&arg.id);
             if let Some(ref mut n) = arg.node {
                 n.delete(ctx);
             }
@@ -1465,12 +1657,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     .expect("arg_ref must be a Ref");
                 let id = id_remap.get(&old.id).copied().unwrap_or(old.id);
                 ctx.rt.ref_var(id, top_id);
-                Box::new(Ref {
-                    spec: old.spec.clone(),
-                    typ: old.typ.clone(),
-                    id,
-                    top_id,
-                }) as Node<R, E>
+                Box::new(Ref { spec: old.spec.clone(), typ: old.typ.clone(), id, top_id })
+                    as Node<R, E>
             })
             .collect();
         let fnode = self.fnode.clone_rebind(ctx, scope, remap);
@@ -1495,14 +1683,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     first_update: true,
                 }
             }
-            Callee::DynamicBound { def, apply }
+            Callee::DynamicBound { def, apply, .. }
                 if matches!(apply.view(), ApplyView::Lambda(_)) =>
             {
                 Callee::DynamicBound {
                     def: def.clone(),
                     apply: apply.clone_rebind(ctx, scope, remap),
+                    // A template is a compile-time artifact — never a
+                    // recursive unfold (and never parked: transient
+                    // bindings don't survive the update that made them).
+                    transient: false,
                 }
             }
+            // `TransientParked` (and unbound / builtin-bound) clones
+            // reset to `DynamicUnbound`: the clone's first update
+            // re-binds via its own fnode, and the parked registrations
+            // are per-instance state the original keeps.
             _ => Callee::DynamicUnbound,
         };
         // A cloned recursion-site stays a recursion site. `tail_arg_order`

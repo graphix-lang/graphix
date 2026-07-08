@@ -1708,6 +1708,16 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// [`PendingTailCall`]. `None` except for the instant between a tail
     /// self-call stashing its args and the owning lambda consuming them.
     pub(crate) pending_tail_call: Option<PendingTailCall>,
+    /// `LambdaId`s whose `GXLambda::update` is currently ON the Rust
+    /// call stack, with activation counts (a multiset — recursion
+    /// activates the same id many times). `CallSite::bind` consults it:
+    /// binding a callee whose def is already active is a recursive
+    /// unfold, and a qualifying body (see
+    /// `callsite::transient_body_ok`) binds TRANSIENT — the instance is
+    /// deleted when its dispatch returns, so non-tail recursion holds
+    /// O(depth) instances instead of one per dynamic call (the full
+    /// call TREE — fib(28) retained 1M instances / 9.6GB).
+    pub(crate) active_lambdas: nohash::IntMap<LambdaId, u32>,
     /// Interrupt/abort control, shared (cloned `Arc`) with the runtime
     /// handle. Loops poll it via [`Self::interrupted`] to abort a wedge;
     /// the runtime polls `control.aborted()` to shut down. See [`Control`].
@@ -1754,6 +1764,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             rec_defs: nohash::IntSet::default(),
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
+            active_lambdas: nohash::IntMap::default(),
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
         };

@@ -20,6 +20,7 @@ use netidx::{pack::Pack, subscriber::Value, utils::Either};
 use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
 use std::{
+    collections::hash_map::Entry as MapEntry,
     fmt,
     hash::Hash,
     mem,
@@ -240,6 +241,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             });
             return None;
         }
+        *ctx.active_lambdas.entry(self.id).or_insert(0) += 1;
         let res = if !self.tail_loop.load(Ordering::Relaxed) {
             self.body.update(ctx, event)
         } else {
@@ -320,6 +322,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             }
             res
         };
+        match ctx.active_lambdas.entry(self.id) {
+            MapEntry::Occupied(mut e) => {
+                let n = e.get_mut();
+                *n -= 1;
+                if *n == 0 {
+                    e.remove();
+                }
+            }
+            MapEntry::Vacant(_) => unreachable!("active_lambdas underflow"),
+        }
         ctx.control.depth_pop();
         res
     }

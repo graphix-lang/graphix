@@ -1213,3 +1213,70 @@ run!(rec_in_split_callback, REC_IN_SPLIT_CALLBACK, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(8)]),
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// Transient recursion (the O(depth) memory fix): a recursively-bound
+// Sync callee instance whose body is a pure activation record is
+// DELETED when its call returns and re-bound from the parked def on
+// the next genuine call. These three pin the observable edges of that
+// mechanism against the retained-instance behavior it replaced.
+
+// A parked site must stay reactively LIVE to the deleted instance's
+// captures: cap fires while the recursion's args are quiet, and each
+// fire must recompute the result (the parked wake-set,
+// `Callee::TransientParked`). Collects [100, 101, 102].
+const REC_TRANSIENT_CAPTURE_WAKE: &str = r#"
+{
+  let cap = 100;
+  cap <- select cap { n if n < 102 => n + 1, _ => never() };
+  let rec f = |n: i64| -> i64 select n {i64:0 => cap, _ => f(n - i64:1)};
+  array::group(f(i64:5), |n, _| n == 3)
+}
+"#;
+
+run!(rec_transient_capture_wake, REC_TRANSIENT_CAPTURE_WAKE, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        matches!(&a[..], [Value::I64(100), Value::I64(101), Value::I64(102)])
+    }
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A body holding a STATEFUL sync builtin (`count`) refuses the
+// transient gate (`transient_body_ok`) — its per-instance state must
+// keep accumulating across fires exactly as the retained unfold
+// always did: three levels of count step 1,2,3 across the three
+// fires, so the sums are [3, 6, 9] (fresh state per call would give
+// [3, 3, 3]).
+const REC_TRANSIENT_STATEFUL_RETAINED: &str = r#"
+{
+  let go = 0;
+  go <- select go { n if n < 2 => n + 1, _ => never() };
+  let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => count(n) + f(n - i64:1)};
+  array::group(f(go ~ i64:3), |n, _| n == 3)
+}
+"#;
+
+run!(rec_transient_stateful_retained, REC_TRANSIENT_STATEFUL_RETAINED, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        matches!(&a[..], [Value::I64(3), Value::I64(6), Value::I64(9)])
+    }
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Pure non-tail recursion re-fired repeatedly: each fire re-binds the
+// parked instances and recomputes the same value — the park/re-bind
+// cycle must be idempotent for a pure body. Collects [55, 55, 55].
+const REC_TRANSIENT_PURE_REFIRE: &str = r#"
+{
+  let go = 0;
+  go <- select go { n if n < 2 => n + 1, _ => never() };
+  let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, i64:1 => i64:1, _ => f(n - i64:1) + f(n - i64:2)};
+  array::group(f(go ~ i64:10), |n, _| n == 3)
+}
+"#;
+
+run!(rec_transient_pure_refire, REC_TRANSIENT_PURE_REFIRE, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        matches!(&a[..], [Value::I64(55), Value::I64(55), Value::I64(55)])
+    }
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
