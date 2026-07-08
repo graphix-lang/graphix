@@ -226,6 +226,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
         if !ctx.control.depth_push() {
             let limit = ctx.control.max_call_depth();
+            if std::env::var("GRAPHIX_DBG_DEPTH").is_ok() {
+                eprintln!(
+                    "DEPTH TRIP lambda id={:?} tail_loop={}",
+                    self.id,
+                    self.tail_loop.load(Ordering::Relaxed)
+                );
+            }
             error!(
                 "call depth limit ({limit}) exceeded in {} — deep non-tail \
                  recursion produces no value (raise via \

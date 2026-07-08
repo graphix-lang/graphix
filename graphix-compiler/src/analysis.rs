@@ -141,16 +141,27 @@ fn infer_effects<R: Rt, E: UserEvent>(
 ) {
     // Dedup the reachable bodies by LambdaId (a lambda may have many call
     // sites; its body + effect are one).
+    //
+    // The (callee, self_bind) pairs double as a BACK-EDGE resolution
+    // table: a #203-unresolved self-call's fnode Ref can miss
+    // `ctx.bind_to_lambda` — a per-slot HOF clone re-mints the `let rec`
+    // binding's BindId without a typecheck0 pass, so the map has no
+    // entry for the re-minted id — and the fallthrough classified the
+    // recursion Async, which disabled the interpreter tail loop and
+    // stack-recursed the residue into the depth guard where `--no-fusion`
+    // tail-looped to the value (soak jul08g fuzz divergence 4).
     let mut bodies: IntMap<LambdaId, &Node<R, E>> = IntMap::default();
-    for (g, _) in sites {
+    let mut self_ids: IntMap<BindId, LambdaId> = IntMap::default();
+    for (g, sb) in sites {
         bodies.entry(g.id()).or_insert_with(|| g.body());
+        self_ids.entry(*sb).or_insert_with(|| g.id());
     }
     let mut eff: IntMap<LambdaId, EffectKind> =
         bodies.keys().map(|id| (*id, EffectKind::Sync)).collect();
     loop {
         let mut changed = false;
         for (lid, body) in &bodies {
-            let e = body_effect(body, &eff, ctx);
+            let e = body_effect(body, &eff, &self_ids, ctx);
             if eff.get(lid).copied() != Some(e) {
                 eff.insert(*lid, e);
                 changed = true;
@@ -172,11 +183,12 @@ fn infer_effects<R: Rt, E: UserEvent>(
 fn body_effect<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     eff: &IntMap<LambdaId, EffectKind>,
+    self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
 ) -> EffectKind {
     let mut acc = EffectKind::Sync;
     fusion::for_each_node(body, &mut |n| {
-        acc = acc.join(node_effect(n, eff, ctx));
+        acc = acc.join(node_effect(n, eff, self_ids, ctx));
     });
     acc
 }
@@ -199,10 +211,11 @@ fn body_effect<R: Rt, E: UserEvent>(
 fn node_effect<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     eff: &IntMap<LambdaId, EffectKind>,
+    self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
 ) -> EffectKind {
     match n.view() {
-        NodeView::CallSite(cs) => callee_effect(cs, eff, ctx),
+        NodeView::CallSite(cs) => callee_effect(cs, eff, self_ids, ctx),
         // Genuinely cross-cycle: a sample (`~`) or `any` delivers on a
         // later cycle than its trigger; a TryCatch's catch handler reads
         // an error variable a cycle after the `?` writes it; a fused
@@ -283,14 +296,25 @@ fn node_effect<R: Rt, E: UserEvent>(
 fn callee_effect<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     eff: &IntMap<LambdaId, EffectKind>,
+    self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
 ) -> EffectKind {
     // Resolved user lambda.
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return eff.get(&g.id()).copied().unwrap_or_default();
     }
-    // fnode Ref → a known user-lambda binding (incl. #203 self-calls).
     if let NodeView::Ref(r) = cs.fnode().view() {
+        // A seeded back-edge (this pass's own (callee, self_bind)
+        // pairs) — the ONLY resolution for a runtime-cloned `let rec`
+        // whose re-minted binding id is absent from `bind_to_lambda`.
+        // Checked first: where both tables know the binding, this one
+        // names the ACTUAL instance at the analyzed site (the stale
+        // template def in `bind_to_lambda` isn't in `eff`, so it reads
+        // as the Async default).
+        if let Some(lid) = self_ids.get(&r.id) {
+            return eff.get(lid).copied().unwrap_or_default();
+        }
+        // fnode Ref → a known user-lambda binding (incl. #203 self-calls).
         if let Some(v) = ctx.bind_to_lambda.get(&r.id) {
             if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
                 return eff.get(&d.id).copied().unwrap_or_default();
@@ -344,10 +368,16 @@ fn mark_recursion<R: Rt, E: UserEvent>(
     // that must advance cycle-by-cycle). Only set when the body's tail
     // self-call(s) actually get marked, so `tail_loop` never promises a
     // loop the interpreter can't perform.
-    if lowering::structural_tail_loop(g, self_bind, ctx)
-        && lambda_is_sync(ctx, g.id())
-        && mark_tail_sites(g.body(), self_bind, g.id())
-    {
+    let structural = lowering::structural_tail_loop(g, self_bind, ctx);
+    let sync = lambda_is_sync(ctx, g.id());
+    if std::env::var("GRAPHIX_DBG_DEPTH").is_ok() {
+        eprintln!(
+            "MARK_RECURSION id={:?} self_bind={:?} structural={structural} sync={sync}",
+            g.id(),
+            self_bind
+        );
+    }
+    if structural && sync && mark_tail_sites(g.body(), self_bind, g.id()) {
         g.set_tail_loop(true);
     }
 }
