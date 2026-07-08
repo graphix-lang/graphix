@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [U64(1), U64(3), U64(5)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(1), I64(3), I64(5)] }) })))))], capped: false }] })
+// mutant: {let a = buffer::from_string; array::map({let a = [i64:1, i64:2, i64:3]; array::enumerate(a)}, |(k, v)| k + v)}
+// minimized:
+array::map({let a = [i64:0, i64:0, i64:3]; array::enumerate(a)}, |(k, v)| k + v)

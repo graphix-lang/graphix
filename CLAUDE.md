@@ -286,6 +286,10 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GRAPHIX_DBG_REGION=1` — dump fused-region input wiring (name/BindId/
   type+deref/constraints/slot kind).
 - `GRAPHIX_DBG_FREEZE=1` — dump region freeze outcomes.
+- `GRAPHIX_DBG_DEPTH=1` — print the lambda id + `tail_loop` gate at every
+  call-depth-guard trip, and each `mark_recursion` decision (id/self_bind/
+  structural/sync). The tool for "why didn't this recursion tail-loop" —
+  found the runtime-clone back-edge effect miss (soak jul08g div 4).
 - `GRAPHIX_DUMP_CLIF=1` — dump every compiled kernel's CLIF (note: the
   display shows `u0:N` func indices, not helper names; map N to the
   registration order of the helper table in `emit_helpers.rs`).

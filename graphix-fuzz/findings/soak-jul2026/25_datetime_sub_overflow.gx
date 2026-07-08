@@ -1,0 +1,3 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) | `DateTime - TimeDelta` overflowed | fatal runtime error: failed to initiate panic, error 5, aborting
+// mutant:
+{let x: datetime = datetime:"2024-11-05 00:00:00 UTC" - duration:9999999999999.s; x}

@@ -1,0 +1,3 @@
+// CRASH: child signal: 11 (SIGSEGV) (core dumped)
+// mutant:
+{let y = array::iter([i64:1, i64:2, i64:3, i64:4]); let src = {let a = [i64:1, i64:2]; array::flat_map(a, |x| [x, x + i64:1])}; let m = array::map(src, |x| i64:7); let c = count(m); select count(y) {i64:4 => "hello foo", _ => never()}}

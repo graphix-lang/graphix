@@ -1,0 +1,14 @@
+// CRASH: child signal: 11 (SIGSEGV) (core dumped)
+// mutant:
+{ let v2 = 'a: Number |v0: 'a, v1: 'a| -> 'a ((v0 * v1) - v1); let v3 = m0::un(m0::mk((i64:1 % i64:2))); let v3 = select v3 { i64:100 if (false && false) => [(v3 - i64:1), i64:-100], i64:0 => { let mt: Array<i64> = []; mt }, v2 => array::init(2, |v4| v2) }; v3 }
+// file-v1: m0.gxi
+val f0: fn(a0: bool) -> i64;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+// file-v1: m0.gx
+let h0 = |v3: u8| -> u8 ((u8:0 + v3) * u8:255);
+let f0 = |v4: bool| -> i64 cast<i64>((u8:1 / u8:0))$;
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;

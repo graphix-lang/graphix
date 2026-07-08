@@ -1,0 +1,3 @@
+// CRASH: child signal: 11 (SIGSEGV) (core dumped)
+// mutant:
+array::find({let a = [i64:1, i64:-100, i64:5]; array::flat_map(a, |x| [i64:10 / x])}, |x| true)
