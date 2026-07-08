@@ -477,6 +477,21 @@ impl Type {
                                 },
                             )?)
                     })?;
+                // Binding member order: a bare unbound TVar member
+                // admits ANYTHING, capturing the whole of `t` — the
+                // WIDEST possible binding — so structural members are
+                // tried first and bare TVars are the fallback. This
+                // keeps a union like flat_map's callback return
+                // `['b, Array<'b>]` in agreement with the runtime
+                // broadcast rule: a returned array always splices, so
+                // an array-typed return must bind through `Array<'b>`
+                // ('b := elem), never 'b := the whole array (soak
+                // jul08g: the wide binding typed find-over-flat_map's
+                // element as Array<i64> while the runtime produced
+                // i64 — the JIT trusted the type and crashed).
+                let bare = |t0: &&Self| matches!(t0, Self::TVar(tv) if tv.read().typ.read().typ.is_none());
+                let members =
+                    || s.iter().filter(|t0| !bare(t0)).chain(s.iter().filter(bare));
                 match (whole_ok, prims_ok) {
                     (false, false) => Ok(false),
                     // prefer prims when valid — narrowest TVar bindings
@@ -484,7 +499,7 @@ impl Type {
                         Ok::<_, anyhow::Error>(true),
                         |acc, t1| {
                             Ok(acc?
-                                && s.iter().fold(
+                                && members().fold(
                                     Ok::<_, anyhow::Error>(false),
                                     |acc, t0| {
                                         Ok(acc?
@@ -493,11 +508,10 @@ impl Type {
                                 )?)
                         },
                     )?),
-                    (true, false) => {
-                        Ok(s.iter().fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
+                    (true, false) => Ok(members()
+                        .fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
                             Ok(acc? || t0.contains_int(flags, env, hist, t)?)
-                        })?)
-                    }
+                        })?),
                 }
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
