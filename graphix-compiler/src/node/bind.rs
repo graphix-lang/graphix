@@ -610,9 +610,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.child, self.child.typecheck0(ctx))?;
-        let typ = match self.child.typ() {
-            Type::ByRef(t) => (**t).clone(),
-            _ => bail!("expected reference"),
+        // Deref TVars before matching: a container/accessor read's
+        // type is a TVar BOUND to `&T`, not a bare `Type::ByRef` —
+        // `*(a[0]$)` over `Array<&i64>` was rejected here while the
+        // runtime handles it by construction (a ref VALUE is
+        // `Value::U64(bind_id)` wherever it came from; `update`
+        // re-registers lazily off the value). The structural match
+        // made container-stored refs a compile error for no semantic
+        // reason (2026-07-08).
+        let typ = self.child.typ().with_deref(|t| match t {
+            Some(Type::ByRef(t)) => Some((**t).clone()),
+            _ => None,
+        });
+        let typ = match typ {
+            Some(t) => t,
+            None => bail!("expected reference"),
         };
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
         Ok(())
