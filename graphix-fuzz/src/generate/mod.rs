@@ -145,6 +145,9 @@ pub struct GenStats {
     pub module: bool,
     /// A DYNAMIC module was emitted.
     pub dynamic_module: bool,
+    /// A module interface carried a composite (non-scalar) param or
+    /// return type.
+    pub composite_iface: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -426,7 +429,7 @@ mod test {
         let mut rng = Rng::new(3);
         let (mut rebind, mut mono, mut collision, mut rec, mut errl, mut module) =
             (0, 0, 0, 0, 0, 0);
-        let mut dynmod = 0;
+        let (mut dynmod, mut comp_iface) = (0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -437,6 +440,7 @@ mod test {
             errl += s.error_lambda as usize;
             module += s.module as usize;
             dynmod += s.dynamic_module as usize;
+            comp_iface += s.composite_iface as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
@@ -446,6 +450,7 @@ mod test {
             ("error-arm lambda (B5 shape)", errl),
             ("module with interface", module),
             ("dynamic module", dynmod),
+            ("composite interface type", comp_iface),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }

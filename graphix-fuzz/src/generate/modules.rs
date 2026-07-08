@@ -64,13 +64,34 @@ pub(super) fn gen_module(
     } else {
         None
     };
-    // 1-3 public typed lambdas over scalars.
+    // An interface-boundary type: scalars keep the majority, but
+    // composites (tuple/struct/array/map/nullable) and the occasional
+    // tag union cross too — a marshalled composite param/return is the
+    // instantiation + ABI surface a scalar-only interface never touched.
+    // Bare variant literals and `null` coerce at the annotated call
+    // site exactly like the annotated-let flow (probed 2026-07-08).
+    let mut iface_type = |rng: &mut Rng, stats: &mut GenStats| match rng.below(10) {
+        0..=4 => types::scalar_type(rng),
+        5..=8 => {
+            let t = types::random_type(rng, 2);
+            if !t.is_scalar() {
+                stats.composite_iface = true;
+            }
+            t
+        }
+        _ => {
+            stats.composite_iface = true;
+            types::random_variant(rng, 1)
+        }
+    };
+    // 1-3 public typed lambdas.
     let nfns = 1 + rng.below(3);
     for i in 0..nfns {
         let fname = format!("f{i}");
         let arity = 1 + rng.below(2);
-        let params: Vec<GenType> = (0..arity).map(|_| types::scalar_type(rng)).collect();
-        let ret = types::scalar_type(rng);
+        let params: Vec<GenType> =
+            (0..arity).map(|_| iface_type(rng, stats)).collect();
+        let ret = iface_type(rng, stats);
         let names: Vec<String> = (0..arity).map(|_| inner.fresh()).collect();
         let m = inner.mark();
         for (n, t) in names.iter().zip(params.iter()) {
