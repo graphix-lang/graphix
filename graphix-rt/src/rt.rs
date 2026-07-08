@@ -32,6 +32,19 @@ use tokio::{
 };
 use triomphe::Arc;
 
+/// `GRAPHIX_DBG_VARS=1` — print every runtime variable event:
+/// `REF_VAR`/`UNREF_VAR` (the (BindId, ExprId) wake-interest refcount),
+/// `SET_VAR` (a queued cross-cycle write), and `NOTIFY_SET` (same-cycle
+/// bind delivery with the current interest map). The tool for "who
+/// publishes/wakes this bind" — found the dead-eliminated module
+/// statement (a fused region waiting forever on a feeder whose producer
+/// was spliced away, 2026-07-08). Checked once; set before launch.
+fn dbg_vars() -> bool {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("GRAPHIX_DBG_VARS").is_some());
+    *ON
+}
+
 #[derive(Debug)]
 pub(super) struct RpcClient {
     proc: rpc::client::Proc,
@@ -388,10 +401,16 @@ impl<X: GXExt> Rt for GXRt<X> {
     }
 
     fn ref_var(&mut self, id: BindId, ref_by: ExprId) {
+        if dbg_vars() {
+            eprintln!("REF_VAR {id:?} by {ref_by:?}");
+        }
         *self.by_ref.entry(id).or_default().entry(ref_by).or_default() += 1;
     }
 
     fn unref_var(&mut self, id: BindId, ref_by: ExprId) {
+        if dbg_vars() {
+            eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
+        }
         if let Some(refs) = self.by_ref.get_mut(&id) {
             if let Some(cn) = refs.get_mut(&ref_by) {
                 *cn -= 1;
@@ -406,10 +425,16 @@ impl<X: GXExt> Rt for GXRt<X> {
     }
 
     fn set_var(&mut self, id: BindId, value: Value) {
+        if dbg_vars() {
+            eprintln!("SET_VAR {id:?} = {value}");
+        }
         self.var_updates.push_back((id, value.clone()));
     }
 
     fn notify_set(&mut self, id: BindId) {
+        if dbg_vars() {
+            eprintln!("NOTIFY_SET {id:?} -> {:?}", self.by_ref.get(&id));
+        }
         if let Some(refed) = self.by_ref.get(&id) {
             for eid in refed.keys() {
                 self.updated.entry(*eid).or_default();

@@ -4327,6 +4327,18 @@ fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
         NodeView::Connect(_) | NodeView::ConnectDeref(_) | NodeView::CallSite(_) => {
             ok = false
         }
+        // A Module PUBLISHES its binds into the persistent env —
+        // readable by any Ref outside the region and by every
+        // later-installed top expression — so a `mod m;` statement is
+        // never dead. Eliminating one deadlocked the spliced region:
+        // the whole-file Do fused with the module's constant routed IN
+        // as a feeder while the module (that feeder's only producer)
+        // was eliminated as a dead statement and deleted with the
+        // splice — the kernel waited forever on its own input
+        // (`mod m0; m0::c` under the shell's file wrap, found probing
+        // the fuzzer's cross-module vocabulary, 2026-07-08). The
+        // node-walk runs the "dead" statement and delivers.
+        NodeView::Module(_) => ok = false,
         NodeView::Qop(q) => {
             if q.id.is_some() {
                 ok = false

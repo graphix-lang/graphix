@@ -293,6 +293,12 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GRAPHIX_DUMP_CLIF=1` — dump every compiled kernel's CLIF (note: the
   display shows `u0:N` func indices, not helper names; map N to the
   registration order of the helper table in `emit_helpers.rs`).
+- `GRAPHIX_DBG_VARS=1` — print every runtime variable event (`REF_VAR`/
+  `UNREF_VAR` wake-interest refcounts, `SET_VAR` cross-cycle writes,
+  `NOTIFY_SET` same-cycle bind delivery + interest map). The tool for
+  "who publishes/wakes this bind" — found the dead-eliminated module
+  statement (a region waiting forever on a feeder whose producer was
+  spliced away, 2026-07-08). Lives in graphix-rt (rt.rs).
 
 ### Type Alias Expansion in Contains
 
