@@ -201,13 +201,12 @@ pub enum GenType {
     PolyFn {
         arity: usize,
     },
-    /// A reference `&T` — inner type kept SCALAR (v1): refs are
-    /// second-class in runtime containers (an `Array<&T>` element
-    /// deref is a runtime "expected reference" — probed 2026-07-08),
-    /// so refs enter composites only through tuples/structs, where
-    /// field PROJECTION deref (`*(p.0)`) statically resolves. Never
-    /// produced by `random_type`; introduced by dedicated statements,
-    /// ref-typed fn/interface params, and `&literal` leaves.
+    /// A reference `&T` — inner type kept SCALAR (v1). Refs enter
+    /// composites through tuples/structs (projection deref `*(p.0)`)
+    /// and arrays (element deref `*(a[0]$)` — legal since Deref
+    /// typechecks through bound TVars, c4c20881). Never produced by
+    /// `random_type`; introduced by dedicated statements, ref-typed
+    /// fn/interface params, and `&literal` leaves.
     Ref(Box<GenType>),
     /// A generated module's abstract type (`type T;` in `m<i>.gxi`,
     /// concrete rep hidden in the impl). Identified by its module —

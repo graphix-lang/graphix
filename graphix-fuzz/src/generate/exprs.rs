@@ -91,6 +91,12 @@ fn try_accessor(
                     };
                     cands.push(format!("{name}[{idx}]$"));
                 }
+                // Element deref over an array of refs (ref arrays are
+                // built 2 long, so 0/-1 always hit).
+                if **e == reffed {
+                    let idx = if rng.below(2) == 0 { "0" } else { "-1" };
+                    cands.push(format!("*({name}[{idx}]$)"));
+                }
                 if ty == t {
                     let slice = if rng.below(2) == 0 { "..1" } else { "1.." };
                     cands.push(format!("{name}[{slice}]$"));

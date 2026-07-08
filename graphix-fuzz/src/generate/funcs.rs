@@ -329,7 +329,7 @@ pub(super) fn gen_ref_stmts(
     let r = ctx.name_for_bind(rng, cfg);
     stmts.push(format!("let {r} = {val}"));
     ctx.push(r.clone(), rty.clone());
-    match rng.below(3) {
+    match rng.below(4) {
         0 => {
             let other = exprs::gen_typed(ctx, rng, &inner, 1);
             let t = ctx.fresh();
@@ -340,6 +340,14 @@ pub(super) fn gen_ref_stmts(
         // has no binding to write).
         1 if var_target => {
             stmts.push(format!("*{r} <- {}", types::literal(rng, &inner)));
+        }
+        // Array of refs — element deref (`*(a[0]$)`) is legal since
+        // Deref::typecheck0 derefs TVars (the 2026-07-08 fix Eric's
+        // question found); try_accessor reads it back.
+        2 => {
+            let arr = ctx.fresh();
+            stmts.push(format!("let {arr} = [{r}, {r}]"));
+            ctx.push(arr, GenType::Array(Box::new(rty)));
         }
         _ => {}
     }
