@@ -155,10 +155,26 @@ async fn main() -> Result<()> {
                 spawn(&mut set, next, progs[next].clone());
                 next += 1;
             }
+            // `GRAPHIX_FUZZ_DUMP_REJECTS=<dir>`: write each rejected
+            // program (with its full error as a trailing comment) to
+            // `<dir>/reject_<i>.gx` — the inline one-example-per-bucket
+            // print mangles multi-line programs (dynmod raw strings),
+            // so byte-exact repro needs the file.
+            let dump_dir = std::env::var_os("GRAPHIX_FUZZ_DUMP_REJECTS");
             while let Some(res) = set.join_next().await {
                 match res {
                     Ok((_, None)) => compiled += 1,
                     Ok((i, Some(err))) => {
+                        if let Some(dir) = &dump_dir {
+                            let p = std::path::Path::new(dir)
+                                .join(format!("reject_{i:06}.gx"));
+                            let body = format!(
+                                "{}\n// gen-check reject:\n// {}\n",
+                                progs[i],
+                                err.replace('\n', "\n// ")
+                            );
+                            let _ = std::fs::write(p, body);
+                        }
                         let mut key = err
                             .lines()
                             .rev()

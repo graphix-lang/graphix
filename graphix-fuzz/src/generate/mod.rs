@@ -96,6 +96,8 @@ pub struct GenCfg {
     /// Statement slots per program: 0..=max_lets (template slots may
     /// emit several statements).
     pub max_lets: usize,
+    /// Depth passed to `random_type` for value-let and tail types.
+    pub type_depth: usize,
 }
 
 impl Default for GenCfg {
@@ -118,8 +120,20 @@ impl Default for GenCfg {
             p_bare_module: 0.2,
             p_dynmod: 0.08,
             max_lets: 6,
+            type_depth: 2,
         }
     }
+}
+
+/// The BIG profile — the same vocabulary at program scale: 4x the
+/// statement slots (longer dataflow chains, more regions, more
+/// modules per program — `p_module` raised so multi-module programs
+/// with cross-module edges are common) and one level deeper types.
+/// Scale multiplies whatever the vocabulary expresses; the
+/// multiplicative bug surface (many regions × many feeders × module
+/// boundaries) is exactly what small profiles can't reach.
+pub fn big_cfg() -> GenCfg {
+    GenCfg { max_lets: 24, p_module: 0.2, type_depth: 3, ..GenCfg::default() }
 }
 
 /// Which bug-class shapes one generated program contains — the
@@ -183,9 +197,19 @@ impl GenCtx {
     }
 
     fn fresh(&mut self) -> String {
-        let n = format!("v{}", self.next);
-        self.next += 1;
-        n
+        loop {
+            let n = format!("v{}", self.next);
+            self.next += 1;
+            // `v32`/`v64` are the variable-width int TYPE KEYWORDS —
+            // as binding names they're a parse error. Latent at the
+            // default profile (6 slots rarely push the counter past
+            // 31); the big profile hit it immediately (62/3000 at
+            // seed 71, all "Expected mod, use, ... let" in a module
+            // file whose param list reached v32).
+            if n != "v32" && n != "v64" {
+                return n;
+            }
+        }
     }
 
     /// Choose the name for a new binding: a visible name (shadow), a
@@ -295,9 +319,12 @@ impl GenCtx {
     }
 }
 
-/// Generate one complete program with the default profile.
+/// Generate one complete program: ~15% draw the BIG profile
+/// ([`big_cfg`]), the rest the default. The profile choice consumes
+/// the rng, so a seed still maps to one deterministic program stream.
 pub fn gen_program(rng: &mut Rng) -> String {
-    gen_program_stats(&GenCfg::default(), rng).0
+    let cfg = if chance(rng, 0.15) { big_cfg() } else { GenCfg::default() };
+    gen_program_stats(&cfg, rng).0
 }
 
 /// Generate one complete program (a graphix expression): a run of
@@ -344,7 +371,7 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
             let ty = if variant {
                 types::random_variant(rng, 1)
             } else {
-                types::random_type(rng, 2)
+                types::random_type(rng, cfg.type_depth)
             };
             let val = patterns::maybe_select(&ctx, rng, &ty, 3)
                 .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &ty, 3));
@@ -359,7 +386,7 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
             ctx.push(name, ty);
         }
     }
-    let tail_ty = types::random_type(rng, 2);
+    let tail_ty = types::random_type(rng, cfg.type_depth);
     let tail = patterns::maybe_select(&ctx, rng, &tail_ty, 3)
         .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &tail_ty, 3));
     let prog = if stmts.is_empty() {
