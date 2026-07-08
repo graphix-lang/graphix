@@ -1089,7 +1089,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::Array(a)) = &from.0[0] {
             let a = ValArray::from_iter_exact(
-                a.iter().enumerate().map(|(i, v)| (i, v.clone()).into()),
+                a.iter().enumerate().map(|(i, v)| (i as i64, v.clone()).into()),
             );
             return Some(Value::Array(a));
         }

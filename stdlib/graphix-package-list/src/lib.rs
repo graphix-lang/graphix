@@ -705,7 +705,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
             return None;
         }
         Some(from_iter_back(
-            ListIter { cur: list.clone() }.enumerate().map(|(i, v)| (i, v).into()),
+            ListIter { cur: list.clone() }.enumerate().map(|(i, v)| (i as i64, v).into()),
         ))
     }
 }
