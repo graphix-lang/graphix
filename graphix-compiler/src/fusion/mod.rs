@@ -310,30 +310,16 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
 ) -> ahash::AHashSet<BindId> {
+    // A `let` INSIDE a select arm lifts like any other: the node-walk
+    // RE-SEEDS it on every arm wake (unselected arms sleep; a re-taken
+    // arm updates under `event.init = true`), and the value-position
+    // select emitter reproduces that from its selection-memory state
+    // word (arm bodies emit under an effective init — see
+    // `emit_select_value_arm`). Contexts without a state word (tail
+    // selects in recursive bodies, callee kernels) refuse the shape at
+    // emission and de-fuse (soak jul08g fuzz divergence 6).
     let mut connect_count: ahash::AHashMap<BindId, usize> = ahash::AHashMap::default();
     let mut const_lets: ahash::AHashSet<BindId> = ahash::AHashSet::default();
-    // A `let` INSIDE a select arm is excluded: the node-walk re-fires
-    // the Bind each time the arm WAKES (unselected arms sleep), so the
-    // variable RE-SEEDS on every arm re-entry — `s` counts up from the
-    // seed again — where the lift's fire-once STALE-gated seed would
-    // hand the feeder's retained value straight back (soak jul08g fuzz
-    // divergence 6: interp re-emitted 0 then 6 per re-entry, the kernel
-    // emitted only 6). An OUTER `let` whose connect sits in an arm is
-    // fine — it doesn't sleep with the arm, so it never re-seeds.
-    let mut arm_binds: ahash::AHashSet<BindId> = ahash::AHashSet::default();
-    for_each_node(node, &mut |n| {
-        if let NodeView::Select(s) = n.view() {
-            for (_, body) in s.arms.iter() {
-                for_each_node(&body.node, &mut |m| {
-                    if let NodeView::Bind(b) = m.view() {
-                        if let Some(id) = b.single_bind_id() {
-                            arm_binds.insert(id);
-                        }
-                    }
-                });
-            }
-        }
-    });
     for_each_node(node, &mut |n| match n.view() {
         NodeView::Connect(c) => {
             *connect_count.entry(c.id).or_default() += 1;
@@ -368,9 +354,7 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     });
     connect_count
         .into_iter()
-        .filter(|&(t, count)| {
-            count == 1 && const_lets.contains(&t) && !arm_binds.contains(&t)
-        })
+        .filter(|&(t, count)| count == 1 && const_lets.contains(&t))
         .map(|(t, _)| t)
         .collect()
 }

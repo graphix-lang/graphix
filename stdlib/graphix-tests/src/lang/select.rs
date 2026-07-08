@@ -752,3 +752,57 @@ run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Resul
 >| {
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// Arm-wake re-seed (soak jul08g fuzz divergence 6): the node-walk
+// updates a newly-taken arm with `event.init = true` (node/select.rs),
+// so an arm-local lifted connect target RE-SEEDS on every re-entry —
+// sel alternates arms and each arm-2 take emits the SEED 10, never the
+// connect-written 11 the feeder retains from the previous take. The
+// kernel reproduces the init view from the select's selection-memory
+// state word (arm bodies emit under an effective init).
+const SELECT_ARM_LOCAL_RESEED: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x % 2;
+  let sel = select m {
+    0 => 0,
+    _ => { let s = 10; s <- (x ~ s) + 1; s }
+  };
+  array::group(sel, |n, _| n == 4)
+}
+"#;
+
+run!(select_arm_local_reseed, SELECT_ARM_LOCAL_RESEED, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![10, 0, 10, 0]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Same shape, connect RHS recomputed by a fold on each wake — the
+// re-entry emits the seed 0 first (the fold's write lands a cycle
+// later, while the arm is asleep again, so 6 never surfaces).
+const SELECT_ARM_LOCAL_RESEED_FOLD: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x % 2;
+  let sel = select m {
+    0 => 100,
+    _ => { let s = 0; s <- array::fold([1, 2, 3], 0, |acc, e| acc + e); s }
+  };
+  array::group(sel, |n, _| n == 4)
+}
+"#;
+
+run!(select_arm_local_reseed_fold, SELECT_ARM_LOCAL_RESEED_FOLD, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![0, 100, 0, 100]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);

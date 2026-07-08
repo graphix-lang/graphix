@@ -1339,6 +1339,7 @@ fn compile_into_function(
         helper_refs,
         tail_call_slots,
         tail_scrut_stale,
+        init_override: std::cell::Cell::new(None),
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
@@ -1594,6 +1595,18 @@ pub(crate) struct LowerCtx<'a> {
     /// fires when the arm-selecting scrutinee fired — the tail-arm
     /// mirror of the value-position select's merge-point fold.
     tail_scrut_stale: Variable,
+    /// Effective-init override for select ARM bodies. The node-walk
+    /// updates a newly-taken arm with `event.init = true`
+    /// (node/select.rs — an arm WAKE is an init view: seeds re-fire,
+    /// constants re-deliver, connects re-write), so
+    /// `emit_select_value_arm` emits each arm body with this set to
+    /// `kernel_init | selection-changed-into-this-arm` (from the
+    /// select's state word) and [`BodyCx::init_flag`] returns it.
+    /// Nested selects compose naturally: the inner arm ORs its own
+    /// changed bit into the outer effective init it reads. `None`
+    /// outside arm bodies (and inside arms of stateless-context
+    /// selects, which refuse arm-lifted binds instead).
+    init_override: std::cell::Cell<Option<ClifValue>>,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
     /// pops it once `graphix_dyncall` has consumed it. A forced-bottom
@@ -3260,12 +3273,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing helper {name}"))
     }
 
-    /// The `event.init` flag (`I64`, 1 on the kernel's init cycle),
-    /// loaded from wire slot 0 (see [`kernel_abi::CTX_WIRE_SLOTS`]).
-    /// `emit_const_node` reads it to STALE-gate a constant: a constant
-    /// fires only at init, then carries a cached (stale) value.
+    /// The EFFECTIVE `event.init` flag (`I64`, nonzero on an init
+    /// view): the kernel-init word from wire slot 0 (see
+    /// [`kernel_abi::CTX_WIRE_SLOTS`]), overridden inside select ARM
+    /// bodies with `kernel_init | selection-changed` (see
+    /// `LowerCtx::init_override` — the node-walk gives a newly-taken
+    /// arm an init view). `emit_const_node` reads it to STALE-gate a
+    /// constant: a constant fires only on an init view, then carries a
+    /// cached (stale) value.
     pub fn init_flag(&self) -> ClifValue {
-        self.ctx.init_flag
+        self.ctx.init_override.get().unwrap_or(self.ctx.init_flag)
     }
 
     /// The per-instance state-buffer pointer (`I64`), loaded from wire
@@ -4524,6 +4541,27 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
     }
+    // The tail emitter has no selection memory (recursive bodies claim
+    // no state), so an arm-lifted connect target's wake re-seed can't
+    // be reproduced here — de-fuse. The value-position emitter handles
+    // this shape via the state word (see `emit_select_node`).
+    let has_arm_lift = sel.arms.iter().any(|(_, body)| {
+        let mut found = false;
+        fusion::for_each_node(&body.node, &mut |n| {
+            if let NodeView::Bind(b) = n.view() {
+                if b.single_bind_id().is_some_and(|id| cx.ctx.lifted.contains(&id)) {
+                    found = true;
+                }
+            }
+        });
+        found
+    });
+    if has_arm_lift {
+        return Err(anyhow!(
+            "emit_clif: tail select arm holds a lifted connect target — \
+             no selection memory in a recursive body"
+        ));
+    }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
     // Fold this scrutinee's firing into the kernel's tail-firing
@@ -4652,6 +4690,21 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             let pdisc = cx.b.use_var(vv.disc);
             let ppay = cx.b.use_var(vv.payload);
             let valid = is_untainted(cx.b, pdisc);
+            // Inside a select ARM body (init-override active), the
+            // node-walk RE-FIRES this bind's seed on every arm init
+            // view (wake/entry — node/select.rs sets `event.init`),
+            // preferring it over the feeder's retained value; the
+            // connect then rebuilds from the seed (soak jul08g fuzz
+            // divergence 6). Outside arms the feeder wins whenever it
+            // has ever fired, exactly as before (at kernel init the
+            // feeder is tainted, so the seed wins there too).
+            let use_feeder = match cx.ctx.init_override.get() {
+                None => valid,
+                Some(eff) => {
+                    let quiet = cx.b.ins().icmp_imm(IntCC::Equal, eff, 0);
+                    cx.b.ins().band(valid, quiet)
+                }
+            };
             let frozen =
                 kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());
             let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
@@ -4660,8 +4713,8 @@ fn emit_let_node<R: Rt, E: UserEvent>(
                     // Register scalars are branch-free: both sides are
                     // plain values, select the feeder or the seed.
                     let seed = value.emit_clif(cx)?;
-                    let disc = cx.b.ins().select(valid, pdisc, seed.disc);
-                    let payload = cx.b.ins().select(valid, ppay, seed.payload);
+                    let disc = cx.b.ins().select(use_feeder, pdisc, seed.disc);
+                    let payload = cx.b.ins().select(use_feeder, ppay, seed.payload);
                     bind_local(
                         cx,
                         name.clone(),
@@ -4686,7 +4739,7 @@ fn emit_let_node<R: Rt, E: UserEvent>(
                     let merge = cx.b.create_block();
                     cx.b.append_block_param(merge, types::I64); // disc
                     cx.b.append_block_param(merge, types::I64); // ptr/bits
-                    cx.b.ins().brif(valid, use_param, &[], use_seed, &[]);
+                    cx.b.ins().brif(use_feeder, use_param, &[], use_seed, &[]);
                     cx.b.switch_to_block(use_param);
                     cx.b.seal_block(use_param);
                     let clone_helper = if is_string {
@@ -6423,7 +6476,33 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     } else {
         None
     };
-    let sel_state_off = if has_guard { cx.claim_state_word() } else { None };
+    // An arm body holding a LIFTED connect target (`let s = 0; s <-
+    // …; s` — the per-arm reactive accumulator) needs the state word
+    // unconditionally: the node-walk RE-SEEDS the bind on every arm
+    // wake (the init-view contract above), which the arm emitter
+    // reproduces from the selection-changed bit. Without a word
+    // (loop/callee context) that semantics is unrepresentable — Err,
+    // de-fuse (soak jul08g fuzz divergence 6).
+    let has_arm_lift = sel.arms.iter().any(|(_, body)| {
+        let mut found = false;
+        fusion::for_each_node(&body.node, &mut |n| {
+            if let NodeView::Bind(b) = n.view() {
+                if b.single_bind_id().is_some_and(|id| cx.ctx.lifted.contains(&id)) {
+                    found = true;
+                }
+            }
+        });
+        found
+    });
+    let sel_state_off =
+        if has_guard || has_arm_lift { cx.claim_state_word() } else { None };
+    if has_arm_lift && sel_state_off.is_none() {
+        return Err(anyhow!(
+            "emit_clif: select arm holds a lifted connect target but no \
+             per-instance state word is available here — the arm-wake \
+             re-seed can't be reproduced"
+        ));
+    }
     let arm_index = std::cell::Cell::new(0usize);
     emit_select_arms(
         cx,
@@ -7338,6 +7417,34 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                     body.node.typ()
                 )
             })?;
+    // Selection memory (see `emit_select_node`): compare-and-record
+    // this arm's index BEFORE the body — the changed bit both refines
+    // the guard firing term (below) and drives the arm's EFFECTIVE
+    // INIT. The node-walk updates a newly-taken arm with `event.init =
+    // true` (node/select.rs — the wake is an init view), so the body
+    // is emitted under `kernel_init | (changed & valid)`: seeds
+    // re-fire, constants re-deliver, lifted connect targets re-seed
+    // (soak jul08g fuzz divergence 6). Recording (and the init view)
+    // is skipped for a TAINTED scrutinee: the arm is taken
+    // structurally but the node-walk made no selection.
+    let base_init = cx.init_flag();
+    let sel_changed = sel_state.map(|(off, idx)| {
+        let sp = cx.state_ptr();
+        let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+        let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
+        let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
+        let valid = is_untainted(cx.b, scrut_disc);
+        let recorded = cx.b.ins().select(valid, tag, stored);
+        cx.b.ins().store(MemFlags::trusted(), recorded, sp, off);
+        let woke = cx.b.ins().band(changed, valid);
+        let woke = cx.b.ins().uextend(types::I64, woke);
+        let eff_init = cx.b.ins().bor(base_init, woke);
+        (changed, eff_init)
+    });
+    let prev_override = match sel_changed {
+        Some((_, eff_init)) => cx.ctx.init_override.replace(Some(eff_init)),
+        None => cx.ctx.init_override.get(),
+    };
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(rp) => {
             if kernel_abi::scalar_prim(cx.registry(), &body_frozen) != Some(rp) {
@@ -7442,30 +7549,19 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     //  - GUARDED: additionally AND in the guard-feeder stale word
     //    computed before the chain — the select also fires when any
     //    guard input fired (see `emit_select_node`).
+    cx.ctx.init_override.set(prev_override);
     let base = clean_disc(cx.b, disc);
     let disc = match guard_stale {
         None => propagate_flags(cx.b, base, &[disc, scrut_disc]),
         Some(gw) => {
-            // Selection memory (see `emit_select_node`): with a state
-            // word, the guard term fires only when the SELECTION
-            // changed — compare-and-record this arm's index (stored
-            // as idx+1; 0 = no previous selection, so a fresh
-            // instance's first selection always reads as changed).
-            // The record is skipped for a TAINTED scrutinee: the arm
-            // is taken structurally but the node-walk made no
-            // selection (its output is bottom), and recording it
-            // would mask the next real selection change.
-            let gw = match sel_state {
+            // Selection memory: with a state word, the guard term
+            // fires only when the SELECTION changed (compare-recorded
+            // above, before the body; stored as idx+1, 0 = no previous
+            // selection, so a fresh instance's first selection always
+            // reads as changed).
+            let gw = match sel_changed {
                 None => gw,
-                Some((off, idx)) => {
-                    let sp = cx.state_ptr();
-                    let stored =
-                        cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-                    let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
-                    let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
-                    let valid = is_untainted(cx.b, scrut_disc);
-                    let recorded = cx.b.ins().select(valid, tag, stored);
-                    cx.b.ins().store(MemFlags::trusted(), recorded, sp, off);
+                Some((changed, _)) => {
                     let quiet = cx.b.ins().iconst(types::I64, STALE);
                     cx.b.ins().select(changed, gw, quiet)
                 }
