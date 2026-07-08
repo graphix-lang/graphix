@@ -150,6 +150,8 @@ pub struct GenStats {
     pub composite_iface: bool,
     /// A module body called an EARLIER module's public fn.
     pub cross_module_call: bool,
+    /// An abstract T entered the vocabulary as a first-class value.
+    pub abstract_value: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -431,7 +433,7 @@ mod test {
         let mut rng = Rng::new(3);
         let (mut rebind, mut mono, mut collision, mut rec, mut errl, mut module) =
             (0, 0, 0, 0, 0, 0);
-        let (mut dynmod, mut comp_iface, mut xmod) = (0, 0, 0);
+        let (mut dynmod, mut comp_iface, mut xmod, mut abst) = (0, 0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -444,6 +446,7 @@ mod test {
             dynmod += s.dynamic_module as usize;
             comp_iface += s.composite_iface as usize;
             xmod += s.cross_module_call as usize;
+            abst += s.abstract_value as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
@@ -455,6 +458,7 @@ mod test {
             ("dynamic module", dynmod),
             ("composite interface type", comp_iface),
             ("cross-module call", xmod),
+            ("first-class abstract value", abst),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }

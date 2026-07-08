@@ -201,6 +201,18 @@ pub enum GenType {
     PolyFn {
         arity: usize,
     },
+    /// A generated module's abstract type (`type T;` in `m<i>.gxi`,
+    /// concrete rep hidden in the impl). Identified by its module —
+    /// two modules' `T`s are distinct types. The ONLY producers are
+    /// `<module>::mk(i64)` and T-typed bindings; the only structural
+    /// consumer is `<module>::un(T) -> i64` — everything else
+    /// (composites, selects, interfaces of later modules) treats it as
+    /// an opaque value, which is exactly the abstract-registry surface
+    /// (`resolve_abstract`/`freeze_for_abi`) under test. Never produced
+    /// by `random_type`; enters the vocabulary through module emission.
+    Abstract {
+        module: String,
+    },
     /// A name deliberately bound to something OUTSIDE the typed
     /// vocabulary (a rec lambda, a bare wide-tvar lambda). The entry
     /// exists to MASK any binding the name shadowed — without it a
@@ -250,6 +262,7 @@ impl GenType {
             }
             GenType::Map(v) => format!("Map<string, {}>", v.render()),
             GenType::Nullable(t) => format!("[{}, null]", t.render()),
+            GenType::Abstract { module } => format!("{module}::T"),
             // fn-type annotations name their positional params.
             GenType::Fn { params, ret } => {
                 let parts: Vec<_> = params
@@ -287,6 +300,7 @@ impl GenType {
             | GenType::Str
             | GenType::Fn { .. }
             | GenType::PolyFn { .. }
+            | GenType::Abstract { .. }
             | GenType::Opaque => false,
         }
     }
@@ -440,6 +454,11 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
             } else {
                 literal(rng, t)
             }
+        }
+        // No literal form exists, but the constructor over an i64
+        // literal is the closed leaf expression.
+        GenType::Abstract { module } => {
+            format!("{module}::mk({})", literal(rng, &GenType::Num(NumTy::I64)))
         }
         GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
             unreachable!("fn/opaque types have no literal form")

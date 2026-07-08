@@ -165,10 +165,17 @@ pub(super) fn gen_module(
         inner.push(fname.clone(), fty.clone());
         public.push((fname, fty));
     }
-    // Optional abstract type round-trip: `type T;` in the interface, a
-    // hidden concrete def in the impl, constructor + accessor — the
+    // Optional abstract type: `type T;` in the interface, a hidden
+    // concrete def in the impl, constructor + accessor — the
     // abstract-registry surface fusion resolves through
-    // `resolve_abstract`/`freeze_for_abi`.
+    // `resolve_abstract`/`freeze_for_abi`. `mk`/`un` register as MAIN
+    // vocabulary typed over `GenType::Abstract`, so T values flow
+    // FIRST-CLASS from here: through lets, tuples/arrays, select
+    // binds, later modules' bodies, and (via cross-module wiring
+    // pinning a later f0's return to `mk`'s) other interfaces —
+    // `m1.gxi` declaring `-> m0::T` resolves (probed 2026-07-08). In
+    // the bare-module variant the same paths hold with `m<i>::T`
+    // resolving as a transparent alias.
     let mut stmts = Vec::new();
     if chance(rng, cfg.p_abstract) {
         let concrete = match rng.below(3) {
@@ -186,10 +193,32 @@ pub(super) fn gen_module(
             "type T = {};\nlet mk = |x: i64| -> T {mk_body};\nlet un = |t: T| -> i64 {un_body};\n",
             concrete.render()
         ));
+        let aty = GenType::Abstract { module: mname.clone() };
+        ctx.push(
+            format!("{mname}::mk"),
+            GenType::Fn { params: vec![I64], ret: Box::new(aty.clone()) },
+        );
+        ctx.push(
+            format!("{mname}::un"),
+            GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+        );
+        // Seed one T-typed binding; production and consumption are
+        // organic vocabulary from here (`un` via try_call at i64
+        // positions, `mk` via the Abstract arm of gen_typed).
         let arg = exprs::gen_typed(ctx, rng, &I64, 1);
         let v = ctx.fresh();
-        stmts.push(format!("let {v} = {mname}::un({mname}::mk({arg}))"));
-        ctx.push(v, I64);
+        stmts.push(format!("let {v} = {mname}::mk({arg})"));
+        ctx.push(v, aty.clone());
+        // Sometimes store T in a composite so accessors read it back
+        // out (the opaque-value-in-composite marshal surface).
+        if chance(rng, 0.5) {
+            let t_expr = exprs::gen_typed(ctx, rng, &aty, 1);
+            let n_expr = exprs::gen_typed(ctx, rng, &I64, 1);
+            let v2 = ctx.fresh();
+            stmts.push(format!("let {v2} = ({t_expr}, {n_expr})"));
+            ctx.push(v2, GenType::Tuple(vec![aty, I64]));
+        }
+        stats.abstract_value = true;
     }
     // Cross-module call presence — textual, but exact: `m<j>::` for an
     // earlier j can only appear in this module's body through a

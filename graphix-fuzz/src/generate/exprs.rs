@@ -105,6 +105,7 @@ fn try_accessor(
             | GenType::Variant(_)
             | GenType::Fn { .. }
             | GenType::PolyFn { .. }
+            | GenType::Abstract { .. }
             | GenType::Opaque => {}
         }
     }
@@ -466,6 +467,17 @@ pub(super) fn gen_typed(
                 "null".into()
             } else {
                 gen_typed(ctx, rng, t, d)
+            }
+        }
+        // An abstract T: a T-typed binding, or the constructor over a
+        // recursive i64 (the only producers — `un` consumption arises
+        // organically through `try_call` at i64 positions).
+        GenType::Abstract { module } => {
+            let vars = ctx.vars_of(ty);
+            if !vars.is_empty() && rng.below(2) == 0 {
+                vars[rng.below(vars.len())].to_string()
+            } else {
+                format!("{module}::mk({})", gen_typed(ctx, rng, &I64, d.min(1)))
             }
         }
         GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
