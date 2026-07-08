@@ -45,12 +45,30 @@ Three pieces, all runtime-side (`node/callsite.rs`, `node/lambda.rs`):
      walk). This excludes async bodies and — because `analysis.rs`
      classifies them Async — `~`, `any`, `try/catch`, and fn-typed
      parameter calls (dynamic callees).
-   - No builtin call sites. A builtin `Apply` may hold per-instance state
-     (`count`, `sum`, `min`, `max`, `all`, `skip`, …) that accumulates
-     across calls under the retained unfold; there is no
-     stateless-vs-stateful declaration on `BuiltIn` to consult, so ALL
-     builtins refuse. (A `STATELESS` marker const could widen the gate
-     later — `str::len`-style pure builtins are observably safe.)
+   - No STATEFUL builtin call sites. A builtin `Apply` may hold
+     per-instance state (`count`, `sum`, `min`, `max`, `all`, `skip`, …)
+     that accumulates across calls under the retained unfold, or emit per
+     invocation (`print`, `log`), or mutate an external value
+     (`buffer::encode`/`decode`). Builtins declare
+     `BuiltIn::STATELESS = true` (default `false`, pulled through
+     `EvalCached`/`CachedArgs` and recorded in the registry as
+     `BuiltinFacts` next to `EFFECT`) when delete-and-reinit is
+     unobservable: no cross-invocation state, no per-invocation effect
+     (an internal memo — a compiled `Regex`, a scratch buffer, a
+     typecheck-derived cast type — is fine). The gate resolves a builtin
+     call site back to its declaration exactly as `analysis.rs`'s
+     `callee_effect` does (fnode `Ref` → `lookup_bind` →
+     `builtin_bindings` → `ctx.builtin_stateless`); an unresolvable
+     builtin call refuses. Marked in the 2026-07-08 sweep: all of `str`
+     and `re`, the pure `map` accessors (`len`/`get`/`get_or`/`insert`/
+     `remove` — not `change`), the pure non-HOF `array` ops, the pure
+     `list` ops, `core`'s pure opt predicates/combinators (not the
+     callback-taking ones), the bytes conversions (not
+     `buffer_encode`/`decode`), the math functions, `is_err`/
+     `filter_err` (not `filter` — it holds a `pending` value), the
+     per-fire bit ops, and the `json`/`toml`/`pack` writers (not the
+     `EvalCachedAsync` readers). Everything else keeps the conservative
+     default.
    - No `connect` (plain or deref): the write target and its next-cycle
      delivery live inside the instance.
    - No `&x`: a reference to an instance-local binding can escape the

@@ -1185,6 +1185,18 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// to a current trigger). See `effects::EffectKind` and
     /// `design/whole_graph_fusion.md` for the rules and examples.
     const EFFECT: EffectKind = EffectKind::Async;
+    /// Whether deleting this builtin's `Apply` and re-initializing it
+    /// fresh is unobservable: the instance holds no cross-invocation
+    /// state (`count`/`sum`/`min` accumulate — NOT stateless) and each
+    /// invocation performs no external effect (`print`/`log` emit — NOT
+    /// stateless; an internal same-input memo cache is fine). Only
+    /// meaningful for `EFFECT = Sync` builtins (async builtins are
+    /// excluded upstream). Consulted by the transient-recursion gate
+    /// (`node::callsite::transient_body_ok`,
+    /// `design/transient_recursion.md`): a recursive callee instance
+    /// may be deleted when its call returns only if every builtin its
+    /// body calls is stateless. Conservative default: `false`.
+    const STATELESS: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1789,7 +1801,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
-        self.fusion.builtin_effects.insert(T::NAME, T::EFFECT);
+        self.fusion.builtin_facts.insert(
+            T::NAME,
+            effects::BuiltinFacts { effect: T::EFFECT, stateless: T::STATELESS },
+        );
         Ok(())
     }
 
@@ -1816,7 +1831,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// `EffectKind::Async` (the conservative default) for unknown names
     /// so callers don't need to handle the "missing" case specially.
     pub fn builtin_effect(&self, name: &str) -> EffectKind {
-        self.fusion.builtin_effects.get(name).copied().unwrap_or_default()
+        self.fusion.builtin_facts.get(name).map(|f| f.effect).unwrap_or_default()
+    }
+
+    /// Look up a registered builtin's `STATELESS` declaration (see
+    /// [`BuiltIn::STATELESS`]). Returns `false` (the conservative
+    /// default) for unknown names.
+    pub fn builtin_stateless(&self, name: &str) -> bool {
+        self.fusion.builtin_facts.get(name).map(|f| f.stateless).unwrap_or(false)
     }
 
     /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin

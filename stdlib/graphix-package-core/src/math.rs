@@ -14,6 +14,7 @@ macro_rules! unary_f64 {
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
             const NAME: &str = $name;
 
             fn eval(
@@ -35,6 +36,7 @@ macro_rules! binary_f64 {
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
             const NAME: &str = $name;
 
             fn eval(
@@ -57,6 +59,7 @@ macro_rules! unary_f64_pred {
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
             const NAME: &str = $name;
 
             fn eval(
@@ -125,6 +128,7 @@ binary_f64!(MathMaxEv, MathMax, "core_math_max", max);
 pub(crate) struct MathClampEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_math_clamp";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

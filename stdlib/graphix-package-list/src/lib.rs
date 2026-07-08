@@ -310,6 +310,7 @@ struct NilEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for NilEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_nil";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -325,6 +326,7 @@ struct ConsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConsEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_cons";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -341,6 +343,7 @@ struct SingletonEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SingletonEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_singleton";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -356,6 +359,7 @@ struct HeadEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HeadEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_head";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -374,6 +378,7 @@ struct TailEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TailEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_tail";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -392,6 +397,7 @@ struct UnconsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnconsEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_uncons";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -412,6 +418,7 @@ struct IsEmptyEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsEmptyEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_is_empty";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -427,6 +434,7 @@ struct NthEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for NthEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_nth";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -459,6 +467,7 @@ struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_len";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -474,6 +483,7 @@ struct ReverseEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReverseEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_reverse";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -496,6 +506,7 @@ struct TakeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TakeEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_take";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -518,6 +529,7 @@ struct DropEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DropEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_drop";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -547,6 +559,7 @@ struct ToArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_to_array";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -565,6 +578,7 @@ struct FromArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_from_array";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -582,6 +596,7 @@ struct ConcatEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_concat";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -613,6 +628,7 @@ struct FlattenEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_flatten";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -635,6 +651,7 @@ struct SortEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_sort";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -679,6 +696,7 @@ struct EnumerateEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_enumerate";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -699,6 +717,7 @@ struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_zip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

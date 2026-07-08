@@ -103,6 +103,7 @@ struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "map_len";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -120,6 +121,7 @@ struct GetEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "map_get";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -139,6 +141,7 @@ struct GetOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "map_get_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -158,6 +161,7 @@ struct InsertEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "map_insert";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -177,6 +181,7 @@ struct RemoveEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "map_remove";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

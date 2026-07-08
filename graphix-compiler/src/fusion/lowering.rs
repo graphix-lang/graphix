@@ -313,10 +313,8 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     };
     // Async builtins can't be fused — they may produce values on a
     // later cycle than the trigger.
-    use crate::effects::EffectKind;
-    match ctx.fusion.builtin_effects.get(info.name.as_str()) {
-        Some(EffectKind::Sync) => {}
-        _ => return,
+    if !ctx.builtin_effect(info.name.as_str()).is_sync() {
+        return;
     }
     // Use the CallSite's resolved FnType (TVars unified at typecheck
     // time to the call-site's concrete arg types) for the call shape.
@@ -773,8 +771,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             &ec.fusion.abstract_registry,
             &arg_typ,
         )?;
-        let kind =
-            type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone())?;
+        let kind = type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone())?;
         inputs.push((name, kind, None));
         formal_kts.push(kt);
     }

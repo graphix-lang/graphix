@@ -17,6 +17,7 @@ pub(crate) struct IsSomeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsSomeEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_is_some";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -35,6 +36,7 @@ pub(crate) struct IsNoneEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsNoneEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_is_none";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -53,6 +55,7 @@ pub(crate) struct ContainsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_contains";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -73,6 +76,7 @@ pub(crate) struct OrNeverEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrNeverEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_or_never";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -90,6 +94,7 @@ pub(crate) struct OrDefaultEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrDefaultEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_or_default";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -110,6 +115,7 @@ pub(crate) struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -128,6 +134,7 @@ pub(crate) struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_and";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -146,6 +153,7 @@ pub(crate) struct XorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_xor";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -174,6 +182,7 @@ pub(crate) struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_zip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -194,6 +203,7 @@ pub(crate) struct UnzipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_unzip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -219,6 +229,7 @@ pub(crate) struct OkOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_ok_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

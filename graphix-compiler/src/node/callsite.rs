@@ -244,11 +244,13 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 /// transitively through every already-bound callee body — holds no
 /// cross-dispatch state or obligations:
 ///
-/// - no builtin call sites: a builtin `Apply` may hold per-instance
-///   state (`count`, `sum`, `min`, …) that today accumulates across
-///   calls; there is no stateless-vs-stateful declaration to consult,
-///   so ALL builtins refuse (a `STATELESS` marker can widen this
-///   later),
+/// - no STATEFUL builtin call sites: a builtin `Apply` may hold
+///   per-instance state (`count`, `sum`, `min`, …) that today
+///   accumulates across calls, or emit per invocation (`print`,
+///   `log`). Builtins declaring [`crate::BuiltIn::STATELESS`] are fine
+///   — delete-and-reinit is unobservable for them. Anything else —
+///   including a builtin call whose binding can't be resolved back to
+///   its declaration — refuses,
 /// - no `connect` (plain or deref): the write target and its
 ///   next-cycle delivery live in the instance,
 /// - no `&x`: a reference to an instance-local binding can escape the
@@ -290,7 +292,27 @@ fn transient_body_ok<R: Rt, E: UserEvent>(
                                 to_descend.push(g.body());
                             }
                         }
-                        ApplyView::BuiltIn => ok = false,
+                        // Resolve the builtin binding back to its
+                        // declaration (the `callee_effect` resolution)
+                        // and consult `BuiltIn::STATELESS`; a call that
+                        // can't be resolved refuses.
+                        ApplyView::BuiltIn => {
+                            let stateless = match &cs.fnode().spec().kind {
+                                ExprKind::Ref { name } => ctx
+                                    .env
+                                    .lookup_bind(&cs.scope().lexical, name)
+                                    .and_then(|(_, bind)| {
+                                        let key = (bind.scope.clone(), bind.name.clone());
+                                        ctx.builtin_bindings.get(&key)
+                                    })
+                                    .map(|info| ctx.builtin_stateless(info.name.as_str()))
+                                    .unwrap_or(false),
+                                _ => false,
+                            };
+                            if !stateless {
+                                ok = false;
+                            }
+                        }
                     },
                     None => {
                         let known = match cs.fnode().view() {

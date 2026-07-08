@@ -68,6 +68,20 @@ impl Default for EffectKind {
     }
 }
 
+/// The declared facts of a registered builtin, recorded by
+/// `ExecCtx::register_builtin` from the `BuiltIn` trait consts and
+/// looked up by name (`ExecCtx::builtin_effect` /
+/// `ExecCtx::builtin_stateless`). `default()` is the conservative
+/// reading for an unregistered name: `Async` + stateful.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BuiltinFacts {
+    /// `BuiltIn::EFFECT` — see [`EffectKind`].
+    pub effect: EffectKind,
+    /// `BuiltIn::STATELESS` — delete-and-reinit is unobservable (no
+    /// cross-invocation state, no per-invocation external effect).
+    pub stateless: bool,
+}
+
 /// How a lambda recurses with respect to its own `LambdaId`. A summary
 /// computed by the analysis pass (`analysis::analyze`) alongside the
 /// per-call-site tail facts. This is a human/diagnostic summary — the

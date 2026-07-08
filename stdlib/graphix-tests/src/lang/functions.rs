@@ -1280,3 +1280,24 @@ run!(rec_transient_pure_refire, REC_TRANSIENT_PURE_REFIRE, |v: Result<&Value>| m
     }
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// The widened transient gate: STATELESS builtins (`str::len`,
+// `array::len`) in a recursive body no longer refuse — each re-fire
+// re-binds parked instances and re-inits the builtins fresh, which
+// must be unobservable for a declared-stateless builtin. f(4) =
+// len("abc") + 4*len([n]) = 7 per fire.
+const REC_TRANSIENT_STATELESS_BUILTIN: &str = r#"
+{
+  let go = 0;
+  go <- select go { n if n < 2 => n + 1, _ => never() };
+  let rec f = |n: i64| -> i64 select n {i64:0 => str::len("abc"), _ => f(n - i64:1) + array::len([n])};
+  array::group(f(go ~ i64:4), |n, _| n == 3)
+}
+"#;
+
+run!(rec_transient_stateless_builtin, REC_TRANSIENT_STATELESS_BUILTIN, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        matches!(&a[..], [Value::I64(7), Value::I64(7), Value::I64(7)])
+    }
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

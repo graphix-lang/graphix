@@ -30,6 +30,7 @@ struct IsMatchEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsMatchEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_is_match";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -56,6 +57,7 @@ struct FindEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FindEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_find";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -85,6 +87,7 @@ struct CapturesEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for CapturesEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_captures";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -118,6 +121,7 @@ struct SplitEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_split";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -146,6 +150,7 @@ struct SplitNEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitNEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_splitn";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

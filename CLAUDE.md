@@ -141,6 +141,18 @@ Types are structural - compatibility is based on structure, not names. Type infe
 Built-ins implement the `BuiltIn<R, E>` trait:
 - `NAME`: Function name constant
 - `init()`: Returns initialization function
+- `EFFECT` (default `Async`): sync/async classification — `Sync` iff every
+  output appears on the same cycle as its trigger (fusion boundary otherwise)
+- `STATELESS` (default `false`): declare `true` iff deleting the builtin's
+  `Apply` and re-initing it fresh is unobservable — no cross-invocation state
+  (`count`/`sum` accumulate), no per-invocation effect (`print` emits), no
+  external-value mutation (`buffer::encode`); internal memos (a compiled
+  `Regex`, scratch buffers, a typecheck-derived cast type) are fine. Only
+  consulted for `Sync` builtins, by the transient-recursion gate
+  (`design/transient_recursion.md`) — a wrong `true` is a semantics bug, a
+  wrong `false` only costs memory. Both consts are pulled through
+  `EvalCached`/`CachedArgs` and recorded per name as `BuiltinFacts`
+  (`ctx.builtin_effect`/`ctx.builtin_stateless`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.

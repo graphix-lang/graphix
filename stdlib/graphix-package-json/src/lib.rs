@@ -249,6 +249,7 @@ struct JsonWriteStrEv;
 // json::write_str is a pure Value→string conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "json_write_str";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -284,6 +285,7 @@ struct JsonWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "json_write_bytes";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {

@@ -241,6 +241,7 @@ struct TomlWriteStrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "toml_write_str";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -271,6 +272,7 @@ struct TomlWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "toml_write_bytes";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {

@@ -281,6 +281,14 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     /// `CachedArgs<T>`'s `BuiltIn` impl pulls this through to the
     /// builtin registry.
     const EFFECT: EffectKind = EffectKind::Async;
+    /// Same semantics as `BuiltIn::STATELESS`: `eval` is a
+    /// deterministic function of the current args with no external
+    /// effect and no cross-invocation state in `Self` (an internal
+    /// memo/scratch that never changes an output is fine) — so
+    /// deleting the instance and re-initializing it fresh is
+    /// unobservable. Conservative default: `false`. Pulled through to
+    /// the builtin registry by `CachedArgs<T>`'s `BuiltIn` impl.
+    const STATELESS: bool = false;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -322,6 +330,7 @@ pub struct CachedArgs<T> {
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const EFFECT: EffectKind = T::EFFECT;
     const NAME: &str = T::NAME;
+    const STATELESS: bool = T::STATELESS;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1720,6 +1729,7 @@ struct IsErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_is_err";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1755,6 +1765,7 @@ struct FilterErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_filter_err";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2269,6 +2280,7 @@ struct BitAndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_and";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2283,6 +2295,7 @@ struct BitOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2297,6 +2310,7 @@ struct BitXorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_xor";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2311,6 +2325,7 @@ struct BitNotEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_not";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2339,6 +2354,7 @@ struct ShlEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_shl";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2353,6 +2369,7 @@ struct ShrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_shr";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

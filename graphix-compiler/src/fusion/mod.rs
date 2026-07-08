@@ -154,12 +154,15 @@ pub struct FusionCtx {
     /// Refs unref — a fused region fed by a `<-`-written variable would
     /// then never see updates past the first cycle.
     pub(crate) top_id: Option<ExprId>,
-    /// Sync/async effect of each registered builtin, keyed by name.
-    /// Populated by `register_builtin` from `T::EFFECT`. Read by fusion's
-    /// effect inference to decide whether a builtin call site can be
-    /// absorbed into a sync kernel. Builtins absent from this map are
-    /// treated as `Async` (the conservative default), always correct.
-    pub builtin_effects: ahash::AHashMap<&'static str, EffectKind>,
+    /// Declared facts of each registered builtin, keyed by name.
+    /// Populated by `register_builtin` from `T::EFFECT`/`T::STATELESS`.
+    /// The effect is read by fusion's effect inference to decide
+    /// whether a builtin call site can be absorbed into a sync kernel;
+    /// the stateless bit by the transient-recursion gate
+    /// (`node::callsite::transient_body_ok`). Builtins absent from this
+    /// map are treated as `Async` + stateful (the conservative
+    /// defaults), always correct.
+    pub builtin_facts: ahash::AHashMap<&'static str, crate::effects::BuiltinFacts>,
 }
 
 impl FusionCtx {
@@ -177,7 +180,7 @@ impl FusionCtx {
             stats: FusionStats::default(),
             abstract_registry: kernel_abi::AbstractRegistry::default(),
             top_id: None,
-            builtin_effects: ahash::AHashMap::default(),
+            builtin_facts: ahash::AHashMap::default(),
         })
     }
 
@@ -908,10 +911,10 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             // type (#18 was diagnosed with exactly this dump).
             if std::env::var_os("GRAPHIX_DBG_REGION").is_some() {
                 for (i, fv) in inputs.iter().enumerate() {
-                    let deref = crate::format_with_flags(
-                        crate::PrintFlag::DerefTVars,
-                        || compact_str::format_compact!("{}", fv.typ),
-                    );
+                    let deref =
+                        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+                            compact_str::format_compact!("{}", fv.typ)
+                        });
                     let cons = match &fv.typ {
                         crate::typ::Type::TVar(tv) => {
                             let cs = tv.cell_constraints();
