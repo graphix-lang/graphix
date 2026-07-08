@@ -93,6 +93,9 @@ pub struct GenCfg {
     /// compiled at runtime against a sig in a sandbox, consumed
     /// through the status gate).
     pub p_dynmod: f64,
+    /// A statement slot emits a REFERENCE group (`let r = &v`, tuple
+    /// storage, `*r <- lit` write-through).
+    pub p_ref: f64,
     /// Statement slots per program: 0..=max_lets (template slots may
     /// emit several statements).
     pub max_lets: usize,
@@ -119,6 +122,7 @@ impl Default for GenCfg {
             p_abstract: 0.4,
             p_bare_module: 0.2,
             p_dynmod: 0.08,
+            p_ref: 0.1,
             max_lets: 6,
             type_depth: 2,
         }
@@ -171,6 +175,8 @@ pub struct GenStats {
     /// A module fn impl carried NO return annotation (interface-checked
     /// inference).
     pub unannotated_ret: bool,
+    /// A reference shape was emitted (`&`/`*`/ref param/`*r <-`).
+    pub ref_op: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -350,6 +356,8 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
             let n = ndynmods;
             ndynmods += 1;
             stmts.extend(modules::gen_dynamic_module(&mut ctx, rng, cfg, &mut stats, n));
+        } else if chance(rng, cfg.p_ref) {
+            stmts.extend(funcs::gen_ref_stmts(&mut ctx, rng, cfg, &mut stats));
         } else if chance(rng, cfg.p_rec) {
             stmts.extend(funcs::gen_rec_lambda(&mut ctx, rng, cfg, &mut stats));
         } else if chance(rng, cfg.p_error_lambda) {
@@ -466,7 +474,7 @@ mod test {
         let (mut rebind, mut mono, mut collision, mut rec, mut errl, mut module) =
             (0, 0, 0, 0, 0, 0);
         let (mut dynmod, mut comp_iface, mut xmod, mut abst) = (0, 0, 0, 0);
-        let (mut konst, mut unret) = (0, 0);
+        let (mut konst, mut unret, mut refop) = (0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -482,6 +490,7 @@ mod test {
             abst += s.abstract_value as usize;
             konst += s.iface_const as usize;
             unret += s.unannotated_ret as usize;
+            refop += s.ref_op as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
@@ -496,6 +505,7 @@ mod test {
             ("first-class abstract value", abst),
             ("exported constant", konst),
             ("unannotated-return impl", unret),
+            ("reference op", refop),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }

@@ -301,6 +301,51 @@ pub(super) fn gen_error_arm_lambda(
     stmts
 }
 
+/// Reference statements: bind `let r = &<target>` (a visible scalar
+/// binding, else a fresh literal — the `&24.0` GUI idiom), then
+/// sometimes store the ref in a tuple (field-projection deref,
+/// `*(p.0)`, is the one composite read refs support — an
+/// `Array<&T>` element deref is a runtime error) or write through it
+/// (`*r <- <literal>` — LITERAL RHS only: a self-reading RHS re-fires
+/// every cycle and never quiesces, probed 2026-07-08). Reads (`*r` at
+/// scalar positions, `&` args to ref-param fns) are organic
+/// vocabulary from the binding alone.
+pub(super) fn gen_ref_stmts(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+) -> Vec<String> {
+    stats.ref_op = true;
+    let inner = types::scalar_type(rng);
+    let rty = GenType::Ref(Box::new(inner.clone()));
+    let mut stmts = Vec::new();
+    let tgts = ctx.vars_of(&inner);
+    let (val, var_target) = if !tgts.is_empty() && rng.below(3) != 0 {
+        (format!("&{}", tgts[rng.below(tgts.len())]), true)
+    } else {
+        (format!("&{}", types::literal(rng, &inner)), false)
+    };
+    let r = ctx.name_for_bind(rng, cfg);
+    stmts.push(format!("let {r} = {val}"));
+    ctx.push(r.clone(), rty.clone());
+    match rng.below(3) {
+        0 => {
+            let other = exprs::gen_typed(ctx, rng, &inner, 1);
+            let t = ctx.fresh();
+            stmts.push(format!("let {t} = ({r}, {other})"));
+            ctx.push(t, GenType::Tuple(vec![rty, inner]));
+        }
+        // Write-through requires a VARIABLE target (`*(&lit) <- v`
+        // has no binding to write).
+        1 if var_target => {
+            stmts.push(format!("*{r} <- {}", types::literal(rng, &inner)));
+        }
+        _ => {}
+    }
+    stmts
+}
+
 /// A guaranteed-terminating `let rec` plus a call-site binding. The
 /// base arm's `<= 0` guard terminates any argument sign; call args are
 /// small literals (mutation perturbs them toward the edges later —

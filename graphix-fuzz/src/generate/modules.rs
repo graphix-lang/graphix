@@ -138,8 +138,18 @@ pub(super) fn gen_module(
     for i in 0..nfns {
         let fname = format!("f{i}");
         let arity = 1 + rng.below(2);
-        let params: Vec<GenType> =
-            (0..arity).map(|_| iface_type(rng, stats)).collect();
+        // Params only (never returns): `&T` across the interface is
+        // the GUI widget-arg idiom; bodies deref organically.
+        let params: Vec<GenType> = (0..arity)
+            .map(|_| {
+                if chance(rng, 0.15) {
+                    stats.ref_op = true;
+                    GenType::Ref(Box::new(types::scalar_type(rng)))
+                } else {
+                    iface_type(rng, stats)
+                }
+            })
+            .collect();
         let ret = match (i, &cross) {
             (0, Some((_, _, rty))) => rty.clone(),
             _ => iface_type(rng, stats),

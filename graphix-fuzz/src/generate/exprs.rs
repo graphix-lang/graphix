@@ -48,12 +48,24 @@ fn try_accessor(
     depth: usize,
 ) -> Option<String> {
     let mut cands: Vec<String> = Vec::new();
+    let reffed = GenType::Ref(Box::new(ty.clone()));
     for (name, t) in ctx.visible_entries() {
         match t {
+            // Deref a visible `&ty` binding.
+            GenType::Ref(inner) => {
+                if **inner == *ty {
+                    cands.push(format!("*{name}"));
+                }
+            }
             GenType::Struct(fields) => {
                 for (f, ft) in fields {
                     if ft == ty {
                         cands.push(format!("{name}.{f}"));
+                    }
+                    // Field-projection deref (`*(p.f)`) statically
+                    // resolves — the one composite read refs support.
+                    if *ft == reffed {
+                        cands.push(format!("*({name}.{f})"));
                     }
                 }
             }
@@ -61,6 +73,9 @@ fn try_accessor(
                 for (i, et) in elems.iter().enumerate() {
                     if et == ty {
                         cands.push(format!("{name}.{i}"));
+                    }
+                    if *et == reffed {
+                        cands.push(format!("*({name}.{i})"));
                     }
                 }
             }
@@ -468,6 +483,20 @@ pub(super) fn gen_typed(
             } else {
                 gen_typed(ctx, rng, t, d)
             }
+        }
+        // A reference: a visible `&T` binding, `&` of a visible
+        // T-typed binding, or `&(<expr>)` / `&<literal>` (all probed
+        // working, incl. `&24.0`-style literal refs).
+        GenType::Ref(inner) => {
+            let ref_vars = ctx.vars_of(ty);
+            if !ref_vars.is_empty() && rng.below(2) == 0 {
+                return ref_vars[rng.below(ref_vars.len())].to_string();
+            }
+            let tgt_vars = ctx.vars_of(inner);
+            if !tgt_vars.is_empty() && rng.below(2) == 0 {
+                return format!("&{}", tgt_vars[rng.below(tgt_vars.len())]);
+            }
+            format!("&({})", gen_typed(ctx, rng, inner, d.min(1)))
         }
         // An abstract T: a T-typed binding, or the constructor over a
         // recursive i64 (the only producers — `un` consumption arises

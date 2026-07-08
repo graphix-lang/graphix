@@ -201,6 +201,14 @@ pub enum GenType {
     PolyFn {
         arity: usize,
     },
+    /// A reference `&T` — inner type kept SCALAR (v1): refs are
+    /// second-class in runtime containers (an `Array<&T>` element
+    /// deref is a runtime "expected reference" — probed 2026-07-08),
+    /// so refs enter composites only through tuples/structs, where
+    /// field PROJECTION deref (`*(p.0)`) statically resolves. Never
+    /// produced by `random_type`; introduced by dedicated statements,
+    /// ref-typed fn/interface params, and `&literal` leaves.
+    Ref(Box<GenType>),
     /// A generated module's abstract type (`type T;` in `m<i>.gxi`,
     /// concrete rep hidden in the impl). Identified by its module —
     /// two modules' `T`s are distinct types. The ONLY producers are
@@ -263,6 +271,7 @@ impl GenType {
             GenType::Map(v) => format!("Map<string, {}>", v.render()),
             GenType::Nullable(t) => format!("[{}, null]", t.render()),
             GenType::Abstract { module } => format!("{module}::T"),
+            GenType::Ref(t) => format!("&{}", t.render()),
             // fn-type annotations name their positional params.
             GenType::Fn { params, ret } => {
                 let parts: Vec<_> = params
@@ -295,6 +304,7 @@ impl GenType {
                 ts.iter().any(|(_, args)| args.iter().any(|t| t.contains_nullable()))
             }
             GenType::Array(e) | GenType::Map(e) => e.contains_nullable(),
+            GenType::Ref(t) => t.contains_nullable(),
             GenType::Num(_)
             | GenType::Bool
             | GenType::Str
@@ -322,6 +332,7 @@ impl GenType {
             | GenType::Abstract { .. } => true,
             GenType::Variant(_)
             | GenType::Nullable(_)
+            | GenType::Ref(_)
             | GenType::Fn { .. }
             | GenType::PolyFn { .. }
             | GenType::Opaque => false,
@@ -482,6 +493,8 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
                 literal(rng, t)
             }
         }
+        // The `&24.0` GUI-idiom leaf — a ref to a literal.
+        GenType::Ref(t) => format!("&{}", literal(rng, t)),
         // No literal form exists, but the constructor over an i64
         // literal is the closed leaf expression.
         GenType::Abstract { module } => {
