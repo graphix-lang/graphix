@@ -802,6 +802,14 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             None => false,
         }
     });
+    // DETERMINISM: input order so far is `Refs`' nohash-set iteration
+    // order — nonlinear in the ABSOLUTE BindId values, which can drift
+    // between processes (detcheck gen#29: the same program compiled a
+    // kernel signature `(.., i8, i64, f64)` in one child and
+    // `(.., f64, i64, i8)` in the other). BindIds allocate in compile
+    // order, so sorting by id makes the signature source-order-stable
+    // regardless of where the counter started.
+    inputs.sort_by_key(|fv| fv.bind_id);
     // #219 taint rides each param's disc word (no separate validity
     // bitmask), and the per-param firing trackers spill to the heap, so
     // there is no input-count ceiling — a region of any width fuses.
