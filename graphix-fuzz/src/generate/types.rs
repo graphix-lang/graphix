@@ -308,6 +308,28 @@ impl GenType {
     pub(super) fn is_scalar(&self) -> bool {
         matches!(self, GenType::Num(_) | GenType::Bool | GenType::Str)
     }
+
+    /// A literal-free generated body of this type INFERS exactly this
+    /// type: no Variant (a bare tag infers its single tag, not the
+    /// union) and no Nullable (a value-branch body infers the bare
+    /// type) anywhere. Gates unannotated-return impls — the interface
+    /// signature must MATCH the inferred type, it never narrows it.
+    pub(super) fn infers_exact(&self) -> bool {
+        match self {
+            GenType::Num(_)
+            | GenType::Bool
+            | GenType::Str
+            | GenType::Abstract { .. } => true,
+            GenType::Variant(_)
+            | GenType::Nullable(_)
+            | GenType::Fn { .. }
+            | GenType::PolyFn { .. }
+            | GenType::Opaque => false,
+            GenType::Tuple(es) => es.iter().all(|e| e.infers_exact()),
+            GenType::Struct(fs) => fs.iter().all(|(_, t)| t.infers_exact()),
+            GenType::Array(e) | GenType::Map(e) => e.infers_exact(),
+        }
+    }
 }
 
 /// A random numeric type: the dominant trio (i64/f64/u8) at 60%, the
@@ -359,11 +381,16 @@ pub(super) fn random_struct(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Struct(fields)
 }
 
-/// A random tag union: 2-3 distinct tags, each with 0-2 payload types.
+/// A random tag union: 2-3 DISTINCT tags, each with 0-2 payload types.
+/// Two tags minimum is load-bearing: `gen_pattern` counts a variant
+/// pattern refutable on the ≥2-tag premise, and a single-tag union
+/// makes a select's final irrefutable arm DEAD ("unused match cases" —
+/// gen-check seed 51). The old draw deduped pool collisions down to
+/// one tag.
 pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     let n = 2 + rng.below(2);
     let mut tags: Vec<(String, Vec<GenType>)> = Vec::new();
-    for _ in 0..n {
+    while tags.len() < n {
         let t = TAGS[rng.below(TAGS.len())];
         if !tags.iter().any(|(u, _)| u == t) {
             let nargs = rng.below(3);

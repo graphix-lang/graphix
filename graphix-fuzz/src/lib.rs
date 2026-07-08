@@ -562,6 +562,16 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         return OracleTier::Excluded;
     }
     if ["sys::", "http::"].iter().any(|m| code.contains(m)) {
+        // FinalValues assumes the async values themselves settle
+        // deterministically. A `<-` weaves async ARRIVAL ORDER into
+        // reactive state (soak jul08i divergence_000000: a `?`-consumed
+        // `sys::tcp::listen` element + a connected array + a
+        // self-clocked `iterq` — the final value depends on whether the
+        // listener lands before or after the walk; 8x re-check AGREEs
+        // on an idle machine, the recorded miss needed soak load).
+        if code.contains("<-") {
+            return OracleTier::Excluded;
+        }
         return OracleTier::FinalValues;
     }
     OracleTier::Exact

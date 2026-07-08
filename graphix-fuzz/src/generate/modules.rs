@@ -48,9 +48,32 @@ pub(super) fn gen_module(
     // name is exactly the name-vs-identity surface).
     let mut inner = ctx.clone();
     inner.vars.retain(|(n, _)| n.contains("::"));
+    // Decided up front: unannotated-return impls are legal only when
+    // the interface states the full type (a bare module registers the
+    // vocabulary from the declared type, which a body's inference may
+    // not reproduce exactly).
+    let has_gxi = !chance(rng, cfg.p_bare_module);
     let mut gx = String::new();
     let mut gxi = String::new();
     let mut public: Vec<(String, GenType)> = Vec::new();
+    // Optional exported CONSTANT — a non-fn `val`. Emitted FIRST so
+    // later fn bodies can reference it organically; registered in MAIN
+    // under its path. A cross-region read of exactly this shape found
+    // the dead-eliminated-module deadlock (2026-07-08).
+    if chance(rng, 0.5) {
+        let k = format!("k{idx}");
+        let kty = if chance(rng, 0.3) {
+            types::random_type(rng, 1)
+        } else {
+            types::scalar_type(rng)
+        };
+        let kv = exprs::gen_typed(&inner, rng, &kty, 1);
+        gx.push_str(&format!("let {k}: {t} = {kv};\n", t = kty.render()));
+        gxi.push_str(&format!("val {k}: {};\n", kty.render()));
+        inner.push(k.clone(), kty.clone());
+        ctx.push(format!("{mname}::{k}"), kty);
+        stats.iface_const = true;
+    }
     // Optional private helper: used by the first public lambda, absent
     // from the interface — the visibility surface.
     let helper = if chance(rng, 0.5) {
@@ -152,11 +175,26 @@ pub(super) fn gen_module(
             .zip(params.iter())
             .map(|(n, t)| format!("{n}: {}", t.render()))
             .collect();
-        gx.push_str(&format!(
-            "let {fname} = |{}| -> {} {body};\n",
-            sig.join(", "),
-            ret.render()
-        ));
+        // Unannotated RETURN: the impl's return type is inferred from
+        // the body and checked against the interface's declared type —
+        // the signature-match seam annotated impls never exercise.
+        // Only where inference reproduces the type EXACTLY (the
+        // signature must MATCH the inferred type, it never narrows it:
+        // a bare tag infers its single tag, not the union — probed
+        // 2026-07-08, "signature mismatch" is a hard error).
+        if has_gxi && ret.infers_exact() && chance(rng, 0.3) {
+            stats.unannotated_ret = true;
+            gx.push_str(&format!(
+                "let {fname} = |{}| {body};\n",
+                sig.join(", ")
+            ));
+        } else {
+            gx.push_str(&format!(
+                "let {fname} = |{}| -> {} {body};\n",
+                sig.join(", "),
+                ret.render()
+            ));
+        }
         let fty = GenType::Fn { params: params.clone(), ret: Box::new(ret.clone()) };
         if chance(rng, 0.15) {
             gxi.push_str("/// generated\n");
@@ -233,7 +271,7 @@ pub(super) fn gen_module(
         ctx.push(format!("{mname}::{fname}"), fty);
     }
     let mut files = vec![(format!("{mname}.gx"), gx.trim_end().to_string())];
-    if !chance(rng, cfg.p_bare_module) {
+    if has_gxi {
         files.insert(0, (format!("{mname}.gxi"), gxi.trim_end().to_string()));
     }
     GenModule { files, stmts }

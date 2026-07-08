@@ -152,6 +152,11 @@ pub struct GenStats {
     pub cross_module_call: bool,
     /// An abstract T entered the vocabulary as a first-class value.
     pub abstract_value: bool,
+    /// A module exported a non-fn `val` constant.
+    pub iface_const: bool,
+    /// A module fn impl carried NO return annotation (interface-checked
+    /// inference).
+    pub unannotated_ret: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
@@ -434,6 +439,7 @@ mod test {
         let (mut rebind, mut mono, mut collision, mut rec, mut errl, mut module) =
             (0, 0, 0, 0, 0, 0);
         let (mut dynmod, mut comp_iface, mut xmod, mut abst) = (0, 0, 0, 0);
+        let (mut konst, mut unret) = (0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -447,6 +453,8 @@ mod test {
             comp_iface += s.composite_iface as usize;
             xmod += s.cross_module_call as usize;
             abst += s.abstract_value as usize;
+            konst += s.iface_const as usize;
+            unret += s.unannotated_ret as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
@@ -459,6 +467,8 @@ mod test {
             ("composite interface type", comp_iface),
             ("cross-module call", xmod),
             ("first-class abstract value", abst),
+            ("exported constant", konst),
+            ("unannotated-return impl", unret),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }
