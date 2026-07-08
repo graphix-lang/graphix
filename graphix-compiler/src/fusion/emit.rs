@@ -3441,6 +3441,24 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
     }
 }
 
+/// True iff the node's own type derefs to `Type::Bottom` — a `<-`
+/// connect in value position, or a block/select whose value is one. A
+/// Bottom node never produces a value and its emission is the shapeless
+/// tainted-null placeholder `(NULL|TAINT, 0)`. That is safe wherever
+/// the consumer reads the payload by the node's OWN shape (scalar and
+/// 2-word Value operands, discarded statements — those classify Bottom
+/// as `AbiKind::Unit` and refuse or discard), but a consumer that
+/// interprets the payload by an EXTERNAL type (HOF source array, fold
+/// init, lambda-call arg — all typed from a resolved signature) would
+/// read the 0 payload as a pointer. Bottom unifies with every
+/// signature type, so the signature-side shape-agreement checks can't
+/// catch it — gate on the node itself and de-fuse; the node-walk runs
+/// the subtree and the value simply never fires, which IS the
+/// semantics (soak jul08h `fuzz/crash_000000`).
+pub fn node_is_bottom<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
+}
+
 /// True iff `node` is a plain `Ref` whose binding is LOOP-INVARIANT at
 /// this emission point: a kernel input or a local bound outside every
 /// open scaffold loop (`Local::depth` 0) — its value is identical on
@@ -7822,8 +7840,20 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     for cap in &info.captures {
         slots.push(LambdaCallSlot::Cap(cap));
     }
-    // Shape gate — scalar / composite / variant / nullable only.
+    // Shape gate — scalar / composite / variant / nullable only. The
+    // slot TYPES come from the callee's signature (see above), so a
+    // Bottom-typed arg NODE slips through them (Bottom unifies with any
+    // signature type) — gate on the node itself, the caller-side twin
+    // of the DynCall shape-agreement check ([`node_is_bottom`]).
     for s in &slots {
+        if let LambdaCallSlot::Arg(n, _) = s {
+            if node_is_bottom(n) {
+                return Err(anyhow!(
+                    "lambda call `{fn_name}`: Bottom-typed arg in value \
+                     position — subtree node-walks"
+                ));
+            }
+        }
         match kernel_abi::abi_kind(reg, s.typ()) {
             Some(
                 AbiKind::Scalar(_)

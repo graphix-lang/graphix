@@ -1,0 +1,12 @@
+// crash: SIGSEGV in graphix_valarray_len (null *const ValArray)
+// A `<-` connect in VALUE position as the fold's source: connect emits
+// the shapeless tainted-null placeholder (its typ is Bottom, payload 0),
+// but the HOF gate typed the source from the resolved signature (Array)
+// and handed the 0 payload to the scaffold as a `*const ValArray`.
+// Bottom unifies with every signature type, so the signature-side shape
+// checks can't catch it — fixed by gating on the node itself
+// (emit::node_is_bottom) at the MapQ/FoldQ orchestration and
+// lambda-call arg seams; the subtree node-walks (the source never
+// fires, s stays 0 — the semantics).
+// mutant:
+{let a = [i64:1, i64:2, [i64:1, i64:2, i64:3]]; let s = i64:0; s <- array::fold(a <- [i64:5, i64:6, i64:7, i64:8], i64:0, |acc, e| acc + e); s}

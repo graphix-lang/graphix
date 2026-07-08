@@ -1091,6 +1091,14 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         let Some(array_arg) = callsite.arg_positional(0) else {
             return Ok(None);
         };
+        // A Bottom-typed source (`x <- e` in value position) emits the
+        // shapeless tainted-null placeholder, which the scaffold would
+        // read as a `*const ValArray`. Bottom unifies with the
+        // signature's Array type, so only the node itself can be
+        // checked — see `emit::node_is_bottom` (soak jul08h).
+        if graphix_compiler::fusion::emit::node_is_bottom(array_arg) {
+            return Ok(None);
+        }
         // Locate the callback's body Node through the synthesized
         // inner CallSite's resolved Apply.
         let inner_cs = match slot.pred.view() {
@@ -1666,6 +1674,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         let Some(init_arg) = callsite.arg_positional(1) else {
             return Ok(None);
         };
+        // Bottom-typed source/init gate — same rationale as
+        // `MapQ::emit_clif` (the init seeds the accumulator, whose
+        // shape also comes from the signature).
+        if graphix_compiler::fusion::emit::node_is_bottom(array_arg)
+            || graphix_compiler::fusion::emit::node_is_bottom(init_arg)
+        {
+            return Ok(None);
+        }
         let inner_cs = match slot.pred.view() {
             graphix_compiler::NodeView::CallSite(cs) => cs,
             _ => return Ok(None),
