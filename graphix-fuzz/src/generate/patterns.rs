@@ -17,7 +17,7 @@
 
 use super::{
     GenCtx, exprs,
-    types::{self, GenType},
+    types::{self, GenType, I64},
 };
 use crate::mutate::Rng;
 
@@ -63,17 +63,18 @@ fn gen_pattern(
         }
     };
     match ty {
-        // Scalar literal leaves are the refutable base case (f64
+        // Scalar literal leaves are the refutable base case (floats
         // excluded — float-equality patterns are legal but a value
         // match is vanishingly unlikely, all noise).
-        GenType::I64 | GenType::U8 | GenType::Bool | GenType::Str => {
-            if !force_irrefutable && rng.below(2) == 0 {
+        t @ (GenType::Num(_) | GenType::Bool | GenType::Str) => {
+            let lit_ok = !matches!(t, GenType::Num(n) if n.is_float());
+            if lit_ok && !force_irrefutable && rng.below(2) == 0 {
                 Pat { text: types::literal(rng, ty), refutable: true }
             } else {
                 leaf(inner, rng)
             }
         }
-        GenType::F64 | GenType::Map(_) | GenType::Nullable(_) => leaf(inner, rng),
+        GenType::Map(_) | GenType::Nullable(_) => leaf(inner, rng),
         GenType::Tuple(elems) if depth > 0 => {
             let parts: Vec<Pat> = elems
                 .iter()
@@ -179,26 +180,23 @@ pub(super) fn maybe_select(
     let structured: Vec<(&str, &GenType)> = ctx
         .visible_entries()
         .into_iter()
-        .filter(|(_, t)| {
-            matches!(
-                t,
-                GenType::Tuple(_)
-                    | GenType::Struct(_)
-                    | GenType::Variant(_)
-                    | GenType::Array(_)
-                    | GenType::Nullable(_)
-                    | GenType::I64
-                    | GenType::U8
-                    | GenType::Bool
-                    | GenType::Str
-            )
+        .filter(|(_, t)| match t {
+            GenType::Tuple(_)
+            | GenType::Struct(_)
+            | GenType::Variant(_)
+            | GenType::Array(_)
+            | GenType::Nullable(_)
+            | GenType::Bool
+            | GenType::Str => true,
+            GenType::Num(n) => !n.is_float(),
+            _ => false,
         })
         .collect();
     let (scrut, scrut_ty) = if !structured.is_empty() && rng.below(10) < 7 {
         let (n, t) = structured[rng.below(structured.len())];
         (n.to_string(), t.clone())
     } else {
-        (exprs::gen_typed(ctx, rng, &GenType::I64, d), GenType::I64)
+        (exprs::gen_typed(ctx, rng, &I64, d), I64)
     };
     let mut arms: Vec<String> = Vec::new();
     // Nullable coverage mode: null arm + value type-match arm cover

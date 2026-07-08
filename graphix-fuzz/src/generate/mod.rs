@@ -361,7 +361,7 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use super::{types::I64, *};
 
     /// Same seed → byte-identical program stream. The whole
     /// replay/minimize/regress pipeline rests on this.
@@ -458,10 +458,10 @@ mod test {
     #[test]
     fn vars_of_last_binding_wins() {
         let mut ctx = GenCtx::new();
-        ctx.push("v0".into(), GenType::I64);
-        ctx.push("v1".into(), GenType::I64);
+        ctx.push("v0".into(), I64);
+        ctx.push("v1".into(), I64);
         ctx.push("v0".into(), GenType::Bool);
-        assert_eq!(ctx.vars_of(&GenType::I64), vec!["v1"]);
+        assert_eq!(ctx.vars_of(&I64), vec!["v1"]);
         assert_eq!(ctx.vars_of(&GenType::Bool), vec!["v0"]);
         assert_eq!(ctx.visible_names(), vec!["v0", "v1"]);
     }

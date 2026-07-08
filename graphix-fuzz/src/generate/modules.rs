@@ -13,7 +13,7 @@
 
 use super::{
     GenCfg, GenCtx, GenStats, chance, exprs,
-    types::{self, GenType},
+    types::{self, GenType, I64, NumTy},
 };
 use crate::mutate::Rng;
 
@@ -112,12 +112,12 @@ pub(super) fn gen_module(
     let mut stmts = Vec::new();
     if chance(rng, cfg.p_abstract) {
         let concrete = match rng.below(3) {
-            0 => GenType::I64,
-            1 => GenType::Tuple(vec![GenType::I64, GenType::I64]),
-            _ => GenType::Array(Box::new(GenType::I64)),
+            0 => I64,
+            1 => GenType::Tuple(vec![I64, I64]),
+            _ => GenType::Array(Box::new(I64)),
         };
         let (mk_body, un_body) = match &concrete {
-            GenType::I64 => ("x".to_string(), "t".to_string()),
+            GenType::Num(NumTy::I64) => ("x".to_string(), "t".to_string()),
             GenType::Tuple(_) => ("(x, x + i64:1)".to_string(), "t.0".to_string()),
             _ => ("[x, x]".to_string(), "t[0]$".to_string()),
         };
@@ -126,10 +126,10 @@ pub(super) fn gen_module(
             "type T = {};\nlet mk = |x: i64| -> T {mk_body};\nlet un = |t: T| -> i64 {un_body};\n",
             concrete.render()
         ));
-        let arg = exprs::gen_typed(ctx, rng, &GenType::I64, 1);
+        let arg = exprs::gen_typed(ctx, rng, &I64, 1);
         let v = ctx.fresh();
         stmts.push(format!("let {v} = {mname}::un({mname}::mk({arg}))"));
-        ctx.push(v, GenType::I64);
+        ctx.push(v, I64);
     }
     // Register the public lambdas in MAIN under their absolute paths.
     // With the bare-module variant (no .gxi) everything is public —
@@ -170,9 +170,9 @@ pub(super) fn gen_dynamic_module(
     // Optional hidden binding, used through capture — never in the sig.
     if chance(rng, 0.4) {
         let h = inner.fresh();
-        let v = exprs::gen_typed(&inner, rng, &GenType::I64, 1);
+        let v = exprs::gen_typed(&inner, rng, &I64, 1);
         src.push_str(&format!("let {h} = {v};\n"));
-        inner.push(h, GenType::I64);
+        inner.push(h, I64);
     }
     let nfns = 1 + rng.below(2);
     let mut sig = String::new();
@@ -214,8 +214,14 @@ pub(super) fn gen_dynamic_module(
     // error-arm outcomes rather than invalid programs, so both
     // whitelists are healthy to emit.
     let whitelist = if chance(rng, 0.25) { "[core]" } else { "[core, array, str]" };
-    let src = src.trim_end().trim_end_matches(';');
-    debug_assert!(!src.contains('\''), "raw-string source must not contain '");
+    // Raw-string-escape the source: `\\` and `\'` are the only escapes
+    // a raw string recognizes, and a generated body can contain BOTH
+    // characters (the escaped-bracket string-interp shape emits `\[`,
+    // which an unescaped raw string rejects as a parse error).
+    // Backslashes first, so the quote escape's own backslash isn't
+    // doubled.
+    let src =
+        src.trim_end().trim_end_matches(';').replace('\\', "\\\\").replace('\'', "\\'");
     let status = ctx.fresh();
     let mut stmts = vec![format!(
         "let {status} = mod {dname} dynamic {{ sandbox whitelist {whitelist}; \

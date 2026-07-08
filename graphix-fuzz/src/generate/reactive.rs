@@ -14,7 +14,7 @@
 
 use netidx::publisher::Value;
 
-use super::{GenCfg, GenCtx, GenType, chance, exprs, types};
+use super::{GenCfg, GenCtx, GenType, chance, exprs, types, types::{F64, I64, NumTy}};
 use crate::mutate::Rng;
 use crate::schedule::Schedule;
 
@@ -59,8 +59,8 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
     let mut inputs: Vec<(String, GenType)> = Vec::new();
     for i in 0..n_inputs {
         let ty = match rng.below(10) {
-            0..=5 => GenType::I64,
-            6..=7 => GenType::F64,
+            0..=5 => I64,
+            6..=7 => F64,
             _ => GenType::Bool,
         };
         let name = format!("in{i}");
@@ -109,7 +109,7 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
     // scalars, and force every runaway in.
     let tail = {
         let i64s: Vec<String> =
-            ctx.vars_of(&GenType::I64).into_iter().map(|s| s.to_string()).collect();
+            ctx.vars_of(&I64).into_iter().map(|s| s.to_string()).collect();
         let mut t = live[rng.below(live.len())].clone();
         for _ in 0..rng.below(3) {
             let n = &i64s[rng.below(i64s.len())];
@@ -155,8 +155,8 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
 
 fn injection_value(rng: &mut Rng, ty: &GenType) -> Value {
     match ty {
-        GenType::I64 => Value::I64([-3, -1, 0, 1, 2, 3, 5, 7, 12, 100][rng.below(10)]),
-        GenType::F64 => {
+        GenType::Num(NumTy::I64) => Value::I64([-3, -1, 0, 1, 2, 3, 5, 7, 12, 100][rng.below(10)]),
+        GenType::Num(NumTy::F64) => {
             Value::F64([-2.25, -1.0, 0.0, 0.5, 1.5, 3.0, 10.25][rng.below(7)])
         }
         GenType::Bool => Value::Bool(rng.below(2) == 0),
@@ -179,7 +179,7 @@ fn counter(
     stmts.push(format!(
         "select {c} {{ {x} if {x} < i64:{k} => {c} <- ({x} ~ {c}) + i64:1, _ => never() }}"
     ));
-    ctx.push(c, GenType::I64);
+    ctx.push(c, I64);
     st.counters += 1;
 }
 
@@ -197,13 +197,13 @@ fn accumulator(
     let (input, ity) = &inputs[rng.below(inputs.len())];
     st.accumulators += 1;
     match ity {
-        GenType::I64 => match rng.below(4) {
+        GenType::Num(NumTy::I64) => match rng.below(4) {
             0 => {
                 let a = ctx.fresh();
                 stmts.push(format!("let {a} = i64:0"));
                 stmts.push(format!("{a} <- {input} ~ ({a} + {input})"));
                 live.push(a.clone());
-                ctx.push(a, GenType::I64);
+                ctx.push(a, I64);
             }
             1 => {
                 let d = ctx.fresh();
@@ -212,8 +212,8 @@ fn accumulator(
                 stmts.push(format!("{d} <- {input} ~ array::push({d}, {input})"));
                 stmts.push(format!("let {l} = array::len({d})"));
                 live.push(l.clone());
-                ctx.push(d, GenType::Array(Box::new(GenType::I64)));
-                ctx.push(l, GenType::I64);
+                ctx.push(d, GenType::Array(Box::new(I64)));
+                ctx.push(l, I64);
             }
             2 => {
                 let s = ctx.fresh();
@@ -223,7 +223,7 @@ fn accumulator(
                 stmts.push(format!("let {l} = str::len({s})"));
                 live.push(l.clone());
                 ctx.push(s, GenType::Str);
-                ctx.push(l, GenType::I64);
+                ctx.push(l, I64);
             }
             _ => {
                 let t = ctx.fresh();
@@ -234,10 +234,10 @@ fn accumulator(
                 ));
                 stmts.push(format!("let {m} = {t}.n * i64:100 + {t}.last"));
                 live.push(m.clone());
-                ctx.push(m, GenType::I64);
+                ctx.push(m, I64);
             }
         },
-        GenType::F64 => {
+        GenType::Num(NumTy::F64) => {
             // The f64 accumulator itself can't join the i64 tail, so a
             // count over the same input carries the observable pulse.
             let a = ctx.fresh();
@@ -246,8 +246,8 @@ fn accumulator(
             stmts.push(format!("{a} <- {input} ~ ({a} + {input})"));
             stmts.push(format!("let {m} = count({input})"));
             live.push(m.clone());
-            ctx.push(a, GenType::F64);
-            ctx.push(m, GenType::I64);
+            ctx.push(a, F64);
+            ctx.push(m, I64);
         }
         GenType::Bool => {
             // Count the true injections.
@@ -257,7 +257,7 @@ fn accumulator(
                 "{a} <- {input} ~ (select {input} {{ true => {a} + i64:1, false => {a} }})"
             ));
             live.push(a.clone());
-            ctx.push(a, GenType::I64);
+            ctx.push(a, I64);
         }
         other => unreachable!("no accumulator for input type {other:?}"),
     }
@@ -275,29 +275,29 @@ fn cross_cycle(
     st.cross_cycle += 1;
     let b = ctx.fresh();
     let (expr, ty) = match ity {
-        GenType::I64 => match rng.below(7) {
-            0 => (format!("count({input})"), GenType::I64),
-            1 => (format!("sum({input})"), GenType::I64),
-            2 => (format!("uniq({input})"), GenType::I64),
-            3 => (format!("once({input})"), GenType::I64),
-            4 => (format!("take(#n: i64:{}, {input})", 1 + rng.below(3)), GenType::I64),
-            5 => (format!("skip(#n: i64:{}, {input})", 1 + rng.below(3)), GenType::I64),
+        GenType::Num(NumTy::I64) => match rng.below(7) {
+            0 => (format!("count({input})"), I64),
+            1 => (format!("sum({input})"), I64),
+            2 => (format!("uniq({input})"), I64),
+            3 => (format!("once({input})"), I64),
+            4 => (format!("take(#n: i64:{}, {input})", 1 + rng.below(3)), I64),
+            5 => (format!("skip(#n: i64:{}, {input})", 1 + rng.below(3)), I64),
             _ => {
                 let x = ctx.fresh();
                 // `filter(v, pred)` — value first, predicate second.
                 (
                     format!("filter({input}, |{x}: i64| {x} > i64:{})", rng.below(5)),
-                    GenType::I64,
+                    I64,
                 )
             }
         },
-        GenType::F64 => match rng.below(3) {
-            0 => (format!("count({input})"), GenType::I64),
-            1 => (format!("uniq({input})"), GenType::F64),
-            _ => (format!("once({input})"), GenType::F64),
+        GenType::Num(NumTy::F64) => match rng.below(3) {
+            0 => (format!("count({input})"), I64),
+            1 => (format!("uniq({input})"), F64),
+            _ => (format!("once({input})"), F64),
         },
         GenType::Bool => match rng.below(2) {
-            0 => (format!("count({input})"), GenType::I64),
+            0 => (format!("count({input})"), I64),
             _ => (format!("uniq({input})"), GenType::Bool),
         },
         other => unreachable!("no cross-cycle template for {other:?}"),
@@ -316,10 +316,10 @@ fn sample_chain(
 ) {
     let (input, _) = &inputs[rng.below(inputs.len())];
     let t = ctx.fresh();
-    let val = exprs::gen_typed(ctx, rng, &GenType::I64, 2);
+    let val = exprs::gen_typed(ctx, rng, &I64, 2);
     stmts.push(format!("let {t} = {input} ~ ({val})"));
     live.push(t.clone());
-    ctx.push(t, GenType::I64);
+    ctx.push(t, I64);
 }
 
 /// A HOT-RELOADING dynamic module: the source is selected from an
@@ -341,7 +341,7 @@ fn dyn_reload(
     stats: &mut ReactiveStats,
     ndyn: &mut usize,
 ) {
-    let Some((iname, _)) = inputs.iter().find(|(_, t)| *t == GenType::I64) else {
+    let Some((iname, _)) = inputs.iter().find(|(_, t)| *t == I64) else {
         return;
     };
     stats.dyn_reload = true;
@@ -354,8 +354,8 @@ fn dyn_reload(
         .map(|_| {
             let p = inner.fresh();
             let m = inner.mark();
-            inner.push(p.clone(), GenType::I64);
-            let body = exprs::gen_typed(&inner, rng, &GenType::I64, 1);
+            inner.push(p.clone(), I64);
+            let body = exprs::gen_typed(&inner, rng, &I64, 1);
             inner.truncate(m);
             format!("r'let f = |{p}: i64| -> i64 {body}'")
         })
@@ -366,12 +366,12 @@ fn dyn_reload(
     stmts.push(format!(
         "let {status} = mod {dname} dynamic {{ sandbox whitelist [core];          sig {{ val f: fn(x: i64) -> i64 }};          source {srcs_name}[{iname} % i64:{n_srcs}]$ }}"
     ));
-    let arg = exprs::gen_typed(ctx, rng, &GenType::I64, 1);
+    let arg = exprs::gen_typed(ctx, rng, &I64, 1);
     let v = ctx.fresh();
     stmts.push(format!(
         "let {v} = select {status} {{ error as _ => i64:-1, null as _ =>          {dname}::f({arg}) }}"
     ));
-    ctx.push(v, GenType::I64);
+    ctx.push(v, I64);
 }
 
 /// The deliberate runaway — an INPUT-FREE single burst (no schedule):
@@ -386,12 +386,12 @@ fn gen_runaway_burst(rng: &mut Rng) -> (String, ReactiveStats) {
     let r = ctx.fresh();
     stmts.push(format!("let {r} = i64:0"));
     stmts.push(format!("{r} <- {r} + i64:1"));
-    ctx.push(r.clone(), GenType::I64);
+    ctx.push(r.clone(), I64);
     stats.runaway = true;
     if chance(rng, 0.5) {
         counter(&mut ctx, rng, &mut stmts, &mut stats);
     }
-    let val = exprs::gen_typed(&ctx, rng, &GenType::I64, 2);
+    let val = exprs::gen_typed(&ctx, rng, &I64, 2);
     let body = format!("{{ {}; ({r} + ({val})) }}", stmts.join("; "));
     (Schedule::default().render(&body), stats)
 }

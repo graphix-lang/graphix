@@ -5,9 +5,21 @@
 
 use super::{
     GenCfg, GenCtx, GenStats, chance, exprs,
-    types::{self, GenType},
+    types::{self, GenType, I64},
 };
 use crate::mutate::Rng;
+
+/// Two DISTINCT numeric types for a monomorphization pair — any
+/// combination from the full 14-type family (i16-vs-u64 pairs are
+/// exactly the sign/zero-extension narrowing surface).
+fn distinct_numeric_pair(rng: &mut Rng) -> (GenType, GenType) {
+    let a = types::num_ty(rng);
+    let mut b = types::num_ty(rng);
+    while b == a {
+        b = types::num_ty(rng);
+    }
+    (GenType::Num(a), GenType::Num(b))
+}
 
 /// Distinct parameter names, collision-pool-biased (a param that
 /// collides with an outer binding or another lambda's local is the
@@ -124,11 +136,7 @@ pub(super) fn gen_poly_lambda(
     ctx.push(name.clone(), GenType::PolyFn { arity });
     if chance(rng, cfg.p_mono_pair) {
         stats.mono_pair = true;
-        let (ta, tb) = match rng.below(3) {
-            0 => (GenType::I64, GenType::F64),
-            1 => (GenType::I64, GenType::U8),
-            _ => (GenType::F64, GenType::U8),
-        };
+        let (ta, tb) = distinct_numeric_pair(rng);
         for ty in [ta, tb] {
             let args: Vec<_> =
                 (0..arity).map(|_| exprs::gen_typed(ctx, rng, &ty, 1)).collect();
@@ -166,11 +174,7 @@ pub(super) fn gen_bare_lambda(
     // annotated context would reject) but must MASK whatever it
     // shadowed — a stale entry would offer the dead type to later refs.
     ctx.push(f.clone(), GenType::Opaque);
-    let (ta, tb) = match rng.below(3) {
-        0 => (GenType::I64, GenType::F64),
-        1 => (GenType::I64, GenType::U8),
-        _ => (GenType::F64, GenType::U8),
-    };
+    let (ta, tb) = distinct_numeric_pair(rng);
     for ty in [ta, tb] {
         let args: Vec<_> = (0..arity).map(|_| types::literal(rng, &ty)).collect();
         let cname = ctx.fresh();
@@ -271,7 +275,7 @@ pub(super) fn gen_error_arm_lambda(
     let n = ctx.fresh();
     let ret = types::scalar_type(rng);
     let mark = ctx.mark();
-    ctx.push(n.clone(), GenType::I64);
+    ctx.push(n.clone(), I64);
     let ok = exprs::gen_typed(ctx, rng, &ret, 1);
     ctx.truncate(mark);
     let pty = types::scalar_type(rng);
@@ -317,8 +321,8 @@ pub(super) fn gen_rec_lambda(
     let n = ctx.fresh();
     let m = ctx.fresh();
     let mark = ctx.mark();
-    ctx.push(m.clone(), GenType::I64);
-    let base = exprs::gen_typed(ctx, rng, &GenType::I64, 1);
+    ctx.push(m.clone(), I64);
+    let base = exprs::gen_typed(ctx, rng, &I64, 1);
     ctx.truncate(mark);
     let (sig, stmt_args, step) = match rng.below(4) {
         // Non-tail: n + f(n - 1).
@@ -360,6 +364,6 @@ pub(super) fn gen_rec_lambda(
     // deep double-recursion blowups. The single call site:
     let call = ctx.fresh();
     let stmts = vec![rec, format!("let {call} = {f}(i64:{stmt_args})")];
-    ctx.push(call, GenType::I64);
+    ctx.push(call, I64);
     stmts
 }

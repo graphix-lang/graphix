@@ -4,7 +4,7 @@
 
 use super::{
     GenCtx,
-    types::{self, GenType},
+    types::{self, GenType, I64, NUM_TYS, NumTy},
 };
 use crate::mutate::Rng;
 
@@ -99,9 +99,7 @@ fn try_accessor(
                     ));
                 }
             }
-            GenType::I64
-            | GenType::F64
-            | GenType::U8
+            GenType::Num(_)
             | GenType::Bool
             | GenType::Str
             | GenType::Variant(_)
@@ -110,25 +108,25 @@ fn try_accessor(
             | GenType::Opaque => {}
         }
     }
-    // Numeric casts: mostly widening (never fails); narrowing at low
-    // probability exercises the overflow-error path.
-    if ty.is_numeric() && rng.below(2) == 0 {
-        let src = match (ty, rng.below(10)) {
-            (GenType::I64, 0..=8) => Some(GenType::U8),
-            (GenType::I64, _) => Some(GenType::F64),
-            (GenType::F64, _) => {
-                Some(if rng.below(2) == 0 { GenType::I64 } else { GenType::U8 })
-            }
-            (GenType::U8, 0) => Some(GenType::I64),
-            _ => None,
+    // Numeric casts: mostly widening (lossless per `fits_in` — never
+    // fails); the rest arbitrary, exercising the narrowing/overflow
+    // error path at a budgeted rate.
+    if let GenType::Num(t) = ty
+        && rng.below(2) == 0
+    {
+        let fit: Vec<NumTy> =
+            NUM_TYS.iter().copied().filter(|s| s != t && s.fits_in(*t)).collect();
+        let any: Vec<NumTy> = NUM_TYS.iter().copied().filter(|s| s != t).collect();
+        let src = if rng.below(10) < 8 && !fit.is_empty() {
+            fit[rng.below(fit.len())]
+        } else {
+            any[rng.below(any.len())]
         };
-        if let Some(src) = src {
-            cands.push(format!(
-                "cast<{}>({})$",
-                ty.render(),
-                gen_typed(ctx, rng, &src, depth)
-            ));
-        }
+        cands.push(format!(
+            "cast<{}>({})$",
+            ty.render(),
+            gen_typed(ctx, rng, &GenType::Num(src), depth)
+        ));
     }
     if cands.is_empty() {
         return None;
@@ -229,7 +227,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             _ => {
                 let n = 1 + rng.below(4);
                 let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, &GenType::I64, &[]);
+                let binder = callback_binder(&mut inner, rng, &I64, &[]);
                 let body = gen_typed(&inner, rng, e, d.min(2));
                 Some(format!("array::init({n}, |{binder}| {body})"))
             }
@@ -253,7 +251,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             let acc = callback_param(&mut inner, rng, &[]);
             inner.push(acc.clone(), ty.clone());
             let binder = callback_binder(&mut inner, rng, &d_ty, &[acc.clone()]);
-            let body = if *ty == GenType::I64 && rng.below(8) == 0 {
+            let body = if *ty == I64 && rng.below(8) == 0 {
                 // A terminating tail-recursive `let rec` INSIDE the
                 // callback: the per-slot pred lazy-binds at runtime, a
                 // dispatch path with its own resolution/marking pipeline
@@ -319,7 +317,7 @@ pub(super) fn gen_typed(
         }
     }
     match ty {
-        GenType::I64 | GenType::F64 | GenType::U8 => {
+        GenType::Num(n) => {
             // Checked arithmetic, consumed by one of the three legal
             // forms: `$` (error -> bottom), a type-match select with an
             // error arm, or `?` under try/catch.
@@ -338,11 +336,11 @@ pub(super) fn gen_typed(
                 };
             }
             // Unary minus (a real `Neg` node, exercising `ineg`/`fneg`). Only
-            // for signed/float — `-u8` is a compile error (Part B's
-            // signed/float/decimal constraint). Parenthesize the operand so
-            // `-(i64:5)` stays a `Neg` rather than re-parsing as a negative
-            // literal.
-            if !matches!(ty, GenType::U8) && rng.below(6) == 0 {
+            // for signed/float — `-` on an unsigned type is a compile error
+            // (Part B's signed/float/decimal constraint). Parenthesize the
+            // operand so `-(i64:5)` stays a `Neg` rather than re-parsing as a
+            // negative literal.
+            if n.is_signed() && rng.below(6) == 0 {
                 return format!("(-({}))", gen_typed(ctx, rng, ty, d));
             }
             // Bias toward +/-/* over //% — a generated `/0` or `%0` drops to
@@ -484,7 +482,7 @@ fn try_str_builtin(
 ) -> Option<String> {
     let d = depth.min(1);
     match ty {
-        GenType::I64 => {
+        GenType::Num(NumTy::I64) => {
             Some(format!("str::len({})", gen_typed(ctx, rng, &GenType::Str, d)))
         }
         GenType::Bool => {

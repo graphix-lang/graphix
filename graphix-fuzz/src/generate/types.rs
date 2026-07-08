@@ -4,11 +4,166 @@
 
 use crate::mutate::Rng;
 
+/// The numeric primitive vocabulary — every graphix numeric type. The
+/// fixed-width ten are the JIT's register-scalar set (each with its own
+/// sign/zero-extension ABI path — the 50a562b9 bug class); the
+/// variable-width four (`v`/`z`) are valid language that de-fuses
+/// (outside `PrimType`), exercising the fused/unfused boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumTy {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    V32,
+    V64,
+    Z32,
+    Z64,
+}
+
+pub(super) const NUM_TYS: &[NumTy] = &[
+    NumTy::I8,
+    NumTy::I16,
+    NumTy::I32,
+    NumTy::I64,
+    NumTy::U8,
+    NumTy::U16,
+    NumTy::U32,
+    NumTy::U64,
+    NumTy::F32,
+    NumTy::F64,
+    NumTy::V32,
+    NumTy::V64,
+    NumTy::Z32,
+    NumTy::Z64,
+];
+
+impl NumTy {
+    pub fn render(self) -> &'static str {
+        match self {
+            NumTy::I8 => "i8",
+            NumTy::I16 => "i16",
+            NumTy::I32 => "i32",
+            NumTy::I64 => "i64",
+            NumTy::U8 => "u8",
+            NumTy::U16 => "u16",
+            NumTy::U32 => "u32",
+            NumTy::U64 => "u64",
+            NumTy::F32 => "f32",
+            NumTy::F64 => "f64",
+            NumTy::V32 => "v32",
+            NumTy::V64 => "v64",
+            NumTy::Z32 => "z32",
+            NumTy::Z64 => "z64",
+        }
+    }
+
+    pub(super) fn is_float(self) -> bool {
+        matches!(self, NumTy::F32 | NumTy::F64)
+    }
+
+    /// Signed (negation is legal): signed ints, zigzag varints, floats.
+    pub(super) fn is_signed(self) -> bool {
+        matches!(
+            self,
+            NumTy::I8
+                | NumTy::I16
+                | NumTy::I32
+                | NumTy::I64
+                | NumTy::Z32
+                | NumTy::Z64
+                | NumTy::F32
+                | NumTy::F64
+        )
+    }
+
+    /// The value-range identity: `v`/`z` varints are alternate wire
+    /// encodings of a fixed-width type — casts and fits follow the
+    /// fixed-width twin.
+    fn range_twin(self) -> NumTy {
+        match self {
+            NumTy::V32 => NumTy::U32,
+            NumTy::V64 => NumTy::U64,
+            NumTy::Z32 => NumTy::I32,
+            NumTy::Z64 => NumTy::I64,
+            t => t,
+        }
+    }
+
+    /// Every value of `self` casts to `other` losslessly — the
+    /// never-fails widening relation for generated `cast<T>`. Floats
+    /// count integer embeddings only up to their exact-integer range
+    /// (24/53 mantissa bits).
+    pub(super) fn fits_in(self, other: NumTy) -> bool {
+        fn int_bits(t: NumTy) -> Option<(u32, bool)> {
+            Some(match t {
+                NumTy::I8 => (8, true),
+                NumTy::I16 => (16, true),
+                NumTy::I32 => (32, true),
+                NumTy::I64 => (64, true),
+                NumTy::U8 => (8, false),
+                NumTy::U16 => (16, false),
+                NumTy::U32 => (32, false),
+                NumTy::U64 => (64, false),
+                NumTy::F32 | NumTy::F64 => return None,
+                NumTy::V32 | NumTy::V64 | NumTy::Z32 | NumTy::Z64 => unreachable!(),
+            })
+        }
+        let (a, b) = (self.range_twin(), other.range_twin());
+        match (int_bits(a), int_bits(b)) {
+            (Some((ab, asig)), Some((bb, bsig))) => match (asig, bsig) {
+                (false, false) | (true, true) => ab <= bb,
+                (false, true) => ab < bb,
+                (true, false) => false,
+            },
+            (Some((ab, asig)), None) => {
+                let mant = if b == NumTy::F32 { 24 } else { 53 };
+                if asig { ab - 1 <= mant } else { ab <= mant }
+            }
+            (None, None) => a == NumTy::F32 || b == NumTy::F64,
+            (None, Some(_)) => false,
+        }
+    }
+
+    /// A literal of this type, drawn from a per-type pool that includes
+    /// the boundary values (MIN/MAX — the wrap/overflow surface).
+    pub(super) fn literal(self, rng: &mut Rng) -> String {
+        let v: &str = match self {
+            NumTy::I8 => ["0", "1", "-1", "7", "100", "-100", "127", "-128"]
+                [rng.below(8)],
+            NumTy::I16 => ["0", "1", "-1", "7", "1000", "-1000", "32767", "-32768"]
+                [rng.below(8)],
+            NumTy::I32 => {
+                ["0", "1", "-1", "42", "100000", "-100000", "2147483647",
+                 "-2147483648"][rng.below(8)]
+            }
+            NumTy::I64 => ["0", "1", "-1", "2", "42", "100", "-100", "7"][rng.below(8)],
+            NumTy::U8 => ["0", "1", "2", "100", "255"][rng.below(5)],
+            NumTy::U16 => ["0", "1", "2", "1000", "65535"][rng.below(5)],
+            NumTy::U32 => ["0", "1", "7", "100000", "4294967295"][rng.below(5)],
+            NumTy::U64 => {
+                ["0", "1", "7", "1000000", "18446744073709551615"][rng.below(5)]
+            }
+            NumTy::F32 => ["0.0", "1.0", "-1.0", "3.5", "0.25", "-2.5"][rng.below(6)],
+            NumTy::F64 => ["0.0", "1.0", "-1.0", "3.14", "2.5", "0.1"][rng.below(6)],
+            NumTy::V32 => ["0", "1", "7", "1000", "4294967295"][rng.below(5)],
+            NumTy::V64 => ["0", "1", "7", "1000000"][rng.below(4)],
+            NumTy::Z32 => ["0", "1", "-1", "7", "-1000"][rng.below(5)],
+            NumTy::Z64 => ["0", "1", "-1", "42", "-1000000"][rng.below(5)],
+        };
+        format!("{}:{v}", self.render())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GenType {
-    I64,
-    F64,
-    U8,
+    Num(NumTy),
     Bool,
     Str,
     Tuple(Vec<GenType>),
@@ -54,14 +209,19 @@ pub enum GenType {
     Opaque,
 }
 
+/// The historically-dominant trio — kept as consts so template code
+/// (rec skeletons, reactive counters, str::len results) names them
+/// without ceremony.
+pub(super) const I64: GenType = GenType::Num(NumTy::I64);
+pub(super) const F64: GenType = GenType::Num(NumTy::F64);
+pub(super) const U8: GenType = GenType::Num(NumTy::U8);
+
 impl GenType {
     /// The graphix type-annotation text for this type (`Array<i64>`,
     /// `(i64, string)`, ...), used for `let x: T = ...`.
     pub fn render(&self) -> String {
         match self {
-            GenType::I64 => "i64".into(),
-            GenType::F64 => "f64".into(),
-            GenType::U8 => "u8".into(),
+            GenType::Num(n) => n.render().into(),
             GenType::Bool => "bool".into(),
             GenType::Str => "string".into(),
             GenType::Tuple(elems) => {
@@ -106,7 +266,7 @@ impl GenType {
     }
 
     pub(super) fn is_numeric(&self) -> bool {
-        matches!(self, GenType::I64 | GenType::F64 | GenType::U8)
+        matches!(self, GenType::Num(_))
     }
 
     /// Whether the type contains an option anywhere — such a binding
@@ -122,9 +282,7 @@ impl GenType {
                 ts.iter().any(|(_, args)| args.iter().any(|t| t.contains_nullable()))
             }
             GenType::Array(e) | GenType::Map(e) => e.contains_nullable(),
-            GenType::I64
-            | GenType::F64
-            | GenType::U8
+            GenType::Num(_)
             | GenType::Bool
             | GenType::Str
             | GenType::Fn { .. }
@@ -134,28 +292,32 @@ impl GenType {
     }
 
     pub(super) fn is_scalar(&self) -> bool {
-        matches!(
-            self,
-            GenType::I64 | GenType::F64 | GenType::U8 | GenType::Bool | GenType::Str
-        )
+        matches!(self, GenType::Num(_) | GenType::Bool | GenType::Str)
+    }
+}
+
+/// A random numeric type: the dominant trio (i64/f64/u8) at 60%, the
+/// rest of the family at 40% — narrow widths and varints keep enough
+/// presence to exercise their extension/boundary paths without
+/// diluting the poly/HOF combination surface the trio anchors.
+pub(super) fn numeric_type(rng: &mut Rng) -> GenType {
+    GenType::Num(num_ty(rng))
+}
+
+pub(super) fn num_ty(rng: &mut Rng) -> NumTy {
+    match rng.below(10) {
+        0 | 1 => NumTy::I64,
+        2 | 3 => NumTy::F64,
+        4 | 5 => NumTy::U8,
+        _ => NUM_TYS[rng.below(NUM_TYS.len())],
     }
 }
 
 pub(super) fn scalar_type(rng: &mut Rng) -> GenType {
     match rng.below(5) {
-        0 => GenType::I64,
-        1 => GenType::F64,
-        2 => GenType::U8,
+        0..=2 => numeric_type(rng),
         3 => GenType::Bool,
         _ => GenType::Str,
-    }
-}
-
-pub(super) fn numeric_type(rng: &mut Rng) -> GenType {
-    match rng.below(3) {
-        0 => GenType::I64,
-        1 => GenType::F64,
-        _ => GenType::U8,
     }
 }
 
@@ -206,9 +368,9 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
         return scalar_type(rng);
     }
     match rng.below(11) {
-        0 | 1 => GenType::I64,
-        2 => GenType::F64,
-        3 => GenType::U8,
+        0 | 1 => I64,
+        2 => F64,
+        3 => U8,
         4 => GenType::Bool,
         5 => GenType::Str,
         6 => {
@@ -224,15 +386,7 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
 
 pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
     match ty {
-        GenType::I64 => {
-            let v = [0i64, 1, -1, 2, 42, 100, -100, 7][rng.below(8)];
-            format!("i64:{v}")
-        }
-        GenType::U8 => format!("u8:{}", [0u8, 1, 2, 100, 255][rng.below(5)]),
-        GenType::F64 => {
-            let v = ["0.0", "1.0", "-1.0", "3.14", "2.5", "0.1"][rng.below(6)];
-            format!("f64:{v}")
-        }
+        GenType::Num(n) => n.literal(rng),
         GenType::Bool => {
             if rng.below(2) == 0 {
                 "true".into()
