@@ -397,7 +397,11 @@ impl Jit {
     /// module + ISA. Returns `Err` if cranelift initialization fails
     /// (rare; only happens if the target ISA isn't supported).
     pub fn new() -> Result<Self> {
-        Ok(Self { ctx: JitCtx::new()?, by_kernel: BTreeMap::new(), layouts: BTreeMap::new() })
+        Ok(Self {
+            ctx: JitCtx::new()?,
+            by_kernel: BTreeMap::new(),
+            layouts: BTreeMap::new(),
+        })
     }
 
     fn intern_layout(&mut self, layout: Vec<(usize, u32)>) -> u32 {
@@ -689,7 +693,8 @@ fn compile_kernel_with_callees_inner(
     // funcref indices (fn0, fn1, …) are assigned in import order — a
     // pointer-ordered map here made the numbering ASLR-dependent (#19).
     let mut funcids: Vec<(usize, (FuncId, Signature))> = Vec::new();
-    let parent_entry = ensure_declared(jit, kernel, 0, parent_layout, to_define, registry)?;
+    let parent_entry =
+        ensure_declared(jit, kernel, 0, parent_layout, to_define, registry)?;
     funcids.push((parent_ptr, parent_entry.clone()));
     for (ptr, k) in callees {
         if *ptr == parent_ptr {
@@ -829,17 +834,16 @@ fn define_kernel_body(
     body_emitter: &dyn BodyEmitter,
 ) -> Result<(KernelStrings, KernelValues, usize)> {
     let self_ptr = kernel_abi::kernel_key(kernel);
-    let (func_id, sig) = funcids
-        .iter()
-        .find(|(p, _)| *p == self_ptr)
-        .map(|(_, e)| e.clone())
-        .ok_or_else(|| {
-            anyhow!(
-                "define_kernel_body: missing FuncId for kernel `{}` \
+    let (func_id, sig) =
+        funcids.iter().find(|(p, _)| *p == self_ptr).map(|(_, e)| e.clone()).ok_or_else(
+            || {
+                anyhow!(
+                    "define_kernel_body: missing FuncId for kernel `{}` \
                  (phase-1 declare must have populated `funcids` first)",
-                kernel.fn_name
-            )
-        })?;
+                    kernel.fn_name
+                )
+            },
+        )?;
     // Defensive: a *prior* kernel compile that returned `Err` before
     // its end-of-function `clear_context` leaves `func_ctx` dirty,
     // which makes the next `FunctionBuilder::new` panic
@@ -2594,10 +2598,7 @@ impl JitEnv {
         if let Some(l) = self.locals.iter().rev().find(|l| l.bind_id == Some(id)) {
             return Some(l);
         }
-        self.locals
-            .iter()
-            .rev()
-            .find(|l| l.bind_id.is_none() && l.name.as_str() == name)
+        self.locals.iter().rev().find(|l| l.bind_id.is_none() && l.name.as_str() == name)
     }
 
     /// Resolve a local by name only — for sites with no BindId (string /
@@ -3410,10 +3411,14 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
         match n.view() {
             NodeView::Ref(_) => return CompositeSource::Borrowed,
             NodeView::ExplicitParens(p) => n = &*p.n,
-            NodeView::Block(blk) => match blk.children.last() {
-                Some(tail) => n = &**tail,
-                None => return CompositeSource::Owned,
-            },
+            // A Block's composite/value/string result is OWNED by
+            // construction: `emit_block_node`'s tail handling clones a
+            // borrowed tail before the scope drops (the tail may alias
+            // a dying block local). Walking through to the tail here
+            // (the old behavior) contradicted that — every consumer of
+            // a block whose tail was a Ref cloned the already-owned
+            // result AGAIN and leaked the first clone.
+            NodeView::Block(_) => return CompositeSource::Owned,
             _ => return CompositeSource::Owned,
         }
     }
@@ -4313,8 +4318,22 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
             // The tail may alias a block-scoped local we're about to
             // drop — clone borrowed results so they outlive the block.
             // Taint rides in the disc through the clone.
+            //
+            // `freeze_for_abi_normalized`, NOT `abi_kind(child.typ())`
+            // raw: a select-valued tail's type is the un-normalized
+            // arm union, which doesn't classify — the old raw call
+            // fell through to "no clone needed" while the scope drop
+            // below still freed the local, so the caller's later clone
+            // read freed memory (soak jul08g generate crashes 0/1,
+            // SIGSEGV in `graphix_valarray_clone`). An unclassifiable
+            // tail is an ERROR (de-fuse), never a silent passthrough —
+            // the passthrough IS the use-after-free.
             let src = node_composite_source(child);
-            let result = match kernel_abi::abi_kind(cx.registry(), child.typ()) {
+            let frozen =
+                kernel_abi::freeze_for_abi_normalized(cx.registry(), child.typ());
+            let shape =
+                frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
+            let result = match shape {
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                     let v = ensure_owned_composite_src(cx, src, tail_cv.payload)?;
                     CompiledExpr::new(tail_cv.disc, v)
@@ -4326,7 +4345,16 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
                 }
                 // Scalars need no clone; a String read is already an
                 // owned clone (the Ref/Const arms bump the refcount).
-                _ => tail_cv,
+                Some(
+                    AbiKind::Scalar(_) | AbiKind::String | AbiKind::Unit | AbiKind::Null,
+                ) => tail_cv,
+                None => {
+                    return Err(anyhow!(
+                        "emit_clif: block tail type {:?} doesn't classify — \
+                         can't make the result outlive the scope drops",
+                        child.typ()
+                    ));
+                }
             };
             emit_scope_drops(cx, mark)?;
             cx.env.truncate(mark);
@@ -7943,10 +7971,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // Owned-arg drops belong to the CALL path (the trip path never
     // marshalled), then meet the trip placeholder at the merge.
     emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
-    cx.b.ins().jump(
-        dmerge,
-        &[BlockArg::Value(result.disc), BlockArg::Value(result.payload)],
-    );
+    cx.b.ins()
+        .jump(dmerge, &[BlockArg::Value(result.disc), BlockArg::Value(result.payload)]);
     cx.b.switch_to_block(dmerge);
     cx.b.seal_block(dmerge);
     let disc = cx.b.block_params(dmerge)[0];
@@ -7990,9 +8016,10 @@ fn emit_call_arg_drops(
 /// local currently in scope. Called at every Return point so we
 /// don't leak refcount-bumped ValArrays past kernel exit.
 ///
-/// Composite-return kernels (when we add them) would skip the
-/// dropped value being returned; right now all composite return is
-/// rejected at compile so it's safe to drop everything.
+/// A composite/string/value RETURN is safe against these drops
+/// because `emit_kernel_return` makes the result independently owned
+/// (`ensure_owned_*_src` clones a borrowed local read) BEFORE calling
+/// this — the returned pointer never aliases a dropped slot.
 fn drop_owned_composites(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
