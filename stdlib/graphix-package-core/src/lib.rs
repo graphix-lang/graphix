@@ -1153,6 +1153,10 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
     /// and the subtree node-walks). The acc/elem BindIds come from the
     /// callback's arg patterns — the direct path resolves Refs
     /// BindId-first.
+    /// `acc_typ` is the RESOLVED accumulator type (the callback's
+    /// return `'b` from the callsite-resolved FnType) — the analysis
+    /// instance's own `body.typ()` re-mints generalized tvars unbound,
+    /// so it is NOT a reliable freeze authority for generic bodies.
     fn emit_clif(
         _cx: &mut graphix_compiler::fusion::emit::BodyCx,
         _array_arg: &Node<R, E>,
@@ -1160,6 +1164,8 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
         _body: &Node<R, E>,
         _acc_name: &ArcStr,
         _acc_id: Option<graphix_compiler::BindId>,
+        _acc_binds: &[(graphix_compiler::BindId, usize)],
+        _acc_typ: &graphix_compiler::typ::Type,
         _elem_name: &ArcStr,
         _elem_id: Option<graphix_compiler::BindId>,
         _in_elem: &graphix_compiler::typ::Type,
@@ -1695,15 +1701,29 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         };
         let body = g.body();
         let mut params = g.typ().args.iter();
-        // The accumulator (1st) param is always a single name.
-        let acc_name = match params.next().map(|a| &a.kind) {
-            Some(graphix_compiler::typ::FnArgKind::Positional { name: Some(n) }) => {
-                n.clone()
-            }
-            Some(graphix_compiler::typ::FnArgKind::Labeled { name, .. }) => name.clone(),
-            _ => return Ok(None),
-        };
-        let acc_id = g.args().first().and_then(|p| p.single_bind_id());
+        // The accumulator (1st) param: a single name, or a
+        // `|(a, b), v|` destructure (the sync-block multi-mut desugar)
+        // whose leaves bind off the carried acc each iteration.
+        let (acc_name, acc_id, acc_binds) =
+            match g.args().first().and_then(|p| p.tuple_leaves()) {
+                Some(binds) => {
+                    let _ = params.next();
+                    (arcstr::literal!("__acc"), None, binds)
+                }
+                None => {
+                    let n = match params.next().map(|a| &a.kind) {
+                        Some(graphix_compiler::typ::FnArgKind::Positional {
+                            name: Some(n),
+                        }) => n.clone(),
+                        Some(graphix_compiler::typ::FnArgKind::Labeled {
+                            name, ..
+                        }) => name.clone(),
+                        _ => return Ok(None),
+                    };
+                    let id = g.args().first().and_then(|p| p.single_bind_id());
+                    (n, id, Vec::new())
+                }
+            };
         // The element (2nd) param may be an `|acc, (k, v)|`
         // destructure — same handling as `MapQ::emit_clif`.
         let (elem_name, elem_id, elem_binds) =
@@ -1730,6 +1750,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             body,
             &acc_name,
             acc_id,
+            &acc_binds,
+            &self.mftype.rtype,
             &elem_name,
             elem_id,
             &self.etyp,

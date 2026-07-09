@@ -700,11 +700,15 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
 
     /// Direct-path fold loop via `scaffold::emit_fold_loop`. Same
     /// `Ok(None)` gates as `MapImpl::emit_clif`, plus the accumulator
-    /// must be a register scalar whose prim the init and body types
-    /// agree on (`scalar_prim(init)` + `body == acc` checks). A
-    /// may-bottom init/body TAINTS the accumulator (loop-carried in
-    /// its disc), matching the node-walk's per-slot dataflow: the fold
-    /// bottoms only while the callback consumes the bottom acc.
+    /// shape: a register scalar whose prim the init and body types
+    /// agree on, a pointer composite (array/tuple/struct — the loop
+    /// owns the carried value, cloning borrowed init/body results and
+    /// dropping the replaced acc each iteration), or a String (reads
+    /// clone, so results are already owned). Value-shape (2-word)
+    /// accumulators stay on the FoldQ path. A may-bottom init/body
+    /// TAINTS the accumulator (loop-carried in its disc), matching the
+    /// node-walk's per-slot dataflow: the fold bottoms only while the
+    /// callback consumes the bottom acc.
     fn emit_clif(
         cx: &mut BodyCx,
         array_arg: &Node<R, E>,
@@ -712,6 +716,8 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         body: &Node<R, E>,
         acc_name: &ArcStr,
         acc_id: Option<BindId>,
+        acc_binds: &[(BindId, usize)],
+        acc_typ: &Type,
         elem_name: &ArcStr,
         elem_id: Option<BindId>,
         in_elem: &Type,
@@ -746,23 +752,34 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         // producer — literal, slice, inlined-HOF result) is adopted by
         // the scaffold for both-path cleanup (the `ArraySrc` contract).
         let owned = emit::node_composite_source(array_arg) == CompositeSource::Owned;
-        // The acc threads through the loop as a register Variable —
-        // init and body must both freeze to the same register scalar.
-        let acc_prim =
-            match kernel_abi::freeze_for_abi_normalized(cx.registry(), init_arg.typ())
-                .as_ref()
-                .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
-            {
-                Some(p) => p,
-                None => return Ok(None),
-            };
-        match kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-            .as_ref()
-            .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
-        {
-            Some(p) if p == acc_prim => {}
+        // The carry shape comes from the RESOLVED acc type `acc_typ`
+        // (the callback's `'b`, which the callsite unified with both
+        // the init and the body result — one authority, agreement by
+        // construction): one register scalar prim, a pointer composite
+        // (array/tuple/struct — all ValArray-backed), or String.
+        let Some(acc_t) = kernel_abi::freeze_for_abi_normalized(cx.registry(), acc_typ)
+        else {
+            return Ok(None);
+        };
+        let acc_leaves;
+        let acc = match kernel_abi::abi_kind(cx.registry(), &acc_t) {
+            Some(AbiKind::Scalar(p)) if acc_binds.is_empty() => {
+                scaffold::FoldAcc::Scalar(p)
+            }
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                let Some(leaves) = elem_leaves(cx.registry(), &acc_t, acc_binds) else {
+                    return Ok(None);
+                };
+                acc_leaves = leaves;
+                scaffold::FoldAcc::Composite {
+                    init_src: emit::node_composite_source(init_arg),
+                    body_src: emit::node_composite_source(body),
+                    leaves: &acc_leaves,
+                }
+            }
+            Some(AbiKind::String) if acc_binds.is_empty() => scaffold::FoldAcc::Str,
             _ => return Ok(None),
-        }
+        };
         // Gates done — emit. From here a mismatch is a build bug or a
         // de-fuse, so Err (abort the kernel), never Ok(None).
         //
@@ -778,7 +795,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for FoldImpl {
         scaffold::emit_fold_loop(
             cx,
             scaffold::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
-            acc_prim,
+            acc,
             acc_name,
             acc_id,
             &scaffold::HofElem {
