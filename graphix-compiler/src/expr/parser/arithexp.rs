@@ -225,7 +225,15 @@ parser! {
                         }
                     }),
             )
-            .skip(spaces())
+        // NOTE: arith_term must NOT skip trailing spaces — the tight
+        // brace rule (`m{"k"}` is a map access, `m {"k"}` is not)
+        // depends on the whitespace between a postfix source and `{`
+        // surviving to the postfix loop. The old trailing
+        // `.skip(spaces())` laundered it for PREFIX forms: `*r {i8:0}`
+        // recursed into arith_term for `r`, whose trailing skip ate
+        // the space, and the OUTER postfix loop then saw `{i8:0}`
+        // flush and built a MapRef (found by the extended round-trip
+        // proptest on the sync-subset `for … in *r { body }` shape).
     }
 }
 

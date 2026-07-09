@@ -1749,3 +1749,4 @@ fn in_stays_contextual() {
     let e = parse_one("input + 1").unwrap();
     assert!(matches!(&e.kind, ExprKind::Add { .. }), "got {:?}", e.kind);
 }
+
