@@ -131,6 +131,20 @@ pub struct FusionCtx {
     /// Gating it here (not just the compile-time `fuse()` phase) is what
     /// makes `FusionDisabled` a TRUE node-walk. Defaults `true`.
     pub enabled: bool,
+    /// Set while [`lowering::build_fused_template`] fuses a per-slot
+    /// HOF callback template. Suppresses the connect-target LIFT
+    /// ([`collect_lifted_connect_targets`] returns empty): a lifted
+    /// target's `Bind` is spliced INTO the kernel, so the per-slot
+    /// `clone_rebind` has no node to re-mint the binding from — every
+    /// slot clone would read and write the TEMPLATE's one variable
+    /// (soak jul08m: `array::filter_map(a, |x| { let s = 0;
+    /// s <- x*10; s })` aliased all slots to one accumulator). With
+    /// the lift off, the connect target is a non-lifted kernel-local
+    /// and `emit_connect_node`'s read-after-write guard de-fuses the
+    /// enclosing region — the callback block node-walks per slot with
+    /// properly re-minted bindings. Save/restore, not set/clear:
+    /// template builds nest (HOF-of-HOF).
+    pub per_slot_template: bool,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub stats: FusionStats,
@@ -176,6 +190,7 @@ impl FusionCtx {
                 nohash::IntSet::default(),
             )),
             enabled: true,
+            per_slot_template: false,
             stats: FusionStats::default(),
             abstract_registry: kernel_abi::AbstractRegistry::default(),
             top_id: None,
@@ -318,6 +333,9 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     // `emit_select_value_arm`). Contexts without a state word (tail
     // selects in recursive bodies, callee kernels) refuse the shape at
     // emission and de-fuse (soak jul08g fuzz divergence 6).
+    if ctx.fusion.per_slot_template {
+        return ahash::AHashSet::default();
+    }
     let mut connect_count: ahash::AHashMap<BindId, usize> = ahash::AHashMap::default();
     let mut const_lets: ahash::AHashSet<BindId> = ahash::AHashSet::default();
     for_each_node(node, &mut |n| match n.view() {

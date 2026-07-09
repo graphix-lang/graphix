@@ -1103,6 +1103,11 @@ pub fn build_fused_template<R: Rt, E: UserEvent>(
     let mut remap = crate::RebindMap::default();
     remap.top_id = Some(top_id);
     let mut t = pred.clone_rebind(ctx, scope, &mut remap);
+    // Lift suppression for the whole template fuse — see
+    // `FusionCtx::per_slot_template`. Save/restore: template builds
+    // nest (HOF-of-HOF callbacks build inner templates).
+    let prev_pst = ctx.fusion.per_slot_template;
+    ctx.fusion.per_slot_template = true;
     {
         let any: &mut dyn std::any::Any = &mut *t;
         if let Some(cs) = any.downcast_mut::<CallSite<R, E>>() {
@@ -1125,6 +1130,7 @@ pub fn build_fused_template<R: Rt, E: UserEvent>(
             }
         }
     }
+    ctx.fusion.per_slot_template = prev_pst;
     t
 }
 
