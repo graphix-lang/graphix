@@ -160,43 +160,70 @@ answered with a map.
 scratch, reinitialized each run — the block stays pure modulo its own
 locals.
 
-### Mutation: mut PLACES, not mut types
+### Mutation: mut VARIABLES, persistent data, in-place by proof
 
-`let mut tmp = []` does not introduce a `Vec`. It introduces a mutable
-*binding* — a place — holding an ordinary `Array<'b>`. Mutating ops on
-a mut place (`array::push(tmp, x)`) mean `tmp = array::push(tmp, x)`
-semantically, executed in place when the runtime can prove sole
-ownership (refcount-1 steal — ValArray and the chunkmap are refcounted
-persistent structures, so this is classic COW). Behind the curtain a
-mut Array place keeps builder slack so repeated pushes aren't O(n²),
-materializing on read/escape — the scaffold's `buf_new → push →
-finalize`, promoted from emission detail to the meaning of a mut
-place.
+All data structures stay exactly as they are — persistent, immutable
+values. The only mutable thing is a *binding*:
 
-Consequences:
+```graphix
+let filter = |a: Array<'a>, f: fn('a) -> bool| -> Array<'a> sync {
+    let mut res = [];
+    for v in a {
+        select f(v) {
+            true => res = array::push(res, v),
+            false => ()
+        }
+    }
+    res
+}
+```
 
-- **`Vec` lives nowhere.** No `vec::` module, no `to_array` — the
-  freeze is the place's ESCAPE (return, capture, assignment out), and
-  what escapes is a plain `Array<'b>`. One type universe.
-- **Aliasing collapses**: places aren't values; you can read one
-  (materializes a value) or update it, never alias it. Escape analysis
-  is lexical. No affine type system needed.
+`res = array::push(res, v)` is ordinary rebinding — the language has
+sequential shadowing today; the only new semantics a `for` loop adds
+is the rebind carrying ACROSS iterations. Hence the one-line
+desugaring: **a `for` loop with mut vars IS a fold, the mut vars its
+accumulator tuple.** The JIT already compiles exactly this — the
+scaffold's fold loop carries the accumulator as a CLIF block
+parameter; "in-kernel mutable variables" is what block params are.
+Rung-2 elaboration inherits for free: loop-carried mut vars under
+async are fold's acc chain (FoldQ's slot chain).
+
+**The n² objection dissolves by a shipped optimization, not ValArray
+games.** For `res = array::push(res, v)` with `res` block-local and
+loop-carried, the old value is provably dead after the rebind (born in
+this block, no other reference, consumed by this expression). Under
+that trivially-checkable uniqueness condition the emitter builds in
+place — `buf_new → push → finalize at escape` — which is verbatim what
+`emit_map_loop` emits today, now licensed by a liveness argument
+instead of special-cased HOF lowering. The interpreter holds the same
+builder representation during sequential block evaluation, keeping
+both evaluators O(n). Prior art: Lean/Koka's "functional but in-place"
+(Perceus-style reuse) — persistent semantics, allocation reuse when
+uniqueness holds, no ownership in the type system.
+
+Where the uniqueness proof fails (res stashed into another structure
+mid-loop → pushes genuinely copy), the honest fallback is already in
+the stdlib: cons onto a `List` and reverse — O(n), zero machinery.
+
+Consequences: no mut containers, no in-place ops with special
+semantics, no `vec::`, no freeze API, no affine types. One new binder
+(`let mut`), one new expression form (assignment to a mut local, sync
+blocks only).
+
 - **User-defined mutable structures** split along the leaf/control
-  line: mutation *ergonomics* over existing types comes free (mut
-  struct places with field updates, mut Map places — every persistent
-  type gets in-place update in sync blocks). Novel *representations*
-  (ring buffers, specialized tables) stay where representation
-  innovation already lives: Rust leaf builtins behind an abstract
-  type. `buffer::` is the shipped proof — a user-facing mutable sync
-  structure as Rust ops over an abstract type. Computation, not
+  line: mutation ergonomics over existing types comes free (mut locals
+  of struct/Map type rebound with functional update). Novel
+  REPRESENTATIONS (ring buffers, specialized tables) stay where
+  representation innovation already lives: Rust leaf builtins behind
+  an abstract type — `buffer::` is the shipped proof. Computation, not
   control: the sanctioned side of the boundary.
-- **Coherence with refs and the cached ruling**: the reactive layer
-  already has mutable places — ref cells, `*r <- v`. `let mut` is
-  their sync-local cousin with the opposite visibility rule, and the
-  rules compose into one story: WITHIN a sync block, mutation is
-  immediate (sequential semantics); anything crossing OUT of sync into
-  reactive land is a delivery, visible next cycle (the 2026-07-09
-  cached-follows-deliveries ruling).
+- **Coherence with refs and the cached ruling**: reactive land already
+  has mutable places — ref cells, `*r <- v`. `let mut` is the
+  sync-local cousin with the opposite visibility rule, and the rules
+  compose: WITHIN a sync block, rebinding is immediate (sequential
+  semantics); anything crossing OUT into reactive land is a delivery,
+  visible next cycle (the 2026-07-09 cached-follows-deliveries
+  ruling).
 
 ### What remains in Rust
 
@@ -249,8 +276,8 @@ formulation — the eventual-value machinery is elaboration-internal
 | --- | --- |
 | Function coloring (`sync fn`) | Gone from types: `sync` is a block; effects inferred, never written. |
 | Calling reactive `f` from sync | Re-evaluation under taint + the elaboration ladder; only the CALL SET must be eventual-independent (rung 3 catches the rest). |
-| `Vec` + freeze API | Mut PLACES over persistent types; freeze = escape; no `vec::`. |
-| Aliasing / affine types | Places aren't values; no aliasing exists to restrict. |
+| `Vec` + freeze API | Mut VARIABLES + persistent data; `for` = fold; in-place by uniqueness proof (FBIP); no `vec::`, no freeze. |
+| Aliasing / affine types | Rebinding, not aliasing; uniqueness is an optimization condition, not a type. |
 | Bottom mid-loop | #219 taint algebra, unchanged. |
 | Surface effect variables | Avoided entirely (inference-only was v1's recommendation; v2 makes it structural). |
 
@@ -267,8 +294,10 @@ formulation — the eventual-value machinery is elaboration-internal
   eventual-dependent control) or flow-based (eventual-ness as a
   compile-time taint on places too — laundering through a mut place
   then branching)?
-- Mut-place builder representations per type (Array slack buffer, Map
-  COW handle, String rope?) and the materialize-on-read cost model.
+- Builder representations per type for the in-place optimization
+  (Array slack buffer, Map COW handle, String rope?) and where the
+  uniqueness proof draws its line (block-local + loop-carried is the
+  easy 95%; is more worth it?).
 - `for` syntax and iteration protocol (arrays, maps, ranges; does
   user code ever iterate an abstract type?).
 - Diagnostics quality for inferred effects — the error must carry the
