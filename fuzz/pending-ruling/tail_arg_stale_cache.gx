@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: {let rec lp = |n: i64, acc: i64| -> i64 select n + i64:1 {i64:0 => acc, _ => lp(n - i64:1, acc / n)}; lp(i64:100, i64:0)}
+// minimized:
+{let rec lp = |n: i64, acc: i64| -> i64 select n + i64:1 {i64:0 => i64:0, _ => lp(n - i64:1, acc / n)}; lp(i64:100, i64:0)}
