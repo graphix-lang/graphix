@@ -1225,9 +1225,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.ready = false;
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
-                ctx.cached.insert(self.nid, len.clone());
+                ctx.rt.cached_mut().insert(self.nid, len.clone());
                 event.variables.insert(self.nid, len);
-                ctx.cached.insert(self.xid, $v.clone());
+                ctx.rt.cached_mut().insert(self.xid, $v.clone());
                 event.variables.insert(self.xid, $v);
             }};
         }
@@ -1235,7 +1235,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             self.queue.push_back(v);
         }
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.pid, v.clone());
+            ctx.rt.cached_mut().insert(self.pid, v.clone());
             event.variables.insert(self.pid, v);
         }
         if self.ready && self.queue.len() > 0 {
@@ -1281,9 +1281,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.nid);
-        ctx.cached.remove(&self.pid);
-        ctx.cached.remove(&self.xid);
+        ctx.rt.cached_mut().remove(&self.nid);
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.xid);
         self.pred.delete(ctx);
     }
 
@@ -1558,7 +1558,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
     ) -> Option<Value> {
         let slen = self.slots.len();
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
         let (size_fired, resized) = match from[0].update(ctx, event) {
@@ -1605,7 +1605,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
                                 TArc::new(graphix_compiler::expr::Origin::default()),
                             )
                             .id;
-                        ctx.cached.insert(id, Value::I64(i as i64));
+                        ctx.rt.cached_mut().insert(id, Value::I64(i as i64));
                         let pred = match &self.fused_template {
                             Some(t) => {
                                 let scope = self.scope.clone();
@@ -1662,7 +1662,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
             if i == slen {
                 event.init = true;
                 if let Entry::Vacant(e) = event.variables.entry(self.fid)
-                    && let Some(v) = ctx.cached.get(&self.fid)
+                    && let Some(v) = ctx.rt.cached().get(&self.fid)
                 {
                     e.insert(v.clone());
                 }
@@ -1715,7 +1715,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Init<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.fid);
         for sl in &mut self.slots {
             sl.delete(ctx)
         }

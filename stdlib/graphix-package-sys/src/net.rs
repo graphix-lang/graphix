@@ -588,7 +588,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.args.update_diff(&mut up, ctx, from, event);
         if up[0] {
             if let Some(v) = self.args.0[0].clone() {
-                ctx.cached.insert(self.pid, v.clone());
+                ctx.rt.cached_mut().insert(self.pid, v.clone());
                 event.variables.insert(self.pid, v);
             }
         }
@@ -614,7 +614,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
                     None => req.value.clone(),
                 };
-                ctx.cached.insert(self.x, v.clone());
+                ctx.rt.cached_mut().insert(self.x, v.clone());
                 event.variables.insert(self.x, v);
                 reply = req.send_result;
             }
@@ -655,8 +655,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         if let Some((_, val)) = self.current.take() {
             ctx.rt.unpublish(val, self.top_id);
         }
-        ctx.cached.remove(&self.pid);
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.on_write.delete(ctx);
     }
@@ -863,7 +863,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.args.update_diff(&mut changed, ctx, from, event);
         if changed[3] {
             if let Some(v) = self.args.0[3].clone() {
-                ctx.cached.insert(self.pid, v.clone());
+                ctx.rt.cached_mut().insert(self.pid, v.clone());
                 event.variables.insert(self.pid, v);
             }
         }
@@ -930,7 +930,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     Some(typ) => typ.cast_value(&ctx.env, Value::Array(args)),
                     None => Value::Array(args),
                 };
-                ctx.cached.insert(self.x, args.clone());
+                ctx.rt.cached_mut().insert(self.x, args.clone());
                 event.variables.insert(self.x, args);
             }};
         }
@@ -988,9 +988,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         if let Some(path) = self.current.take() {
             ctx.rt.unpublish_rpc(path);
         }
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
-        ctx.cached.remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.pid);
         self.f.delete(ctx);
     }
 

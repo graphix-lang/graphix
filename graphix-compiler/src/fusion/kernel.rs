@@ -662,7 +662,7 @@ pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
     }
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let ctx = unsafe { &mut *state.ctx };
-    ctx.set_var(BindId::from_inner(bind_id), value);
+    ctx.rt.set_var(BindId::from_inner(bind_id), value);
 }
 
 /// Pack a scalar [`Value`]'s bits into a u64 for the DynCall ABI's
@@ -954,7 +954,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         let fps = self.jit.dyn_fn_params.clone();
         for (fn_idx, fp) in fps.iter().enumerate() {
             if let FnSource::Binding { bind_id } = &fp.source {
-                if let Some(v) = ctx.cached.get(bind_id).cloned() {
+                if let Some(v) = ctx.rt.cached().get(bind_id).cloned() {
                     if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
                         log::warn!(
                             "kernel: pre_init for fn_param `{}` failed: \
@@ -1120,7 +1120,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for slot in self.dyn_slots.iter() {
             for id in slot.default_external_refs.iter() {
                 if !event.variables.contains_key(id) {
-                    if let Some(v) = ctx.cached.get(id) {
+                    if let Some(v) = ctx.rt.cached().get(id) {
                         event.variables.insert(*id, v.clone());
                     }
                 }
@@ -1205,7 +1205,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                     .variables
                     .get(bind_id)
                     .cloned()
-                    .or_else(|| ctx.cached.get(bind_id).cloned())?;
+                    .or_else(|| ctx.rt.cached().get(bind_id).cloned())?;
                 fn_arg_values[fn_idx] = v;
             }
         }

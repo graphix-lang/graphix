@@ -1378,6 +1378,24 @@ pub trait Rt: Debug + Any {
     /// presented as a new batch.
     fn set_var(&mut self, id: BindId, value: Value);
 
+    /// The last DELIVERED value of every bound variable. Maintained by
+    /// the runtime's cycle loop AT DELIVERY — when a queued `set_var`
+    /// actually lands in `event.variables` — so a primed read (select
+    /// arm wake, fresh callsite bind, per-slot HOF dispatch) can never
+    /// observe a value AHEAD of the delivery stream. Two consequences
+    /// the old `ExecCtx`-owned map got wrong: a same-cycle `<-` write
+    /// was visible to primers a cycle early (soak jul08l/jul08n), and
+    /// a variable set N times in one cycle showed its LAST value while
+    /// the deliveries still had N-1 cycles to run. Same-cycle
+    /// publishers (`Bind`'s direct `event.variables` insert, `ByRef`'s
+    /// init seed) update it through [`Rt::cached_mut`] at their insert
+    /// — those ARE deliveries.
+    fn cached(&self) -> &IntMap<BindId, Value>;
+
+    /// Mutable access to [`Rt::cached`] for the same-cycle publishers
+    /// and delete/unbind cleanup.
+    fn cached_mut(&mut self) -> &mut IntMap<BindId, Value>;
+
     /// Notify the RT that a top level variable has been set internally
     ///
     /// This is called when the compiler has determined that it's safe to set a
@@ -1637,8 +1655,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub libstate: LibState,
     /// the language environment, typdefs, binds, lambdas, etc
     pub env: Env,
-    /// the last value of every bound variable
-    pub cached: IntMap<BindId, Value>,
     /// the runtime
     pub rt: R,
     /// LambdaDefs indexed by LambdaId, used by `CallSite::typecheck1` to
@@ -1774,7 +1790,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             builtins_allowed: true,
             libstate: LibState::default(),
             tags: AHashSet::default(),
-            cached: IntMap::default(),
             rt: user,
             lambda_defs: IntMap::default(),
             bind_to_lambda: IntMap::default(),
@@ -1859,14 +1874,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let v = self.lambdawrap.wrap(def);
         self.lambda_defs.insert(id, v.clone());
         v
-    }
-
-    /// Built in functions should call this when variables are set
-    /// unless they are sure the variable does not need to be
-    /// cached. This will also call the user ctx set_var.
-    pub fn set_var(&mut self, id: BindId, v: Value) {
-        self.cached.insert(id, v.clone());
-        self.rt.set_var(id, v)
     }
 
     fn tag(&mut self, s: &ArcStr) -> ArcStr {

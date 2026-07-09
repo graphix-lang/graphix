@@ -673,7 +673,7 @@ pub struct Slot<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> Slot<R, E> {
     pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.delete(ctx);
-        ctx.cached.remove(&self.id);
+        ctx.rt.cached_mut().remove(&self.id);
         ctx.env.unbind_variable(self.id);
     }
 }
@@ -880,7 +880,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
     ) -> Option<Value> {
         let slen = self.slots.len();
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.predid, v.clone());
+            ctx.rt.cached_mut().insert(self.predid, v.clone());
             event.variables.insert(self.predid, v);
         }
         let (up, resized) = match from[0]
@@ -962,7 +962,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         };
         if let Some(a) = up {
             for (s, v) in self.slots.iter().zip(a.iter_values()) {
-                ctx.cached.insert(s.id, v.clone());
+                ctx.rt.cached_mut().insert(s.id, v.clone());
                 event.variables.insert(s.id, v);
             }
             self.cur = a.clone();
@@ -992,7 +992,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                 // new nodes were added starting here
                 event.init = true;
                 if let Entry::Vacant(e) = event.variables.entry(self.predid)
-                    && let Some(v) = ctx.cached.get(&self.predid)
+                    && let Some(v) = ctx.rt.cached().get(&self.predid)
                 {
                     e.insert(v.clone());
                 }
@@ -1049,7 +1049,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.predid);
+        ctx.rt.cached_mut().remove(&self.predid);
         for sl in &mut self.slots {
             sl.delete(ctx)
         }
@@ -1188,8 +1188,8 @@ pub struct FoldAnalysisPred<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> FoldAnalysisPred<R, E> {
     pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.delete(ctx);
-        ctx.cached.remove(&self.acc_id);
-        ctx.cached.remove(&self.elem_id);
+        ctx.rt.cached_mut().remove(&self.acc_id);
+        ctx.rt.cached_mut().remove(&self.elem_id);
         ctx.env.unbind_variable(self.acc_id);
         ctx.env.unbind_variable(self.elem_id);
     }
@@ -1393,7 +1393,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 self.arr_present = true;
                 fired = true;
                 for (id, v) in self.binds.iter().zip(a.iter_values()) {
-                    ctx.cached.insert(*id, v.clone());
+                    ctx.rt.cached_mut().insert(*id, v.clone());
                     event.variables.insert(*id, v.clone());
                 }
                 self.nodes.len()
@@ -1476,10 +1476,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 }
                 while a.len() < self.binds.len() {
                     if let Some(id) = self.binds.pop() {
-                        ctx.cached.remove(&id);
+                        ctx.rt.cached_mut().remove(&id);
                     }
                     if let Some(id) = self.accids.pop() {
-                        ctx.cached.remove(&id);
+                        ctx.rt.cached_mut().remove(&id);
                     }
                     self.inits.pop();
                     self.held.pop();
@@ -1489,7 +1489,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 }
                 // Feed element values for all slots.
                 for i in 0..self.binds.len() {
-                    ctx.cached.insert(self.binds[i], vals[i].clone());
+                    ctx.rt.cached_mut().insert(self.binds[i], vals[i].clone());
                     event.variables.insert(self.binds[i], vals[i].clone());
                 }
                 init_idx
@@ -1500,12 +1500,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
             fired = true;
             // Slot 0's accumulator input IS the init value — fire it.
             if let Some(&acc0) = self.accids.first() {
-                ctx.cached.insert(acc0, v.clone());
+                ctx.rt.cached_mut().insert(acc0, v.clone());
                 event.variables.insert(acc0, v);
             }
         }
         if let Some(v) = from[2].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
         let old_init = event.init;
@@ -1521,7 +1521,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 // slot's accumulator input (its predecessor's held result,
                 // or `init` for slot 0).
                 event.init = true;
-                if let Some(v) = ctx.cached.get(&self.fid)
+                if let Some(v) = ctx.rt.cached().get(&self.fid)
                     && let Entry::Vacant(e) = event.variables.entry(self.fid)
                 {
                     e.insert(v.clone());
@@ -1530,11 +1530,11 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                     if let Some(v) = self.init.clone()
                         && let Entry::Vacant(e) = event.variables.entry(self.accids[0])
                     {
-                        ctx.cached.insert(self.accids[0], v.clone());
+                        ctx.rt.cached_mut().insert(self.accids[0], v.clone());
                         e.insert(v);
                     }
                 } else if let Some(v) = self.held[i - 1].clone() {
-                    ctx.cached.insert(self.accids[i], v.clone());
+                    ctx.rt.cached_mut().insert(self.accids[i], v.clone());
                     event.variables.insert(self.accids[i], v);
                 }
             }
@@ -1546,7 +1546,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                     // it, so the held acc is available when only that slot's
                     // element fires a later cycle).
                     if i + 1 < self.accids.len() {
-                        ctx.cached.insert(self.accids[i + 1], v.clone());
+                        ctx.rt.cached_mut().insert(self.accids[i + 1], v.clone());
                         event.variables.insert(self.accids[i + 1], v);
                     }
                 }
@@ -1555,7 +1555,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                     // Bottom propagates: the next slot's acc is gone, so it
                     // bottoms too.
                     if i + 1 < self.accids.len() {
-                        ctx.cached.remove(&self.accids[i + 1]);
+                        ctx.rt.cached_mut().remove(&self.accids[i + 1]);
                         event.variables.remove(&self.accids[i + 1]);
                     }
                 }
@@ -1630,7 +1630,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         let i =
             iter::once(&self.initid).chain(self.binds.iter()).chain(self.accids.iter());
         for id in i {
-            ctx.cached.remove(id);
+            ctx.rt.cached_mut().remove(id);
         }
         for n in &mut self.nodes {
             n.delete(ctx);
@@ -2447,12 +2447,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
         if let Some(v) = from[0].update(ctx, event) {
             self.pending = Some(v.clone());
-            ctx.cached.insert(self.x, v.clone());
+            ctx.rt.cached_mut().insert(self.x, v.clone());
             event.variables.insert(self.x, v);
         }
         self.pred.update(ctx, event).and_then(|b| match b {
@@ -2475,8 +2475,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
     }

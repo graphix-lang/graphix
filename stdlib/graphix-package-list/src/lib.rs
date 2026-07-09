@@ -935,7 +935,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
     ) -> Option<Value> {
         let slen = self.slots.len();
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
         let (size_fired, resized) = match from[0].update(ctx, event) {
@@ -973,7 +973,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
                             i_typ.clone(),
                             self.top_id,
                         );
-                        ctx.cached.insert(id, Value::I64(i as i64));
+                        ctx.rt.cached_mut().insert(id, Value::I64(i as i64));
                         let fnode = genn::reference(
                             ctx,
                             self.fid,
@@ -1009,7 +1009,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
             if i == slen {
                 event.init = true;
                 if let Entry::Vacant(e) = event.variables.entry(self.fid)
-                    && let Some(v) = ctx.cached.get(&self.fid)
+                    && let Some(v) = ctx.rt.cached().get(&self.fid)
                 {
                     e.insert(v.clone());
                 }
@@ -1051,7 +1051,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.fid);
         for sl in &mut self.slots {
             sl.delete(ctx)
         }

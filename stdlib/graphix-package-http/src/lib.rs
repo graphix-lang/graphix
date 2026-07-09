@@ -754,7 +754,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         // update handler function reference
         if changed[4] {
             if let Some(v) = self.args.0[4].clone() {
-                ctx.cached.insert(self.pid, v.clone());
+                ctx.rt.cached_mut().insert(self.pid, v.clone());
                 event.variables.insert(self.pid, v);
             }
         }
@@ -838,7 +838,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if self.ready && !self.queue.is_empty() {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
-                ctx.cached.insert(self.x, req.clone());
+                ctx.rt.cached_mut().insert(self.x, req.clone());
                 event.variables.insert(self.x, req.clone());
             }
         }
@@ -856,7 +856,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     match self.queue.front() {
                         Some((req, _)) => {
                             self.ready = false;
-                            ctx.cached.insert(self.x, req.clone());
+                            ctx.rt.cached_mut().insert(self.x, req.clone());
                             event.variables.insert(self.x, req.clone());
                         }
                         None => break,
@@ -885,9 +885,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
-        ctx.cached.remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.pid);
         self.handler.delete(ctx);
     }
 

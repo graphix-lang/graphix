@@ -377,7 +377,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(v) = from[3].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
         let mut changed = false;
@@ -398,7 +398,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
                 (&self.last_m, &self.last_k, &self.last_d)
             {
                 let current = m.get(k).cloned().unwrap_or_else(|| d.clone());
-                ctx.cached.insert(self.x, current.clone());
+                ctx.rt.cached_mut().insert(self.x, current.clone());
                 event.variables.insert(self.x, current);
             }
         }
@@ -431,8 +431,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.inner.delete(ctx);
     }

@@ -89,7 +89,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     s.pop_count -= 1;
                     drop(s);
                     for (bid, v) in delta.drain(..) {
-                        ctx.cached.insert(bid, v.clone());
+                        ctx.rt.cached_mut().insert(bid, v.clone());
                         event.variables.insert(bid, v);
                     }
                     None
@@ -302,7 +302,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         }
         let mut new_lambda: Option<Value> = None;
         if let Some(v) = from[2].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
             if self.lambda.is_none() {
                 match self.build_lambda(ctx) {

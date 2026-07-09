@@ -53,6 +53,11 @@ pub(super) struct RpcClient {
 
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
+    /// The last DELIVERED value of every bound variable — see
+    /// [`Rt::cached`]. Written by the cycle loop as each variable
+    /// event lands in `event.variables`, and by the same-cycle
+    /// publishers through [`Rt::cached_mut`].
+    pub(super) cached: IntMap<BindId, Value>,
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
     pub(super) subscribed: IntMap<SubId, IntMap<ExprId, usize>>,
     pub(super) published: IntMap<Id, IntMap<ExprId, usize>>,
@@ -104,6 +109,7 @@ impl<X: GXExt> GXRt<X> {
         let mut var_watches = SelectAll::new();
         var_watches.push(dummy_rx);
         Self {
+            cached: IntMap::default(),
             by_ref: IntMap::default(),
             var_updates: VecDeque::new(),
             custom_updates: VecDeque::new(),
@@ -165,8 +171,17 @@ macro_rules! check_changed {
 impl<X: GXExt> Rt for GXRt<X> {
     type AbortHandle = task::AbortHandle;
 
+    fn cached(&self) -> &IntMap<BindId, Value> {
+        &self.cached
+    }
+
+    fn cached_mut(&mut self) -> &mut IntMap<BindId, Value> {
+        &mut self.cached
+    }
+
     fn clear(&mut self) {
         let Self {
+            cached,
             by_ref,
             var_updates,
             custom_updates,
@@ -199,6 +214,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         } = self;
         ext.clear();
         updated.clear();
+        cached.clear();
         by_ref.clear();
         var_updates.clear();
         custom_updates.clear();

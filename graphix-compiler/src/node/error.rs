@@ -86,7 +86,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
                 Entry::Vacant(slot) => {
                     slot.insert(v);
                 }
-                Entry::Occupied(_) => ctx.set_var(self.handler_id, v),
+                Entry::Occupied(_) => ctx.rt.set_var(self.handler_id, v),
             }
         }
         Some(Value::Null)
@@ -274,7 +274,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                         Entry::Vacant(e) => {
                             e.insert(v);
                         }
-                        Entry::Occupied(_) => ctx.set_var(id, v),
+                        Entry::Occupied(_) => ctx.rt.set_var(id, v),
                     }
                     None
                 }

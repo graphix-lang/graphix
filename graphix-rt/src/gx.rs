@@ -351,12 +351,35 @@ impl<X: GXExt> GX<X> {
                 }
             };
         }
+        // Variable DELIVERY is where `Rt::cached` advances: the Vacant
+        // arm below is a value landing in `event.variables` this cycle;
+        // the Occupied arm re-queues (NOT delivered — cached must not
+        // move, or a variable set N times in one cycle would show its
+        // final value while the deliveries still had cycles to run).
+        macro_rules! push_var_event {
+            ($id:expr, $v:expr) => {
+                match self.event.variables.entry($id) {
+                    Entry::Vacant(e) => {
+                        self.ctx.rt.cached.insert($id, $v.clone());
+                        e.insert($v);
+                        if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
+                            for id in exps.keys() {
+                                self.ctx.rt.updated.entry(*id).or_insert(false);
+                            }
+                        }
+                    }
+                    Entry::Occupied(_) => {
+                        self.ctx.rt.var_updates.push_back(($id, $v));
+                    }
+                }
+            };
+        }
         for _ in 0..self.ctx.rt.var_updates.len() {
             let (id, v) = self.ctx.rt.var_updates.pop_front().unwrap();
-            push_event!(id, v, variables, by_ref, var_updates)
+            push_var_event!(id, v)
         }
         for (id, v) in tasks.drain(..) {
-            push_event!(id, v, variables, by_ref, var_updates)
+            push_var_event!(id, v)
         }
         for _ in 0..self.ctx.rt.custom_updates.len() {
             let (id, u) = self.ctx.rt.custom_updates.pop_front().unwrap();
@@ -413,7 +436,7 @@ impl<X: GXExt> GX<X> {
                         let mut refs = Refs::default();
                         n.refs(&mut refs);
                         refs.with_external_refs(|id| {
-                            if let Some(v) = self.ctx.cached.get(&id) {
+                            if let Some(v) = self.ctx.rt.cached.get(&id) {
                                 if let Entry::Vacant(e) = self.event.variables.entry(id) {
                                     e.insert(v.clone());
                                     clear.push(id);
@@ -538,15 +561,11 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
-                ToGX::Set { id, v } => {
-                    self.ctx.cached.insert(id, v.clone());
-                    tasks.push((id, v))
-                }
+                ToGX::Set { id, v } => tasks.push((id, v)),
                 ToGX::SetMany { sets } => {
                     // One message ⇒ one input batch ⇒ every update
                     // lands in the same cycle (see GXHandle::set_many).
                     for (id, v) in sets {
-                        self.ctx.cached.insert(id, v.clone());
                         tasks.push((id, v))
                     }
                 }
@@ -949,7 +968,7 @@ impl<X: GXExt> GX<X> {
             bid: id,
             typ,
             target_bid,
-            last: self.ctx.cached.get(&id).cloned(),
+            last: self.ctx.rt.cached.get(&id).cloned(),
             rt,
         })
     }

@@ -140,7 +140,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     arms[i].1.node.refs(&mut refs);
                     refs.with_external_refs(|id| {
                         if let Entry::Vacant(e) = event.variables.entry(id)
-                            && let Some(v) = ctx.cached.get(&id)
+                            && let Some(v) = ctx.rt.cached().get(&id)
                         {
                             e.insert(v.clone());
                             set.push(id);

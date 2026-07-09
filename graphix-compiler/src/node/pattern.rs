@@ -750,12 +750,12 @@ impl StructPatternNode {
         match self {
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => {
-                ctx.cached.remove(&id);
+                ctx.rt.cached_mut().remove(&id);
                 ctx.env.unbind_variable(*id);
             }
             Self::Struct { all, binds } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for (_, _, n) in binds {
@@ -765,7 +765,7 @@ impl StructPatternNode {
             Self::Slice { tuple: _, all, binds }
             | Self::Variant { tag: _, all, binds } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in binds {
@@ -774,11 +774,11 @@ impl StructPatternNode {
             }
             Self::SlicePrefix { all, prefix, tail } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 if let Some(id) = tail {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in prefix {
@@ -787,11 +787,11 @@ impl StructPatternNode {
             }
             Self::SliceSuffix { all, head, suffix } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 if let Some(id) = head {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in suffix {
@@ -896,7 +896,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         v: &Value,
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
-            ctx.cached.insert(id, v.clone());
+            ctx.rt.cached_mut().insert(id, v.clone());
             event.variables.insert(id, v);
         })
     }

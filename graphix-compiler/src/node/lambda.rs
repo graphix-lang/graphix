@@ -199,7 +199,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         for (arg, pat) in from.iter_mut().zip(&self.args) {
             if let Some(v) = arg.update(ctx, event) {
                 pat.bind(&v, &mut |id, v| {
-                    ctx.cached.insert(id, v.clone());
+                    ctx.rt.cached_mut().insert(id, v.clone());
                     event.variables.insert(id, v);
                 })
             }
@@ -280,7 +280,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             let mut saved: LPooled<Vec<(BindId, Option<Value>)>> = LPooled::take();
             for pat in self.args.iter() {
                 pat.ids(&mut |id| {
-                    saved.push((id, ctx.cached.get(&id).cloned()));
+                    saved.push((id, ctx.rt.cached().get(&id).cloned()));
                 });
             }
             let mut reentered = false;
@@ -309,7 +309,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 let prev = mem::replace(&mut event.init, true);
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
                     pat.bind(v, &mut |id, v| {
-                        ctx.cached.insert(id, v.clone());
+                        ctx.rt.cached_mut().insert(id, v.clone());
                         event.variables.insert(id, v);
                     })
                 }
@@ -319,10 +319,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 for (id, v) in saved.drain(..) {
                     match v {
                         Some(v) => {
-                            ctx.cached.insert(id, v);
+                            ctx.rt.cached_mut().insert(id, v);
                         }
                         None => {
-                            ctx.cached.remove(&id);
+                            ctx.rt.cached_mut().remove(&id);
                         }
                     }
                 }

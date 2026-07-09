@@ -298,13 +298,13 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         event: &mut Event<E>,
     ) {
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
     }
 
     fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value) {
-        ctx.cached.insert(self.x, v.clone());
+        ctx.rt.cached_mut().insert(self.x, v.clone());
         event.variables.insert(self.x, v);
     }
 
@@ -340,8 +340,8 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.inner.delete(ctx);
     }
@@ -713,7 +713,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         event: &mut Event<E>,
     ) -> (bool, bool) {
         if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
         }
         let a_updated = if let Some(a) = from[0].update(ctx, event) {
@@ -738,7 +738,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.fid);
         self.inner.delete(ctx);
     }
 

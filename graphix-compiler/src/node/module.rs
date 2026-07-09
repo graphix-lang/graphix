@@ -438,7 +438,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 n.refs(&mut refs);
             }
             refs.with_external_refs(|id| {
-                if let Some(v) = ctx.cached.get(&id) {
+                if let Some(v) = ctx.rt.cached().get(&id) {
                     if let std::collections::hash_map::Entry::Vacant(e) =
                         event.variables.entry(id)
                     {
@@ -455,7 +455,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             if let Some(v) = event.variables.get(proxy_id) {
                 let v = v.clone();
                 event.variables.insert(*inner_id, v.clone());
-                ctx.cached.insert(*inner_id, v);
+                ctx.rt.cached_mut().insert(*inner_id, v);
             }
         }
         self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
@@ -463,7 +463,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(v) = event.variables.remove(inner_id) {
                 event.variables.insert(*proxy_id, v.clone());
-                ctx.cached.insert(*proxy_id, v);
+                ctx.rt.cached_mut().insert(*proxy_id, v);
             }
         }
         compiled.then(|| Value::Null)

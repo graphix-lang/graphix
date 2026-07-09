@@ -321,7 +321,7 @@ fn transient_body_ok<R: Rt, E: UserEvent>(
                                     && ctx
                                         .bind_to_lambda
                                         .get(&r.id)
-                                        .or_else(|| ctx.cached.get(&r.id))
+                                        .or_else(|| ctx.rt.cached().get(&r.id))
                                         .map(|v| {
                                             v.downcast_ref::<LambdaDef<R, E>>().is_some()
                                         })
@@ -549,7 +549,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // re-created in the arg_refs loop below.
         self.args.retain(|_, arg| {
             if arg.is_default {
-                ctx.cached.remove(&arg.id);
+                ctx.rt.cached_mut().remove(&arg.id);
                 if let Some(mut n) = arg.node.take() {
                     n.delete(ctx);
                 }
@@ -702,7 +702,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // same cycle.
         let apply = self.setup_bind(ctx, &scope, flags, f, |ctx, refs| {
             refs.with_external_refs(|id| {
-                if let Some(v) = ctx.cached.get(&id) {
+                if let Some(v) = ctx.rt.cached().get(&id) {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
                         e.insert(v.clone());
                         set.push(id);
@@ -771,13 +771,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if arg.is_default {
                 if let Some(ref mut node) = arg.node {
                     if let Some(v) = node.update(ctx, event) {
-                        ctx.cached.insert(arg.id, v.clone());
+                        ctx.rt.cached_mut().insert(arg.id, v.clone());
                         event.variables.insert(arg.id, v);
                         set.push(arg.id);
                     }
                 }
             } else if let Entry::Vacant(e) = event.variables.entry(arg.id) {
-                if let Some(v) = ctx.cached.get(&arg.id) {
+                if let Some(v) = ctx.rt.cached().get(&arg.id) {
                     e.insert(v.clone());
                     set.push(arg.id);
                 }
@@ -881,7 +881,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 } else {
                     ctx.bind_to_lambda
                         .get(&r.id)
-                        .or_else(|| ctx.cached.get(&r.id))
+                        .or_else(|| ctx.rt.cached().get(&r.id))
                         .cloned()
                 }
             }
@@ -953,7 +953,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         for arg in self.args.values_mut() {
             if let Some(ref mut node) = arg.node {
                 if let Some(v) = node.update(ctx, event) {
-                    ctx.cached.insert(arg.id, v.clone());
+                    ctx.rt.cached_mut().insert(arg.id, v.clone());
                     event.variables.insert(arg.id, v);
                     set.push(arg.id);
                 }
@@ -987,7 +987,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     return None;
                 }
                 let args: SmallVec<[Value; 4]> =
-                    order.iter().filter_map(|id| ctx.cached.get(id).cloned()).collect();
+                    order.iter().filter_map(|id| ctx.rt.cached().get(id).cloned()).collect();
                 if args.len() == order.len() {
                     debug_assert!(ctx.pending_tail_call.is_none());
                     ctx.pending_tail_call = Some(PendingTailCall { lambda, args });
@@ -1093,7 +1093,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 f.refs(&mut refs);
                 refs.with_external_refs(|id| {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
-                        if let Some(v) = ctx.cached.get(&id) {
+                        if let Some(v) = ctx.rt.cached().get(&id) {
                             e.insert(v.clone());
                             set.push(id);
                         }
@@ -1150,7 +1150,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         self.fnode.delete(ctx);
         for arg in self.args.values_mut() {
-            ctx.cached.remove(&arg.id);
+            ctx.rt.cached_mut().remove(&arg.id);
             if let Some(ref mut n) = arg.node {
                 n.delete(ctx);
             }
