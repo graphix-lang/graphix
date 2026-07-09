@@ -492,7 +492,13 @@ all scalar arithmetic/comparison/logical/cast/checked-arith, every producer
 (field/index/slice/`m{key}`), `?`/`$`, all eight array HOFs as native loops
 (map/filter/flat_map/filter_map/find/find_map/fold/init — over scalar, composite,
 **String, and value-shape elements**, with `|(k,v)|` destructure leaves of any of
-those shapes, and HOF-of-HOF fused into one multi-loop kernel), **`select`
+those shapes, and HOF-of-HOF fused into one multi-loop kernel; **fold
+accumulators may be composite or string, not just scalar** — tuple/struct/array/
+string accs carry loop-OWNED with clone-borrowed/drop-replaced discipline, acc
+patterns may destructure (`|(a, b), v|`), and the freeze authority is the
+RESOLVED acc type from FoldQ's `mftype.rtype`, since the analysis instance's
+`body.typ()` re-mints generalized tvars unbound — this is what makes pure
+`sync { }` blocks one kernel, sync-subset P2), **`select`
 structural destructuring** (tuple/struct/slice patterns with scalar leaf binds,
 anonymous-rest prefix/suffix, nested patterns via borrowed interior reads, owned
 fresh-producer scrutinees in value position — each arm's length test doubles as
@@ -555,17 +561,22 @@ in `run!` fixtures and bench programs). The decision is recorded in
 - `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
   HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
 - `queue_fn.md` — `queuefn` feature design.
-- `sync_subset.md` — **proposed, not built (v2):** repatriate CONTROL
-  from Rust builtins into `sync { }` BLOCKS (sequential semantics, not
-  an execution promise; effects inferred, never in types). The
-  compiler elaborates per call site — sync callback → one kernel
-  (today's scaffold loop), async callback → per-element lambda
-  instantiation (today's MapQ semantics); the staging rule (eventual
-  values are data, not control) keeps it mechanical. Mutation is mut
-  PLACES over persistent types (no Vec, freeze = escape). clone_rebind
-  and the MapQ/FoldQ mini-interpreters retire; Rust stays the sync
-  subset for COMPUTATION (leaf builtins + novel representations behind
-  abstract types, e.g. `buffer::`). Eric's design, 2026-07-09.
+- `sync_subset.md` — **P0–P3 BUILT on the `sync-subset-proto` branch
+  (2026-07-09; see the doc's "Prototype status" section):** repatriate
+  CONTROL from Rust builtins into `sync { }` BLOCKS (sequential
+  semantics, not an execution promise; effects inferred, never in
+  types). The prototype desugars at compile time (`expr/sync_desugar.rs`:
+  assignment = shadowing, `for` = fold over the assigned set) — no new
+  node types, no effect analysis; pure blocks fuse to ONE kernel
+  (`#[native]`-pinned), async bodies ride the impure fold (rung 2
+  free). Mutation is mut PLACES over persistent types (no Vec, freeze
+  = escape). **P4 (stdlib HOFs in-language, retiring clone_rebind and
+  the MapQ/FoldQ mini-interpreters) is gated on per-callsite
+  elaboration** — a lambda-param call in a once-compiled generic body
+  can't statically resolve, so in-language `map` is correct but
+  unfused today. Rust stays the sync subset for COMPUTATION (leaf
+  builtins + novel representations behind abstract types, e.g.
+  `buffer::`). Eric's design, 2026-07-09.
 - `fusion_lowering_split.md` — **proposed, not built:** split `try_fuse`'s welded
   analysis+lowering into a pure analysis pass (color nodes with a `KernelId`,
   build per-kernel descriptors) consumed by a thin lowering pass. Motivated by
