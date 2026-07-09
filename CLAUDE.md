@@ -555,12 +555,17 @@ in `run!` fixtures and bench programs). The decision is recorded in
 - `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
   HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
 - `queue_fn.md` — `queuefn` feature design.
-- `sync_subset.md` — **proposed, not built:** repatriate CONTROL from
-  Rust builtins into a synchronous sub-language (loops + mutation +
-  `Async` escape values); HOFs become library code, per-element
-  instantiation becomes lambda binding, clone_rebind and the MapQ/FoldQ
-  mini-interpreters retire. Rust stays the sync subset for COMPUTATION
-  (leaf builtins). Eric's design, 2026-07-09.
+- `sync_subset.md` — **proposed, not built (v2):** repatriate CONTROL
+  from Rust builtins into `sync { }` BLOCKS (sequential semantics, not
+  an execution promise; effects inferred, never in types). The
+  compiler elaborates per call site — sync callback → one kernel
+  (today's scaffold loop), async callback → per-element lambda
+  instantiation (today's MapQ semantics); the staging rule (eventual
+  values are data, not control) keeps it mechanical. Mutation is mut
+  PLACES over persistent types (no Vec, freeze = escape). clone_rebind
+  and the MapQ/FoldQ mini-interpreters retire; Rust stays the sync
+  subset for COMPUTATION (leaf builtins + novel representations behind
+  abstract types, e.g. `buffer::`). Eric's design, 2026-07-09.
 - `fusion_lowering_split.md` — **proposed, not built:** split `try_fuse`'s welded
   analysis+lowering into a pure analysis pass (color nodes with a `KernelId`,
   build per-kernel descriptors) consumed by a thin lowering pass. Motivated by
