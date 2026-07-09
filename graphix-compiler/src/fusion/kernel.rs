@@ -864,6 +864,16 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// The compiled kernel IR this node executes. Used by graph
     /// introspection (`node_shape`) to assert on what a region
     /// actually fused into.
+    /// Write per-instance lifted-target BindIds into the reserved
+    /// state head words — the `clone_rebind` override (construction
+    /// wrote the sig's originals).
+    pub fn set_lifted_ids(&mut self, ids: &[crate::BindId]) {
+        debug_assert_eq!(ids.len(), self.kernel.lifted.len());
+        for (i, id) in ids.iter().enumerate() {
+            self.state[i] = id.inner();
+        }
+    }
+
     pub fn kernel(&self) -> &Arc<KernelSig> {
         &self.kernel
     }
@@ -920,7 +930,14 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             .map(|fp| DynCallSlot::new(fp, scope.clone(), top_id))
             .collect();
         let arg_layout = build_arg_layout(&kernel);
-        let state = vec![0u64; wrapped.state_words].into_boxed_slice();
+        let mut state = vec![0u64; wrapped.state_words].into_boxed_slice();
+        // The reserved head words carry the lifted connect targets'
+        // per-instance BindIds (KernelSig::lifted). Defaults to the
+        // sig's ORIGINAL ids — a `clone_rebind` overrides with freshly
+        // minted ones via `set_lifted_ids`.
+        for (i, id) in kernel.lifted.iter().enumerate() {
+            state[i] = id.inner();
+        }
         let mut node = Self {
             kernel,
             args: vec![None; n_args].into_boxed_slice(),

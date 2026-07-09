@@ -34,6 +34,12 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// Routing through `Kernel` (instead of re-implementing the
     /// dispatch surface) keeps FusedKernel minimal.
     inner: Kernel<R, E>,
+    /// THIS instance's lifted connect-target ids, parallel to
+    /// `kernel().lifted` (the sig's originals for the first instance;
+    /// freshly minted per `clone_rebind`). The state buffer's reserved
+    /// head words mirror these; clones mint from HERE, not the sig, so
+    /// a clone-of-a-clone remaps the ids its feeders actually carry.
+    lifted: Box<[crate::BindId]>,
     _phantom: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
@@ -69,12 +75,14 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ));
             }
         };
+        let lifted: Box<[crate::BindId]> = kernel.lifted.iter().copied().collect();
         let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
         Ok(Box::new(Self {
             spec,
             typ,
             feeders,
             inner,
+            lifted,
             _phantom: std::marker::PhantomData,
         }))
     }
@@ -163,18 +171,39 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // Kernel by SHARING the immutable kernel/JIT/registry Arcs while
         // re-initing per-cycle scratch + dyn_slots. The kernel is
         // incidental — the precompiled update logic, shared across slots.
+        //
+        // LIFTED connect targets are per-instance IDENTITY: their Bind
+        // was spliced into the kernel, so this node is the minting
+        // authority the Bind would have been — mint a fresh id per
+        // lifted target BEFORE cloning the feeders (the remap entries
+        // steer the feeder Refs onto the fresh ids) and write them
+        // into the clone's reserved state words (the kernel's write
+        // side loads its target from there). Finding 35: without this
+        // every per-slot clone read and wrote the template's one
+        // variable.
+        let fresh: Box<[crate::BindId]> = self
+            .lifted
+            .iter()
+            .map(|old| {
+                let new = crate::BindId::new();
+                remap.insert(*old, new);
+                new
+            })
+            .collect();
         let feeders: Box<[Node<R, E>]> =
             self.feeders.iter().map(|f| f.clone_rebind(ctx, scope, remap)).collect();
         let n_args = feeders.len();
-        let inner = self
+        let mut inner = self
             .inner
             .clone_shared(ctx, n_args, scope.clone(), self.spec.id)
             .expect("FusedKernel Kernel clone_shared failed");
+        inner.set_lifted_ids(&fresh);
         Box::new(Self {
             spec: self.spec.clone(),
             typ: self.typ.clone(),
             feeders,
             inner,
+            lifted: fresh,
             _phantom: std::marker::PhantomData,
         })
     }

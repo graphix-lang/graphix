@@ -1353,9 +1353,10 @@ fn compile_into_function(
         fn_index_offset: body_emitter.fn_index_offset(),
         gate_stale_at_return: body_emitter.gate_stale_at_return(),
         lifted: body_emitter.lifted(),
+        lifted_ord: &kernel.lifted,
         state_ptr,
         state_enabled: body_emitter.allow_state(),
-        state_next: std::cell::Cell::new(0),
+        state_next: std::cell::Cell::new(kernel.lifted.len()),
         loop_depth: std::cell::Cell::new(0),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
@@ -1557,7 +1558,15 @@ pub(crate) struct LowerCtx<'a> {
     state_enabled: bool,
     /// Next unclaimed state word index. The final count becomes
     /// [`WrappedKernel::state_words`] — the runtime buffer size.
+    /// STARTS at `lifted_ord.len()`: the first words are reserved for
+    /// the per-instance lifted-target `BindId`s (see
+    /// [`KernelSig::lifted`]).
     state_next: std::cell::Cell<usize>,
+    /// The kernel's lifted connect targets, sorted — slot `i`'s id
+    /// lives in state word `i`. `emit_connect_node` loads its write
+    /// target from there instead of an `iconst` (per-instance
+    /// identity must never be baked into the shared code).
+    lifted_ord: &'a [crate::BindId],
     /// Depth of enclosing scaffold loops at the current emission
     /// point. State claims are refused inside loops: a loop-body
     /// construct evaluates once PER SLOT per invocation, so one static
@@ -3304,6 +3313,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// `clone_rebind`), so consumers store `value + 1` and read 0 as
     /// "no previous observation" — init semantics fall out of the
     /// zeroing. See `design/kernel_instance_state.md`.
+    /// State-buffer byte offset of a LIFTED connect target's
+    /// per-instance `BindId` word, if `id` is lifted in this kernel.
+    pub fn lifted_state_off(&self, id: BindId) -> Option<i32> {
+        self.ctx.lifted_ord.binary_search(&id).ok().map(|i| (i as i32) * 8)
+    }
+
     pub fn claim_state_word(&self) -> Option<i32> {
         if !self.ctx.state_enabled || self.ctx.loop_depth.get() > 0 {
             return None;
@@ -4235,9 +4250,20 @@ pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
     // without leaking; #219 taint / STALE ride `cv.disc` and the helper honors
     // them (skip the write).
     let cv = emit_owned_value_operand_node(cx, rhs)?;
-    let id_const = cx.b.ins().iconst(types::I64, bind_id.inner() as i64);
+    // A LIFTED target's identity is per-INSTANCE: load the BindId from
+    // the reserved state word (written at construction; re-minted per
+    // `clone_rebind` — finding 35: an `iconst` here aliased every
+    // per-slot template clone onto one variable). External targets are
+    // shared by design and stay immediates.
+    let id_val = match cx.lifted_state_off(bind_id) {
+        Some(off) => {
+            let sp = cx.state_ptr();
+            cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off)
+        }
+        None => cx.b.ins().iconst(types::I64, bind_id.inner() as i64),
+    };
     let set_var = cx.helper("graphix_set_var")?;
-    cx.b.ins().call(set_var, &[id_const, cv.disc, cv.payload]);
+    cx.b.ins().call(set_var, &[id_val, cv.disc, cv.payload]);
     // `connect` produces no value — a tainted-null bottom. Discarded as a
     // block statement (a connect is never a kernel's published result;
     // its `typ()` is `Bottom`).

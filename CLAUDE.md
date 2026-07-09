@@ -555,6 +555,12 @@ in `run!` fixtures and bench programs). The decision is recorded in
 - `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
   HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
 - `queue_fn.md` — `queuefn` feature design.
+- `sync_subset.md` — **proposed, not built:** repatriate CONTROL from
+  Rust builtins into a synchronous sub-language (loops + mutation +
+  `Async` escape values); HOFs become library code, per-element
+  instantiation becomes lambda binding, clone_rebind and the MapQ/FoldQ
+  mini-interpreters retire. Rust stays the sync subset for COMPUTATION
+  (leaf builtins). Eric's design, 2026-07-09.
 - `fusion_lowering_split.md` — **proposed, not built:** split `try_fuse`'s welded
   analysis+lowering into a pure analysis pass (color nodes with a `KernelId`,
   build per-kernel descriptors) consumed by a thin lowering pass. Motivated by

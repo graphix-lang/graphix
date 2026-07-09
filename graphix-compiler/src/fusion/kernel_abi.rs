@@ -1298,6 +1298,16 @@ pub struct KernelSig {
     /// lambda's source argspec order. Only populated when
     /// `has_tail_loop` is true; otherwise empty.
     pub tail_call_slots: Vec<TailCallSlot>,
+    /// LIFTED connect-target inputs (sorted by `BindId`): let-bound
+    /// reactive accumulators routed in as feeders whose IDENTITY is
+    /// per-INSTANCE data, not code. The first `lifted.len()` words of
+    /// the per-instance state buffer hold each target's `BindId`
+    /// (written at construction; a `clone_rebind` mints fresh ids per
+    /// clone — finding 35: baking the id as an `iconst` aliased every
+    /// per-slot clone onto the template's one variable). Emission
+    /// reserves these words (`state_next` starts past them) and
+    /// `emit_connect_node` loads the write target from them.
+    pub lifted: Vec<BindId>,
     pub return_type: Type,
     /// True iff the body contains a self-tail-call. Backends wrap the
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
