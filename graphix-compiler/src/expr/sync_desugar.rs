@@ -30,16 +30,14 @@
 //! Arrays; a `for` pattern may not shadow an in-scope mut; assignment
 //! is a STATEMENT (block statement or select-arm body), not a value.
 
-use super::{
-    BindExpr, Expr, ExprKind, ModPath, SelectExpr,
-    pattern::StructurePattern,
-};
+use super::{BindExpr, Expr, ExprKind, ModPath, SelectExpr, pattern::StructurePattern};
 use crate::bailat;
 use anyhow::Result;
 use arcstr::ArcStr;
+use compact_str::CompactString;
+use netidx::utils::Either;
 use poolshark::local::LPooled;
 use triomphe::Arc;
-use netidx::utils::Either;
 
 /// Desugar one `sync { exprs }` body into an ordinary expression.
 /// Nested `sync` blocks are left in place — the compiler's `SyncBlock`
@@ -102,11 +100,7 @@ fn desugar_stmt(
         }
         ExprKind::For { .. } | ExprKind::Select(_) => {
             let (rewritten, assigned) = yielding_form(e, muts)?;
-            if assigned.is_empty() {
-                out.push(rewritten);
-            } else {
-                out.push(bind_assigned(e, &assigned, rewritten));
-            }
+            bind_assigned(e, &assigned, rewritten, out);
             Ok(())
         }
         _ => {
@@ -127,7 +121,7 @@ fn desugar_stmt(
 fn yielding_form(
     e: &Expr,
     muts: &mut LPooled<Vec<ArcStr>>,
-    ) -> Result<(Expr, Vec<ArcStr>)> {
+) -> Result<(Expr, Vec<ArcStr>)> {
     match &e.kind {
         ExprKind::Assign { name, value } => {
             let x = assign_target(e, name, muts)?;
@@ -238,14 +232,10 @@ fn arm_yielding(
         match &s.kind {
             ExprKind::Assign { .. } | ExprKind::For { .. } | ExprKind::Select(_) => {
                 let (rewritten, a) = yielding_form(s, muts)?;
-                if a.is_empty() {
-                    out.push(rewritten);
-                } else {
-                    out.push(bind_assigned(s, &a, rewritten));
-                    for n in a {
-                        if !assigned.contains(&n) {
-                            assigned.push(n);
-                        }
+                bind_assigned(s, &a, rewritten, &mut out);
+                for n in a {
+                    if !assigned.contains(&n) {
+                        assigned.push(n);
                     }
                 }
             }
@@ -308,11 +298,7 @@ fn body_yielding(
         match &s.kind {
             ExprKind::Assign { .. } | ExprKind::For { .. } | ExprKind::Select(_) => {
                 let (rewritten, a) = yielding_form(s, muts)?;
-                if a.is_empty() {
-                    out.push(rewritten);
-                } else {
-                    out.push(bind_assigned(s, &a, rewritten));
-                }
+                bind_assigned(s, &a, rewritten, &mut out);
             }
             _ => out.push(s.clone()),
         }
@@ -368,17 +354,62 @@ fn bind_single(at: &Expr, x: &ArcStr, value: Arc<Expr>) -> Expr {
     .to_expr(at.pos)
 }
 
-/// `let x = e` or `let (x1,..,xk) = e` for the assigned set.
-fn bind_assigned(at: &Expr, assigned: &[ArcStr], value: Expr) -> Expr {
-    let pattern = acc_pattern(assigned);
-    ExprKind::Bind(Arc::new(BindExpr {
-        rec: false,
-        mut_: false,
-        pattern,
-        typ: None,
-        value,
-    }))
-    .to_expr(at.pos)
+/// Bind the assigned set from `value`: nothing (effect-only), `let x =
+/// value`, or — for multiple names — a temp bind plus one tuple-index
+/// accessor per name. Accessors instead of a destructuring `let (..)`
+/// because single binds and TupleRef are in the fused vocabulary while
+/// pattern lets are not; a destructuring let here would leave every
+/// multi-mut loop with node-walk residue.
+fn bind_assigned(
+    at: &Expr,
+    assigned: &[ArcStr],
+    value: Expr,
+    out: &mut LPooled<Vec<Expr>>,
+) {
+    match assigned {
+        [] => out.push(value),
+        [x] => {
+            out.push(
+                ExprKind::Bind(Arc::new(BindExpr {
+                    rec: false,
+                    mut_: false,
+                    pattern: StructurePattern::Bind(x.clone()),
+                    typ: None,
+                    value,
+                }))
+                .to_expr(at.pos),
+            );
+        }
+        xs => {
+            let mut tmp = CompactString::const_new("__acc");
+            for x in xs {
+                tmp.push('_');
+                tmp.push_str(x);
+            }
+            let tmp: ArcStr = tmp.as_str().into();
+            out.push(
+                ExprKind::Bind(Arc::new(BindExpr {
+                    rec: false,
+                    mut_: false,
+                    pattern: StructurePattern::Bind(tmp.clone()),
+                    typ: None,
+                    value,
+                }))
+                .to_expr(at.pos),
+            );
+            for (i, x) in xs.iter().enumerate() {
+                let field = ExprKind::TupleRef {
+                    source: Arc::new(
+                        ExprKind::Ref { name: ModPath::from_iter([tmp.as_str()]) }
+                            .to_expr(at.pos),
+                    ),
+                    field: i,
+                }
+                .to_expr(at.pos);
+                out.push(bind_single(at, x, Arc::new(field)));
+            }
+        }
+    }
 }
 
 /// The accumulator PATTERN for the assigned set: a single bind, or a
@@ -389,9 +420,7 @@ fn acc_pattern(assigned: &[ArcStr]) -> StructurePattern {
         [x] => StructurePattern::Bind(x.clone()),
         xs => StructurePattern::Tuple {
             all: None,
-            binds: Arc::from_iter(
-                xs.iter().map(|x| StructurePattern::Bind(x.clone())),
-            ),
+            binds: Arc::from_iter(xs.iter().map(|x| StructurePattern::Bind(x.clone()))),
         },
     }
 }

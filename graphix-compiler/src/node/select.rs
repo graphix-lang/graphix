@@ -218,7 +218,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // fed the scrutinee's own not-yet-bound cell it burned that
         // instead.
         let mut wildcard = false;
-        for (pat, n) in self.arms.iter_mut() {
+        for (pat, _) in self.arms.iter_mut() {
             let inferred_irrefutable = !pat.explicit_type_predicate
                 && pat.structure_predicate.matches_anything();
             match &mut pat.guard {

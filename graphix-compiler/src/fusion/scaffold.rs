@@ -133,6 +133,93 @@ fn elem_disc(cx: &mut BodyCx, base: ClifValue, src_disc: ClifValue) -> ClifValue
     cx.b.ins().bor(base, sb)
 }
 
+/// [`elem_disc`] with a caller-chosen carry mask: fold the masked bits
+/// of `src_disc` onto `base`. Elements carry STALE only (a valid
+/// array's elements are untainted); a fold ACCUMULATOR's destructure
+/// leaves carry TAINT|STALE (the acc's taint is loop-carried).
+fn carry_disc(
+    cx: &mut BodyCx,
+    base: ClifValue,
+    src_disc: ClifValue,
+    mask: i64,
+) -> ClifValue {
+    let sb = cx.b.ins().band_imm(src_disc, mask);
+    cx.b.ins().bor(base, sb)
+}
+
+/// Read and bind the `|(k, v)|` destructure leaves of a composite
+/// `base_ptr`, each under its pattern `BindId` (BindId-first
+/// resolution — the synthetic composite name is never looked up).
+/// Scalar leaves are by-value copies (the composite's own drop covers
+/// the allocation); composite / string / value leaves are OWNED
+/// clones — bound as env locals of the matching kind (so a mid-body
+/// pending exit drops them via `drop_owned_composites`) and returned
+/// for the loop's normal-path [`drop_owned_leaves`]. Each leaf disc
+/// folds `src_disc & mask` onto its shape base ([`carry_disc`]).
+fn bind_leaves(
+    cx: &mut BodyCx,
+    base_ptr: ClifValue,
+    src_disc: ClifValue,
+    mask: i64,
+    leaves: &[(crate::BindId, usize, LeafShape)],
+) -> Result<Vec<BoundElem>> {
+    let mut owned_leaves: Vec<BoundElem> = Vec::new();
+    for (id, idx, shape) in leaves {
+        let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
+        let name: ArcStr =
+            compact_str::format_compact!("__leaf{}", id.inner()).as_str().into();
+        match shape {
+            LeafShape::Scalar(prim) => {
+                let get = cx.helper(valarray_get_helper(*prim)?)?;
+                let call = cx.b.ins().call(get, &[base_ptr, idx_c]);
+                let v = cx.b.inst_results(call)[0];
+                let d = scalar_disc(cx.b, *prim);
+                let d = carry_disc(cx, d, src_disc, mask);
+                bind_local(cx, name, d, v, LocalKind::Scalar(*prim), Some(*id));
+            }
+            LeafShape::Composite => {
+                let get = cx.helper("graphix_valarray_get_array")?;
+                let call = cx.b.ins().call(get, &[base_ptr, idx_c]);
+                let p = cx.b.inst_results(call)[0];
+                let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+                let d = carry_disc(cx, d, src_disc, mask);
+                let vv = bind_local(cx, name, d, p, LocalKind::Composite, Some(*id));
+                owned_leaves.push(BoundElem::Composite { var: vv.payload });
+            }
+            LeafShape::String => {
+                let get = cx.helper("graphix_valarray_get_arcstr")?;
+                let call = cx.b.ins().call(get, &[base_ptr, idx_c]);
+                let s = cx.b.inst_results(call)[0];
+                let d = cx.b.ins().iconst(types::I64, value_disc::STRING);
+                let d = carry_disc(cx, d, src_disc, mask);
+                let vv = bind_local(cx, name, d, s, LocalKind::String, Some(*id));
+                owned_leaves.push(BoundElem::String { var: vv.payload });
+            }
+            LeafShape::Value(vk) => {
+                let get = cx.helper("graphix_valarray_get_value")?;
+                let call = cx.b.ins().call(get, &[base_ptr, idx_c]);
+                let (d, p) = {
+                    let r = cx.b.inst_results(call);
+                    (r[0], r[1])
+                };
+                let d = carry_disc(cx, d, src_disc, mask);
+                let kind = match vk {
+                    ValueLeafKind::Variant => LocalKind::Variant,
+                    ValueLeafKind::Nullable => LocalKind::Nullable,
+                    ValueLeafKind::Value => LocalKind::Value,
+                };
+                let disc = cx.b.declare_var(types::I64);
+                cx.b.def_var(disc, d);
+                let payload = cx.b.declare_var(types::I64);
+                cx.b.def_var(payload, p);
+                cx.env.bind(name, ValueVar { disc, payload }, kind, Some(*id));
+                owned_leaves.push(BoundElem::Value { disc, payload });
+            }
+        }
+    }
+    Ok(owned_leaves)
+}
+
 fn bind_elem(
     cx: &mut BodyCx,
     src_disc: ClifValue,
@@ -183,69 +270,9 @@ fn bind_elem(
                 LocalKind::Composite,
                 elem.id,
             );
-            // Destructure leaves, bound under their pattern BindIds (the
-            // body's leaf Refs resolve BindId-first; the synthetic name is
-            // never looked up). Scalar leaves are by-value copies (the
-            // element's own drop covers the allocation); composite /
-            // string / value leaves are OWNED clones — bound as env
-            // locals of the matching kind (so a mid-body pending exit
-            // drops them via `drop_owned_composites`) and returned for
-            // the loop's normal-path [`drop_owned_leaves`].
-            let mut owned_leaves: Vec<BoundElem> = Vec::new();
-            for (id, idx, shape) in elem.leaves {
-                let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let name: ArcStr =
-                    compact_str::format_compact!("__leaf{}", id.inner()).as_str().into();
-                match shape {
-                    LeafShape::Scalar(prim) => {
-                        let get = cx.helper(valarray_get_helper(*prim)?)?;
-                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
-                        let v = cx.b.inst_results(call)[0];
-                        let d = scalar_disc(cx.b, *prim);
-                        let d = elem_disc(cx, d, src_disc);
-                        bind_local(cx, name, d, v, LocalKind::Scalar(*prim), Some(*id));
-                    }
-                    LeafShape::Composite => {
-                        let get = cx.helper("graphix_valarray_get_array")?;
-                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
-                        let p = cx.b.inst_results(call)[0];
-                        let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-                        let d = elem_disc(cx, d, src_disc);
-                        let vv =
-                            bind_local(cx, name, d, p, LocalKind::Composite, Some(*id));
-                        owned_leaves.push(BoundElem::Composite { var: vv.payload });
-                    }
-                    LeafShape::String => {
-                        let get = cx.helper("graphix_valarray_get_arcstr")?;
-                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
-                        let s = cx.b.inst_results(call)[0];
-                        let d = cx.b.ins().iconst(types::I64, value_disc::STRING);
-                        let d = elem_disc(cx, d, src_disc);
-                        let vv = bind_local(cx, name, d, s, LocalKind::String, Some(*id));
-                        owned_leaves.push(BoundElem::String { var: vv.payload });
-                    }
-                    LeafShape::Value(vk) => {
-                        let get = cx.helper("graphix_valarray_get_value")?;
-                        let call = cx.b.ins().call(get, &[elem_ptr, idx_c]);
-                        let (d, p) = {
-                            let r = cx.b.inst_results(call);
-                            (r[0], r[1])
-                        };
-                        let d = elem_disc(cx, d, src_disc);
-                        let kind = match vk {
-                            ValueLeafKind::Variant => LocalKind::Variant,
-                            ValueLeafKind::Nullable => LocalKind::Nullable,
-                            ValueLeafKind::Value => LocalKind::Value,
-                        };
-                        let disc = cx.b.declare_var(types::I64);
-                        cx.b.def_var(disc, d);
-                        let payload = cx.b.declare_var(types::I64);
-                        cx.b.def_var(payload, p);
-                        cx.env.bind(name, ValueVar { disc, payload }, kind, Some(*id));
-                        owned_leaves.push(BoundElem::Value { disc, payload });
-                    }
-                }
-            }
+            // Destructure leaves — see [`bind_leaves`]. Elements carry
+            // STALE only (a valid array's elements are untainted).
+            let owned_leaves = bind_leaves(cx, elem_ptr, src_disc, STALE, elem.leaves)?;
             Ok((BoundElem::Composite { var }, owned_leaves))
         }
         Some(AbiKind::String) => {
@@ -1201,10 +1228,76 @@ where
 /// blocks). Same convention for [`emit_filter_loop`]/[`emit_find_loop`]
 /// predicates and [`emit_flat_map_loop`] bodies, and for the map path
 /// ([`push_field`]). There is NO build-time may-bottom de-fuse.
+/// The fold accumulator's shape — how the loop-carried value is held,
+/// bound for the body, made owned, and dropped when replaced.
+pub enum FoldAcc<'a> {
+    /// A register scalar in a prim-typed Variable. Owns nothing.
+    Scalar(PrimType),
+    /// An OWNED `*mut ValArray` (array / tuple / struct) in an I64
+    /// Variable. The loop owns the current acc: each iteration the
+    /// body's result is made independently owned (`ensure_owned` per
+    /// `body_src` — a borrowed Ref result clones) and the old acc is
+    /// dropped. `leaves` are the `|(a, b), v|` destructure leaves of
+    /// the acc pattern, re-read off the CURRENT acc each iteration
+    /// with TAINT|STALE carried from the acc disc.
+    Composite {
+        init_src: CompositeSource,
+        body_src: CompositeSource,
+        leaves: &'a [(crate::BindId, usize, LeafShape)],
+    },
+    /// An OWNED `ArcStr` in an I64 Variable. String reads always CLONE
+    /// (`LocalKind::String`), so init and body results are already
+    /// independently owned — no `ensure_owned` step; the old acc still
+    /// drops when replaced.
+    Str,
+}
+
+impl FoldAcc<'_> {
+    fn local_kind(&self) -> LocalKind {
+        match self {
+            FoldAcc::Scalar(p) => LocalKind::Scalar(*p),
+            FoldAcc::Composite { .. } => LocalKind::Composite,
+            FoldAcc::Str => LocalKind::String,
+        }
+    }
+
+    /// The clean (untainted, fired) disc for the carried acc shape —
+    /// each carry re-bases on this so only TAINT and STALE ride.
+    fn base_disc(&self, cx: &mut BodyCx) -> ClifValue {
+        match self {
+            FoldAcc::Scalar(p) => scalar_disc(cx.b, *p),
+            FoldAcc::Composite { .. } => cx.b.ins().iconst(types::I64, value_disc::ARRAY),
+            FoldAcc::Str => cx.b.ins().iconst(types::I64, value_disc::STRING),
+        }
+    }
+
+    /// Drop the old carried acc when a new one replaces it (and on the
+    /// loop's pending-abort edges it is dropped as the env local the
+    /// loop binds it to — `drop_owned_composites`). Emits nothing for
+    /// a scalar (not even the `use_var` — scalar CLIF is preserved
+    /// instruction-for-instruction).
+    fn drop_old(&self, cx: &mut BodyCx, acc_var: Variable) -> Result<()> {
+        match self {
+            FoldAcc::Scalar(_) => {}
+            FoldAcc::Composite { .. } => {
+                let drop = cx.helper("graphix_valarray_drop")?;
+                let old = cx.b.use_var(acc_var);
+                cx.b.ins().call(drop, &[old]);
+            }
+            FoldAcc::Str => {
+                let drop = cx.helper("graphix_arcstr_drop")?;
+                let old = cx.b.use_var(acc_var);
+                cx.b.ins().call(drop, &[old]);
+            }
+        }
+        Ok(())
+    }
+}
+
 pub fn emit_fold_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
-    acc_prim: PrimType,
+    acc: FoldAcc,
     acc_name: &ArcStr,
     acc_id: Option<crate::BindId>,
     elem: &HofElem,
@@ -1217,7 +1310,10 @@ where
 {
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
-    let acc_var = cx.b.declare_var(prim_to_clif(acc_prim));
+    let acc_var = cx.b.declare_var(match &acc {
+        FoldAcc::Scalar(p) => prim_to_clif(*p),
+        FoldAcc::Composite { .. } | FoldAcc::Str => types::I64,
+    });
     // The acc's TAINT and STALE are LOOP-CARRIED in its own disc
     // Variable — the node-walk's per-slot dataflow means a bottom init
     // poisons the fold ONLY while the callback actually consumes the
@@ -1242,8 +1338,17 @@ where
     // the node-walk's chain (rightly) kept quiet (#9, soak jul04).
     taint.result_is_firing();
     let init_cv = init(cx)?;
-    cx.b.def_var(acc_var, init_cv.payload);
-    let base = scalar_disc(cx.b, acc_prim);
+    // A pointer-shaped acc is loop-OWNED from the start: a borrowed
+    // init (a Ref to a kernel input / outer local) clones here. String
+    // reads already clone; a scalar owns nothing.
+    let init_pay = match &acc {
+        FoldAcc::Composite { init_src, .. } => {
+            ensure_owned_composite_src(cx, *init_src, init_cv.payload)?
+        }
+        FoldAcc::Scalar(_) | FoldAcc::Str => init_cv.payload,
+    };
+    cx.b.def_var(acc_var, init_pay);
+    let base = acc.base_disc(cx);
     let t = cx.b.ins().band_imm(init_cv.disc, TAINT | STALE);
     let d0 = cx.b.ins().bor(base, t);
     cx.b.def_var(acc_disc_var, d0);
@@ -1259,25 +1364,49 @@ where
     cx.b.switch_to_block(loop_header);
     emit_loop_header(cx, i_var, len, loop_body, loop_exit);
     cx.b.switch_to_block(loop_body);
+    let mark = cx.env.mark();
+    cx.enter_loop();
+    // The acc binds BEFORE the interrupt poll (env bookkeeping — no
+    // instructions): an owned acc shape must be in the poll's abort
+    // cleanup (`drop_owned_composites`) or an interrupt would leak the
+    // loop-carried value.
+    cx.env.bind(
+        acc_name.clone(),
+        ValueVar { disc: acc_disc_var, payload: acc_var },
+        acc.local_kind(),
+        acc_id,
+    );
     // Cooperative interrupt poll at the scaffold loop head: a wedged
     // map/fold/filter/… over a huge array aborts to bottom; the in-flight
     // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
-    let mark = cx.env.mark();
-    cx.enter_loop();
-    bind_scalar_var_with_disc(
-        cx,
-        acc_name.clone(),
-        acc_prim,
-        acc_var,
-        acc_disc_var,
-        acc_id,
-    );
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
+    // `|(a, b), v|` acc-destructure leaves re-read off the CURRENT acc
+    // each iteration; their discs carry the acc's loop-carried
+    // TAINT|STALE (unlike elements, the acc can be tainted).
+    let acc_owned_leaves = match &acc {
+        FoldAcc::Composite { leaves, .. } if !leaves.is_empty() => {
+            let acc_ptr = cx.b.use_var(acc_var);
+            let acc_disc = cx.b.use_var(acc_disc_var);
+            bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?
+        }
+        _ => Vec::new(),
+    };
     let new_acc = body(cx);
     cx.exit_loop();
     let new_acc = new_acc?;
+    // The new acc is made independently owned BEFORE anything drops: a
+    // borrowed body result (`|acc, x| acc`) may alias the old acc, an
+    // element, or a leaf local.
+    let new_pay = match &acc {
+        FoldAcc::Composite { body_src, .. } => {
+            ensure_owned_composite_src(cx, *body_src, new_acc.payload)?
+        }
+        FoldAcc::Scalar(_) | FoldAcc::Str => new_acc.payload,
+    };
+    acc.drop_old(cx, acc_var)?;
+    drop_owned_leaves(cx, &acc_owned_leaves)?;
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
@@ -1287,8 +1416,8 @@ where
     // made it STICKY — soak finding corpus-generate/divergence_000021,
     // 2026-07-04), and STALE because the carry IS fold's firing channel
     // (`result_is_firing` above).
-    cx.b.def_var(acc_var, new_acc.payload);
-    let base = scalar_disc(cx.b, acc_prim);
+    cx.b.def_var(acc_var, new_pay);
+    let base = acc.base_disc(cx);
     let t = cx.b.ins().band_imm(new_acc.disc, TAINT | STALE);
     let d = cx.b.ins().bor(base, t);
     cx.b.def_var(acc_disc_var, d);

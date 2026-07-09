@@ -61,8 +61,12 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         // desugared expression compiles normally — one specification,
         // both evaluators (design/sync_subset.md).
         ExprKind::SyncBlock { exprs } => {
-            let desugared =
+            let mut desugared =
                 crate::expr::sync_desugar::desugar_sync_block(&spec, exprs)?;
+            // The desugared root REPLACES the sync block, so the block's
+            // decorations (`#[native]` above all) must ride along or the
+            // attribute silently asserts nothing.
+            desugared.dec = spec.dec.clone();
             return compile(ctx, flags, desugared, scope, top_id);
         }
         // Outside a sync block these forms have no meaning; inside one
