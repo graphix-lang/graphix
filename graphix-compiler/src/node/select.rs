@@ -243,7 +243,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             if !inferred_irrefutable {
                 itype = itype.union(&ctx.env, &pat.type_predicate)?;
             }
-            rtype = rtype.union(&ctx.env, n.node.typ())?;
+            // NOTE: rtype (the arm-result union) is built in the
+            // SECOND loop, after each arm's typecheck0 — an arm whose
+            // node REPLACES its typ field there (a nested select sets
+            // `self.typ = rtype`) would otherwise contribute its
+            // pre-typecheck EMPTY tvar to the union: an orphaned cell
+            // the enclosing annotation check greedily bound (an
+            // `-> i64` lambda/let accepted a nested select yielding
+            // STRUCTS; the fused return slot then leaked the struct
+            // pointer as a scalar — soak jul08o).
         }
         if wildcard {
             // Exhaustive by construction — but still narrow an
@@ -288,6 +296,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // the walk and leave every LATER slot's bind TVars un-narrowed.
             ntype.contains(&ctx.env, &pat.type_predicate.any_as_tvar())?;
             wrap!(n.node, n.node.typecheck0(ctx))?;
+            rtype = rtype.union(&ctx.env, n.node.typ())?;
             if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {
                 ntype = ntype.diff(&ctx.env, &pat.type_predicate)?;
             }
