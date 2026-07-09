@@ -100,15 +100,65 @@ Three commitments, each an ergonomics decision with semantic teeth:
      becomes a typed, compiler-chosen elaboration instead of a fusion
      heuristic.
 
-### The staging rule
+### Re-evaluation, taint, and the elaboration ladder
 
-What keeps the async elaboration mechanical instead of a full CPS
-transform: **an eventual value may flow through data but may not gate
-control inside the block.** Push it, store it, return it — fine (data
-edges become dataflow edges). Branch on it, index by it, `break` on it
-— compile error, reported with the effect source. This one rule covers
-every HOF shape; anything it rejects is a computation that genuinely
-cannot be sequentially staged within a cycle.
+The v2 staging rule ("eventual values are data, not control") was too
+strong — `filter` breaks it immediately:
+
+```graphix
+let filter = |a: Array<'a>, f: fn('a) -> bool| -> Array<'a> sync {
+    let mut res = [];
+    for v in a {
+        select f(v) {
+            true => array::push(res, v),
+            false => ()
+        }
+    }
+    res
+}
+```
+
+The `select` scrutinizes `f(v)` — control on an eventual value — and
+async filter must work. The repair is better than the rule:
+
+**The async-elaborated block is a reactive node; it RE-EVALUATES as
+slot values land, and pending values are TAINTED.** First evaluation:
+the loop runs (control up to the `f(v)` calls depends only on sync
+values), each `f(v)` instantiates a slot, each pending result is a
+#219-tainted value; the select consumes taint, `res` taints, the block
+produces nothing this cycle. Deliveries land → the node re-runs →
+selects evaluate on real bools → the output fires. A later `f(v)`
+update re-runs the block again — exactly MapQ's living-slots behavior.
+No staging analysis: evaluate under the existing taint algebra, let
+taint gate the output.
+
+What survives of the rule is weaker and more precise: **the set of
+async call sites executed must not depend on eventual values** (else
+the call set is unstable across re-runs). Filter and fold pass (every
+call runs unconditionally; results are only consumed). What trips it —
+`for v in a { if f(v) { g(v) } }`, both async — falls to rung 3 below.
+
+**The elaboration ladder** (every rung already exists today in some
+form):
+
+1. **All-sync** → one kernel: today's scaffold loop.
+2. **Async, stable call set** → per-call-site slots + block
+   re-evaluation under taint: today's MapQ/FoldQ slot-and-finish
+   model, compiler-generated.
+3. **Control-dependent async** → per-element fallback: the loop body
+   becomes a lambda instantiated per iteration, its internal
+   sequencing handled reactively inside the slot — precisely today's
+   per-slot model, demoted from the only case to the degenerate case.
+
+**Slot identity across re-runs**: `f(v)` on re-evaluation must find
+its EXISTING slot, not re-instantiate; when `a` changes the slot set
+diffs (grow/shrink). Keyed by (call site × iteration index) in a
+table — the identity question clone_rebind answered with tree surgery,
+answered with a map.
+
+**Mut places under re-evaluation** are naturally safe: per-run
+scratch, reinitialized each run — the block stays pure modulo its own
+locals.
 
 ### Mutation: mut PLACES, not mut types
 
@@ -198,7 +248,7 @@ formulation — the eventual-value machinery is elaboration-internal
 | v1 worm | v2 resolution |
 | --- | --- |
 | Function coloring (`sync fn`) | Gone from types: `sync` is a block; effects inferred, never written. |
-| Calling reactive `f` from sync | The staging rule: eventual values are data, not control; elaboration instantiates. |
+| Calling reactive `f` from sync | Re-evaluation under taint + the elaboration ladder; only the CALL SET must be eventual-independent (rung 3 catches the rest). |
 | `Vec` + freeze API | Mut PLACES over persistent types; freeze = escape; no `vec::`. |
 | Aliasing / affine types | Places aren't values; no aliasing exists to restrict. |
 | Bottom mid-loop | #219 taint algebra, unchanged. |
@@ -206,10 +256,17 @@ formulation — the eventual-value machinery is elaboration-internal
 
 ## Open questions
 
-- The staging-rule checker's granularity: is "no control on eventual
-  values" per-expression, or does it need flow analysis (an eventual
-  value laundered through a mut place then branched on)? Likely:
-  eventual-ness is a compile-time taint on places too.
+- `<-` inside a sync block: a connect would re-fire per re-evaluation.
+  Forbid in v1 of the feature, or accept ordinary connect semantics
+  (fires when its RHS fires, which now includes re-runs)?
+- Re-evaluation cost: today's MapQ re-runs only `finish`; a naive
+  block re-run re-loops everything. Fine for hundreds of elements;
+  for 10^5 the incremental version is self-adjusting-computation
+  territory — out of scope, noted.
+- Call-set stability checking: syntactic (async calls not under
+  eventual-dependent control) or flow-based (eventual-ness as a
+  compile-time taint on places too — laundering through a mut place
+  then branching)?
 - Mut-place builder representations per type (Array slack buffer, Map
   COW handle, String rope?) and the materialize-on-read cost model.
 - `for` syntax and iteration protocol (arrays, maps, ranges; does
