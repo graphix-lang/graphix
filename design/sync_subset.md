@@ -115,6 +115,76 @@ runtime work, it is small, and it carries no compiler smuggled inside.
   and typing work, not a new backend — and it hands the NODE-WALK
   loops too, closing the evaluator asymmetry from the canonical side.
 
+## The worms (brainstorm, 2026-07-09)
+
+The running example — `array::map` as it would ideally be written:
+
+```graphix
+val map: sync fn(a: Array<'a>, f: fn('a) -> 'b) -> Array<'b>;
+
+let map = sync |a: Array<'a>, f: fn('a) -> 'b| -> Array<'b> {
+    let mut tmp = [];
+    for v in a {
+        vec::push(tmp, f(v))
+    }
+    tmp
+};
+```
+
+**Worm 1 — reactive functions cannot be CALLED from sync code, only
+instantiated.** A reactive fn's body may span cycles by design; a sync
+context cannot force it to completion within a cycle without breaking
+the cycle model. So `f` above must really be `sync fn('a) -> 'b` —
+function coloring. Mitigations: (a) graphix already computes the
+coloring — the M6 HOF effect inference and `analysis::infer_effects`
+are an effect-polymorphism engine running as a compiler internal;
+(b) `map` becomes effect-polymorphic with the compiler choosing the
+ELABORATION: sync `f` → the loop body as written; reactive `f` → the
+dynamic-children primitive with per-element lambda instantiation.
+That is the impure-HOF split promoted from fusion heuristic to typed
+language semantics.
+
+**Worm 2 — `mut` containers and the freeze.** `Array` is a persistent
+value; `tmp` is a `Vec<'b>` frozen to `Array<'b>` at the boundary.
+Freeze is zero-copy only if unaliased: either an affine discipline
+(mut containers don't alias) or the runtime check (refcount-1 →
+steal, else copy). Note the body above is operation-for-operation what
+`emit_map_loop` emits today (`buf_new → push → finalize`) — the
+scaffold already lives this linearity, enforced by construction.
+`vec::push(tmp, …)` mutating a bare arg needs a story (implicit by-ref
+for mut sync params, or spell it `&tmp` and reuse the ref machinery).
+
+**Worm 3 — bottom mid-loop.** `f(v)` can produce nothing (div0, `?`).
+The sync value domain is `['b, ⊥]` with the #219 taint algebra — the
+JIT's existing bottom semantics transfer wholesale. (The pending
+tail-arg-stale-cache ruling is this worm in tail-loop clothing; one
+answer should cover both.)
+
+**Worm 4 — sync fns called FROM reactive context** are benign: a node
+that recomputes when inputs fire — exactly the `EFFECT = Sync` builtin
+contract. The `BuiltIn` trait becomes the FFI special case of a
+general language feature.
+
+**Worm 5 — divergence.** `for` over an array terminates; `while`
+doesn't have to. Inherit the JIT's position (an infinite pure loop
+hangs the cycle; that's correct) and its mechanism (the cooperative
+interrupt poll).
+
+**Worm 6 — who writes `sync`?** Inference does the work (effects are
+already inferred); the keyword is written only where load-bearing:
+`.gxi` declarations (contracts) and bodies the author wants ENFORCED
+sync. Same philosophy as type annotations.
+
+**The worm without a clean exit — surface effect variables.** `map`'s
+honest type quantifies over an effect. If effect polymorphism stays
+inference-only with monomorphic surface annotations, most of the
+lattice stays internal; the moment users can write effect-generic
+signatures, the language maintains a second inference lattice next to
+the type lattice forever. Recommendation: inference-only until proven
+insufficient. (Sub-worm: the reactive elaboration's result type —
+"an array whose elements arrive" is just an Array that updates, so the
+types may unify after all; needs real thought.)
+
 ## Open questions
 
 - Syntax and typing of sync contexts: a block form? a function
