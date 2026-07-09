@@ -844,38 +844,55 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // scrutinee/guard reads are exempt (the wake replays only the arm
     // body).
     {
+        // A binding is potentially written when a Connect targets it
+        // (recorded statically) or — since a ConnectDeref's target is
+        // the RUNTIME ref value — when any ConnectDeref exists and the
+        // binding is `&`-taken (byref_chain targets).
+        let written = |id: BindId| {
+            ctx.unstable_bindings.contains(&id)
+                || (ctx.has_connect_deref
+                    && ctx.env.byref_chain.into_iter().any(|(_, t)| *t == id))
+        };
         let mut blocked: Option<BindId> = None;
+        let check = |sub: &Refs, blocked: &mut Option<BindId>| {
+            sub.with_external_refs(|id| {
+                if blocked.is_none()
+                    && written(id)
+                    && !lifted.contains(&id)
+                    && inputs.iter().any(|fv| fv.bind_id == id)
+                {
+                    *blocked = Some(id);
+                }
+            });
+        };
         for_each_node(node, &mut |n| {
             if blocked.is_some() {
                 return;
             }
-            if let NodeView::Select(s) = n.view() {
-                for (_, body) in s.arms.iter() {
-                    let mut refs = Refs::default();
-                    body.node.refs(&mut refs);
-                    refs.with_external_refs(|id| {
-                        // Connect targets are recorded statically; a
-                        // ConnectDeref's target is the RUNTIME ref
-                        // value, so when one exists anywhere in the
-                        // compile, every `&`-taken binding
-                        // (byref_chain targets) is potentially
-                        // written too.
-                        let written = ctx.unstable_bindings.contains(&id)
-                            || (ctx.has_connect_deref
-                                && ctx
-                                    .env
-                                    .byref_chain
-                                    .into_iter()
-                                    .any(|(_, t)| *t == id));
-                        if blocked.is_none()
-                            && written
-                            && !lifted.contains(&id)
-                            && inputs.iter().any(|fv| fv.bind_id == id)
-                        {
-                            blocked = Some(id);
-                        }
-                    });
+            match n.view() {
+                // The select wake replays cached values into the woken
+                // ARM's event (node/select.rs).
+                NodeView::Select(s) => {
+                    for (_, body) in s.arms.iter() {
+                        let mut refs = Refs::default();
+                        body.node.refs(&mut refs);
+                        check(&refs, &mut blocked);
+                    }
                 }
+                // Freshly-instantiated callee subgraphs prime their
+                // externals from cached at first dispatch (the lazy
+                // bind at callsite.rs `setup_bind`/dispatch, and every
+                // per-slot HOF pred — slots are runtime-instantiated,
+                // so a fold/map whose callback reads a connect-written
+                // binding sees a same-cycle write the fused scaffold's
+                // feeder can't; soak jul08n, the fold-scrutinee
+                // variant of the jul08l select-arm find).
+                NodeView::CallSite(cs) => {
+                    let mut refs = Refs::default();
+                    cs.refs(&mut refs);
+                    check(&refs, &mut blocked);
+                }
+                _ => {}
             }
         });
         if let Some(id) = blocked {
