@@ -331,6 +331,7 @@ fn letbind() {
     assert_eq!(
         ExprKind::Bind(Arc::new(BindExpr {
             rec: false,
+            mut_: false,
             typ: None,
             pattern: StructurePattern::Bind(literal!("foo")),
             value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
@@ -345,6 +346,7 @@ fn letrecbind() {
     assert_eq!(
         ExprKind::Bind(Arc::new(BindExpr {
             rec: true,
+            mut_: false,
             typ: None,
             pattern: StructurePattern::Bind(literal!("foo")),
             value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
@@ -376,6 +378,7 @@ fn typed_letbind() {
     assert_eq!(
         ExprKind::Bind(Arc::new(BindExpr {
             rec: false,
+            mut_: false,
             typ: Some(Type::Primitive(Typ::I64.into())),
             pattern: StructurePattern::Bind(literal!("foo")),
             value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
@@ -881,6 +884,7 @@ fn doexpr() {
         exprs: Arc::from_iter([
             ExprKind::Bind(Arc::new(BindExpr {
                 rec: false,
+                mut_: false,
                 typ: None,
                 pattern: StructurePattern::Bind(literal!("baz")),
                 value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
@@ -1050,6 +1054,7 @@ fn apply_typed_lambda() {
 fn typed_array() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
+        mut_: false,
         pattern: StructurePattern::Bind(literal!("f")),
         typ: None,
         value: ExprKind::Lambda(Arc::new(LambdaExpr {
@@ -1079,6 +1084,7 @@ fn typed_array() {
 fn labeled_argument_lambda() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
+        mut_: false,
         pattern: StructurePattern::Bind(literal!("a")),
         typ: Some(Type::Fn(Arc::new(FnType {
             args: Arc::from_iter([
@@ -1270,6 +1276,7 @@ fn tuple0() {
 fn tuple1() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
+        mut_: false,
         pattern: StructurePattern::Tuple {
             all: None,
             binds: Arc::from_iter([
@@ -1307,6 +1314,7 @@ fn tuple1() {
 fn struct0() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
+        mut_: false,
         pattern: StructurePattern::Bind(literal!("a")),
         typ: None,
         value: ExprKind::Struct(StructExpr {
@@ -1341,6 +1349,7 @@ fn struct0() {
 fn bindstruct() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
+        mut_: false,
         pattern: StructurePattern::Struct {
             all: None,
             exhaustive: true,
@@ -1667,4 +1676,76 @@ fn parenthesized_connect_round_trips() {
     let e = parse_one("*(a <- b)").unwrap();
     let e2 = parse_one(&e.to_string()).unwrap();
     assert_eq!(e.kind, e2.kind);
+}
+
+// ── sync subset (design/sync_subset.md) ─────────────────────────────
+
+#[test]
+fn sync_block_basic() {
+    let e = parse_one("sync { let mut x = 0; x = x + 1; x }").unwrap();
+    match &e.kind {
+        ExprKind::SyncBlock { exprs } => {
+            assert_eq!(exprs.len(), 3);
+            match &exprs[0].kind {
+                ExprKind::Bind(b) => assert!(b.mut_, "let mut lost"),
+                k => panic!("expected mut bind, got {k:?}"),
+            }
+            assert!(matches!(&exprs[1].kind, ExprKind::Assign { .. }));
+        }
+        k => panic!("expected SyncBlock, got {k:?}"),
+    }
+}
+
+#[test]
+fn sync_block_single_expr() {
+    // Unlike `{ x }` (blocks need 2+), `sync { x }` is unambiguous.
+    let e = parse_one("sync { x }").unwrap();
+    assert!(matches!(&e.kind, ExprKind::SyncBlock { exprs } if exprs.len() == 1));
+}
+
+#[test]
+fn for_in_single_stmt_body() {
+    // `a { v }` must NOT parse as a map access: the tight-brace rule
+    // ends the postfix chain at the space, so the block is the body.
+    let e = parse_one("for v in a { v }").unwrap();
+    match &e.kind {
+        ExprKind::For { iter, body, .. } => {
+            assert!(matches!(&iter.kind, ExprKind::Ref { .. }), "iter {:?}", iter.kind);
+            assert!(matches!(&body.kind, ExprKind::Do { exprs } if exprs.len() == 1));
+        }
+        k => panic!("expected For, got {k:?}"),
+    }
+}
+
+#[test]
+fn for_in_select_body() {
+    // The filter idiom: a single select statement as the whole body.
+    let e =
+        parse_one("for v in a { select f(v) { true => x = v, false => null } }").unwrap();
+    assert!(matches!(&e.kind, ExprKind::For { .. }), "got {:?}", e.kind);
+}
+
+#[test]
+fn assign_not_eq_or_arrow() {
+    let e = parse_one("x = 1").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Assign { .. }), "got {:?}", e.kind);
+    let e = parse_one("x == 1").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Eq { .. }), "got {:?}", e.kind);
+}
+
+#[test]
+fn mapref_requires_tight_brace() {
+    // `m{"k"}` is a map access; `m {"k"}` is not (the space ends the
+    // postfix chain — this is what disambiguates `for … in a { … }`).
+    let e = parse_one(r#"m{"k"}"#).unwrap();
+    assert!(matches!(&e.kind, ExprKind::MapRef { .. }), "got {:?}", e.kind);
+    assert!(parse_one(r#"m {"k"}"#).map(|e| !matches!(&e.kind, ExprKind::MapRef { .. })).unwrap_or(true));
+}
+
+#[test]
+fn in_stays_contextual() {
+    // `in` is NOT reserved — `#in` labeled args (sys::fs::tempdir) and
+    // identifiers containing `in` keep working.
+    let e = parse_one("input + 1").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Add { .. }), "got {:?}", e.kind);
 }

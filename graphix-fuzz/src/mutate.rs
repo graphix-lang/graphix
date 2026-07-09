@@ -69,6 +69,16 @@ fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
     use ExprKind::*;
     match &e.kind {
         NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) | Module { .. } => {}
+        SyncBlock { exprs } => {
+            for x in exprs.iter() {
+                f(x)
+            }
+        }
+        For { pattern: _, iter, body } => {
+            f(iter);
+            f(body)
+        }
+        Assign { name: _, value } => f(value),
         ExplicitParens(x)
         | Qop(x)
         | OrNever(x)
@@ -205,6 +215,19 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) | Module { .. } => {
             e.kind.clone()
         }
+        SyncBlock { exprs } => SyncBlock {
+            exprs: exprs
+                .iter()
+                .map(|x| replace_at(x, target, ctr, repl))
+                .collect::<Vec<_>>()
+                .into(),
+        },
+        For { pattern, iter, body } => For {
+            pattern: pattern.clone(),
+            iter: ra!(iter),
+            body: ra!(body),
+        },
+        Assign { name, value } => Assign { name: name.clone(), value: ra!(value) },
         ExplicitParens(x) => ExplicitParens(ra!(x)),
         Qop(x) => Qop(ra!(x)),
         OrNever(x) => OrNever(ra!(x)),
@@ -226,6 +249,7 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         },
         Bind(b) => Bind(Arc::new(BindExpr {
             rec: b.rec,
+            mut_: b.mut_,
             pattern: b.pattern.clone(),
             typ: b.typ.clone(),
             value: r!(&b.value),
@@ -448,6 +472,7 @@ fn try_shadow_rename(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
             ExprKind::Bind(b) if k == binds[j] => Expr::new(
                 ExprKind::Bind(Arc::new(BindExpr {
                     rec: b.rec,
+                    mut_: b.mut_,
                     pattern: StructurePattern::Bind(name.clone()),
                     typ: b.typ.clone(),
                     value: b.value.clone(),
@@ -471,6 +496,7 @@ fn try_strip_annotation(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
         ExprKind::Bind(b) if b.typ.is_some() && rng.below(2) == 0 => {
             Some(ExprKind::Bind(Arc::new(BindExpr {
                 rec: b.rec,
+                mut_: b.mut_,
                 pattern: b.pattern.clone(),
                 typ: None,
                 value: b.value.clone(),

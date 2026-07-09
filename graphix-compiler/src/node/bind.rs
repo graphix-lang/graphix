@@ -71,7 +71,10 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         top_id: ExprId,
         b: &expr::BindExpr,
     ) -> Result<Node<R, E>> {
-        let expr::BindExpr { rec, pattern, typ, value } = b;
+        let expr::BindExpr { rec, mut_, pattern, typ, value } = b;
+        if *mut_ {
+            bailat!(spec, "`let mut` is only legal inside a sync block (P1)")
+        }
         let (node, pattern, typ) = if *rec {
             if !pattern.single_bind().is_some() {
                 bailat!(spec, "can't use rec on a complex pattern")

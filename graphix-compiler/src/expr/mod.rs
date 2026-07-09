@@ -236,6 +236,10 @@ pub enum ModuleKind {
 #[pack(unwrapped)]
 pub struct BindExpr {
     pub rec: bool,
+    /// `let mut` — a rebindable local, legal only inside `sync` blocks
+    /// (enforced at compile, not parse). Requires a single-name
+    /// pattern.
+    pub mut_: bool,
     pub pattern: StructurePattern,
     pub typ: Option<Type>,
     pub value: Expr,
@@ -344,6 +348,19 @@ pub enum ExprKind {
     Mod { lhs: Arc<Expr>, rhs: Arc<Expr> },
     CheckedMod { lhs: Arc<Expr>, rhs: Arc<Expr> },
     Sample { lhs: Arc<Expr>, rhs: Arc<Expr> },
+    /// `sync { e; e; ... }` — a block with SEQUENTIAL semantics
+    /// (design/sync_subset.md). Statements evaluate in written order;
+    /// `let mut` locals may be rebound by `Assign`; `for` loops are
+    /// legal. The compiler elaborates by inferred effect (one kernel /
+    /// slots + re-eval / per-element instantiation).
+    SyncBlock { exprs: Arc<[Expr]> },
+    /// `for <pattern> in <iter> { body }` — legal only inside a
+    /// `sync` block. Semantics: fold over the enclosing block's
+    /// `let mut` locals (the loop-carried accumulator tuple).
+    For { pattern: StructurePattern, iter: Arc<Expr>, body: Arc<Expr> },
+    /// `name = value` — rebind a `let mut` local; legal only inside
+    /// the `sync` block that bound it.
+    Assign { name: ModPath, value: Arc<Expr> },
 }
 
 impl ExprKind {
@@ -620,6 +637,14 @@ impl Expr {
             | ExprKind::Ref { name: _ }
             | ExprKind::TypeDef(_) => init,
             ExprKind::ExplicitParens(e) => e.fold(init, f),
+            ExprKind::SyncBlock { exprs } => {
+                exprs.iter().fold(init, |init, e| e.fold(init, f))
+            }
+            ExprKind::For { pattern: _, iter, body } => {
+                let init = iter.fold(init, f);
+                body.fold(init, f)
+            }
+            ExprKind::Assign { name: _, value } => value.fold(init, f),
             ExprKind::StructRef { source, field: _ }
             | ExprKind::TupleRef { source, field: _ } => source.fold(init, f),
 

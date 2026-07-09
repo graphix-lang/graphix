@@ -43,6 +43,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -68,6 +72,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -132,6 +140,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -297,6 +309,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -322,6 +338,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -394,6 +414,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -475,6 +499,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -500,6 +528,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -564,6 +596,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -656,6 +692,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -681,6 +721,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -745,6 +789,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -811,6 +859,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -836,6 +888,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -900,6 +956,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -1013,6 +1073,188 @@
     }
   },
   {
+    "type": "assign",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "module_path",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": ".",
+            "named": false
+          },
+          {
+            "type": "any",
+            "named": true
+          },
+          {
+            "type": "apply",
+            "named": true
+          },
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "array_ref",
+            "named": true
+          },
+          {
+            "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "assign",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "builtin_ref",
+            "named": true
+          },
+          {
+            "type": "by_ref",
+            "named": true
+          },
+          {
+            "type": "cast",
+            "named": true
+          },
+          {
+            "type": "connect",
+            "named": true
+          },
+          {
+            "type": "deref",
+            "named": true
+          },
+          {
+            "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "let_binding",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map",
+            "named": true
+          },
+          {
+            "type": "map_ref",
+            "named": true
+          },
+          {
+            "type": "module",
+            "named": true
+          },
+          {
+            "type": "or_never",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qop",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "reference",
+            "named": true
+          },
+          {
+            "type": "select",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "struct",
+            "named": true
+          },
+          {
+            "type": "struct_ref",
+            "named": true
+          },
+          {
+            "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
+            "named": true
+          },
+          {
+            "type": "try_catch",
+            "named": true
+          },
+          {
+            "type": "tuple",
+            "named": true
+          },
+          {
+            "type": "tuple_ref",
+            "named": true
+          },
+          {
+            "type": "type_ascription",
+            "named": true
+          },
+          {
+            "type": "type_def",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "use",
+            "named": true
+          },
+          {
+            "type": "variant",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "binary_expression",
     "named": true,
     "fields": {},
@@ -1041,6 +1283,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -1066,6 +1312,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -1130,6 +1380,177 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
+          "named": true
+        },
+        {
+          "type": "try_catch",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "tuple_ref",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "type_def",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "use",
+          "named": true
+        },
+        {
+          "type": "variant",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "block1",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "any",
+          "named": true
+        },
+        {
+          "type": "apply",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "array_ref",
+          "named": true
+        },
+        {
+          "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "assign",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
+          "named": true
+        },
+        {
+          "type": "connect",
+          "named": true
+        },
+        {
+          "type": "deref",
+          "named": true
+        },
+        {
+          "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "map",
+          "named": true
+        },
+        {
+          "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "module",
+          "named": true
+        },
+        {
+          "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qop",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "reference",
+          "named": true
+        },
+        {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "struct",
+          "named": true
+        },
+        {
+          "type": "struct_ref",
+          "named": true
+        },
+        {
+          "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -1216,6 +1637,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -1241,6 +1666,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -1305,6 +1734,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -1454,6 +1887,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -1487,6 +1924,10 @@
         },
         {
           "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -1575,6 +2016,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -1679,6 +2124,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -1704,6 +2153,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -1768,6 +2221,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -1925,6 +2382,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -1950,6 +2411,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -2014,6 +2479,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -2080,6 +2549,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -2105,6 +2578,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -2169,6 +2646,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -2493,6 +2974,198 @@
     }
   },
   {
+    "type": "for_expression",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block1",
+            "named": true
+          }
+        ]
+      },
+      "iter": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": ".",
+            "named": false
+          },
+          {
+            "type": "any",
+            "named": true
+          },
+          {
+            "type": "apply",
+            "named": true
+          },
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "array_ref",
+            "named": true
+          },
+          {
+            "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "assign",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "builtin_ref",
+            "named": true
+          },
+          {
+            "type": "by_ref",
+            "named": true
+          },
+          {
+            "type": "cast",
+            "named": true
+          },
+          {
+            "type": "connect",
+            "named": true
+          },
+          {
+            "type": "deref",
+            "named": true
+          },
+          {
+            "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "let_binding",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map",
+            "named": true
+          },
+          {
+            "type": "map_ref",
+            "named": true
+          },
+          {
+            "type": "module",
+            "named": true
+          },
+          {
+            "type": "or_never",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qop",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "reference",
+            "named": true
+          },
+          {
+            "type": "select",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "struct",
+            "named": true
+          },
+          {
+            "type": "struct_ref",
+            "named": true
+          },
+          {
+            "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
+            "named": true
+          },
+          {
+            "type": "try_catch",
+            "named": true
+          },
+          {
+            "type": "tuple",
+            "named": true
+          },
+          {
+            "type": "tuple_ref",
+            "named": true
+          },
+          {
+            "type": "type_ascription",
+            "named": true
+          },
+          {
+            "type": "type_def",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "use",
+            "named": true
+          },
+          {
+            "type": "variant",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "structure_pattern",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "function_type",
     "named": true,
     "fields": {},
@@ -2612,6 +3285,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -2637,6 +3314,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -2701,6 +3382,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -2805,6 +3490,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -2838,6 +3527,10 @@
         },
         {
           "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -2930,6 +3623,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -3028,6 +3725,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -3061,6 +3762,10 @@
         },
         {
           "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -3157,6 +3862,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -3452,6 +4161,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -3477,6 +4190,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -3541,6 +4258,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -3650,6 +4371,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -3675,6 +4400,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -3739,6 +4468,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -3804,6 +4537,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -3829,6 +4566,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -3893,6 +4634,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -3960,6 +4705,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -3985,6 +4734,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -4049,6 +4802,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -4194,6 +4951,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -4219,6 +4980,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -4283,6 +5048,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -4404,6 +5173,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -4429,6 +5202,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -4493,6 +5270,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -4570,6 +5351,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -4595,6 +5380,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -4659,6 +5448,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -4864,6 +5657,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -4889,6 +5686,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -4953,6 +5754,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -5102,6 +5907,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -5135,6 +5944,10 @@
         },
         {
           "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -5227,6 +6040,10 @@
         },
         {
           "type": "structure_pattern",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -5535,6 +6352,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -5560,6 +6381,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -5624,6 +6449,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -6067,6 +6896,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -6092,6 +6925,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -6160,6 +6997,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -6278,6 +7119,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -6303,6 +7148,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -6367,6 +7216,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -6686,6 +7539,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -6711,6 +7568,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -6779,6 +7640,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -6862,6 +7727,173 @@
         },
         {
           "type": "variant_pattern",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "sync_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "any",
+          "named": true
+        },
+        {
+          "type": "apply",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "array_ref",
+          "named": true
+        },
+        {
+          "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "assign",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
+          "named": true
+        },
+        {
+          "type": "connect",
+          "named": true
+        },
+        {
+          "type": "deref",
+          "named": true
+        },
+        {
+          "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "map",
+          "named": true
+        },
+        {
+          "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "module",
+          "named": true
+        },
+        {
+          "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qop",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "reference",
+          "named": true
+        },
+        {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "struct",
+          "named": true
+        },
+        {
+          "type": "struct_ref",
+          "named": true
+        },
+        {
+          "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
+          "named": true
+        },
+        {
+          "type": "try_catch",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "tuple_ref",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "type_def",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "use",
+          "named": true
+        },
+        {
+          "type": "variant",
           "named": true
         }
       ]
@@ -6985,6 +8017,10 @@
             "named": true
           },
           {
+            "type": "assign",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -7010,6 +8046,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "for_expression",
             "named": true
           },
           {
@@ -7074,6 +8114,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "sync_block",
             "named": true
           },
           {
@@ -7144,6 +8188,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -7177,6 +8225,10 @@
         },
         {
           "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -7268,6 +8320,10 @@
           "named": true
         },
         {
+          "type": "sync_block",
+          "named": true
+        },
+        {
           "type": "try_catch",
           "named": true
         },
@@ -7355,6 +8411,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -7380,6 +8440,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -7444,6 +8508,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -8044,6 +9112,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -8069,6 +9141,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -8133,6 +9209,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -8388,6 +9468,10 @@
           "named": true
         },
         {
+          "type": "assign",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -8413,6 +9497,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "for_expression",
           "named": true
         },
         {
@@ -8477,6 +9565,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "sync_block",
           "named": true
         },
         {
@@ -8900,6 +9992,10 @@
     "named": false
   },
   {
+    "type": "for",
+    "named": false
+  },
+  {
     "type": "i16",
     "named": false
   },
@@ -8924,15 +10020,24 @@
     "named": false
   },
   {
+    "type": "in",
+    "named": false
+  },
+  {
     "type": "let",
     "named": false
   },
   {
     "type": "line_comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "mod",
+    "named": false
+  },
+  {
+    "type": "mut",
     "named": false
   },
   {
@@ -8982,6 +10087,10 @@
   {
     "type": "string_content",
     "named": true
+  },
+  {
+    "type": "sync",
+    "named": false
   },
   {
     "type": "throws",

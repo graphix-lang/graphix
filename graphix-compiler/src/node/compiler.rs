@@ -55,6 +55,11 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         }
     }
     match &spec.kind {
+        // sync-subset P0: syntax lands first; compilation is P1
+        // (design/sync_subset.md).
+        ExprKind::SyncBlock { .. } | ExprKind::For { .. } | ExprKind::Assign { .. } => {
+            crate::bailat!(spec, "the sync subset is not implemented yet")
+        }
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {
             ExplicitParens::compile(ctx, flags, (**s).clone(), scope, top_id)
