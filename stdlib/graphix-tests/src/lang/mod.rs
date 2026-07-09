@@ -10,6 +10,7 @@ mod fusion;
 mod interfaces;
 mod maps;
 mod modules;
+mod sync_block;
 mod select;
 mod tuples_structs;
 mod types;

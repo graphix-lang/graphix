@@ -32,6 +32,7 @@ use triomphe::Arc;
 mod modpath;
 pub mod parser;
 mod pattern;
+pub mod sync_desugar;
 pub mod print;
 mod resolver;
 pub mod serialize;

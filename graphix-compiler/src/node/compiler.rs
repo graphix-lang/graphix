@@ -55,10 +55,27 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         }
     }
     match &spec.kind {
-        // sync-subset P0: syntax lands first; compilation is P1
-        // (design/sync_subset.md).
-        ExprKind::SyncBlock { .. } | ExprKind::For { .. } | ExprKind::Assign { .. } => {
-            crate::bailat!(spec, "the sync subset is not implemented yet")
+        // sync-subset: a `sync { … }` block desugars into the existing
+        // vocabulary (assignment = shadowing, for = fold over the
+        // assigned set, arm-assigns hoist to tuple yields) and the
+        // desugared expression compiles normally — one specification,
+        // both evaluators (design/sync_subset.md).
+        ExprKind::SyncBlock { exprs } => {
+            let desugared =
+                crate::expr::sync_desugar::desugar_sync_block(&spec, exprs)?;
+            return compile(ctx, flags, desugared, scope, top_id);
+        }
+        // Outside a sync block these forms have no meaning; inside one
+        // the desugar consumed them. Anything left is a source error —
+        // the backstop for assignment-as-value and loops outside sync.
+        ExprKind::For { .. } => {
+            crate::bailat!(spec, "`for` is only legal inside a sync block")
+        }
+        ExprKind::Assign { .. } => {
+            crate::bailat!(
+                spec,
+                "assignment is a sync-block statement (a block statement or a                  select-arm body targeting a `let mut` of the enclosing sync                  block)"
+            )
         }
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {
