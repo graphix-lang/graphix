@@ -810,6 +810,68 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // order, so sorting by id makes the signature source-order-stable
     // regardless of where the counter started.
     inputs.sort_by_key(|fv| fv.bind_id);
+    // ARM-WAKE CACHED REPLAY (soak jul08l): the node-walk's select
+    // wake inserts `ctx.cached[id]` into the woken arm's event
+    // (node/select.rs), so an arm BODY sees a connect write from the
+    // SAME cycle — a connect's `ctx.set_var` caches immediately but
+    // delivers next cycle, and the plain-`Ref` feeder a kernel input
+    // rides sees only DELIVERIES. A fused select whose arm body reads
+    // a connect-written input therefore misses the wake-replay fire
+    // (interp emitted the written value at wake AND at delivery; the
+    // kernel only at delivery). One feeder serves both read kinds
+    // (plain refs must NOT see cached — that's the node-walk Ref
+    // contract), so the shape can't be represented: de-fuse. LIFTED
+    // targets are exempt (the seed-select + fired-bit reproduce the
+    // node-walk exactly — the live-seed case agrees by construction);
+    // scrutinee/guard reads are exempt (the wake replays only the arm
+    // body).
+    {
+        let mut blocked: Option<BindId> = None;
+        for_each_node(node, &mut |n| {
+            if blocked.is_some() {
+                return;
+            }
+            if let NodeView::Select(s) = n.view() {
+                for (_, body) in s.arms.iter() {
+                    let mut refs = Refs::default();
+                    body.node.refs(&mut refs);
+                    refs.with_external_refs(|id| {
+                        // Connect targets are recorded statically; a
+                        // ConnectDeref's target is the RUNTIME ref
+                        // value, so when one exists anywhere in the
+                        // compile, every `&`-taken binding
+                        // (byref_chain targets) is potentially
+                        // written too.
+                        let written = ctx.unstable_bindings.contains(&id)
+                            || (ctx.has_connect_deref
+                                && ctx
+                                    .env
+                                    .byref_chain
+                                    .into_iter()
+                                    .any(|(_, t)| *t == id));
+                        if blocked.is_none()
+                            && written
+                            && !lifted.contains(&id)
+                            && inputs.iter().any(|fv| fv.bind_id == id)
+                        {
+                            blocked = Some(id);
+                        }
+                    });
+                }
+            }
+        });
+        if let Some(id) = blocked {
+            ctx.fusion.stats.failed.push((
+                node.spec().id,
+                compact_str::format_compact!(
+                    "select arm body reads connect-written non-lifted input \
+                     {id:?} — arm-wake cached replay isn't representable, \
+                     node-walks"
+                ),
+            ));
+            return Ok(None);
+        }
+    }
     // #219 taint rides each param's disc word (no separate validity
     // bitmask), and the per-param firing trackers spill to the heap, so
     // there is no input-count ceiling — a region of any width fuses.

@@ -99,6 +99,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 pat.unbind_event(event);
             }
         }
+        if std::env::var_os("GRAPHIX_DBG_SELECT").is_some() {
+            eprintln!(
+                "SELECT upd init={} arg_up={arg_up} pat_up={pat_up} sel={:?} vars={}",
+                event.init,
+                selected,
+                event.variables.len()
+            );
+        }
         if !arg_up && !pat_up {
             self.selected.and_then(|i| {
                 if arms[i].1.update(ctx, event) { arms[i].1.cached.clone() } else { None }

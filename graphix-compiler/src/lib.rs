@@ -1675,6 +1675,13 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// fused (a `<-` target rebinds at runtime, so a static splice
     /// into native code would dispatch into stale state).
     pub unstable_bindings: IntSet<BindId>,
+    /// Whether the current compile contains any `ConnectDeref`
+    /// (`*r <- v`). A deref-write's TARGET is runtime-determined (the
+    /// ref value), so it can't be recorded in `unstable_bindings`;
+    /// fusion's arm-wake-replay gate instead treats every `&`-taken
+    /// binding (`env.byref_chain` targets) as potentially written when
+    /// this is set. Reset alongside `unstable_bindings` per load.
+    pub has_connect_deref: bool,
     /// `(scope, name)` → builtin metadata for bindings whose value
     /// is a builtin lambda (i.e. `let foo = |...| 'builtin_name`).
     /// Keyed by name+scope rather than `BindId` because sig and
@@ -1772,6 +1779,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             lambda_defs: IntMap::default(),
             bind_to_lambda: IntMap::default(),
             unstable_bindings: nohash::IntSet::default(),
+            has_connect_deref: false,
             builtin_bindings: ahash::AHashMap::default(),
             rec_defs: nohash::IntSet::default(),
             fusion: fusion::FusionCtx::new()?,

@@ -1,0 +1,16 @@
+// divergence: fused select missed the arm-wake cached replay
+// A connect (`*r <- v` here — the plain `x <- v` twin diverged too)
+// writes ctx.cached SAME-CYCLE but delivers next cycle; the node-walk
+// select's wake inserts cached values into the woken arm's event, so
+// the arm fires at the write cycle AND at delivery (two emissions).
+// A fused select's plain-Ref feeder sees only deliveries — one
+// emission. Fixed by de-fusing regions whose select ARM BODIES read a
+// connect-written non-lifted input (deref-writes over-approximate via
+// byref_chain targets + has_connect_deref). Visible only with a
+// BOTTOM seed (a live seed emits [seed] at cycle 0 in both modes).
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [String("xyz")] }) }))))), (1, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [String("xyz")] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(1, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [String("xyz")] }) })))))], capped: false }] })
+// mutant: { let v0 = array::filter([i64:-100, i64:-1, i64:42], |v0| str::ends_with(#sfx: "hello", "hello")); let v1 = select v0 { [_, v1..] if (!false) => ((i64:0 /? i64:100)$ / v0[0]$), [v1, v2..] => array::fold([i64:-1, i64:2, i64:42], v1, |v0, v3| v1), v1 => v1[0]$ }; let v4 = |v2, v3| ((v3 + v3) + v3); let v5 = v4(f64:2.5, f64:0.1); let v6 = v4(i64:42, i64:7); let v1 = |v7: i64| select v7 { i64:0 => "", _ => error(false) }; let v8 = v1(i64:1)$; let v9 = &v8; *v9 <- "xyz"; select v0 { [v7] => ["", "", "graphix"], _ => [v8] } }\n// file-v1: m0.gxi\nval f0: fn(a0: i64, a1: u8) -> [`A, `B(Map<string, string>, {a: f64, y: string})];\n// file-v1: m0.gx\nlet f0 = |v10: i64, v11: u8| -> [`A, `B(Map<string, string>, {a: f64, y: string})] `B({"k0" => "", "b" => "a", "k2" => "xyz"}, { a: f64:-1.0, y: "" });
+// minimized:
+{let v0 = [i64:0, i64:0, i64:42]; let v1 = select v0 {[_, v1..] if (!false) => ((i64:0 /? i64:100)$ / v0[i64:0]$), [v1, v2..] => array::fold([i64:-1, i64:2, i64:42], v1, |v0, v3| v1), v1 => v1[i64:0]$}; let v4 = |v2, v3| ((v3 + v3) + v3); let v5 = v4(f64:2.5, f64:0.1); let v6 = v4(i64:42, i64:7); let v1 = |v7: i64| select v7 {i64:0 => "", _ => error(false)}; let v8 = v1(i64:1)$; let v9 = &v8; *v9 <- "xyz"; select v0 {[v7] => ["", "", "graphix"], _ => [v8]}}

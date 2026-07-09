@@ -960,6 +960,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             });
         }
         ctx.rt.ref_var(src_id, top_id);
+        ctx.has_connect_deref = true;
         let rhs = Cached::new(compile(ctx, flags, value.clone(), scope, top_id)?);
         Ok(Box::new(Self { spec, rhs, src_id, target_id: None, top_id }))
     }

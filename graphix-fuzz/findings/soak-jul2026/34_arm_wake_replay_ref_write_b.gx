@@ -1,0 +1,29 @@
+// divergence: fused select missed the arm-wake cached replay
+// A connect (`*r <- v` here — the plain `x <- v` twin diverged too)
+// writes ctx.cached SAME-CYCLE but delivers next cycle; the node-walk
+// select's wake inserts cached values into the woken arm's event, so
+// the arm fires at the write cycle AND at delivery (two emissions).
+// A fused select's plain-Ref feeder sees only deliveries — one
+// emission. Fixed by de-fusing regions whose select ARM BODIES read a
+// connect-written non-lifted input (deref-writes over-approximate via
+// byref_chain targets + has_connect_deref). Visible only with a
+// BOTTOM seed (a live seed emits [seed] at cycle 0 in both modes).
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [F64(100.0), F64(6.28), F64(2.5)] }) }))))), (1, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [F64(100.0), F64(6.28), F64(2.5)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(1, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [F64(100.0), F64(6.28), F64(2.5)] }) })))))], capped: false }] })
+// mutant: { let v0 = {"k1" => {"k0" => f64:-1.0, "a" => f64:0.0}}; let v1 = select i64:1 { v1 => (try (((try ((u8:2 *? u8:2))? catch(e) => u8:255) -? (u8:255 * u8:1)))? catch(e) => u8:255) }; let v2 = |v3: i64| -> i64 (v3 - i64:-100); let v4 = |v5: i64| -> i64 (v2(v5) + i64:-1); let v2 = i64:1; let v6 = v4(str::len("xyz")); let v0 = &v1; *v0 <- u8:100; let v7 = m0::mk(str::len("hello")); let v8 = (m0::mk(v6), i64:1); select v8 { (_, v9) if str::contains(#part: "hello", "") => [f64:0.0], (_, v9) => [cast<f64>(v1)$, (f64:3.14 + f64:3.14), m1::f2([u8:100], u8:2)] } }\n// file-v1: m0.gx\nlet f0 = |v7: f64, v8: string| -> bool true;\nlet f1 = |v9: ([u8, null], bool), v10: f64| -> string "xyz";\nlet f2 = |v11: bool| -> f64 f64:3.14;\ntype T = Array<i64>;\nlet mk = |x: i64| -> T [x, x];\nlet un = |t: T| -> i64 t[0]$;\n// file-v1: m1.gxi\nval k1: f64;\nval f0: fn(a0: Array<i64>) -> bool;\nval f1: fn(a0: i64) -> [i32, null];\nval f2: fn(a0: Array<[u8, null]>, a1: u8) -> f64;\n// file-v1: m1.gx\nlet k1: f64 = f64:2.5;\nlet h1 = |v9: u8| -> u8 v9;\nlet f0 = |v10: Array<i64>| -> bool m0::f0((f64:0.1 / k1), m0::f1((u8:100, false), k1));\nlet f1 = |v11: i64| -> [i32, null] null;\nlet f2 = |v12: Array<[u8, null]>, v13: u8| -> f64 k1;
+// minimized:
+{f64:0.; let v1 = select i64:1 {v1 => (try (((try ((u8:2 *? u8:2))? catch(e) => u8:255) -? (u8:255 * u8:1)))? catch(e) => u8:255)}; let v2 = |v3: i64| -> i64 (v3 - i64:-100); let v4 = |v5: i64| -> i64 (v2(v5) + i64:-1); let v2 = i64:1; let v6 = v4(str::len("xyz")); let v0 = &v1; *v0 <- u8:100; let v7 = m0::mk(str::len("hello")); let v8 = (m0::mk(v6), i64:1); select v8 {(_, v9) if str::contains(#part: "hello", "") => [f64:0.], (_, v9) => [cast<f64>(v1)$, (f64:3.14 + f64:3.14), m1::f2([u8:100], u8:2)]}}
+// file-v1: m0.gx
+let f0 = |v7: f64, v8: string| -> bool true;
+let f1 = |v9: ([u8, null], bool), v10: f64| -> string "xyz";
+let f2 = |v11: bool| -> f64 f64:3.14;
+type T = Array<i64>;
+let mk = |x: i64| -> T [x, x];
+let un = |t: T| -> i64 t[0]$;
+// file-v1: m1.gx
+let k1: f64 = f64:2.5;
+let h1 = |v9: u8| -> u8 v9;
+let f0 = |v10: Array<i64>| -> bool m0::f0((f64:0.1 / k1), m0::f1((u8:100, false), k1));
+let f1 = |v11: i64| -> [i32, null] null;
+let f2 = |v12: Array<[u8, null]>, v13: u8| -> f64 k1;
