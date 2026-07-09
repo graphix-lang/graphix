@@ -188,22 +188,20 @@ parameter; "in-kernel mutable variables" is what block params are.
 Rung-2 elaboration inherits for free: loop-carried mut vars under
 async are fold's acc chain (FoldQ's slot chain).
 
-**The n² objection dissolves by a shipped optimization, not ValArray
-games.** For `res = array::push(res, v)` with `res` block-local and
-loop-carried, the old value is provably dead after the rebind (born in
-this block, no other reference, consumed by this expression). Under
-that trivially-checkable uniqueness condition the emitter builds in
-place — `buf_new → push → finalize at escape` — which is verbatim what
-`emit_map_loop` emits today, now licensed by a liveness argument
-instead of special-cased HOF lowering. The interpreter holds the same
-builder representation during sequential block evaluation, keeping
-both evaluators O(n). Prior art: Lean/Koka's "functional but in-place"
-(Perceus-style reuse) — persistent semantics, allocation reuse when
-uniqueness holds, no ownership in the type system.
-
-Where the uniqueness proof fails (res stashed into another structure
-mid-loop → pushes genuinely copy), the honest fallback is already in
-the stdlib: cons onto a `List` and reverse — O(n), zero machinery.
+**The accumulator idiom is `List`, and array-building is a scoped
+optimization — not a language promise.** ValArray is an Arc-wrapped
+SLICE: it cannot grow or shrink, so there is no in-place push,
+uniqueness or not. The honest semantic story: `array::push` copies
+(as it does today), and the idiomatic O(n) accumulator is cons onto a
+`List` and reverse (or `list::to_array`) at the end — that is what
+List is for. Separately, the emitter may recognize the build-loop
+PATTERN — a loop-carried `res = array::push(res, v)` whose only
+in-loop uses are push/len — and keep `res` in builder form (a growable
+scratch, `buf_new → push → finalize at escape`, verbatim what
+`emit_map_loop` emits for the stdlib HOFs today), never materializing
+a ValArray until escape. Any other use of `res` mid-loop materializes
+and the copies are real. An optimization of a specific shape, kept out
+of the semantics.
 
 Consequences: no mut containers, no in-place ops with special
 semantics, no `vec::`, no freeze API, no affine types. One new binder
@@ -276,7 +274,7 @@ formulation — the eventual-value machinery is elaboration-internal
 | --- | --- |
 | Function coloring (`sync fn`) | Gone from types: `sync` is a block; effects inferred, never written. |
 | Calling reactive `f` from sync | Re-evaluation under taint + the elaboration ladder; only the CALL SET must be eventual-independent (rung 3 catches the rest). |
-| `Vec` + freeze API | Mut VARIABLES + persistent data; `for` = fold; in-place by uniqueness proof (FBIP); no `vec::`, no freeze. |
+| `Vec` + freeze API | Mut VARIABLES + persistent data; `for` = fold; List is the accumulator idiom; build-loop builder as a pattern-scoped emission optimization; no `vec::`, no freeze. |
 | Aliasing / affine types | Rebinding, not aliasing; uniqueness is an optimization condition, not a type. |
 | Bottom mid-loop | #219 taint algebra, unchanged. |
 | Surface effect variables | Avoided entirely (inference-only was v1's recommendation; v2 makes it structural). |
@@ -294,10 +292,9 @@ formulation — the eventual-value machinery is elaboration-internal
   eventual-dependent control) or flow-based (eventual-ness as a
   compile-time taint on places too — laundering through a mut place
   then branching)?
-- Builder representations per type for the in-place optimization
-  (Array slack buffer, Map COW handle, String rope?) and where the
-  uniqueness proof draws its line (block-local + loop-carried is the
-  easy 95%; is more worth it?).
+- How far the build-loop pattern recognition goes (push-only is the
+  stdlib-HOF shape; push+len is easy; anything more is probably not
+  worth it given List).
 - `for` syntax and iteration protocol (arrays, maps, ranges; does
   user code ever iterate an abstract type?).
 - Diagnostics quality for inferred effects — the error must carry the
