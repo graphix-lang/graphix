@@ -111,6 +111,39 @@ sync {
 run!(async_body, ASYNC_BODY, |v: Result<&Value>| matches!(v, Ok(Value::I64(6)));
      FuseExpect::Jit);
 
+// async in ONE arm only — the elaboration ladder is per-shape, not
+// per-block: the impure-fold split still applies with the other arm
+// pure, and both arms' assigns thread through the same acc
+const ASYNC_ARM: &str = r#"
+sync {
+  let mut res = 0;
+  for v in [1, 2, 3, 4] {
+    select v % 2 { 0 => res = res + once(v * 10), _ => res = res + v }
+  };
+  res
+}
+"#;
+
+run!(async_arm, ASYNC_ARM, |v: Result<&Value>| matches!(v, Ok(Value::I64(64)));
+     FuseExpect::Jit);
+
+// async in the INNER loop of a nested for — the outer fold's callback
+// contains the impure inner fold
+const ASYNC_NESTED: &str = r#"
+sync {
+  let mut m = 0;
+  for row in [[1, 9], [3, 2]] {
+    for v in row { m = m + once(v) }
+  };
+  m
+}
+"#;
+
+run!(async_nested, ASYNC_NESTED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(15))
+); FuseExpect::Jit);
+
 // ── select in statement position assigning from arms ────────────────
 
 const ARM_ASSIGN_STMT: &str = r#"
