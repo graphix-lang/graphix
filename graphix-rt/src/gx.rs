@@ -672,7 +672,6 @@ impl<X: GXExt> GX<X> {
         // `<-` site inserts the resolved BindId, so by the time the
         // fusion passes run, the set reflects all Connect targets.
         self.ctx.unstable_bindings.clear();
-        self.ctx.has_connect_deref = false;
         self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let mut nodes = exprs
             .iter()
@@ -704,7 +703,6 @@ impl<X: GXExt> GX<X> {
         // `<-` site is compiled — clear the carry-over from a
         // previous batch, then let compile populate.
         self.ctx.unstable_bindings.clear();
-        self.ctx.has_connect_deref = false;
         self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let mut nodes = exprs
             .iter()
@@ -909,7 +907,6 @@ impl<X: GXExt> GX<X> {
         // re-populates with resolved BindIds as each `<-` site is
         // compiled below.
         self.ctx.unstable_bindings.clear();
-        self.ctx.has_connect_deref = false;
         self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
             .with_context(|| ori.clone())?;
