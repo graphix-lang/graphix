@@ -302,3 +302,45 @@ formulation — the eventual-value machinery is elaboration-internal
 - Migration: MapQ/FoldQ remain until the subset lands; the
   per-instance-identity fix keeps clone_rebind correct in the interim
   and dies with it.
+
+## Prototype status (sync-subset-proto branch, 2026-07-09)
+
+P0–P3 are BUILT and committed; the desugar prototype validates the
+core bet — sequential semantics with zero new evaluation machinery.
+
+- **P0 syntax** (2497ff7b + 3e97d0a1): `sync { }`, `let mut`, `x = e`,
+  `for p in it { }`; tight-brace rule for MapRef; proptest round-trip.
+- **P1 desugar** (f7795efb): functionalization in
+  `expr/sync_desugar.rs` — assignment = shadowing, `for` = fold over
+  the body's assigned set, arm-assigns hoist to tuple yields. No new
+  node types; both evaluators inherit the semantics from one spec.
+- **P2 fusion** (a236e65f): pure sync blocks compile to ONE kernel —
+  ten `#[native]` fixtures (zero node-walk residue) over tuple,
+  struct, array, string, and mixed accumulators. The enabling work
+  was general vocabulary: `emit_fold_loop` grew composite/string
+  accumulator carries (owned loop-carried acc with clone-borrowed /
+  drop-replaced discipline), FoldQ freezes from the RESOLVED acc type,
+  and `union_identical` derefs bound tvars against bare types.
+- **P3 async** (6e9e383e): an async call anywhere in the body (arm,
+  nested loop, iter, beside sync assigns) makes the desugared fold
+  callback impure and rides MapQ/FoldQ per-slot machinery unchanged —
+  rung 2 was free, differentially verified.
+
+**P4 is gated on per-callsite elaboration.** An in-language
+`array::map` written as a sync block is CORRECT today at multiple
+instantiations (verified differentially), but compiles zero kernels:
+the fold callback's call to the lambda PARAM `f` cannot statically
+resolve in a once-compiled generic body (missed-fusion item 1). The
+design's answer — the compiler elaborates a sync fn per call site
+(sync arg → one kernel, async arg → per-element instantiation) — is
+the piece that makes in-language HOFs match MapQ's native loops, and
+it retires clone_rebind/MapQ/FoldQ when it lands. Needs a design
+session before code.
+
+**Pending rulings encountered by the prototype:**
+- Unannotated `let mut res = []` in a MULTI-mut loop: the no-assign
+  arm's element tvar is unbound when the arm-tuple union forms →
+  `union.0` is a compile error. Annotation is the workaround.
+  (fuzz/pending-ruling/sync_multimut_union_tuple_ref.md)
+- Assignment in tail position is rejected (dead rebind) — currently
+  via the compiler backstop; a dedicated error would read better.
