@@ -55,7 +55,7 @@ run!(
         type Handle = { value: string };
         let make = |x: string| -> Handle { value: x };
         let get_name = |h: Handle| h.value
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Interface without abstract types (regression test - should still work)
 run!(
@@ -180,7 +180,7 @@ run!(
             `Some(t) => t.value,
             `None => default
         }
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type in tuple
 run!(
@@ -251,7 +251,7 @@ run!(
             `Cons(x, rest) => x + sum(rest),
             `Nil => 0
         }
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types with ByRef
@@ -441,7 +441,7 @@ run!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Error: abstract type constraint violation - string doesn't satisfy Number
 // The constraint from type Box<'a: Number> should reject non-Number types
@@ -527,7 +527,7 @@ run!(
         type Box<'a> = { value: 'a };
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type instantiated with different concrete types
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
@@ -551,7 +551,7 @@ run!(
         type Box<'a> = { value: 'a };
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with constraint - use concrete type in interface
 // Note: Constrained type parameters in val declarations use a different syntax.
@@ -625,7 +625,7 @@ run!(
         let make = |a: 'a, b: 'b| -> Pair<'a, 'b> { first: a, second: b };
         let get_first = |p: Pair<'a, 'b>| -> 'a p.first;
         let get_second = |p: Pair<'a, 'b>| -> 'b p.second
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types in Map

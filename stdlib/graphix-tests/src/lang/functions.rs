@@ -429,7 +429,7 @@ const KIR_DYNCALL_HOF: &str = r#"
 run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
     Ok(Value::I64(26)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // A let-bound `helper` whose body is `array::fold` over a literal
 // (scalar i64 -> i64), called by `outer`. #203 Phase C discovers the
@@ -616,7 +616,7 @@ const LAMBDAMATCH4: &str = r#"
 run!(lambdamatch4, LAMBDAMATCH4, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LAMBDAMATCH5: &str = r#"
 {
@@ -1044,7 +1044,7 @@ const NESTED_TAIL_LOOP: &str = r#"
 // tail loop — the node-walk completes depth 500 with the same value.
 run!(nested_tail_loop, NESTED_TAIL_LOOP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(125251)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // An `-> i64` rtype annotation must reject an error-producing arm.
 // This compiled for a while: `Type::union` collapsed two DISTINCT
