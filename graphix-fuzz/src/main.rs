@@ -101,6 +101,38 @@ async fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
     let reactive = args.iter().any(|a| a == "--reactive");
     args.retain(|a| a != "--reactive");
+    // Generated/mutated programs freely call `sys::fs::write_all` &
+    // co. with arbitrary short strings as paths — executed with an
+    // inherited cwd they litter the campaign launch directory (the
+    // repo root filled with files named `bar`, `hello world`, `,` …).
+    // The per-subject WORKER processes (program on stdin, no path
+    // args) work from a fresh tempdir instead; campaigns spawn one
+    // per subject, so this covers fuzz/generate/minimize soaks. For
+    // the single-file commands (`check`/`run`) the file argument is
+    // made absolute first, then the same sandbox applies. Leaked on
+    // `process::exit` (worker arms skip drops) — that's /tmp.
+    let sandbox_cwd = match args.get(1).map(String::as_str) {
+        Some(
+            "check-one" | "detcheck-one" | "selfcheck-one" | "minimize-one"
+            | "gen-check" | "regress",
+        ) => true,
+        Some("check" | "run") => {
+            if let Some(f) = args.get_mut(2) {
+                if let Ok(abs) = std::fs::canonicalize(&*f) {
+                    *f = abs.to_string_lossy().into_owned();
+                }
+            }
+            true
+        }
+        _ => false,
+    };
+    let _cwd_guard = if sandbox_cwd {
+        let d = tempfile::tempdir()?;
+        std::env::set_current_dir(d.path())?;
+        Some(d)
+    } else {
+        None
+    };
     let gen_one = move |rng: &mut graphix_fuzz::mutate::Rng| {
         if reactive {
             graphix_fuzz::generate::reactive::gen_reactive_program(rng)
