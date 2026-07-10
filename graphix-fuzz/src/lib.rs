@@ -213,7 +213,7 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
     .await
     {
         Ok(c) => c,
-        Err(e) => return Some(format!("runtime init failed: {e}")),
+        Err(e) => return Some(format!("runtime init failed: {e:?}")),
     };
     let text = format!(
         "{}{}{{ mod test; test::result }}",
@@ -288,7 +288,7 @@ pub async fn run_program_with_stats(
         Ok(c) => c,
         Err(e) => {
             return (
-                Outcome::RuntimeErr(format!("runtime init failed: {e}")),
+                Outcome::RuntimeErr(format!("runtime init failed: {e:?}")),
                 FusionStats::default(),
             );
         }

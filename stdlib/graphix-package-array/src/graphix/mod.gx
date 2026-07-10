@@ -57,12 +57,17 @@ let flat_map = |a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>] throws 'e| -> Arra
   res
 };
 
+// find/find_map track a bool `found` flag rather than matching the
+// Option accumulator: a select whose scrutinee is Option<'a> with 'a
+// RIGID (inside this def's gate) trips the dead-arm residue analysis
+// (see fuzz/pending-ruling — select-over-rigid-Option corner).
 let find = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e sync {
   let mut res: Option<'a> = null;
+  let mut found = false;
   for v in a {
-    select res {
-      null as _ => select f(v) { true => res = v, false => null },
-      _ => null
+    select found {
+      false => select f(v) { true => { res = v; found = true }, false => null },
+      true => null
     }
   };
   res
@@ -70,8 +75,12 @@ let find = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws '
 
 let find_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e sync {
   let mut res: Option<'b> = null;
+  let mut found = false;
   for v in a {
-    select res { null as _ => res = f(v), _ => null }
+    select found {
+      false => select f(v) { null as _ => null, x => { res = x; found = true } },
+      true => null
+    }
   };
   res
 };
