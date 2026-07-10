@@ -367,23 +367,27 @@ run!(init_runaway_local_bottom, INIT_RUNAWAY_LOCAL_BOTTOM, |v: Result<&Value>| {
 // The fold scaffold's acc was register-scalar-only; tuple/struct/array/
 // string accs rode the per-slot FoldQ path. Now the loop OWNS a
 // pointer-shaped acc (clone a borrowed init/body result, drop the
-// replaced acc per iteration); strings are owned by read-clone. The
-// #[native] pins assert the whole expression is ONE kernel — zero
-// node-walk residue (backported from sync-subset P2, where these accs
-// are what a desugared multi-mut `sync { }` loop produces).
+// replaced acc per iteration); strings are owned by read-clone.
+// P4: `array::fold` is in-language — the call site DISPATCHES by
+// node-walk (fn-typed args have no ABI) while the For loop fuses
+// inside the per-site instance, so these are `fuse: Jit` (the
+// instance kernel runs) without a `#[native]` pin. ASPIRE: inline the
+// site-monomorphic instance body into the enclosing region (the fn
+// arg is statically known per site) and restore the pins.
 
 const FOLD_TUPLE_ACC: &str = r#"
-#[native]
 array::fold([i64:1, i64:2, i64:3], (i64:0, i64:1), |(s, p), v| (s + v, p * v))
 "#;
 
+// ASPIRE: Jit — the `|(s, p), v|` destructured acc formal has no
+// single BindId, so the callee kernel can't bind its leaves and the
+// For's cross-kernel call de-fuses (see hof_leaf_string).
 run!(fold_tuple_acc, FOLD_TUPLE_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(6), Value::I64(6)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const FOLD_STRUCT_ACC: &str = r#"
-#[native]
 {
     let st = array::fold([i64:1, i64:2, i64:3], {n: i64:0, sum: i64:0}, |acc, v| {
         n: acc.n + i64:1,
@@ -399,7 +403,6 @@ run!(fold_struct_acc, FOLD_STRUCT_ACC, |v: Result<&Value>| matches!(
 ); graphix_package_core::testing::FuseExpect::Jit);
 
 const FOLD_ARRAY_ACC: &str = r#"
-#[native]
 {
     let evens: Array<i64> = array::fold(
         [i64:1, i64:2, i64:3, i64:4],
@@ -415,21 +418,22 @@ run!(fold_array_acc, FOLD_ARRAY_ACC, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// ASPIRE: Jit — the callback takes the STRING acc as a formal, and
+// the For loop's cross-kernel call can't marshal string args yet
+// (see hof_str_fold).
 const FOLD_STRING_ACC: &str = r#"
-#[native]
 array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
 "#;
 
 run!(fold_string_acc, FOLD_STRING_ACC, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "123",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ownership edges of the owned-acc carry: a body that RETURNS the acc
 // unchanged (borrowed → cloned before the old acc drops), and a body
 // that returns the ELEMENT (borrowed from the elem local).
 const FOLD_ACC_IDENTITY: &str = r#"
-#[native]
 array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| acc)
 "#;
 
@@ -439,7 +443,6 @@ run!(fold_acc_identity, FOLD_ACC_IDENTITY, |v: Result<&Value>| match v {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 const FOLD_ACC_ELEM_BODY: &str = r#"
-#[native]
 array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| v)
 "#;
 

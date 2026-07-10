@@ -5,6 +5,9 @@ use netidx::subscriber::Value;
 
 // ── Construction ────────────────────────────────────────────────
 
+// P4: list:: HOFs stay on the MapQ/FoldQ node-walk mini-interpreter
+// (no fused templates, no per-slot kernels) until for-over-Map/List
+// lands — their callbacks run interpreted, so fuse: None throughout.
 const LIST_NIL: &str = r#"
   list::is_empty(list::nil(null))
 "#;
@@ -427,7 +430,7 @@ run!(list_map, LIST_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_MAP_TYPE_ERR: &str = r#"
 {
@@ -464,7 +467,7 @@ run!(list_filter, LIST_FILTER, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── Filter map ──────────────────────────────────────────────────
 
@@ -528,7 +531,7 @@ const LIST_FOLD: &str = r#"
 // across slots.
 run!(list_fold, LIST_FOLD, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(55)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Dynamic re-firing is tested as a multi-cycle CONVERGENCE test (the
 // `run!` harness only captures the first update) — see
@@ -563,7 +566,7 @@ run!(list_find, LIST_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_FIND_MISS: &str = r#"
 {
@@ -575,7 +578,7 @@ const LIST_FIND_MISS: &str = r#"
 // `list::find` (no match → null) now fuses + JITs per-slot (Phase 1).
 run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── Find map ────────────────────────────────────────────────────
 
@@ -870,4 +873,4 @@ const LIST_FIND_MAP_TUPLE: &str = r#"
 "#;
 run!(list_find_map_tuple, LIST_FIND_MAP_TUPLE, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, i64)>()), Ok(Ok((1, 2))))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

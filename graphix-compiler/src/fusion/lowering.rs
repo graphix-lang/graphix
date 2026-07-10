@@ -748,11 +748,15 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         return None;
     }
     let _building = BuildingGuard(ec.fusion.building.clone(), lid);
-    // Translate each lambda formal arg into a kernel input slot. The
-    // arg's source-level name (from `FnArgKind`) becomes the kernel
-    // input slot name so the body's `Ref` lookups resolve (formals
-    // bind their ids in the lambda Node, outside the body, so there
-    // is no BindId to key by — name resolution is the contract).
+    // Translate each lambda formal arg into a kernel input slot. Slots
+    // carry the formal's PATTERN BindId when the pattern is a single
+    // name — body `Ref`s resolve id-first, which is load-bearing when
+    // the instance was resolved through a DECLARED fn type whose
+    // parameter names are documentation (`f: fn(acc: 'b, x: 'a)` in a
+    // .gxi) and differ from the callback literal's own names
+    // (`|acc, v| …` — the body's `Ref(v)` never matches slot name
+    // "x"). The FnArgKind name still names the slot for by-name
+    // resolution of destructured formals (no single id).
     let typ = g.typ();
     let n_formal = typ.args.len();
     let mut inputs: Vec<(ArcStr, RegionInputKind, Option<BindId>)> =
@@ -760,7 +764,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // The frozen kernel-ABI slot type of each formal, kept for the
     // recursive-self-call ABI check below (#21).
     let mut formal_kts: Vec<Type> = Vec::with_capacity(n_formal);
-    for fa in typ.args.iter() {
+    for (i, fa) in typ.args.iter().enumerate() {
         let name = match &fa.kind {
             FnArgKind::Positional { name: Some(n) } => n.clone(),
             FnArgKind::Labeled { name, .. } => name.clone(),
@@ -772,7 +776,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             &arg_typ,
         )?;
         let kind = type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone())?;
-        inputs.push((name, kind, None));
+        let id = g.args().get(i).and_then(|p| p.single_bind_id());
+        inputs.push((name, kind, id));
         formal_kts.push(kt);
     }
     // Closure conversion: every binding the body references but

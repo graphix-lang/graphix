@@ -3529,7 +3529,6 @@ pub fn emit_for_node<R: Rt, E: UserEvent>(
     };
     let owned = node_composite_source(&node.iter.node) == CompositeSource::Owned;
     let arr = node.iter.node.emit_clif(cx)?;
-    let src_inv = node_loop_invariant_ref(cx, &node.iter.node);
     scaffold_::emit_fold_loop(
         cx,
         scaffold_::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
@@ -3545,9 +3544,18 @@ pub fn emit_for_node<R: Rt, E: UserEvent>(
         |cx| node.init.node.emit_clif(cx),
         |cx| node.body.emit_clif(cx),
     )
-    .map(|(r, mut flags)| {
-        if src_inv {
-            flags.set_src_invariant();
+    .map(|(r, flags)| {
+        // Coarse sequential firing: a captured external the body reads
+        // fires the loop (the node-walk re-runs the whole loop with
+        // fired delivery on any input event) — fold each ext feeder's
+        // STALE into the slots-word. Discovery made every
+        // body-consumed binding a param or region-local, so an env
+        // miss is a synthetic id — skip it.
+        for id in node.ext_refs() {
+            if let Some(v) = cx.env.lookup_by_id(*id).map(|l| l.vv.disc) {
+                let d = cx.b.use_var(v);
+                flags.fold_stale(cx, d);
+            }
         }
         flags.apply(cx, r, &[arr.disc])
     })
@@ -3971,10 +3979,22 @@ pub(crate) fn emit_ref_node(
     let name = ref_local_name(spec)
         .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
     let (vv, kind) = {
+        if cx.env.lookup(id, name).is_none()
+            && std::env::var_os("GXDBG_REFMISS").is_some()
+        {
+            eprintln!(
+                "REFMISS `{name}` id={id:?} locals={:?}",
+                cx.env
+                    .locals
+                    .iter()
+                    .map(|l| (l.name.as_str(), l.bind_id))
+                    .collect::<Vec<_>>()
+            );
+        }
         let l = cx
             .env
             .lookup(id, name)
-            .ok_or_else(|| anyhow!("emit_clif: undefined local `{name}`"))?;
+            .ok_or_else(|| anyhow!("emit_clif: undefined local `{name}` ({id:?})"))?;
         (l.vv, l.kind)
     };
     let disc = cx.b.use_var(vv.disc);
@@ -8089,8 +8109,19 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Variant)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)));
+    // STRICT call semantics: the node-walk dispatches only when every
+    // arg has a value, so a TAINTED (missing/bottomed) arg bottoms the
+    // CALL — even if the callee never consumes it. Accumulate arg
+    // taint and OR it into the result disc below (the old
+    // taint-per-consumption forwarding let a callee that ignored a
+    // bottomed arg recover where the node-walk never dispatched).
+    let mut arg_taint = cx.b.ins().iconst(types::I64, 0);
     for s in order {
         let cv = emit_slot(cx, s)?;
+        {
+            let t = cx.b.ins().band_imm(cv.disc, TAINT);
+            arg_taint = cx.b.ins().bor(arg_taint, t);
+        }
         if let LambdaCallSlot::Arg(n, _) = s {
             if node_composite_source(n) == CompositeSource::Owned {
                 match kernel_abi::abi_kind(reg, s.typ()) {
@@ -8218,8 +8249,9 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // Owned-arg drops belong to the CALL path (the trip path never
     // marshalled), then meet the trip placeholder at the merge.
     emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
+    let strict_disc = cx.b.ins().bor(result.disc, arg_taint);
     cx.b.ins()
-        .jump(dmerge, &[BlockArg::Value(result.disc), BlockArg::Value(result.payload)]);
+        .jump(dmerge, &[BlockArg::Value(strict_disc), BlockArg::Value(result.payload)]);
     cx.b.switch_to_block(dmerge);
     cx.b.seal_block(dmerge);
     let disc = cx.b.block_params(dmerge)[0];

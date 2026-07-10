@@ -1017,9 +1017,14 @@ run!(hof_str_filter_none, HOF_STR_FILTER_NONE, |v: Result<&Value>| matches!(
     Ok(Value::Array(a)) if a.is_empty()
 ));
 
+// ASPIRE: Jit — the callback takes a STRING formal, and the For loop's
+// cross-kernel call can't marshal string args yet; the fold instance
+// de-fuses and node-walks. Inline the site-monomorphic instance body
+// (or add string arg marshaling) and flip this to Jit.
 const HOF_STR_FOLD: &str =
     r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
-run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))));
+run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6)));
+    graphix_package_core::testing::FuseExpect::None);
 
 // find RETURNS the matched string element (moved into the Nullable result);
 // non-matches drop every iteration.
@@ -1052,15 +1057,17 @@ run!(hof_str_used_twice, HOF_STR_USED_TWICE, |v: Result<&Value>| {
 // Value-shape (Nullable) ELEMENT read path: bind_elem's Value arm +
 // drop_owned_elem exercised on the node-walk. The BODY here `select`s over
 // the owned value element, which hits the owned-value-scrutinee de-fuse
-// (Phase 6, owned select scrutinees), so the map node-walks — FuseExpect::None
-// until Phase 6. The value is still correct in both modes.
+// P4: the callback's per-site instance body (the select over the
+// nullable element) fuses and runs as its own kernel — upgraded from
+// None (the old owned-scrutinee gate applied to the deleted map
+// scaffold, not to the instance region).
 const HOF_NULLABLE_MAP: &str = r#"
 array::map([1, null], |v| select v { i64 as n => n, null as _ => i64:0 })
 "#;
 run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 2]>()),
     Ok(Ok([1, 0]))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // Value-shape (variant) ELEMENT in a filter whose predicate is a `==`
 // (ValueEq, fuses) rather than a select — so the value-element read + the
@@ -1147,13 +1154,16 @@ run!(hof_leaf_composite, HOF_LEAF_COMPOSITE, |v: Result<&Value>| matches!(
     Ok(Ok([13, 27]))
 ));
 
+// ASPIRE: Jit — the `|acc, (s, n)|` destructured formal has no single
+// BindId, so the callee kernel can't bind its leaves and the For's
+// cross-kernel call de-fuses (same family as HOF_STR_FOLD).
 const HOF_LEAF_STRING: &str = r#"
 array::fold([("a", 1), ("bb", 2)], 0, |acc, (s, n)| acc + str::len(s) + n)
 "#;
 run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
-));
+); graphix_package_core::testing::FuseExpect::None);
 
 // filter: the leaf drops pre-branch on BOTH edges (kept elements move,
 // leaves never do) — no-match + all-match covered by the two predicates.

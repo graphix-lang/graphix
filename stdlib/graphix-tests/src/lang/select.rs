@@ -564,7 +564,7 @@ const GATED_WINDOW_FOLD: &str = r#"
     0 => never(),
     _ => win
   };
-  let total = #[native] array::fold(w, 0.0, |a, x| a + x);
+  let total = array::fold(w, 0.0, |a, x| a + x);
   select count(total) {
     4 => total,
     _ => never()

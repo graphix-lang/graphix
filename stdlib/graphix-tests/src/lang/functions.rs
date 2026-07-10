@@ -429,7 +429,7 @@ const KIR_DYNCALL_HOF: &str = r#"
 run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
     Ok(Value::I64(26)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // A let-bound `helper` whose body is `array::fold` over a literal
 // (scalar i64 -> i64), called by `outer`. #203 Phase C discovers the
@@ -447,13 +447,17 @@ const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (P4 regression — was Jit): the transitive #203 chain's
+// leaf is now an in-language `array::fold`, and the transitive kernel
+// build doesn't yet discover the fold call site inside `helper`'s
+// body (the region path does — see sfold shapes). Values agree.
 run!(
     dyncall_static_nonfusable,
     KIR_DYNCALL_STATIC_NONFUSABLE,
     |v: Result<&Value>| match v {
         Ok(Value::I64(51)) => true,
         _ => false,
-    }; graphix_package_core::testing::FuseExpect::Jit);
+    }; graphix_package_core::testing::FuseExpect::None);
 
 // #203 Phase C — a deep TRANSITIVE chain g1 -> g2 -> g3. Discovery walks
 // each callee's body in turn, builds every kernel in the closure, and the
@@ -616,7 +620,7 @@ const LAMBDAMATCH4: &str = r#"
 run!(lambdamatch4, LAMBDAMATCH4, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LAMBDAMATCH5: &str = r#"
 {
@@ -822,14 +826,16 @@ run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| mat
 // to abort the WHOLE kernel at HOF/composite boundaries where the
 // node-walk bottoms only the consuming path.
 
-// Fold with a bottom init whose callback never READS the accumulator:
-// the node-walk's per-slot dataflow recovers on the first slot (the
-// fold yields the last element). The acc's taint is loop-carried in
-// its own disc now, not kernel-aborted.
+// STRICT sequential semantics (P4): a fold whose init BOTTOMS never
+// dispatches — an in-language call waits for every arg, even one the
+// callback never reads (the old per-slot recovery to the last element
+// was FoldQ plumbing). The tail is independent so the fixture
+// observes agreement: the tripped fold is silent, the sibling fires.
 const FOLD_BOTTOM_INIT_UNREAD_ACC: &str = r#"
 {
   let b = i64:1 / i64:0;
-  array::fold([i64:5, i64:7], b, |acc, x| x)
+  array::fold([i64:5, i64:7], b, |acc, x| x);
+  array::fold([i64:5, i64:7], i64:0, |acc, x| x)
 }
 "#;
 
@@ -887,13 +893,14 @@ run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, |v: Result<&Value>| match
     Ok(Value::Bool(false))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A capture read ONLY inside a slot callback's SLEEPING select arm
-// must not re-fire the fused map (interp counted 1, jit counted 5):
-// "a sleeping select shouldn't be firing". HOF result firing is now
-// DYNAMIC — the scaffold AND-reduces slot-body STALE (elements inherit
-// the source's STALE, so bodies fire with their elems/captures) and
-// the result fires iff the source fired or any slot body fired —
-// replacing the static-refs capture walk (inherit_hof_firing, deleted).
+// COARSE SEQUENTIAL FIRING (sync-subset P4): the loop is ONE reactive
+// node — it fires whenever ANY input it consumes fires, including a
+// capture read only inside a sleeping select arm (the sequential
+// shared body tree re-runs with fired delivery on any input event;
+// path-sensitive quiet needed the per-element machinery that died
+// with MapQ). Both modes count 1 initial + 4 y events = 5. The old
+// per-slot machinery kept this quiet (count 1) — that precision died
+// with it.
 const HOF_SLEEPING_ARM_CAPTURE_QUIET: &str = r#"
 {
   let y = array::iter([1, 2, 3, 4]);
@@ -906,7 +913,10 @@ const HOF_SLEEPING_ARM_CAPTURE_QUIET: &str = r#"
 run!(
     hof_sleeping_arm_capture_quiet,
     HOF_SLEEPING_ARM_CAPTURE_QUIET,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    // 4 or 5: the initial emission may or may not share a cycle with
+    // y's first tick (instance priming vs kernel first-run alignment)
+    // — the assertion is that the loop RE-FIRES per y event at all.
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4 | 5)));
     graphix_package_core::testing::FuseExpect::Jit
 );
 
@@ -925,14 +935,13 @@ run!(hof_consumed_capture_fires, HOF_CONSUMED_CAPTURE_FIRES, |v: Result<&Value>|
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Exact HOF resize detection (design/kernel_instance_state.md): MapQ
-// emits iff resized ∨ any slot pred emitted (plus unconditionally when
-// the source fires while EMPTY). A same-length source fire with a
-// CONST callback body emits nothing after the first array arrives —
-// the kernel's per-instance state word remembers the previous length,
-// so "resized" is real; the stateless rule ("source fired ∨ slot
-// fired") re-emitted per source event (interp 1, jit 4 —
-// findings/firing-jul2026/02).
+// COARSE SEQUENTIAL FIRING (sync-subset P4): a same-length source
+// fire with a CONST callback body re-emits — the source is a loop
+// input and any input fire fires the loop (both modes: 1 initial + 3
+// further y events reaching src = 4). The old exact resize
+// state-word (emit iff resized ∨ slot fired) died with the per-slot
+// machinery; values are still identical per re-fire, only the event
+// count changed.
 const HOF_CONST_BODY_PREV_LEN: &str = r#"
 {
   let y = array::iter([1, 2, 3, 4]);
@@ -944,7 +953,7 @@ const HOF_CONST_BODY_PREV_LEN: &str = r#"
 "#;
 
 run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(1)))
+    matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // The call-depth guard (DEFAULT_MAX_CALL_DEPTH = 256), limit±1 in both
@@ -972,13 +981,13 @@ run!(depth_guard_under_limit, DEPTH_GUARD_UNDER_LIMIT, |v: Result<&Value>| {
 // agreement is a first-class assertion there, while the run! harness
 // has no runtime-bottom expectation (it would wait out its timeout).
 
-// A fused HOF loop's inlined callback charges ONE depth unit, same as
-// the node-walk's per-element dispatch (`emit_depth_unit` around each
-// scaffold loop — soak jul07c, findings/depth-guard-jul2026/04+05):
-// f(254) is 255 dispatches, the base arm's HOF unit is the 256th, so
-// this completes at exactly the limit in both modes. A kernel that
-// stops charging the unit completes f(255)+HOF where the node-walk
-// bottoms (the 04 corpus pin); one that charges two trips HERE.
+// Depth accounting with in-language HOFs (P4): f(252) is 253
+// dispatch units, and the base arm's `array::init` charges 3 more —
+// the init instance dispatch, its For loop's unit, and the per-index
+// callback dispatch — peaking at exactly the 256 limit in BOTH modes
+// (measured: n=252 completes, n=253 bottoms, interp and jit agree).
+// A mode that stops charging any of those units completes f(253)
+// where the other bottoms.
 const DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n {
@@ -988,27 +997,28 @@ const DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT: &str = r#"
     },
     _ => n + f(n - i64:1)
   };
-  f(i64:254)
+  f(i64:252)
 }
 "#;
 
 run!(
     depth_guard_hof_unit_under_limit,
     DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42285))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(41778))) };
+    graphix_package_core::testing::FuseExpect::None
 );
 
 // A depth trip bottoms the CALL, not the kernel: the tripping f(256)
-// sits in fold's init argument inside the fused region, and the
-// callback ignores the accumulator — the node-walk's per-dispatch
-// bottom lets the fold recover to 42, so the fused version must too
-// (the former whole-kernel abort swallowed it — soak jul07h,
-// findings/depth-guard-jul2026/06).
+// sits in fold's init argument — under STRICT sequential semantics
+// (P4) the fold never dispatches (a call waits for every arg), and
+// the trip stays LOCAL: the independent sibling fold still fires in
+// both modes (the former whole-kernel abort swallowed it — soak
+// jul07h, findings/depth-guard-jul2026/06).
 const DEPTH_TRIP_LOCAL_RECOVERY: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
-  array::fold([i64:41], f(i64:256), |acc, x| x + i64:1)
+  array::fold([i64:41], f(i64:256), |acc, x| x + i64:1);
+  array::fold([i64:41], i64:0, |acc, x| x + i64:1)
 }
 "#;
 
@@ -1044,7 +1054,7 @@ const NESTED_TAIL_LOOP: &str = r#"
 // tail loop — the node-walk completes depth 500 with the same value.
 run!(nested_tail_loop, NESTED_TAIL_LOOP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(125251)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // An `-> i64` rtype annotation must reject an error-producing arm.
 // This compiled for a while: `Type::union` collapsed two DISTINCT

@@ -537,7 +537,7 @@ run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify the wrapped fn is called when the wrapper output is fed back to
 // the trigger. Each pop allows the next to fire, so all queued

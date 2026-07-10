@@ -197,9 +197,11 @@ run!(struct_acc, STRUCT_ACC, |v: Result<&Value>| matches!(
     Ok(Value::I64(306))
 ); FuseExpect::Jit);
 
-// iterating a computed array — the desugared fold's source is itself a HOF
+// iterating a computed array — the desugared fold's source is itself a
+// HOF. P4: the inner `array::map` call site dispatches by node-walk
+// (in-language HOF), so the block is not one kernel — no #[native]
+// pin; the map instance's loop and the outer for both fuse.
 const RUNTIME_ITER: &str = r#"
-#[native]
 sync {
   let mut res = 0;
   for v in array::map([1, 2, 3], |x| x * 2) { res = res + v };

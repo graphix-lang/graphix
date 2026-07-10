@@ -565,45 +565,16 @@ pub fn push_field(
 /// slot values are the helper-safe placeholders, masked at every
 /// helper boundary.
 ///
-/// STALE (firing): the node-walk's HOF aggregation is SLOT-DRIVEN
-/// (MapQ::update: emit iff resized or any slot pred emitted, and all
-/// slots determined; plus an unconditional emit when the source fires
-/// while EMPTY). With a per-instance state word (a top-level HOF in
-/// the root body — `BodyCx::claim_state_word` — or a NESTED one whose
-/// source is loop-invariant, see [`Self::src_invariant`]) `apply`
-/// implements that rule EXACTLY: the word remembers the previous
-/// source length, so "resized" is real and a same-length source fire
-/// with all-quiet (const-callback) slots stays quiet, matching the
-/// node-walk (fuzz/triage-fuzzer-v2/firing_000007; the nested-
-/// invariant case is findings/firing-jul2026/03). Without a word (a
-/// nested HOF over a loop-VARIANT source — an element, an in-loop
-/// let) the stateless approximation stands — the result fires iff the
-/// SOURCE fired or ANY slot body fired — a deliberate residual
-/// duplicate-fire, never a wrong value (suppressing source-only fires
-/// without length memory would under-fire the
-/// shrink-with-unchanged-prefix case: no slot fires but the shorter
-/// array MUST emit).
+/// STALE (firing): COARSE SEQUENTIAL (sync-subset P4) — the loop is
+/// ONE reactive node and fires iff ANY input it consumes fired (the
+/// source array, the init, a captured external, or a body
+/// evaluation). The node-walk `For` re-runs the whole loop with fired
+/// delivery on any input event, and the kernel agrees. The old
+/// per-slot precision (exact resize state-words, the chain-only fold
+/// rule) died with the per-slot machinery.
 pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
-    /// The source's slot count (array length; `array::init`'s clamped
-    /// `n`) — set by each loop emitter, consumed by `apply`'s exact
-    /// resize detection. `None` disables exactness (approximation).
-    len: Option<ClifValue>,
-    /// Fold only: the firing channel is the RESULT's own disc (the
-    /// loop-carried acc disc — the kernel mirror of the node-walk's
-    /// slot chain, where firing propagates only through actual acc
-    /// consumption), not the `stale` slots-word. See
-    /// [`Self::result_is_firing`].
-    result_is_firing: bool,
-    /// The source is LOOP-INVARIANT w.r.t. every ENCLOSING scaffold
-    /// loop (`emit::node_loop_invariant_ref`) — a nested HOF may then
-    /// claim a state word despite being inside a loop: every iteration
-    /// observes the SAME source, so one shared word tracks one length
-    /// and the exact resize rule holds. Set by the HOF's `emit_clif`
-    /// (which has the source Node); irrelevant at the top level, where
-    /// the plain claim already succeeds.
-    src_invariant: bool,
 }
 
 impl SlotFlags {
@@ -615,38 +586,19 @@ impl SlotFlags {
         // All-stale start: an empty loop contributes no firing.
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags {
-            taint,
-            stale,
-            len: None,
-            result_is_firing: false,
-            src_invariant: false,
-        }
+        SlotFlags { taint, stale }
     }
 
-    /// Mark the source loop-invariant — see [`Self::src_invariant`].
-    pub fn set_src_invariant(&mut self) {
-        self.src_invariant = true;
-    }
-
-    /// Fold's firing channel is its loop-carried acc disc — the exact
-    /// kernel mirror of the node-walk's slot CHAIN: a slot's output
-    /// fires only if its evaluation fired (its element, or an acc a
-    /// prior slot fed), so a closed callback (`|a, b| 100`) never
-    /// re-fires the chain from an init/element fire alone, while an
-    /// acc-consuming one propagates the init's fire through every
-    /// slot (#9, soak jul04 — both directions were hit: the slots-word
-    /// under-counted resize re-fires and over-counted init-only ones).
-    /// Calling this makes `apply` read the firing bit from the result
-    /// disc it is handed instead of the accumulated slots-word.
-    pub fn result_is_firing(&mut self) {
-        self.result_is_firing = true;
-    }
-
-    /// Record the source's slot count for `apply`'s exact resize
-    /// detection. Every loop emitter calls this once, before the loop.
-    pub fn set_len(&mut self, len: ClifValue) {
-        self.len = Some(len);
+    /// AND a disc's STALE into the slots-word WITHOUT touching taint —
+    /// for loop INPUTS (init, captured externals) whose firing must
+    /// fire the loop but whose taint propagates through normal value
+    /// flow (a bottom init poisons the fold only while the body
+    /// consumes the acc).
+    pub fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
+        let cur = cx.b.use_var(self.stale);
+        let sb = cx.b.ins().band_imm(disc, STALE);
+        let n = cx.b.ins().band(cur, sb);
+        cx.b.def_var(self.stale, n);
     }
 
     /// Fold one slot's disc into the accumulators (inside the loop).
@@ -661,23 +613,20 @@ impl SlotFlags {
         cx.b.def_var(self.stale, n);
     }
 
-    /// Finish the HOF's result disc (after the loop): OR the slot
+    /// Finish the loop's result disc (after the loop): OR the slot
     /// taint (plus each source's TAINT), and set the firing bit.
     ///
-    /// With a state word available (this runs AFTER the loop closes,
-    /// so a top-level HOF claims while a nested one inside another
-    /// loop is refused — exactly the per-slot-memory boundary), the
-    /// firing rule is MapQ's, exact:
-    ///   fires = resized ∨ any-slot-fired ∨ (source-fired ∧ empty)
-    /// where `resized` compares the remembered previous length
-    /// (stored as len+1; 0 = no previous, so a fresh instance's first
-    /// real array always counts as resized — which is also MapQ's
-    /// unconditional emit when the source first arrives). The record
-    /// is skipped while any source is TAINTED: the placeholder's
-    /// length is phantom and the node-walk's slot machinery makes no
-    /// progress on a missing input.
-    ///
-    /// Without a word: fires = source-fired ∨ any-slot-fired.
+    /// COARSE SEQUENTIAL FIRING (sync-subset P4): the loop is ONE
+    /// reactive node — it fires iff ANY input it consumes fired: the
+    /// source array, the init, a captured external the body reads
+    /// (all handed in via `srcs` / `fold_stale`), or any body
+    /// evaluation (the slots-word / the loop-carried chain disc).
+    /// This replaces the old per-slot precision (exact resize
+    /// state-words, the chain-only fold rule) — the sequential
+    /// node-walk re-runs the whole loop with fired delivery on any
+    /// input event, and the kernel must agree. Values may be
+    /// identical across a re-fire; dataflow fires on events, not
+    /// value changes.
     pub fn apply(
         &self,
         cx: &mut BodyCx,
@@ -686,86 +635,20 @@ impl SlotFlags {
     ) -> CompiledExpr {
         let t = cx.b.use_var(self.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
-        // STALE words (bit SET = quiet): the loop's slot accumulator,
-        // and the AND-fold over the sources. Source TAINT ORs into the
-        // result as before.
+        // STALE (bit SET = quiet): AND-fold the result's own chain
+        // disc, the slots-word, and every source — any fired input
+        // clears the bit. Source TAINT ORs into the result.
         let slots_word = cx.b.use_var(self.stale);
-        let mut src_word = cx.b.ins().iconst(types::I64, STALE);
-        let mut src_taint = cx.b.ins().iconst(types::I64, 0);
+        let mut quiet = cx.b.ins().band_imm(r.disc, STALE);
+        quiet = cx.b.ins().band(quiet, slots_word);
         for s in srcs {
             let ss = cx.b.ins().band_imm(*s, STALE);
-            src_word = cx.b.ins().band(src_word, ss);
+            quiet = cx.b.ins().band(quiet, ss);
             let st = cx.b.ins().band_imm(*s, TAINT);
-            src_taint = cx.b.ins().bor(src_taint, st);
+            r.disc = cx.b.ins().bor(r.disc, st);
         }
-        r.disc = cx.b.ins().bor(r.disc, src_taint);
-        // The firing channel: the slots-word for the map family, the
-        // result's own loop-carried disc for fold (the chain — see
-        // `result_is_firing`). Read it BEFORE the strip below.
-        let fired_word = if self.result_is_firing {
-            cx.b.ins().band_imm(r.disc, STALE)
-        } else {
-            slots_word
-        };
-        // Firing is AUTHORITATIVE from here: strip any STALE the result
-        // disc carried in and reassemble it from the rule below. Fold's
-        // result disc rides the LAST body evaluation's STALE; the map
-        // family hands a fresh STALE-clear disc in (no-op strip).
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
-        let exact = match self.len {
-            Some(len) => {
-                // A nested HOF with a loop-invariant source shares one
-                // word across the enclosing iterations — still exact
-                // (see `src_invariant`); otherwise in-loop claims are
-                // refused and the approximation below stands.
-                let claim = if self.src_invariant {
-                    cx.claim_state_word_loop_invariant()
-                } else {
-                    cx.claim_state_word()
-                };
-                claim.map(|off| (len, off))
-            }
-            None => None,
-        };
-        match exact {
-            None => {
-                // Approximation. Map family: fires = source-fired ∨
-                // any-slot-fired. Fold: the chain alone — a source fire
-                // that never propagated through the chain (closed
-                // callback, unchanged length) does NOT re-emit in the
-                // node-walk.
-                let sb = if self.result_is_firing {
-                    fired_word
-                } else {
-                    cx.b.ins().band(fired_word, src_word)
-                };
-                r.disc = cx.b.ins().bor(r.disc, sb);
-            }
-            Some((len, off)) => {
-                let sp = cx.state_ptr();
-                let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-                let lenp1 = cx.b.ins().iadd_imm(len, 1);
-                let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
-                let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
-                let recorded = cx.b.ins().select(valid, lenp1, stored);
-                cx.b.ins().store(MemFlags::trusted(), recorded, sp, off);
-                let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
-                let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
-                let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
-                let src_empty = cx.b.ins().band(src_fired, empty);
-                // resized: a grown array's new slots run under forced
-                // init in the node-walk (FoldQ primes each NEW slot with
-                // event.init = true), so even a closed callback fires
-                // there — the kernel re-runs every slot with no notion
-                // of "new", and this channel compensates.
-                let fires = cx.b.ins().bor(resized, slot_fired);
-                let fires = cx.b.ins().bor(fires, src_empty);
-                let quiet = cx.b.ins().iconst(types::I64, STALE);
-                let zero = cx.b.ins().iconst(types::I64, 0);
-                let sbit = cx.b.ins().select(fires, zero, quiet);
-                r.disc = cx.b.ins().bor(r.disc, sbit);
-            }
-        }
+        r.disc = cx.b.ins().bor(r.disc, quiet);
         r
     }
 }
@@ -908,13 +791,11 @@ where
         FoldAcc::Composite { .. } | FoldAcc::Str => types::I64,
     });
     // The acc's TAINT and STALE are LOOP-CARRIED in its own disc
-    // Variable — the node-walk's per-slot dataflow means a bottom init
-    // poisons the fold ONLY while the callback actually consumes the
-    // accumulator (`|acc, x| x` recovers on the first iteration;
-    // `|acc, x| acc + x` stays bottom). A kernel abort here diverged
-    // from the node-walk (fuzz/triage-fuzzer-v2/divergence_000003:
-    // init 1/0, callback ignoring acc — interp folds to the last
-    // element, jit bottomed). Each carry re-bases on the clean scalar
+    // Variable. (Historically a bottom init poisoned the fold only
+    // while the callback consumed the acc — FoldQ's per-slot dataflow;
+    // strict sequential semantics now bottom the whole loop via the
+    // sticky flags fold above, and the carry just keeps values
+    // coherent.) Each carry re-bases on the clean scalar
     // tag so only TAINT and STALE ride. STALE must ride too: rebasing
     // to the always-fired scalar tag made an acc-consuming body read
     // FIRED on every kernel run, so a fold over a quiet const array
@@ -923,14 +804,13 @@ where
     // re-caught by the trace oracle after the SlotFlags rework).
     let acc_disc_var = cx.b.declare_var(types::I64);
     let mut taint = SlotFlags::new(cx);
-    taint.set_len(len);
-    // Firing rides the acc carry (the chain), not the slots-word — the
-    // init's and each body's STALE are already loop-carried in
-    // `acc_disc_var`, and folding them into the slots-word as well
-    // over-fired: an init-only fire re-emitted a closed-callback fold
-    // the node-walk's chain (rightly) kept quiet (#9, soak jul04).
-    taint.result_is_firing();
     let init_cv = init(cx)?;
+    // Coarse firing: the init is a loop input — its fire fires the
+    // loop. Its TAINT is STICKY (strict sequential semantics:
+    // `let mut acc = ⊥` bottoms the loop — the node-walk `For`
+    // returns None on a missing init, and a bottom-arg CALL never
+    // dispatches).
+    taint.fold(cx, init_cv.disc);
     // A pointer-shaped acc is loop-OWNED from the start: a borrowed
     // init (a Ref to a kernel input / outer local) clones here. String
     // reads already clone; a scalar owns nothing.
@@ -1003,12 +883,19 @@ where
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    // The body's TAINT and STALE both ride the accumulator carry below —
-    // taint because a slot's bottomed body RECOVERS when a later
-    // callback never consumes the acc (folding it into the slots-word
-    // made it STICKY — soak finding corpus-generate/divergence_000021,
-    // 2026-07-04), and STALE because the carry IS fold's firing channel
-    // (`result_is_firing` above).
+    // The BODY EVALUATION's disc folds into the flags: its STALE is
+    // one more coarse firing source, and its TAINT is STICKY — a
+    // bottomed body evaluation bottoms the whole loop, matching the
+    // sequential node-walk's break (never-until-complete). This
+    // deliberately reverts the per-slot recovery pin (soak finding
+    // corpus-generate/divergence_000021 — a later acc-ignoring
+    // callback recovered under FoldQ's per-slot dataflow); sequential
+    // semantics ARE the semantics now. The INIT's taint still rides
+    // ONLY the carry (`d0` above, never the sticky word): a bottom
+    // init with a callback that never consumes the acc recovers on the
+    // first iteration in BOTH modes (the node-walk skip-binds the
+    // missing acc).
+    taint.fold(cx, new_acc.disc);
     cx.b.def_var(acc_var, new_pay);
     let base = acc.base_disc(cx);
     let t = cx.b.ins().band_imm(new_acc.disc, TAINT | STALE);

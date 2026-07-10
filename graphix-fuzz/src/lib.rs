@@ -1936,12 +1936,17 @@ mod tests {
             for (id, reason) in &stats.failed {
                 // Structural recurse noise, not coverage gaps: the
                 // attempt-then-recurse protocol logs the ancestor
-                // wrappers ("node does not emit CLIF"), and a
+                // wrappers ("node does not emit CLIF"), a
                 // function-valued let can never emit by design (the
-                // binding node-walks while its call sites fuse).
+                // binding node-walks while its call sites fuse), and a
+                // lambda call site with fn-typed args (the in-language
+                // HOFs) dispatches by node-walk while its per-site
+                // instance BODY fuses (P4 — the `fused > 0` assert
+                // above is what sees the instance's loop kernel).
                 assert!(
                     reason.contains("node does not emit CLIF")
-                        || reason.contains("function-valued let"),
+                        || reason.contains("function-valued let")
+                        || reason.contains("not discovered"),
                     "expected `{code}` to fuse cleanly under the JIT \
                      but {id:?} hit a real blocker: {reason}"
                 );

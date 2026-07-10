@@ -52,7 +52,11 @@ pub struct For<R: Rt, E: UserEvent> {
     /// The body's EXTERNAL references (its refs minus the ids the
     /// acc/elem patterns bind) — the loop re-runs when any of these
     /// fire, in addition to iter/init updates and the init view.
-    ext_refs: Vec<BindId>,
+    /// Filled LAZILY on first use: a compile-time walk ran before
+    /// `typecheck1`'s static resolution, so a callee instance's
+    /// CAPTURES (`CallSite::refs` → the resolved apply's refs) were
+    /// invisible and a capture-only event never re-ran the loop.
+    ext_refs: std::sync::OnceLock<Vec<BindId>>,
     /// Set by analysis pass 4 when the body has an ASYNC effect: the
     /// loop switches to per-index instantiation + re-evaluation (each
     /// element gets its OWN body instance so element-distinct async
@@ -113,16 +117,6 @@ impl<R: Rt, E: UserEvent> For<R, E> {
         // instance.
         let env = ctx.env.clone();
         let body = compile(ctx, flags, body.clone(), scope, top_id)?;
-        let mut refs = Refs::default();
-        body.refs(&mut refs);
-        acc_pattern.ids(&mut |id| refs.mark_bound(id));
-        elem_pattern.ids(&mut |id| refs.mark_bound(id));
-        let mut ext_refs: Vec<BindId> = Vec::new();
-        refs.with_external_refs(|id| {
-            if !ext_refs.contains(&id) {
-                ext_refs.push(id);
-            }
-        });
         let body_spec = body.spec().clone();
         Ok(Box::new(Self {
             spec,
@@ -133,7 +127,7 @@ impl<R: Rt, E: UserEvent> For<R, E> {
             elem_pattern,
             body,
             elem_t,
-            ext_refs,
+            ext_refs: std::sync::OnceLock::new(),
             async_body: AtomicBool::new(
                 std::env::var_os("GXDBG_FOR_FORCE_ASYNC").is_some(),
             ),
@@ -152,6 +146,28 @@ impl<R: Rt, E: UserEvent> For<R, E> {
     /// it at typecheck) — the emitter's element-shape authority.
     pub fn elem_typ(&self) -> &Type {
         &self.elem_t
+    }
+
+    /// The body's external references — the loop re-runs when any of
+    /// these fire, and the emitter folds their discs into the loop's
+    /// firing (coarse sequential firing: any consumed input fires the
+    /// loop). Computed on first use — after `typecheck1`'s static
+    /// resolution, so resolved callee instances contribute their
+    /// captures.
+    pub fn ext_refs(&self) -> &[BindId] {
+        self.ext_refs.get_or_init(|| {
+            let mut refs = Refs::default();
+            self.body.refs(&mut refs);
+            self.acc_pattern.ids(&mut |id| refs.mark_bound(id));
+            self.elem_pattern.ids(&mut |id| refs.mark_bound(id));
+            let mut ext: Vec<BindId> = Vec::new();
+            refs.with_external_refs(|id| {
+                if !ext.contains(&id) {
+                    ext.push(id);
+                }
+            });
+            ext
+        })
     }
 
     /// Analysis pass 4's marking hook — `&self` (the pass walks shared
@@ -297,12 +313,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
             Some(Value::Array(a)) => a.clone(),
             Some(_) | None => return None,
         };
-        let init = self.init.cached.as_ref()?.clone();
-        let ext_fired = self.ext_refs.iter().any(|id| event.variables.contains_key(id));
+        let ext_fired =
+            self.ext_refs().iter().any(|id| event.variables.contains_key(id));
         if self.async_body.load(Ordering::Relaxed) {
             // The async walk runs EVERY cycle (instances must pump
             // their own async arrivals, whose ids the For can't know);
             // emission is gated inside on something having fired.
+            let init = self.init.cached.as_ref()?.clone();
             return self.update_async(
                 ctx, event, &arr, init, ext_fired, iter_up, init_up,
             );
@@ -318,36 +335,48 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
             ctx.control.depth_pop();
             return None;
         }
-        let mut acc = init;
-        let mut out = Some(());
+        // STRICT sequential semantics: a BOTTOM init (`None` cached —
+        // a depth-tripped or errored init expression) bottoms the
+        // whole loop; `let mut acc = ⊥` can't proceed. The kernel
+        // agrees (the init's taint is sticky in the fold scaffold).
+        let Some(init) = self.init.cached.clone() else {
+            ctx.control.depth_pop();
+            return None;
+        };
+        let mut acc: Option<Value> = Some(init);
+        let mut out = true;
         for v in arr.iter() {
             // Cooperative interrupt poll — a wedged huge loop aborts to
             // bottom, mirroring the scaffold loop head's poll.
             if ctx.control.interrupted() {
-                out = None;
+                out = false;
                 break;
             }
-            self.acc_pattern.bind(&acc, &mut |id, v| {
-                ctx.rt.cached_mut().insert(id, v.clone());
-                event.variables.insert(id, v);
-            });
+            if let Some(a) = &acc {
+                self.acc_pattern.bind(a, &mut |id, v| {
+                    ctx.rt.cached_mut().insert(id, v.clone());
+                    event.variables.insert(id, v);
+                });
+            }
             self.elem_pattern.bind(v, &mut |id, v| {
                 ctx.rt.cached_mut().insert(id, v.clone());
                 event.variables.insert(id, v);
             });
             match self.body.update(ctx, event) {
-                Some(v) => acc = v,
+                Some(v) => acc = Some(v),
                 // NEVER-UNTIL-COMPLETE: a bottomed element (or a
                 // not-yet-arrived async value) suppresses the whole
-                // loop's emission this cycle.
+                // loop's emission this cycle. The kernel agrees — a
+                // body evaluation's taint is STICKY in the fold
+                // scaffold.
                 None => {
-                    out = None;
+                    out = false;
                     break;
                 }
             }
         }
         ctx.control.depth_pop();
-        out.map(|()| acc)
+        if out { acc } else { None }
     }
 
     fn spec(&self) -> &Expr {
