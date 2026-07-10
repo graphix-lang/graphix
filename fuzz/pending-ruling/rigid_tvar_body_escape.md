@@ -59,3 +59,19 @@ jul09c fuzz 000002 (`lp(500)` recursion per fold slot + throttle in a
 dead catch arm) flaps only on the loaded campaign machine and AGREEs
 deterministically unloaded — the known interrupt-grace wall-clock
 class (a8a2332e).
+
+## Residual: arith promotion hides the escape (jul10a fuzz 000002)
+
+`'a: Number |x: 'a| -> 'a x + f64:0.` PASSES the rigid gate: the mixed
+op's result is a fresh Number-constrained cell (the `ut` narrowing
+defers to typecheck1, which never runs at the def), so the acceptance
+check sees only an aliasable fresh cell — but at 'a=i64 the runtime
+promotes to F64 and the JIT (ret=i64) no-emits. Repro parked as
+rigid_arith_promotion_escape.gx (AGREEs only under --no-fusion...
+i.e. interp 5.5, jit nothing).
+
+Proposed direction: the arith op's typecheck0, when ONE operand is a
+RIGID tvar and the other a known concrete type, should require
+contains('a, other) as an ACCEPTANCE (rigid) check — "x + f64:0. under
+-> 'a demands f64 ⊆ 'a" — the promotion-aware version of the same
+contract. Needs Eric (interacts with the deferred ut design).
