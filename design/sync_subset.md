@@ -344,3 +344,42 @@ session before code.
   (fuzz/pending-ruling/sync_multimut_union_tuple_ref.md)
 - Assignment in tail position is rejected (dead rebind) — currently
   via the compiler backstop; a dedicated error would read better.
+
+## P4 design: per-callsite elaboration via param→lambda binding (2026-07-10)
+
+The blocker was: a call to a lambda PARAM (`f(v)` inside `let map2 =
+|a, f| sync { … f(v) … }`) can't statically resolve in a once-compiled
+generic body, so in-language HOFs are correct but compile zero
+kernels.
+
+The insight from the jul09c queuefn investigation: the compiler
+already elaborates per callsite — GXLambda instances are built PER
+CALLSITE with the site-resolved signature (#18), `try_static_resolve`
+already computes `fn_arg_targets` (fn-typed args that resolve to known
+lambdas — it's how MapQ pre-materializes callbacks), and the #203
+cascade already drives each bound instance's body through typecheck1
+so nested callsites resolve. The ONLY missing link: the instance's
+arg-pattern BindId for a statically-known fn arg is never entered in
+`ctx.bind_to_lambda`, so the body's `f(v)` fnode Ref finds nothing.
+
+P4 mechanism (small, because everything else exists):
+
+1. In `resolve_static`, after `setup_bind` builds the per-site
+   instance: for each statically-known fn-typed arg, look up the
+   instance's arg-pattern BindId (`GXLambda::args[i].single_bind_id()`)
+   and insert `bind_to_lambda[param_bind_id] = lambda_value` for the
+   duration of the instance's typecheck1 cascade.
+2. The cascade's body walk then statically resolves `f(v)` like any
+   lambda binding — per-instance BindIds are fresh per callsite, so
+   there is NO cross-site contamination by construction.
+3. Fusion needs no new code: it reads resolved CallSites. A sync
+   callback → the desugared fold's callback body inlines into the
+   scaffold loop (one kernel per HOF callsite). An async callback →
+   the effect lattice classifies the call impure → the sync block's
+   impure-fold path (P3).
+
+Then the stdlib HOFs rewrite in-language (`map`/`filter`/… as sync
+blocks over `for`), and MapQ/FoldQ/clone_rebind retire — the jul09c
+soak alone produced two clone_rebind-adjacent crashes (findings 35,
+38); the per-slot cloning of analysis-built trees is the standing
+hazard this ends.
