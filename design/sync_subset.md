@@ -404,3 +404,43 @@ as the queuefn clone finding, corpus #38). Next: read the discovery
 walker (`builtin_apply_sites` construction in try_fuse's analysis)
 and either extend its descent or re-key. `GXDBG_P4=1` prints the
 per-instance fusion outcome and the new failure entries.
+
+## P4 final scope (Eric's ruling, 2026-07-10): eliminate FoldQ too
+
+The finished product is the FULL repatriation — no MapQ, no FoldQ, no
+clone_rebind anywhere. Never-until-complete is the loop's emission
+contract (a loop whose body produced no value for some element — a
+bottom, or an async value not yet arrived — emits nothing this cycle;
+matches the old fold contract and the #219 loop-carried taint model).
+
+Architecture (one new invention, everything else is deletion):
+
+- **`For` node** (ExprKind::ForFold, desugar-internal): the sync-block
+  desugar keeps its assigned-set analysis but emits ForFold { iter,
+  init, acc_pattern, elem_pattern, body } instead of an array::fold
+  Apply. Compiled to a real Update node:
+  - Node-walk, SYNC body: sequential in-place loop — bind acc+elem,
+    re-run the ONE body tree per element (the GXLambda tail_loop
+    precedent). Sequential semantics are the semantics: a stateful
+    Sync builtin (count) in the body is SHARED across iterations —
+    that's what a loop means; the per-slot-counter behavior dies with
+    the machinery that produced it.
+  - Node-walk, ASYNC body: per-INDEX body instantiation — compile the
+    body expr fresh per element index on demand (the NORMAL compile
+    path; instances cached by index, never cloned), re-evaluate the
+    whole chain from init whenever any instance fires, emit only when
+    every element produced (never-until-complete).
+  - JIT: For::emit_clif drives emit_fold_loop with the P2 FoldAcc
+    machinery directly. Async bodies de-fuse naturally.
+- **stdlib**: map/filter/flat_map/filter_map/find/find_map/fold
+  written in graphix (sync blocks over for) in array.gx; existing .gxi
+  signatures unchanged. init/group/iter/sort/len/push/concat stay
+  Rust computation leaves. map::/list:: HOFs keep Rust impls this
+  pass (for-over-Map needs type-directed desugar — later).
+- **DELETE**: MapQ, FoldQ, MapFn, FoldFn, every per-HOF impl, analysis
+  preds, per-slot templates, fused_template, the map/filter/find/
+  flat_map scaffolds (emit_fold_loop + shared helpers remain), and the
+  ENTIRE clone_rebind method tree — nothing clones compiled nodes;
+  every instantiation is LambdaDef::init per (site, index).
+- Tree stays red mid-refactor by design; verification at the end:
+  suite + GRAPHIX_FUSE_AUDIT sweep + bench parity + fresh soak.
