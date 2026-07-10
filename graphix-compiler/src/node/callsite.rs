@@ -668,7 +668,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.resolved_ftype.as_ref(),
             self.top_id,
         )?;
-        let _ = rf.typecheck0(ctx, &mut self.arg_refs);
+        let swallowed = rf.typecheck0(ctx, &mut self.arg_refs);
+        if let Err(e) = &swallowed {
+            if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
+            }
+        }
         Ok(rf)
     }
 
