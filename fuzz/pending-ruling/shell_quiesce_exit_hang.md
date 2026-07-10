@@ -61,3 +61,15 @@ generate/divergence_000000: PACING — interp fires (0, 3600) AND
 i64:1 with array::find in an untaken arm. Deterministic. Suspects:
 select arm-wake/guard replay classes (the jul08l/n family) or a new
 rigid-era interaction. Not yet classified.
+
+## Third open jul10b item (morning triage)
+
+fuzz/divergence_000001: deterministic JIT no-emit. Shape: fold +
+`let rec lp = |n, a| select n { 0 => a, _ => (5, 6) }` — a "rec"
+lambda whose non-base arm returns a TUPLE (no recursion despite let
+rec), so the return type is the union [i64, (i64, i64)]; body then
+does `lp(500, 0) * 0` (tuple arith → bottom in interp) + try/catch.
+interp yields an Array; jit emits nothing. Suspect: recursive-callee
+kernel freeze over a mixed scalar/composite union return, or the
+tuple-arith bottom path diverging at the region gate. Same program
+FAMILY as jul09c 000003/jul10a 000003 mutants (generator lineage).
