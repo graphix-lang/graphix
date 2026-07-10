@@ -40,3 +40,24 @@
 4. GRAPHIX_DBG_VARS on cr6 shows normal NOTIFY_SET traffic then
    silence — no obviously-leaked wake interest in the tail; diff the
    full trace against a build that exits.
+
+## Second SEGV instance (jul10b fuzz crash_000000, override-off build)
+
+`array::map(["a", str::len, "ccc"], |s| str::len({let inner = …;
+let middle = |x| inner(x) + inner(x + 1); let outer = |x| middle(x)
+- middle(x - 1); outer(…)}))` — a first-class BUILTIN value in the
+array literal plus deeply-nested local lambda calls. exit=139
+reproducible. Confirms the SEGV class does not depend on the
+instance-fusion override (default-off in this build) — consistent
+with the pre-existing classification from the cr1 baseline test.
+Common factor across both crashes: NESTED LOCAL LAMBDA CALL CHAINS
+inside an array::map callback (per-slot machinery + local-lambda
+resolution). gdb the core in the morning.
+
+## Open jul10b divergence (morning triage)
+
+generate/divergence_000000: PACING — interp fires (0, 3600) AND
+(1, 3600) in one epoch, jit fires only (0, 3600). Guarded select over
+i64:1 with array::find in an untaken arm. Deterministic. Suspects:
+select arm-wake/guard replay classes (the jul08l/n family) or a new
+rigid-era interaction. Not yet classified.
