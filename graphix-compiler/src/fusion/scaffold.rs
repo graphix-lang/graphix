@@ -131,7 +131,7 @@ pub(crate) enum BoundElem {
 /// freshness. `src_disc` is kept in the signature for taint
 /// uniformity (elements of a valid array are untainted; a tainted
 /// source bottoms the loop via the sticky flags fold).
-fn elem_disc(cx: &mut BodyCx, base: ClifValue, _src_disc: ClifValue) -> ClifValue {
+fn elem_disc(_cx: &mut BodyCx, base: ClifValue, _src_disc: ClifValue) -> ClifValue {
     base
 }
 
