@@ -78,6 +78,11 @@ fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
             f(iter);
             f(body)
         }
+        ForFold { iter, init, acc_pattern: _, elem_pattern: _, body } => {
+            f(iter);
+            f(init);
+            f(body)
+        }
         Assign { name: _, value } => f(value),
         ExplicitParens(x)
         | Qop(x)
@@ -225,6 +230,13 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         For { pattern, iter, body } => For {
             pattern: pattern.clone(),
             iter: ra!(iter),
+            body: ra!(body),
+        },
+        ForFold { iter, init, acc_pattern, elem_pattern, body } => ForFold {
+            iter: ra!(iter),
+            init: ra!(init),
+            acc_pattern: acc_pattern.clone(),
+            elem_pattern: elem_pattern.clone(),
             body: ra!(body),
         },
         Assign { name, value } => Assign { name: name.clone(), value: ra!(value) },

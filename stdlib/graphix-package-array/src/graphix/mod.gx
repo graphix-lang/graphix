@@ -1,8 +1,3 @@
-let filter = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Array<'a> throws 'e 'array_filter;
-let filter_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Array<'b> throws 'e 'array_filter_map;
-let map = |a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e| -> Array<'b> throws 'e 'array_map;
-let flat_map = |a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>] throws 'e| -> Array<'b> throws 'e 'array_flat_map;
-let fold = |a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'array_fold;
 let group = |v: 'a, f: fn(len: i64, x: 'a) -> bool throws 'e| -> Array<'a> throws 'e 'array_group;
 let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> Array<'a> throws 'e 'array_init;
 let iter = |a: Array<'a>| -> 'a 'array_iter;
@@ -14,9 +9,69 @@ let push_front = |a: Array<'a>, @args: 'a| -> Array<'a> 'array_push_front;
 let window = |#n: i64, a: Array<'a>, @args: 'a| -> Array<'a> 'array_window;
 let flatten = |a: Array<Array<'a>>| -> Array<'a> 'array_flatten;
 let dedup = |a: Array<'a>| -> Array<'a> 'array_dedup;
-let find = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e 'array_find;
-let find_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'array_find_map;
 let sort = |#dir: Direction = `Ascending, #numeric: bool = false, a: Array<'a>| -> Array<'a> 'array_sort;
 let enumerate = |a: Array<'a>| -> Array<(i64, 'a)> 'array_enumerate;
 let zip = |a0: Array<'a>, a1: Array<'b>| -> Array<('a, 'b)> 'array_zip;
 let unzip = |a: Array<('a, 'b)>| -> (Array<'a>, Array<'b>) 'array_unzip;
+
+// ── The traversal HOFs, in graphix (sync-subset P4 final) ──────────
+// Sequential loops on the For substrate: a sync callback compiles to
+// one native loop; an async callback rides per-index instantiation +
+// re-evaluation. Never-until-complete emission. Sequential semantics:
+// find/find_map stop CALLING f once found (the old per-slot machinery
+// called f for every element regardless).
+
+let fold = |a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e sync {
+  let mut acc: 'b = init;
+  for v in a { acc = f(acc, v) };
+  acc
+};
+
+let map = |a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e| -> Array<'b> throws 'e sync {
+  let mut res: Array<'b> = [];
+  for v in a { res = push(res, f(v)) };
+  res
+};
+
+let filter = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Array<'a> throws 'e sync {
+  let mut res: Array<'a> = [];
+  for v in a {
+    select f(v) { true => res = push(res, v), false => null }
+  };
+  res
+};
+
+let filter_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Array<'b> throws 'e sync {
+  let mut res: Array<'b> = [];
+  for v in a {
+    select f(v) { null as _ => null, x => res = push(res, x) }
+  };
+  res
+};
+
+let flat_map = |a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>] throws 'e| -> Array<'b> throws 'e sync {
+  let mut res: Array<'b> = [];
+  for v in a {
+    select f(v) { Array<'b> as xs => res = concat(res, xs), x => res = push(res, x) }
+  };
+  res
+};
+
+let find = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e sync {
+  let mut res: Option<'a> = null;
+  for v in a {
+    select res {
+      null as _ => select f(v) { true => res = v, false => null },
+      _ => null
+    }
+  };
+  res
+};
+
+let find_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e sync {
+  let mut res: Option<'b> = null;
+  for v in a {
+    select res { null as _ => res = f(v), _ => null }
+  };
+  res
+};
