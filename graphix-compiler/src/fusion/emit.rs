@@ -3545,19 +3545,18 @@ pub fn emit_for_node<R: Rt, E: UserEvent>(
         |cx| node.body.emit_clif(cx),
     )
     .map(|(r, flags)| {
-        // Coarse sequential firing: a captured external the body reads
-        // fires the loop (the node-walk re-runs the whole loop with
-        // fired delivery on any input event) — fold each ext feeder's
-        // STALE into the slots-word. Discovery made every
-        // body-consumed binding a param or region-local, so an env
-        // miss is a synthetic id — skip it.
+        // The loop's INPUT discs (source array + the body's captured
+        // externals) feed apply's empty-source term and taint OR;
+        // firing over a non-empty source is body-driven (a body that
+        // consumes a fired capture fires — the capture's disc reaches
+        // it as a param). Env misses are synthetic ids — skip.
+        let mut srcs = vec![arr.disc];
         for id in node.ext_refs() {
             if let Some(v) = cx.env.lookup_by_id(*id).map(|l| l.vv.disc) {
-                let d = cx.b.use_var(v);
-                flags.fold_stale(cx, d);
+                srcs.push(cx.b.use_var(v));
             }
         }
-        flags.apply(cx, r, &[arr.disc])
+        flags.apply(cx, r, &srcs)
     })
 }
 
@@ -8093,7 +8092,29 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // for uniformity only: a callee body never CLAIMS words
     // (`BodyEmitter::allow_state` is false for callees), so it never
     // reads through it.
-    clif_args.push(cx.init_flag());
+    // The callee's init view: the node-walk's `Callee::Static`
+    // primes an instance's FIRST dispatch with a forced init view
+    // (`first_update`), so a late first call — e.g. a fold callback
+    // whose loop had zero elements until a lifted source grew — still
+    // fires its consts/cached reads once. Mirror it with a per-call-
+    // site state word: force the callee's init flag on the first call
+    // ever, then never again (the word is call-site-shared across
+    // loop iterations, exactly like the shared instance). No word
+    // available (a callee body) → the plain kernel init flag.
+    let callee_init = match cx.claim_state_word_loop_invariant() {
+        Some(off) => {
+            let sp = cx.state_ptr();
+            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
+            let one = cx.b.ins().iconst(types::I64, 1);
+            cx.b.ins().store(MemFlags::trusted(), one, sp, off);
+            let init = cx.init_flag();
+            let first_i = cx.b.ins().uextend(types::I64, first);
+            cx.b.ins().bor(init, first_i)
+        }
+        None => cx.init_flag(),
+    };
+    clif_args.push(callee_init);
     clif_args.push(cx.state_ptr());
     // Marshal in canonical `abi_params` order — scalars, then composites
     // (array/tuple/struct), then value-shape (variant/nullable) — two
@@ -8109,19 +8130,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Variant)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)));
-    // STRICT call semantics: the node-walk dispatches only when every
-    // arg has a value, so a TAINTED (missing/bottomed) arg bottoms the
-    // CALL — even if the callee never consumes it. Accumulate arg
-    // taint and OR it into the result disc below (the old
-    // taint-per-consumption forwarding let a callee that ignored a
-    // bottomed arg recover where the node-walk never dispatched).
-    let mut arg_taint = cx.b.ins().iconst(types::I64, 0);
     for s in order {
         let cv = emit_slot(cx, s)?;
-        {
-            let t = cx.b.ins().band_imm(cv.disc, TAINT);
-            arg_taint = cx.b.ins().bor(arg_taint, t);
-        }
         if let LambdaCallSlot::Arg(n, _) = s {
             if node_composite_source(n) == CompositeSource::Owned {
                 match kernel_abi::abi_kind(reg, s.typ()) {
@@ -8249,9 +8259,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // Owned-arg drops belong to the CALL path (the trip path never
     // marshalled), then meet the trip placeholder at the merge.
     emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
-    let strict_disc = cx.b.ins().bor(result.disc, arg_taint);
     cx.b.ins()
-        .jump(dmerge, &[BlockArg::Value(strict_disc), BlockArg::Value(result.payload)]);
+        .jump(dmerge, &[BlockArg::Value(result.disc), BlockArg::Value(result.payload)]);
     cx.b.switch_to_block(dmerge);
     cx.b.seal_block(dmerge);
     let disc = cx.b.block_params(dmerge)[0];

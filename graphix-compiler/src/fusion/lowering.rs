@@ -777,6 +777,23 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         )?;
         let kind = type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone())?;
         let id = g.args().get(i).and_then(|p| p.single_bind_id());
+        if id.is_none() {
+            // A DESTRUCTURED formal (`|(k, v)| …`) has no single id and
+            // its leaves aren't bound as slots yet — refuse the build.
+            // Falling through with a name-only slot is a WRONG-BINDING
+            // hazard: the slot is named from the DECLARED FnType (a
+            // .gxi doc name like "x"), and a body leaf that happens to
+            // share it resolves by name to the whole composite —
+            // `array::map(a, |(p, x)| x)` returned the tuple POINTER
+            // as the scalar x (jit_destructure_probes).
+            let mut has_ids = false;
+            if let Some(p) = g.args().get(i) {
+                p.ids(&mut |_| has_ids = true);
+            }
+            if has_ids {
+                return None;
+            }
+        }
         inputs.push((name, kind, id));
         formal_kts.push(kt);
     }

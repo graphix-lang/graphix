@@ -124,13 +124,15 @@ pub(crate) enum BoundElem {
 /// shape errs — lowering never produces string / value-shape loop
 /// elements (the #150 gap), and an explicit refusal turns would-be
 /// type confusion on unreachable input into a clean de-fuse.
-/// Fold the SOURCE's STALE bit onto a synthesized element/leaf disc:
-/// an element "fires" exactly when its source array fired, so slot
-/// bodies that consume the element fire with the source — and stay
-/// quiet on capture-only cycles (the sleeping-select-arm class).
-fn elem_disc(cx: &mut BodyCx, base: ClifValue, src_disc: ClifValue) -> ClifValue {
-    let sb = cx.b.ins().band_imm(src_disc, STALE);
-    cx.b.ins().bor(base, sb)
+/// An element delivers FIRED: the sequential node-walk `For` binds
+/// the element (and acc) into `event.variables` on EVERY loop run, so
+/// a body that consumes them fires — loop-result firing is gated on
+/// the BODY-evaluATION discs (the slots-word), not on element
+/// freshness. `src_disc` is kept in the signature for taint
+/// uniformity (elements of a valid array are untainted; a tainted
+/// source bottoms the loop via the sticky flags fold).
+fn elem_disc(cx: &mut BodyCx, base: ClifValue, _src_disc: ClifValue) -> ClifValue {
+    base
 }
 
 /// [`elem_disc`] with a caller-chosen carry mask: fold the masked bits
@@ -272,7 +274,7 @@ fn bind_elem(
             );
             // Destructure leaves — see [`bind_leaves`]. Elements carry
             // STALE only (a valid array's elements are untainted).
-            let owned_leaves = bind_leaves(cx, elem_ptr, src_disc, STALE, elem.leaves)?;
+            let owned_leaves = bind_leaves(cx, elem_ptr, src_disc, 0, elem.leaves)?;
             Ok((BoundElem::Composite { var }, owned_leaves))
         }
         Some(AbiKind::String) => {
@@ -575,6 +577,8 @@ pub fn push_field(
 pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
+    /// The source's element count — see [`Self::set_len`].
+    len: Option<ClifValue>,
 }
 
 impl SlotFlags {
@@ -586,19 +590,25 @@ impl SlotFlags {
         // All-stale start: an empty loop contributes no firing.
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags { taint, stale }
+        SlotFlags { taint, stale, len: None }
     }
 
-    /// AND a disc's STALE into the slots-word WITHOUT touching taint —
-    /// for loop INPUTS (init, captured externals) whose firing must
-    /// fire the loop but whose taint propagates through normal value
-    /// flow (a bottom init poisons the fold only while the body
-    /// consumes the acc).
-    pub fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
-        let cur = cx.b.use_var(self.stale);
-        let sb = cx.b.ins().band_imm(disc, STALE);
-        let n = cx.b.ins().band(cur, sb);
-        cx.b.def_var(self.stale, n);
+    /// OR a disc's TAINT into the sticky taint word WITHOUT touching
+    /// the slots-word — for loop INPUTS (the init) whose bottom must
+    /// bottom the loop but whose firing must not count as a body
+    /// evaluation firing.
+    pub fn fold_taint(&self, cx: &mut BodyCx, disc: ClifValue) {
+        let cur = cx.b.use_var(self.taint);
+        let t = cx.b.ins().band_imm(disc, TAINT);
+        let n = cx.b.ins().bor(cur, t);
+        cx.b.def_var(self.taint, n);
+    }
+
+    /// Record the source's element count for `apply`'s empty-source
+    /// term (a fold over an EMPTY array emits its init when an input
+    /// fired — there are no body evaluations to gate on).
+    pub fn set_len(&mut self, len: ClifValue) {
+        self.len = Some(len);
     }
 
     /// Fold one slot's disc into the accumulators (inside the loop).
@@ -613,20 +623,20 @@ impl SlotFlags {
         cx.b.def_var(self.stale, n);
     }
 
-    /// Finish the loop's result disc (after the loop): OR the slot
-    /// taint (plus each source's TAINT), and set the firing bit.
+    /// Finish the loop's result disc (after the loop): OR the sticky
+    /// taint word (a bottomed body evaluation or init bottoms the
+    /// loop — the sequential node-walk's break), then set the firing
+    /// bit.
     ///
-    /// COARSE SEQUENTIAL FIRING (sync-subset P4): the loop is ONE
-    /// reactive node — it fires iff ANY input it consumes fired: the
-    /// source array, the init, a captured external the body reads
-    /// (all handed in via `srcs` / `fold_stale`), or any body
-    /// evaluation (the slots-word / the loop-carried chain disc).
-    /// This replaces the old per-slot precision (exact resize
-    /// state-words, the chain-only fold rule) — the sequential
-    /// node-walk re-runs the whole loop with fired delivery on any
-    /// input event, and the kernel must agree. Values may be
-    /// identical across a re-fire; dataflow fires on events, not
-    /// value changes.
+    /// FIRING IS BODY-DRIVEN (matching the sequential node-walk `For`,
+    /// which delivers the element and acc as FIRED on every run and
+    /// emits iff every body evaluation produced): the loop result
+    /// fires iff any body evaluation fired (the slots-word — a body
+    /// that consumes its element, acc, or a fired capture fires; a
+    /// bare-const body stays quiet after the kernel's init view, its
+    /// callee reporting STALE through `CALLEE_RESULT_FLAGS`), or the
+    /// source is EMPTY and an input fired (no body evaluations exist
+    /// to gate on — the fold emits its init).
     pub fn apply(
         &self,
         cx: &mut BodyCx,
@@ -635,18 +645,26 @@ impl SlotFlags {
     ) -> CompiledExpr {
         let t = cx.b.use_var(self.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
-        // STALE (bit SET = quiet): AND-fold the result's own chain
-        // disc, the slots-word, and every source — any fired input
-        // clears the bit. Source TAINT ORs into the result.
+        // STALE (bit SET = quiet). Sources: OR their TAINT into the
+        // result; AND their STALE for the empty-source term.
         let slots_word = cx.b.use_var(self.stale);
-        let mut quiet = cx.b.ins().band_imm(r.disc, STALE);
-        quiet = cx.b.ins().band(quiet, slots_word);
+        let mut src_quiet = cx.b.ins().iconst(types::I64, STALE);
         for s in srcs {
             let ss = cx.b.ins().band_imm(*s, STALE);
-            quiet = cx.b.ins().band(quiet, ss);
+            src_quiet = cx.b.ins().band(src_quiet, ss);
             let st = cx.b.ins().band_imm(*s, TAINT);
             r.disc = cx.b.ins().bor(r.disc, st);
         }
+        // quiet = slots-quiet AND (non-empty OR sources-quiet)
+        let quiet = match self.len {
+            Some(len) => {
+                let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                let stale_c = cx.b.ins().iconst(types::I64, STALE);
+                let non_empty_word = cx.b.ins().select(empty, src_quiet, stale_c);
+                cx.b.ins().band(slots_word, non_empty_word)
+            }
+            None => slots_word,
+        };
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
         r.disc = cx.b.ins().bor(r.disc, quiet);
         r
@@ -804,13 +822,12 @@ where
     // re-caught by the trace oracle after the SlotFlags rework).
     let acc_disc_var = cx.b.declare_var(types::I64);
     let mut taint = SlotFlags::new(cx);
+    taint.set_len(len);
     let init_cv = init(cx)?;
-    // Coarse firing: the init is a loop input — its fire fires the
-    // loop. Its TAINT is STICKY (strict sequential semantics:
-    // `let mut acc = ⊥` bottoms the loop — the node-walk `For`
-    // returns None on a missing init, and a bottom-arg CALL never
-    // dispatches).
-    taint.fold(cx, init_cv.disc);
+    // The init's TAINT is STICKY (`let mut acc = ⊥` bottoms the loop —
+    // the node-walk `For` returns None on a missing init). Its STALE
+    // must NOT touch the slots-word: firing is body-driven.
+    taint.fold_taint(cx, init_cv.disc);
     // A pointer-shaped acc is loop-OWNED from the start: a borrowed
     // init (a Ref to a kernel input / outer local) clones here. String
     // reads already clone; a scalar owns nothing.
@@ -822,7 +839,7 @@ where
     };
     cx.b.def_var(acc_var, init_pay);
     let base = acc.base_disc(cx);
-    let t = cx.b.ins().band_imm(init_cv.disc, TAINT | STALE);
+    let t = cx.b.ins().band_imm(init_cv.disc, TAINT);
     let d0 = cx.b.ins().bor(base, t);
     cx.b.def_var(acc_disc_var, d0);
     // After the init emit — the node-walk evaluates fold's init at the
@@ -862,7 +879,7 @@ where
         FoldAcc::Composite { leaves, .. } if !leaves.is_empty() => {
             let acc_ptr = cx.b.use_var(acc_var);
             let acc_disc = cx.b.use_var(acc_disc_var);
-            bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?
+            bind_leaves(cx, acc_ptr, acc_disc, TAINT, leaves)?
         }
         _ => Vec::new(),
     };
@@ -898,7 +915,7 @@ where
     taint.fold(cx, new_acc.disc);
     cx.b.def_var(acc_var, new_pay);
     let base = acc.base_disc(cx);
-    let t = cx.b.ins().band_imm(new_acc.disc, TAINT | STALE);
+    let t = cx.b.ins().band_imm(new_acc.disc, TAINT);
     let d = cx.b.ins().bor(base, t);
     cx.b.def_var(acc_disc_var, d);
     emit_increment(cx, i_var, i_now, loop_header);
