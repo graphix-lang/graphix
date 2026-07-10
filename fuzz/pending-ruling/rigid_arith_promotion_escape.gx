@@ -4,3 +4,4 @@
 // mutant: {let f = 'a: Number|x: 'a| -> 'a x + f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}
 // minimized:
 {let f = 'a: Number|x: 'a| -> 'a x + f64:0.; {let a = f(i64:0); let b = f(f64:2.5); cast<f64>(a)$ + b}}
+// jul10b fuzz/divergence_000002: SAME CLASS as rigid_arith_promotion_escape (x / f64:0. variant) — covered by the parked ruling
