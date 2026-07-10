@@ -578,7 +578,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                     None if *default => {
                         let id = BindId::new();
-                        let default_node = match &f.argspec[i].labeled {
+                        let mut default_node = match &f.argspec[i].labeled {
                             None | Some(None) => {
                                 bail!("expected default value")
                             }
@@ -602,7 +602,29 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                                 })?
                             }
                         };
+                        // PER-CALLSITE default checking (Eric's ruling,
+                        // 2026-07-09): a default participates exactly
+                        // when the caller omits the arg, and typechecks
+                        // HERE against this SITE's instantiated
+                        // signature — never at the def gate (where the
+                        // rigid check rejected any generic-typed
+                        // default: rand's f64 seeds vs `'a: [Float,
+                        // Int]`). The containment BINDS the site's
+                        // cells, so an omitting site infers from the
+                        // default (`rand()` gets `'a := f64`) while a
+                        // providing site never sees it. Loud: a
+                        // mismatch is a compile error on the static
+                        // path and a bind error on the dynamic path.
+                        wrap!(default_node, default_node.typecheck0(ctx))?;
                         let typ = default_node.typ().clone();
+                        if let Some(site) = self.ftype.as_ref() {
+                            if let Some(sarg) = site.args.get(i) {
+                                wrap!(
+                                    default_node,
+                                    sarg.typ.check_contains(&ctx.env, &typ)
+                                )?;
+                            }
+                        }
                         let spec = TArc::new(default_node.spec().clone());
                         self.args.insert(
                             ArgKey::Named(name.clone()),

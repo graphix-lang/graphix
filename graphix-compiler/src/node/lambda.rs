@@ -964,18 +964,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .def
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
+        // EVERY arg body-checks as a Nop of its DECLARED type —
+        // including defaulted labeled args. Defaults are per-CALLSITE
+        // constructs (Eric's ruling, 2026-07-09): they compile and
+        // typecheck at each omitting site against that site's
+        // instantiated signature (`setup_bind`), where a generic
+        // default legitimately narrows the site's cells. Checking the
+        // default here against the def's rigid cells rejected every
+        // generic-typed default (rand's f64 seeds vs `'a: [Float,
+        // Int]`), and the old faux-compile also BOUND def cells the
+        // gate then had to unwind.
         let mut faux_args: LPooled<Vec<Node<R, E>>> = def
-            .argspec
+            .typ
+            .args
             .iter()
-            .zip(def.typ.args.iter())
-            .map(|(a, at)| match &a.labeled {
-                Some(Some(e)) => ctx.with_restored(def.env.clone(), |ctx| {
-                    compile(ctx, self.flags, e.clone(), &def.scope, self.top_id)
-                }),
-                Some(None) | None => {
-                    let n: Node<R, E> = Box::new(Nop { typ: at.typ.clone() });
-                    Ok(n)
-                }
+            .map(|at| {
+                let n: Node<R, E> = Box::new(Nop { typ: at.typ.clone() });
+                Ok(n)
             })
             .collect::<Result<_>>()?;
         let faux_id = BindId::new();

@@ -353,10 +353,14 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// Observation #4 (the typecheck unsoundness from the 2026-07 soak): an
-// explicit `'a: Number` with a def-time f64 body FACT must reject an
-// i64 call — the def binding rides the cell as a conjunct and the arg
-// site names it.
+// Observation #4, SUPERSEDED by the rigid-tvar ruling (2026-07-09,
+// soak jul09c rigid_tvar_body_escape): a declared `'a` is a CONTRACT —
+// the def-time body check runs with 'a rigid, so a concrete f64 body
+// under `-> 'a` is a DEF-time compile error, at every call type. The
+// previous semantics (accept the def, ride the f64 fact as a cell
+// conjunct, reject only non-f64 calls) monomorphized the lie instead
+// of rejecting it; constrain_known's conjunct machinery remains for
+// INFERRED (anonymous-cell) facts.
 const OBS4_DEF_FACT_REJECTS: &str = r#"
 {
   let f = 'a: Number |x: 'a| -> 'a f64:0.5;
@@ -369,6 +373,8 @@ run!(obs4_def_fact_rejects, OBS4_DEF_FACT_REJECTS, |v: Result<&Value>| matches!(
     Err(_)
 ); graphix_package_core::testing::FuseExpect::None);
 
+// The same def rejects even at an f64 call — the def itself is the
+// error now, not the call.
 const OBS4_DEF_FACT_ACCEPTS: &str = r#"
 {
   let f = 'a: Number |x: 'a| -> 'a f64:0.5;
@@ -378,5 +384,5 @@ const OBS4_DEF_FACT_ACCEPTS: &str = r#"
 
 run!(obs4_def_fact_accepts, OBS4_DEF_FACT_ACCEPTS, |v: Result<&Value>| matches!(
     v,
-    Ok(Value::F64(f)) if *f == 0.5
-));
+    Err(_)
+); graphix_package_core::testing::FuseExpect::None);
