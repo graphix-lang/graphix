@@ -383,3 +383,24 @@ blocks over `for`), and MapQ/FoldQ/clone_rebind retire — the jul09c
 soak alone produced two clone_rebind-adjacent crashes (findings 35,
 38); the per-slot cloning of analysis-built trees is the standing
 hazard this ends.
+
+### P4 layer 2 status (2026-07-10, in progress)
+
+Layer 1 (semantics) is COMMITTED (8630436f): the param knot,
+per-callsite resolution of fn-typed args, rigid cells never written
+(bind-suppression — also fixed the `x + i64:1` monomorphization
+quirk), and nested-gate fact scoping. `inlang_map` pins the semantics.
+
+Layer 2 (the fusion elaboration, option (a)): `GXLambda` now has an
+`Apply::fuse` override running region fusion over the per-site
+instance body (reached via `CallSite::fuse` → `apply.fuse`). VERIFIED
+reached; the body's region attempt currently fails with
+"emit_clif: builtin call site not discovered" for the sites inside
+the fold — the per-REGION builtin-site discovery pass does not cover
+instance-body regions the way it covers top-level regions (suspected
+ExprId-keyed map mismatch between the region's own nodes and the
+analysis-pred bodies FoldQ hands to discovery — the same seam class
+as the queuefn clone finding, corpus #38). Next: read the discovery
+walker (`builtin_apply_sites` construction in try_fuse's analysis)
+and either extend its descent or re-key. `GXDBG_P4=1` prints the
+per-instance fusion outcome and the new failure entries.

@@ -374,6 +374,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         wrap!(self.body, self.body.typecheck1(ctx))
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        // Per-callsite elaboration, layer 2 (sync-subset P4): this
+        // instance was built for ONE call site (site-resolved
+        // signature, per-site static resolution of its fn-typed args),
+        // so its body is site-monomorphic — give it the same region
+        // fusion top-level code gets. A fold whose callback statically
+        // resolved to the site's lambda arg then compiles as a native
+        // loop INSIDE the instance; the call dispatch itself
+        // node-walks when the callee can't be a kernel (fn-typed args
+        // have no ABI), but the loops go native. Reached only through
+        // `CallSite::fuse` on the owning site — MapQ's pristine
+        // `analysis_pred` is not on that walk (its builtin fuses a
+        // `clone_rebind` COPY instead, see `MapQ::fuse`).
+        if std::env::var_os("GXDBG_P4").is_some() {
+            let before = ctx.fusion.stats.failed.len();
+            let fused_before = ctx.fusion.stats.fused;
+            let r = crate::fusion::fuse(&mut self.body, ctx);
+            eprintln!(
+                "P4 GXLambda::fuse id={:?} fused_delta={} new_failures:",
+                self.id,
+                ctx.fusion.stats.fused - fused_before
+            );
+            for (id, why) in &ctx.fusion.stats.failed[before..] {
+                eprintln!("  P4-FAIL {id:?}: {why}");
+            }
+            return r;
+        }
+        crate::fusion::fuse(&mut self.body, ctx)
+    }
+
     fn typ(&self) -> Arc<FnType> {
         Arc::clone(&self.typ)
     }
