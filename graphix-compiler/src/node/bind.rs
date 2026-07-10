@@ -1,6 +1,6 @@
 use super::pattern::StructPatternNode;
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, RebindMap,
+    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag,
     Refs, Rt, Scope, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
@@ -276,33 +276,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         Ok(None)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // `rec`: pattern bound before value (so the value can reference
-        // itself); non-rec: value cloned before the binding is re-minted
-        // (the RHS can't see the new binding). Mirrors `Bind::compile`.
-        let rec = matches!(&self.spec.kind, ExprKind::Bind(b) if b.rec);
-        let (pattern, node) = if rec {
-            let pattern = self.pattern.clone_rebind(ctx, scope, remap);
-            let node = self.node.clone_rebind(ctx, scope, remap);
-            (pattern, node)
-        } else {
-            let node = self.node.clone_rebind(ctx, scope, remap);
-            let pattern = self.pattern.clone_rebind(ctx, scope, remap);
-            (pattern, node)
-        };
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            pattern,
-            node,
-            scope: self.scope.clone(),
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -406,33 +379,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         emit_ref_node(cx, self.spec.as_ref(), &self.typ, self.id)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        _scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Resolve through the walk's old→new table: an internal binding
-        // (re-minted by an enclosing clone, or seeded by the per-slot
-        // initiator) maps to its fresh id; a capture (external, never
-        // re-minted) isn't in the table and keeps the original id.
-        // NEVER by name — the walk threads one flat scope, so a name
-        // lookup conflates lexically-distinct same-named bindings (a
-        // local aliased to a cloned callee's parameter,
-        // audit-jul2026/03). The subscription registers under the clone
-        // destination's DRIVING top when the initiator provided one
-        // (`RebindMap::top_id`) — an analysis-built tree's original top
-        // was never driven (soak jul08a).
-        let top_id = remap.top_id.unwrap_or(self.top_id);
-        let new_id = remap.get(&self.id).copied().unwrap_or(self.id);
-        ctx.rt.ref_var(new_id, top_id);
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            id: new_id,
-            top_id,
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -642,28 +588,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         NodeView::Deref(self)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Structural clone under the clone destination's DRIVING top
-        // (`RebindMap::top_id`), falling back to this node's original —
-        // the wake-root discipline shared with Sample / ConnectDeref
-        // (see Sample's comment: spec().id was never driven, and an
-        // analysis-built tree's "original" top wasn't either — soak
-        // jul08a). `id: None`: the runtime wake-up registers LAZILY in
-        // `update` when the child delivers the ref id, now under this
-        // clone's own view of `top_id` (the clone's first dispatch is
-        // init-forced, so the child re-emits its cached ByRef id
-        // immediately).
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            child: self.child.clone_rebind(ctx, scope, remap),
-            id: None,
-            top_id: remap.top_id.unwrap_or(self.top_id),
-        })
-    }
 }

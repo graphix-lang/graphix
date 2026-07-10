@@ -1,7 +1,7 @@
 use super::{Nop, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId,
-    Node, NodeView, RebindMap, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
+    Node, NodeView, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
@@ -385,16 +385,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // node-walks when the callee can't be a kernel (fn-typed args
         // have no ABI), but the loops go native. Reached only through
         // `CallSite::fuse` on the owning site — MapQ's pristine
-        // `analysis_pred` is not on that walk (its builtin fuses a
-        // `clone_rebind` COPY instead, see `MapQ::fuse`).
-        // DEFAULT OFF until the per-region builtin-site discovery
-        // covers instance bodies: enabling this fused an IIFE instance
-        // body into a kernel that never emits (jul10a divergence
-        // 000003 — override off AGREEs). Opt in with
-        // GRAPHIX_P4_INSTANCE_FUSION=1 for development.
-        if std::env::var_os("GRAPHIX_P4_INSTANCE_FUSION").is_none() {
-            return Ok(());
-        }
+        // `analysis_pred` is not on that walk.
         if std::env::var_os("GXDBG_P4").is_some() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
@@ -436,31 +427,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         self.body.sleep(ctx);
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Box<dyn Apply<R, E>> {
-        // Re-mint the arg patterns first (fresh param ids enter the scope
-        // name map), then recurse the body STRUCTURALLY so any spliced
-        // FusedKernels are preserved (NOT re-init from spec). Keep the
-        // LambdaId so clones share the cached JIT kernel. Mirrors the
-        // order in `GXLambda::new` (patterns then body, one scope).
-        let args: Box<[StructPatternNode]> =
-            self.args.iter().map(|p| p.clone_rebind(ctx, scope, remap)).collect();
-        let body = self.body.clone_rebind(ctx, scope, remap);
-        // Same LambdaId ⇒ same recursion property: a per-slot HOF clone
-        // inherits the template's analysis-set tail_loop bit (the clone
-        // itself isn't visited by the analysis pass).
-        Box::new(Self {
-            id: self.id,
-            args,
-            body,
-            typ: self.typ.clone(),
-            tail_loop: AtomicBool::new(self.tail_loop.load(Ordering::Relaxed)),
-        })
-    }
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -547,12 +513,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.for_each_hof_callback_body(f)
     }
 
-    fn for_each_hof_fused_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
-        // MUST delegate (the trap) — else the checker descends into
-        // nothing and #[native] passes vacuously inside the callback.
-        self.apply.for_each_hof_fused_body(f)
-    }
-
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         // MUST delegate (the trap): the trait default `Ok(())` would
         // silently swallow a wrapped HOF's compile-time callback build,
@@ -628,19 +588,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.sleep(ctx);
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Box<dyn Apply<R, E>> {
-        // Plumbing wrapper — delegate to the inner builtin's own
-        // clone_rebind (builtins own their clone, 100%).
-        Box::new(Self {
-            typ: self.typ.clone(),
-            apply: self.apply.clone_rebind(ctx, scope, remap),
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -909,85 +856,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
     }
 
     fn refs(&self, _refs: &mut Refs) {}
-
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        // The id table is unused (a lambda VALUE recompiles from spec,
-        // and its captures resolve by the alias-into-scope dance below)
-        // — only the remap's driving `top_id` is consumed.
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // `Lambda::refs` is intentionally empty (a lambda VALUE has no
-        // runtime refs until it is applied), so the recompile-default
-        // `clone_rebind` never aliases this lambda's CAPTURES into the
-        // clone scope. Recompiling the body in `scope` then fails to
-        // resolve any capture that isn't reachable from `scope` — e.g. a
-        // grandparent binding when this lambda is the callback of a HOF
-        // NESTED inside another HOF's callback, whose per-slot clone
-        // scope is rooted in the array package, not the program (#168).
-        // The lambda's DEFINITION env still resolves those captures, so
-        // alias each body free-var that's unresolvable in the clone scope
-        // but resolvable in `def.env` before recompiling. Slot-local
-        // captures (the enclosing HOF's element) already resolve in the
-        // clone scope and are left untouched, so existing cases are
-        // unaffected. Over-collection is harmless: an inner-let / nested-
-        // lambda-arg name won't resolve in `def.scope` either, so it's
-        // skipped.
-        if let (expr::ExprKind::Lambda(lam), Some(def)) =
-            (&self.spec.kind, self.def.downcast_ref::<LambdaDef<R, E>>())
-        {
-            if let Either::Left(body) = &lam.body {
-                let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
-                body.fold((), &mut |(), e| {
-                    if let expr::ExprKind::Ref { name } = &e.kind {
-                        let s: &str = name.0.as_ref();
-                        if netidx::path::Path::levels(s) == 1 {
-                            if let Some(base) = netidx::path::Path::basename(s) {
-                                names.push(ArcStr::from(base));
-                            }
-                        }
-                    }
-                });
-                // Alias UNCONDITIONALLY, resolved through `remap` — the
-                // same discipline as the trait-default clone (its comment
-                // records why the old conditional was the #5 soak-jul04
-                // bug). The conditional here ("skip if the name resolves
-                // in the clone scope") had the same failure with MODULE
-                // names: a per-slot clone scope is rooted in the array
-                // package (#168), where a stdlib name like `filter`
-                // resolves — to array::filter — so the alias to the
-                // definition env's binding (core `filter`) was skipped
-                // and the recompiled callback bound the WRONG function: a
-                // nested callback's `filter(array::iter(..), p)` became
-                // array::filter over a STREAM, which collects nothing —
-                // the map emitted NOTHING under fusion (soak jul08a
-                // fuzz/divergence_000000). A slot feeder resolves through
-                // `remap` to THIS slot's fresh binding; internal binders
-                // (params, lets) re-register during the recompile and
-                // shadow the alias, exactly the original scoping.
-                for base in names.iter() {
-                    let mp = expr::ModPath::from_iter([base.as_str()]);
-                    let cap_id =
-                        def.env.lookup_bind(&def.scope.lexical, &mp).map(|(_, b)| b.id);
-                    if let Some(id) = cap_id {
-                        let id = remap.get(&id).copied().unwrap_or(id);
-                        ctx.env.alias_variable(&scope.lexical, base.as_str(), id);
-                    }
-                }
-            }
-        }
-        // Recompile under the clone destination's DRIVING top (see
-        // `RebindMap::top_id`) — the same wake-root discipline as the
-        // Sample / ConnectDeref / Deref structural clones. Falls back
-        // to this node's own original top; never `spec.id` (not a
-        // driven top — subscriptions registered under it wake nobody,
-        // soak jul07g fuzz/divergence_000000).
-        let top_id = remap.top_id.unwrap_or(self.top_id);
-        compile(ctx, BitFlags::empty(), self.spec.clone(), scope, top_id)
-            .expect("Lambda::clone_rebind recompile failed")
-    }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 

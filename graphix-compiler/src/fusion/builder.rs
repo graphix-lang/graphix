@@ -5,7 +5,7 @@
 //! kernel executor is [`Kernel`].
 
 use crate::{
-    Apply, Event, ExecCtx, Node, NodeView, RebindMap, Refs, Rt, Scope, Update, UserEvent,
+    Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
     expr::{Expr, ExprId},
     fusion::{emit::WrappedKernel, kernel::Kernel, kernel_abi::KernelSig},
     typ::Type,
@@ -160,51 +160,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         NodeView::FusedKernel(self)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // An ordinary Node: recurse its feeder deps (Refs that re-resolve
-        // to the slot's fresh element / captures by name) and clone the
-        // Kernel by SHARING the immutable kernel/JIT/registry Arcs while
-        // re-initing per-cycle scratch + dyn_slots. The kernel is
-        // incidental — the precompiled update logic, shared across slots.
-        //
-        // LIFTED connect targets are per-instance IDENTITY: their Bind
-        // was spliced into the kernel, so this node is the minting
-        // authority the Bind would have been — mint a fresh id per
-        // lifted target BEFORE cloning the feeders (the remap entries
-        // steer the feeder Refs onto the fresh ids) and write them
-        // into the clone's reserved state words (the kernel's write
-        // side loads its target from there). Finding 35: without this
-        // every per-slot clone read and wrote the template's one
-        // variable.
-        let fresh: Box<[crate::BindId]> = self
-            .lifted
-            .iter()
-            .map(|old| {
-                let new = crate::BindId::new();
-                remap.insert(*old, new);
-                new
-            })
-            .collect();
-        let feeders: Box<[Node<R, E>]> =
-            self.feeders.iter().map(|f| f.clone_rebind(ctx, scope, remap)).collect();
-        let n_args = feeders.len();
-        let mut inner = self
-            .inner
-            .clone_shared(ctx, n_args, scope.clone(), self.spec.id)
-            .expect("FusedKernel Kernel clone_shared failed");
-        inner.set_lifted_ids(&fresh);
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            feeders,
-            inner,
-            lifted: fresh,
-            _phantom: std::marker::PhantomData,
-        })
-    }
 }

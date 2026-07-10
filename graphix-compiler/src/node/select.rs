@@ -1,6 +1,6 @@
 use super::{Cached, compiler::compile, pattern::StructPatternNode};
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, RebindMap, Refs, Rt, Scope,
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
     Update, UserEvent,
     expr::{Expr, ExprId, Pattern},
     format_with_flags,
@@ -347,43 +347,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         emit_select_node(cx, self)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // The arg (scrutinee) references no arm bindings. Per arm, re-mint
-        // the pattern FIRST (binds enter the scope name map), then clone the
-        // body so its Refs resolve to the fresh pattern ids.
-        let arg = Cached::new(self.arg.node.clone_rebind(ctx, scope, remap));
-        let arms = self
-            .arms
-            .iter()
-            .map(|(pat, body)| {
-                // Each arm gets a FRESH sub-scope, exactly as
-                // `Select::compile` does (`scope.append("sel{id}")`).
-                // Without it, re-minting arm 2's binding `n` into the
-                // shared `scope` pollutes it: a later clone (template →
-                // per-slot) then resolves arm 1's `Ref(n)` to that stale
-                // sibling binding (never written when arm 1 fires)
-                // instead of the outer `n` → the arm produces nothing and
-                // the HOF hangs (#167). Per-arm isolation is a
-                // correctness invariant of `select`, and clone_rebind —
-                // which builds the per-slot node graph — must preserve it.
-                let arm_scope =
-                    scope.append(&format_compact!("sel{}", SelectId::new().0));
-                let pat = pat.clone_rebind(ctx, &arm_scope, remap);
-                let body = Cached::new(body.node.clone_rebind(ctx, &arm_scope, remap));
-                (pat, body)
-            })
-            .collect();
-        Box::new(Self {
-            selected: None,
-            arg,
-            arms,
-            typ: self.typ.clone(),
-            spec: self.spec.clone(),
-        })
-    }
 }

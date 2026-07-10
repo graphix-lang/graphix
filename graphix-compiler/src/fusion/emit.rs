@@ -2737,28 +2737,6 @@ pub fn emit_forced_keep<R: Rt, E: UserEvent>(
     Ok(cv)
 }
 
-/// Bind an EXISTING scalar Variable as a local (a loop counter /
-/// accumulator the scaffold rebinds in place — `bind_local` would
-/// declare a fresh one), with a caller-owned DISC Variable: reads of
-/// the local see whatever taint/staleness the caller carries into it
-/// (a fold accumulator's loop-carried taint, an element's
-/// source-inherited STALE bit).
-pub(crate) fn bind_scalar_var_with_disc(
-    cx: &mut BodyCx,
-    name: ArcStr,
-    prim: PrimType,
-    payload_var: Variable,
-    disc_var: Variable,
-    bind_id: Option<BindId>,
-) {
-    cx.env.bind(
-        name,
-        ValueVar { disc: disc_var, payload: payload_var },
-        LocalKind::Scalar(prim),
-        bind_id,
-    );
-}
-
 // ─── Body / statement compilation ────────────────────────────────
 
 /// The rebind-and-jump core of a self tail-call

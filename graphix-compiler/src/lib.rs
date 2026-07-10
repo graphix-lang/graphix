@@ -385,43 +385,6 @@ impl From<u64> for LambdaId {
 
 atomic_id!(BindId);
 
-/// The old->new `BindId` table a `clone_rebind` walk threads through
-/// every node: re-minted bindings record themselves, `Ref`s resolve
-/// through it (an id not in the table is a capture and passes through
-/// unchanged). See [`Update::clone_rebind`].
-///
-/// `top_id` is the DRIVING top of the clone destination — set by the
-/// clone initiator (a per-slot HOF, `build_fused_template`) so
-/// recompile-based clones (`Update::clone_rebind`'s default,
-/// `Lambda::clone_rebind`) register their subtree's runtime
-/// subscriptions (`ref_var`) under a top the runtime actually drives.
-/// Recompiling under the node's own `spec().id` orphaned every wake
-/// the cloned subtree needed: a per-slot callback's connect loop wrote
-/// its variable, the notify went to an undriven top, and the loop ran
-/// once and died under fusion where `--no-fusion` (fresh slot binds
-/// under the real top) looped forever (soak jul07g
-/// fuzz/divergence_000000). `None` (a clone walk nobody parameterized)
-/// falls back to the old spec-id behavior.
-#[derive(Debug, Default)]
-pub struct RebindMap {
-    map: nohash::IntMap<BindId, BindId>,
-    pub top_id: Option<ExprId>,
-}
-
-impl std::ops::Deref for RebindMap {
-    type Target = nohash::IntMap<BindId, BindId>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.map
-    }
-}
-
-impl std::ops::DerefMut for RebindMap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.map
-    }
-}
-
 impl From<u64> for BindId {
     fn from(v: u64) -> Self {
         BindId(v)
@@ -749,42 +712,9 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// collect the bodies and walk them after the main pass.
     fn for_each_hof_callback_body<'a>(&'a self, _f: &mut dyn FnMut(&'a Node<R, E>)) {}
 
-    /// Walk this Apply's FUSED HOF callback bodies for post-fusion
-    /// attribute checking. The fused twin of
-    /// [`Apply::for_each_hof_callback_body`]: that one exposes the
-    /// pristine (unfused) `analysis_pred` body for fusion DISCOVERY;
-    /// this one exposes the body of the FUSED template built by
-    /// [`Apply::fuse`] (its sync sub-regions replaced by `FusedKernel`s),
-    /// so `check_attributes` can descend into it and give each decorated
-    /// callback node the right native/residue verdict. Default: no
-    /// callbacks — also correct when the HOF batch-loop-inlined (its
-    /// callback was absorbed into the enclosing kernel and there is no
-    /// separate fused template).
-    fn for_each_hof_fused_body<'a>(&'a self, _f: &mut dyn FnMut(&'a Node<R, E>)) {}
-
     /// put the node to sleep, used in conditions like select for branches that
     /// are not selected. Any cached values should be cleared on sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
-
-    /// See [`Update::clone_rebind`]. For a builtin this is the
-    /// builtin's own responsibility — it clones its argument nodes
-    /// through `clone_rebind` (so their internal `Ref`s/binds rebind)
-    /// and constructs fresh initial state: a cloned `subscribe` comes
-    /// back un-subscribed and opens its own subscription on first
-    /// update, a cloned counter resets, a cloned timer arms its own.
-    /// `BuiltInLambda` delegates to the inner `apply`. The default
-    /// panics so a missed builtin is surfaced loudly.
-    fn clone_rebind(
-        &self,
-        _ctx: &mut ExecCtx<R, E>,
-        // The scope is where re-minted bindings register in the env
-        // (and where the recompile default resolves); ref RESOLUTION
-        // goes through `remap` (see `Update::clone_rebind`).
-        _scope: &Scope,
-        _remap: &mut RebindMap,
-    ) -> Box<dyn Apply<R, E>> {
-        panic!("clone_rebind not implemented for Apply {self:?}")
-    }
 
     /// Emit this call site into the open JIT kernel as CLIF (the
     /// builtin-owned half of distributed emission — see
@@ -808,17 +738,12 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 
     /// Participate in the compile-time fusion phase. Called by
     /// [`CallSite::fuse`] — i.e. exactly when `try_fuse` on the call
-    /// site FAILED (the call did NOT batch-loop inline via
-    /// [`Apply::emit_clif`]). A HOF builtin (`map`/`fold`/`init`/…)
-    /// overrides this to build its per-element fused callback template
-    /// NOW, at compile time, via the normal `fuse_callsite` /
-    /// [`fusion::fuse`] machinery — rather than lazily at runtime in
-    /// `update`. Doing it here records the callback's fusion in
-    /// [`fusion::FusionStats`] and makes it visible to the post-fusion
-    /// graph walk (the `#[native]` checker descends into the result via
-    /// [`Apply::for_each_hof_fused_body`]). The impl MUST swallow build
-    /// errors (de-fuse, never fail the compile — node-walk is
-    /// canonical). Default: no-op.
+    /// site FAILED (the call did NOT inline into an enclosing kernel).
+    /// [`GXLambda`] overrides this to fuse the maximal sync sub-regions
+    /// of its per-callsite instance BODY in place (async residue
+    /// node-walks), so a lambda whose call site didn't fuse still runs
+    /// its body natively. The impl MUST swallow build errors (de-fuse,
+    /// never fail the compile — node-walk is canonical). Default: no-op.
     fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
@@ -996,126 +921,6 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// without choosing a variant; adding a new variant forces
     /// every exhaustive match consuming `NodeView` to be reviewed.
     fn view(&self) -> NodeView<'_, R, E>;
-
-    /// Produce an independent deep copy of this node positioned as if
-    /// it were compiled fresh in the same lexical scope. Semantics:
-    /// every binding the subtree *introduces* is re-minted to a fresh
-    /// env-registered `BindId`; every `Ref` to an internal binding
-    /// re-resolves to this copy's fresh one; every capture (a `Ref` to
-    /// an external binding) keeps pointing at the original outer
-    /// binding; immutable shared artifacts (fused-kernel `Arc`s) are
-    /// shared, not copied; and stateful builtins get fresh independent
-    /// state via their own `clone_rebind`.
-    ///
-    /// The re-binding rides `remap`, an explicit old→new `BindId` table
-    /// threaded through the whole clone walk: each re-minted binding
-    /// records itself (`pattern.rs remint_bind_id`), and `Ref` resolves
-    /// through the table — an id not in the table is a capture and
-    /// passes through unchanged. Resolution is NEVER by name: the walk
-    /// threads one flat scope, so name lookup conflates lexically
-    /// distinct same-named bindings (a local named like a callee's
-    /// parameter aliased to the parameter — audit-jul2026/03). The
-    /// initiator (a HOF's per-slot instantiation) seeds the table with
-    /// its feeder rebindings (e.g. the analysis element id → this
-    /// slot's fresh element id).
-    ///
-    /// Used by per-slot HOF dispatch (`MapQ`) to instantiate one
-    /// independent graph per array element from a single fused
-    /// template.
-    ///
-    /// The default RE-INITS from the node's `spec`: a fresh `compile`
-    /// in `scope`. This is the *correct* clone for env-managing nodes
-    /// (`TryCatch`, `Module`, `Use`/`TypeDef`, `Lambda`) — `compile`
-    /// re-runs the catch-scope / env-snapshot / proxy setup that no
-    /// hand-written structural clone could safely duplicate. Value-
-    /// computing residue (arithmetic, producers, accessors, `Select`,
-    /// …) and the fusion spine override with structural clones (lighter,
-    /// and the spine must preserve spliced `FusedKernel` descendants).
-    /// NOTE the recompile default resolves refs BY NAME against `scope`
-    /// (compile has no remap channel) — it keeps the flat-scope name
-    /// hazard the structural spine no longer has; acceptable because
-    /// env-managing nodes are rare inside per-slot templates.
-    ///
-    /// **Capture-safe.** `compile` re-resolves every `Ref` by name, but a
-    /// CAPTURE was resolved in an *outer* scope not lexically visible from
-    /// `scope`, so a naive recompile would fail ("not defined"). So first
-    /// alias EVERY external ref's name — resolved through `remap` — into
-    /// the fresh child scope below. Unconditional and deepest-wins:
-    /// resolution by recorded IDENTITY, immune to same-named env
-    /// pollution. The remap consultation is load-bearing: a per-slot HOF
-    /// initiator seeds `remap` with its feeder rebindings (analysis
-    /// element id → this slot's fresh id), so a feeder ref aliases to
-    /// THIS slot's binding, while a true capture (absent from the table)
-    /// aliases to its original outer binding — the same contract the
-    /// structural clone spine honors. (The old conditional — alias into
-    /// the SHARED `scope`, only when `lookup_bind` found nothing — was
-    /// the #5 soak-jul04 bug: a sibling slot clone's re-minted bind
-    /// under the same name made the lookup succeed, the alias was
-    /// skipped, and the recompiled body read the sibling's binding. It
-    /// also resolved slot feeders by name-lookup luck instead of the
-    /// remap.) Internal refs still resolve to their re-minted binds: the
-    /// replayed compile registers each internal binder in the child
-    /// scope as it goes, shadowing the alias for everything lexically
-    /// after it — exactly the original scoping. Known residual: two
-    /// same-named external captures with distinct ids (only reachable
-    /// via a `use` re-pointing the name mid-subtree) collapse to the
-    /// later alias; that limitation predates this fix.
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Recompile into a fresh child scope: compile MUTATES the env, and
-        // this spec was already compiled once into `scope` — a replay there
-        // collides on registrations that reject redefinition (`deftype`:
-        // a typedef in an HOF callback body panicked every per-slot clone)
-        // and stacks shadow binds otherwise. The child scope makes the
-        // replay hermetic: internal registrations (and the capture aliases
-        // above) land in a scope this clone alone owns (and its delete
-        // alone cleans). Internal names are lexically invisible to template
-        // siblings, so nothing outside the subtree resolves into the child
-        // scope.
-        static REBIND_SCOPE: AtomicU32 = AtomicU32::new(0);
-        let fresh = Scope {
-            lexical: ModPath(
-                scope.lexical.append(
-                    compact_str::format_compact!(
-                        "rb{}",
-                        REBIND_SCOPE.fetch_add(1, Ordering::Relaxed)
-                    )
-                    .as_str(),
-                ),
-            ),
-            dynamic: scope.dynamic.clone(),
-        };
-        let mut refs = Refs::default();
-        self.refs(&mut refs);
-        for id in refs.refed.iter() {
-            if refs.bound.contains(id) {
-                continue;
-            }
-            let bid = remap.get(id).copied().unwrap_or(*id);
-            let name = match ctx.env.by_id.get(&bid) {
-                Some(b) => b.name.clone(),
-                None => continue,
-            };
-            ctx.env.alias_variable(&fresh.lexical, &name, bid);
-        }
-        // Register the recompiled subtree's runtime subscriptions under
-        // the clone destination's DRIVING top (see [`RebindMap::top_id`]) —
-        // `spec().id` is not a driven top, so any reactive residue in the
-        // clone (a connect's write-back read, a Deref subscription) would
-        // wake nobody and go permanently quiet.
-        compiler::compile(
-            ctx,
-            enumflags2::BitFlags::empty(),
-            self.spec().clone(),
-            &fresh,
-            remap.top_id.unwrap_or_else(|| self.spec().id),
-        )
-        .expect("clone_rebind: recompile from spec failed")
-    }
 
     /// Emit this node's computation into the open JIT kernel as CLIF
     /// and return its SSA result. Emission recursion is distributed —
@@ -2046,14 +1851,15 @@ fn check_attributes<R: Rt, E: UserEvent>(
 }
 
 /// Run every registered attribute's check on `n`'s own decorations, then
-/// DESCEND into any HOF callback bodies the node's callee fused (a HOF
-/// builtin exposes its fused per-element template body via
-/// [`Apply::for_each_hof_fused_body`]). The main `for_each_node` walk stops at
-/// lambda bodies, so a decorated expression inside an HOF callback is
-/// otherwise never visited. The fused template's body carries `FusedKernel`s
-/// for the sub-regions that fused and node-walk residue (recorded in
+/// DESCEND into a resolved lambda call site's per-callsite instance BODY.
+/// The main `for_each_node` walk stops at lambda bodies, so a decorated
+/// expression inside a callback (`array::map(a, |x| #[native] ...)`) is
+/// otherwise never visited. The instance body carries `FusedKernel`s for
+/// the sub-regions that fused and node-walk residue (recorded in
 /// `FusionStats`) for those that didn't — exactly what each attribute's
-/// per-node verdict needs. Recurses through nested HOFs.
+/// per-node verdict needs. Recurses through nested resolved call sites
+/// (a recursive def's self-call site is not statically resolved to a
+/// nested instance, so the descent terminates).
 fn check_decorated_node<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -2066,21 +1872,17 @@ fn check_decorated_node<R: Rt, E: UserEvent>(
         }
     }
     if let NodeView::CallSite(cs) = n.view() {
-        if let Some(apply) = cs.callee_apply() {
-            let mut bodies: Vec<&Node<R, E>> = Vec::new();
-            apply.for_each_hof_fused_body(&mut |body| bodies.push(body));
-            for body in bodies {
-                let mut err: Option<anyhow::Error> = None;
-                fusion::for_each_node(body, &mut |bn| {
-                    if err.is_none() {
-                        if let Err(e) = check_decorated_node(bn, ctx) {
-                            err = Some(e);
-                        }
+        if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
+            let mut err: Option<anyhow::Error> = None;
+            fusion::for_each_node(g.body(), &mut |bn| {
+                if err.is_none() {
+                    if let Err(e) = check_decorated_node(bn, ctx) {
+                        err = Some(e);
                     }
-                });
-                if let Some(e) = err {
-                    return Err(e);
                 }
+            });
+            if let Some(e) = err {
+                return Err(e);
             }
         }
     }

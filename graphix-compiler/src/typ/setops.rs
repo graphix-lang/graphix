@@ -433,7 +433,18 @@ impl Type {
                 if t0 == t1 {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
-                    Ok(Type::Array(Arc::new(t0.diff_int(env, hist, t1)?)))
+                    // An emptied element type empties the ARRAY type:
+                    // leaving `Array<[]>` (uninhabited, but nonempty to
+                    // the containment walk) in a select residue blocked
+                    // catch-all narrowing for instantiated generics
+                    // (`Array<'b:=i64>` subtracted from
+                    // `[i64, Array<i64>]` left `[i64, Array<[]>]`).
+                    match t0.diff_int(env, hist, t1)? {
+                        Type::Primitive(p) if p.is_empty() => {
+                            Ok(Type::Primitive(BitFlags::empty()))
+                        }
+                        d => Ok(Type::Array(Arc::new(d))),
+                    }
                 }
             }
             (Type::Primitive(p), Type::Array(t)) => {
@@ -482,11 +493,21 @@ impl Type {
                 if e0 == e1 {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
-                    Ok(Type::Error(Arc::new(e0.diff_int(env, hist, e1)?)))
+                    match e0.diff_int(env, hist, e1)? {
+                        Type::Primitive(p) if p.is_empty() => {
+                            Ok(Type::Primitive(BitFlags::empty()))
+                        }
+                        d => Ok(Type::Error(Arc::new(d))),
+                    }
                 }
             }
             (Type::ByRef(t0), Type::ByRef(t1)) => {
-                Ok(Type::ByRef(Arc::new(t0.diff_int(env, hist, t1)?)))
+                match t0.diff_int(env, hist, t1)? {
+                    Type::Primitive(p) if p.is_empty() => {
+                        Ok(Type::Primitive(BitFlags::empty()))
+                    }
+                    d => Ok(Type::ByRef(Arc::new(d))),
+                }
             }
             (
                 Type::Abstract { id: id0, params: p0 },

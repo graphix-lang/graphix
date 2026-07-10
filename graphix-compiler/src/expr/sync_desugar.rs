@@ -35,7 +35,6 @@ use crate::bailat;
 use anyhow::Result;
 use arcstr::ArcStr;
 use compact_str::CompactString;
-use netidx::utils::Either;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 

@@ -1,5 +1,5 @@
 use crate::{
-    Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, RebindMap, Refs, Rt,
+    Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Update, UserEvent,
     compiler::compile,
     deref_typ,
@@ -407,23 +407,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         emit_qop_node(cx, &self.n, &self.typ, self.id.map(|_| self.spec.id))
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Re-resolve the nearest catch handler in the clone scope (as
-        // `Qop::compile` does); `None` for an unhandled `?`. A `Qop`
-        // *inside* a `TryCatch` is recompiled as part of that node's
-        // recompile, so this path only sees standalone Qops.
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            id: ctx.env.lookup_catch(&scope.dynamic).ok(),
-            n: self.n.clone_rebind(ctx, scope, remap),
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -508,16 +491,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         emit_qop_node(cx, &self.n, &self.typ, None)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            n: self.n.clone_rebind(ctx, scope, remap),
-        })
-    }
 }

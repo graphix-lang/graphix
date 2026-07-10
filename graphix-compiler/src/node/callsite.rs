@@ -1,7 +1,7 @@
 use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId, Node,
-    NodeView, PendingTailCall, PrintFlag, RebindMap, Refs, Rt, Scope, StaticFnArg,
+    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg,
     Update, UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::{
@@ -1704,117 +1704,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         emit_dyncall_node(cx, &info, &arg_nodes)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Bind-shaped: re-mint the arg-slot ids (genn-minted, NOT env-named,
-        // so they need a local old→new map), clone each arg value node (the
-        // element ref re-resolves its name to MapQ's fresh element), rebuild
-        // arg_refs to point at the fresh slot ids, then clone the fnode and
-        // the bound callee `Apply` structurally (preserving its fused body).
-        // Precondition: the template CallSite is already bound + fused.
-        let mut id_remap: AHashMap<BindId, BindId> = AHashMap::default();
-        let mut new_args: AHashMap<ArgKey, Arg<R, E>> = AHashMap::default();
-        for (key, arg) in &self.args {
-            let new_id = BindId::new();
-            id_remap.insert(arg.id, new_id);
-            let node = arg.node.as_ref().map(|n| n.clone_rebind(ctx, scope, remap));
-            new_args.insert(
-                key.clone(),
-                Arg { id: new_id, node, is_default: arg.is_default },
-            );
-        }
-        // The clone lives under the destination's DRIVING top when the
-        // initiator provided one (`RebindMap::top_id`) — the top this
-        // clone's registrations use, and the top a re-bind of a
-        // DynamicUnbound callee passes to `BuiltIn::init` (an async
-        // builtin like `array::iter` registers its stream variable
-        // there; an analysis-built tree's original top was never
-        // driven, so the stream woke nothing — soak jul08a
-        // fuzz/divergence_000000, the nested-HOF async residue).
-        let top_id = remap.top_id.unwrap_or(self.top_id);
-        let arg_refs: Vec<Node<R, E>> = self
-            .arg_refs
-            .iter()
-            .map(|r| {
-                let old = (&**r as &dyn std::any::Any)
-                    .downcast_ref::<Ref>()
-                    .expect("arg_ref must be a Ref");
-                let id = id_remap.get(&old.id).copied().unwrap_or(old.id);
-                ctx.rt.ref_var(id, top_id);
-                Box::new(Ref { spec: old.spec.clone(), typ: old.typ.clone(), id, top_id })
-                    as Node<R, E>
-            })
-            .collect();
-        let fnode = self.fnode.clone_rebind(ctx, scope, remap);
-        // A `GXLambda` callee is cloned STRUCTURALLY — preserving its fused
-        // body AND its variant (`Static` re-primes on first update). A
-        // builtin callee (or unbound) instead resets to `DynamicUnbound` so
-        // the clone re-binds it on its first update, re-running the builtin's
-        // own `init` to produce a FRESH independent instance (its own
-        // subscription, counter, timer, …). Re-bind is correct for builtins
-        // precisely because they don't fuse their body, so nothing is lost by
-        // rebuilding from `init` — and it needs zero per-builtin clone code.
-        // (A `GXLambda` must NOT be re-bound that way: re-init would recompile
-        // its body from spec, discarding the spliced FusedKernels.)
-        let callee = match &self.callee {
-            Callee::Static { def, apply, .. }
-                if matches!(apply.view(), ApplyView::Lambda(_)) =>
-            {
-                Callee::Static {
-                    def: def.clone(),
-                    apply: apply.clone_rebind(ctx, scope, remap),
-                    // Re-prime on the clone's first update (like a fresh bind).
-                    first_update: true,
-                }
-            }
-            Callee::DynamicBound { def, apply, .. }
-                if matches!(apply.view(), ApplyView::Lambda(_)) =>
-            {
-                Callee::DynamicBound {
-                    def: def.clone(),
-                    apply: apply.clone_rebind(ctx, scope, remap),
-                    // A template is a compile-time artifact — never a
-                    // recursive unfold (and never parked: transient
-                    // bindings don't survive the update that made them).
-                    transient: false,
-                }
-            }
-            // `TransientParked` (and unbound / builtin-bound) clones
-            // reset to `DynamicUnbound`: the clone's first update
-            // re-binds via its own fnode, and the parked registrations
-            // are per-instance state the original keeps.
-            _ => Callee::DynamicUnbound,
-        };
-        // A cloned recursion-site stays a recursion site. `tail_arg_order`
-        // names this call's own arg BindIds, which `id_remap` just
-        // re-minted, so remap them too (callee_lambda_id is id-independent).
-        let tail_arg_order = self.tail_arg_order.lock().as_ref().map(|order| {
-            order
-                .iter()
-                .map(|id| id_remap.get(id).copied().unwrap_or(*id))
-                .collect::<Box<[BindId]>>()
-        });
-        Box::new(Self {
-            spec: self.spec.clone(),
-            ftype: self.ftype.clone(),
-            resolved_ftype: self.resolved_ftype.clone(),
-            rtype: self.rtype.clone(),
-            fnode,
-            args: new_args,
-            arg_refs,
-            callee,
-            flags: self.flags,
-            scope: self.scope.clone(),
-            top_id,
-            is_self_tail_call: AtomicBool::new(
-                self.is_self_tail_call.load(Ordering::Relaxed),
-            ),
-            tail_arg_order: Mutex::new(tail_arg_order),
-            callee_lambda_id: Mutex::new(*self.callee_lambda_id.lock()),
-        })
-    }
 }

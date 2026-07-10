@@ -1,5 +1,5 @@
 let group = |v: 'a, f: fn(len: i64, x: 'a) -> bool throws 'e| -> Array<'a> throws 'e 'array_group;
-let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> Array<'a> throws 'e 'array_init;
+let iota = |n: i64| -> Array<i64> 'array_iota;
 let iter = |a: Array<'a>| -> 'a 'array_iter;
 let iterq = |#clock: Any, a: Array<'a>| -> 'a 'array_iterq;
 let len = |a: Array<'a>| -> i64 'array_len;
@@ -20,6 +20,12 @@ let unzip = |a: Array<('a, 'b)>| -> (Array<'a>, Array<'b>) 'array_unzip;
 // re-evaluation. Never-until-complete emission. Sequential semantics:
 // find/find_map stop CALLING f once found (the old per-slot machinery
 // called f for every element regardless).
+
+let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> Array<'a> throws 'e sync {
+  let mut res: Array<'a> = [];
+  for i in iota(n) { res = push(res, f(i)) };
+  res
+};
 
 let fold = |a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e sync {
   let mut acc: 'b = init;

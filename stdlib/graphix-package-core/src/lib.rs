@@ -620,47 +620,6 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// guaranteed to be Some.
     fn finish(&mut self, slots: &[Slot<R, E>], a: &Self::Collection) -> Option<Value>;
 
-    /// Codegen hook for the node-graph JIT. Implementations emit the
-    /// HOF loop into the open kernel via the `emit::scaffold` fns,
-    /// compiling the callback body with `body.emit_clif(cx)`.
-    /// Returning `Ok(None)` (the default) falls back to the runtime
-    /// HOF dispatch (per-element [`Apply`] Nodes via
-    /// [`Self::finish`]).
-    ///
-    /// Implementors receive:
-    /// - `array_arg`: the outer HOF call site's input array argument
-    ///   Node.
-    /// - `body`: the callback lambda's body Node, provided by `MapQ`'s
-    ///   analysis-time setup (the callback must be statically
-    ///   resolvable — MapQ's `Apply::emit_clif` orchestration
-    ///   short-circuits otherwise).
-    /// - `elem_name` / `elem_id`: the callback's parameter name and
-    ///   BindId (`x` in `|x| body`) — the element binding the body's
-    ///   `Ref`s resolve against.
-    /// - `in_elem`: the array's element type.
-    /// - `elem_binds`: tuple-destructure callback leaves
-    ///   `(BindId, position)` when the arg is `|(k, v)|`; empty for a
-    ///   single-name `|x|` callback.
-    ///
-    /// Same contract as [`graphix_compiler::Apply::emit_clif`]:
-    /// `Ok(None)` = shape not handled, and it MUST be decided BEFORE
-    /// the first instruction is emitted (run every gate up front);
-    /// `Err` aborts the kernel build (partial emission fine — the
-    /// function is discarded). No `ExecCtx`: emission runs under the
-    /// jit lock (see design/distributed_jit.md §1). Implementations
-    /// live with each `MapFn` impl (the package that defines the
-    /// runtime semantics) — the compiler doesn't know builtin names.
-    fn emit_clif(
-        _cx: &mut graphix_compiler::fusion::emit::BodyCx,
-        _array_arg: &Node<R, E>,
-        _body: &Node<R, E>,
-        _elem_name: &ArcStr,
-        _elem_id: Option<graphix_compiler::BindId>,
-        _in_elem: &graphix_compiler::typ::Type,
-        _elem_binds: &[(graphix_compiler::BindId, usize)],
-    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
-        Ok(None)
-    }
 }
 
 #[derive(Debug)]
@@ -705,15 +664,6 @@ pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     /// inline the callback into a surrounding region (full fusion); it is
     /// never mutated. See `design/impure_hof_fusion.md` (superseding).
     pub analysis_pred: Option<Slot<R, E>>,
-    /// The per-slot template: a `clone_rebind`'d COPY of `analysis_pred`
-    /// with its sync sub-regions fused. Built lazily once on the first
-    /// slot-growing `update()` — a SEPARATE copy, so the pristine
-    /// `analysis_pred` (which `emit_clif` reads) is never mutated. `update`
-    /// `clone_rebind`s THIS per slot; each clone shares the template's
-    /// compiled kernel `Arc`s with freshly re-bound async residue (fresh
-    /// BindIds → independent per-slot state). `None` until first built, or
-    /// when the callback wasn't statically resolvable (→ interp fallback).
-    pub fused_template: Option<Node<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
@@ -749,7 +699,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
                     cur: Default::default(),
                     t: T::default(),
                     analysis_pred: None,
-                    fused_template: None,
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -766,18 +715,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             if let Some(body) =
                 graphix_compiler::fusion::lowering::hof_callback_body(&slot.pred)
             {
-                f(body);
-            }
-        }
-    }
-
-    fn for_each_hof_fused_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
-        // Expose the FUSED template's callback body (NOT the pristine
-        // `analysis_pred`) for post-fusion attribute checks: its sync
-        // sub-regions are `FusedKernel`s, residue node-walks, so #[native]
-        // gets the real native/residue verdict per node.
-        if let Some(t) = &self.fused_template {
-            if let Some(body) = graphix_compiler::fusion::lowering::hof_callback_body(t) {
                 f(body);
             }
         }
@@ -843,35 +780,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         Ok(())
     }
 
-    /// Build the per-slot callback template at COMPILE time (the fusion
-    /// phase). Reached via `CallSite::fuse` only when `try_fuse` on the
-    /// HOF call site already FAILED (the whole HOF did not batch-loop
-    /// inline) — so the callback would otherwise node-walk per element.
-    /// `clone_rebind` the pristine `analysis_pred` and fuse the CLONE
-    /// (keeping the prototype `emit_clif` reads untouched): whole-body
-    /// (pure) → replace the body with one FusedKernel; split (impure) →
-    /// fuse the body's maximal sync sub-regions in place, async residue
-    /// node-walks. Recording it here (vs. lazily in `update`) puts the
-    /// callback's fusion into FusionStats and makes it visible to the
-    /// post-fusion walk (`for_each_hof_fused_body` / #[native]). Errors
-    /// are swallowed (de-fuse, never fail the compile).
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        if self.fused_template.is_none() && self.analysis_pred.is_some() {
-            let scope = self.scope.clone();
-            let ap = self.analysis_pred.as_ref().unwrap();
-            let feeders = [(ap.id, self.etyp.clone())];
-            let t = graphix_compiler::fusion::lowering::build_fused_template(
-                ctx,
-                &ap.pred,
-                &scope,
-                &feeders,
-                self.top_id,
-            );
-            self.fused_template = Some(t);
-        }
-        Ok(())
-    }
-
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -897,18 +805,11 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                 (Some(a), true)
             }
             Some(a) => {
-                // The per-slot callback template is built at COMPILE time
-                // in `Apply::fuse` (the fusion phase), not lazily here —
-                // so its fusion is recorded in FusionStats and visible to
-                // the post-fusion graph walk (#[native]). `update` just
-                // clones it per slot below (genn::apply fallback when no
-                // template was built: fusion disabled / no static callback).
                 while self.slots.len() < a.len() {
                     // Mint this slot's fresh element binding "x" in scope
-                    // (fresh id, no ref_var). The cloned template's arg[0]
-                    // element ref + the FusedKernel's element feeder reach
-                    // THIS slot's id through the seeded remap below (the
-                    // template kept the ANALYSIS element id).
+                    // (fresh id, no ref_var) and instantiate a fresh
+                    // interpreted CallSite for it — every instantiation
+                    // is `LambdaDef::init` per (site, index).
                     let id = ctx
                         .env
                         .bind_variable(
@@ -919,41 +820,20 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                             TArc::new(graphix_compiler::expr::Origin::default()),
                         )
                         .id;
-                    // Clone the fused template for this slot: a fresh
-                    // independent graph whose sync sub-regions SHARE the
-                    // compiled kernel `Arc` and whose async residue is
-                    // freshly re-bound (fresh BindIds → independent
-                    // per-slot state). Fall back to a fresh interpreted
-                    // CallSite when no template was built (callback never
-                    // analysis-resolved). See design/impure_hof_fusion.md.
-                    let pred = match &self.fused_template {
-                        Some(t) => {
-                            let scope = self.scope.clone();
-                            let mut remap = graphix_compiler::RebindMap::default();
-                            remap.top_id = Some(self.top_id);
-                            if let Some(ap) = &self.analysis_pred {
-                                remap.insert(ap.id, id);
-                            }
-                            t.clone_rebind(ctx, &scope, &mut remap)
-                        }
-                        None => {
-                            let node =
-                                genn::reference(ctx, id, self.etyp.clone(), self.top_id);
-                            let fnode = genn::reference(
-                                ctx,
-                                self.predid,
-                                Type::Fn(self.mftyp.clone()),
-                                self.top_id,
-                            );
-                            genn::apply(
-                                fnode,
-                                self.scope.clone(),
-                                vec![node],
-                                &self.mftyp,
-                                self.top_id,
-                            )
-                        }
-                    };
+                    let node = genn::reference(ctx, id, self.etyp.clone(), self.top_id);
+                    let fnode = genn::reference(
+                        ctx,
+                        self.predid,
+                        Type::Fn(self.mftyp.clone()),
+                        self.top_id,
+                    );
+                    let pred = genn::apply(
+                        fnode,
+                        self.scope.clone(),
+                        vec![node],
+                        &self.mftyp,
+                        self.top_id,
+                    );
                     self.slots.push(Slot { id, pred, cur: None });
                 }
                 (Some(a), true)
@@ -1056,9 +936,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         if let Some(mut s) = self.analysis_pred.take() {
             s.delete(ctx);
         }
-        if let Some(mut t) = self.fused_template.take() {
-            t.delete(ctx);
-        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1071,74 +948,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         // need to put to sleep.
     }
 
-    /// Direct-path codegen (Stage D2) — the [`Apply::emit_clif`] twin
-    /// of the `Apply::emit_clif` orchestration below: locate the
-    /// callback body through the analysis_pred's resolved CallSite,
-    /// extract the element name / BindId / destructure leaves, then
-    /// delegate to the per-`MapFn` [`MapFn::emit_clif`]. Every miss is
-    /// `Ok(None)` — nothing has been emitted yet, so the call site
-    /// falls back to its next strategy (DynCall, or no fusion).
-    fn emit_clif(
-        &self,
-        callsite: &CallSite<R, E>,
-        cx: &mut graphix_compiler::fusion::emit::BodyCx,
-    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
-        // No analysis_pred → callback wasn't statically resolvable.
-        let Some(slot) = self.analysis_pred.as_ref() else {
-            return Ok(None);
-        };
-        // Outer call site's positional args: array, callback.
-        let Some(array_arg) = callsite.arg_positional(0) else {
-            return Ok(None);
-        };
-        // A Bottom-typed source (`x <- e` in value position) emits the
-        // shapeless tainted-null placeholder, which the scaffold would
-        // read as a `*const ValArray`. Bottom unifies with the
-        // signature's Array type, so only the node itself can be
-        // checked — see `emit::node_is_bottom` (soak jul08h).
-        if graphix_compiler::fusion::emit::node_is_bottom(array_arg) {
-            return Ok(None);
-        }
-        // Locate the callback's body Node through the synthesized
-        // inner CallSite's resolved Apply.
-        let inner_cs = match slot.pred.view() {
-            graphix_compiler::NodeView::CallSite(cs) => cs,
-            _ => return Ok(None),
-        };
-        let Some(inner_apply) = inner_cs.resolved_apply() else {
-            return Ok(None);
-        };
-        let g = match inner_apply {
-            graphix_compiler::ApplyView::Lambda(g) => g,
-            _ => return Ok(None),
-        };
-        let body = g.body();
-        // A `|(k, v)|` tuple-destructure arg has no single name —
-        // synthesize an element name and hand the per-leaf
-        // `(BindId, position)` list to the impl. A single-name `|x|`
-        // arg pulls its name from the callback `FnType.args[0].kind`
-        // and its BindId from the arg pattern (the body's `Ref`s carry
-        // that id — the direct path resolves BindId-first).
-        let (elem_name, elem_id, elem_binds) =
-            match g.args().first().and_then(|p| p.tuple_leaves()) {
-                Some(binds) => (arcstr::literal!("__elem"), None, binds),
-                None => {
-                    let n = match g.typ().args.first().map(|a| &a.kind) {
-                        Some(graphix_compiler::typ::FnArgKind::Positional {
-                            name: Some(n),
-                        }) => n.clone(),
-                        Some(graphix_compiler::typ::FnArgKind::Labeled {
-                            name, ..
-                        }) => name.clone(),
-                        _ => return Ok(None),
-                    };
-                    let id = g.args().first().and_then(|p| p.single_bind_id());
-                    (n, id, Vec::new())
-                }
-            };
-        // Delegate to the per-MapFn codegen.
-        T::emit_clif(cx, array_arg, body, &elem_name, elem_id, &self.etyp, &elem_binds)
-    }
 }
 
 pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
@@ -1146,33 +955,6 @@ pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
 
     const NAME: &str;
 
-    /// Direct-path codegen hook (Stage D2) — the [`MapFn::emit_clif`]
-    /// analog for the 2-arg `(acc, elem)` callback. `Ok(None)` gates
-    /// must all be decided before the first emitted instruction; after
-    /// emission starts a mismatch must `Err` (the kernel build aborts
-    /// and the subtree node-walks). The acc/elem BindIds come from the
-    /// callback's arg patterns — the direct path resolves Refs
-    /// BindId-first.
-    /// `acc_typ` is the RESOLVED accumulator type (the callback's
-    /// return `'b` from the callsite-resolved FnType) — the analysis
-    /// instance's own `body.typ()` re-mints generalized tvars unbound,
-    /// so it is NOT a reliable freeze authority for generic bodies.
-    fn emit_clif(
-        _cx: &mut graphix_compiler::fusion::emit::BodyCx,
-        _array_arg: &Node<R, E>,
-        _init_arg: &Node<R, E>,
-        _body: &Node<R, E>,
-        _acc_name: &ArcStr,
-        _acc_id: Option<graphix_compiler::BindId>,
-        _acc_binds: &[(graphix_compiler::BindId, usize)],
-        _acc_typ: &graphix_compiler::typ::Type,
-        _elem_name: &ArcStr,
-        _elem_id: Option<graphix_compiler::BindId>,
-        _in_elem: &graphix_compiler::typ::Type,
-        _elem_binds: &[(graphix_compiler::BindId, usize)],
-    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
-        Ok(None)
-    }
 }
 
 /// Pre-materialized analysis predicate for [`FoldQ`]. See
@@ -1206,9 +988,7 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     top_id: ExprId,
     fid: BindId,
     scope: Scope,
-    /// Per-slot element bindings, name-bound "x" so the per-slot
-    /// `clone_rebind` of `fused_template` resolves the callback's element
-    /// ref to THIS slot's id.
+    /// Per-slot element bindings, name-bound "x".
     binds: Vec<BindId>,
     nodes: Vec<Node<R, E>>,
     inits: Vec<Option<Value>>,
@@ -1243,10 +1023,6 @@ pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     /// Analysis-only pre-materialized callback Apply. See
     /// [`MapQ::analysis_pred`] for semantics.
     pub analysis_pred: Option<FoldAnalysisPred<R, E>>,
-    /// Per-slot callback template: a fused CLONE of `analysis_pred.pred`,
-    /// built at COMPILE time in `Apply::fuse` and cloned per slot in
-    /// `update`. `None` when fusion is disabled or no static callback.
-    fused_template: Option<Node<R, E>>,
     t: PhantomData<T>,
 }
 
@@ -1285,7 +1061,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
                     init: None,
                     arr_present: false,
                     analysis_pred: None,
-                    fused_template: None,
                     t: PhantomData,
                 }))
             }
@@ -1348,36 +1123,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         Ok(())
     }
 
-    /// Build the per-slot `(acc, elem)` callback template at COMPILE time
-    /// (the fusion phase), reached via `CallSite::fuse` when the fold call
-    /// site did not inline. Two formals (acc, elem) → `build_slot` gets two
-    /// element feeders. See `MapQ::fuse`; errors are swallowed (de-fuse).
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        if self.fused_template.is_none() && self.analysis_pred.is_some() {
-            let scope = self.scope.clone();
-            let ap = self.analysis_pred.as_ref().unwrap();
-            let feeders =
-                [(ap.acc_id, self.ityp.clone()), (ap.elem_id, self.etyp.clone())];
-            let t = graphix_compiler::fusion::lowering::build_fused_template(
-                ctx,
-                &ap.pred,
-                &scope,
-                &feeders,
-                self.top_id,
-            );
-            self.fused_template = Some(t);
-        }
-        Ok(())
-    }
-
-    fn for_each_hof_fused_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
-        if let Some(t) = &self.fused_template {
-            if let Some(body) = graphix_compiler::fusion::lowering::hof_callback_body(t) {
-                f(body);
-            }
-        }
-    }
-
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1435,45 +1180,23 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                             TArc::new(graphix_compiler::expr::Origin::default()),
                         )
                         .id;
-                    let pred = match &self.fused_template {
-                        Some(t) => {
-                            let scope = self.scope.clone();
-                            let mut remap = graphix_compiler::RebindMap::default();
-                            remap.top_id = Some(self.top_id);
-                            if let Some(ap) = &self.analysis_pred {
-                                remap.insert(ap.acc_id, acc_id);
-                                remap.insert(ap.elem_id, elem_id);
-                            }
-                            t.clone_rebind(ctx, &scope, &mut remap)
-                        }
-                        None => {
-                            let acc_ref = genn::reference(
-                                ctx,
-                                acc_id,
-                                self.ityp.clone(),
-                                self.top_id,
-                            );
-                            let elem_ref = genn::reference(
-                                ctx,
-                                elem_id,
-                                self.etyp.clone(),
-                                self.top_id,
-                            );
-                            let fnode = genn::reference(
-                                ctx,
-                                self.fid,
-                                Type::Fn(self.mftype.clone()),
-                                self.top_id,
-                            );
-                            genn::apply(
-                                fnode,
-                                self.scope.clone(),
-                                vec![acc_ref, elem_ref],
-                                &self.mftype,
-                                self.top_id,
-                            )
-                        }
-                    };
+                    let acc_ref =
+                        genn::reference(ctx, acc_id, self.ityp.clone(), self.top_id);
+                    let elem_ref =
+                        genn::reference(ctx, elem_id, self.etyp.clone(), self.top_id);
+                    let fnode = genn::reference(
+                        ctx,
+                        self.fid,
+                        Type::Fn(self.mftype.clone()),
+                        self.top_id,
+                    );
+                    let pred = genn::apply(
+                        fnode,
+                        self.scope.clone(),
+                        vec![acc_ref, elem_ref],
+                        &self.mftype,
+                        self.top_id,
+                    );
                     self.accids.push(acc_id);
                     self.binds.push(elem_id);
                     self.inits.push(None);
@@ -1660,104 +1383,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         // analysis_pred is analysis-only — no runtime sleep needed.
     }
 
-    /// Direct-path codegen (Stage D2) — the [`Apply::emit_clif`] twin
-    /// of the `Apply::emit_clif` orchestration below, adapted to
-    /// the 2-arg `(acc, elem)` callback. See `MapQ::emit_clif` for the
-    /// shared structure; every miss is `Ok(None)` (nothing emitted
-    /// yet — the call site falls back to DynCall or no fusion).
-    fn emit_clif(
-        &self,
-        callsite: &CallSite<R, E>,
-        cx: &mut graphix_compiler::fusion::emit::BodyCx,
-    ) -> Result<Option<graphix_compiler::fusion::emit::CompiledExpr>> {
-        let Some(slot) = self.analysis_pred.as_ref() else {
-            return Ok(None);
-        };
-        // Outer call site's positional args: array, init, callback.
-        let Some(array_arg) = callsite.arg_positional(0) else {
-            return Ok(None);
-        };
-        let Some(init_arg) = callsite.arg_positional(1) else {
-            return Ok(None);
-        };
-        // Bottom-typed source/init gate — same rationale as
-        // `MapQ::emit_clif` (the init seeds the accumulator, whose
-        // shape also comes from the signature).
-        if graphix_compiler::fusion::emit::node_is_bottom(array_arg)
-            || graphix_compiler::fusion::emit::node_is_bottom(init_arg)
-        {
-            return Ok(None);
-        }
-        let inner_cs = match slot.pred.view() {
-            graphix_compiler::NodeView::CallSite(cs) => cs,
-            _ => return Ok(None),
-        };
-        let Some(inner_apply) = inner_cs.resolved_apply() else {
-            return Ok(None);
-        };
-        let g = match inner_apply {
-            graphix_compiler::ApplyView::Lambda(g) => g,
-            _ => return Ok(None),
-        };
-        let body = g.body();
-        let mut params = g.typ().args.iter();
-        // The accumulator (1st) param: a single name, or a
-        // `|(a, b), v|` destructure (the sync-block multi-mut desugar)
-        // whose leaves bind off the carried acc each iteration.
-        let (acc_name, acc_id, acc_binds) =
-            match g.args().first().and_then(|p| p.tuple_leaves()) {
-                Some(binds) => {
-                    let _ = params.next();
-                    (arcstr::literal!("__acc"), None, binds)
-                }
-                None => {
-                    let n = match params.next().map(|a| &a.kind) {
-                        Some(graphix_compiler::typ::FnArgKind::Positional {
-                            name: Some(n),
-                        }) => n.clone(),
-                        Some(graphix_compiler::typ::FnArgKind::Labeled {
-                            name, ..
-                        }) => name.clone(),
-                        _ => return Ok(None),
-                    };
-                    let id = g.args().first().and_then(|p| p.single_bind_id());
-                    (n, id, Vec::new())
-                }
-            };
-        // The element (2nd) param may be an `|acc, (k, v)|`
-        // destructure — same handling as `MapQ::emit_clif`.
-        let (elem_name, elem_id, elem_binds) =
-            match g.args().get(1).and_then(|p| p.tuple_leaves()) {
-                Some(binds) => (arcstr::literal!("__elem"), None, binds),
-                None => {
-                    let n = match params.next().map(|a| &a.kind) {
-                        Some(graphix_compiler::typ::FnArgKind::Positional {
-                            name: Some(n),
-                        }) => n.clone(),
-                        Some(graphix_compiler::typ::FnArgKind::Labeled {
-                            name, ..
-                        }) => name.clone(),
-                        _ => return Ok(None),
-                    };
-                    let id = g.args().get(1).and_then(|p| p.single_bind_id());
-                    (n, id, Vec::new())
-                }
-            };
-        T::emit_clif(
-            cx,
-            array_arg,
-            init_arg,
-            body,
-            &acc_name,
-            acc_id,
-            &acc_binds,
-            &self.mftype.rtype,
-            &elem_name,
-            elem_id,
-            &self.etyp,
-            &elem_binds,
-        )
-    }
 }
 
 // ── Core builtins ──────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, RebindMap, Refs, Rt, Scope,
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope,
     Update, UserEvent,
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
@@ -180,14 +180,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         NodeView::Nop(self)
     }
 
-    fn clone_rebind(
-        &self,
-        _ctx: &mut ExecCtx<R, E>,
-        _scope: &Scope,
-        _remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        Box::new(Self { typ: self.typ.clone() })
-    }
 }
 
 #[derive(Debug)]
@@ -252,17 +244,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.emit_clif(cx)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        Box::new(Self {
-            spec: self.spec.clone(),
-            n: self.n.clone_rebind(ctx, scope, remap),
-        })
-    }
 }
 
 /// Wraps a child `Node` with its last-produced value cached for the
@@ -513,18 +494,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         emit_const_node(cx, &self.value, &self.typ)
     }
 
-    fn clone_rebind(
-        &self,
-        _ctx: &mut ExecCtx<R, E>,
-        _scope: &Scope,
-        _remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        Box::new(Self {
-            spec: self.spec.clone(),
-            value: self.value.clone(),
-            typ: self.typ.clone(),
-        })
-    }
 }
 
 // used for both mod and do
@@ -650,24 +619,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         Ok(None)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // `Do` children share the block's scope (see `Block::compile`),
-        // so recurse in lexical order — each `Bind` re-mints into the
-        // (transient) scope name map before later siblings resolve names.
-        let children: Box<[Node<R, E>]> =
-            self.children.iter().map(|c| c.clone_rebind(ctx, scope, remap)).collect();
-        Box::new(Self {
-            module: self.module,
-            spec: self.spec.clone(),
-            children,
-            scope: self.scope.clone(),
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -773,23 +724,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         emit_string_interpolate_node(cx, &self.args)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            typs: self.typs.clone(),
-            args: self
-                .args
-                .iter()
-                .map(|c| Cached::new(c.node.clone_rebind(ctx, scope, remap)))
-                .collect(),
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -890,28 +824,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         emit_connect_node(cx, &self.node, self.id)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Re-resolve the `<-` target by name: an outer Connect target
-        // (e.g. `counter`, shared across slots) resolves to the unchanged
-        // outer binding; an internal target (a block-local re-minted by an
-        // earlier sibling) resolves to its fresh id. Then re-register it as
-        // unstable and recurse the RHS.
-        let new_id = ctx
-            .env
-            .by_id
-            .get(&self.id)
-            .map(|b| ModPath::from_iter([b.name.as_str()]))
-            .and_then(|n| ctx.env.lookup_bind(&scope.lexical, &n).map(|(_, b)| b.id))
-            .unwrap_or(self.id);
-        ctx.unstable_bindings.insert(new_id);
-        let node = self.node.clone_rebind(ctx, scope, remap);
-        Box::new(Self { spec: self.spec.clone(), node, id: new_id })
-    }
 }
 
 #[derive(Debug)]
@@ -1022,31 +934,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         Ok(())
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Structural clone registered under the clone destination's
-        // DRIVING top (`RebindMap::top_id`), falling back to this
-        // node's original — the same wake-root discipline as
-        // [`Sample`]'s override (see its comment; an analysis-built
-        // tree's "original" top was never driven, soak jul08a). The
-        // deref'd source remaps through the table (a per-slot ref cell
-        // gets a fresh id); absent = a capture, kept as-is.
-        let top_id = remap.top_id.unwrap_or(self.top_id);
-        let src_id = remap.get(&self.src_id).copied().unwrap_or(self.src_id);
-        ctx.rt.ref_var(src_id, top_id);
-        Box::new(Self {
-            spec: self.spec.clone(),
-            rhs: Cached::new(self.rhs.node.clone_rebind(ctx, scope, remap)),
-            src_id,
-            target_id: None,
-            top_id,
-        })
-    }
-
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::ConnectDeref(self)
     }
@@ -1122,19 +1009,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         emit_cast_node(cx, &self.n, &self.target, self.spec.id)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            target: self.target.clone(),
-            n: self.n.clone_rebind(ctx, scope, remap),
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -1214,18 +1088,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         NodeView::Any(self)
     }
 
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        Box::new(Self {
-            spec: self.spec.clone(),
-            typ: self.typ.clone(),
-            n: self.n.iter().map(|x| x.clone_rebind(ctx, scope, remap)).collect(),
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -1314,37 +1176,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         wrap!(self.trigger, self.trigger.typecheck1(ctx))?;
         wrap!(self.arg.node, self.arg.node.typecheck1(ctx))?;
         Ok(())
-    }
-
-    fn clone_rebind(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // Structural clone with a fresh internal wake-up id registered
-        // under the clone destination's DRIVING top (`RebindMap::top_id`,
-        // set by the per-slot initiator), falling back to this node's
-        // original top. The default recompile once passed `spec().id` as
-        // top_id, so a per-slot HOF clone's `set_var(self.id, ..)` woke a
-        // root nobody drives — the sample never delivered and the slot
-        // never advanced (soak finding corpus-fuzz/divergence_000046) —
-        // and keeping the ORIGINAL top has the same failure one level up
-        // when the cloned tree was itself built in an ANALYSIS context
-        // (its "original" top was never driven — soak jul08a
-        // fuzz/divergence_000000, the nested-HOF async residue).
-        let top_id = remap.top_id.unwrap_or(self.top_id);
-        let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
-        Box::new(Self {
-            spec: self.spec.clone(),
-            triggered: 0,
-            typ: self.typ.clone(),
-            id,
-            top_id,
-            trigger: self.trigger.clone_rebind(ctx, scope, remap),
-            arg: Cached::new(self.arg.node.clone_rebind(ctx, scope, remap)),
-        })
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

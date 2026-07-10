@@ -24,7 +24,7 @@
 
 use super::{Cached, compiler::compile, pattern::StructPatternNode};
 use crate::{
-    BindId, CFlag, Event, ExecCtx, ExprId, Node, NodeView, PrintFlag, RebindMap, Refs,
+    BindId, CFlag, Event, ExecCtx, ExprId, Node, NodeView, PrintFlag, Refs,
     Rt, Scope, Update, UserEvent,
     expr::{Expr, StructurePattern},
     fusion::emit::{BodyCx, CompiledExpr},
@@ -435,15 +435,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         Ok(None)
     }
 
-    fn clone_rebind(
-        &self,
-        _ctx: &mut ExecCtx<R, E>,
-        _scope: &Scope,
-        _remap: &mut RebindMap,
-    ) -> Node<R, E> {
-        // clone_rebind is being DELETED this pass (design/sync_subset
-        // "P4 final scope"); nothing may clone a For before that
-        // deletion completes.
-        unreachable!("For nodes are never clone_rebind'd")
-    }
 }
