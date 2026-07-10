@@ -60,7 +60,40 @@ pub fn analyze<R: Rt, E: UserEvent>(
     for (g, self_bind) in &sites {
         mark_recursion(g, *self_bind, ctx);
     }
+    // Pass 4: For-loop body effects (sync-subset P4 final). An
+    // async-effect body flips the For to per-index instantiation +
+    // re-evaluation (the never-until-complete async elaboration);
+    // reads the pass-2 effect facts through the same node_effect walk.
+    mark_for_bodies(root, ctx);
     Ok(())
+}
+
+/// Mark every reachable `For` node whose BODY has an async effect —
+/// walks the root and, like the effect passes, descends resolved
+/// callee bodies (a For inside an in-language HOF's instance body is
+/// the primary customer).
+pub(crate) fn mark_for_bodies<R: Rt, E: UserEvent>(root: &Node<R, E>, ctx: &ExecCtx<R, E>) {
+    let eff: IntMap<LambdaId, EffectKind> = IntMap::default();
+    let self_ids: IntMap<BindId, LambdaId> = IntMap::default();
+    let mut bodies: Vec<&Node<R, E>> = vec![root];
+    let mut seen: ahash::AHashSet<*const u8> = ahash::AHashSet::default();
+    while let Some(b) = bodies.pop() {
+        fusion::for_each_node(b, &mut |n| match n.view() {
+            NodeView::For(fl) => {
+                let e = body_effect(&fl.body, &eff, &self_ids, ctx);
+                fl.set_async_body(matches!(e, EffectKind::Async));
+            }
+            NodeView::CallSite(cs) => {
+                if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
+                    let ptr = (g as *const GXLambda<R, E>).cast::<u8>();
+                    if seen.insert(ptr) {
+                        bodies.push(g.body());
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
 }
 
 /// Analyze a callee bound at RUNTIME (`CallSite::bind`): the lazy-bound

@@ -34,6 +34,8 @@ use crate::{
 use anyhow::Result;
 use enumflags2::BitFlags;
 use netidx::publisher::Value;
+use nohash::IntMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug)]
 pub struct For<R: Rt, E: UserEvent> {
@@ -51,6 +53,19 @@ pub struct For<R: Rt, E: UserEvent> {
     /// acc/elem patterns bind) — the loop re-runs when any of these
     /// fire, in addition to iter/init updates and the init view.
     ext_refs: Vec<BindId>,
+    /// Set by analysis pass 4 when the body has an ASYNC effect: the
+    /// loop switches to per-index instantiation + re-evaluation (each
+    /// element gets its OWN body instance so element-distinct async
+    /// state — a subscription per element — is possible; the design's
+    /// "per-element lambda instantiation", minus any cloning).
+    async_body: AtomicBool,
+    /// Per-index body instances (async path only), compiled on demand
+    /// from `body_spec` in the captured `env` — the NORMAL compile
+    /// path, never clone_rebind.
+    instances: IntMap<usize, Node<R, E>>,
+    body_spec: Expr,
+    env: crate::env::Env,
+    flags: BitFlags<CFlag>,
     scope: Scope,
     top_id: ExprId,
 }
@@ -90,6 +105,13 @@ impl<R: Rt, E: UserEvent> For<R, E> {
             spec.pos,
             spec.ori.clone(),
         )?;
+        // Snapshot the env BEFORE the shared body compiles: instance
+        // re-compiles must resolve names exactly as the shared body's
+        // first compile did — the shared body's own interior binds (the
+        // desugar's shadow `let res`) land in ctx.env and would
+        // otherwise shadow the acc pattern's binding for every
+        // instance.
+        let env = ctx.env.clone();
         let body = compile(ctx, flags, body.clone(), scope, top_id)?;
         let mut refs = Refs::default();
         body.refs(&mut refs);
@@ -101,6 +123,7 @@ impl<R: Rt, E: UserEvent> For<R, E> {
                 ext_refs.push(id);
             }
         });
+        let body_spec = body.spec().clone();
         Ok(Box::new(Self {
             spec,
             typ: acc_t,
@@ -111,6 +134,13 @@ impl<R: Rt, E: UserEvent> For<R, E> {
             body,
             elem_t,
             ext_refs,
+            async_body: AtomicBool::new(
+                std::env::var_os("GXDBG_FOR_FORCE_ASYNC").is_some(),
+            ),
+            instances: IntMap::default(),
+            body_spec,
+            env,
+            flags,
             scope: scope.clone(),
             top_id,
         }))
@@ -122,6 +152,140 @@ impl<R: Rt, E: UserEvent> For<R, E> {
     /// it at typecheck) — the emitter's element-shape authority.
     pub fn elem_typ(&self) -> &Type {
         &self.elem_t
+    }
+
+    /// Analysis pass 4's marking hook — `&self` (the pass walks shared
+    /// nodes), hence the atomic.
+    pub fn set_async_body(&self, v: bool) {
+        let v = v || std::env::var_os("GXDBG_FOR_FORCE_ASYNC").is_some();
+        self.async_body.store(v, Ordering::Relaxed)
+    }
+
+    /// The ASYNC evaluation: per-index instances pump their own async
+    /// state every cycle; the acc CHAIN threads through as far as the
+    /// arrived values allow (an instance's Cached interiors let its
+    /// sync part re-fire against a fresh acc binding), and the loop
+    /// emits only when a full pass completes — never-until-complete.
+    fn update_async(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+        arr: &netidx_value::ValArray,
+        init: Value,
+        ext_fired: bool,
+        iter_up: bool,
+        init_up: bool,
+    ) -> Option<Value> {
+        let n = arr.len();
+        // The array shrank: excess instances' async state dies with
+        // their elements (re-evaluation semantics).
+        let excess: Vec<usize> =
+            self.instances.keys().copied().filter(|i| *i >= n).collect();
+        for i in excess {
+            if let Some(mut inst) = self.instances.remove(&i) {
+                inst.delete(ctx);
+            }
+        }
+        let mut acc = init;
+        let mut complete = true;
+        let mut inst_fired = false;
+        for (i, v) in arr.iter().enumerate() {
+            if ctx.control.interrupted() {
+                return None;
+            }
+            let mut fresh = false;
+            if !self.instances.contains_key(&i) {
+                let inst = {
+                    let body_spec = self.body_spec.clone();
+                    let scope = self.scope.clone();
+                    let flags = self.flags;
+                    let top_id = self.top_id;
+                    ctx.with_restored(self.env.clone(), |ctx| {
+                        let mut inst = compile(ctx, flags, body_spec, &scope, top_id)?;
+                        inst.typecheck0(ctx)?;
+                        Ok::<_, anyhow::Error>(inst)
+                    })
+                };
+                match inst {
+                    Ok(inst) => {
+                        // A runtime-compiled instance missed analysis
+                        // pass 4 — mark its own nested For loops (the
+                        // inner loop of a nested async for must also
+                        // instantiate per index).
+                        crate::analysis::mark_for_bodies(&inst, ctx);
+                        // Prime the fresh instance's EXTERNAL refs from
+                        // the runtime cache so its first (init-forced)
+                        // update sees outer bindings — the same
+                        // priming a lazy CallSite bind does.
+                        let mut refs = Refs::default();
+                        inst.refs(&mut refs);
+                        refs.with_external_refs(|id| {
+                            if let Some(v) = ctx.rt.cached().get(&id) {
+                                event.variables.entry(id).or_insert_with(|| v.clone());
+                            }
+                        });
+                        self.instances.insert(i, inst);
+                        fresh = true;
+                    }
+                    Err(e) => {
+                        // An instance that can't compile is a bug (the
+                        // shared body compiled) — log, never complete.
+                        log::error!(
+                            "for-loop instance {i} failed to compile: {e:#}"
+                        );
+                        return None;
+                    }
+                }
+            }
+            if complete {
+                self.acc_pattern.bind(&acc, &mut |id, v| {
+                    ctx.rt.cached_mut().insert(id, v.clone());
+                    event.variables.insert(id, v);
+                });
+            }
+            self.elem_pattern.bind(v, &mut |id, v| {
+                ctx.rt.cached_mut().insert(id, v.clone());
+                event.variables.insert(id, v);
+            });
+            let inst = self.instances.get_mut(&i).unwrap();
+            // A fresh instance's FIRST update runs under a forced init
+            // view (its Refs and lazy callsite binds fire from cached
+            // state) — the flag is restored immediately after, so only
+            // this subtree sees it.
+            let saved_init = event.init;
+            if fresh {
+                event.init = true;
+            }
+            let r = inst.update(ctx, event);
+            event.init = saved_init;
+            if std::env::var_os("GXDBG_FOR").is_some() {
+                let mut ids: Vec<(BindId, bool)> = Vec::new();
+                self.acc_pattern.ids(&mut |id| {
+                    ids.push((id, event.variables.contains_key(&id)))
+                });
+                self.elem_pattern.ids(&mut |id| {
+                    ids.push((id, event.variables.contains_key(&id)))
+                });
+                eprintln!(
+                    "FOR-ASYNC i={i} fresh={fresh} complete={complete} r={r:?} \
+                     ids={ids:?} spec={}",
+                    self.body_spec
+                );
+            }
+            match r {
+                Some(v) => {
+                    inst_fired = true;
+                    if complete {
+                        acc = v;
+                    }
+                }
+                // Not arrived yet (or bottom): the chain halts here,
+                // but LATER instances still pump their async state.
+                None => complete = false,
+            }
+        }
+        let fired = iter_up || init_up || ext_fired || inst_fired || event.init;
+        if complete && fired { Some(acc) } else { None }
     }
 }
 
@@ -135,6 +299,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         };
         let init = self.init.cached.as_ref()?.clone();
         let ext_fired = self.ext_refs.iter().any(|id| event.variables.contains_key(id));
+        if self.async_body.load(Ordering::Relaxed) {
+            // The async walk runs EVERY cycle (instances must pump
+            // their own async arrivals, whose ids the For can't know);
+            // emission is gated inside on something having fired.
+            return self.update_async(
+                ctx, event, &arr, init, ext_fired, iter_up, init_up,
+            );
+        }
         if !(iter_up || init_up || ext_fired || event.init) {
             return None;
         }
@@ -198,6 +370,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         self.iter.node.delete(ctx);
         self.init.node.delete(ctx);
         self.body.delete(ctx);
+        for (_, mut inst) in std::mem::take(&mut self.instances) {
+            inst.delete(ctx);
+        }
         self.acc_pattern.ids(&mut |id| ctx.env.unbind_variable(id));
         self.elem_pattern.ids(&mut |id| ctx.env.unbind_variable(id));
     }
@@ -206,6 +381,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         self.iter.sleep(ctx);
         self.init.sleep(ctx);
         self.body.sleep(ctx);
+        for inst in self.instances.values_mut() {
+            inst.sleep(ctx);
+        }
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
