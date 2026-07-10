@@ -387,7 +387,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // `CallSite::fuse` on the owning site — MapQ's pristine
         // `analysis_pred` is not on that walk (its builtin fuses a
         // `clone_rebind` COPY instead, see `MapQ::fuse`).
-        if std::env::var_os("GXDBG_P4_OFF").is_some() {
+        // DEFAULT OFF until the per-region builtin-site discovery
+        // covers instance bodies: enabling this fused an IIFE instance
+        // body into a kernel that never emits (jul10a divergence
+        // 000003 — override off AGREEs). Opt in with
+        // GRAPHIX_P4_INSTANCE_FUSION=1 for development.
+        if std::env::var_os("GRAPHIX_P4_INSTANCE_FUSION").is_none() {
             return Ok(());
         }
         if std::env::var_os("GXDBG_P4").is_some() {
