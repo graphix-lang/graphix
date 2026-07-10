@@ -1726,6 +1726,24 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// widens to `Any` — the recursive lambda's checked signature
     /// silently degrades (soak jul05 items 11/17).
     pub(crate) rec_defs: nohash::IntSet<LambdaId>,
+    /// Param-call KNOT for the def gate (sync-subset P4): the
+    /// fn-typed arg-pattern BindIds of the lambda def(s) currently
+    /// being body-checked. A callsite whose fnode is a Ref to one of
+    /// these unifies against the param's OWN declared FnType cells
+    /// (a shallow clone — the same knot `rec_defs` gives self-calls)
+    /// instead of a freshened instantiation, so `f(v)` inside
+    /// `|f: fn(x: 'a) -> 'b, …|` types as the def's rigid 'b and the
+    /// declared-rtype acceptance check can see the body delivers it.
+    pub(crate) def_gate_params: nohash::IntSet<BindId>,
+    /// Def-gate nesting depth. `constrain_known` (the obs4 def-time
+    /// fact conjuncts) runs only at depth 1: a lambda gated INSIDE an
+    /// enclosing def's gate (an inline HOF callback) has inferred
+    /// cells still entangled with the enclosing inference, and
+    /// recording them as CLOSED facts (`bind_as(Any)` snapshots) let
+    /// the terminal settle bind the shared cell to `Array<Any>` — the
+    /// enclosing rigid rtype check then refused its own body
+    /// (sync-subset P4, the in-language map).
+    pub(crate) def_gate_depth: usize,
     /// All state owned by the fusion subsystem — the JIT module,
     /// kernel caches, abstract-type registry, builtin effects, and the
     /// compile-time fusion flags/counters. Grouped into one struct so
@@ -1789,6 +1807,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
             rec_defs: nohash::IntSet::default(),
+            def_gate_params: nohash::IntSet::default(),
+            def_gate_depth: 0,
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             active_lambdas: nohash::IntMap::default(),

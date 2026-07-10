@@ -1301,3 +1301,49 @@ run!(rec_transient_stateless_builtin, REC_TRANSIENT_STATELESS_BUILTIN, |v: Resul
     }
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// ── sync-subset P4: in-language generic HOFs (per-callsite elaboration) ──
+// A lambda param called inside another lambda's body now statically
+// resolves per callsite (the def-gate param KNOT types the body against
+// the param's declared cells; `try_static_resolve` registers
+// statically-known fn args under the instance's param BindIds). The
+// same generic def instantiates at unrelated types.
+
+const INLANG_MAP: &str = r#"
+{
+  let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b>
+    array::fold(a, [], |acc, v| array::push(acc, f(v)));
+  (m([1, 2, 3], |x| x * 2), m(["a", "b"], |s| "[s]!"))
+}
+"#;
+
+// ASPIRE: Jit — the per-site instance body's fold region does not yet
+// fuse (the P4 elaboration step); the semantics are the deliverable
+// pinned here.
+run!(inlang_map, INLANG_MAP, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => match &t[..] {
+        [Value::Array(a), Value::Array(b)] => {
+            matches!(&a[..], [Value::I64(2), Value::I64(4), Value::I64(6)])
+                && matches!(&b[..], [Value::String(x), Value::String(y)]
+                    if &**x == "a!" && &**y == "b!")
+        }
+        _ => false,
+    },
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::None);
+
+// The param knot must not leak the callsite's narrowing into the def:
+// `x + i64:1` under `-> 'a` stays polymorphic (the flagless operand
+// pre-bind is SUPPRESSED on rigid cells rather than fact-ified into a
+// poisoned conjunct — this exact program used to reject the f64 call).
+const PARAM_KNOT_NO_LEAK: &str = r#"
+{
+  let f = 'a: Number |x: 'a| -> 'a x + i64:1;
+  (f(i64:3), f(f64:2.5))
+}
+"#;
+
+run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(4), Value::F64(f)] if *f == 3.5),
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::None);

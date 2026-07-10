@@ -694,7 +694,15 @@ impl Type {
             Type::TVar(tv) => {
                 let tv = tv.read();
                 let mut tv = tv.typ.write();
-                if tv.typ.is_none() {
+                // A RIGID cell is an ENCLOSING def's declared universal
+                // reached through an inner binding (a nested lambda's
+                // gate runs inside the outer's, and its constrain_known
+                // closes leftover cells with `bind_as(Any)`). It is not
+                // an unconstrained leftover — binding it here stomped
+                // the outer contract to Any and the outer's rigid
+                // rtype check then refused its own body (sync-subset
+                // P4, the in-language map).
+                if tv.typ.is_none() && tv.rigid == 0 {
                     tv.typ = Some(t.clone());
                 }
             }

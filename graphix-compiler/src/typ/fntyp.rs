@@ -480,6 +480,15 @@ impl FnType {
             let listed = constraints.iter().any(|(ltv, _)| ltv.name == name);
             match bound {
                 Some(t) if t != Type::Bottom && t != Type::Any => {
+                    // Close the conjunct SNAPSHOT, not the live cells:
+                    // this def may be nested inside an enclosing def's
+                    // still-open gate, and `bind_as(Any)` on the live
+                    // binding foreclosed the outer's inference (an
+                    // inline fold callback's leftover cells are shared
+                    // with the fold signature the outer body's type
+                    // flows through — sync-subset P4, the in-language
+                    // map).
+                    let t = t.reset_tvars();
                     t.bind_as(&Type::Any);
                     let tc = t.normalize();
                     // The def-time binding is a FACT every instance must

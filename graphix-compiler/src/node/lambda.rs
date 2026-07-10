@@ -1017,13 +1017,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // While this def's body is checked, a self-call site must knot
         // to the def's own ftype cells (see `ExecCtx::rec_defs`).
         ctx.rec_defs.insert(def.id);
+        ctx.def_gate_depth += 1;
         let res = (def.init)(&def.scope, ctx, &mut faux_args, None, ExprId::new())
             .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
+            // Fn-typed params knot the same way self-calls do: a body
+            // callsite calling `f` must unify against the param's OWN
+            // declared cells or the body can't prove it delivers the
+            // declared (rigid) rtype — see `ExecCtx::def_gate_params`.
+            let mut param_knot: LPooled<Vec<BindId>> = LPooled::take();
+            if let ApplyView::Lambda(g) = f.view() {
+                for (pat, at) in g.args().iter().zip(ftyp.args.iter()) {
+                    if at.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
+                        && let Some(id) = pat.single_bind_id()
+                    {
+                        ctx.def_gate_params.insert(id);
+                        param_knot.push(id);
+                    }
+                }
+            }
             let res = f
                 .typecheck0(ctx, &mut faux_args)
                 .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
+            for id in param_knot.drain(..) {
+                ctx.def_gate_params.remove(&id);
+            }
             // Retain a check `Apply` for every BUILTIN lambda so
             // `CallSite::typecheck1` can run its resolved-`typecheck1`
             // (validation / type extraction). A user `GXLambda`
@@ -1049,9 +1068,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             ftyp.throws
                 .check_contains(&ctx.env, &inferred_throws)
                 .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()))?;
-            ftyp.constrain_known();
+            if ctx.def_gate_depth == 1 {
+                ftyp.constrain_known();
+            }
             Ok(())
         });
+        ctx.def_gate_depth -= 1;
         ctx.rec_defs.remove(&def.id);
         ctx.env.by_id.remove_cow(&faux_id);
         match prev_catch {

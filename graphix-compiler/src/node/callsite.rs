@@ -964,11 +964,39 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if fn_args.is_empty() {
             return Ok(());
         }
+        // PER-CALLSITE ELABORATION (sync-subset P4): when the bound
+        // callee is a user lambda, register each statically-known
+        // fn-typed arg under the INSTANCE's arg-pattern BindId in
+        // `bind_to_lambda` for the duration of the re-driven body
+        // typecheck1 below. The instance's body callsites then
+        // statically resolve calls to the lambda PARAM (`f(v)` inside
+        // `|a, f| sync { … f(v) … }`) exactly like calls to a lambda
+        // binding — per-instance BindIds are fresh per callsite, so
+        // there is no cross-site contamination by construction, and
+        // fusion needs no new code (it reads resolved CallSites). This
+        // is what lets an in-language HOF compile to the same native
+        // loop MapQ's builtins get.
+        let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
+        if let ApplyView::Lambda(g) = apply.view() {
+            for (idx, fv) in &fn_arg_targets {
+                if let Some(id) = g.args().get(*idx).and_then(|p| p.single_bind_id()) {
+                    ctx.bind_to_lambda.insert(id, fv.clone());
+                    param_binds.push(id);
+                }
+            }
+        }
         // Bound-instance firing of the CallSite phase: hand the resolved
         // callbacks to the bound apply's `typecheck1`. `fn_args` non-empty
         // here (HOF call site) is what distinguishes this from the scratch
         // `def.check` firing in `finalize_lambda` (empty `fn_args`).
-        apply.typecheck1(ctx, &mut [], &ftype, &fn_args)?;
+        // For a user-lambda callee this re-drives the body walk, during
+        // which still-unbound nested sites re-attempt static resolution
+        // with the param bindings above in scope.
+        let res = apply.typecheck1(ctx, &mut [], &ftype, &fn_args);
+        for id in param_binds.drain(..) {
+            ctx.bind_to_lambda.remove(&id);
+        }
+        res?;
         Ok(())
     }
 }
@@ -1224,7 +1252,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // for per-site monomorphization.
                 let is_rec_self_call = !ctx.rec_defs.is_empty()
                     && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-                let ftype = if is_rec_self_call {
+                // A call to one of the enclosing def's fn-typed PARAMS
+                // during its def gate — the param knot (see
+                // `ExecCtx::def_gate_params`).
+                let is_param_knot = !ctx.def_gate_params.is_empty()
+                    && matches!(
+                        self.fnode.view(),
+                        NodeView::Ref(r) if ctx.def_gate_params.contains(&r.id)
+                    );
+                let ftype = if is_rec_self_call || is_param_knot {
                     // A shallow clone shares every TVar cell with the
                     // def's ftype — the knot.
                     (*ftype).clone()

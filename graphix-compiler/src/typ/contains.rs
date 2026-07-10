@@ -268,7 +268,20 @@ impl Type {
                 if !cell_constraints_ok(t0, env, hist, &Self::Any)? {
                     return Ok(false);
                 }
-                if flags.contains(ContainsFlags::InitTVars) {
+                // A rigid cell is never WRITTEN outside the acceptance
+                // judgment either — the permissive verdict stands (the
+                // old check-then-unbind dance, minus the binding that
+                // `constrain_known` could fact-ify into a poisoned
+                // conjunct: `f(y) + 1` bound the param's quantified 'a
+                // to i64 through the flagless operand pre-bind).
+                if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() {
+                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                        eprintln!(
+                            "BIND lhs '{}({:x}) := Any",
+                            t0.name,
+                            t0.cell_addr()
+                        );
+                    }
                     t0.read().typ.write().typ = Some(Self::Any);
                 }
                 Ok(true)
@@ -425,7 +438,10 @@ impl Type {
                 // binding — the receiver's constraints must admit it
                 // (checked lock-free on the cloned-out binding).
                 match act {
-                    Act::RightCopy if flags.contains(ContainsFlags::InitTVars) => {
+                    Act::RightCopy
+                        if flags.contains(ContainsFlags::InitTVars)
+                            && !t1.is_rigid() =>
+                    {
                         let b = bound.as_ref().expect("copy without binding");
                         if !cell_constraints_ok(t1, env, hist, b)? {
                             return Ok(false);
@@ -438,7 +454,10 @@ impl Type {
                     Act::LeftAlias if flags.contains(ContainsFlags::AliasTVars) => {
                         t0.alias(t1)
                     }
-                    Act::LeftCopy if flags.contains(ContainsFlags::InitTVars) => {
+                    Act::LeftCopy
+                        if flags.contains(ContainsFlags::InitTVars)
+                            && !t0.is_rigid() =>
+                    {
                         let b = bound.as_ref().expect("copy without binding");
                         if !cell_constraints_ok(t0, env, hist, b)? {
                             return Ok(false);
@@ -471,7 +490,7 @@ impl Type {
                 if !cell_constraints_ok(t0, env, hist, t1)? {
                     return Ok(false);
                 }
-                if flags.contains(ContainsFlags::InitTVars) {
+                if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() {
                     if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
                         eprintln!(
                             "BIND lhs '{}({:x}) := {t1:?}",
@@ -508,7 +527,7 @@ impl Type {
                 if !cell_constraints_ok(t1, env, hist, t0)? {
                     return Ok(false);
                 }
-                if flags.contains(ContainsFlags::InitTVars) {
+                if flags.contains(ContainsFlags::InitTVars) && !t1.is_rigid() {
                     if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
                         eprintln!(
                             "BIND rhs '{}({:x}) := {t0:?}",
