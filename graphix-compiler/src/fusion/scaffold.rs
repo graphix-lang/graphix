@@ -1228,6 +1228,42 @@ where
 /// blocks). Same convention for [`emit_filter_loop`]/[`emit_find_loop`]
 /// predicates and [`emit_flat_map_loop`] bodies, and for the map path
 /// ([`push_field`]). There is NO build-time may-bottom de-fuse.
+/// Destructure-leaf shapes for a `|(k, v)|`-style pattern over a
+/// tuple-typed value: per bound leaf, its pattern `BindId`, tuple
+/// position, and [`LeafShape`]. `None` when the (frozen) type isn't a
+/// tuple or a bound position has no register/heap shape — those
+/// callers node-walk. Empty binds (single-name pattern) is trivially
+/// `Some(empty)`. (Moved here from the array package for the `For`
+/// node's emitter — sync-subset P4 final.)
+pub fn elem_leaves(
+    reg: &kernel_abi::AbstractRegistry,
+    in_elem: &Type,
+    elem_binds: &[(crate::BindId, usize)],
+) -> Option<Vec<(crate::BindId, usize, LeafShape)>> {
+    use kernel_abi::AbiKind;
+    if elem_binds.is_empty() {
+        return Some(Vec::new());
+    }
+    let Type::Tuple(ts) = in_elem else { return None };
+    elem_binds
+        .iter()
+        .map(|(id, i)| {
+            let shape = match kernel_abi::abi_kind(reg, ts.get(*i)?) {
+                Some(AbiKind::Scalar(p)) => LeafShape::Scalar(p),
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                    LeafShape::Composite
+                }
+                Some(AbiKind::String) => LeafShape::String,
+                Some(AbiKind::Variant) => LeafShape::Value(ValueLeafKind::Variant),
+                Some(AbiKind::Nullable) => LeafShape::Value(ValueLeafKind::Nullable),
+                Some(AbiKind::Value) => LeafShape::Value(ValueLeafKind::Value),
+                Some(AbiKind::Unit | AbiKind::Null) | None => return None,
+            };
+            Some((*id, *i, shape))
+        })
+        .collect()
+}
+
 /// The fold accumulator's shape — how the loop-carried value is held,
 /// bound for the body, made owned, and dropped when replaced.
 pub enum FoldAcc<'a> {

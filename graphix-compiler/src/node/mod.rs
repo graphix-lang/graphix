@@ -24,6 +24,7 @@ pub(crate) mod array;
 pub use array::MAX_ARRAY_INIT_LEN;
 pub(crate) mod bind;
 pub mod callsite;
+pub mod forloop;
 pub(crate) mod compiler;
 pub(crate) mod data;
 pub(crate) mod error;

@@ -72,6 +72,20 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         // Outside a sync block these forms have no meaning; inside one
         // the desugar consumed them. Anything left is a source error —
         // the backstop for assignment-as-value and loops outside sync.
+        ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
+            crate::node::forloop::For::compile(
+                ctx,
+                flags,
+                spec.clone(),
+                scope,
+                top_id,
+                iter,
+                init,
+                acc_pattern,
+                elem_pattern,
+                body,
+            )
+        }
         ExprKind::For { .. } => {
             crate::bailat!(spec, "`for` is only legal inside a sync block")
         }

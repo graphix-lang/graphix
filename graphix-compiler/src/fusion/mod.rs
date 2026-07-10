@@ -377,6 +377,7 @@ pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
     }
     match node.view() {
         NodeView::Bind(b) => rec!(&b.node),
+        NodeView::For(fl) => rec!(&fl.iter.node, &fl.init.node, &fl.body),
         NodeView::Module(m) => {
             for child in m.nodes.iter() {
                 rec!(child)
@@ -773,6 +774,17 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let Some(return_type) =
         freeze_region_return(&ctx.fusion.abstract_registry, node.typ(), &ctx.env)
     else {
+        if std::env::var_os("GXDBG_FREEZE_RET").is_some() {
+            crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+                eprintln!(
+                    "FREEZE-RET-MISS {:?} typ={}",
+                    node.spec().id,
+                    node.typ()
+                );
+                Ok::<_, std::fmt::Error>(())
+            })
+            .ok();
+        }
         return Ok(None);
     };
     ctx.fusion.stats.attempted += 1;

@@ -362,6 +362,22 @@ pub enum ExprKind {
     /// `name = value` — rebind a `let mut` local; legal only inside
     /// the `sync` block that bound it.
     Assign { name: ModPath, value: Arc<Expr> },
+    /// DESUGAR-INTERNAL loop form (never parsed, never printed as
+    /// source): the sync-block desugar's rewrite of `for` — a fold
+    /// whose accumulator is the tuple of the mut locals the body
+    /// assigns. `acc_pattern` binds the carried accumulator for the
+    /// body, `elem_pattern` binds the element, `init` seeds the
+    /// carry, and the body evaluates to the updated accumulator.
+    /// Compiled to the `For` Update node (sequential node-walk loop /
+    /// `emit_fold_loop` JIT / per-index instantiation for async
+    /// bodies — design/sync_subset.md "P4 final scope").
+    ForFold {
+        iter: Arc<Expr>,
+        init: Arc<Expr>,
+        acc_pattern: StructurePattern,
+        elem_pattern: StructurePattern,
+        body: Arc<Expr>,
+    },
 }
 
 impl ExprKind {
@@ -646,6 +662,11 @@ impl Expr {
                 body.fold(init, f)
             }
             ExprKind::Assign { name: _, value } => value.fold(init, f),
+            ExprKind::ForFold { iter, init: i, acc_pattern: _, elem_pattern: _, body } => {
+                let acc = iter.fold(init, f);
+                let acc = i.fold(acc, f);
+                body.fold(acc, f)
+            }
             ExprKind::StructRef { source, field: _ }
             | ExprKind::TupleRef { source, field: _ } => source.fold(init, f),
 

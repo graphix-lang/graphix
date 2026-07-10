@@ -1666,7 +1666,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // positional count (not source position).
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
-            None => bail!("emit_clif: builtin call site not discovered — doesn't fuse"),
+            None => bail!(
+                "emit_clif: builtin call site `{}` not discovered — doesn't fuse",
+                self.spec
+            ),
         };
         let spec_apply = match &self.spec.kind {
             ExprKind::Apply(a) => a,

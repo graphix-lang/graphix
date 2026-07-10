@@ -138,43 +138,16 @@ fn yielding_form(
                 }
             }
             let (body, assigned) = body_yielding(body, muts)?;
-            let fold_cb_args: Arc<[super::Arg]> = Arc::from_iter([
-                super::Arg {
-                    labeled: None,
-                    pattern: acc_pattern(&assigned),
-                    constraint: None,
-                    pos: e.pos,
-                },
-                super::Arg {
-                    labeled: None,
-                    pattern: pattern.clone(),
-                    constraint: None,
-                    pos: e.pos,
-                },
-            ]);
-            let cb = ExprKind::Lambda(Arc::new(super::LambdaExpr {
-                args: fold_cb_args,
-                vargs: None,
-                rtype: None,
-                constraints: Arc::from_iter(std::iter::empty()),
-                throws: None,
-                body: Either::Left(body),
-            }))
-            .to_expr(e.pos);
             let init = acc_value(e, &assigned);
-            let fold = ExprKind::Apply(super::ApplyExpr {
-                function: Arc::new(
-                    ExprKind::Ref { name: ModPath::from_iter(["array", "fold"]) }
-                        .to_expr(e.pos),
-                ),
-                args: Arc::from_iter([
-                    (None, (**iter).clone()),
-                    (None, init),
-                    (None, cb),
-                ]),
-            })
+            let forfold = ExprKind::ForFold {
+                iter: Arc::new((**iter).clone()),
+                init: Arc::new(init),
+                acc_pattern: acc_pattern(&assigned),
+                elem_pattern: pattern.clone(),
+                body: Arc::new(body),
+            }
             .to_expr(e.pos);
-            Ok((fold, assigned))
+            Ok((forfold, assigned))
         }
         ExprKind::Select(sel) => {
             // Collect the union of arm-assigned sets first, then

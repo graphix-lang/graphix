@@ -3470,6 +3470,111 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
 /// catch it — gate on the node itself and de-fuse; the node-walk runs
 /// the subtree and the value simply never fires, which IS the
 /// semantics (soak jul08h `fuzz/crash_000000`).
+/// Emit a `For` loop into the enclosing region — drives
+/// `scaffold::emit_fold_loop` with the P2 `FoldAcc` machinery, sourced
+/// from the node's own patterns and type cells (the `FoldImpl`
+/// emitter's twin, minus the FoldQ plumbing it replaced —
+/// design/sync_subset.md "P4 final scope"). Every gate miss is an
+/// `Err` (de-fuse; the sequential node-walk loop is the fallback).
+pub fn emit_for_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    node: &crate::node::forloop::For<R, E>,
+) -> Result<CompiledExpr> {
+    use crate::fusion::kernel_abi;
+    use kernel_abi::AbiKind;
+    use scaffold as scaffold_;
+    let miss = |what: &str| {
+        if std::env::var_os("GXDBG_FOR").is_some() {
+            eprintln!("FORMISS {what} at {:?}", node.spec().id);
+        }
+        anyhow!(
+            "emit_clif: For loop {what} not JIT-representable (spec id {:?}) — \
+             subtree node-walks",
+            node.spec().id
+        )
+    };
+    // Element shape: only what `scaffold::bind_elem` accepts.
+    let in_elem = kernel_abi::freeze_for_abi_normalized(cx.registry(), node.elem_typ())
+        .ok_or_else(|| miss("element type"))?;
+    match kernel_abi::abi_kind(cx.registry(), &in_elem) {
+        Some(
+            AbiKind::Scalar(_)
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::String
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value,
+        ) => {}
+        _ => return Err(miss("element shape")),
+    }
+    let (elem_name, elem_id, elem_binds) = match node.elem_pattern.tuple_leaves() {
+        Some(binds) => (arcstr::literal!("__elem"), None, binds),
+        None => match node.elem_pattern.single_bind_id() {
+            Some(id) => (arcstr::literal!("__elem"), Some(id), Vec::new()),
+            None => return Err(miss("element pattern")),
+        },
+    };
+    let elem_leaves = scaffold_::elem_leaves(cx.registry(), &in_elem, &elem_binds)
+        .ok_or_else(|| miss("element destructure leaves"))?;
+    // The carry shape from the node's own acc knot (init and body were
+    // unified into it at typecheck).
+    let acc_t = kernel_abi::freeze_for_abi_normalized(cx.registry(), node.typ())
+        .ok_or_else(|| miss("accumulator type"))?;
+    let acc_binds = node.acc_pattern.tuple_leaves();
+    let (acc_name, acc_id) = match node.acc_pattern.single_bind_id() {
+        Some(id) => (arcstr::literal!("__acc"), Some(id)),
+        None => (arcstr::literal!("__acc"), None),
+    };
+    let acc_leaves;
+    let acc = match kernel_abi::abi_kind(cx.registry(), &acc_t) {
+        Some(AbiKind::Scalar(p)) if acc_binds.is_none() || acc_binds.as_deref() == Some(&[]) => {
+            scaffold_::FoldAcc::Scalar(p)
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let binds = acc_binds.unwrap_or_default();
+            acc_leaves = scaffold_::elem_leaves(cx.registry(), &acc_t, &binds)
+                .ok_or_else(|| miss("accumulator destructure leaves"))?;
+            scaffold_::FoldAcc::Composite {
+                init_src: node_composite_source(&node.init.node),
+                body_src: node_composite_source(&node.body),
+                leaves: &acc_leaves,
+            }
+        }
+        Some(AbiKind::String)
+            if acc_binds.is_none() || acc_binds.as_deref() == Some(&[]) =>
+        {
+            scaffold_::FoldAcc::Str
+        }
+        _ => return Err(miss("accumulator shape")),
+    };
+    let owned = node_composite_source(&node.iter.node) == CompositeSource::Owned;
+    let arr = node.iter.node.emit_clif(cx)?;
+    let src_inv = node_loop_invariant_ref(cx, &node.iter.node);
+    scaffold_::emit_fold_loop(
+        cx,
+        scaffold_::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
+        acc,
+        &acc_name,
+        acc_id,
+        &scaffold_::HofElem {
+            name: &elem_name,
+            id: elem_id,
+            typ: &in_elem,
+            leaves: &elem_leaves,
+        },
+        |cx| node.init.node.emit_clif(cx),
+        |cx| node.body.emit_clif(cx),
+    )
+    .map(|(r, mut flags)| {
+        if src_inv {
+            flags.set_src_invariant();
+        }
+        flags.apply(cx, r, &[arr.disc])
+    })
+}
+
 pub fn node_is_bottom<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
 }

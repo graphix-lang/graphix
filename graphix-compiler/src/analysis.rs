@@ -241,6 +241,7 @@ fn node_effect<R: Rt, E: UserEvent>(
         NodeView::Bind(_)
         | NodeView::Module(_)
         | NodeView::Block(_)
+        | NodeView::For(_)
         | NodeView::Select(_)
         | NodeView::ExplicitParens(_)
         | NodeView::TypeCast(_)

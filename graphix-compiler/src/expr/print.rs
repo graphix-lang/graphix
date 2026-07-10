@@ -697,6 +697,15 @@ impl PrettyDisplay for LambdaExpr {
                 writeln!(buf, "for {pattern} in {iter} ")?;
                 body.fmt_pretty(buf)
             }
+            ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
+                // Desugar-internal — printed for diagnostics only,
+                // deliberately not parseable source.
+                writeln!(
+                    buf,
+                    "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} "
+                )?;
+                body.fmt_pretty(buf)
+            }
             ExprKind::Assign { name, value } => {
                 write!(buf, "{name} = ")?;
                 value.fmt_pretty(buf)
@@ -803,6 +812,15 @@ impl PrettyDisplay for ExprKind {
             }
             ExprKind::For { pattern, iter, body } => {
                 writeln!(buf, "for {pattern} in {iter} ")?;
+                body.fmt_pretty(buf)
+            }
+            ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
+                // Desugar-internal — printed for diagnostics only,
+                // deliberately not parseable source.
+                writeln!(
+                    buf,
+                    "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} "
+                )?;
                 body.fmt_pretty(buf)
             }
             ExprKind::Assign { name, value } => {
@@ -967,6 +985,12 @@ impl fmt::Display for ExprKind {
             ExprKind::SyncBlock { exprs } => print_exprs(f, exprs, "sync { ", " }", "; "),
             ExprKind::For { pattern, iter, body } => {
                 write!(f, "for {pattern} in {iter} {body}")
+            }
+            ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
+                write!(
+                    f,
+                    "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} {body}"
+                )
             }
             ExprKind::Assign { name, value } => write!(f, "{name} = {value}"),
             ExprKind::ExplicitParens(e) => write!(f, "({e})"),

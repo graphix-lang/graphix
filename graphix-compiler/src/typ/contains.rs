@@ -421,9 +421,15 @@ impl Type {
                             ActOrRecurse::Recurse(tt0.clone(), b.clone())
                         }
                         (Some(b), None) => {
+                            if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                                eprintln!("TT-RIGHTCOPY '{} <= '{}", t1.id.inner(), t0.id.inner());
+                            }
                             ActOrRecurse::Act(Act::RightCopy, Some(b.clone()))
                         }
                         (None, Some(b)) => {
+                            if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                                eprintln!("TT-LEFTCOPY '{} <= '{}", t0.id.inner(), t1.id.inner());
+                            }
                             ActOrRecurse::Act(Act::LeftCopy, Some(b.clone()))
                         }
                     }

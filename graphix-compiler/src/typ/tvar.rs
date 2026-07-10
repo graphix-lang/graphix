@@ -376,6 +376,15 @@ impl TVar {
             let oc = o.typ.read();
             (oc.typ.clone(), oc.constraints.clone())
         };
+        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+            eprintln!(
+                "COPY '{}({:x}) <= '{}: {:?}",
+                self.name,
+                Arc::as_ptr(&s.typ).addr(),
+                other.name,
+                typ
+            );
+        }
         let mut sc = s.typ.write();
         sc.typ = typ;
         for c in ocons {

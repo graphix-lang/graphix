@@ -892,6 +892,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     // Child-bearing non-container
     CallSite(&'a CallSite<R, E>),
     Select(&'a node::select::Select<R, E>),
+    For(&'a node::forloop::For<R, E>),
     TryCatch(&'a node::error::TryCatch<R, E>),
     Qop(&'a node::error::Qop<R, E>),
     OrNever(&'a node::error::OrNever<R, E>),
@@ -1287,6 +1288,11 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
                 }
             }
         });
+        if std::env::var_os("GXDBG_NATIVE_ALL").is_some() {
+            for (id, why) in ctx.fusion.stats.failed.iter() {
+                eprintln!("NATIVE-ALL {id:?}: {why}");
+            }
+        }
         let mut reasons = CompactString::new("");
         for id in &report {
             use std::fmt::Write;

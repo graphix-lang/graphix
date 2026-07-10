@@ -239,8 +239,10 @@ run!(mixed_acc, MIXED_ACC, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
-// the List accumulator idiom (cons + reverse) — List is a recursive ADT,
-// no fixed ABI layout, so this is correct-None territory for now
+// the List accumulator idiom (cons + reverse). Under the For node the
+// loop fuses: list::cons is a Sync DynCall and the acc rides the
+// 2-word Value ABI through the abstract registry — the old fold path
+// refused it (differential values verified)
 const LIST_ACC: &str = r#"
 sync {
   let mut res = list::nil(null);
@@ -255,4 +257,4 @@ run!(list_acc, LIST_ACC, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; FuseExpect::None);
+}; FuseExpect::Jit);
