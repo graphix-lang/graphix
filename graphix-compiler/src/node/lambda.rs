@@ -387,6 +387,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // `CallSite::fuse` on the owning site — MapQ's pristine
         // `analysis_pred` is not on that walk (its builtin fuses a
         // `clone_rebind` COPY instead, see `MapQ::fuse`).
+        if std::env::var_os("GXDBG_P4_OFF").is_some() {
+            return Ok(());
+        }
         if std::env::var_os("GXDBG_P4").is_some() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
