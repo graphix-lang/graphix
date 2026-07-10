@@ -228,7 +228,7 @@ impl<R: Rt, E: UserEvent> For<R, E> {
                         // pass 4 — mark its own nested For loops (the
                         // inner loop of a nested async for must also
                         // instantiate per index).
-                        crate::analysis::mark_for_bodies(&inst, ctx);
+                        crate::analysis::mark_for_bodies_standalone(&inst, ctx);
                         // Prime the fresh instance's EXTERNAL refs from
                         // the runtime cache so its first (init-forced)
                         // update sees outer bindings — the same

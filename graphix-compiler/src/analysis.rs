@@ -55,7 +55,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
     // what `build_lambda_kernel` derives.
     let sites = collect_resolved_sites(root);
     // Pass 2: effect fixpoint over the reachable bodies.
-    infer_effects(&sites, ctx);
+    let (eff, self_ids) = infer_effects(&sites, ctx);
     // Pass 3: recursion + tail marking (reads the effects from pass 2).
     for (g, self_bind) in &sites {
         mark_recursion(g, *self_bind, ctx);
@@ -64,23 +64,42 @@ pub fn analyze<R: Rt, E: UserEvent>(
     // async-effect body flips the For to per-index instantiation +
     // re-evaluation (the never-until-complete async elaboration);
     // reads the pass-2 effect facts through the same node_effect walk.
-    mark_for_bodies(root, ctx);
+    // MUST be fed pass 2's maps: with empty maps every resolved lambda
+    // call read as the Async default, so every in-language HOF body
+    // (`f(acc, v)`) took the per-index instantiation path — 100k body
+    // compiles for a 100k fold (bench/fold_sum, 2026-07-10).
+    mark_for_bodies(root, ctx, &eff, &self_ids);
     Ok(())
+}
+
+/// [`mark_for_bodies`] for a subtree with no precomputed effect facts
+/// (a runtime-compiled `For` instance): run the site discovery +
+/// effect fixpoint over the subtree first.
+pub(crate) fn mark_for_bodies_standalone<R: Rt, E: UserEvent>(
+    root: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+) {
+    let sites = collect_resolved_sites(root);
+    let (eff, self_ids) = infer_effects(&sites, ctx);
+    mark_for_bodies(root, ctx, &eff, &self_ids);
 }
 
 /// Mark every reachable `For` node whose BODY has an async effect —
 /// walks the root and, like the effect passes, descends resolved
 /// callee bodies (a For inside an in-language HOF's instance body is
 /// the primary customer).
-pub(crate) fn mark_for_bodies<R: Rt, E: UserEvent>(root: &Node<R, E>, ctx: &ExecCtx<R, E>) {
-    let eff: IntMap<LambdaId, EffectKind> = IntMap::default();
-    let self_ids: IntMap<BindId, LambdaId> = IntMap::default();
+pub(crate) fn mark_for_bodies<R: Rt, E: UserEvent>(
+    root: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+    eff: &IntMap<LambdaId, EffectKind>,
+    self_ids: &IntMap<BindId, LambdaId>,
+) {
     let mut bodies: Vec<&Node<R, E>> = vec![root];
     let mut seen: ahash::AHashSet<*const u8> = ahash::AHashSet::default();
     while let Some(b) = bodies.pop() {
         fusion::for_each_node(b, &mut |n| match n.view() {
             NodeView::For(fl) => {
-                let e = body_effect(&fl.body, &eff, &self_ids, ctx);
+                let e = body_effect(&fl.body, eff, self_ids, ctx);
                 fl.set_async_body(matches!(e, EffectKind::Async));
             }
             NodeView::CallSite(cs) => {
@@ -115,10 +134,11 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     if let Some(sb) = self_bind {
         sites.push((g, sb));
     }
-    infer_effects(&sites, ctx);
+    let (eff, self_ids) = infer_effects(&sites, ctx);
     for (g, sb) in &sites {
         mark_recursion(g, *sb, ctx);
     }
+    mark_for_bodies(g.body(), ctx, &eff, &self_ids);
 }
 
 /// Every reachable resolved-lambda call site, as `(callee, self_bind)`.
@@ -171,7 +191,7 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
 fn infer_effects<R: Rt, E: UserEvent>(
     sites: &[(&GXLambda<R, E>, BindId)],
     ctx: &ExecCtx<R, E>,
-) {
+) -> (IntMap<LambdaId, EffectKind>, IntMap<BindId, LambdaId>) {
     // Dedup the reachable bodies by LambdaId (a lambda may have many call
     // sites; its body + effect are one).
     //
@@ -209,6 +229,7 @@ fn infer_effects<R: Rt, E: UserEvent>(
             *d.intrinsic_effect.lock() = *e;
         }
     }
+    (eff, self_ids)
 }
 
 /// Fold the effect over one lambda body. `for_each_node` does not descend
