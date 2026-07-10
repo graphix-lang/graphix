@@ -462,12 +462,32 @@ and every feeder the callback body captures fired).
 - A divergence is **at least as likely a fused/JIT bug as a node-walk one** —
   verify the intended semantics against the node-walk before touching it.
 
-**Per-slot HOF callbacks** (`array::map(a, cb)` etc.): the callback fuses into a
-template kernel once at compile time, then `clone_rebind`s per array slot (each
-slot gets fresh async state). An *impure* callback splits at the async boundary —
-the sync part fuses + JITs per slot, the async residue node-walks.
-`design/impure_hof_fusion.md`, `design/composite_hof_fusion.md`,
-`design/clone_rebind_testing.md`.
+**In-language HOFs (P4 final, 2026-07-10):** the seven array traversal HOFs
+plus `init` are graphix source (`sync` blocks over `For` in array/mod.gx);
+`clone_rebind`, the fused templates, MapQ/FoldQ's fusion tendrils, the per-HOF
+`MapFn::emit_clif` impls, and the map/filter/find loop scaffolds are DELETED
+(+103/−3576). Every instantiation is `LambdaDef::init` per (site, index).
+`GXLambda::fuse` fuses each per-callsite instance BODY unconditionally (the
+`For` loop compiles via `emit_for_node` → `emit_fold_loop`); the HOF CALL SITE
+itself dispatches by node-walk (fn-typed args have no ABI). A sync body with an
+async call flips the `For` to per-index instantiation + re-evaluation
+(analysis pass 4 `mark_for_bodies` — MUST be fed pass 2's effect maps).
+MapQ/FoldQ survive ONLY as node-walk mini-interpreters for `list::`/`map::`
+HOFs until for-over-Map lands. Loop firing is BODY-DRIVEN in both modes:
+elements/acc deliver FIRED, the result fires iff any body evaluation fired (or
+the source is empty and an input fired); body/init taint is STICKY
+(never-until-complete = the sequential break). Cross-kernel call sites force
+the callee's init flag on the first call ever (a state word — the kernel
+mirror of `Callee::Static`'s `first_update` priming).
+OPEN (P4 performance completion): (1) in-language HOFs build arrays via
+persistent `push` — O(n²); needs owned-acc in-place append recognition;
+(2) the SHELL's static resolution flaps run-to-run (release: an identical
+program's instances fuse on some runs and not others — repro in
+fuzz/pending-ruling/; the fuzz harness path is deterministic, detcheck-clean);
+(3) instance-body INLINING at the call site (the per-site instance is
+monomorphic, so the dispatch cliff and the destructured/string-formal
+cross-kernel gaps all close by emitting the resolved body inline) — the
+`#[native]` HOF pins and several probes carry ASPIRE notes pointing at it.
 
 **Kernel ABI:** kind-grouped params — scalars, then array/tuple/struct pointers,
 then string, then 2-word variant/nullable/value — derived from a single source
