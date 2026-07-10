@@ -7,7 +7,7 @@ use crate::{
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{callsite::CallSite, pattern::StructPatternNode},
-    typ::{FnArgKind, FnArgType, FnType, Type, fntyp::LambdaIds},
+    typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
     wrap,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -350,10 +350,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     ) -> Result<()> {
         for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
             wrap!(arg, arg.typecheck0(ctx))?;
-            wrap!(arg, typ.check_contains(&ctx.env, &arg.typ()))?;
+            wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
         }
         wrap!(self.body, self.body.typecheck0(ctx))?;
-        wrap!(self.body, self.typ.rtype.check_contains(&ctx.env, &self.body.typ()))?;
+        wrap!(
+            self.body,
+            self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
+        )?;
         Ok(())
     }
 
@@ -961,18 +964,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .def
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
+        // EVERY arg body-checks as a Nop of its DECLARED type —
+        // including defaulted labeled args. Defaults are per-CALLSITE
+        // constructs (Eric's ruling, 2026-07-09): they compile and
+        // typecheck at each omitting site against that site's
+        // instantiated signature (`setup_bind`), where a generic
+        // default legitimately narrows the site's cells. Checking the
+        // default here against the def's rigid cells rejected every
+        // generic-typed default (rand's f64 seeds vs `'a: [Float,
+        // Int]`), and the old faux-compile also BOUND def cells the
+        // gate then had to unwind.
         let mut faux_args: LPooled<Vec<Node<R, E>>> = def
-            .argspec
+            .typ
+            .args
             .iter()
-            .zip(def.typ.args.iter())
-            .map(|(a, at)| match &a.labeled {
-                Some(Some(e)) => ctx.with_restored(def.env.clone(), |ctx| {
-                    compile(ctx, self.flags, e.clone(), &def.scope, self.top_id)
-                }),
-                Some(None) | None => {
-                    let n: Node<R, E> = Box::new(Nop { typ: at.typ.clone() });
-                    Ok(n)
-                }
+            .map(|at| {
+                let n: Node<R, E> = Box::new(Nop { typ: at.typ.clone() });
+                Ok(n)
             })
             .collect::<Result<_>>()?;
         let faux_id = BindId::new();
@@ -990,6 +998,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             },
         );
         let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);
+        // DECLARED (named) signature tvars are RIGID for the DURATION
+        // of this def gate: the body must be well-typed for ARBITRARY
+        // 'a, so a concrete body type can't bind (and thereby escape)
+        // the annotation — see `TCell::rigid`. Anonymous '_N inference
+        // cells (unannotated args, inferred rtype) stay bindable.
+        // Rigidity is CLEARED below with the gate's other cell state
+        // (`unbind_tvars`): late/dynamic binds legitimately build
+        // instances against the def's own cells (the #18 fallback in
+        // the InitFn above), and a permanently-rigid def refused every
+        // such bind.
+        let mut named_tvs: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+        def.typ.collect_tvars(&mut named_tvs);
+        named_tvs.retain(|name, _| !name.starts_with('_'));
+        for tv in named_tvs.values() {
+            tv.set_rigid();
+        }
         // While this def's body is checked, a self-call site must knot
         // to the def's own ftype cells (see `ExecCtx::rec_defs`).
         ctx.rec_defs.insert(def.id);
@@ -1034,7 +1058,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             Some(id) => ctx.env.catch.insert_cow(def.scope.dynamic.clone(), id),
             None => ctx.env.catch.remove_cow(&def.scope.dynamic),
         };
+        for tv in named_tvs.values() {
+            tv.clear_rigid();
+        }
         self.typ.unbind_tvars();
+        // GRAPHIX_RIGID_AUDIT=1: report a def-gate failure and
+        // continue — a CATALOGING tool for surveying which defs the
+        // rigid-tvar gate rejects, NOT a semantics-preserving escape:
+        // a refused acceptance check bails the walk before the interior
+        // bindings the old accept path used to make, so a rejected def
+        // that continues under audit can compile to a DIFFERENT shape
+        // (finding 37 diverged with a pointer-typed leak under audit
+        // and AGREEs under enforcement). Never trust value output from
+        // an audit-mode run of a program whose defs it rejected.
+        if res.is_err() && std::env::var_os("GRAPHIX_RIGID_AUDIT").is_some() {
+            if let Err(e) = &res {
+                eprintln!(
+                    "RIGID-AUDIT reject: {} — {e:#}",
+                    Update::<R, E>::spec(self)
+                );
+            }
+            return Ok(());
+        }
         res
     }
 

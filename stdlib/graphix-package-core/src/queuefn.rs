@@ -302,6 +302,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         }
         let mut new_lambda: Option<Value> = None;
         if let Some(v) = from[2].update(ctx, event) {
+            // `resolved` is a typecheck-time artifact; a lazily-built
+            // instance (an analysis-pred per-slot clone whose swallowed
+            // typecheck died upstream) never had one. The runtime `f`
+            // VALUE carries its own LambdaDef — the signature queuefn
+            // is wrapping — so derive the wrapper type from it
+            // (fresh-cell snapshot; the def's cells stay untouched).
+            // Without this the first `qf(..)` call received a
+            // `QueueFnErr` VALUE where the static type promises a
+            // function — soak jul09c fuzz 000003 killed the runtime.
+            if self.ftyp.is_none() {
+                if let Some(def) = v.downcast_ref::<LambdaDef<R, E>>() {
+                    self.ftyp = Some(Arc::new(def.typ.reset_tvars()));
+                }
+            }
             ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, v);
             if self.lambda.is_none() {

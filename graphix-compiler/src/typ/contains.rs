@@ -18,6 +18,16 @@ use triomphe::Arc;
 pub enum ContainsFlags {
     AliasTVars,
     InitTVars,
+    /// Enforce RIGID (declared) tvar semantics — see `TCell::rigid`.
+    /// Set ONLY on the def gate's ACCEPTANCE checks (a lambda's
+    /// declared arg types vs the faux args, declared rtype vs the body
+    /// type). Everywhere else — including other contains calls that
+    /// run while a def gate is open (union subsumption, select
+    /// dead-arm analysis, opportunistic operand pre-binds) — rigid
+    /// cells behave like ordinary unbound cells, or the gate would
+    /// perturb every non-fatal typing decision inside the body
+    /// (regressed finding 37's nested-select compile).
+    RigidCheck,
 }
 
 /// True iff binding `t` into the cell would satisfy EVERY conjunct of
@@ -146,6 +156,26 @@ impl Type {
         }
     }
 
+    /// [`Self::check_contains`] with RIGID enforcement — the def
+    /// gate's acceptance checks only (see `ContainsFlags::RigidCheck`).
+    pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
+        let ok = self.contains_int(
+            ContainsFlags::AliasTVars
+                | ContainsFlags::InitTVars
+                | ContainsFlags::RigidCheck,
+            env,
+            &mut RefHist::new(LPooled::take()),
+            t,
+        )?;
+        if ok {
+            Ok(())
+        } else {
+            format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                bail!("type mismatch {self} does not contain {t}")
+            })
+        }
+    }
+
     pub(super) fn contains_int(
         &self,
         flags: BitFlags<ContainsFlags>,
@@ -223,6 +253,17 @@ impl Type {
                 let bound = t0.read().typ.read().typ.clone();
                 if let Some(t0) = bound {
                     return t0.contains_int(flags, env, hist, t);
+                }
+                // RIGID: an unbound FROZEN cell is a declared signature
+                // tvar (alias_tvars froze it at the def). It contains
+                // nothing but itself and Bottom — for arbitrary 'a, Any
+                // is not ⊆ 'a. Binding it here let a concrete body type
+                // escape the annotation: each callsite re-instantiates
+                // 'a from its args alone, the def-time binding orphans,
+                // and the JIT trusts a signature the body never
+                // delivers (soak jul09c, rigid_tvar_body_escape).
+                if flags.contains(ContainsFlags::RigidCheck) && t0.is_rigid() {
+                    return Ok(false);
                 }
                 if !cell_constraints_ok(t0, env, hist, &Self::Any)? {
                     return Ok(false);
@@ -355,6 +396,17 @@ impl Type {
                                 ActOrRecurse::Act(Act::LeftAlias, None)
                             }
                         }
+                        // A copy would BIND the unbound receiver — a
+                        // frozen (rigid, declared) receiver must not
+                        // bind; re-verdict structurally against the
+                        // bare rigid var instead (lands in the
+                        // rigid-aware bare-TVar arms below).
+                        (Some(b), None) if flags.contains(ContainsFlags::RigidCheck) && t1i.rigid > 0 => {
+                            ActOrRecurse::Recurse(b.clone(), tt1.clone())
+                        }
+                        (None, Some(b)) if flags.contains(ContainsFlags::RigidCheck) && t0i.rigid > 0 => {
+                            ActOrRecurse::Recurse(tt0.clone(), b.clone())
+                        }
                         (Some(b), None) => {
                             ActOrRecurse::Act(Act::RightCopy, Some(b.clone()))
                         }
@@ -406,6 +458,12 @@ impl Type {
                 if let Some(t0) = bound {
                     return t0.contains_int(flags, env, hist, t1);
                 }
+                // RIGID: an unbound rigid (declared) tvar contains
+                // only itself and Bottom (Bottom was handled above) —
+                // see the `(TVar, Any)` arm.
+                if flags.contains(ContainsFlags::RigidCheck) && t0.is_rigid() {
+                    return Ok(false);
+                }
                 // The cell's constraints must admit the binding — a
                 // violation fails the unification HERE, at the site
                 // that tried it, instead of baking a wide binding that
@@ -431,6 +489,21 @@ impl Type {
                 let bound = t1.read().typ.read().typ.clone();
                 if let Some(t1) = bound {
                     return t0.contains_int(flags, env, hist, &t1);
+                }
+                // RIGID: t0 contains an arbitrary 'a only when t0
+                // contains one of the cell's CONSTRAINT conjuncts
+                // (every possible 'a ⊆ C ⊆ t0). `Any` was handled
+                // above, and a Set literally containing this cell
+                // routed to the Set arm via the would_cycle guard.
+                // See the `(TVar, Any)` arm.
+                if flags.contains(ContainsFlags::RigidCheck) && t1.is_rigid() {
+                    let cons = t1.read().typ.read().constraints.clone();
+                    for c in cons.iter() {
+                        if t0.contains_int(flags, env, hist, c)? {
+                            return Ok(true);
+                        }
+                    }
+                    return Ok(false);
                 }
                 if !cell_constraints_ok(t1, env, hist, t0)? {
                     return Ok(false);

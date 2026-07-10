@@ -87,11 +87,32 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
 pub struct TCell {
     pub(crate) typ: Option<Type>,
     pub(crate) constraints: smallvec::SmallVec<[Type; 1]>,
+    /// RIGID: a DECLARED (user-annotated, named) lambda tvar during its
+    /// def's body check. A rigid unbound cell never binds — the body
+    /// must be well-typed for ARBITRARY 'a (within the constraints), so
+    /// `contains('a, T)` is false for any concrete T and
+    /// `contains(T, 'a)` holds only when T contains a constraint
+    /// conjunct. Without this, the def check bound 'a to the body's
+    /// concrete type, `unbind_tvars` discarded it, and every callsite
+    /// re-instantiated 'a from its args alone — the signature became a
+    /// lie the JIT trusted (soak jul09c, rigid_tvar_body_escape).
+    /// Instantiation (`reset_tvars`) mints fresh cells, so callsite
+    /// unification is unaffected. Anonymous `'_N` inference cells are
+    /// never rigid — unannotated arg/rtype inference still binds.
+    /// A COUNTER, not a bool: nested def gates can share a cell (an
+    /// inner lambda annotated with the enclosing lambda's 'a), and the
+    /// inner gate's exit must not un-rigidify the outer's still-open
+    /// gate.
+    pub(crate) rigid: u32,
 }
 
 impl TCell {
     fn bound(typ: Type) -> Self {
-        TCell { typ: Some(typ), constraints: smallvec::SmallVec::new() }
+        TCell {
+            typ: Some(typ),
+            constraints: smallvec::SmallVec::new(),
+            rigid: 0,
+        }
     }
 
     /// Add `c` to the conjunction unless an equal member is present.
@@ -390,6 +411,25 @@ impl TVar {
     /// returns to constrained-unbound, not to unconstrained.
     pub fn unbind(&self) {
         self.read().typ.write().typ = None
+    }
+
+    /// Mark this var's shared cell RIGID — see [`TCell::rigid`]. Set on
+    /// DECLARED (named) signature tvars at the lambda def gate; every
+    /// same-named signature occurrence shares the cell via
+    /// `alias_tvars`, so marking the representative marks them all.
+    pub fn set_rigid(&self) {
+        self.read().typ.write().rigid += 1
+    }
+
+    /// Clear one gate's rigidity claim when it exits — see `set_rigid`.
+    pub fn clear_rigid(&self) {
+        let tv = self.read();
+        let mut cell = tv.typ.write();
+        cell.rigid = cell.rigid.saturating_sub(1);
+    }
+
+    pub(crate) fn is_rigid(&self) -> bool {
+        self.read().typ.read().rigid > 0
     }
 
     pub(super) fn would_cycle(&self, t: &Type) -> bool {
