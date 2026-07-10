@@ -12,10 +12,10 @@ A sync block interacts with the reactive graph on two independent axes
 that earlier drafts conflated:
 
 1. **Suspension** — what happens when a value the block needs has not
-   ARRIVED yet. This is `await`'s domain. The async elaboration engine
-   (per-index instantiation + re-evaluation, never-until-complete)
-   already implements suspension; it currently INFERS the suspension
-   points from effect analysis. `await` declares them.
+   ARRIVED yet. The async elaboration engine (per-index instantiation
+   + re-evaluation, never-until-complete) implements suspension, with
+   the suspension points INFERRED by effect analysis per instance
+   (see the `await` section for why a declared marker can't work).
 
 2. **Re-triggering** — when a COMPLETED evaluation re-runs. This is
    `~!`'s domain, and it lives at the USE site, not the definition
@@ -29,38 +29,28 @@ let f = || sync { ... };
 both(a, b) ~! f()
 ```
 
-## `await` — declared suspension points
+## `await` — rejected: effects are per-callsite facts
 
-`await e` is legal ONLY inside a sync block. It marks a read whose
-value arrives asynchronously: an async function call, or a capture
-whose defining expression has an async effect.
+Mandatory `await` dies on generic code: `array::map`'s body calls
+`f(v)` without knowing whether THIS site's callback is sync or async —
+the def can't be written correctly with or without the marker. That's
+the same per-callsite argument that killed `sync<trigger>`: an effect
+in this language is a fact about an INSTANCE (site-resolved signature,
+site-resolved callbacks), and a source-level marker is def-site
+information. Only inference at the instance can know, so inference
+stays the authority (analysis passes 2/4; pass 4 must be fed pass 2's
+maps — see the 2026-07-10 bench incident).
 
-- **Mandatory**: an async call or async-derived capture read inside a
-  sync block WITHOUT `await` is a compile error.
-- **Bidirectional**: `await` on a provably-sync expression is also a
-  compile error — the annotations must stay honest or they rot into
-  noise.
-- **Semantics**: `await` is the declared form of what effect analysis
-  (passes 2/4) currently infers. The analysis becomes a VERIFIER of
-  the programmer's claim instead of a silent oracle. Evaluation
-  reaching an `await` whose value has not arrived parks there
-  (never-until-complete); the block produces nothing this cycle and
-  resumes as values arrive.
-- **Not a trigger**: awaits do not define when the block re-runs.
-  Two awaits in a block have no and/or structure to define — they are
-  path-order suspension points. (An await-as-trigger reading was
-  considered and rejected: it can't express and/or without new
-  syntax, and it moves triggering back to the definition.)
-- **The cost signal**: `for v in a { await f(v) }` puts the per-index
-  instantiation + re-evaluation cost in the source text where the
-  user agreed to it. An un-awaited async call silently flipping a
-  loop to the expensive path was the old world; the annotation is the
-  new one.
-- Open question (revisit with real code): transitively, most bindings
-  in a reactive program are async-derived, so mandatory await on
-  CAPTURES may wallpaper blocks. Start strict (calls AND captures);
-  if it's wallpaper in practice, fall back to calls-only, where the
-  marker is unambiguous and carries the loop-cost signal.
+What survives from the idea:
+
+- The LEGIBILITY goal (make the async boundary and the per-index loop
+  elaboration visible) moves to tooling: LSP inlay hints at inferred
+  suspension points, and the loop-cost surfaced per instance.
+- OPTIONAL `await` as a checked assertion is still on the table: where
+  the author KNOWS a read is async, `await e` documents it and the
+  compiler errors if `e` is provably sync at that instance. Optional
+  annotations don't rot if they're verified; generic code simply
+  omits them. Deferred until wanted.
 
 ## `~!` — the force operator
 
@@ -88,8 +78,7 @@ fires.
   could never fire.)
 - **Reactive-land only**: `~!` inside a sync block is a compile
   error. Sequential code has no trigger semantics — statements run in
-  order. This gives the teaching symmetry: `await` is legal only
-  inside sync; `~!` only outside.
+  order.
 - **Precedence**: same level as `~` (lowest binary), left-associative.
 - **RHS is any expression**, not just a call — `t ~! sync { ... }`
   gates a whole block, which is what makes `sync<trigger>` syntax
@@ -116,8 +105,8 @@ trigger syntax has.
 ## Defaults
 
 Bare `sync { ... }` re-runs on any capture update (unchanged — right
-for the common case, zero ceremony). `await` marks arrival semantics
-inside; `~!` adds use-site precision outside. Nothing else.
+for the common case, zero ceremony); suspension is inferred; `~!`
+adds use-site trigger precision outside. Nothing else.
 
 ## Implementation notes
 
@@ -126,7 +115,5 @@ inside; `~!` adds use-site precision outside. Nothing else.
   trigger as the sole wake source. The per-call-site first-dispatch
   state word (built for the fold-callback priming, 2026-07-10) is the
   first-trigger priming in kernel land.
-- `await` enforcement rides the existing effect analysis: declared
-  awaits are CHECKED against inferred effects in both directions.
 - Kernel-side, a forced region's trigger disc gates the region's
   firing; the RHS emits with the init flag wired to the trigger fire.
