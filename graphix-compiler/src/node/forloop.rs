@@ -57,6 +57,16 @@ pub struct For<R: Rt, E: UserEvent> {
     /// CAPTURES (`CallSite::refs` → the resolved apply's refs) were
     /// invisible and a capture-only event never re-ran the loop.
     ext_refs: std::sync::OnceLock<Vec<BindId>>,
+    /// The ids the body tree BINDS internally (the desugar's shadow
+    /// `let`s etc.), computed lazily like `ext_refs`. The sync loop
+    /// removes them from `event.variables` before each iteration: a
+    /// shadow bind published by iteration i would otherwise keep its
+    /// value visible to iteration i+1's reads, so a BOTTOMED body
+    /// evaluation "fired" with the previous element's value (soak
+    /// jul10c generate 000000 — `fold(.., 1, |v0, _| v0 % v0)` emitted
+    /// 0 in the interp where 0 % 0 must bottom the loop; the kernel
+    /// was right).
+    body_bound: std::sync::OnceLock<Vec<BindId>>,
     /// Set by analysis pass 4 when the body has an ASYNC effect: the
     /// loop switches to per-index instantiation + re-evaluation (each
     /// element gets its OWN body instance so element-distinct async
@@ -128,6 +138,7 @@ impl<R: Rt, E: UserEvent> For<R, E> {
             body,
             elem_t,
             ext_refs: std::sync::OnceLock::new(),
+            body_bound: std::sync::OnceLock::new(),
             async_body: AtomicBool::new(
                 std::env::var_os("GXDBG_FOR_FORCE_ASYNC").is_some(),
             ),
@@ -167,6 +178,32 @@ impl<R: Rt, E: UserEvent> For<R, E> {
                 }
             });
             ext
+        })
+    }
+
+    /// The ids the body tree binds internally — see the field docs.
+    /// Collected via the fusion walker's `Bind` nodes only: the full
+    /// `refs().bound` set also contains call-site arg ids, connect
+    /// targets, and resolved-instance interiors, and clearing THOSE
+    /// per iteration broke cross-node delivery (the nested-HOF tests
+    /// hung under FusionDisabled).
+    fn body_bound(&self) -> &[BindId] {
+        self.body_bound.get_or_init(|| {
+            let mut ids: Vec<BindId> = Vec::new();
+            crate::fusion::for_each_node(&self.body, &mut |n| {
+                if let NodeView::Bind(b) = n.view() {
+                    b.pattern.ids(&mut |id| {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    });
+                }
+            });
+            let mut skip: Vec<BindId> = Vec::new();
+            self.acc_pattern.ids(&mut |id| skip.push(id));
+            self.elem_pattern.ids(&mut |id| skip.push(id));
+            ids.retain(|id| !skip.contains(id));
+            ids
         })
     }
 
@@ -324,6 +361,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
                 ctx, event, &arr, init, ext_fired, iter_up, init_up,
             );
         }
+        if std::env::var_os("GXDBG_FOR").is_some() {
+            eprintln!(
+                "FOR-SYNC-GATE spec={} iter_up={iter_up} init_up={init_up} ext={ext_fired} evinit={} iter_cached={} init_cached={}",
+                self.spec,
+                event.init,
+                self.iter.cached.is_some(),
+                self.init.cached.is_some()
+            );
+        }
         if !(iter_up || init_up || ext_fired || event.init) {
             return None;
         }
@@ -352,6 +398,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
                 out = false;
                 break;
             }
+            if std::env::var_os("GXDBG_NOCLEAR").is_none() {
+                for id in self.body_bound() {
+                    event.variables.remove(id);
+                }
+            }
             if let Some(a) = &acc {
                 self.acc_pattern.bind(a, &mut |id, v| {
                     ctx.rt.cached_mut().insert(id, v.clone());
@@ -370,6 +421,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
                 // body evaluation's taint is STICKY in the fold
                 // scaffold.
                 None => {
+                    if std::env::var_os("GXDBG_FOR").is_some() {
+                        eprintln!("FOR-SYNC-BODYNONE spec={} elem={v}", self.spec);
+                    }
                     out = false;
                     break;
                 }

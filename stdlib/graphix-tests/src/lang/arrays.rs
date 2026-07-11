@@ -385,7 +385,7 @@ array::fold([i64:1, i64:2, i64:3], (i64:0, i64:1), |(s, p), v| (s + v, p * v))
 run!(fold_tuple_acc, FOLD_TUPLE_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(6), Value::I64(6)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FOLD_STRUCT_ACC: &str = r#"
 {
@@ -428,7 +428,7 @@ array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
 run!(fold_string_acc, FOLD_STRING_ACC, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "123",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ownership edges of the owned-acc carry: a body that RETURNS the acc
 // unchanged (borrowed → cloned before the old acc drops), and a body

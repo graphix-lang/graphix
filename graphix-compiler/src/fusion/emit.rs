@@ -3550,13 +3550,13 @@ pub fn emit_for_node<R: Rt, E: UserEvent>(
         // firing over a non-empty source is body-driven (a body that
         // consumes a fired capture fires — the capture's disc reaches
         // it as a param). Env misses are synthetic ids — skip.
-        let mut srcs = vec![arr.disc];
+        let mut fire_srcs = Vec::new();
         for id in node.ext_refs() {
             if let Some(v) = cx.env.lookup_by_id(*id).map(|l| l.vv.disc) {
-                srcs.push(cx.b.use_var(v));
+                fire_srcs.push(cx.b.use_var(v));
             }
         }
-        flags.apply(cx, r, &srcs)
+        flags.apply(cx, r, &[arr.disc], &fire_srcs)
     })
 }
 

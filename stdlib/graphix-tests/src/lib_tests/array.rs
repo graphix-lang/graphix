@@ -1017,14 +1017,12 @@ run!(hof_str_filter_none, HOF_STR_FILTER_NONE, |v: Result<&Value>| matches!(
     Ok(Value::Array(a)) if a.is_empty()
 ));
 
-// ASPIRE: Jit — the callback takes a STRING formal, and the For loop's
-// cross-kernel call can't marshal string args yet; the fold instance
-// de-fuses and node-walks. Inline the site-monomorphic instance body
-// (or add string arg marshaling) and flip this to Jit.
+// P4 firing rework (2026-07-10 late): kernels now run for this shape
+// (the fired-element delivery + first-call priming unblocked it).
 const HOF_STR_FOLD: &str =
     r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
 run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6)));
-    graphix_package_core::testing::FuseExpect::None);
+    graphix_package_core::testing::FuseExpect::Jit);
 
 // find RETURNS the matched string element (moved into the Nullable result);
 // non-matches drop every iteration.
@@ -1154,16 +1152,14 @@ run!(hof_leaf_composite, HOF_LEAF_COMPOSITE, |v: Result<&Value>| matches!(
     Ok(Ok([13, 27]))
 ));
 
-// ASPIRE: Jit — the `|acc, (s, n)|` destructured formal has no single
-// BindId, so the callee kernel can't bind its leaves and the For's
-// cross-kernel call de-fuses (same family as HOF_STR_FOLD).
+// P4 firing rework (2026-07-10 late): kernels now run for this shape.
 const HOF_LEAF_STRING: &str = r#"
 array::fold([("a", 1), ("bb", 2)], 0, |acc, (s, n)| acc + str::len(s) + n)
 "#;
 run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // filter: the leaf drops pre-branch on BOTH edges (kept elements move,
 // leaves never do) — no-match + all-match covered by the two predicates.

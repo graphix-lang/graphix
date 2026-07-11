@@ -642,11 +642,19 @@ impl SlotFlags {
         cx: &mut BodyCx,
         mut r: CompiledExpr,
         srcs: &[ClifValue],
+        fire_srcs: &[ClifValue],
     ) -> CompiledExpr {
         let t = cx.b.use_var(self.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
-        // STALE (bit SET = quiet). Sources: OR their TAINT into the
-        // result; AND their STALE for the empty-source term.
+        // STALE (bit SET = quiet). `srcs` (the source array): STALE
+        // AND-folds into the empty-source term AND their TAINT is
+        // strict (a missing array bottoms the loop — the node-walk
+        // returns None without a source). `fire_srcs` (the body's
+        // captured externals): STALE only — their TAINT rides
+        // per-consumption through the body's own dataflow (a capture
+        // read only in a sleeping select arm must NOT bottom the
+        // loop: the interp emits at cycle 0 with the capture still
+        // missing — soak jul10c fuzz 000000, interp 5 vs jit 4).
         let slots_word = cx.b.use_var(self.stale);
         let mut src_quiet = cx.b.ins().iconst(types::I64, STALE);
         for s in srcs {
@@ -654,6 +662,10 @@ impl SlotFlags {
             src_quiet = cx.b.ins().band(src_quiet, ss);
             let st = cx.b.ins().band_imm(*s, TAINT);
             r.disc = cx.b.ins().bor(r.disc, st);
+        }
+        for s in fire_srcs {
+            let ss = cx.b.ins().band_imm(*s, STALE);
+            src_quiet = cx.b.ins().band(src_quiet, ss);
         }
         // quiet = slots-quiet AND (non-empty OR sources-quiet)
         let quiet = match self.len {
