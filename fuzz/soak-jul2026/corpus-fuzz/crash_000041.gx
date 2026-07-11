@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let rec fib = |n: i64| -> i64 select n {i64:0 => i64:0, i64:1 => i64:1, _ => fib({let a = i64:3; select (a, a * i64:2) {(i64:0, y) => y, (x, y) => x + y}} - i64:1) + fib(n - i64:2)}; fib(i64:12)}

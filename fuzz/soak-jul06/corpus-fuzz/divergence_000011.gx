@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    Timeout
-// mutant: array::filter([sum, "bb", "ccc"], |s| {let rec f = |v: i64| f(v + i64:1); f(i64:0)})
-// minimized:
-array::filter([f64:0., "bb", "ccc"], |s| {let rec f = |v: i64| f(v + i64:1); f(i64:0)})

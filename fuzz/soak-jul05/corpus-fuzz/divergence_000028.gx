@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(3, F64(0.0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: {let tick = array::iter([f64:1., "foo, bar, baz", f64:3., f64:4.]); let win: Array<f64> = []; array::iter; let w = select i64:4 {i64:0 => never(), _ => win}; let total = array::fold(w, f64:0., |a, x| a + x); select count(total) {i64:4 => total, _ => never()}}
-// minimized:
-{array::iter([f64:0., "foo, bar, baz", f64:3., f64:4.]); let win: Array<f64> = []; array::iter; let w = select i64:4 {i64:0 => never(), _ => win}; let total = array::fold(w, f64:0., |a, x| a + x); select count(total) {i64:4 => total, _ => never()}}

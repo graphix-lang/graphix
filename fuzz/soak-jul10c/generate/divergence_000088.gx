@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0: bool = ((!(i64:-100 <= i64:1)) || ((f64:0.0 / f64:0.0) <= (f64:2.5 - f64:2.5))); array::fold([[false], [true, true, true], [true]], i64:7, |v1, v0| (v1 % v1)) }\n// file-v1: m0.gxi\nval f0: fn(a0: bool, a1: [`B(bool), `C([bool, null], {c: string}), `Some]) -> Map<string, u8>;\nval f1: fn(a0: i64) -> string;\n// file-v1: m0.gx\nlet f0 = |v1: bool, v2: [`B(bool), `C([bool, null], {c: string}), `Some]| -> Map<string, u8> {"k0" => u8:1};\nlet f1 = |v3: i64| -> string "["xyz"]";
-// minimized:
-array::fold([true, true, true], i64:7, |v1, v0| (v1 % v1))

@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let a = [i64:100, array::find_map, i64:3]; array::filter_map(a, |x| [x, i64:1 * i64:1])}

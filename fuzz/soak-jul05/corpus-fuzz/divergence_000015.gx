@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(3, F64(3.0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(4, F64(6.0))], capped: false }] })
-// mutant: {let tick = array::iter([f64:1., f64:2., f64:3., f64:4.]); let win: Array<f64> = []; win <- array::window(#n: i64:3, tick ~ win, tick); let w = select array::len([u32:1, i64:2, i64:3]) {i64:0 => never(), _ => win}; let total = array::fold(w, f64:0., |a, x| a + x); select count(total) {i64:4 => total, _ => never()}}
-// minimized:
-{let tick = array::iter([f64:0., f64:0., f64:3., f64:4.]); let win: Array<f64> = []; win <- array::window(#n: i64:3, tick ~ win, tick); let w = select array::len([u32:1, i64:2, i64:3]) {i64:0 => never(), _ => win}; let total = array::fold(w, f64:0., |a, x| a + x); select count(total) {i64:4 => total, _ => never()}}

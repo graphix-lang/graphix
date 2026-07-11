@@ -1,4 +1,0 @@
-// CRASH: child signal: 6 (SIGABRT) (core dumped) | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace | fatal runtime error: failed to initiate panic, error 5, aborting
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-min([i64:1, i64:2, i64:3, i64:4])

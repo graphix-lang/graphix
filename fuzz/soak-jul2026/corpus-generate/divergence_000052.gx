@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("hello"))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = select ((i64:7 * i64:-100) % i64:0) { v0 if (true && false) => { b: { c: true }, n: (u8:255, true), y: (v0 - v0) }, v0 => { b: { c: true }, n: (u8:2, true), y: (-(i64:2)) } }; let v0 = (str::len("hello") * v0.y); let v1 = (i64:100 * cast<i64>((u8:1 + u8:0))$); "hello" }
-// minimized:
-{let v0 = select i64:7 % i64:0 {v0 if (true && false) => { b: { c: true }, n: (u8:255, true), y: (v0 - v0) }, v0 => { b: { c: true }, n: (u8:2, true), y: (-(i64:2)) }}; let v0 = (str::len("hello") * v0.y); let v1 = (i64:100 * cast<i64>((u8:1 + u8:0))$); "hello"}

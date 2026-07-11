@@ -1,8 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }, Epoch { events: [(0, I64(83)), (1, I64(84))], capped: false }, Epoch { events: [(0, I64(-84)), (1, I64(-83))], capped: false }, Epoch { events: [(0, I64(1)), (1, I64(2))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }, Epoch { events: [(0, I64(83)), (1, I64(84))], capped: false }, Epoch { events: [(0, I64(-84)), (1, I64(-83))], capped: false }, Epoch { events: [(1, I64(-82))], capped: false }] })
-// mutant: // schedule-v1: cap=64 events=512; in0=i64:5 in1=i64:1; in0=i64:-3 in1=i64:-1; in0=i64:2 in1=i64:0
-{ let v0: i64 = ((in1 / in1) - (in1 * i64:42)); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); ((v2 - v0) - v0) }
-// minimized:
-// schedule-v1: cap=64 events=512; in1=i64:1; in0=i64:0 in1=i64:0
-{let v0: i64 = ((in1 / in1) - (in1 * i64:42)); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); ((v2 - v0) - v0)}

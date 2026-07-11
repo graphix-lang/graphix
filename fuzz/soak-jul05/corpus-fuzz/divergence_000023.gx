@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Timeout
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, String("_test"))], capped: false }] })
-// mutant: {let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); "_test"}
-// minimized:
-{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); "_test"}

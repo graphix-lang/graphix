@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(1))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: {let a = ["a", "b", "a", "c", "b", "d"]; let xs = array::init(i64:9223372036854775807, |idx: i64| idx); i64:1}
-// minimized:
-{i64:0; let xs = array::init(i64:9223372036854775807, |idx: i64| idx); i64:1}

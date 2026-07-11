@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("hello"))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v2 = |v0: string, v1: f64| -> u8 ((u8:2 +? u8:100)$ + u8:1); let v3 = u8:255; let v3 = array::fold([i64:-1, i64:2, i64:7], (i64:100 * i64:1), |v4, v2| (v4 % v4)); let v4: {c: [z32, null], x: [bool, null]} = select v3 { i64:2 if (false || true) => { c: z32:0, x: true }, v2 => { c: z32:1, x: false } }; select v3 { i64:7 if (false && false) => str::to_upper("a"), i64:1 if false => "", i64:42 => "xyz", _ => "hello" } }
-// minimized:
-{u8:2; let v3 = u8:255; let v3 = array::fold([i64:-1, i64:2, i64:7], (i64:100 * i64:1), |v4, v2| (v4 % v4)); let v4: {c: [z32, null], x: [bool, null]} = select v3 {i64:2 if (false || true) => { c: z32:0, x: true }, v2 => { c: z32:1, x: false }}; select v3 {i64:7 if (false && false) => str::to_upper("a"), i64:1 if false => "", i64:42 => "xyz", _ => "hello"}}

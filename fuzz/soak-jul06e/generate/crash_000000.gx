@@ -1,4 +1,0 @@
-// CRASH: child signal: 11 (SIGSEGV) (core dumped)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{ let v0 = select (cast<i64>(u8:1)$ * i64:-100) { i64:-100 if (true || true) => { let mt: Array<i64> = []; mt }, v0 => [i64:0, i64:0, i64:-1] }; v0 }

@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: array::fold([{ n: "xyz" }, { n: "xyz" }], select (i64:-1 /? i64:1) { error as _ => i64:100, i64 as n => n }, |v0, v1| (i64:1 % v0))
-// minimized:
-array::fold([null, i64:0], select (i64:-1 /? i64:1) {error as _ => i64:100, i64 as n => n}, |v0, v1| (i64:1 % v0))

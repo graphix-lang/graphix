@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(1, String("x is foo and y is abstract:"))], capped: false }] })
-// mutant: {let f = |x, y| "x is [x] and y is [sys::fs::tempdir::create(null)]"; f("foo", i64:9223372036854775807)}
-// minimized:
-{let f = |x, y| "x is [x] and y is [sys::fs::tempdir::create(null)]"; f("foo", f64:0.)}

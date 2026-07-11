@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(false))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0: Map<string, string> = {"k2" => "graphix"}; let v0 = v0{"b"}$; let v1: Array<[u8, null]> = [u8:0, (u8:0 / u8:2)]; let v0 = (("hello", u8:2), str::join(#sep: "graphix", ["", v0]), (-(str::len("graphix")))); str::contains(#part: "a", "xyz") }
-// minimized:
-{let v0: Map<string, string> = {"k2" => "graphix"}; let v0 = v0{"b"}$; [u8:0, (u8:0 / u8:2)]; let v0 = (("hello", u8:2), str::join(#sep: "graphix", ["", v0]), (-(str::len("graphix")))); str::contains(#part: "a", "xyz")}

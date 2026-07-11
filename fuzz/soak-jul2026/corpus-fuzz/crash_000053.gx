@@ -1,4 +1,0 @@
-// CRASH: child signal: 6 (SIGABRT) (core dumped) | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace | fatal runtime error: failed to initiate panic, error 5, aborting
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{rand::shuffle(["Chicken is coming", "Grape", "Pilot!"]); let f = |x| array::find([i64:1, i64:0], |x| (i64:5 / x) > i64:0); f(i64:5)}

@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("xyz"))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = mod d0 dynamic { sandbox whitelist [core]; sig { val g0: fn(a0: string, a1: f64) -> u8; val g1: fn(a0: i64) -> u16 }; source r'let v0 = i64:42;\nlet g0 = |v1: string, v2: f64| -> u8 u8:1;\nlet g1 = |v3: i64| -> u16 u16:65535' }; let v1 = select v0 { error as _ => (u16:1000 % u16:1), null as _ => d0::g1(i64:42) }; let v1 = array::fold([f64:0.1, f64:3.14], (i64:42 * i64:100), |v1, v2| (i64:7 / v1)); let v2: [`A((string, string, bool)), `B(Array<string>), `C] = `A(("", "hello", true)); select v1 { i64:7 => str::concat("", "a"), v3 => "xyz" } }
-// minimized:
-{let v0 = f64:0.; v0; let v1 = array::fold([f64:0.1, f64:3.14], (i64:42 * i64:100), |v1, v2| (i64:7 / v1)); let v2: [`A((string, string, bool)), `B(Array<string>), `C] = `A(("", "hello", true)); select v1 {i64:7 => str::concat("", "a"), v3 => "xyz"}}

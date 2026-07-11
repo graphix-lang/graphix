@@ -1,4 +1,0 @@
-// CRASH: child signal: 6 (SIGABRT) (core dumped) | `DateTime + TimeDelta` overflowed | fatal runtime error: failed to initiate panic, error 5, aborting
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-array::map([map::insert, i64:2, i64:3], |x| datetime:"2024-11-05 00:00:00 UTC" + duration:3600.s * i64:9223372036854775807)

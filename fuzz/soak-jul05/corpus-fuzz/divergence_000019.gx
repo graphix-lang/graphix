@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    Timeout
-// mutant: {let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); array::group(v, |n, _| n == i64:0)}
-// minimized:
-{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); array::group(v, |n, _| n == i64:0)}

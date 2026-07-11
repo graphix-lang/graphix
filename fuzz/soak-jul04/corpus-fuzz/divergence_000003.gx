@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Timeout
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: {let a = []; let b = [i64:0, i64:1, i64:2, i64:3, i64:4, i64:5, i64:6]; let r = select uniq(array::iter([a, a, a, b])) {[] => `Empty, _ => `Nonempty}; array::group({let rec f = |v: i64| -> i64 f(v + i64:1); f(i64:0)}, |n, _| n == i64:-1)}
-// minimized:
-{let a = i64:0; let b = [i64:0, i64:1, i64:2, i64:3, i64:4, i64:5, i64:6]; let r = select uniq(array::iter([a, a, a, b])) {[] => `Empty, _ => `Nonempty}; array::group({let rec f = |v: i64| -> i64 f(v + i64:1); f(i64:0)}, |n, _| n == i64:-1)}

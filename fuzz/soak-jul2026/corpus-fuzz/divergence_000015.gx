@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Error(String("can't multiply duration by negative")))], capped: false }] })
-// mutant: {let x: duration = duration:2.s * i64:-100; x}
-// minimized:
-{let x: duration = duration:2.s * i64:-100; x}

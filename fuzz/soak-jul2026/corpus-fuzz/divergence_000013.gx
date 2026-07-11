@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    RuntimeErr("trace_wait_idle: runtime did not respond")
-// mutant: {let m = {"a" => i64:100, "b" => i64:2, "c" => i64:3, "d" => i64:4}; map::filter(m, |(k, v)| type A = B)}
-// minimized:
-{let m = {i64:0 => i64:100, "b" => i64:2, "c" => i64:3, "d" => i64:4}; map::filter(m, |(k, v)| type A = B)}

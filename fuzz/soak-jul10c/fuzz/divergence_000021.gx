@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("033"))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: sync { let mut s = ""; for v in [i64:1, i64:9223372036854775807, i64:3] {s = "[i64:0][v]"}; "[s][v]" }
-// minimized:
-sync { let mut s = ""; for v in [i64:0, i64:0, i64:3] {s = "[i64:0][v]"}; "[s][v]" }

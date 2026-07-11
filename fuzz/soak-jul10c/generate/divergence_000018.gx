@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0: [bool, null] = null; let v1 = { n: u8:0, x: f64:0.1 }; let v2 = select v1 { {n: u8:255, x: _} => "graphix", {n: v2, x: _} => "xyz" }; let v2 = |v3: i16| -> i16 (v3 * i16:7); let v4 = |v5: i16| -> i16 (v2(v5) + i16:1); let v2 = |v6: i16| -> i16 (v6 - i16:-1); let v7 = v4(i16:-32768); let v8 = select v7 { i16:1 if (i16:32767 >= i16:32767) => select ((f64:1.0 + f64:2.5) *? f64:-1.0) { error as _ => (f64:3.14 * f64:1.0), f64 as n => n }, _ => v1.x }; array::fold([v8, f64:0.1], i64:-100, |v9, v7| (v9 % v9)) }
-// minimized:
-{f64:0.; let v1 = { n: u8:0, x: f64:0.1 }; let v2 = select v1 {{n: u8:255, x: _} => "graphix", {n: v2, x: _} => "xyz"}; let v2 = |v3: i16| -> i16 (v3 * i16:7); let v4 = |v5: i16| -> i16 (v2(v5) + i16:1); let v2 = |v6: i16| -> i16 (v6 - i16:-1); let v7 = v4(i16:-32768); let v8 = select v7 {i16:1 if (i16:32767 >= i16:32767) => select ((f64:1. + f64:2.5) *? f64:-1.) {error as _ => (f64:3.14 * f64:1.), f64 as n => n}, _ => v1.x}; array::fold([v8, f64:0.1], i64:-100, |v9, v7| (v9 % v9))}

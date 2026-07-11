@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = true; let v1: u8 = (try (((try ((u8:1 %? (u8:100 + u8:0)))? catch(e) => u8:2) *? ((u8:100 / u8:0) + u8:0)))? catch(e) => ((u8:2 - u8:1) * u8:1)); let v2: i64 = select v1 { v2 if (f64:-1.0 < f64:0.0) => (-((i64:1 % i64:7))), u8:2 => i64:-100, v0 => i64:-1 }; let v4 = 'a: Number |v0: 'a, v3: 'a| -> 'a (v0 - v0); let v5 = select i64:100 { i64:100 if (!v0) => cast<f64>((v1 + u8:100))$, _ if (!v0) => f64:1.0, _ => (f64:-1.0 / f64:3.14) }; v4((v4(i64:-1, v2) - v4(i64:42, v2)), (v4(v2, v2) - v2)) }
-// minimized:
-{let v0 = true; let v1: u8 = ((try ((u8:1 %? (u8:100 + u8:0)))? catch(e) => u8:2) *? ((u8:100 / u8:0) + u8:0))?; let v2: i64 = select v1 {v2 if (f64:-1. < f64:0.) => (-((i64:1 % i64:7))), u8:2 => i64:-100, v0 => i64:-1}; let v4 = 'a: Number|v0: 'a, v3: 'a| -> 'a (v0 - v0); let v5 = select i64:100 {i64:100 if (!v0) => cast<f64>((v1 + u8:100))$, _ if (!v0) => f64:1., _ => (f64:-1. / f64:3.14)}; v4((v4(i64:-1, v2) - v4(i64:42, v2)), (v4(v2, v2) - v2))}

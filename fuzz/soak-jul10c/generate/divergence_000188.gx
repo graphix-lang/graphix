@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let rec v0 = |v1: i64| -> i64 select v1 { v2 if v2 <= i64:0 => cast<i64>(u8:1)$, v2 => (v0(v2 - i64:1) + v0(v2 - i64:2)) }; let v3 = v0(i64:2); let v4 = select str::len("["hello"]-[f64:0.1]") { i64:1 if (!false) => (cast<i64>(i32:-2147483648)$ * (i64:7 + i64:100)), v0 => i64:-1 }; let v5: Map<string, i64> = {"b" => i64:0}; let v6: i64 = (v4 + (v3 - str::len("xyz"))); array::fold([u8:2, u8:100], (u8:2 * u8:2), |v5, v6| (u8:100 % v5)) }
-// minimized:
-array::fold([i64:0, i64:0], (u8:2 * u8:2), |v5, v6| (u8:100 % v5))

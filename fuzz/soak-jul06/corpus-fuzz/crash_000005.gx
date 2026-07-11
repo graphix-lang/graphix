@@ -1,5 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-// schedule-v1: cap=64 events=512; in0=i64:4; in0=i64:4; in0=i64:9
-seq(i64:0, i64:9223372036854775807)

@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [Bool(true), Bool(true), Bool(false)] }) })))), U8(1)] }) })))))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [Bool(true), Bool(true), Bool(true)] }) })))), U8(1)] }) })))))], capped: false }] })
-// mutant: { let v2 = |v0, v1| ((v1 + v1) * v1); let v3 = v2(i64:42, i64:100); let v4 = v2(f64:1.0, f64:3.14); let v2 = {"b" => { a: "hello", b: u8:0 }}; ([(!false), true, (f64:1.0 == f64:-1.0)], u8:1) }
-// minimized:
-([(!false), true, f64:0. == f64:-1.], u8:1)

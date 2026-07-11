@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(4, I64(-9223372036854775756))], capped: false }] })
-// mutant: sync { let mut st = { n: i64:0, sum: i64:0 }; for v in {let f = |#foo: i64 = i64:0, #bar: i64 = i64:1, baz| (foo - bar) + baz; let g = |#bar: i64 = i64:1, #foo: i64 = i64:0, baz| (foo - bar) + baz; let h = |#bar: i64 = i64:1, #zam: i64 = i64:55, #foo: i64 = i64:0, baz| (foo - bar) + baz + zam; let fs = [f, g, h]; let f: fn(x: i64) -> i64 = never(); f <- array::iter(fs); array::group(f(i64:1), |n, _| n == i64:3)} {st = { n: st.n + i64:1, sum: st.sum + v }}; st.n * i64:9223372036854775807 + st.sum }
-// minimized:
-sync { let mut st = { n: i64:0, sum: i64:0 }; for v in {let f = |#foo: i64 = i64:0, #bar: i64 = i64:1, baz| (foo - bar); let g = |#bar: i64 = i64:1, #foo: i64 = i64:0, baz| (foo - bar) + baz; let h = |#bar: i64 = i64:1, #zam: i64 = i64:55, #foo: i64 = i64:0, baz| (foo - bar) + baz + zam; let fs = [f, g, h]; let f: fn(x: i64) -> i64 = never(); f <- array::iter(fs); array::group(f(i64:1), |n, _| n == i64:3)} {st = { n: st.n + i64:1, sum: st.sum + v }}; st.n * i64:9223372036854775807 + st.sum }

@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, String("graphix"))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = (((u8:255 - u8:100) /? u8:0)$, ("xyz", cast<i64>(u8:255)$, u8:255)); let v0 = (v0.0 + array::fold([u8:0], u8:100, |v0, v1| u8:0)); let v1 = select v0 { v1 => [(false && true), (!false), (!false)] }; let v2 = (i64:7, f64:0.1, "hello"); "graphix" }
-// minimized:
-{let v0 = ((u8:255 /? u8:0)$, ("xyz", cast<i64>(u8:255)$, u8:255)); let v0 = (v0.0 + array::fold([u8:0], u8:100, |v0, v1| u8:0)); let v1 = select v0 {v1 => [(false && true), (!false), (!false)]}; let v2 = (i64:7, f64:0.1, "hello"); "graphix"}

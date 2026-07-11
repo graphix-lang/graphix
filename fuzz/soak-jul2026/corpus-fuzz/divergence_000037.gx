@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(false))], capped: false }] })
-// jit:    Timeout
-// mutant: {let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => f(i64:0), m => (i64:0 + f(m - i64:1))}; let v = f(i64:8); false}
-// minimized:
-{let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => f(i64:0), m => i64:0 + f(m - i64:1)}; let v = f(i64:8); false}

@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Error(String("foo")))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(140307593718912))], capped: false }] })
-// mutant: {let rec countdown = |n: i64, acc| -> i64 select n {i64:0 => acc, _ => error("foo")}; countdown(i64:100, i64:0)}
-// minimized:
-{let rec countdown = |n: i64, acc| -> i64 select n {i64:0 => acc, _ => error(i64:0)}; countdown(i64:100, i64:0)}

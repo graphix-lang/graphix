@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(42), I64(2), I64(1)] }) })))))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = &f32:0.25; let v0 = array::fold([f64:1.0, f64:2.5, f64:0.0], (u8:1 - u8:2), |v1, v2| (u8:0 / v1)); let v2 = |v0: f64, v1: i64| -> i64 { let v0 = ((i64:42 / v1) >= (i64:2 % v1)); ((v1 - v1) / (-(i64:7))) }; let v3 = &false; let v2 = |v4: i64| select v4 { i64:0 => (-(i64:42)), _ => error("a") }; let v5 = (try (v2(i64:0))? catch(e) => i64:7); select v0 { v6 => [(-(v5)), i64:2, cast<i64>(i32:1)$] } }
-// minimized:
-{f64:0.; let v0 = array::fold([f64:1., f64:2.5, f64:0.], (u8:1 - u8:2), |v1, v2| (u8:0 / v1)); let v2 = |v0: f64, v1: i64| -> i64 {let v0 = ((i64:42 / v1) >= (i64:2 % v1)); ((v1 - v1) / (-(i64:7)))}; let v3 = &false; let v2 = |v4: i64| select v4 {i64:0 => (-(i64:42)), _ => error("a")}; let v5 = (try (v2(i64:0))? catch(e) => i64:7); select v0 {v6 => [(-(v5)), i64:2, cast<i64>(i32:1)$]}}

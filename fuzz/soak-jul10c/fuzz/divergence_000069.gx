@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(4, I64(5))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(4, I64(4))], capped: false }] })
-// mutant: {let y = array::iter([i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, i64:7, i64:8]); let m = array::map([i64:1], |x| select i64:1 {i64:1 => x, _ => y}); let c = count(m); select count(y) {i64:4 => c, _ => never()}}
-// minimized:
-{let y = array::iter([null, i64:2, i64:3, i64:4, i64:5, i64:6, i64:7, i64:8]); let m = array::map([i64:1], |x| select i64:1 {i64:1 => x, _ => y}); let c = count(m); select count(y) {i64:4 => c, _ => never()}}

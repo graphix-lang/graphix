@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-array::group(seq(i64:0, i64:9223372036854775807), |n, _| n != i64:4)

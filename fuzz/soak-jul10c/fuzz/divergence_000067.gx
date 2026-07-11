@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(1, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(100), I64(2), I64(4)] }) }))))), (2, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(2), I64(2), I64(4)] }) }))))), (3, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [I64(2), I64(4)] }) }))))), (4, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(4), I64(2), I64(4)] }) })))))], capped: false }] })
-// mutant: sync { let mut res = []; for v in [list::iter(list::from_array([i64:100, i64:2, i64:3, i64:4])), i64:2, i64:3, i64:4] {select v % i64:2 {i64:0 => res = array::push(res, v), _ => i64:1}}; res }
-// minimized:
-sync { let mut res = []; for v in [list::iter(list::from_array([i64:0, i64:2, i64:3, i64:4])), i64:2, i64:3, i64:4] {select v % i64:2 {i64:0 => res = array::push(res, v), _ => i64:1}}; res }

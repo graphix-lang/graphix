@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(true), Bool(false)] }) })))))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(true), Bool(true)] }) })))))], capped: false }] })
-// mutant: { let v2 = 'a: Number |v0: 'a, v1: 'a| -> 'a (((v1 * v0) - v1) - v0); let v3: i64 = v2((i64:2 - i64:100), (i64:1 / i64:1)); let v4: u8 = v2((try ((u8:1 %? u8:255))? catch(e) => u8:2), (u8:2 * u8:100)); let v3 = |v5| ((v5 + v5) * v5); let v6 = v3(i64:2); let v7 = v3(f64:3.14); let v8 = |v9: u8| -> u8 (v9 * u8:255); let v10 = |v11: u8| -> u8 (v8(v11) + u8:255); let v8 = u8:0; let v12 = v10(u8:0); [true, (i64:0 == (i64:7 *? i64:7)$)] }
-// minimized:
-[true, i64:0 == (i64:7 *? i64:7)$]

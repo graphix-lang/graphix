@@ -1,4 +1,0 @@
-// CRASH: child signal: 9 (SIGKILL)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let m = {"outer" => seq(i64:-9223372036854775808, i64:4)}; m{"outer"}}

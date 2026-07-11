@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = &f64:3.14; let v0: (Array<f64>, {c: bool, n: f64}, bool) = (array::flat_map(["a", "a", "graphix"], |v0| f64:-1.0), { c: false, n: (f64:2.5 * f64:-1.0) }, ((false && true) || true)); let v1: [f64, null] = select v0 { ([v1, v0..], {c: false, n: v2}, true) if (u8:255 != u8:2) => null, ([v1], {c: false, n: _}, true) => null, (v1, {c: v2, n: v3}, v0) => f64:1.0 }; let v0: [`A(string, (f64, u8)), `C(bool, i64), `Some([f64, null], [f64, null])] = `A("[(false || false)]-[(i64:1 + i64:1)]", (f64:0.1, u8:1)); let v1 = select v1 { v2 if (f64:1.0 < f64:0.0) => false, _ if (f64:0.0 == f64:-1.0) => true, _ => (true && (!false)) }; let v1 = [true, false, false]; array::fold([i64:-1, i64:100, i64:2], select (i64:0 %? i64:0) { error as _ => i64:1, i64 as n => n }, |v2, v3| (i64:2 % v2)) }
-// minimized:
-array::fold([i64:0, i64:100, i64:2], select (i64:0 %? i64:0) {error as _ => i64:1, i64 as n => n}, |v2, v3| (i64:2 % v2))

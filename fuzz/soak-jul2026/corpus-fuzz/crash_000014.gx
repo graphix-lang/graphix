@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let get_val = "/local/get_val"; let set_val = "/local/set_val"; let v: Any = never(); sys::net::rpc(#path: get_val, #doc: "get the value", #spec: null, #f: |a: null| a ~ v); sys::net::rpc(#path: set_val, #doc: "set the value", #spec: { val: { default: null, doc: "The value" } }, #f: |args: {val: Any}| {v <- args.val; args.val ~ null}); let r: i64 = sys::net::call(set_val, { val: i64:1 })?; let r2: i64 = sys::net::call(get_val, null)?; r2}

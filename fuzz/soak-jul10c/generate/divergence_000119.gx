@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = u8:100; let v0 = |v1: i64| select v1 { i64:0 => true, _ => error(f64:0.0) }; let v2 = (try (v0(i64:1))? catch(e) => (f64:2.5 <= f64:0.0)); array::fold([i64:7, i64:-1, i64:100], i64:100, |v3, v4| (v3 % v3)) }\n// file-v1: m0.gxi\nval k0: (f32, string);\nval f0: fn(a0: string, a1: f64) -> i64;\n// file-v1: m0.gx\nlet k0: (f32, string) = (f32:0.25, "");\nlet f0 = |v0: string, v1: f64| cast<i64>(cast<z32>(i16:-1)$)$;
-// minimized:
-array::fold([i64:0, i64:-1, i64:100], i64:100, |v3, v4| (v3 % v3))

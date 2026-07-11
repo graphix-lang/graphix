@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [I64(5), I64(5)] }) })))))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: sync { let mut m = i64:0; let m = array::map([i64:1, i64:0], |x| i64:5 / x); m }
-// minimized:
-sync { i64:0; let m = array::map([i64:1, i64:0], |x| i64:5 / x); m }

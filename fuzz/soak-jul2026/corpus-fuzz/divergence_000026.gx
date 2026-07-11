@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// jit:    RuntimeErr("trace_wait_idle: runtime is dead")
-// mutant: {let x = (|i| i)("hello"); let w = x / i64:4; let v = w + i64:1; select x {i64:5 => i64:99, i64:6 => v, _ => v}}
-// minimized:
-{let x = (|i| i)(true); let w = x / i64:4; let v = w + i64:1; select x {i64:5 => i64:99, i64:6 => v, _ => v}}

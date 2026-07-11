@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Null)], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: { let v0 = {"k1" => "xyz"}; let v1: [`C({c: u8}, bool), `Some] = `C({ c: u8:100 }, false); let v1: [string, null] = v0{"k2"}$; select array::fold([i64:100, i64:2, i64:-1], i64:100, |v1, v2| v1) { i64:100 if (false || true) => null, _ => false } }
-// minimized:
-{let v0 = {"k1" => "xyz"}; { c: u8:100 }; let v1: [null, string] = v0{"k2"}$; select array::fold([i64:100, i64:2, i64:-1], i64:100, |v1, v2| v1) {i64:100 if (false || true) => null, _ => false}}

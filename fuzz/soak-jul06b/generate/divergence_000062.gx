@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [U8(100), Bool(false)] }) })))))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [U8(100), Bool(true)] }) })))))], capped: false }] })
-// mutant: { let v0 = select i64:1 { v0 if (!false) => (!(!false)), i64:42 => (!true), _ => array::fold([("graphix", "graphix"), ("xyz", ""), ("hello", "xyz")], true, |v0, (v1, v2)| false) }; let v1: f64 = cast<f64>((-(cast<i64>(u8:1)$)))$; (u8:100, (!(v1 >= v1))) }
-// minimized:
-{i64:0; let v1: f64 = cast<f64>((-(cast<i64>(u8:1)$)))$; (u8:100, (!(v1 >= v1)))}

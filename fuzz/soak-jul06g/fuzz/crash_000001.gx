@@ -1,4 +1,0 @@
-// CRASH: child no VERDICT line (exit status: 0)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-array::find([sys::io::write_exact(sys::io::stdout(null), buffer::from_string("12345")), `Green, `Blue], |v| v == `Green)

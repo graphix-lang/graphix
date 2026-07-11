@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: array::fold([false, true, true], (u8:100 * u8:100), |v0, v1| (u8:2 % v0))
-// minimized:
-array::fold([true, true, true], (u8:100 * u8:100), |v0, v1| (u8:2 % v0))

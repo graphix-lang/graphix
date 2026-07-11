@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(1)), (1, I64(1)), (2, I64(1))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(1))], capped: false }] })
-// mutant: {type F = fn(#x: i64, #y: i64) -> i64; type T = {bar: i64, f: F, foo: string}; let t: T = { bar: i64:2, f: |#x: i64, #y: i64| x - y, foo: "hello world" }; let u: T = { bar: i64:42, f: |#c: i64 = i64:1, #y: i64, #x: i64| (x - y) + c, foo: "hello foo" }; let f: F = select array::iter([i64:0, i64:1]) {i64:0 => t.f, i64:1 => u.f, _ => never()}; {let rec g = |n: i64| -> i64 select n {i64:0 => cast<i64>(true)$, _ => g(n - i64:1)}; g(i64:3)}}
-// minimized:
-{type F = fn(#x: i64, #y: i64) -> i64; type T = {bar: i64, f: F, foo: string}; let t: T = { bar: i64:0, f: |#x: i64, #y: i64| x, foo: "hello world" }; let u: T = { bar: i64:42, f: |#c: i64 = i64:1, #y: i64, #x: i64| (x - y) + c, foo: "hello foo" }; let f: F = select array::iter([i64:0, i64:1]) {i64:0 => t.f, i64:1 => u.f, _ => never()}; {let rec g = |n: i64| -> i64 select n {i64:0 => cast<i64>(true)$, _ => g(n - i64:1)}; g(i64:3)}}

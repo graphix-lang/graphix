@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(100), I64(100), I64(0)] }) })))), Bool(false), F64(0.0)] }) })))))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(100), I64(100), I64(0)] }) })))), Bool(true), F64(0.0)] }) })))))], capped: false }] })
-// mutant: { let v0: [`A({c: u8}), `Nil] = `Nil; let v0 = "hello"; let v0 = (true && false); let v1: (Map<string, i64>, {n: string}, Map<string, i64>) = ({"k1" => i64:42}, { n: "a" }, {"k0" => i64:7, "k2" => i64:100, "a" => i64:2}); ((i64:100, i64:100, i64:0), ((i64:1 + i64:2) == cast<i64>(u8:100)$), f64:0.0) }
-// minimized:
-(f64:0., ((i64:1 + i64:2) == cast<i64>(u8:100)$), f64:0.)

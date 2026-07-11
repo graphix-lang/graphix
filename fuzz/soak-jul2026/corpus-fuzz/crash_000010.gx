@@ -1,4 +1,0 @@
-// CRASH: child HANG (outer deadline)
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let f = 'a: Number|x: 'a, y: 'a| -> 'a x + y; seq(i64:0, i64:9223372036854775807)}

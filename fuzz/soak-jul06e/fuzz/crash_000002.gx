@@ -1,4 +1,0 @@
-// CRASH: child signal: 6 (SIGABRT) (core dumped) | thread 'tokio-rt-worker' (151375) has overflowed its stack | fatal runtime error: stack overflow, aborting
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-array::flat_map([sys::join_path, array::map], |s| [s, s])

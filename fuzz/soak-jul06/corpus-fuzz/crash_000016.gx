@@ -1,4 +1,0 @@
-// CRASH: child signal: 6 (SIGABRT) (core dumped) | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace | thread caused non-unwinding panic. aborting.
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let rec pair = |e| -> i64 select e {i64:0 => i64:0, _ => e * i64:10}; let run_one = |s: i64| -> i64 {let e = s + i64:1; pair(e + i64:1) + e}; array::fold({let a = [i64:0, i64:2]; array::flat_map(a, |x| [x, x + i64:1])}, i64:0, |acc, i| acc + i64:2)}
