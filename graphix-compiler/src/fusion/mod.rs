@@ -893,6 +893,9 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         &ctx.env,
         &ctx.fusion.abstract_registry,
         &lifted,
+        // Region parent: frames reach its replay reset through the
+        // FusedKernel node, so replay words are honored here.
+        true,
     ) {
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {

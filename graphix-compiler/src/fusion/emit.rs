@@ -474,6 +474,11 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     type_env: &Env,
     registry: &AbstractRegistry,
     lifted: &ahash::AHashSet<BindId>,
+    // REPLAY-word eligibility for the parent body: `true` for region
+    // parents (frames reach their reset through the `FusedKernel`
+    // node), `false` for lambda kernels (native cross-kernel entry
+    // bypasses the reset — see `BodyEmitter::allow_replay_state`).
+    parent_allow_replay: bool,
 ) -> Result<WrappedKernel> {
     // Callee bodies never lift (lifts are region-level let-bound
     // counters); only the parent emitter carries the lifted set.
@@ -502,6 +507,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         gate_stale: parent_self_call.is_none(),
         lifted,
         allow_state: true,
+        allow_replay: parent_allow_replay,
     };
     // Assemble the region-wide DynCall slot table: parent `fn_params`
     // first (base 0), then each callee's `fn_params`, in callee
@@ -544,6 +550,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     gate_stale: false,
                     lifted: &no_lift,
                     allow_state: false,
+                    allow_replay: false,
                 },
             ))
         })
@@ -1369,6 +1376,7 @@ fn compile_into_function(
         lifted_ord: &kernel.lifted,
         state_ptr,
         state_enabled: body_emitter.allow_state(),
+        replay_enabled: body_emitter.allow_replay_state(),
         state_next: std::cell::Cell::new(kernel.lifted.len()),
         replay_words: std::cell::RefCell::new(Vec::new()),
         loop_depth: std::cell::Cell::new(0),
@@ -1571,6 +1579,14 @@ pub(crate) struct LowerCtx<'a> {
     /// claims would alias one buffer offset, so callees never claim
     /// (their stateful constructs keep the stateless approximation).
     state_enabled: bool,
+    /// Whether THIS function's body may claim REPLAY state words —
+    /// true only for REGION parents (`BodyEmitter::allow_replay_state`).
+    /// A lambda kernel is also entered by native cross-kernel calls
+    /// that bypass the node-level `reset_replay`, so a replay word
+    /// claimed there could never honor its per-iteration reset
+    /// contract (jul10h 000009: a caller's native map loop bridged
+    /// element 1's success into element 2's div0).
+    replay_enabled: bool,
     /// Next unclaimed state word index. The final count becomes
     /// [`WrappedKernel::state_words`] — the runtime buffer size.
     /// STARTS at `lifted_ord.len()`: the first words are reserved for
@@ -3161,6 +3177,20 @@ trait BodyEmitter {
     fn allow_state(&self) -> bool {
         false
     }
+
+    /// Whether this body may claim REPLAY state words (see
+    /// [`BodyCx::claim_state_word_replay`]). `true` only for a REGION
+    /// parent: replay words are zeroed by `Kernel::reset_replay`, which
+    /// evaluation frames reach through the `FusedKernel` NODE — but a
+    /// LAMBDA kernel is also entered by native cross-kernel calls that
+    /// bypass the node layer entirely, so a replay word claimed there
+    /// can never honor its per-iteration reset contract (jul10h 000009:
+    /// element 1's success bridged element 2's div0 across the caller's
+    /// native map loop). Such bodies keep the stateless approximation.
+    /// Default `false`.
+    fn allow_replay_state(&self) -> bool {
+        false
+    }
 }
 
 /// The body emitter — walks the region-root `Node` via `emit_clif`
@@ -3193,6 +3223,11 @@ struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
     /// [`BodyEmitter::allow_state`]. `true` for the region parent's
     /// root body, `false` for callee bodies.
     allow_state: bool,
+    /// May this body claim REPLAY state words — see
+    /// [`BodyEmitter::allow_replay_state`]. `true` for region parents
+    /// only; `false` for lambda kernels (cross-kernel entry bypasses
+    /// the node-level `reset_replay`) and callee bodies.
+    allow_replay: bool,
 }
 
 impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
@@ -3250,6 +3285,10 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
 
     fn allow_state(&self) -> bool {
         self.allow_state
+    }
+
+    fn allow_replay_state(&self) -> bool {
+        self.allow_replay
     }
 }
 
@@ -3338,6 +3377,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// `Kernel::reset_replay`, so an evaluation frame's per-iteration
     /// reset severs the cache exactly like the node-walk's.
     pub fn claim_state_word_replay(&self) -> Option<i32> {
+        // Replay words are refused wherever their reset contract can't
+        // be honored — lambda kernels and callee bodies (see
+        // `LowerCtx::replay_enabled`). Claimants fall back stateless.
+        if !self.ctx.replay_enabled {
+            return None;
+        }
         let off = self.claim_state_word()?;
         self.ctx.replay_words.borrow_mut().push((off / 8) as u32);
         Some(off)

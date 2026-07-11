@@ -1496,6 +1496,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             // (garbage scalar / null pointer); every abort path
             // dropped the owned set before jumping there, so
             // discard and re-fire next cycle.
+            //
+            // INSIDE an evaluation frame the abort must surface as the
+            // TAINTED placeholder, not None: the node-walk's in-frame
+            // bottoms are tainted productions (op.rs/error.rs frame
+            // gates) that poison downstream slot caches, where a None
+            // leaves them holding the PREVIOUS iteration's value — a
+            // consumer like `push(res, f(v))` then quietly re-used
+            // element 1's result when element 2's kernel bottomed
+            // (jul10h 000009). At depth 0 None stays v1.
+            if ctx.frame_depth > 0 {
+                self.last_out = crate::Tag::TAINT;
+                return Some(Value::Null);
+            }
             return None;
         }
         // Decode the wrapper's *out slot(s) according to the
@@ -1590,6 +1603,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // (lifted ids, first-call flags, select memory) survive.
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
+        }
+        if std::env::var_os("GXDBG_RESET").is_some() {
+            eprintln!("KERNEL-RESET words={:?}", self.jit.replay_state_words);
         }
     }
 

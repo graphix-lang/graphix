@@ -1143,6 +1143,11 @@ fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
         &ec.fusion.abstract_registry,
         // Per-slot HOF callback templates have no region-level lifts.
         &ahash::AHashSet::default(),
+        // Lambda kernel: native cross-kernel entry bypasses the
+        // node-level reset_replay, so replay words are refused (their
+        // per-iteration reset contract can't be honored — jul10h
+        // 000009). Stateful constructs keep the stateless fallback.
+        false,
     );
     match r {
         Ok(w) => Some(std::sync::Arc::new(w)),
