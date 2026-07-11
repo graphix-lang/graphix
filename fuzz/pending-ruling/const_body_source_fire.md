@@ -1,5 +1,32 @@
 # Const-valued fold body vs a firing source: which mode is right?
 
+> **UPDATE (same night):** three of the four classes this file
+> originally covered are FIXED (the spurious async-path flip — a
+> resolved lambda outside a subtree-analysis' local fixpoint map read
+> as Async via `unwrap_or_default`; the kernel's interior-bottom
+> prior-success bridge leaking across loop iterations; the
+> empty-source/fired-init scaffold term). p3–p9 and both reactive
+> repros now AGREE at body-driven semantics in both modes. What
+> REMAINS is one sharp question + one ABI-shaped consequence:
+>
+> **The DynCall side-channel arg stash is always-FIRED** (kernel.rs
+> `dispatch_typed`, deliberate v1 parity: "delivers every arg on
+> every call"). When an inner HOF instance INLINES into the caller's
+> kernel, its loop is body-driven (quiet on const bodies); when
+> inlining fails (e.g. the taint statement in frame_bottom_class) it
+> becomes a DynCall, whose always-fired arg delivery makes the callee
+> fire on every dispatch. The two shapes disagree with EACH OTHER —
+> `p3` (inlined, [1:0 2:7]) vs `frame_bottom_class` (DynCall,
+> [0,7,7,7]) are the same fold. The interp now implements body-driven
+> consistently, matching the inlined shape.
+>
+> Ruling needed: body-driven is the settled P4 rule, so the DynCall
+> path should carry REAL arg discs across the dispatch ABI (wire
+> format change: (disc,payload) pairs instead of bare Values for the
+> side-channel stash) — or the rule is amended. The remaining jul10e
+> survivors (5 fuzz + frame_bottom_class, all the group() shape, and
+> reactive/000009) are this class.
+
 Found 2026-07-11 while validating the two-channel (TagValue) build.
 PRE-EXISTING — the old binary diverges on the same shape (differently:
 its interp additionally dropped an emission to the replay-leak bug).

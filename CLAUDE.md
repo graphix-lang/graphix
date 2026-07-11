@@ -299,6 +299,19 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   "who publishes/wakes this bind" — found the dead-eliminated module
   statement (a region waiting forever on a feeder whose producer was
   spliced away, 2026-07-08). Lives in graphix-rt (rt.rs).
+- `GXDBG_FOR=1` — For-loop debugging: the sync gate per update
+  (`FOR-SYNC-GATE`, inputs' fired state), per-index async evaluation
+  (`FOR-ASYNC`), `FOR-MARK-ASYNC` at every analysis flip to the
+  per-index path, and `EFFECT-ASYNC-NODE` naming the node that made a
+  For body read async. The tool for "why is this loop on the async
+  path / why does it (not) fire" — found the subtree-analysis effect
+  fact miss (a resolved lambda outside the local fixpoint map read as
+  Async via unwrap_or_default; jul10e p7/p9 + the double-emission
+  class, 2026-07-11).
+- `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
+  cycle, apply kind lambda/builtin, any-arg-fired). The tool for
+  "does this call dispatch and to what" — paired with GXDBG_FOR it
+  localized the async-flip above.
 
 ### Type Alias Expansion in Contains
 

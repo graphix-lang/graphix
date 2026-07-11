@@ -242,7 +242,11 @@ fn body_effect<R: Rt, E: UserEvent>(
 ) -> EffectKind {
     let mut acc = EffectKind::Sync;
     fusion::for_each_node(body, &mut |n| {
-        acc = acc.join(node_effect(n, eff, self_ids, ctx));
+        let e = node_effect(n, eff, self_ids, ctx);
+        if matches!(e, EffectKind::Async) && std::env::var_os("GXDBG_FOR").is_some() {
+            eprintln!("EFFECT-ASYNC-NODE node={}", n.spec());
+        }
+        acc = acc.join(e);
     });
     acc
 }
@@ -354,9 +358,24 @@ fn callee_effect<R: Rt, E: UserEvent>(
     self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
 ) -> EffectKind {
+    // A resolved lambda missing from the LOCAL fixpoint map is one a
+    // PRIOR pass analyzed (the subtree walks of `analyze_bound_callee`
+    // / `mark_for_bodies_standalone` only cover their subtree): read
+    // its STORED fact instead of defaulting Async. Silently defaulting
+    // flipped every runtime-bound in-language HOF instance's For to
+    // the per-index async path (the callback resolved fine but lived
+    // outside the local walk), where a const-valued callback re-fired
+    // per dispatch — the p7/p9 over-fire class.
+    let known = |lid: LambdaId| -> EffectKind {
+        eff.get(&lid).copied().unwrap_or_else(|| {
+            lambda_def(ctx, lid)
+                .map(|d| *d.intrinsic_effect.lock())
+                .unwrap_or_default()
+        })
+    };
     // Resolved user lambda.
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
-        return eff.get(&g.id()).copied().unwrap_or_default();
+        return known(g.id());
     }
     if let NodeView::Ref(r) = cs.fnode().view() {
         // A seeded back-edge (this pass's own (callee, self_bind)
@@ -364,15 +383,15 @@ fn callee_effect<R: Rt, E: UserEvent>(
         // whose re-minted binding id is absent from `bind_to_lambda`.
         // Checked first: where both tables know the binding, this one
         // names the ACTUAL instance at the analyzed site (the stale
-        // template def in `bind_to_lambda` isn't in `eff`, so it reads
-        // as the Async default).
+        // template def in `bind_to_lambda` isn't in `eff`, so it would
+        // otherwise read as its stored fact).
         if let Some(lid) = self_ids.get(&r.id) {
-            return eff.get(lid).copied().unwrap_or_default();
+            return known(*lid);
         }
         // fnode Ref → a known user-lambda binding (incl. #203 self-calls).
         if let Some(v) = ctx.bind_to_lambda.get(&r.id) {
             if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
-                return eff.get(&d.id).copied().unwrap_or_default();
+                return known(d.id);
             }
         }
     }
@@ -386,6 +405,9 @@ fn callee_effect<R: Rt, E: UserEvent>(
         }
     }
     // Unknown dynamic dispatch / fn-typed parameter call.
+    if std::env::var_os("GXDBG_FOR").is_some() {
+        eprintln!("EFFECT-ASYNC-FALLBACK cs={}", cs.fnode().spec());
+    }
     EffectKind::Async
 }
 

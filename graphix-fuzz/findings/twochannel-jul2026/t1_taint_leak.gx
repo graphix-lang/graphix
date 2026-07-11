@@ -1,0 +1,1 @@
+{let rec f = |v2: i64, v3: i64| -> i64 select v2 {i64:0 => v3, _ => f(v2 - i64:1, v3 + v2)}; array::fold([i64:-1, i64:7, i64:42], i64:2, |acc, x| (f(i64:284, i64:0) * i64:0) + (i64:1 / acc))}

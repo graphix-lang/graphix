@@ -1570,6 +1570,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for slot in self.args.iter_mut() {
             *slot = None;
         }
+        // Sleep restarts the arm: the interior-bottom taint caches are
+        // node-walk `Cached` twins, which sleep clears.
+        for w in self.jit.replay_state_words.iter() {
+            self.state[*w as usize] = 0;
+        }
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -1577,6 +1582,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // memory — replay state, same as sleep clears.
         for slot in self.args.iter_mut() {
             *slot = None;
+        }
+        // Zero the emitted REPLAY state words (the interior-bottom
+        // taint caches — `emit_scalar_taint_cache`): a value cached on
+        // iteration i−1 must not bridge iteration i's bottom, exactly
+        // the node-walk's per-frame cache reset. Semantic/config words
+        // (lifted ids, first-call flags, select memory) survive.
+        for w in self.jit.replay_state_words.iter() {
+            self.state[*w as usize] = 0;
         }
     }
 

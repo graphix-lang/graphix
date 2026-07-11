@@ -295,6 +295,13 @@ pub struct WrappedKernel {
     /// this size and passes its pointer in wire slot 1 (see
     /// [`kernel_abi::CTX_WIRE_SLOTS`]).
     pub state_words: usize,
+    /// Word indices (into the per-instance state buffer) of the ROOT
+    /// body's REPLAY-memory claims (the interior-bottom taint caches —
+    /// see `emit_scalar_taint_cache`). `Kernel::reset_replay` zeroes
+    /// exactly these so a value cached on one evaluation-frame
+    /// iteration cannot bridge a bottom on the next; semantic/config
+    /// words (lifted ids, first-call flags, select memory) survive.
+    pub replay_state_words: Vec<u32>,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -413,6 +420,8 @@ impl Jit {
 struct CachedKernel {
     func_id: FuncId,
     signature: Signature,
+    /// See [`WrappedKernel::replay_state_words`]; filled in phase 2.
+    replay_state_words: Vec<u32>,
     /// Holds the Arc alive so its raw pointer can't be reused by a
     /// later allocation.
     _kernel: std::sync::Arc<KernelSig>,
@@ -735,13 +744,14 @@ fn compile_kernel_with_callees_inner(
                 k.fn_name
             )
         })?;
-        let (strings, values, state_words) =
+        let (strings, values, state_words, replay_words) =
             define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
         *defined += 1;
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base, *layout)) {
             cached._strings = strings;
             cached._values = values;
             cached.state_words = state_words;
+            cached.replay_state_words = replay_words;
         }
     }
     // Phase 3 — compile the uniform wrapper for the parent and
@@ -763,10 +773,10 @@ fn compile_kernel_with_callees_inner(
     // prior compile) still sizes the runtime buffer correctly. Only
     // the parent's ROOT body may claim (callee claims would alias
     // across call sites), so callees' entries stay 0 by construction.
-    let state_words = jit
+    let (state_words, replay_state_words) = jit
         .by_kernel
         .get(&(parent_ptr, 0, parent_layout))
-        .map(|e| e.state_words)
+        .map(|e| (e.state_words, e.replay_state_words.clone()))
         .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
     Ok(WrappedKernel {
         wrapper_fn_ptr,
@@ -778,6 +788,7 @@ fn compile_kernel_with_callees_inner(
         // combined parent++callees list when callees contribute slots.
         dyn_fn_params: kernel.fn_params.iter().cloned().collect(),
         state_words,
+        replay_state_words,
     })
 }
 
@@ -817,6 +828,7 @@ fn ensure_declared(
             _strings: KernelStrings::empty(),
             _values: KernelValues::empty(),
             state_words: 0,
+            replay_state_words: Vec::new(),
         },
     );
     to_define.push((k.clone(), base, layout));
@@ -832,7 +844,7 @@ fn define_kernel_body(
     kernel: &std::sync::Arc<KernelSig>,
     funcids: &[(usize, (FuncId, Signature))],
     body_emitter: &dyn BodyEmitter,
-) -> Result<(KernelStrings, KernelValues, usize)> {
+) -> Result<(KernelStrings, KernelValues, usize, Vec<u32>)> {
     let self_ptr = kernel_abi::kernel_key(kernel);
     let (func_id, sig) =
         funcids.iter().find(|(p, _)| *p == self_ptr).map(|(_, e)| e.clone()).ok_or_else(
@@ -855,7 +867,7 @@ fn define_kernel_body(
     jit.func_ctx.func.signature = sig;
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
-    let (strings, values, state_words) = {
+    let (strings, values, state_words, replay_words) = {
         // Declare each lambda call site's callee as a FuncRef in this
         // function. Done before constructing the FunctionBuilder
         // because both `declare_func_in_func` and `FunctionBuilder::new`
@@ -915,7 +927,7 @@ fn define_kernel_body(
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        let state_words = compile_into_function(
+        let (state_words, replay_words) = compile_into_function(
             &mut builder,
             kernel,
             &callee_refs,
@@ -935,6 +947,7 @@ fn define_kernel_body(
             KernelStrings::empty().with_lazy(lazy_strings.into_inner()),
             KernelValues::empty().with_lazy(lazy_values.into_inner()),
             state_words,
+            replay_words,
         )
     };
     jit.module
@@ -942,7 +955,7 @@ fn define_kernel_body(
         .context("define_function (shared body)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok((strings, values, state_words))
+    Ok((strings, values, state_words, replay_words))
 }
 
 /// Define the (args*, out*) wrapper that adapts the typed kernel to a
@@ -1203,7 +1216,7 @@ fn compile_into_function(
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
     body_emitter: &dyn BodyEmitter,
-) -> Result<usize> {
+) -> Result<(usize, Vec<u32>)> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -1357,6 +1370,7 @@ fn compile_into_function(
         state_ptr,
         state_enabled: body_emitter.allow_state(),
         state_next: std::cell::Cell::new(kernel.lifted.len()),
+        replay_words: std::cell::RefCell::new(Vec::new()),
         loop_depth: std::cell::Cell::new(0),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
@@ -1432,7 +1446,8 @@ fn compile_into_function(
     // pending_exit). FunctionBuilder requires all blocks be sealed
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
-    Ok(lower.state_next.get())
+    let replay_words = lower.replay_words.borrow().clone();
+    Ok((lower.state_next.get(), replay_words))
 }
 
 /// Per-kernel storage of the ArcStrs the JIT'd code references via
@@ -1562,6 +1577,14 @@ pub(crate) struct LowerCtx<'a> {
     /// the per-instance lifted-target `BindId`s (see
     /// [`KernelSig::lifted`]).
     state_next: std::cell::Cell<usize>,
+    /// Word indices of claims that are REPLAY memory (cross-invocation
+    /// caches whose interp twins `reset_replay` clears — the
+    /// interior-bottom taint cache), as opposed to semantic/config
+    /// state (lifted ids, first-call-ever flags, select memory).
+    /// `Kernel::reset_replay` zeroes exactly these, so a value cached
+    /// on one evaluation-frame iteration cannot bridge a bottom on the
+    /// next (see [`emit_scalar_taint_cache`]).
+    replay_words: std::cell::RefCell<Vec<u32>>,
     /// The kernel's lifted connect targets, sorted — slot `i`'s id
     /// lives in state word `i`. `emit_connect_node` loads its write
     /// target from there instead of an `iconst` (per-instance
@@ -2444,7 +2467,13 @@ fn emit_scalar_taint_cache(
     prim: PrimType,
     cv: CompiledExpr,
 ) -> CompiledExpr {
-    let (Some(off_val), Some(off_ok)) = (cx.claim_state_word(), cx.claim_state_word())
+    // REPLAY words: `Kernel::reset_replay` zeroes them (ok = 0 = "no
+    // history"), so iteration i−1's success can't bridge iteration
+    // i's bottom inside an evaluation frame — the bridge stays a
+    // strictly REACTIVE (cycle-to-cycle) behavior, like the node-walk
+    // caches it mirrors.
+    let (Some(off_val), Some(off_ok)) =
+        (cx.claim_state_word_replay(), cx.claim_state_word_replay())
     else {
         return cv;
     };
@@ -3300,6 +3329,18 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let idx = self.ctx.state_next.get();
         self.ctx.state_next.set(idx + 1);
         Some((idx * 8) as i32)
+    }
+
+    /// [`claim_state_word`](Self::claim_state_word) for REPLAY memory —
+    /// a cross-invocation cache whose interp twin `reset_replay`
+    /// clears. The claimed word is registered on
+    /// [`WrappedKernel::replay_state_words`] and zeroed by
+    /// `Kernel::reset_replay`, so an evaluation frame's per-iteration
+    /// reset severs the cache exactly like the node-walk's.
+    pub fn claim_state_word_replay(&self) -> Option<i32> {
+        let off = self.claim_state_word()?;
+        self.ctx.replay_words.borrow_mut().push((off / 8) as u32);
+        Some(off)
     }
 
     /// [`claim_state_word`](Self::claim_state_word) for a claimant

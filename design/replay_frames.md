@@ -258,6 +258,29 @@ the exact UB class it was built to stop at the JIT boundary.
   real init view, or a captured input triggered — the kernel's
   rebind-and-jump result-disc derivation. A first pass that never
   jumped keeps its organic tag.
+- **Replay state words** (`WrappedKernel::replay_state_words`): the
+  kernel's interior-bottom prior-success bridge
+  (`emit_scalar_taint_cache`) caches a may-bottom op's last good
+  value in per-instance state words — correct for REACTIVE
+  cycle-to-cycle combineLatest, but across evaluation-frame
+  iterations it was exactly the replay leak (iteration i−1's div
+  result bridged iteration i's div0). Emission registers those words
+  as REPLAY memory; `Kernel::reset_replay`/`sleep` zero them, so the
+  bridge is scoped to reactive land like the node-walk caches it
+  mirrors.
+- **Subtree effect analysis reads stored facts**
+  (`analysis::callee_effect`): a resolved lambda missing from a
+  subtree pass's LOCAL fixpoint map (lazy binds analyze only their
+  subtree) reads the def's stored `intrinsic_effect` instead of
+  defaulting Async — the silent Async default flipped every
+  runtime-bound in-language HOF instance's For to the per-index
+  async path (the p7/p9 over-fire class AND the double-emission
+  class).
+- **Known open seam** (fuzz/pending-ruling/const_body_source_fire.md):
+  the DynCall side-channel arg stash is always-FIRED, so a
+  non-inlined inner HOF fires per dispatch where the inlined form is
+  body-driven-quiet — needs arg discs across the dispatch ABI (or a
+  ruling amendment).
 - Known refinement flagged during the sweep: select's
   `bind_event` delivers scrutinee FIELDS fired even when the
   scrutinee production was stale — threading the scrutinee tag

@@ -185,6 +185,9 @@ impl<R: Rt, E: UserEvent> For<R, E> {
     /// nodes), hence the atomic.
     pub fn set_async_body(&self, v: bool) {
         let v = v || std::env::var_os("GXDBG_FOR_FORCE_ASYNC").is_some();
+        if v && std::env::var_os("GXDBG_FOR").is_some() {
+            eprintln!("FOR-MARK-ASYNC spec={}", self.spec);
+        }
         self.async_body.store(v, Ordering::Relaxed)
     }
 

@@ -579,6 +579,15 @@ pub struct SlotFlags {
     stale: Variable,
     /// The source's element count — see [`Self::set_len`].
     len: Option<ClifValue>,
+    /// The loop INIT's disc — see [`Self::set_init_disc`]. Feeds ONLY
+    /// the empty-source firing term in [`Self::apply`]: a fold over an
+    /// EMPTY source IS its init, so an init fire must fire the result
+    /// (the node-walk emits the init per gate pass). For a non-empty
+    /// source the init's firing flows through acc-chain CONSUMPTION
+    /// (body-driven) and this disc is not consulted — which is what
+    /// keeps `fold(const_arr, firing_init, |a,b| K)` quiet (the
+    /// hof-lift-firing pin).
+    init_disc: Option<ClifValue>,
 }
 
 impl SlotFlags {
@@ -590,7 +599,12 @@ impl SlotFlags {
         // All-stale start: an empty loop contributes no firing.
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags { taint, stale, len: None }
+        SlotFlags { taint, stale, len: None, init_disc: None }
+    }
+
+    /// Record the INIT's disc for the empty-source firing term.
+    pub fn set_init_disc(&mut self, disc: ClifValue) {
+        self.init_disc = Some(disc);
     }
 
     /// OR a disc's TAINT into the sticky taint word WITHOUT touching
@@ -665,6 +679,14 @@ impl SlotFlags {
         }
         for s in fire_srcs {
             let ss = cx.b.ins().band_imm(*s, STALE);
+            src_quiet = cx.b.ins().band(src_quiet, ss);
+        }
+        // The INIT is an "input" for the empty-source term: an empty
+        // fold's result IS the init, so an init fire fires it. Taint
+        // is already strict via `fold_taint`; only the STALE bit joins
+        // here, and `src_quiet` is consulted ONLY on the empty branch.
+        if let Some(d) = self.init_disc {
+            let ss = cx.b.ins().band_imm(d, STALE);
             src_quiet = cx.b.ins().band(src_quiet, ss);
         }
         // quiet = slots-quiet AND (non-empty OR sources-quiet)
@@ -838,8 +860,10 @@ where
     let init_cv = init(cx)?;
     // The init's TAINT is STICKY (`let mut acc = ⊥` bottoms the loop —
     // the node-walk `For` returns None on a missing init). Its STALE
-    // must NOT touch the slots-word: firing is body-driven.
+    // must NOT touch the slots-word: firing is body-driven — but it
+    // DOES join the empty-source term (an empty fold IS its init).
     taint.fold_taint(cx, init_cv.disc);
+    taint.set_init_disc(init_cv.disc);
     // A pointer-shaped acc is loop-OWNED from the start: a borrowed
     // init (a Ref to a kernel input / outer local) clones here. String
     // reads already clone; a scalar owns nothing.

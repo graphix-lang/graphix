@@ -1205,6 +1205,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
             _ => bound,
         };
+        if std::env::var_os("GXDBG_CS").is_some() {
+            let kind = match self.callee.apply() {
+                None => "none",
+                Some(a) => match a.view() {
+                    ApplyView::Lambda(_) => "lambda",
+                    ApplyView::BuiltIn => "builtin",
+                },
+            };
+            eprintln!(
+                "CS spec={} bound={bound} kind={kind} argfired={arg_fired}",
+                self.spec,
+            );
+        }
         let res = match self.callee.apply_mut() {
             None => None,
             Some(f) if !bound => {
