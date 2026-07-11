@@ -398,10 +398,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
                 out = false;
                 break;
             }
-            if std::env::var_os("GXDBG_NOCLEAR").is_none() {
-                for id in self.body_bound() {
-                    event.variables.remove(id);
-                }
+            for id in self.body_bound() {
+                event.variables.remove(id);
             }
             if let Some(a) = &acc {
                 self.acc_pattern.bind(a, &mut |id, v| {
