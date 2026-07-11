@@ -276,11 +276,36 @@ the exact UB class it was built to stop at the JIT boundary.
   runtime-bound in-language HOF instance's For to the per-index
   async path (the p7/p9 over-fire class AND the double-emission
   class).
-- **Known open seam** (fuzz/pending-ruling/const_body_source_fire.md):
-  the DynCall side-channel arg stash is always-FIRED, so a
-  non-inlined inner HOF fires per dispatch where the inlined form is
-  body-driven-quiet — needs arg discs across the dispatch ABI (or a
-  ruling amendment).
+- **Ruling A landed (body-driven, Eric 2026-07-11) as three v2
+  refinements**, closing the const-body class without the DynCall
+  ABI change (which retains no live witness — see the resolved
+  header of fuzz/pending-ruling/const_body_source_fire.md):
+  1. **Constants are the value channel** — `Constant` and `Lambda`
+     nodes produce STALE on every framed evaluation (`frame_depth >
+     0`, non-init), the node-walk twin of the kernel recomputing
+     every const per invocation under `const_stale_gate`. A framed
+     body that reads only constants (a const callee body, a literal
+     inner-fold source, a `let rec` re-bind) computes quietly
+     instead of bottoming via never-until-complete when the frame
+     discipline cleared its consumers' operand caches. This is what
+     retired the GXLambda `last_result` idea: a lambda-level value
+     channel could not distinguish a kernel body's None-as-bottom
+     (the return gate forces taint to None) from None-as-quiet and
+     masked genuine bottoms (t1/t4/t6 regressed in an hour).
+  2. **STALE and TAINTED never escape frame depth 0.** They are
+     intra-frame/intra-kernel currency; reactive land is v1 — quiet
+     or bottomed = None, consumers hold their own caches. An escaped
+     stale reads as an EVENT to any async consumer (`array::group`
+     counted a quiet fold's value-channel refresh — jul10h 000007).
+     Gates at the produce points: `CallSite::update`,
+     `For::update_sync` (both the quiet-pass stale and the
+     tainted-input return), `FusedKernel::update`. The op/error
+     taint minters were already frame-gated.
+  3. **Loop priming = first ITERATING run in both engines.** The
+     scaffold's first-run state word joins `len > 0` (an empty
+     evaluation must not consume it), matching `For::primed`'s
+     actual rule — an iter-driven source that grows 0→n diverged on
+     which cycle the first-fire landed.
 - Known refinement flagged during the sweep: select's
   `bind_event` delivers scrutinee FIELDS fired even when the
   scrutinee production was stale — threading the scrutinee tag

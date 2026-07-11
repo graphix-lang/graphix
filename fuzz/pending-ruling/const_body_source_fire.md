@@ -1,5 +1,23 @@
 # Const-valued fold body vs a firing source: which mode is right?
 
+> **RESOLVED — ERIC RULED A (body-driven), 2026-07-11.** Landed as
+> interp-side semantics, not the anticipated DynCall ABI change:
+> (1) `Constant`/`Lambda` nodes produce STALE inside frames (the
+> node-walk twin of the kernel recomputing consts under
+> `const_stale_gate`) — a framed body that reads only constants
+> computes quietly instead of bottoming; (2) STALE/TAINTED
+> productions are intra-frame currency and never escape a frame-
+> depth-0 node (gates in CallSite / For / FusedKernel::update) —
+> reactive land is v1, quiet or bottomed = None (an escaped stale
+> read as an EVENT to `array::group`, which counted a quiet fold's
+> value-channel refresh); (3) the kernel scaffold's first-run priming
+> word is consumed only by a NON-EMPTY evaluation (`For::primed`'s
+> actual rule). The DynCall always-fired arg stash survives but has
+> NO remaining live witness (every pinned/corpus program of this
+> class now agrees) — if a witness reappears, carry real discs
+> across the dispatch ABI as designed below. Everything below is
+> kept as the analysis record.
+
 > **UPDATE (same night):** three of the four classes this file
 > originally covered are FIXED (the spurious async-path flip — a
 > resolved lambda outside a subtree-analysis' local fixpoint map read
@@ -26,6 +44,17 @@
 > side-channel stash) — or the rule is amended. The remaining jul10e
 > survivors (5 fuzz + frame_bottom_class, all the group() shape, and
 > reactive/000009) are this class.
+>
+> **Second leg (jul10h 000007):** the interp has its own residual
+> non-body-driven path — a `let rec f = ...` INSIDE the callback body
+> mints a fresh Lambda def per frame evaluation, and the Lambda node's
+> production is unconditionally FIRED, so a const-valued body that
+> merely re-binds a local lambda reads as fired every iteration
+> (interp fires per source-cycle; the kernel, where the lambda is
+> static, stays quiet — `group(f, |n,_| n==4)` then emits in one mode
+> only). Under ruling A: a lambda re-bind in a re-run frame should
+> produce STALE, not FIRED (first dispatch of a fresh tree stays
+> FIRED).
 
 Found 2026-07-11 while validating the two-channel (TagValue) build.
 PRE-EXISTING — the old binary diverges on the same shape (differently:

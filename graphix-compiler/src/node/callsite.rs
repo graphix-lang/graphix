@@ -1245,6 +1245,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 res.map(|v| TagValue::tagged(v, f.out_tag()))
             }
         };
+        // STALE and TAINTED productions are intra-frame currency (the
+        // value channel / the representable bottom). At frame depth 0
+        // neither escapes as a production: reactive land is v1 — quiet
+        // OR bottomed = None, consumers hold their own caches — and an
+        // escape reads as an EVENT to any async consumer (`group`
+        // counted a quiet fold's value-channel refresh, jul10h 000007).
+        // The kernel twin is the return seam's `is_not_fresh` gate.
+        let res = if ctx.frame_depth == 0 {
+            res.filter(|tv| tv.tag().is_fired())
+        } else {
+            res
+        };
+        if std::env::var_os("GXDBG_CS").is_some() {
+            // Result-tag companion to the pre-dispatch CS line above —
+            // localized the tail-loop tag derivation and the fd0 stale
+            // escape (jul10h 000007).
+            eprintln!(
+                "CS-RES spec={} res={:?} fd={}",
+                self.spec,
+                res.as_ref().map(|tv| tv.tag()),
+                ctx.frame_depth
+            );
+        }
         // Park a transient binding: the dispatch above was this call —
         // stash the instance's external refs (its capture wake-set,
         // minus the fnode's own target: a re-delivered identical def

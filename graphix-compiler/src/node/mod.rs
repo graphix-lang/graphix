@@ -529,10 +529,22 @@ impl Constant {
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     fn update(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        if event.init { Some(TagValue::fired(self.value.clone())) } else { None }
+        if event.init {
+            Some(TagValue::fired(self.value.clone()))
+        } else if ctx.frame_depth > 0 {
+            // In-frame VALUE channel: the kernel recomputes every
+            // constant per invocation with a `const_stale_gate`d disc
+            // — the node-walk twin is a STALE production on every
+            // framed evaluation, so a body that reads only constants
+            // computes (quietly) instead of bottoming when the frame
+            // discipline has cleared its consumers' operand caches.
+            Some(TagValue::stale(self.value.clone()))
+        } else {
+            None
+        }
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}

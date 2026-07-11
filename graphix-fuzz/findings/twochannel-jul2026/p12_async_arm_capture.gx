@@ -1,0 +1,1 @@
+{let y = array::iter([null, i64:2, i64:3, i64:4]); let m = array::map([i64:1], |x| select i64:0 {i64:1 => x, _ => y}); let c = count(m); select count(y) {i64:4 => c, _ => never()}}

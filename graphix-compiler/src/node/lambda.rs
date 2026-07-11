@@ -981,10 +981,20 @@ impl Lambda {
 impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
     fn update(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        event.init.then(|| TagValue::fired(self.def.clone()))
+        // A lambda literal is a constant of function type — same
+        // production rule as `Constant`: FIRED at init, the STALE
+        // value channel inside frames (a framed `let f = |..| ..`
+        // re-binds quietly so the body's call sites stay computable).
+        if event.init {
+            Some(TagValue::fired(self.def.clone()))
+        } else if ctx.frame_depth > 0 {
+            Some(TagValue::stale(self.def.clone()))
+        } else {
+            None
+        }
     }
 
     fn spec(&self) -> &Expr {

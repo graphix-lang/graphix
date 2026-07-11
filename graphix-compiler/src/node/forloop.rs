@@ -369,8 +369,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         }
         // STRICT sequential semantics: a TAINTED iter or init bottoms
         // the whole loop (sticky, the kernel's loop-carried taint).
+        // The placeholder is FRAMED currency; at depth 0 a bottom is
+        // v1's None (a tainted escape reads as an event to async
+        // consumers — the stale-escape gate's taint twin).
         if self.iter.tag.is_tainted() || self.init.tag.is_tainted() {
-            return Some(TagValue::tainted(Value::Null));
+            return (ctx.frame_depth > 0).then(|| TagValue::tainted(Value::Null));
         }
         // One call-depth unit covers the whole loop (the JIT scaffold's
         // `emit_depth_unit` twin): sequential element dispatches all
@@ -498,11 +501,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         }
         if fired_any {
             acc.map(TagValue::fired)
-        } else {
+        } else if ctx.frame_depth > 0 {
             // Complete pass, nothing fired: the acc chain advanced on
             // the value channel only — a stale production (the parent
-            // caches the value; nothing downstream fires).
+            // caches the value; nothing downstream fires). Framed
+            // only: at depth 0 the value channel must not escape into
+            // reactive land (see the CallSite gate).
             acc.map(TagValue::stale)
+        } else {
+            None
         }
     }
 

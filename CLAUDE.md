@@ -462,7 +462,11 @@ and every feeder the callback body captures fired).
   `GRAPHIX_FUZZ_CORPUS` (separate corpus dir PER campaign — shared dirs
   clobber), launch campaigns under `nice -n 19` (workers inherit —
   keeps interactive builds fast while soaks saturate the idle cores),
-  and NEVER rebuild while campaigns run. Campaign output
+  and launch from a campaign-private COPY of the binary (`cp` it to
+  `~/tmp/target/fuzz/<campaign>/graphix-fuzz` first) — workers exec
+  the binary path per subject, so a rebuild mid-campaign swaps code
+  under a running soak and its findings become mixed-version garbage
+  (jul10h lost its tail this way, 2026-07-11). Campaign output
   defaults OUTSIDE the repo (`~/tmp/target/fuzz/` — the repo's fuzz/
   dir is syncthing-synced; soak corpus dirs go under
   `~/tmp/target/fuzz/<campaign>/`, durable triage summaries stay in

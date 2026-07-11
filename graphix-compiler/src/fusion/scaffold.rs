@@ -883,16 +883,20 @@ where
     taint.fold_taint(cx, init_cv.disc);
     taint.set_init_disc(init_cv.disc);
     // FIRST-COMPLETE-RUN priming (the node-walk `For::primed` twin):
-    // the loop's first evaluation with BOTH the source and the init
-    // present is init-like — its result FIRES even though a const
-    // body's evaluations stay quiet. The kernel's own init view can
-    // predate an async-late input (`fold(arr, iter(..), f)` — the
+    // the loop's first ITERATING evaluation with BOTH the source and
+    // the init present is init-like — its result FIRES even though a
+    // const body's evaluations stay quiet. The kernel's own init view
+    // can predate an async-late input (`fold(arr, iter(..), f)` — the
     // init arrives cycles after the kernel's first dispatch), so the
     // priming is a per-instance state word consumed on the first
-    // untainted (source, init) pair, NOT the init flag. SEMANTIC
-    // state (survives reset_replay, like `For::primed`). Stateless
-    // fallback (nested loops, callee bodies): the init view was the
-    // only priming — the pre-existing behavior.
+    // untainted NON-EMPTY (source, init) pair, NOT the init flag. An
+    // empty evaluation must not consume it (its firing is the
+    // empty-source term's job, and the interp's `For::primed` primes
+    // on the first iterating run — jul10h 000007 diverged on an
+    // iter-driven source that grows 0→n). SEMANTIC state (survives
+    // reset_replay, like `For::primed`). Stateless fallback (nested
+    // loops, callee bodies): the init view was the only priming — the
+    // pre-existing behavior.
     let first_run = cx.claim_state_word().map(|off| {
         let sp = cx.state_ptr();
         let primed = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
@@ -901,6 +905,8 @@ where
         let at = cx.b.ins().band_imm(arr.disc, TAINT);
         let arr_ok = cx.b.ins().icmp_imm(IntCC::Equal, at, 0);
         let ok = cx.b.ins().band(init_ok, arr_ok);
+        let non_empty = cx.b.ins().icmp_imm(IntCC::NotEqual, len, 0);
+        let ok = cx.b.ins().band(ok, non_empty);
         let ok64 = cx.b.ins().uextend(types::I64, ok);
         let np = cx.b.ins().bor(primed, ok64);
         cx.b.ins().store(MemFlags::trusted(), np, sp, off);
