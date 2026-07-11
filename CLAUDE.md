@@ -447,7 +447,17 @@ and every feeder the callback body captures fired).
   flap means the compiled shape depends on allocation order somewhere in
   typing/resolution/fusion. Soak ops: `GRAPHIX_FUZZ_PAR`,
   `GRAPHIX_FUZZ_CORPUS` (separate corpus dir PER campaign — shared dirs
-  clobber), and NEVER rebuild while campaigns run. `design/graphix_fuzz.md`.
+  clobber), and NEVER rebuild while campaigns run. Campaign output
+  defaults OUTSIDE the repo (`~/tmp/target/fuzz/` — the repo's fuzz/
+  dir is syncthing-synced; soak corpus dirs go under
+  `~/tmp/target/fuzz/<campaign>/`, durable triage summaries stay in
+  the repo by hand). Worker children run in PARENT-owned sandbox cwds
+  (`sandbox_cwd`, lib.rs — a child-owned tempdir leaked per subject
+  via `process::exit` and a soak exhausted /tmp's INODES, jul10d), and
+  the pool has an environment-broken backstop (`BreakageWindow`): a
+  majority of findings over a 200-subject window aborts the campaign
+  instead of flooding the corpus at disk speed; finding-write failures
+  are fatal. `design/graphix_fuzz.md` §12.
 - **`FusionStats`** (`fusion/mod.rs`): per-`ExecCtx` compile-time counters
   (`attempted`/`fused`/`failed: Vec<(ExprId, reason)>`), exposed via
   `GXHandle::fusion_stats()` / `TestCtx::fusion_stats()`. Read `failed` as a

@@ -526,3 +526,45 @@ Throughput cost is negligible (100 mutants/5s wall — per-program
 resolver spin-up dominates, not process spawn). First isolated soak
 (3000@777) completed with both known process-killers converted to
 recorded findings and zero unexplained results.
+
+## 12. Campaign hygiene: sandbox ownership, breakage backstop, output location (added 2026-07-11)
+
+A jul10d soak died of its own exhaust, in three coupled failures:
+
+1. **Per-subject tempdir leak.** Each worker child sandboxed its cwd in
+   a self-created `tempfile::tempdir()` (generated programs write files
+   with arbitrary relative names), but the worker arms exit via
+   `process::exit` — drops skipped, one leaked `/tmp/.tmpXXXXXX` per
+   subject. Millions of subjects exhausted the tmpfs's INODES (8.1M
+   inodes, 0 free, at 78MB of 31GB used — invisible to `df -h`, and
+   `du /tmp/*` misses dotfiles).
+2. **No environment-broken detection.** Once /tmp was full, EVERY child
+   failed on ENOSPC; every failure recorded a crash finding (the dedup
+   key varies with program text, so dedup couldn't collapse them) — the
+   campaign flooded its corpus dir with garbage at ~300MB/s until
+   killed by hand.
+3. **The flood landed in the repo**, whose `fuzz/` dir syncs across
+   machines (syncthing).
+
+The fixes, in the same order:
+
+1. **Parent-owned sandboxes** (`sandbox_cwd`, lib.rs): the SPAWNING
+   side creates the tempdir, sets it as the child's cwd, and drops it
+   after the child exits — the parent survives even a SIGSEGV'd child,
+   so cleanup is unconditional. `GRAPHIX_FUZZ_SANDBOXED` tells the
+   child to skip its self-sandbox (which remains for manual
+   invocations only). `minimize_isolated`'s output file moved inside
+   the sandbox (retiring the `MIN_OUT_SEQ` uniquifier).
+2. **`BreakageWindow`** (lib.rs, unit-tested): the pool aborts the
+   campaign (`FATAL`, exit 2) when a MAJORITY of a full 200-subject
+   window are findings — the worst real bug classes hit well under
+   0.1%, so a sustained majority means the environment (or the build)
+   is broken and every further "finding" is noise. Never trips before
+   the window fills. Excluded-tier hangs don't count (environmental by
+   design). Finding-WRITE failures are fatal too, joining the existing
+   die-loudly convention for child-spawn failure.
+3. **Campaign output defaults OUTSIDE the repo**:
+   `~/tmp/target/fuzz/crashes` (build scratch — never synced, cleaned
+   freely; `GRAPHIX_FUZZ_CORPUS` still overrides). Soak corpus dirs
+   belong under `~/tmp/target/fuzz/<campaign>/`; durable triage
+   summaries are written by hand into the repo as before.

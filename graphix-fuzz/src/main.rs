@@ -106,27 +106,31 @@ async fn main() -> Result<()> {
     // inherited cwd they litter the campaign launch directory (the
     // repo root filled with files named `bar`, `hello world`, `,` …).
     // The per-subject WORKER processes (program on stdin, no path
-    // args) work from a fresh tempdir instead; campaigns spawn one
-    // per subject, so this covers fuzz/generate/minimize soaks. For
-    // the single-file commands (`check`/`run`) the file argument is
-    // made absolute first, then the same sandbox applies. Leaked on
-    // `process::exit` (worker arms skip drops) — that's /tmp.
-    let sandbox_cwd = match args.get(1).map(String::as_str) {
-        Some(
-            "check-one" | "detcheck-one" | "selfcheck-one" | "minimize-one"
-            | "gen-check" | "regress",
-        ) => true,
-        Some("check" | "run") => {
-            if let Some(f) = args.get_mut(2) {
-                if let Ok(abs) = std::fs::canonicalize(&*f) {
-                    *f = abs.to_string_lossy().into_owned();
+    // args) are sandboxed by the SPAWNING campaign (lib.rs
+    // `sandbox_cwd`: parent-owned tempdir as the child's cwd, removed
+    // after the child exits, signalled via GRAPHIX_FUZZ_SANDBOXED). A
+    // child-owned tempdir here leaked on `process::exit` (worker arms
+    // skip drops) and a soak's millions of subjects exhausted /tmp's
+    // INODES (jul10d). The self-sandbox below covers MANUAL
+    // invocations only; for the single-file commands (`check`/`run`)
+    // the file argument is made absolute first.
+    let sandbox_cwd = std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none()
+        && match args.get(1).map(String::as_str) {
+            Some(
+                "check-one" | "detcheck-one" | "selfcheck-one" | "minimize-one"
+                | "gen-check" | "regress",
+            ) => true,
+            Some("check" | "run") => {
+                if let Some(f) = args.get_mut(2) {
+                    if let Ok(abs) = std::fs::canonicalize(&*f) {
+                        *f = abs.to_string_lossy().into_owned();
+                    }
                 }
+                true
             }
-            true
-        }
-        _ => false,
-    };
-    let _cwd_guard = if sandbox_cwd {
+            _ => false,
+        };
+    let cwd_guard = if sandbox_cwd {
         let d = tempfile::tempdir()?;
         std::env::set_current_dir(d.path())?;
         Some(d)
@@ -249,6 +253,7 @@ async fn main() -> Result<()> {
         Some("regress") => {
             let n = print_regression().await;
             if n > 0 {
+                drop(cwd_guard);
                 std::process::exit(1);
             }
         }
@@ -499,10 +504,19 @@ async fn main() -> Result<()> {
             // max index at startup and writes findings with its own
             // counter, so two campaigns on one dir silently clobber
             // each other's findings at colliding indices.
-            let out = std::path::PathBuf::from(
-                std::env::var("GRAPHIX_FUZZ_CORPUS")
-                    .unwrap_or_else(|_| "fuzz/crashes".into()),
-            );
+            // The DEFAULT lives OUTSIDE the repo: the repo's fuzz/ dir
+            // is synced across machines (syncthing), and a campaign is
+            // an artifact firehose — the jul10d environment breakage
+            // wrote garbage findings into the repo at 300MB/s.
+            // ~/tmp/target is build scratch (never synced, cleaned
+            // freely) — durable triage summaries still belong in the
+            // repo, written by hand.
+            let out = match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
+                Some(p) => std::path::PathBuf::from(p),
+                None => std::env::home_dir()
+                    .map(|h| h.join("tmp/target/fuzz/crashes"))
+                    .unwrap_or_else(|| "fuzz/crashes".into()),
+            };
             let corpus = Arc::new(Corpus::load(&out));
             println!(
                 "corpus: {} existing divergences loaded from {}/",
@@ -586,6 +600,7 @@ async fn main() -> Result<()> {
                         println!("DIVERGENCE — {}", d.bisect());
                         println!("  interp: {}", render(&d.interp));
                         println!("  jit:    {}", render(&d.jit));
+                        drop(cwd_guard);
                         std::process::exit(1);
                     }
                 },

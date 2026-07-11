@@ -1115,7 +1115,14 @@ impl Corpus {
             mutant.replace('\n', "\\n"),
             minimized,
         );
-        let _ = std::fs::write(self.dir.join(format!("divergence_{n:06}.gx")), body);
+        // Persisting the finding is the campaign's whole point — a
+        // write failure (full disk, dead mount) is a broken HARNESS.
+        // Die loudly, as `check_isolated` does on spawn failure.
+        if let Err(e) = std::fs::write(self.dir.join(format!("divergence_{n:06}.gx")), body)
+        {
+            eprintln!("FATAL fuzz harness: cannot write finding: {e}");
+            std::process::exit(2);
+        }
         true
     }
 
@@ -1141,7 +1148,10 @@ impl Corpus {
              // do not promote to findings/ until fixed (regress runs in-process)\n\
              // mutant:\n{prog}\n",
         );
-        let _ = std::fs::write(self.dir.join(format!("crash_{n:06}.gx")), body);
+        if let Err(e) = std::fs::write(self.dir.join(format!("crash_{n:06}.gx")), body) {
+            eprintln!("FATAL fuzz harness: cannot write finding: {e}");
+            std::process::exit(2);
+        }
         true
     }
 }
@@ -1290,6 +1300,31 @@ fn child_exe() -> std::path::PathBuf {
     return std::env::current_exe().expect("current_exe");
 }
 
+/// Give a worker child a PARENT-owned sandbox cwd (generated programs
+/// write files with arbitrary relative paths — an inherited cwd gets
+/// littered). Parent-owned because the worker arms exit via
+/// `process::exit` (drops skipped): a child-owned tempdir leaked per
+/// subject, and a soak's millions of subjects exhausted /tmp's INODES
+/// (jul10d — 8.1M inodes 0 free at 78MB used; every subsequent run
+/// failed on ENOSPC and recorded a garbage finding). The returned
+/// guard removes the dir on drop — declare it BEFORE the child handle
+/// so `kill_on_drop` reaps the child first. GRAPHIX_FUZZ_SANDBOXED
+/// tells the child to skip its manual-invocation self-sandbox. A
+/// tempdir failure is a broken HARNESS — die loudly, exactly as child
+/// spawn failure does.
+fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
+    match tempfile::tempdir() {
+        Ok(d) => {
+            cmd.current_dir(d.path()).env("GRAPHIX_FUZZ_SANDBOXED", "1");
+            d
+        }
+        Err(e) => {
+            eprintln!("FATAL fuzz harness: sandbox tempdir failed: {e}");
+            std::process::exit(2)
+        }
+    }
+}
+
 /// The per-subject determinism check — the `selfcheck-one` child body:
 /// each mode run twice concurrently AT THE PROGRAM'S ORACLE TIER, with
 /// a sequential uncontended confirm-retry before flagging (under a
@@ -1330,6 +1365,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
 async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(child_exe());
+    let _sandbox = sandbox_cwd(&mut cmd);
     cmd.arg("selfcheck-one")
         .env("TOKIO_WORKER_THREADS", "2")
         .stdin(std::process::Stdio::piped())
@@ -1508,6 +1544,7 @@ pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> 
     ) -> std::result::Result<(Option<i32>, String), String> {
         use tokio::io::AsyncWriteExt;
         let mut cmd = tokio::process::Command::new(child_exe());
+        let _sandbox = sandbox_cwd(&mut cmd);
         cmd.arg("detcheck-one")
             .env("TOKIO_WORKER_THREADS", "2")
             .env("GRAPHIX_DUMP_CLIF", "1")
@@ -1581,6 +1618,7 @@ pub async fn detcheck(
 async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(child_exe());
+    let _sandbox = sandbox_cwd(&mut cmd);
     cmd.arg("check-one")
         // The pool already provides the concurrency; small children keep
         // total thread count sane at parallelism() in-flight processes.
@@ -1660,12 +1698,11 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
 /// lost to the minimizer).
 async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     use tokio::io::AsyncWriteExt;
-    let out_path = std::env::temp_dir().join(format!(
-        "graphix-fuzz-min-{}-{}",
-        std::process::id(),
-        MIN_OUT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
     let mut cmd = tokio::process::Command::new(child_exe());
+    let sandbox = sandbox_cwd(&mut cmd);
+    // The output file lives INSIDE the sandbox (unique per child), so
+    // the guard's drop cleans it along with the program's litter.
+    let out_path = sandbox.path().join("min.gx");
     cmd.arg("minimize-one")
         .arg(&out_path)
         .env("TOKIO_WORKER_THREADS", "2")
@@ -1686,7 +1723,6 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
         Ok(Ok(out)) if out.status.success()
     );
     let min = if ok { std::fs::read_to_string(&out_path).ok() } else { None };
-    let _ = std::fs::remove_file(&out_path);
     let min = min.map(|m| m.trim().to_string());
     match min {
         Some(m) if !m.is_empty() => Some(m),
@@ -1694,9 +1730,41 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     }
 }
 
-/// Uniquifies `minimize_isolated`'s per-child output files (parallel
-/// minimizations in one campaign process).
-static MIN_OUT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Environment-broken backstop for the campaign pool: when a MAJORITY
+/// of a recent window of subjects produce findings, the problem is the
+/// environment (ENOSPC, fd exhaustion) or a fundamentally broken
+/// build, not the programs — the worst real bug classes hit well under
+/// 0.1% of subjects, while a broken environment fails EVERY subject
+/// and records garbage findings at disk speed (jul10d: /tmp inode
+/// exhaustion flooded the corpus at 300MB/s until killed by hand;
+/// dedup can't help because the crash key varies with program text).
+struct BreakageWindow {
+    window: std::collections::VecDeque<bool>,
+    findings: usize,
+}
+
+impl BreakageWindow {
+    const LEN: usize = 200;
+
+    fn new() -> Self {
+        BreakageWindow {
+            window: std::collections::VecDeque::with_capacity(Self::LEN),
+            findings: 0,
+        }
+    }
+
+    /// Record one subject outcome. `true` = abort the campaign: the
+    /// window is full and most of it is findings. Never trips before
+    /// a full window, so short finite runs are unaffected.
+    fn note(&mut self, finding: bool) -> bool {
+        self.window.push_back(finding);
+        self.findings += finding as usize;
+        if self.window.len() > Self::LEN {
+            self.findings -= self.window.pop_front().unwrap() as usize;
+        }
+        self.window.len() == Self::LEN && self.findings * 2 > Self::LEN
+    }
+}
 
 /// Worker pool. Keeps `parallelism()` oracle checks in flight over fresh
 /// programs from `next_prog`. Checks run in ISOLATED child processes by
@@ -1720,6 +1788,7 @@ async fn run_pool(
     let par = parallelism();
     let isolate = std::env::var_os("GRAPHIX_FUZZ_INPROC").is_none();
     let mut stats = FuzzStats::default();
+    let mut breakage = BreakageWindow::new();
     let mut checks: JoinSet<(String, PoolResult)> = JoinSet::new();
     let mut minims: JoinSet<()> = JoinSet::new();
     let mut launched = 0usize;
@@ -1772,8 +1841,8 @@ async fn run_pool(
                             corpus.len()
                         );
                     }
-                    match res {
-                        PoolResult::Agree => {}
+                    let finding = match res {
+                        PoolResult::Agree => false,
                         PoolResult::Crash(status) => {
                             // A HANG in a program touching IO/async
                             // modules is environmental, not a bug: the
@@ -1796,6 +1865,7 @@ async fn run_pool(
                                     prog.replace('\n', "\\n")
                                 );
                             }
+                            true
                         }
                         PoolResult::Diverge(d) => {
                             // No tier filter here: `check` compares at
@@ -1832,7 +1902,19 @@ async fn run_pool(
                                     );
                                 }
                             });
+                            true
                         }
+                    };
+                    if breakage.note(finding) {
+                        eprintln!(
+                            "FATAL fuzz harness: {} of the last {} subjects \
+                             produced findings — the environment (or the \
+                             build) is broken, not the programs; aborting \
+                             instead of flooding the corpus",
+                            breakage.findings,
+                            BreakageWindow::LEN,
+                        );
+                        std::process::exit(2);
                     }
                 }
             }
@@ -1847,6 +1929,32 @@ async fn run_pool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breakage_window_trips_only_on_sustained_majority() {
+        // A clean soak never trips.
+        let mut w = BreakageWindow::new();
+        for _ in 0..10_000 {
+            assert!(!w.note(false));
+        }
+        // A sub-majority burst of real findings doesn't trip (the worst
+        // genuine bug classes are orders of magnitude below this).
+        for _ in 0..BreakageWindow::LEN / 2 {
+            assert!(!w.note(true));
+        }
+        for _ in 0..BreakageWindow::LEN {
+            assert!(!w.note(false));
+        }
+        // Environment breaks: every subject is a finding — trips within
+        // one window of the breakage.
+        assert!((0..BreakageWindow::LEN).any(|_| w.note(true)));
+        // Never trips before the window fills (short finite runs).
+        let mut w = BreakageWindow::new();
+        for _ in 0..BreakageWindow::LEN - 1 {
+            assert!(!w.note(true));
+        }
+        assert!(w.note(true));
+    }
 
     #[test]
     fn addr_getters_are_excluded_tier() {
