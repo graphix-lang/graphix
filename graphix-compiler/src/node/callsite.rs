@@ -708,8 +708,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.resolved_ftype.as_ref(),
             self.top_id,
         )?;
-        let swallowed = rf.typecheck0(ctx, &mut self.arg_refs);
-        if let Err(e) = &swallowed {
+        // The instance-body re-check stays SWALLOWED — an attempted
+        // strictness (2026-07-12) is documented in
+        // fuzz/pending-ruling/site_recheck_strictness.md: it catches
+        // the real disjoint-cell acceptance holes (jul10h
+        // 000001/000002/000010 — the def gate's `unbind_tvars`
+        // discards body facts, so an unannotated formal reaches every
+        // site fully open and the JIT freezes a type the runtime
+        // contradicts), but the same check REJECTS the pinned
+        // numeric-promotion semantics (`param_knot_no_leak`:
+        // `'a: Number |x: 'a| -> 'a x + i64:1` must accept BOTH an
+        // i64 and an f64 site) and cannot validate cross-module
+        // instances (the body bakes the def module's private
+        // abstract/alias view into its node types; the abstract
+        // registry's expansion is scope-gated). Distinguishing
+        // promotion-flexible facts from genuine conflicts needs a
+        // ruling on the elaboration typing model.
+        if let Err(e) = &rf.typecheck0(ctx, &mut self.arg_refs) {
             if std::env::var_os("GXDBG_SWALLOW").is_some() {
                 eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
             }

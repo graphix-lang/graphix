@@ -17,6 +17,12 @@
 > class now agrees) — if a witness reappears, carry real discs
 > across the dispatch ABI as designed below. Everything below is
 > kept as the analysis record.
+>
+> The TYPING-ACCEPTANCE family that shared the jul10h corpus
+> (000001/000002/000010) is OPEN, awaiting a ruling — the strictness
+> experiment collided with the pinned numeric-promotion semantics and
+> the cross-module abstract-scope boundary. Full analysis and the
+> questions for Eric: `site_recheck_strictness.md` (this directory).
 
 > **UPDATE (same night):** three of the four classes this file
 > originally covered are FIXED (the spurious async-path flip — a
