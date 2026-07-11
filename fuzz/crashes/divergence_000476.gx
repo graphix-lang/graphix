@@ -1,7 +1,0 @@
-// bisect: GIR/emit bug (interp != fused)
-// interp: Value(F64(-0.0))
-// fused:  Timeout
-// jit:    Timeout
-// mutant: { let v0 = (i64:-100 % (i64:0 * i64:42)); let v1 = ["", "a"]; let v2 = (!(!(false || false))); select ((i64:100 % i64:42) * i64:100) { 42 => f64:1.0, _ => ((f64:-1.0 * f64:0.0) - f64:0.0) } }
-// minimized:
-{let v0 = i64:0 % i64:0 * i64:42; let v1 = ["", "a"]; let v2 = (!(!(false || false))); select ((i64:100 % i64:42) * i64:100) {i64:42 => f64:1., _ => ((f64:-1. * f64:0.) - f64:0.)}}

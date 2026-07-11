@@ -1,7 +1,0 @@
-// bisect: GIR/emit bug (interp != fused)
-// interp: Value(Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(false), F64(0.0)] }) })))), String("")] }) })))))
-// fused:  Timeout
-// jit:    Timeout
-// mutant: { let v0 = ([true, true, true], i64:2); let v1 = (((i64:-100 / i64:0) - (i64:1 % i64:7)) < i64:1); ((false, f64:0.0), "") }
-// minimized:
-{f64:0.; let v1 = (((i64:-100 / i64:0) - (i64:1 % i64:7)) < i64:1); ((false, f64:0.), "")}

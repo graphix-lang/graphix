@@ -1,7 +1,0 @@
-// bisect: cranelift codegen bug (interp == fused != jit)
-// interp: Value(I64(9223372036854775807))
-// fused:  Value(I64(9223372036854775807))
-// jit:    Timeout
-// mutant: {let v = rand::rand(#start: i64:0, #end: i64:-9223372036854775808, #clock: i64:1); select i64:9223372036854775807 {i64:2 => v, _ => i64:9223372036854775807}}
-// minimized:
-{let v = rand::rand(#start: i64:0, #end: i64:0, #clock: i64:0); select i64:9223372036854775807 {i64:2 => v, _ => i64:9223372036854775807}}

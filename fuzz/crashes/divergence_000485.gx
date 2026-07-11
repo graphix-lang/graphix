@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Timeout
-// jit:    Value(I64(0))
-// mutant: {use array; let xs = array::init(i64:-9223372036854775808, |idx: i64| idx); array::fold(xs, i64:0, |acc, x| acc + x * i64:2)}
-// minimized:
-{i64:0; let xs = array::init(i64:-9223372036854775808, |idx: i64| idx); array::fold(xs, i64:0, |acc, x| acc + x * i64:2)}

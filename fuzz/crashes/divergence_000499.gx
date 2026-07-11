@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Timeout
-// jit:    Value(I64(0))
-// mutant: {let a = array::init(i64:-100, |i| i + i64:1); array::fold(a, i64:0, |acc, x| acc + x)}
-// minimized:
-{let a = array::init(i64:0, |i| i); array::fold(a, i64:0, |acc, x| acc + x)}

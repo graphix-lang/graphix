@@ -1,7 +1,0 @@
-// bisect: GIR/emit bug (interp != fused)
-// interp: Value(Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [U8(9), U8(101)] }) })))))
-// fused:  Timeout
-// jit:    Timeout
-// mutant: { let v0 = i64:2; let v1 = select (i64:100 * (i64:2 * v0)) { 0 => true, _ => ((v0 != i64:0) || (false || true)) }; let v2 = select ((v0 + i64:2) % (v0 - v0)) { 1 => ((i64:-1 * v0), f64:0.0), _ => ((v0 * i64:7), f64:1.0) }; [((u8:1 + u8:2) * (u8:1 + u8:2)), ((u8:100 + u8:0) + (u8:1 + u8:0))] }
-// minimized:
-{let v0 = i64:0; i64:100 * (i64:2 * v0); let v2 = select ((v0 + i64:2) % (v0 - v0)) {i64:1 => ((i64:-1 * v0), f64:0.), _ => ((v0 * i64:7), f64:1.)}; [((u8:1 + u8:2) * (u8:1 + u8:2)), ((u8:100 + u8:0) + (u8:1 + u8:0))]}

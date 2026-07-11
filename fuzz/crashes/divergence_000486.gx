@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Timeout
-// jit:    RuntimeErr("wait_result_or_idle: runtime is dead")
-// mutant: {let f = |x, y| any(x, i64:0); let v = f("foo", i64:3); let g = |x| x + i64:1; g(v)}
-// minimized:
-{let f = |x, y| x; let v = f(null, i64:3); let g = |x| x + i64:1; g(v)}
