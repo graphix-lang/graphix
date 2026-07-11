@@ -111,5 +111,7 @@ no_llvm_build
 /ide/editors/vscode/package-lock.json
 .claude/scheduled_tasks.lock
 # graphix-fuzz working scratch (crash recordings); the committed gate is
-# graphix-fuzz/findings/, not these.
+# graphix-fuzz/findings/, not these. Campaign corpora belong under
+# ~/tmp/target/fuzz/ (out of the synced repo), never in here.
 /fuzz/crashes/
+/fuzz/soak-*/
