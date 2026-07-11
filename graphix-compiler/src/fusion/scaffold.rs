@@ -588,6 +588,10 @@ pub struct SlotFlags {
     /// keeps `fold(const_arr, firing_init, |a,b| K)` quiet (the
     /// hof-lift-firing pin).
     init_disc: Option<ClifValue>,
+    /// I8 bool: this evaluation is the loop's FIRST with both source
+    /// and init present (the `For::primed` twin) — [`Self::apply`]
+    /// forces the result FIRED. `None` = stateless fallback.
+    first_run: Option<ClifValue>,
 }
 
 impl SlotFlags {
@@ -599,12 +603,17 @@ impl SlotFlags {
         // All-stale start: an empty loop contributes no firing.
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags { taint, stale, len: None, init_disc: None }
+        SlotFlags { taint, stale, len: None, init_disc: None, first_run: None }
     }
 
     /// Record the INIT's disc for the empty-source firing term.
     pub fn set_init_disc(&mut self, disc: ClifValue) {
         self.init_disc = Some(disc);
+    }
+
+    /// Record the first-complete-run bool (see the field).
+    pub fn set_first_run(&mut self, first: Option<ClifValue>) {
+        self.first_run = first;
     }
 
     /// OR a disc's TAINT into the sticky taint word WITHOUT touching
@@ -698,6 +707,15 @@ impl SlotFlags {
                 cx.b.ins().band(slots_word, non_empty_word)
             }
             None => slots_word,
+        };
+        // The first COMPLETE run fires unconditionally (the `For::primed`
+        // init-force twin — see `first_run`).
+        let quiet = match self.first_run {
+            Some(first) => {
+                let zero = cx.b.ins().iconst(types::I64, 0);
+                cx.b.ins().select(first, zero, quiet)
+            }
+            None => quiet,
         };
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
         r.disc = cx.b.ins().bor(r.disc, quiet);
@@ -864,6 +882,32 @@ where
     // DOES join the empty-source term (an empty fold IS its init).
     taint.fold_taint(cx, init_cv.disc);
     taint.set_init_disc(init_cv.disc);
+    // FIRST-COMPLETE-RUN priming (the node-walk `For::primed` twin):
+    // the loop's first evaluation with BOTH the source and the init
+    // present is init-like — its result FIRES even though a const
+    // body's evaluations stay quiet. The kernel's own init view can
+    // predate an async-late input (`fold(arr, iter(..), f)` — the
+    // init arrives cycles after the kernel's first dispatch), so the
+    // priming is a per-instance state word consumed on the first
+    // untainted (source, init) pair, NOT the init flag. SEMANTIC
+    // state (survives reset_replay, like `For::primed`). Stateless
+    // fallback (nested loops, callee bodies): the init view was the
+    // only priming — the pre-existing behavior.
+    let first_run = cx.claim_state_word().map(|off| {
+        let sp = cx.state_ptr();
+        let primed = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+        let it = cx.b.ins().band_imm(init_cv.disc, TAINT);
+        let init_ok = cx.b.ins().icmp_imm(IntCC::Equal, it, 0);
+        let at = cx.b.ins().band_imm(arr.disc, TAINT);
+        let arr_ok = cx.b.ins().icmp_imm(IntCC::Equal, at, 0);
+        let ok = cx.b.ins().band(init_ok, arr_ok);
+        let ok64 = cx.b.ins().uextend(types::I64, ok);
+        let np = cx.b.ins().bor(primed, ok64);
+        cx.b.ins().store(MemFlags::trusted(), np, sp, off);
+        let unprimed = cx.b.ins().icmp_imm(IntCC::Equal, primed, 0);
+        cx.b.ins().band(unprimed, ok)
+    });
+    taint.set_first_run(first_run);
     // A pointer-shaped acc is loop-OWNED from the start: a borrowed
     // init (a Ref to a kernel input / outer local) clones here. String
     // reads already clone; a scalar owns nothing.
