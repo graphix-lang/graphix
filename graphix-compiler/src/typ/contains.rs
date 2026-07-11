@@ -98,6 +98,17 @@ impl crate::typ::TVar {
         }
         match witness {
             Some(w) => {
+                // Materialize a PRIVATE copy of the witness: the
+                // conjunct is the constraint STORE's type, and binding
+                // the cell to it verbatim aliases the store's interior
+                // cells into live inference — a later bind through the
+                // settled type wrote the constraint itself (and, with
+                // open conjunct leaves, every cell sharing the conjunct
+                // saw the write).
+                let w = w.reset_tvars();
+                if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                    eprintln!("SETTLE '{}({:x}) := {w:?}", self.name, self.cell_addr());
+                }
                 self.read().typ.write().typ = Some(w);
                 Ok(())
             }
@@ -276,11 +287,7 @@ impl Type {
                 // to i64 through the flagless operand pre-bind).
                 if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() {
                     if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
-                        eprintln!(
-                            "BIND lhs '{}({:x}) := Any",
-                            t0.name,
-                            t0.cell_addr()
-                        );
+                        eprintln!("BIND lhs '{}({:x}) := Any", t0.name, t0.cell_addr());
                     }
                     t0.read().typ.write().typ = Some(Self::Any);
                 }
@@ -414,21 +421,35 @@ impl Type {
                         // bind; re-verdict structurally against the
                         // bare rigid var instead (lands in the
                         // rigid-aware bare-TVar arms below).
-                        (Some(b), None) if flags.contains(ContainsFlags::RigidCheck) && t1i.rigid > 0 => {
+                        (Some(b), None)
+                            if flags.contains(ContainsFlags::RigidCheck)
+                                && t1i.rigid > 0 =>
+                        {
                             ActOrRecurse::Recurse(b.clone(), tt1.clone())
                         }
-                        (None, Some(b)) if flags.contains(ContainsFlags::RigidCheck) && t0i.rigid > 0 => {
+                        (None, Some(b))
+                            if flags.contains(ContainsFlags::RigidCheck)
+                                && t0i.rigid > 0 =>
+                        {
                             ActOrRecurse::Recurse(tt0.clone(), b.clone())
                         }
                         (Some(b), None) => {
                             if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
-                                eprintln!("TT-RIGHTCOPY '{} <= '{}", t1.id.inner(), t0.id.inner());
+                                eprintln!(
+                                    "TT-RIGHTCOPY '{} <= '{}",
+                                    t1.id.inner(),
+                                    t0.id.inner()
+                                );
                             }
                             ActOrRecurse::Act(Act::RightCopy, Some(b.clone()))
                         }
                         (None, Some(b)) => {
                             if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
-                                eprintln!("TT-LEFTCOPY '{} <= '{}", t0.id.inner(), t1.id.inner());
+                                eprintln!(
+                                    "TT-LEFTCOPY '{} <= '{}",
+                                    t0.id.inner(),
+                                    t1.id.inner()
+                                );
                             }
                             ActOrRecurse::Act(Act::LeftCopy, Some(b.clone()))
                         }
@@ -445,8 +466,7 @@ impl Type {
                 // (checked lock-free on the cloned-out binding).
                 match act {
                     Act::RightCopy
-                        if flags.contains(ContainsFlags::InitTVars)
-                            && !t1.is_rigid() =>
+                        if flags.contains(ContainsFlags::InitTVars) && !t1.is_rigid() =>
                     {
                         let b = bound.as_ref().expect("copy without binding");
                         if !cell_constraints_ok(t1, env, hist, b)? {
@@ -461,8 +481,7 @@ impl Type {
                         t0.alias(t1)
                     }
                     Act::LeftCopy
-                        if flags.contains(ContainsFlags::InitTVars)
-                            && !t0.is_rigid() =>
+                        if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() =>
                     {
                         let b = bound.as_ref().expect("copy without binding");
                         if !cell_constraints_ok(t0, env, hist, b)? {
@@ -524,7 +543,12 @@ impl Type {
                 if flags.contains(ContainsFlags::RigidCheck) && t1.is_rigid() {
                     let cons = t1.read().typ.read().constraints.clone();
                     for c in cons.iter() {
-                        if t0.contains_int(flags, env, hist, c)? {
+                        // PROBE flags: `c` is the constraint STORE's
+                        // type. A flagged check here aliased live cells
+                        // into the store (open conjunct leaves are
+                        // writable, unlike the old Any-closed ones) and
+                        // every later check read the leak back.
+                        if t0.contains_int(BitFlags::empty(), env, hist, c)? {
                             return Ok(true);
                         }
                     }

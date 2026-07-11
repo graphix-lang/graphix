@@ -426,7 +426,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.sleep(ctx);
     }
-
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -587,7 +586,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.apply.sleep(ctx);
     }
-
 }
 
 #[derive(Debug)]
@@ -817,9 +815,25 @@ impl Lambda {
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
                     Some(init) => {
+                        // Same policy as the Left branch: the wrapper's
+                        // typecheck runs against the CALL SITE's resolved
+                        // signature when the site provides one. `_typ` is
+                        // the def's SHARED cells — `typecheck0`'s
+                        // check_contains through them bound the def
+                        // (`push`'s 'a := the first site's element type),
+                        // and since `reset_tvars` preserves bindings as
+                        // solved facts, every later site inherited the
+                        // first site's types (the nested in-language map
+                        // hang, sync-subset P4). `None` remains the def
+                        // gate's scratch check, where the def's own cells
+                        // are the point and rigidity protects them.
+                        let typ = match resolved {
+                            Some(r) => Arc::new(r.clone()),
+                            None => _typ.clone(),
+                        };
                         init(ctx, &_typ, resolved, &_scope, args, tid).map(|apply| {
                             let f: Box<dyn Apply<R, E>> =
-                                Box::new(BuiltInLambda { typ: _typ.clone(), apply });
+                                Box::new(BuiltInLambda { typ, apply });
                             f
                         })
                     }
@@ -1001,10 +1015,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // an audit-mode run of a program whose defs it rejected.
         if res.is_err() && std::env::var_os("GRAPHIX_RIGID_AUDIT").is_some() {
             if let Err(e) = &res {
-                eprintln!(
-                    "RIGID-AUDIT reject: {} — {e:#}",
-                    Update::<R, E>::spec(self)
-                );
+                eprintln!("RIGID-AUDIT reject: {} — {e:#}", Update::<R, E>::spec(self));
             }
             return Ok(());
         }

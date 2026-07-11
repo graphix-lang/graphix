@@ -480,17 +480,28 @@ impl FnType {
             let listed = constraints.iter().any(|(ltv, _)| ltv.name == name);
             match bound {
                 Some(t) if t != Type::Bottom && t != Type::Any => {
-                    // Close the conjunct SNAPSHOT, not the live cells:
-                    // this def may be nested inside an enclosing def's
-                    // still-open gate, and `bind_as(Any)` on the live
-                    // binding foreclosed the outer's inference (an
-                    // inline fold callback's leftover cells are shared
-                    // with the fold signature the outer body's type
-                    // flows through — sync-subset P4, the in-language
-                    // map).
+                    // Snapshot with PRIVATE cells (`reset_tvars`), and
+                    // leave still-open leaves OPEN: a binding whose
+                    // interior cell is unbound is a PARTIAL fact, and
+                    // closing the leaf (the old `bind_as(Any)`) turned
+                    // "an array of something not yet solved" into the
+                    // false fact `Array<Any>` — `settle` then
+                    // materialized it as a real binding and every
+                    // instance of a nested generic def inherited an
+                    // element type the body never delivers (sync-subset
+                    // P4, the nested in-language map). The fresh open
+                    // leaf still carries the source cell's constraint
+                    // conjunction, so the obligation survives without
+                    // the lie.
                     let t = t.reset_tvars();
-                    t.bind_as(&Type::Any);
                     let tc = t.normalize();
+                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                        eprintln!(
+                            "CONSTRAIN-KNOWN '{}({:x}) += {tc:?}",
+                            tv.name,
+                            tv.cell_addr()
+                        );
+                    }
                     // The def-time binding is a FACT every instance must
                     // honor (observation #4): seed it as a cell conjunct
                     // even when the name carries an explicit listed

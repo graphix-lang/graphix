@@ -108,11 +108,7 @@ pub struct TCell {
 
 impl TCell {
     fn bound(typ: Type) -> Self {
-        TCell {
-            typ: Some(typ),
-            constraints: smallvec::SmallVec::new(),
-            rigid: 0,
-        }
+        TCell { typ: Some(typ), constraints: smallvec::SmallVec::new(), rigid: 0 }
     }
 
     /// Add `c` to the conjunction unless an equal member is present.
@@ -384,6 +380,16 @@ impl TVar {
                 other.name,
                 typ
             );
+        }
+        if let Ok(id) = std::env::var("GRAPHIX_DBG_BIND_BT") {
+            if id == s.id.inner().to_string() {
+                eprintln!(
+                    "BT for write to '{}({}):\n{}",
+                    self.name,
+                    id,
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
         }
         let mut sc = s.typ.write();
         sc.typ = typ;
