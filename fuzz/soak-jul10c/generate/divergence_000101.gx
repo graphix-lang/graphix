@@ -1,0 +1,12 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = mod d0 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: u32) -> v32 }; source r'let g0 = |v0: u32| -> v32 v32:0' }; let v1 = select v0 { error as _ => v32:1, null as _ => d0::g0(u32:7) }; let v1 = |v2: u8, v3: u8, v1: i64| -> string "xyz"; let v4 = mod d1 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: i64) -> string }; source r'let g0 = |v4: i64| -> string "a"' }; let v5 = select v4 { error as _ => "hello", null as _ => d1::g0(i64:42) }; let v6 = m0::mk((i64:-100 * i64:100)); let v7 = (v6, m0::un(v6)); array::fold([u8:2, u8:2], (-(i64:1)), |v8, v9| (i64:0 % v8)) }\n// file-v1: m0.gxi\nval k0: string;\n/// generated\nval f0: fn(a0: &string) -> bool;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m0.gx\nlet k0: string = "hello";\nlet f0 = |v6: &string| -> bool false;\ntype T = i64;\nlet mk = |x: i64| -> T x;\nlet un = |t: T| -> i64 t;
+// minimized:
+array::fold([i64:0, i64:0], (-(i64:1)), |v8, v9| (i64:0 % v8))
+// file-v1: m0.gx
+let k0: string = "hello";
+let f0 = |v6: &string| -> bool false;
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;

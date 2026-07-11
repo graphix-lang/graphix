@@ -1,0 +1,13 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = m0::mk((i64:7 * i64:2)); array::fold([[f64:3.14, f64:-1.0], [f64:3.14], [f64:0.0, f64:0.1, f64:-1.0]], m0::un(v0), |v0, v1| (i64:-1 / v0)) }\n// file-v1: m0.gxi\nval f0: fn(a0: u32, a1: &f64) -> Map<string, i64>;\n/// generated\nval f1: fn(a0: u8) -> u32;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m0.gx\nlet h0 = |v0: u64| -> u64 (cast<u64>(z64:42)$ % (v0 - u64:7));\nlet f0 = |v1: u32, v2: &f64| {"b" => i64:-1, "k1" => i64:7};\nlet f1 = |v3: u8| -> u32 u32:7;\ntype T = i64;\nlet mk = |x: i64| -> T x;\nlet un = |t: T| -> i64 t;
+// minimized:
+{let v0 = i64:7; array::fold([f64:3.14, f64:-1.], m0::un(v0), |v0, v1| (i64:-1 / v0))}
+// file-v1: m0.gx
+let h0 = |v0: u64| -> u64 (cast<u64>(z64:42)$ % (v0 - u64:7));
+let f0 = |v1: u32, v2: &f64| {"b" => i64:-1, "k1" => i64:7};
+let f1 = |v3: u8| -> u32 u32:7;
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;

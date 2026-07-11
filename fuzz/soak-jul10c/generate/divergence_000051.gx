@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(1))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v3 = |v0: bool, v1: i8, v2: string| -> string "a"; let v4 = |v5: i64| -> i64 (v5 + i64:100); let v6 = |v7: i64| -> i64 (v4(v7) * i64:7); let v4 = |v8: i64| -> i64 (v8 - i64:100); let v9 = v6(i64:1); let v11 = |v10: i64, v6: i32| -> bool array::fold([{"k2" => i32:100000}, {"k2" => i32:100000, "b" => i32:100000}, {"k1" => i32:-1, "b" => i32:100000}], true, |v11, v12| v11); let v6 = |v9: i64, v12: string, v13: i64| -> f64 f64:0.1; array::fold([u8:1, u8:2, u8:0], (u8:1 + u8:255), |v14, v11| (u8:255 % v11)) }
+// minimized:
+array::fold([u8:1, u8:2, u8:0], u8:1, |v14, v11| (u8:255 % v11))

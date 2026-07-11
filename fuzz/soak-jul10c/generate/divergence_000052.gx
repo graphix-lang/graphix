@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = mod d0 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: f64) -> i64; val g1: fn(a0: f32, a1: string) -> f32 }; source r'let v0 = i64:7;\nlet g0 = |v1: f64| -> i64 v0;\nlet g1 = |v2: f32, v3: string| -> f32 ((v2 / f32:3.5) - (v2 - f32:-2.5))' }; let v1 = select v0 { error as _ => select (f32:1.0 *? f32:-1.0) { error as _ => f32:1.0, f32 as n => n }, null as _ => d0::g1(f32:0.0, str::concat("", "")) }; array::fold([f64:1.0, f64:3.14], (u8:255 * u8:255), |v2, v3| (u8:255 % v2)) }
+// minimized:
+array::fold([f64:0., f64:3.14], (u8:255 * u8:255), |v2, v3| (u8:255 % v2))

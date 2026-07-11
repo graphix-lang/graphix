@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = |v1: f64| -> f64 (v1 * f64:3.14); let v2 = |v3: f64| -> f64 (v0(v3) * f64:0.1); let v0 = f64:1.0; let v4 = v2(v0); let v4: [`C(i64), `Some({x: u8})] = `C(i64:42); let v5 = |v6: f64| -> f64 (v6 + f64:0.1); let v7 = |v8: f64| -> f64 (v5(v8) + f64:1.0); let v5 = f64:2.5; let v9 = v7(v0); let v10 = array::fold([u8:0, u8:1], u8:255, |v10, v9| (u8:255 % v10)); v10 }
+// minimized:
+{let v0 = |v1: f64| -> f64 f64:0.; let v2 = |v3: f64| -> f64 (v0(v3) * f64:0.1); let v0 = f64:1.; let v4 = v2(v0); let v4: [`C(i64), `Some({x: u8})] = `C(i64:42); let v5 = |v6: f64| -> f64 (v6 + f64:0.1); let v7 = |v8: f64| -> f64 (v5(v8) + f64:1.); let v5 = f64:2.5; let v9 = v7(v0); let v10 = array::fold([u8:0, u8:1], u8:255, |v10, v9| (u8:255 % v10)); v10}

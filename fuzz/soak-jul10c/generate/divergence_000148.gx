@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v1 = |v0: u8| -> u8 v0; let v2 = |v3: i64| select v3 { i64:0 => (f64:1.0 *? f64:3.14)$, _ => error(false) }; let v4 = select v2(i64:0) { error as _ => cast<f64>(i8:1)$, f64 as x => x }; let v0 = ((-(i64:-1)) + (-((i64:1 / i64:0)))); let v1 = |v5: i64| -> i64 (v5 - i64:-100); let v6 = |v7: i64| -> i64 (v1(v7) + i64:-100); let v1 = |v8: i64| -> i64 (v8 * i64:-1); let v9 = v6((v0 + i64:100)); let v6 = |v10: f64, v11: f32, v12: u8| -> z32 { let v13 = (v11 + v11); (-((z32:-1 + z32:-1))) }; array::fold([false, false, true], u8:255, |v14, v15| (u8:255 % v14)) }\n// file-v1: m0.gxi\nval f0: fn(a0: [bool, null]) -> z64;\n/// generated\nval f1: fn(a0: i64, a1: f64) -> u8;\n// file-v1: m0.gx\nlet f0 = |v14: [bool, null]| -> z64 z64:-1000000;\nlet f1 = |v15: i64, v16: f64| u8:255;
+// minimized:
+array::fold([true, false, true], u8:255, |v14, v15| (u8:255 % v14))

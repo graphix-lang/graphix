@@ -1,0 +1,13 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: i64 = i64:7; let v1: u8 = array::fold([u8:1, u8:0, u8:2], (u8:0 * u8:0), |v1, v2| (u8:1 / v2)); let v2: i64 = v0; let v3: Map<string, Array<bool>> = {"k0" => { let mt: Array<bool> = []; mt }, "k2" => [false, false, true]}; let v2 = u8:0; let v4 = m0::mk((v0 * v0)); let v5 = (m0::mk(v0), m0::un(v4)); v1 }\n// file-v1: m0.gxi\nval f0: fn(a0: bool, a1: f64) -> {a: i64, c: string};\n/// generated\nval f1: fn(a0: string, a1: [`B({c: u8, n: i64}, Map<string, string>), `C(Array<u16>, [f64, null]), `Some]) -> i32;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m0.gx\nlet h0 = |v4: i32| -> i32 i32:1;\nlet f0 = |v5: bool, v6: f64| { a: (i64:42 + i64:-1), c: "" };\nlet f1 = |v7: string, v8: [`B({c: u8, n: i64}, Map<string, string>), `C(Array<u16>, [f64, null]), `Some]| -> i32 cast<i32>((u8:255 - u8:255))$;\ntype T = Array<i64>;\nlet mk = |x: i64| -> T [x, x];\nlet un = |t: T| -> i64 t[0]$;
+// minimized:
+{let v0: i64 = i64:0; let v1: u8 = array::fold([u8:1, u8:0, u8:2], u8:0 * u8:0, |v1, v2| (u8:1 / v2)); let v2: i64 = v0; let v3: Map<string, Array<bool>> = {"k0" => {let mt: Array<bool> = []; mt}, "k2" => [false, false, true]}; let v2 = u8:0; let v4 = m0::mk((v0 * v0)); let v5 = (m0::mk(v0), m0::un(v4)); v1}
+// file-v1: m0.gx
+let h0 = |v4: i32| -> i32 i32:1;
+let f0 = |v5: bool, v6: f64| { a: (i64:42 + i64:-1), c: "" };
+let f1 = |v7: string, v8: [`B({c: u8, n: i64}, Map<string, string>), `C(Array<u16>, [f64, null]), `Some]| -> i32 cast<i32>((u8:255 - u8:255))$;
+type T = Array<i64>;
+let mk = |x: i64| -> T [x, x];
+let un = |t: T| -> i64 t[0]$;

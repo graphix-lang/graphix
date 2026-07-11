@@ -1,0 +1,12 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(-100))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = m0::mk(i64:2); let v0 = 'a: Number |v0: 'a| -> 'a ((v0 - v0) + v0); let v1 = array::fold([false, true, true], u8:100, |v1, v2| (u8:2 / v1)); let v2 = &"graphix"; select v1 { v3 if str::contains(#part: "hello", "") => i64:7, v1 => m0::un(m0::mk(i64:-100)) } }\n// file-v1: m0.gxi\nval f0: fn(a0: bool) -> string;\nval f1: fn(a0: i64, a1: i64) -> string;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m0.gx\nlet f0 = |v0: bool| -> string "["\[[false]-[v0]\]"]";\nlet f1 = |v1: i64, v2: i64| -> string "graphix";\ntype T = (i64, i64);\nlet mk = |x: i64| -> T (x, x + i64:1);\nlet un = |t: T| -> i64 t.0;
+// minimized:
+{i64:0; let v0 = 'a: Number|v0: 'a| -> 'a ((v0 - v0) + v0); let v1 = array::fold([false, true, true], u8:100, |v1, v2| (u8:2 / v1)); let v2 = &"graphix"; select v1 {v3 if str::contains(#part: "hello", "") => i64:7, v1 => m0::un(m0::mk(i64:-100))}}
+// file-v1: m0.gx
+let f0 = |v0: bool| -> string "["\[[false]-[v0]\]"]";
+let f1 = |v1: i64, v2: i64| -> string "graphix";
+type T = (i64, i64);
+let mk = |x: i64| -> T (x, x + i64:1);
+let un = |t: T| -> i64 t.0;

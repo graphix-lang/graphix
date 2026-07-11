@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(true))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let rec v0 = |v1: i64| -> i64 select v1 { v2 if v2 <= i64:0 => (v2 % i64:0), v2 => (v2 + v0(v2 - i64:1)) }; let v3 = v0(i64:8); let v4: string = ""; let v5 = &f64:0.1; let v6 = [v5, v5]; let rec v0 = |v7: i64, v9: i64| -> i64 select v7 { v8 if v8 <= i64:0 => cast<i64>(u16:65535)$, v8 => v0(v8 - i64:1, v9 + v8) }; let v10 = v0(i64:6, i64:0); let v12 = |v10: f64, v11: i64, v3: bool| -> bool true; let v13 = (f64:0.1 - f64:0.0); array::find([true, true, false], |v14| v12(f64:0.0, v3, v14)) }
+// minimized:
+{let rec v0 = |v1: i64| -> i64 select i64:0 {v2 if v2 <= i64:0 => v2 % i64:0, v2 => (v2 + v0(v2 - i64:1))}; let v3 = v0(i64:8); let v4: string = ""; let v5 = &f64:0.1; let v6 = [v5, v5]; let rec v0 = |v7: i64, v9: i64| -> i64 select v7 {v8 if v8 <= i64:0 => cast<i64>(u16:65535)$, v8 => v0(v8 - i64:1, v9 + v8)}; let v10 = v0(i64:6, i64:0); let v12 = |v10: f64, v11: i64, v3: bool| -> bool true; let v13 = (f64:0.1 - f64:0.); array::find([true, true, false], |v14| v12(f64:0., v3, v14))}

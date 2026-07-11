@@ -1,0 +1,18 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = { b: (m0::k0 + (m0::k0 * m0::k0)), n: "\[[cast<i8>(u64:1)$]\]", x: ([i64:1, i64:1, i64:2], {"k0" => u8:255}) }; let v1 = m1::mk(cast<i64>(z32:0)$); let v2 = (m1::mk(m0::k0), (i64:2 * i64:100)); array::fold([u8:1, u8:0], (u8:100 - u8:2), |v3, v4| (v3 % v4)) }\n// file-v1: m0.gx\nlet k0: i64 = (i64:100 + i64:42);\nlet f0 = |v0: &u8, v1: &string| -> i64 cast<i64>(v64:1)$;\nlet f1 = |v2: u8| -> (i64, i64, f64) (i64:100, i64:100, f64:2.5);\n// file-v1: m1.gxi\n/// generated\nval f0: fn(a0: string) -> (i64, i64, f64);\nval f1: fn(a0: [`B, `C(f64, f64), `Nil]) -> i64;\nval f2: fn(a0: string) -> u8;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m1.gx\nlet h1 = |v1: f64| -> f64 array::fold([i64:1, i64:-100], f64:-1.0, |v2, v3| f64:3.14);\nlet f0 = |v2: string| -> (i64, i64, f64) m0::f1((try ((u8:100 +? u8:255))? catch(e) => u8:255));\nlet f1 = |v3: [`B, `C(f64, f64), `Nil]| -> i64 ((i64:-1 * m0::k0) + m0::f0(&u8:2, &"xyz"));\nlet f2 = |v4: string| -> u8 u8:2;\ntype T = i64;\nlet mk = |x: i64| -> T x;\nlet un = |t: T| -> i64 t;
+// minimized:
+array::fold([u8:1, u8:0], u8:100, |v3, v4| (v3 % v4))
+// file-v1: m0.gx
+let k0: i64 = (i64:100 + i64:42);
+let f0 = |v0: &u8, v1: &string| -> i64 cast<i64>(v64:1)$;
+let f1 = |v2: u8| -> (i64, i64, f64) (i64:100, i64:100, f64:2.5);
+// file-v1: m1.gx
+let h1 = |v1: f64| -> f64 array::fold([i64:1, i64:-100], f64:-1.0, |v2, v3| f64:3.14);
+let f0 = |v2: string| -> (i64, i64, f64) m0::f1((try ((u8:100 +? u8:255))? catch(e) => u8:255));
+let f1 = |v3: [`B, `C(f64, f64), `Nil]| -> i64 ((i64:-1 * m0::k0) + m0::f0(&u8:2, &"xyz"));
+let f2 = |v4: string| -> u8 u8:2;
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;

@@ -1,0 +1,16 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Null), (1, Null)], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Null)], capped: false }] })
+// mutant: { let v0: string = select ((i64:-1 + i64:42) / i64:-1) { v0 => str::replace(#pat: "hello", #rep: "a", str::trim("graphix")) }; let v1 = &v0; *v1 <- "xyz"; let v0 = { n: array::fold([null, f64:-1.0], f64:3.14, |v2, v3| v2), x: i64:0 }; let v0 = cast<u8>(((f32:1.0 - f32:1.0) / select (f32:0.25 -? f32:-1.0) { error as _ => f32:3.5, f32 as n => n }))$; let v2 = m1::mk(str::len("graphix")); let v3: [string, null] = select array::fold([i64:-1, i64:7], i64:42, |v1, v3| i64:2) { v1 if true => "\[[f32:3.5]\]", i64:2 if (!true) => "[{ n: false, x: u64:18446744073709551615 }]", _ => array::find(["", "a", "hello"], |v3| true) }; let v4 = ""; let v4: bool = (!(cast<f32>(u16:65535)$ < select (f32:-1.0 /? f32:0.0) { error as _ => f32:1.0, f32 as n => n })); array::find([u8:255], |v5| (i8:7 == i8:-1)) }\n// file-v1: m0.gx\nlet h0 = |v2: f64| -> f64 (-((v2 /? f64:3.14)$));\nlet f0 = |v3: i64, v4: v64| -> {b: Array<i64>, n: f64} { b: [i64:1], n: f64:1.0 };\nlet f1 = |v5: &bool, v6: f64| -> f64 f64:-1.0;\nlet f2 = |v7: Map<string, string>| -> i64 i64:2;\n// file-v1: m1.gxi\nval f0: fn(a0: string) -> f64;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m1.gx\nlet f0 = |v2: string| -> f64 (m0::f1(&(true), f64:0.0) + (cast<f64>(f32:0.0)$));\ntype T = (i64, i64);\nlet mk = |x: i64| -> T (x, x + i64:1);\nlet un = |t: T| -> i64 t.0;
+// minimized:
+{let v0: string = "hello"; let v1 = &v0; *v1 <- "xyz"; let v0 = { n: array::fold([null, f64:-1.], f64:3.14, |v2, v3| v2), x: i64:0 }; let v0 = cast<u8>(((f32:1. - f32:1.) / select (f32:0.25 -? f32:-1.) {error as _ => f32:3.5, f32 as n => n}))$; let v2 = m1::mk(str::len("graphix")); let v3: [null, string] = select array::fold([i64:-1, i64:7], i64:42, |v1, v3| i64:2) {v1 if true => "\[[f32:3.5]\]", i64:2 if (!true) => "[{ n: false, x: u64:18446744073709551615 }]", _ => array::find(["", "a", "hello"], |v3| true)}; let v4 = ""; let v4: bool = (!(cast<f32>(u16:65535)$ < select (f32:-1. /? f32:0.) {error as _ => f32:1., f32 as n => n})); array::find([u8:255], |v5| (i8:7 == i8:-1))}
+// file-v1: m0.gx
+let h0 = |v2: f64| -> f64 (-((v2 /? f64:3.14)$));
+let f0 = |v3: i64, v4: v64| -> {b: Array<i64>, n: f64} { b: [i64:1], n: f64:1.0 };
+let f1 = |v5: &bool, v6: f64| -> f64 f64:-1.0;
+let f2 = |v7: Map<string, string>| -> i64 i64:2;
+// file-v1: m1.gx
+let f0 = |v2: string| -> f64 (m0::f1(&(true), f64:0.0) + (cast<f64>(f32:0.0)$));
+type T = (i64, i64);
+let mk = |x: i64| -> T (x, x + i64:1);
+let un = |t: T| -> i64 t.0;

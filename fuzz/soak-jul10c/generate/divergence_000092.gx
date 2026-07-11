@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = select str::len(str::sub(#start: i64:1, #len: i64:1, "xyz")$) { _ if (false || false) => { n: "[i64:42]-["hello"]", x: (f64:3.14 * f64:-1.0), y: ["graphix"] }, i64:-1 => { n: "xyz", x: (f64:0.1 / f64:3.14), y: ["a", ""] }, _ => { n: "graphix", x: f64:3.14, y: ["graphix"] } }; let v0: [i64, null] = select v0 { {n: "a", x: _, y: [v1, v2..]} => null, {n: v1, x: v2, y: v3} => i64:42 }; let v1: Array<string> = ["", "a", "\[[u8:1]\]"]; array::fold([u8:1, u8:0, u8:0], (u8:255 - u8:2), |v2, v1| (v2 % v2)) }
+// minimized:
+array::fold([null, null, i64:0], (u8:255 - u8:2), |v2, v1| (v2 % v2))

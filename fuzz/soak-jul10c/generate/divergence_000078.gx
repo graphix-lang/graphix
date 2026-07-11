@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = |v0: v64| -> string str::join(#sep: "", ["xyz"]); let v2 = |v1: i64, v0: v64| -> i64 { let v0 = true; (cast<i64>(i16:-32768)$ % i64:42) }; array::fold([u8:100, u8:0], u8:255, |v3, v4| (u8:0 / v4)) }\n// file-v1: m0.gxi\nval k0: Map<string, string>;\n/// generated\nval f0: fn(a0: &bool) -> (bool, u8);\n// file-v1: m0.gx\nlet k0: Map<string, string> = {"k1" => "hello"};\nlet f0 = |v3: &bool| -> (bool, u8) (true, u8:0);\n// file-v1: m1.gxi\nval k1: string;\nval f0: fn(a0: &string, a1: string) -> (bool, u8);\nval f1: fn(a0: Array<(bool, bool)>) -> [`A(f64, i64), `B];\n// file-v1: m1.gx\nlet k1: string = "graphix";\nlet f0 = |v3: &string, v4: string| -> (bool, u8) m0::f0(&(false));\nlet f1 = |v5: Array<(bool, bool)>| -> [`A(f64, i64), `B] `B;\n// file-v1: m2.gxi\nval f0: fn(a0: z64, a1: u16) -> (bool, u8);\nval f1: fn(a0: &i64, a1: &bool) -> bool;\n// file-v1: m2.gx\nlet h2 = |v3: u64| -> u64 u64:1000000;\nlet f0 = |v4: z64, v5: u16| m0::f0(&false);\nlet f1 = |v6: &i64, v7: &bool| false;
+// minimized:
+array::fold([u8:100, u8:0], u8:255, |v3, v4| u8:0 / v4)

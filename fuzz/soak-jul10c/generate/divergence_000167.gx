@@ -1,0 +1,12 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = (((-(i64:2)) - (i64:1 % i64:7)) - (str::len("a") % i64:0)); let v1 = (!true); let v2: [`A([z32, null], (string, bool, f64)), `B((i64, bool)), `C(Map<string, bool>, u8)] = `B((i64:42, false)); let v3 = m1::mk((v0 * i64:100)); let v4 = (m1::mk(v0), cast<i64>(i8:0)$); array::fold([u8:100, u8:100, u8:255], str::len("graphix"), |v0, v5| (v0 % v0)) }\n// file-v1: m0.gxi\nval k0: string;\nval f0: fn(a0: Map<string, i64>, a1: Array<f64>) -> string;\nval f1: fn(a0: u8, a1: bool) -> i32;\n// file-v1: m0.gx\nlet k0: string = "a";\nlet h0 = |v2: v64| -> v64 v64:0;\nlet f0 = |v3: Map<string, i64>, v4: Array<f64>| -> string "graphix";\nlet f1 = |v5: u8, v6: bool| ((i32:1 / i32:-2147483648) - (i32:-100000 - i32:0));\n// file-v1: m1.gx\nlet f0 = |v3: i64, v4: u8| -> u8 (cast<u8>(u32:4294967295)$ % (v4 * u8:0));\nlet f1 = |v5: bool, v6: [u8, null]| -> f64 f64:1.0;\ntype T = i64;\nlet mk = |x: i64| -> T x;\nlet un = |t: T| -> i64 t;
+// minimized:
+array::fold([null, null, u8:255], str::len("graphix"), |v0, v5| (v0 % v0))
+// file-v1: m1.gx
+let f0 = |v3: i64, v4: u8| -> u8 (cast<u8>(u32:4294967295)$ % (v4 * u8:0));
+let f1 = |v5: bool, v6: [u8, null]| -> f64 f64:1.0;
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;

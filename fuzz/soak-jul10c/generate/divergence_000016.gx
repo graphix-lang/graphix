@@ -1,0 +1,11 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v1 = 'a: Number |v0: 'a| -> 'a ((v0 * v0) + v0); let v2 = mod d0 dynamic { sandbox whitelist [core]; sig { val g0: fn(a0: u8) -> bool; val g1: fn(a0: string) -> i32 }; source r'let g0 = |v2: u8| -> bool false;\nlet g1 = |v3: string| -> i32 (try (((i32:-100000 + i32:1) *? (i32:0 /? i32:1)$))? catch(e) => (i32:2147483647 - i32:42))' }; let v3 = select v2 { error as _ => (i32:-100000 * i32:42), null as _ => d0::g1(m0::f1(i64:2, f64:3.14)) }; let v4 = &true; let v5 = (v4, (true && false)); let v6 = ((i64:-1 / v1(i64:2)) + i64:0); array::fold([i64:100, v6, v6], i64:42, |v3, v7| (v7 % v3)) }\n// file-v1: m0.gxi\nval f0: fn(a0: {b: {b: u8, x: bool, y: string}, n: i64}) -> u8;\nval f1: fn(a0: i64, a1: f64) -> string;\nval f2: fn(a0: &bool) -> string;\n// file-v1: m0.gx\nlet h0 = |v0: u8| -> u8 (u8:2 * (v0 - v0));\nlet f0 = |v1: {b: {b: u8, x: bool, y: string}, n: i64}| -> u8 h0((u8:255 + u8:0)) + (u8:2);\nlet f1 = |v2: i64, v3: f64| -> string array::fold([false, false, false], "a", |v4, v3| v4);\nlet f2 = |v4: &bool| -> string "a";\n// file-v1: m1.gx\nlet h1 = |v7: v32| -> v32 ((v7 + v7) * v32:0);\nlet f0 = |v8: string| -> string m0::f2(&(false));
+// minimized:
+{let v1 = 'a: Number|v0: 'a| -> 'a v0 * v0; let v2 = mod d0 dynamic { sandbox whitelist [ core ]; sig { val g0: fn(a0: u8) -> bool; val g1: fn(a0: string) -> i32 }; source "let g0 = |v2: u8| -> bool false;\nlet g1 = |v3: string| -> i32 (try (((i32:-100000 + i32:1) *? (i32:0 /? i32:1)$))? catch(e) => (i32:2147483647 - i32:42))" }; let v3 = select v2 {error as _ => (i32:-100000 * i32:42), null as _ => d0::g1(m0::f1(i64:2, f64:3.14))}; let v4 = &true; let v5 = (v4, (true && false)); let v6 = ((i64:-1 / v1(i64:2)) + i64:0); array::fold([i64:100, v6, v6], i64:42, |v3, v7| (v7 % v3))}
+// file-v1: m0.gx
+let h0 = |v0: u8| -> u8 (u8:2 * (v0 - v0));
+let f0 = |v1: {b: {b: u8, x: bool, y: string}, n: i64}| -> u8 h0((u8:255 + u8:0)) + (u8:2);
+let f1 = |v2: i64, v3: f64| -> string array::fold([false, false, false], "a", |v4, v3| v4);
+let f2 = |v4: &bool| -> string "a";

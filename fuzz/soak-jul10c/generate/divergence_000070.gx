@@ -1,0 +1,12 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let rec v0 = |v1: i64| -> i64 select v1 { v2 if v2 <= i64:0 => i64:42, v2 => (v2 + v0(v2 - i64:1)) }; let v3 = v0(i64:5); let v4: [f32, null] = select i64:1 { v4 => array::find([f32:0.0, f32:-1.0, f32:-2.5], |v5| true) }; let v7 = |v5, v6| (((v5 + v5) - v5) - v5); let v8 = v7(f64:2.5, f64:2.5); let v9 = v7(i64:42, i64:1); let v10 = m0::mk(v3); array::fold([true, true, true], (v3 + v3), |v11, v12| (i64:7 / v11)) }\n// file-v1: m0.gx\nlet h0 = |v10: f64| -> f64 array::fold([f64:0.0], f64:3.14, |v4, v11| f64:3.14);\nlet f0 = |v11: &u64, v12: f64| -> bool true;\ntype T = Array<i64>;\nlet mk = |x: i64| -> T [x, x];\nlet un = |t: T| -> i64 t[0]$;
+// minimized:
+{|v1: i64| -> i64 v1; let v3 = i64:5; let v4: [f32, null] = select i64:1 {v4 => array::find([f32:0., f32:-1., f32:-2.5], |v5| true)}; let v7 = |v5, v6| (((v5 + v5) - v5) - v5); let v8 = v7(f64:2.5, f64:2.5); let v9 = v7(i64:42, i64:1); let v10 = m0::mk(v3); array::fold([true, true, true], (v3 + v3), |v11, v12| (i64:7 / v11))}
+// file-v1: m0.gx
+let h0 = |v10: f64| -> f64 array::fold([f64:0.0], f64:3.14, |v4, v11| f64:3.14);
+let f0 = |v11: &u64, v12: f64| -> bool true;
+type T = Array<i64>;
+let mk = |x: i64| -> T [x, x];
+let un = |t: T| -> i64 t[0]$;

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Null)], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v1 = |v0: bool| -> bool str::starts_with(#pfx: "a", "graphix"); let v2 = |v3: i64| select v3 { i64:0 => str::starts_with(#pfx: "a", "a"), _ => error(true) }; let v4 = (try (v2(i64:1))? catch(e) => true); let rec v5 = |v6: i64, v8: i64| -> i64 select v6 { v7 if v7 <= i64:0 => (i64:7 / i64:1), v7 => v5(v7 - i64:1, v8 + v7) }; let v9 = v5(i64:6, i64:0); array::find([f64:0.0, f64:-1.0, f64:-1.0], |v10| v1(v4)) }
+// minimized:
+{let v1 = |v0: bool| -> bool true; let v2 = |v3: i64| select v3 {i64:0 => true, _ => error(true)}; let v4 = (try (v2(i64:1))? catch(e) => true); let rec v5 = |v6: i64, v8: i64| -> i64 select v6 {v7 if v7 <= i64:0 => (i64:7 / i64:1), v7 => v5(v7 - i64:1, v8 + v7)}; let v9 = v5(i64:6, i64:0); array::find([f64:0., f64:-1., f64:-1.], |v10| v1(v4))}

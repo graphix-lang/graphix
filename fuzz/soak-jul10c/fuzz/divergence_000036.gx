@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(2, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 3 }, slice: [I64(42), I64(42), I64(42)] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: {let cap = i64:100; cap <- select cap {n if n < i64:102 => n + i64:1, _ => never()}; let rec f = |n: i64| -> i64 select n {i64:0 => cap, _ => f(n - i64:1)}; array::group({let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n + f(n - i64:1)}; array::fold([i64:41], f(i64:256), |acc, x| x + i64:1); array::fold([i64:41], i64:0, |acc, x| x + i64:1)}, |n, _| n == i64:3)}
+// minimized:
+{let cap = i64:0; cap <- select cap {n if n < i64:102 => n + i64:1, _ => never()}; i64:0; array::group({let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n + f(n - i64:1)}; array::fold([i64:41], f(i64:256), |acc, x| x + i64:1); array::fold([i64:41], i64:0, |acc, x| x + i64:1)}, |n, _| n == i64:3)}

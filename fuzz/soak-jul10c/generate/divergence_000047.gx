@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(1))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = array::fold([f64:0.1, f64:0.1], (i64:0 - i64:100), |v0, v1| (i64:42 / v0)); let v1 = &true; let v1 = |v2| (v2 - v2); let v3 = v1(z64:-1000000); let v4 = v1(u8:1); select v0 { v5 if false => ((try ((i64:7 %? v5))? catch(e) => i64:-1) / cast<i64>(i8:-1)$), i64:42 => (select (i64:2 -? i64:2) { error as _ => i64:0, i64 as n => n } * cast<i64>(z64:0)$), v5 => i64:1 } }\n// file-v1: m0.gxi\nval k0: u8;\nval f0: fn(a0: bool) -> string;\n// file-v1: m0.gx\nlet k0: u8 = u8:1;\nlet h0 = |v2: i64| -> i64 v2;\nlet f0 = |v3: bool| -> string array::fold(["graphix"], "hello", |v4, v5| "xyz");
+// minimized:
+{let v0 = array::fold([null, f64:0.1], (i64:0 - i64:100), |v0, v1| (i64:42 / v0)); let v1 = &true; let v1 = |v2| (v2 - v2); let v3 = v1(z64:-1000000); let v4 = v1(u8:1); select v0 {v5 if false => ((try ((i64:7 %? v5))? catch(e) => i64:-1) / cast<i64>(i8:-1)$), i64:42 => (select (i64:2 -? i64:2) {error as _ => i64:0, i64 as n => n} * cast<i64>(z64:0)$), v5 => i64:1}}

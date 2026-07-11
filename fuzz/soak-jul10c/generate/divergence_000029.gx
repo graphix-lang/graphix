@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = mod d0 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: i64, a1: string) -> f64; val g1: fn(a0: u8, a1: z64) -> bool }; source r'let g0 = |v0: i64, v1: string| -> f64 ((f64:0.0 - f64:0.0) * (f64:1.0 + f64:0.0));\nlet g1 = |v2: u8, v3: z64| -> bool array::fold([true, true, true], true, |v0, v4| false)' }; let v1 = select v0 { error as _ => (f64:2.5 / f64:3.14), null as _ => d0::g0(str::len("xyz"), "a") }; let v2 = mod d1 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: f64, a1: string) -> u8 }; source r'let v2 = cast<i64>(z64:-1)$;\nlet g0 = |v3: f64, v4: string| -> u8 (cast<u8>(i8:-100)$ / cast<u8>(u32:7)$)' }; let v3 = select v2 { error as _ => (u8:100 + u8:100), null as _ => d1::g0((v1 / v1), "hello") }; let v4 = { n: (-((f64:-1.0 - f64:1.0))) }; let v3: Map<string, string> = select v3 { _ => {"k0" => "a", "b" => "hello"} }; let v5 = &i64:-1; array::fold(["", null, "a"], i64:7, |v6, v7| (v6 % v6)) }
+// minimized:
+array::fold([i64:0, null, i64:0], i64:7, |v6, v7| (v6 % v6))

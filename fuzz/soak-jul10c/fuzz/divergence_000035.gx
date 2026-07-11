@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: sync { let mut res = i64:0; for v in array::map([i64:1, i64:2, i64:-9223372036854775808], |x| x * i64:2) {res = res / v}; res }
+// minimized:
+sync { let mut res = i64:0; for v in [i64:1, i64:0, i64:-9223372036854775808] {res = res / v}; res }

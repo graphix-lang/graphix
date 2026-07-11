@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(-1))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = select (i64:0 * i64:0) { _ => str::contains(#part: "graphix", "") }; let v3 = |v0: f64, v1: string, v2: i64| -> string str::replace(#pat: "", #rep: "graphix", "xyz"); let v4 = str::len(str::concat("hello", "hello")); let v1 = |v0: string| -> i64 i64:2; let v1 = 'a: Number |v1: 'a| -> 'a (((v1 - v1) + v1) - v1); let v4 = 'a: Number |v0: 'a| -> 'a (v0 - v0); array::fold([i64:-1, i64:0, i64:-1], (i64:-100 * i64:2), |v1, v5| (i64:1 / v5)) }
+// minimized:
+array::fold([i64:-1, i64:0, i64:0], i64:-100 * i64:2, |v1, v5| (i64:1 / v5))

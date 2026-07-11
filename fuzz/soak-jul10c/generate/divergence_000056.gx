@@ -1,0 +1,23 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(1))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = (select ((i64:100 - i64:100) /? (i64:-1 - i64:-100)) { error as _ => (i64:-100 + i64:1), i64 as n => n } * i64:0); let v1 = m0::mk((try ((i64:2 -? v0))? catch(e) => i64:-100)); let v3 = 'a: Number |v0: 'a, v2: 'a| -> 'a (v2 + v0); let v4: u8 = v3((u8:100 * u8:2), v3(u8:2, u8:255)); let v5: i32 = v3(i32:-1, (i32:100000 % i32:2147483647)); let v6 = m1::mk(v0); let v7 = &true; let v8 = (v7, (true || false)); let v4 = &v0; let v9: Array<Array<Array<i64>>> = { let mt: Array<Array<Array<i64>>> = []; mt }; let v4 = select v0 { i64:-1 if true => [m0::f0("graphix")], _ if true => [u8:1, u8:0], v10 => [(u8:100 - u8:1), (u8:100 * u8:1)] }; let v10: Array<{y: Map<string, u8>}> = array::filter([{ y: {"k1" => u8:100, "k2" => u8:1, "k0" => u8:1} }, { y: {"b" => u8:100, "k0" => u8:0, "k2" => u8:100} }, { y: {"a" => u8:0, "k1" => u8:255} }], |v10| true); let v11: i64 = v0; array::fold([i64:100, v0], i64:100, |v12, v13| (v13 / v13)) }\n// file-v1: m0.gxi\nval f0: fn(a0: string) -> u8;\nval f1: fn(a0: &i64, a1: bool) -> {a: i64, x: bool};\nval f2: fn(a0: &f64) -> Map<string, {b: i64, c: i32, n: i64}>;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m0.gx\nlet h0 = |v1: i64| -> i64 (str::len("xyz") - (v1 * i64:-1));\nlet f0 = |v2: string| -> u8 ((u8:2 / u8:2) * (u8:255 * u8:2));\nlet f1 = |v3: &i64, v4: bool| -> {a: i64, x: bool} { a: i64:1, x: (v4 || v4) };\nlet f2 = |v5: &f64| -> Map<string, {b: i64, c: i32, n: i64}> {"k2" => { b: i64:100, c: i32:2147483647, n: i64:1 }, "k1" => { b: i64:-100, c: i32:1, n: i64:1 }};\ntype T = Array<i64>;\nlet mk = |x: i64| -> T [x, x];\nlet un = |t: T| -> i64 t[0]$;\n// file-v1: m1.gxi\nval k1: f32;\nval f0: fn(a0: i64, a1: bool) -> i16;\nval f1: fn(a0: &string) -> Map<string, f64>;\nval f2: fn(a0: i64, a1: string) -> f64;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m1.gx\nlet k1: f32 = f32:-2.5;\nlet h1 = |v6: f64| -> f64 array::fold([{ x: u8:1, y: f64:2.5 }, { x: u8:2, y: f64:-1.0 }, { x: u8:1, y: f64:-1.0 }], v6, |v7, k1| f64:3.14);\nlet f0 = |v7: i64, v8: bool| ((i16:32767 * i16:-1) % (i16:1 - i16:0));\nlet f1 = |v9: &string| -> Map<string, f64> {"b" => f64:2.5, "a" => f64:0.1};\nlet f2 = |v10: i64, v11: string| -> f64 ((f64:0.0 + f64:3.14) * (f64:0.1 % f64:0.1));\ntype T = (i64, i64);\nlet mk = |x: i64| -> T (x, x + i64:1);\nlet un = |t: T| -> i64 t.0;
+// minimized:
+{let v0 = select ((i64:100 - i64:100) /? (i64:-1 - i64:-100)) {error as _ => (i64:-100 + i64:1), i64 as n => n}; let v1 = m0::mk((try ((i64:2 -? v0))? catch(e) => i64:-100)); let v3 = 'a: Number|v0: 'a, v2: 'a| -> 'a (v2 + v0); let v4: u8 = v3((u8:100 * u8:2), v3(u8:2, u8:255)); let v5: i32 = v3(i32:-1, (i32:100000 % i32:2147483647)); let v6 = m1::mk(v0); let v7 = &true; let v8 = (v7, (true || false)); let v4 = &v0; let v9: Array<Array<Array<i64>>> = {let mt: Array<Array<Array<i64>>> = []; mt}; let v4 = select v0 {i64:-1 if true => [m0::f0("graphix")], _ if true => [u8:1, u8:0], v10 => [(u8:100 - u8:1), (u8:100 * u8:1)]}; let v10: Array<{y: Map<string, u8>}> = array::filter([{ y: {"k1" => u8:100, "k2" => u8:1, "k0" => u8:1} }, { y: {"b" => u8:100, "k0" => u8:0, "k2" => u8:100} }, { y: {"a" => u8:0, "k1" => u8:255} }], |v10| true); let v11: i64 = v0; array::fold([i64:100, v0], i64:100, |v12, v13| (v13 / v13))}
+// file-v1: m0.gx
+let h0 = |v1: i64| -> i64 (str::len("xyz") - (v1 * i64:-1));
+let f0 = |v2: string| -> u8 ((u8:2 / u8:2) * (u8:255 * u8:2));
+let f1 = |v3: &i64, v4: bool| -> {a: i64, x: bool} { a: i64:1, x: (v4 || v4) };
+let f2 = |v5: &f64| -> Map<string, {b: i64, c: i32, n: i64}> {"k2" => { b: i64:100, c: i32:2147483647, n: i64:1 }, "k1" => { b: i64:-100, c: i32:1, n: i64:1 }};
+type T = Array<i64>;
+let mk = |x: i64| -> T [x, x];
+let un = |t: T| -> i64 t[0]$;
+// file-v1: m1.gx
+let k1: f32 = f32:-2.5;
+let h1 = |v6: f64| -> f64 array::fold([{ x: u8:1, y: f64:2.5 }, { x: u8:2, y: f64:-1.0 }, { x: u8:1, y: f64:-1.0 }], v6, |v7, k1| f64:3.14);
+let f0 = |v7: i64, v8: bool| ((i16:32767 * i16:-1) % (i16:1 - i16:0));
+let f1 = |v9: &string| -> Map<string, f64> {"b" => f64:2.5, "a" => f64:0.1};
+let f2 = |v10: i64, v11: string| -> f64 ((f64:0.0 + f64:3.14) * (f64:0.1 % f64:0.1));
+type T = (i64, i64);
+let mk = |x: i64| -> T (x, x + i64:1);
+let un = |t: T| -> i64 t.0;

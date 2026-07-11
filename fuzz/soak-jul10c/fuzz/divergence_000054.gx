@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(false))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: sync { let mut st = { n: i64:0, sum: i64:0 }; for v in [i64:1, i64:2, i64:3] {st = { n: st.n + i64:1, sum: st.sum + v }}; v != i64:3 }
+// minimized:
+sync { let mut st = { n: i64:0, sum: i64:0 }; for v in [i64:0, i64:0, i64:3] {st = { n: st.n + i64:1, sum: st.sum + v }}; v != i64:3 }

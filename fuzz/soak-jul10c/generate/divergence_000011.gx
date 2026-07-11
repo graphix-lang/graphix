@@ -1,0 +1,12 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, U8(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0 = m0::mk((i64:-1 - i64:-1)); let v0 = str::len("["a"]"); let v0 = ""; let v4 = |v0: u16, v1: i64, v2: u8| -> bool { let v3 = v2; true }; let v5 = select i64:-1 { i64:-1 if false => { a: ["xyz"] }, i64:-1 if (!false) => { a: ["", "hello"] }, v5 => { a: [""] } }; let v6: f64 = f64:3.14; array::fold([false, true, false], (u8:2 + u8:100), |v6, v7| (u8:100 % v6)) }\n// file-v1: m0.gxi\nval k0: {a: v64, b: bool};\nval f0: fn(a0: f64, a1: &string) -> i64;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m0.gx\nlet k0: {a: v64, b: bool} = { a: v64:1000000, b: false };\nlet f0 = |v0: f64, v1: &string| (try ((cast<i64>(v32:1000)$ *? i64:0))? catch(e) => (i64:1 - i64:1));\ntype T = i64;\nlet mk = |x: i64| -> T x;\nlet un = |t: T| -> i64 t;
+// minimized:
+array::fold([true, true, false], (u8:2 + u8:100), |v6, v7| (u8:100 % v6))
+// file-v1: m0.gx
+let k0: {a: v64, b: bool} = { a: v64:1000000, b: false };
+let f0 = |v0: f64, v1: &string| (try ((cast<i64>(v32:1000)$ *? i64:0))? catch(e) => (i64:1 - i64:1));
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;

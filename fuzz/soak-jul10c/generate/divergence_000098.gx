@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v3 = |v0: i16, v1: bool, v2: f64| -> string ""; let v3: Array<f64> = select i64:42 { v1 => [(f64:0.1 * f64:0.1), f64:3.14] }; let v3 = { n: "", x: str::to_lower("[i64:0]-[u8:1]"), y: str::to_lower("[[false, false, true]]-["a"]") }; let v0 = u8:255; let v5 = |v4: z64| -> bool ((u8:1 + v0) > (u8:2 / v0)); let v6 = mod d0 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: u8, a1: u8) -> bool; val g1: fn(a0: u64) -> bool }; source r'let v6 = i64:2;\nlet g0 = |v7: u8, v8: u8| -> bool true;\nlet g1 = |v9: u64| -> bool false' }; let v7 = select v6 { error as _ => false, null as _ => d0::g1((u64:1000000 * u64:18446744073709551615)) }; array::fold([i64:1, i64:100, i64:2], (i64:1 - i64:0), |v8, v2| (i64:1 % v8)) }
+// minimized:
+array::fold([i64:0, i64:100, i64:2], (i64:1 - i64:0), |v8, v2| (i64:1 % v8))
