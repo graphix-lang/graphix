@@ -1,7 +1,7 @@
 use super::pattern::StructPatternNode;
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag,
-    Refs, Rt, Scope, Update, UserEvent, bailat,
+    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
+    Scope, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -233,6 +233,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.node.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.node.reset_replay(ctx);
+    }
+
     fn typ(&self) -> &Type {
         &self.typ
     }
@@ -275,7 +279,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         fuse(&mut self.node, ctx)?;
         Ok(None)
     }
-
 }
 
 #[derive(Debug)]
@@ -355,6 +358,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -378,7 +383,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_ref_node(cx, self.spec.as_ref(), &self.typ, self.id)
     }
-
 }
 
 #[derive(Debug)]
@@ -448,6 +452,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.child.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.child.reset_replay(ctx);
     }
 
     fn spec(&self) -> &Expr {
@@ -542,6 +550,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         self.child.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.child.reset_replay(ctx);
+    }
+
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -587,5 +599,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Deref(self)
     }
-
 }

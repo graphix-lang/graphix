@@ -1,7 +1,7 @@
 use super::{Cached, compiler::compile, pattern::StructPatternNode};
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
-    Update, UserEvent,
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update,
+    UserEvent,
     expr::{Expr, ExprId, Pattern},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -185,6 +185,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The stale-selection replay — a quiet scrutinee re-polling the
+        // previously selected arm with the new frame's arm-body inputs
+        // (the `!arg_up && !pat_up` fast path above) — is exactly the
+        // leak this method exists to clear. Drop the selection with the
+        // caches: the next delivery re-derives it from the frame's own
+        // scrutinee and re-primes the arm through the arm-wake path.
+        let Self { selected, arg, arms, typ: _, spec: _ } = self;
+        *selected = None;
+        arg.reset_replay(ctx);
+        for (pat, arg) in arms {
+            arg.reset_replay(ctx);
+            if let Some(n) = &mut pat.guard {
+                n.reset_replay(ctx)
+            }
+        }
+    }
+
     fn refs(&self, refs: &mut Refs) {
         let Self { selected: _, arg, arms, typ: _, spec: _ } = self;
         arg.node.refs(refs);
@@ -346,5 +364,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_select_node(cx, self)
     }
-
 }

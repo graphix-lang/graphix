@@ -85,6 +85,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         }
         self.args.clear()
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -248,6 +252,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
             ctx.rt.unref_var(id, self.eid);
         }
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 #[derive(Debug)]
@@ -287,4 +295,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }

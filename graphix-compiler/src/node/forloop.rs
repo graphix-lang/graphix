@@ -24,8 +24,8 @@
 
 use super::{Cached, compiler::compile, pattern::StructPatternNode};
 use crate::{
-    BindId, CFlag, Event, ExecCtx, ExprId, Node, NodeView, PrintFlag, Refs,
-    Rt, Scope, Update, UserEvent,
+    BindId, CFlag, Event, ExecCtx, ExprId, Node, NodeView, PrintFlag, Refs, Rt, Scope,
+    Update, UserEvent,
     expr::{Expr, StructurePattern},
     fusion::emit::{BodyCx, CompiledExpr},
     typ::Type,
@@ -35,7 +35,11 @@ use anyhow::Result;
 use enumflags2::BitFlags;
 use netidx::publisher::Value;
 use nohash::IntMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use poolshark::local::LPooled;
+use std::{
+    mem,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Debug)]
 pub struct For<R: Rt, E: UserEvent> {
@@ -57,22 +61,18 @@ pub struct For<R: Rt, E: UserEvent> {
     /// CAPTURES (`CallSite::refs` → the resolved apply's refs) were
     /// invisible and a capture-only event never re-ran the loop.
     ext_refs: std::sync::OnceLock<Vec<BindId>>,
-    /// The ids the body tree BINDS internally (the desugar's shadow
-    /// `let`s etc.), computed lazily like `ext_refs`. The sync loop
-    /// removes them from `event.variables` before each iteration: a
-    /// shadow bind published by iteration i would otherwise keep its
-    /// value visible to iteration i+1's reads, so a BOTTOMED body
-    /// evaluation "fired" with the previous element's value (soak
-    /// jul10c generate 000000 — `fold(.., 1, |v0, _| v0 % v0)` emitted
-    /// 0 in the interp where 0 % 0 must bottom the loop; the kernel
-    /// was right).
-    body_bound: std::sync::OnceLock<Vec<BindId>>,
     /// Set by analysis pass 4 when the body has an ASYNC effect: the
     /// loop switches to per-index instantiation + re-evaluation (each
     /// element gets its OWN body instance so element-distinct async
     /// state — a subscription per element — is possible; the design's
     /// "per-element lambda instantiation", minus any cloning).
     async_body: AtomicBool,
+    /// The sync loop's first ITERATING run (≥1 element) hasn't happened
+    /// yet: that run is forced to an init view so the body's constants
+    /// and defaults materialize — the loop-level mirror of a call
+    /// site's first-dispatch priming. Later runs get no init view; a
+    /// body evaluation fires only from what it consumes.
+    primed: bool,
     /// Per-index body instances (async path only), compiled on demand
     /// from `body_spec` in the captured `env` — the NORMAL compile
     /// path, never clone_rebind.
@@ -138,10 +138,10 @@ impl<R: Rt, E: UserEvent> For<R, E> {
             body,
             elem_t,
             ext_refs: std::sync::OnceLock::new(),
-            body_bound: std::sync::OnceLock::new(),
             async_body: AtomicBool::new(
                 std::env::var_os("GXDBG_FOR_FORCE_ASYNC").is_some(),
             ),
+            primed: false,
             instances: IntMap::default(),
             body_spec,
             env,
@@ -178,32 +178,6 @@ impl<R: Rt, E: UserEvent> For<R, E> {
                 }
             });
             ext
-        })
-    }
-
-    /// The ids the body tree binds internally — see the field docs.
-    /// Collected via the fusion walker's `Bind` nodes only: the full
-    /// `refs().bound` set also contains call-site arg ids, connect
-    /// targets, and resolved-instance interiors, and clearing THOSE
-    /// per iteration broke cross-node delivery (the nested-HOF tests
-    /// hung under FusionDisabled).
-    fn body_bound(&self) -> &[BindId] {
-        self.body_bound.get_or_init(|| {
-            let mut ids: Vec<BindId> = Vec::new();
-            crate::fusion::for_each_node(&self.body, &mut |n| {
-                if let NodeView::Bind(b) = n.view() {
-                    b.pattern.ids(&mut |id| {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
-                    });
-                }
-            });
-            let mut skip: Vec<BindId> = Vec::new();
-            self.acc_pattern.ids(&mut |id| skip.push(id));
-            self.elem_pattern.ids(&mut |id| skip.push(id));
-            ids.retain(|id| !skip.contains(id));
-            ids
         })
     }
 
@@ -283,9 +257,7 @@ impl<R: Rt, E: UserEvent> For<R, E> {
                     Err(e) => {
                         // An instance that can't compile is a bug (the
                         // shared body compiled) — log, never complete.
-                        log::error!(
-                            "for-loop instance {i} failed to compile: {e:#}"
-                        );
+                        log::error!("for-loop instance {i} failed to compile: {e:#}");
                         return None;
                     }
                 }
@@ -313,12 +285,10 @@ impl<R: Rt, E: UserEvent> For<R, E> {
             event.init = saved_init;
             if std::env::var_os("GXDBG_FOR").is_some() {
                 let mut ids: Vec<(BindId, bool)> = Vec::new();
-                self.acc_pattern.ids(&mut |id| {
-                    ids.push((id, event.variables.contains_key(&id)))
-                });
-                self.elem_pattern.ids(&mut |id| {
-                    ids.push((id, event.variables.contains_key(&id)))
-                });
+                self.acc_pattern
+                    .ids(&mut |id| ids.push((id, event.variables.contains_key(&id))));
+                self.elem_pattern
+                    .ids(&mut |id| ids.push((id, event.variables.contains_key(&id))));
                 eprintln!(
                     "FOR-ASYNC i={i} fresh={fresh} complete={complete} r={r:?} \
                      ids={ids:?} spec={}",
@@ -350,16 +320,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
             Some(Value::Array(a)) => a.clone(),
             Some(_) | None => return None,
         };
-        let ext_fired =
-            self.ext_refs().iter().any(|id| event.variables.contains_key(id));
+        let ext_fired = self.ext_refs().iter().any(|id| event.variables.contains_key(id));
         if self.async_body.load(Ordering::Relaxed) {
             // The async walk runs EVERY cycle (instances must pump
             // their own async arrivals, whose ids the For can't know);
             // emission is gated inside on something having fired.
             let init = self.init.cached.as_ref()?.clone();
-            return self.update_async(
-                ctx, event, &arr, init, ext_fired, iter_up, init_up,
-            );
+            return self
+                .update_async(ctx, event, &arr, init, ext_fired, iter_up, init_up);
         }
         if std::env::var_os("GXDBG_FOR").is_some() {
             eprintln!(
@@ -391,6 +359,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         };
         let mut acc: Option<Value> = Some(init);
         let mut out = true;
+        // FRAME DISCIPLINE (reset_replay): each iteration is a fresh
+        // evaluation frame, delivered exactly like a select-arm wake —
+        // replay caches cleared, then a PRIVATE variables map (the
+        // body's externals seeded from the runtime cache, which is
+        // delivery-fresh per cached-into-Rt, plus the fired acc/elem
+        // binds) under a forced init view. Swapping the map instead of
+        // enumerating ids to remove is what makes the frame leak-proof
+        // by construction: a body publish (a shadow bind, a callsite
+        // arg, a callee formal) dies with the frame, so iteration i−1's
+        // sub-results cannot resurrect when iteration i's producer
+        // bottoms. The kernel needs none of this — its temps are SSA,
+        // recomputed per iteration by construction.
+        let mut seeds: LPooled<IntMap<BindId, Value>> = LPooled::take();
+        for id in self.ext_refs() {
+            if let Some(v) = ctx.rt.cached().get(id) {
+                seeds.insert(*id, v.clone());
+            }
+        }
+        let mut frame: LPooled<IntMap<BindId, Value>> = LPooled::take();
+        // First ITERATING run: force the init view so the body's
+        // constants/defaults materialize into their (frame-surviving)
+        // caches — see the `primed` field. Later runs run un-forced: a
+        // body evaluation fires only from what it consumes, which is
+        // what keeps a const-callback fold quiet after its first-ever
+        // evaluation (the hof-lift-firing pin; the kernel's slots-word
+        // agrees).
+        let force_init = !self.primed && !arr.is_empty();
+        if force_init {
+            self.primed = true;
+        }
         for v in arr.iter() {
             // Cooperative interrupt poll — a wedged huge loop aborts to
             // bottom, mirroring the scaffold loop head's poll.
@@ -398,20 +396,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
                 out = false;
                 break;
             }
-            for id in self.body_bound() {
-                event.variables.remove(id);
-            }
+            self.body.reset_replay(ctx);
+            frame.clear();
+            frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
             if let Some(a) = &acc {
                 self.acc_pattern.bind(a, &mut |id, v| {
                     ctx.rt.cached_mut().insert(id, v.clone());
-                    event.variables.insert(id, v);
+                    frame.insert(id, v);
                 });
             }
             self.elem_pattern.bind(v, &mut |id, v| {
                 ctx.rt.cached_mut().insert(id, v.clone());
-                event.variables.insert(id, v);
+                frame.insert(id, v);
             });
-            match self.body.update(ctx, event) {
+            mem::swap(&mut event.variables, &mut *frame);
+            let saved_init = event.init;
+            event.init = saved_init || force_init;
+            ctx.frame_depth += 1;
+            let r = self.body.update(ctx, event);
+            ctx.frame_depth -= 1;
+            event.init = saved_init;
+            mem::swap(&mut event.variables, &mut *frame);
+            // A swallowed error anywhere in the evaluation is a GENUINE
+            // bottom even if a downstream value cache still produced —
+            // the kernel's taint is sticky, so is this.
+            let r = if ctx.take_frame_bottom() { None } else { r };
+            match r {
                 Some(v) => acc = Some(v),
                 // NEVER-UNTIL-COMPLETE: a bottomed element (or a
                 // not-yet-arrived async value) suppresses the whole
@@ -467,6 +477,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // A nested For inside an enclosing frame: the iter/init caches
+        // hold the PREVIOUS enclosing-frame's values (an init that
+        // reads the outer element must re-evaluate), and the published
+        // acc/elem binds are this loop's own frame state.
+        self.iter.reset_replay(ctx);
+        self.init.reset_replay(ctx);
+        self.acc_pattern.ids(&mut |id| {
+            ctx.rt.cached_mut().remove(&id);
+        });
+        self.elem_pattern.ids(&mut |id| {
+            ctx.rt.cached_mut().remove(&id);
+        });
+        self.body.reset_replay(ctx);
+        for inst in self.instances.values_mut() {
+            inst.reset_replay(ctx);
+        }
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.iter.node, self.iter.node.typecheck0(ctx))?;
         wrap!(self.init.node, self.init.node.typecheck0(ctx))?;
@@ -515,5 +544,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         crate::fusion::fuse(&mut self.body, ctx)?;
         Ok(None)
     }
-
 }

@@ -244,6 +244,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Delivery rides set_var (async); the only state is the wake
+        // registration, which reset_replay never touches.
+    }
 }
 
 #[derive(Debug)]
@@ -314,6 +319,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         ctx.rt.ref_var(self.id, self.top_id);
         self.queue.clear();
         self.triggered = 0;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The queue and trigger debt are semantic buffering; delivery
+        // rides set_var (async, so never inside a sync frame anyway).
     }
 }
 
@@ -443,6 +453,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
         self.last_d = None;
         self.last_f = None;
         self.inner.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The held last-m/k/d/f values and the published
+        // callback-fn/element values are all per-invocation replay
+        // memory (the same ids `delete` removes).
+        self.last_m = None;
+        self.last_k = None;
+        self.last_d = None;
+        self.last_f = None;
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.inner.reset_replay(ctx);
     }
 }
 

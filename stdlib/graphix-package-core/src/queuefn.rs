@@ -138,6 +138,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The invocation queue in `state` is semantic (queued calls
+        // must survive anything short of sleep); only the compiled
+        // pred's internal caches are replay memory.
+        self.pred.reset_replay(ctx);
+    }
 }
 
 /// The `queuefn` builtin. Constructs a wrapper LambdaDef the first time `f`
@@ -380,6 +387,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         s.queue.clear();
         s.pop_count = 1;
         s.last_written_depth = 0;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The queue is semantic buffering (async delivery) — sleep's
+        // clearing is the arm-rewake restart, not a frame reset.
     }
 }
 

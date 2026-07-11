@@ -325,6 +325,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 // ── WatchApply ───────────────────────────────────────────────────
@@ -405,6 +407,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.interest = None;
+        self.path = None;
+        self.watcher_val = None;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.interest = None;
         self.path = None;
         self.watcher_val = None;
@@ -532,6 +540,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         self.cached.clear();
     }
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.cached.clear()
+    }
+
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in &self.bind_ids {
             ctx.rt.unref_var(*bid, self.top_id);
@@ -596,6 +608,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
             ctx.rt.unref_var(bid, self.top_id);
         }
         self.cached.clear();
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.cached.clear()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

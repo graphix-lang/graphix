@@ -776,11 +776,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     else {
         if std::env::var_os("GXDBG_FREEZE_RET").is_some() {
             crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-                eprintln!(
-                    "FREEZE-RET-MISS {:?} typ={}",
-                    node.spec().id,
-                    node.typ()
-                );
+                eprintln!("FREEZE-RET-MISS {:?} typ={}", node.spec().id, node.typ());
                 Ok::<_, std::fmt::Error>(())
             })
             .ok();

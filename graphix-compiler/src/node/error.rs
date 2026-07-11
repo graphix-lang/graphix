@@ -1,6 +1,6 @@
 use crate::{
-    Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent,
+    Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
+    Update, UserEvent,
     compiler::compile,
     deref_typ,
     env::Env,
@@ -93,6 +93,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -167,6 +169,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
             n.sleep(ctx)
         }
         self.handler.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        for n in self.nodes.iter_mut() {
+            n.reset_replay(ctx)
+        }
+        self.handler.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -288,6 +297,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                         "unhandled error in {} at {} {e}",
                         self.spec.ori, self.spec.pos
                     );
+                    ctx.mark_frame_bottom();
                     None
                 }
             },
@@ -313,6 +323,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -406,7 +420,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         // the bottom the kernel produces with no delivery.
         emit_qop_node(cx, &self.n, &self.typ, self.id.map(|_| self.spec.id))
     }
-
 }
 
 #[derive(Debug)]
@@ -437,6 +450,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
             None => None,
             Some(Value::Error(e)) => {
                 log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos);
+                ctx.mark_frame_bottom();
                 None
             }
             Some(v) => Some(v),
@@ -461,6 +475,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -490,5 +508,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         // `$` never has a catch handler (log + drop on error) — no delivery.
         emit_qop_node(cx, &self.n, &self.typ, None)
     }
-
 }

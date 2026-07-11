@@ -84,7 +84,7 @@ pub fn apply<R: Rt, E: UserEvent>(
                 Some(name) => ArgKey::Named(name.clone()),
                 None => ArgKey::Positional(i),
             };
-            (key, Arg { id: BindId::new(), node: Some(node), is_default: false })
+            (key, Arg::new(BindId::new(), Some(node), false))
         })
         .collect();
     Box::new(CallSite {

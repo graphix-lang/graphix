@@ -339,6 +339,14 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.inner.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The published callback/element values are per-invocation
+        // replay memory (same ids `delete` removes).
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.inner.reset_replay(ctx);
+    }
+
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.cached_mut().remove(&self.fid);
         ctx.rt.cached_mut().remove(&self.x);
@@ -411,6 +419,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
+    }
 }
 
 // ── flat_map ───────────────────────────────────────────────────────
@@ -468,6 +480,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
     }
 }
 
@@ -551,6 +567,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         self.pending = None;
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.pending = None;
+        self.s.reset_replay(ctx);
+    }
 }
 
 // ── is_some_and ────────────────────────────────────────────────────
@@ -609,6 +630,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
+    }
 }
 
 // ── is_none_or ─────────────────────────────────────────────────────
@@ -666,6 +691,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
     }
 }
 
@@ -735,6 +764,13 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         self.last_a = None;
         self.last_f = None;
         self.inner.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.last_a = None;
+        self.last_f = None;
+        ctx.rt.cached_mut().remove(&self.fid);
+        self.inner.reset_replay(ctx);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -821,6 +857,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
+    }
 }
 
 #[derive(Debug)]
@@ -889,5 +929,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
     }
 }

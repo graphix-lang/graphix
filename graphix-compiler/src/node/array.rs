@@ -1,7 +1,7 @@
 use super::{Cached, compiler::compile};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
-    defetyp, err, errf,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
+    err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
@@ -222,6 +222,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.i.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.source.reset_replay(ctx);
+        self.i.reset_replay(ctx);
+    }
+
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::ArrayRef(self)
     }
@@ -229,7 +234,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_array_ref_node(cx, &self.source.node, &self.i.node)
     }
-
 }
 
 #[derive(Debug)]
@@ -365,6 +369,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.source.reset_replay(ctx);
+        if let Some(start) = &mut self.start {
+            start.reset_replay(ctx);
+        }
+        if let Some(end) = &mut self.end {
+            end.reset_replay(ctx);
+        }
+    }
+
     fn typ(&self) -> &Type {
         &self.typ
     }
@@ -385,7 +399,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
             self.end.as_ref().map(|c| &c.node),
         )
     }
-
 }
 
 #[derive(Debug)]
@@ -443,6 +456,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
@@ -481,5 +498,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         // identical to a tuple literal's; share the producer relay.
         emit_tuple_new_node(cx, &self.n)
     }
-
 }

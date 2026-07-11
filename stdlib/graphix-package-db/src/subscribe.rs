@@ -210,6 +210,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.tree_val = None;
     }
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.tree_val = None;
+    }
+
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
@@ -295,6 +299,10 @@ macro_rules! db_event_accessor {
                     ctx.rt.unref_var(bid, self.top_id);
                 }
                 self.cached.clear();
+            }
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                self.cached.clear()
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

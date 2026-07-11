@@ -690,26 +690,26 @@ impl PrettyDisplay for LambdaExpr {
             }
             Either::Left(body) => match &body.kind {
                 ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
-            ExprKind::SyncBlock { exprs } => {
-                pretty_print_exprs(buf, exprs, "sync {", "}", ";")
-            }
-            ExprKind::For { pattern, iter, body } => {
-                writeln!(buf, "for {pattern} in {iter} ")?;
-                body.fmt_pretty(buf)
-            }
-            ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
-                // Desugar-internal — printed for diagnostics only,
-                // deliberately not parseable source.
-                writeln!(
-                    buf,
-                    "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} "
-                )?;
-                body.fmt_pretty(buf)
-            }
-            ExprKind::Assign { name, value } => {
-                write!(buf, "{name} = ")?;
-                value.fmt_pretty(buf)
-            }
+                ExprKind::SyncBlock { exprs } => {
+                    pretty_print_exprs(buf, exprs, "sync {", "}", ";")
+                }
+                ExprKind::For { pattern, iter, body } => {
+                    writeln!(buf, "for {pattern} in {iter} ")?;
+                    body.fmt_pretty(buf)
+                }
+                ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
+                    // Desugar-internal — printed for diagnostics only,
+                    // deliberately not parseable source.
+                    writeln!(
+                        buf,
+                        "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} "
+                    )?;
+                    body.fmt_pretty(buf)
+                }
+                ExprKind::Assign { name, value } => {
+                    write!(buf, "{name} = ")?;
+                    value.fmt_pretty(buf)
+                }
                 _ => body.fmt_pretty(buf),
             },
         }

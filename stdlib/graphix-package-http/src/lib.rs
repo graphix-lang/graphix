@@ -903,6 +903,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         self.ready = true;
         self.handler.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.handler.reset_replay(ctx);
+    }
 }
 
 graphix_derive::defpackage! {

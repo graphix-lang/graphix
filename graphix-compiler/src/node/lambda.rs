@@ -17,6 +17,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use log::error;
 use netidx::{pack::Pack, subscriber::Value, utils::Either};
+use nohash::IntMap;
 use parking_lot::{Mutex, RwLock};
 use poolshark::local::LPooled;
 use std::{
@@ -283,6 +284,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     saved.push((id, ctx.rt.cached().get(&id).cloned()));
                 });
             }
+            // FRAME DISCIPLINE (reset_replay): every RE-ENTERED pass is
+            // a fresh evaluation frame — replay caches cleared, and the
+            // body run against a PRIVATE variables map (externals seeded
+            // from the runtime cache + the jump's rebound formals) under
+            // a forced init view, mirroring the For sync loop. This is
+            // what retires the tail-arg stale-cache class: a jump whose
+            // arg expression bottoms no longer dispatches with the
+            // previous pass's published value. The first pass stays an
+            // ordinary poll on the real event (#8, soak jul04).
+            let mut seeds: LPooled<IntMap<BindId, Value>> = LPooled::take();
+            let mut frame: LPooled<IntMap<BindId, Value>> = LPooled::take();
             let mut reentered = false;
             let res = loop {
                 // Cooperative interrupt: a wedged tail loop aborts to bottom
@@ -291,12 +303,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 if ctx.interrupted() {
                     break None;
                 }
-                let prev = event.init;
-                if reentered {
-                    event.init = true;
-                }
-                let res = self.body.update(ctx, event);
-                event.init = prev;
+                let res = if !reentered {
+                    self.body.update(ctx, event)
+                } else {
+                    mem::swap(&mut event.variables, &mut *frame);
+                    let prev = mem::replace(&mut event.init, true);
+                    ctx.frame_depth += 1;
+                    let res = self.body.update(ctx, event);
+                    ctx.frame_depth -= 1;
+                    event.init = prev;
+                    mem::swap(&mut event.variables, &mut *frame);
+                    // Swallowed-error bottom — see the For loop's twin.
+                    if ctx.take_frame_bottom() { None } else { res }
+                };
                 let mine = matches!(
                     &ctx.pending_tail_call,
                     Some(p) if p.lambda == self.id
@@ -304,16 +323,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 if !mine {
                     break res;
                 }
-                reentered = true;
+                if !reentered {
+                    reentered = true;
+                    let mut refs = Refs::default();
+                    self.body.refs(&mut refs);
+                    refs.with_external_refs(|id| {
+                        if let Some(v) = ctx.rt.cached().get(&id) {
+                            seeds.insert(id, v.clone());
+                        }
+                    });
+                }
                 let p = ctx.pending_tail_call.take().unwrap();
-                let prev = mem::replace(&mut event.init, true);
+                self.body.reset_replay(ctx);
+                frame.clear();
+                frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
                     pat.bind(v, &mut |id, v| {
                         ctx.rt.cached_mut().insert(id, v.clone());
-                        event.variables.insert(id, v);
+                        frame.insert(id, v);
                     })
                 }
-                event.init = prev;
             };
             if reentered {
                 for (id, v) in saved.drain(..) {
@@ -425,6 +454,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The formal binds this instance published into `rt.cached`
+        // (`update`'s `pat.bind` closure) are replay memory — a frame
+        // whose arg didn't arrive must not run the body against the
+        // previous frame's formals. Per-instance ids, read only through
+        // this instance's body.
+        for pat in self.args.iter() {
+            pat.ids(&mut |id| {
+                ctx.rt.cached_mut().remove(&id);
+            });
+        }
+        self.body.reset_replay(ctx);
     }
 }
 
@@ -585,6 +628,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.apply.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // MUST delegate (same trap as emit_clif/fuse above): a no-op
+        // here would silently leave the wrapped builtin's arg caches
+        // replaying across frames.
+        self.apply.reset_replay(ctx);
     }
 }
 
@@ -874,6 +924,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn typ(&self) -> &Type {
         &self.typ

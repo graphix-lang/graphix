@@ -145,6 +145,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
             Either::Right(_) => (),
         }
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 impl Write {
@@ -271,6 +275,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             ctx.rt.unsubscribe(path, dv, self.top_id);
         }
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 #[derive(Debug)]
@@ -394,6 +402,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         ctx.rt.ref_var(self.id, self.top_id);
         self.args.clear()
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 macro_rules! list {
@@ -475,6 +487,10 @@ macro_rules! list {
                 ctx.rt.ref_var(self.id, self.top_id);
                 self.current = None;
                 self.args.clear();
+            }
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                self.args.clear()
             }
         }
     };
@@ -667,6 +683,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         }
         self.args.clear();
         self.on_write.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.on_write.reset_replay(ctx);
     }
 }
 
@@ -1006,5 +1029,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.argbuf.clear();
         self.ready = true;
         self.f.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.f.reset_replay(ctx);
     }
 }

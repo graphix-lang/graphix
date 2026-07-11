@@ -509,6 +509,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The published pred-fn/length/element values are
+        // per-invocation replay memory (the same ids `delete`
+        // removes); the queue, the group buffer, and the ready flag
+        // are the grouping contract — they aggregate across events
+        // and survive.
+        ctx.rt.cached_mut().remove(&self.nid);
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.xid);
+        self.pred.reset_replay(ctx);
+    }
 }
 
 #[derive(Debug)]
@@ -559,6 +571,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         ctx.rt.unref_var(self.0, self.1);
         self.0 = BindId::new();
         ctx.rt.ref_var(self.0, self.1);
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Delivery rides set_var (async); the only state is the wake
+        // registration, which reset_replay never touches.
     }
 }
 
@@ -628,6 +645,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         self.id = BindId::new();
         self.queue.clear();
         self.triggered = 0;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The queue and trigger debt are semantic buffering; delivery
+        // rides set_var (async, so never inside a sync frame anyway).
     }
 }
 

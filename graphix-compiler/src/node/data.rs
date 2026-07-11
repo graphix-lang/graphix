@@ -1,7 +1,7 @@
 use super::{Cached, compiler::compile};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent, deref_typ,
+    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update, UserEvent,
+    deref_typ,
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_struct_new_node, emit_struct_ref_node,
@@ -82,6 +82,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
@@ -122,7 +126,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_struct_new_node(cx, &self.names, &self.n)
     }
-
 }
 
 #[derive(Debug)]
@@ -240,6 +243,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.current = None;
+        self.source.reset_replay(ctx);
+        self.replace.iter_mut().for_each(|r| r.n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.source.refs(refs);
         self.replace.iter().for_each(|r| r.n.node.refs(refs))
@@ -302,7 +311,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_struct_with_node(cx, &self.source, &self.replace)
     }
-
 }
 
 #[derive(Debug)]
@@ -384,6 +392,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.source.sleep(ctx)
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.source.reset_replay(ctx)
+    }
+
     fn typ(&self) -> &Type {
         &self.typ
     }
@@ -431,7 +443,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
             .ok_or_else(|| anyhow::anyhow!("emit_clif: struct field index unresolved"))?;
         emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
     }
-
 }
 
 #[derive(Debug)]
@@ -489,6 +500,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
@@ -525,7 +540,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_tuple_new_node(cx, &self.n)
     }
-
 }
 
 #[derive(Debug)]
@@ -589,6 +603,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
@@ -628,7 +646,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_variant_new_node(cx, &self.tag, &self.n)
     }
-
 }
 
 #[derive(Debug)]
@@ -691,6 +708,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.source.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.source.reset_replay(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("tuple", ctx, self.source.typ(),
@@ -721,5 +742,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
     }
-
 }

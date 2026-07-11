@@ -501,14 +501,12 @@ impl Type {
                     }
                 }
             }
-            (Type::ByRef(t0), Type::ByRef(t1)) => {
-                match t0.diff_int(env, hist, t1)? {
-                    Type::Primitive(p) if p.is_empty() => {
-                        Ok(Type::Primitive(BitFlags::empty()))
-                    }
-                    d => Ok(Type::ByRef(Arc::new(d))),
+            (Type::ByRef(t0), Type::ByRef(t1)) => match t0.diff_int(env, hist, t1)? {
+                Type::Primitive(p) if p.is_empty() => {
+                    Ok(Type::Primitive(BitFlags::empty()))
                 }
-            }
+                d => Ok(Type::ByRef(Arc::new(d))),
+            },
             (
                 Type::Abstract { id: id0, params: p0 },
                 Type::Abstract { id: id1, params: p1 },

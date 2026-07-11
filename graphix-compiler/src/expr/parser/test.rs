@@ -1739,7 +1739,11 @@ fn mapref_requires_tight_brace() {
     // postfix chain — this is what disambiguates `for … in a { … }`).
     let e = parse_one(r#"m{"k"}"#).unwrap();
     assert!(matches!(&e.kind, ExprKind::MapRef { .. }), "got {:?}", e.kind);
-    assert!(parse_one(r#"m {"k"}"#).map(|e| !matches!(&e.kind, ExprKind::MapRef { .. })).unwrap_or(true));
+    assert!(
+        parse_one(r#"m {"k"}"#)
+            .map(|e| !matches!(&e.kind, ExprKind::MapRef { .. }))
+            .unwrap_or(true)
+    );
 }
 
 #[test]
@@ -1749,4 +1753,3 @@ fn in_stays_contextual() {
     let e = parse_one("input + 1").unwrap();
     assert!(matches!(&e.kind, ExprKind::Add { .. }), "got {:?}", e.kind);
 }
-

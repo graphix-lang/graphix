@@ -813,6 +813,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         self.0 = BindId::new();
         ctx.rt.ref_var(self.0, self.1);
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Delivery rides set_var (async); the wake registration is
+        // sleep's business, never reset_replay's.
+    }
 }
 
 #[derive(Debug)]
@@ -881,6 +886,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         self.id = BindId::new();
         self.queue.clear();
         self.triggered = 0;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The queue and trigger debt are semantic buffering (async
+        // delivery) — sleep's clearing is the arm-rewake restart.
     }
 }
 
@@ -1061,6 +1071,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         for sl in &mut self.slots {
             sl.cur = None;
             sl.pred.sleep(ctx);
+        }
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Same clearing as sleep plus the published callback fn value
+        // (the id `delete` removes) — per-invocation replay memory.
+        ctx.rt.cached_mut().remove(&self.fid);
+        for sl in &mut self.slots {
+            sl.cur = None;
+            sl.pred.reset_replay(ctx);
         }
     }
 }

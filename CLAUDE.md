@@ -581,6 +581,12 @@ in `run!` fixtures and bench programs). The decision is recorded in
 - `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
   HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
 - `queue_fn.md` — `queuefn` feature design.
+- `replay_frames.md` — **BUILT (2026-07-11):** `reset_replay` (required
+  `Update`/`Apply` method, replay caches vs semantic state) + evaluation
+  FRAMES (For sync-loop iterations and tail-loop jumps run against a
+  private variables map) + `frame_bottom` (the interp's taint bit for
+  swallowed errors). The value/firing two-channel story — which caches
+  persist (builtin arg slots, closed subtrees) and why.
 - `sync_subset.md` — **P0–P3 BUILT on the `sync-subset-proto` branch
   (2026-07-09; see the doc's "Prototype status" section):** repatriate
   CONTROL from Rust builtins into `sync { }` BLOCKS (sequential

@@ -1,8 +1,8 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
 use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
-use nohash::IntMap;
 use netidx_value::{PBytes, ValArray, Value};
+use nohash::IntMap;
 
 use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached};
 

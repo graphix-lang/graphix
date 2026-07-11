@@ -481,6 +481,13 @@ macro_rules! escape_fn {
                 self.escape = None;
                 self.args.clear();
             }
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                // The cached args are replay memory; the compiled
+                // escape is a pure memo derived from them and
+                // survives.
+                self.args.clear()
+            }
         }
     };
 }

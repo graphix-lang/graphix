@@ -458,6 +458,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.fired = false;
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 // ── Exit ──────────────────────────────────────────────────────
@@ -503,6 +505,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 graphix_derive::defpackage! {

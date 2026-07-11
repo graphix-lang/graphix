@@ -1,8 +1,8 @@
 use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId, Node,
-    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg,
-    Update, UserEvent, deref_typ,
+    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update,
+    UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::{
         self,
@@ -84,6 +84,27 @@ pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub id: BindId,
     pub node: Option<Node<R, E>>,
     pub is_default: bool,
+    /// Lazily computed: the arg expression references no bindings, so
+    /// its published value is identical in every evaluation frame —
+    /// see the invariant-arg re-delivery in `update` and the removal
+    /// exemption in `reset_replay`.
+    pub invariant: std::sync::OnceLock<bool>,
+}
+
+impl<R: Rt, E: UserEvent> Arg<R, E> {
+    pub(crate) fn new(id: BindId, node: Option<Node<R, E>>, is_default: bool) -> Self {
+        Arg { id, node, is_default, invariant: std::sync::OnceLock::new() }
+    }
+
+    fn is_invariant(&self) -> bool {
+        *self.invariant.get_or_init(|| {
+            self.node.as_ref().is_some_and(|n| {
+                let mut refs = Refs::default();
+                n.refs(&mut refs);
+                refs.refed.is_empty()
+            })
+        })
+    }
 }
 
 /// Collect every `Type::Fn` arm reachable in `t` into `out` — a bare
@@ -141,16 +162,13 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
         let node = Some(compile(ctx, flags, expr.clone(), scope, top_id)?);
         match name {
             None => {
-                res.insert(
-                    ArgKey::Positional(pos),
-                    Arg { id: BindId::new(), node, is_default: false },
-                );
+                res.insert(ArgKey::Positional(pos), Arg::new(BindId::new(), node, false));
                 pos += 1;
             }
             Some(k) => match res.entry(ArgKey::Named(k.clone())) {
                 Entry::Occupied(_) => bail!("duplicate named argument {k}"),
                 Entry::Vacant(e) => {
-                    e.insert(Arg { id: BindId::new(), node, is_default: false });
+                    e.insert(Arg::new(BindId::new(), node, false));
                 }
             },
         }
@@ -628,7 +646,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         let spec = TArc::new(default_node.spec().clone());
                         self.args.insert(
                             ArgKey::Named(name.clone()),
-                            Arg { id, node: Some(default_node), is_default: true },
+                            Arg::new(id, Some(default_node), true),
                         );
                         self.arg_refs.push(self.make_ref(id, typ, spec));
                     }
@@ -1014,6 +1032,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
+        // FRAME-ONLY: re-deliver INVARIANT args (closed expressions —
+        // constants, defaults) when the frame's private variables map
+        // lacks them. A closed arg fires exactly once (its init) and
+        // can't re-produce, so inside an evaluation frame the callee
+        // would otherwise never see it again. Same value every time, no
+        // `set` entry — a cached re-delivery is not a fresh event, so
+        // the tail-call genuine-call gate below is unaffected. The
+        // kernel twin: the DynCall side-channel delivers every arg on
+        // every call. Gated on `frame_depth`: in reactive land the
+        // per-cycle re-delivery would re-fire effectful callees with
+        // const args (an `fs::write_all` with a literal path re-ran
+        // every cycle) — there, quiet-arg persistence rides the callee
+        // body's caches as it always has.
+        if ctx.frame_depth > 0 {
+            for arg in self.args.values() {
+                if arg.is_invariant()
+                    && !event.variables.contains_key(&arg.id)
+                    && let Some(v) = ctx.rt.cached().get(&arg.id)
+                {
+                    event.variables.insert(arg.id, v.clone());
+                }
+            }
+        }
         // Tail-call interception. When `analysis::analyze` flagged this
         // call as a tail-position self-call inside a sync tail-recursive
         // body, don't bind/dispatch (which would recurse on the Rust stack
@@ -1041,8 +1082,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if !event.init && set.is_empty() {
                     return None;
                 }
-                let args: SmallVec<[Value; 4]> =
-                    order.iter().filter_map(|id| ctx.rt.cached().get(id).cloned()).collect();
+                let args: SmallVec<[Value; 4]> = order
+                    .iter()
+                    .filter_map(|id| ctx.rt.cached().get(id).cloned())
+                    .collect();
                 if args.len() == order.len() {
                     debug_assert!(ctx.pending_tail_call.is_none());
                     ctx.pending_tail_call = Some(PendingTailCall { lambda, args });
@@ -1230,6 +1273,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The published arg values (`update` inserts them into
+        // `rt.cached` under this site's own per-instance arg ids) are
+        // replay memory: the dispatch back-fills quiet args from there
+        // and the tail-call interception collects its whole rebind set
+        // from there, so a frame whose arg expression bottoms would
+        // otherwise dispatch with the PREVIOUS frame's value. Removing
+        // them is safe — the ids are minted by and read only through
+        // this site; a capture-fed arg re-publishes when the caller
+        // re-primes the frame's external refs. EXCEPTION: a closed
+        // (refs-free) arg expression is frame-INVARIANT and can't
+        // re-produce without an init view — its published value is the
+        // value channel, kept for the same reason `Cached` keeps a
+        // closed subtree's cache (kernel twin: constant immediates).
+        if let Some(f) = self.callee.apply_mut() {
+            f.reset_replay(ctx)
+        }
+        self.fnode.reset_replay(ctx);
+        for arg in self.args.values_mut() {
+            if !arg.is_invariant() {
+                ctx.rt.cached_mut().remove(&arg.id);
+            }
+            if let Some(ref mut n) = arg.node {
+                n.reset_replay(ctx);
+            }
+        }
+        for n in &mut self.arg_refs {
+            n.reset_replay(ctx);
+        }
+    }
+
     fn typ(&self) -> &Type {
         &self.rtype
     }
@@ -1290,11 +1364,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                                 // Will be filled with default at bind time; insert placeholder
                                 self.args.insert(
                                     ArgKey::Named(name.clone()),
-                                    Arg {
-                                        id: BindId::new(),
-                                        node: Some(Nop::new(arg.typ.clone())),
-                                        is_default: true,
-                                    },
+                                    Arg::new(
+                                        BindId::new(),
+                                        Some(Nop::new(arg.typ.clone())),
+                                        true,
+                                    ),
                                 );
                             }
                             Some(_) => {}
@@ -1703,5 +1777,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             .collect::<Result<Vec<_>>>()?;
         emit_dyncall_node(cx, &info, &arg_nodes)
     }
-
 }

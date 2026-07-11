@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope,
-    Update, UserEvent,
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
+    UserEvent,
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         emit::{
@@ -24,10 +24,10 @@ pub(crate) mod array;
 pub use array::MAX_ARRAY_INIT_LEN;
 pub(crate) mod bind;
 pub mod callsite;
-pub mod forloop;
 pub(crate) mod compiler;
 pub(crate) mod data;
 pub(crate) mod error;
+pub mod forloop;
 pub mod genn;
 pub mod lambda;
 pub(crate) mod map;
@@ -158,6 +158,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
@@ -179,7 +181,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Nop(self)
     }
-
 }
 
 #[derive(Debug)]
@@ -214,6 +215,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         self.n.typecheck0(ctx)
     }
@@ -243,7 +248,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         // `(x)` — grouping only; transparent recurse.
         self.n.emit_clif(cx)
     }
-
 }
 
 /// Wraps a child `Node` with its last-produced value cached for the
@@ -259,11 +263,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 pub struct Cached<R: Rt, E: UserEvent> {
     pub cached: Option<Value>,
     pub node: Node<R, E>,
+    /// Lazily computed: the subtree references no bindings at all, so
+    /// its value is identical in every evaluation frame — see
+    /// [`Self::reset_replay`].
+    invariant: std::sync::OnceLock<bool>,
 }
 
 impl<R: Rt, E: UserEvent> Cached<R, E> {
     pub fn new(node: Node<R, E>) -> Self {
-        Self { cached: None, node }
+        Self { cached: None, node, invariant: std::sync::OnceLock::new() }
     }
 
     /// update the node, return whether the node updated. If it did,
@@ -282,6 +290,27 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.cached = None;
         self.node.sleep(ctx)
+    }
+
+    /// The cached last value is replay memory — EXCEPT when the
+    /// subtree is a closed expression (references no bindings): such a
+    /// value is identical in every frame and the subtree cannot
+    /// re-produce it without an init view, so the cache IS the value
+    /// channel — the interpreter's twin of the kernel's constant
+    /// immediates. Crucially it stays a CACHE, not a firing: a body
+    /// that consumes only constants stays quiet after its first-ever
+    /// evaluation, which is what keeps const-callback folds quiet in
+    /// both backends (the hof-lift-firing pin).
+    pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        let invariant = *self.invariant.get_or_init(|| {
+            let mut refs = Refs::default();
+            self.node.refs(&mut refs);
+            refs.refed.is_empty()
+        });
+        if !invariant {
+            self.cached = None;
+        }
+        self.node.reset_replay(ctx)
     }
 }
 
@@ -348,6 +377,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn typ(&self) -> &Type {
         &Type::Bottom
@@ -420,6 +451,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn typ(&self) -> &Type {
         &Type::Bottom
     }
@@ -468,6 +501,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn refs(&self, _refs: &mut Refs) {}
 
     fn typ(&self) -> &Type {
@@ -493,7 +528,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_const_node(cx, &self.value, &self.typ)
     }
-
 }
 
 // used for both mod and do
@@ -561,6 +595,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        for n in &mut self.children {
+            n.reset_replay(ctx)
+        }
+    }
+
     fn refs(&self, refs: &mut Refs) {
         for n in &self.children {
             n.refs(refs)
@@ -618,7 +658,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         }
         Ok(None)
     }
-
 }
 
 #[derive(Debug)]
@@ -698,6 +737,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        for n in &mut self.args {
+            n.reset_replay(ctx);
+        }
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a.node, a.node.typecheck0(ctx))?;
@@ -723,7 +768,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_string_interpolate_node(cx, &self.args)
     }
-
 }
 
 #[derive(Debug)]
@@ -802,6 +846,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         self.node.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.node.reset_replay(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck0(ctx))?;
         let bind = match ctx.env.by_id.get(&self.id) {
@@ -823,7 +871,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_connect_node(cx, &self.node, self.id)
     }
-
 }
 
 #[derive(Debug)]
@@ -919,6 +966,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.rhs.reset_replay(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
         let bind = match ctx.env.by_id.get(&self.src_id) {
@@ -988,6 +1039,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.refs(refs)
     }
@@ -1008,7 +1063,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_cast_node(cx, &self.n, &self.target, self.spec.id)
     }
-
 }
 
 #[derive(Debug)]
@@ -1059,6 +1113,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.refs(refs))
     }
@@ -1087,7 +1145,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Any(self)
     }
-
 }
 
 #[derive(Debug)]
@@ -1151,6 +1208,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.arg.sleep(ctx);
         self.trigger.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // `arg.cached` (the held RHS) is SEMANTIC — "sample the latest
+        // value when the trigger fires" IS this node's contract, so the
+        // held value survives a frame reset. Children still reset.
+        self.arg.node.reset_replay(ctx);
+        self.trigger.reset_replay(ctx);
     }
 
     fn spec(&self) -> &Expr {

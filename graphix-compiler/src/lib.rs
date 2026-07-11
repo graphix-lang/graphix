@@ -716,6 +716,16 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// are not selected. Any cached values should be cleared on sleep.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 
+    /// Clear REPLAY caches, preserve SEMANTIC state — the `Apply`-side
+    /// twin of [`Update::reset_replay`] (see its doc for the
+    /// classification rule and the caller contract). For a builtin:
+    /// cached ARG values (`CachedArgs`/`EvalCached` memory) are replay
+    /// state and clear; accumulators (`count`'s tally, a queue, `once`'s
+    /// fired flag) and pure memos (a compiled `Regex`, a typecheck-derived
+    /// cast type) are semantic/derived and survive. **Required, no
+    /// default impl** — every builtin must classify its own state.
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>);
+
     /// Emit this call site into the open JIT kernel as CLIF (the
     /// builtin-owned half of distributed emission — see
     /// [`Update::emit_clif`]). The contract:
@@ -914,6 +924,23 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 
     /// put the node to sleep, called on unselected branches
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
+
+    /// Clear REPLAY caches — the "last value I saw" memory that
+    /// combineLatest evaluation keeps so one fresh input can combine
+    /// with a quiet other (operand `Cached` wrappers, select's cached
+    /// scrutinee, a call site's published arg values) — while
+    /// preserving SEMANTIC state (`count`'s tally, `once`'s fired
+    /// flag, an accumulated queue). Sequential evaluation calls this
+    /// between frames (a `For` body between iterations, a tail loop
+    /// between jumps) so iteration i−1's sub-results cannot leak into
+    /// iteration i when i's producer bottoms; the caller re-primes
+    /// quiet inputs from the runtime cache (captures are load-bearing
+    /// across frames — see the arm-wake cached-pull delivery).
+    /// **Required, no default impl**: the replay-vs-semantic
+    /// classification is a per-node decision the compiler must force —
+    /// a defaulted no-op on a node with an operand cache is a silent
+    /// wrong-answer bug. Impls recurse into children like `sleep`.
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>);
 
     /// Return a typed view of this node for compile-time analysis.
     /// **Required, no default impl** — every `Update` impl picks a
@@ -1586,12 +1613,42 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// forwards to embedders through its event stream (the shell prints
     /// them). See [`RtDiagnostic`].
     pub diagnostics: Vec<RtDiagnostic>,
+    /// Non-zero while executing inside a sequential evaluation FRAME —
+    /// a `For` sync-loop iteration or a tail-loop re-entered pass, both
+    /// of which run the body against a private, per-frame variables map
+    /// (see `reset_replay`). Frame-only delivery behaviors (a call
+    /// site's invariant-arg re-delivery) gate on this so reactive-land
+    /// semantics are untouched. A counter, not a bool: frames nest.
+    pub(crate) frame_depth: u32,
+    /// A GENUINE bottom (a swallowed error — unchecked arith, a
+    /// handler-less `?`, `$`) occurred inside the current frame. The
+    /// interpreter's single `None` channel conflates bottom with
+    /// legitimately-quiet (a stale input bridged by a value cache), so
+    /// error sites raise this flag and the enclosing loop treats the
+    /// iteration as bottomed even when a downstream cache produced a
+    /// value — the interpreter mirror of the kernel's taint bit.
+    pub(crate) frame_bottom: bool,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn clear(&mut self) {
         self.env.clear();
         self.rt.clear();
+    }
+
+    /// Record a swallowed-error bottom for the enclosing sequential
+    /// frame, if any — see the `frame_bottom` field. A no-op in
+    /// reactive land (the flag is only consulted by frame drivers).
+    pub fn mark_frame_bottom(&mut self) {
+        if self.frame_depth > 0 {
+            self.frame_bottom = true;
+        }
+    }
+
+    /// Take-and-clear the frame-bottom flag — called by a frame driver
+    /// (the `For` sync loop, the tail loop) after each body evaluation.
+    pub(crate) fn take_frame_bottom(&mut self) -> bool {
+        std::mem::take(&mut self.frame_bottom)
     }
 
     /// Build a new execution context.
@@ -1625,6 +1682,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             active_lambdas: nohash::IntMap::default(),
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
+            frame_depth: 0,
+            frame_bottom: false,
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

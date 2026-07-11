@@ -66,4 +66,9 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {
         self.args.clear()
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {
+        // The cached args are replay memory; there is no other state.
+        self.args.clear()
+    }
 }

@@ -1,7 +1,6 @@
 use super::{CFlag, Cached, compiler::compile};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
-    defetyp,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
     typ::Type,
@@ -125,6 +124,11 @@ macro_rules! compare_op {
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx)
+            }
+
+            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.reset_replay(ctx);
+                self.rhs.reset_replay(ctx)
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -251,6 +255,11 @@ macro_rules! bool_op {
                 self.rhs.sleep(ctx)
             }
 
+            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.reset_replay(ctx);
+                self.rhs.reset_replay(ctx)
+            }
+
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
@@ -344,6 +353,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         self.n.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         let bt = Type::Primitive(Typ::Bool.into());
@@ -362,7 +375,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_not_node(cx, &self.n)
     }
-
 }
 
 #[derive(Debug)]
@@ -431,6 +443,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         self.n.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         // The operand must be a signed-negatable number, so `-x` on an
@@ -465,7 +481,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_neg_node(cx, &self.n)
     }
-
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -752,6 +767,11 @@ macro_rules! arith_op {
                                     "arith error in {} at {} {e}",
                                     self.spec.ori, self.spec.pos
                                 );
+                                // In a sequential frame this is a GENUINE
+                                // bottom (the kernel's taint), not a quiet
+                                // stale — the enclosing loop must not
+                                // bridge it with cached values.
+                                ctx.mark_frame_bottom();
                                 None
                             }
                             v => Some(v),
@@ -783,6 +803,11 @@ macro_rules! arith_op {
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx);
+            }
+
+            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.reset_replay(ctx);
+                self.rhs.reset_replay(ctx);
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -885,7 +910,6 @@ macro_rules! arith_op {
             fn view(&self) -> $crate::NodeView<'_, R, E> {
                 $crate::NodeView::$name(self)
             }
-
         }
     };
 }

@@ -428,8 +428,14 @@ macro_rules! bind {
     ($inner:expr) => {
         ($inner, any::<bool>(), structure_pattern(), option::of(typexp())).prop_map(
             |(value, rec, p, typ)| {
-                ExprKind::Bind(Arc::new(BindExpr { rec, mut_: false, pattern: p, value, typ }))
-                    .to_expr_nopos()
+                ExprKind::Bind(Arc::new(BindExpr {
+                    rec,
+                    mut_: false,
+                    pattern: p,
+                    value,
+                    typ,
+                }))
+                .to_expr_nopos()
             },
         )
     };
@@ -452,10 +458,11 @@ macro_rules! mutbind {
 
 macro_rules! sync_block {
     ($inner:expr) => {
-        collection::vec(prop_oneof![$inner.clone(), assign!($inner), forx!($inner)], (1, 6))
-            .prop_map(|e| {
-                ExprKind::SyncBlock { exprs: Arc::from(e) }.to_expr_nopos()
-            })
+        collection::vec(
+            prop_oneof![$inner.clone(), assign!($inner), forx!($inner)],
+            (1, 6),
+        )
+        .prop_map(|e| ExprKind::SyncBlock { exprs: Arc::from(e) }.to_expr_nopos())
     };
 }
 
@@ -479,11 +486,8 @@ macro_rules! forx {
 macro_rules! assign {
     ($inner:expr) => {
         (valid_fname(), $inner.clone()).prop_map(|(name, value)| {
-            ExprKind::Assign {
-                name: ModPath::from_iter([name]),
-                value: Arc::new(value),
-            }
-            .to_expr_nopos()
+            ExprKind::Assign { name: ModPath::from_iter([name]), value: Arc::new(value) }
+                .to_expr_nopos()
         })
     };
 }
@@ -1481,8 +1485,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(name0 == name1)
         }
         (ExprKind::Bind(b0), ExprKind::Bind(b1)) => {
-            let BindExpr { rec: r0, mut_: m0, pattern: p0, value: value0, typ: typ0 } = &**b0;
-            let BindExpr { rec: r1, mut_: m1, pattern: p1, value: value1, typ: typ1 } = &**b1;
+            let BindExpr { rec: r0, mut_: m0, pattern: p0, value: value0, typ: typ0 } =
+                &**b0;
+            let BindExpr { rec: r1, mut_: m1, pattern: p1, value: value1, typ: typ1 } =
+                &**b1;
             dbg!(
                 dbg!(r0 == r1)
                     && dbg!(m0 == m1)
@@ -1491,11 +1497,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     && dbg!(check(value0, value1))
             )
         }
-        (
-            ExprKind::SyncBlock { exprs: e0 },
-            ExprKind::SyncBlock { exprs: e1 },
-        ) => dbg!(e0.len() == e1.len())
-            && e0.iter().zip(e1.iter()).all(|(e0, e1)| check(e0, e1)),
+        (ExprKind::SyncBlock { exprs: e0 }, ExprKind::SyncBlock { exprs: e1 }) => {
+            dbg!(e0.len() == e1.len())
+                && e0.iter().zip(e1.iter()).all(|(e0, e1)| check(e0, e1))
+        }
         (
             ExprKind::For { pattern: p0, iter: i0, body: b0 },
             ExprKind::For { pattern: p1, iter: i1, body: b1 },

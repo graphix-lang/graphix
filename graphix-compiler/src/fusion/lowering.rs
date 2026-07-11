@@ -1101,7 +1101,6 @@ pub fn fuse_callsite<R: Rt, E: UserEvent>(
     None
 }
 
-
 /// JIT-compile the whole-body callback kernel when `ec.fusion.enabled`,
 /// else `None` (the slot node-walks).
 ///

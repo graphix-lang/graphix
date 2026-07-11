@@ -276,6 +276,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.fired = false;
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The fired latch is once-per-instance semantics (the same
+        // class as `once`'s flag), not replay memory.
+    }
 }
 
 graphix_derive::defpackage! {

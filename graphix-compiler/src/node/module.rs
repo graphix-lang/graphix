@@ -502,6 +502,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if self.dynamic_sig_env.is_some() {
+            self.source.reset_replay(ctx);
+        }
+        ctx.with_restored_mut(&mut self.env, |ctx| {
+            for n in &mut self.nodes {
+                n.reset_replay(ctx);
+            }
+        });
+    }
+
     fn spec(&self) -> &Expr {
         &self.spec
     }

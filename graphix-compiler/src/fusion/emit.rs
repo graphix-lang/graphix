@@ -3507,7 +3507,9 @@ pub fn emit_for_node<R: Rt, E: UserEvent>(
     };
     let acc_leaves;
     let acc = match kernel_abi::abi_kind(cx.registry(), &acc_t) {
-        Some(AbiKind::Scalar(p)) if acc_binds.is_none() || acc_binds.as_deref() == Some(&[]) => {
+        Some(AbiKind::Scalar(p))
+            if acc_binds.is_none() || acc_binds.as_deref() == Some(&[]) =>
+        {
             scaffold_::FoldAcc::Scalar(p)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {

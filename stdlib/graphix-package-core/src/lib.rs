@@ -387,6 +387,17 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.cached.clear()
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The arg slots PERSIST: they are the interpreter's VALUE
+        // channel — the kernel twin of a computed value held in an SSA
+        // temp while the FIRING channel (the slots-word) stays quiet. A
+        // const-result feeder (`f(v)` with a constant body) fires once
+        // ever; its slot value is what lets `push(res, f(v))` keep
+        // emitting per fired `res`, exactly like the kernel (the
+        // hof_const_body_prev_len pin). `t`'s own state (a tally, a
+        // memo) is the builtin's semantics and also survives.
+    }
 }
 
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
@@ -528,6 +539,12 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         ctx.rt.ref_var(id, self.top_id);
         self.id = id;
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Async wrapper: queued results and the running flag are
+        // in-flight semantics; the arg cache feeds re-evaluation on
+        // completion. Async builtins never sit inside a sync frame.
+    }
 }
 
 pub trait MapCollection: Debug + Clone + Default + Send + Sync + 'static {
@@ -619,7 +636,6 @@ pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     /// a are guaranteed to have the same length. out\[i\].cur is
     /// guaranteed to be Some.
     fn finish(&mut self, slots: &[Slot<R, E>], a: &Self::Collection) -> Option<Value>;
-
 }
 
 #[derive(Debug)]
@@ -791,55 +807,54 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
             ctx.rt.cached_mut().insert(self.predid, v.clone());
             event.variables.insert(self.predid, v);
         }
-        let (up, resized) = match from[0]
-            .update(ctx, event)
-            .and_then(|v| T::Collection::select(v))
-        {
-            Some(a) if a.len() == slen => (Some(a), false),
-            Some(a) if a.len() < slen => {
-                while self.slots.len() > a.len() {
-                    if let Some(mut s) = self.slots.pop() {
-                        s.delete(ctx)
+        let (up, resized) =
+            match from[0].update(ctx, event).and_then(|v| T::Collection::select(v)) {
+                Some(a) if a.len() == slen => (Some(a), false),
+                Some(a) if a.len() < slen => {
+                    while self.slots.len() > a.len() {
+                        if let Some(mut s) = self.slots.pop() {
+                            s.delete(ctx)
+                        }
                     }
+                    (Some(a), true)
                 }
-                (Some(a), true)
-            }
-            Some(a) => {
-                while self.slots.len() < a.len() {
-                    // Mint this slot's fresh element binding "x" in scope
-                    // (fresh id, no ref_var) and instantiate a fresh
-                    // interpreted CallSite for it — every instantiation
-                    // is `LambdaDef::init` per (site, index).
-                    let id = ctx
-                        .env
-                        .bind_variable(
-                            &self.scope.lexical,
-                            "x",
-                            self.etyp.clone(),
-                            Default::default(),
-                            TArc::new(graphix_compiler::expr::Origin::default()),
-                        )
-                        .id;
-                    let node = genn::reference(ctx, id, self.etyp.clone(), self.top_id);
-                    let fnode = genn::reference(
-                        ctx,
-                        self.predid,
-                        Type::Fn(self.mftyp.clone()),
-                        self.top_id,
-                    );
-                    let pred = genn::apply(
-                        fnode,
-                        self.scope.clone(),
-                        vec![node],
-                        &self.mftyp,
-                        self.top_id,
-                    );
-                    self.slots.push(Slot { id, pred, cur: None });
+                Some(a) => {
+                    while self.slots.len() < a.len() {
+                        // Mint this slot's fresh element binding "x" in scope
+                        // (fresh id, no ref_var) and instantiate a fresh
+                        // interpreted CallSite for it — every instantiation
+                        // is `LambdaDef::init` per (site, index).
+                        let id = ctx
+                            .env
+                            .bind_variable(
+                                &self.scope.lexical,
+                                "x",
+                                self.etyp.clone(),
+                                Default::default(),
+                                TArc::new(graphix_compiler::expr::Origin::default()),
+                            )
+                            .id;
+                        let node =
+                            genn::reference(ctx, id, self.etyp.clone(), self.top_id);
+                        let fnode = genn::reference(
+                            ctx,
+                            self.predid,
+                            Type::Fn(self.mftyp.clone()),
+                            self.top_id,
+                        );
+                        let pred = genn::apply(
+                            fnode,
+                            self.scope.clone(),
+                            vec![node],
+                            &self.mftyp,
+                            self.top_id,
+                        );
+                        self.slots.push(Slot { id, pred, cur: None });
+                    }
+                    (Some(a), true)
                 }
-                (Some(a), true)
-            }
-            None => (None, false),
-        };
+                None => (None, false),
+            };
         if let Some(a) = up {
             for (s, v) in self.slots.iter().zip(a.iter_values()) {
                 ctx.rt.cached_mut().insert(s.id, v.clone());
@@ -948,13 +963,25 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         // need to put to sleep.
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Same clearing as sleep, plus the values `update` published
+        // into `rt.cached` (the pred fn and each slot's element) — all
+        // per-invocation replay memory read back through this node's
+        // own ids.
+        ctx.rt.cached_mut().remove(&self.predid);
+        self.cur = Default::default();
+        for sl in &mut self.slots {
+            ctx.rt.cached_mut().remove(&sl.id);
+            sl.cur = None;
+            sl.pred.reset_replay(ctx);
+        }
+    }
 }
 
 pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
     type Collection: MapCollection;
 
     const NAME: &str;
-
 }
 
 /// Pre-materialized analysis predicate for [`FoldQ`]. See
@@ -1383,6 +1410,27 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         // analysis_pred is analysis-only — no runtime sleep needed.
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Same clearing as sleep, plus the per-invocation values
+        // `update` published into `rt.cached` (the same set `delete`
+        // removes) — held args and published acc/init values are all
+        // replay memory.
+        self.init = None;
+        for v in &mut self.inits {
+            *v = None
+        }
+        for v in &mut self.held {
+            *v = None
+        }
+        let ids =
+            iter::once(&self.initid).chain(self.binds.iter()).chain(self.accids.iter());
+        for id in ids {
+            ctx.rt.cached_mut().remove(id);
+        }
+        for n in &mut self.nodes {
+            n.reset_replay(ctx)
+        }
+    }
 }
 
 // ── Core builtins ──────────────────────────────────────────────────
@@ -1421,6 +1469,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -1457,6 +1507,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -1489,6 +1541,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -1542,6 +1596,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.val = false
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The fired flag is SEMANTIC (once per subscription lifetime,
+        // not once per frame) — sleep's reset is the arm-rewake
+        // restart semantics, which a frame reset must not replicate.
     }
 }
 
@@ -1602,6 +1662,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.n = None
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The countdown is semantic (take/skip across the node's
+        // lifetime); only sleep's arm-rewake restarts it.
+    }
 }
 
 #[derive(Debug)]
@@ -1660,6 +1725,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.n = None
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The countdown is semantic (take/skip across the node's
+        // lifetime); only sleep's arm-rewake restarts it.
     }
 }
 
@@ -2132,6 +2202,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         self.pending = None;
         self.pred.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // `pending` (the held candidate value) and the published
+        // pred-fn/element values are all per-invocation replay memory.
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.pending = None;
+        self.pred.reset_replay(ctx);
+    }
 }
 
 #[derive(Debug)]
@@ -2194,6 +2273,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         ctx.rt.ref_var(self.id, self.top_id);
         self.triggered = 0;
         self.queue.clear();
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The queue and trigger debt are semantic buffering; delivery
+        // rides set_var (async, so never inside a sync frame anyway).
     }
 }
 
@@ -2259,6 +2343,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
     fn sleep(&mut self, _: &mut ExecCtx<R, E>) {
         self.triggered = 0;
         self.current = None;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // hold's held value and trigger debt ARE its contract (sample
+        // semantics) — not replay memory.
     }
 }
 
@@ -2336,6 +2425,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -2430,6 +2521,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.wait = Duration::ZERO;
         self.args.clear();
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Timing state is semantic, and the cached args feed the
+        // in-flight timer's emission (async — never inside a sync
+        // frame).
+    }
 }
 
 #[derive(Debug)]
@@ -2478,6 +2575,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.count = 0
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The tally is the canonical semantic-state example — it
+        // accumulates across frames in both backends.
     }
 }
 
@@ -2563,6 +2665,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.0 = None
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The held value is uniq's CONTRACT (dedup across time), not
+        // replay memory.
+    }
 }
 
 #[derive(Debug)]
@@ -2608,6 +2715,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Never {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2721,6 +2830,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -2783,6 +2894,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! printfn {
@@ -2849,6 +2962,8 @@ macro_rules! printfn {
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }

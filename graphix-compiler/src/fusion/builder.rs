@@ -134,6 +134,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         }
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Unlike sleep (which leaves the kernel's input slots for the
+        // arm-wake cached replay), a frame reset clears them: a
+        // partially-fused loop body's kernel must not fire iteration i
+        // from iteration i−1's marshalled inputs.
+        self.inner.reset_replay(ctx);
+        for feeder in self.feeders.iter_mut() {
+            feeder.reset_replay(ctx);
+        }
+    }
+
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
@@ -159,5 +170,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::FusedKernel(self)
     }
-
 }

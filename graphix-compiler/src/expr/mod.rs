@@ -32,10 +32,10 @@ use triomphe::Arc;
 mod modpath;
 pub mod parser;
 mod pattern;
-pub mod sync_desugar;
 pub mod print;
 mod resolver;
 pub mod serialize;
+pub mod sync_desugar;
 #[cfg(test)]
 mod test;
 
@@ -298,29 +298,74 @@ pub struct SelectExpr {
 pub enum ExprKind {
     NoOp,
     Constant(Value),
-    Module { name: ArcStr, value: ModuleKind },
+    Module {
+        name: ArcStr,
+        value: ModuleKind,
+    },
     ExplicitParens(Arc<Expr>),
-    Do { exprs: Arc<[Expr]> },
-    Use { name: ModPath },
+    Do {
+        exprs: Arc<[Expr]>,
+    },
+    Use {
+        name: ModPath,
+    },
     Bind(Arc<BindExpr>),
-    Ref { name: ModPath },
-    Connect { name: ModPath, value: Arc<Expr>, deref: bool },
-    StringInterpolate { args: Arc<[Expr]> },
-    StructRef { source: Arc<Expr>, field: ArcStr },
-    TupleRef { source: Arc<Expr>, field: usize },
-    ArrayRef { source: Arc<Expr>, i: Arc<Expr> },
-    ArraySlice { source: Arc<Expr>, start: Option<Arc<Expr>>, end: Option<Arc<Expr>> },
-    MapRef { source: Arc<Expr>, key: Arc<Expr> },
+    Ref {
+        name: ModPath,
+    },
+    Connect {
+        name: ModPath,
+        value: Arc<Expr>,
+        deref: bool,
+    },
+    StringInterpolate {
+        args: Arc<[Expr]>,
+    },
+    StructRef {
+        source: Arc<Expr>,
+        field: ArcStr,
+    },
+    TupleRef {
+        source: Arc<Expr>,
+        field: usize,
+    },
+    ArrayRef {
+        source: Arc<Expr>,
+        i: Arc<Expr>,
+    },
+    ArraySlice {
+        source: Arc<Expr>,
+        start: Option<Arc<Expr>>,
+        end: Option<Arc<Expr>>,
+    },
+    MapRef {
+        source: Arc<Expr>,
+        key: Arc<Expr>,
+    },
     StructWith(StructWithExpr),
     Lambda(Arc<LambdaExpr>),
     TypeDef(TypeDefExpr),
-    TypeCast { expr: Arc<Expr>, typ: Type },
+    TypeCast {
+        expr: Arc<Expr>,
+        typ: Type,
+    },
     Apply(ApplyExpr),
-    Any { args: Arc<[Expr]> },
-    Array { args: Arc<[Expr]> },
-    Map { args: Arc<[(Expr, Expr)]> },
-    Tuple { args: Arc<[Expr]> },
-    Variant { tag: ArcStr, args: Arc<[Expr]> },
+    Any {
+        args: Arc<[Expr]>,
+    },
+    Array {
+        args: Arc<[Expr]>,
+    },
+    Map {
+        args: Arc<[(Expr, Expr)]>,
+    },
+    Tuple {
+        args: Arc<[Expr]>,
+    },
+    Variant {
+        tag: ArcStr,
+        args: Arc<[Expr]>,
+    },
     Struct(StructExpr),
     Select(SelectExpr),
     Qop(Arc<Expr>),
@@ -329,39 +374,107 @@ pub enum ExprKind {
     ByRef(Arc<Expr>),
     Deref(Arc<Expr>),
     Neg(Arc<Expr>),
-    Eq { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Ne { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Lt { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Gt { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Lte { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Gte { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    And { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Or { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Not { expr: Arc<Expr> },
-    Add { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedAdd { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Sub { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedSub { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Mul { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedMul { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Div { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedDiv { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Mod { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedMod { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Sample { lhs: Arc<Expr>, rhs: Arc<Expr> },
+    Eq {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Ne {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Lt {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Gt {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Lte {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Gte {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    And {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Or {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Not {
+        expr: Arc<Expr>,
+    },
+    Add {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedAdd {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Sub {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedSub {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Mul {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedMul {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Div {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedDiv {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Mod {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedMod {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Sample {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
     /// `sync { e; e; ... }` — a block with SEQUENTIAL semantics
     /// (design/sync_subset.md). Statements evaluate in written order;
     /// `let mut` locals may be rebound by `Assign`; `for` loops are
     /// legal. The compiler elaborates by inferred effect (one kernel /
     /// slots + re-eval / per-element instantiation).
-    SyncBlock { exprs: Arc<[Expr]> },
+    SyncBlock {
+        exprs: Arc<[Expr]>,
+    },
     /// `for <pattern> in <iter> { body }` — legal only inside a
     /// `sync` block. Semantics: fold over the enclosing block's
     /// `let mut` locals (the loop-carried accumulator tuple).
-    For { pattern: StructurePattern, iter: Arc<Expr>, body: Arc<Expr> },
+    For {
+        pattern: StructurePattern,
+        iter: Arc<Expr>,
+        body: Arc<Expr>,
+    },
     /// `name = value` — rebind a `let mut` local; legal only inside
     /// the `sync` block that bound it.
-    Assign { name: ModPath, value: Arc<Expr> },
+    Assign {
+        name: ModPath,
+        value: Arc<Expr>,
+    },
     /// DESUGAR-INTERNAL loop form (never parsed, never printed as
     /// source): the sync-block desugar's rewrite of `for` — a fold
     /// whose accumulator is the tuple of the mut locals the body
@@ -662,7 +775,13 @@ impl Expr {
                 body.fold(init, f)
             }
             ExprKind::Assign { name: _, value } => value.fold(init, f),
-            ExprKind::ForFold { iter, init: i, acc_pattern: _, elem_pattern: _, body } => {
+            ExprKind::ForFold {
+                iter,
+                init: i,
+                acc_pattern: _,
+                elem_pattern: _,
+                body,
+            } => {
                 let acc = iter.fold(init, f);
                 let acc = i.fold(acc, f);
                 body.fold(acc, f)

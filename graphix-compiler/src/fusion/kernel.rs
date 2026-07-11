@@ -472,6 +472,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 // ─── DynCall dispatch for JIT'd kernels ──────────────────────────
@@ -1505,6 +1507,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        for slot in self.args.iter_mut() {
+            *slot = None;
+        }
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The per-arg last-value slots are the kernel's combineLatest
+        // memory — replay state, same as sleep clears.
         for slot in self.args.iter_mut() {
             *slot = None;
         }

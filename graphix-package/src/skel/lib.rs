@@ -1,7 +1,7 @@
 use anyhow::Result;
 use graphix_compiler::{
-    effects::EffectKind, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node,
-    Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    expr::ExprId, typ::FnType,
 };
 use graphix_derive::defpackage;
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
@@ -44,6 +44,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Default)]

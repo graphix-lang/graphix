@@ -1,6 +1,6 @@
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
-    defetyp, err, errf,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
+    err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
     node::{Cached, compiler::compile},
@@ -89,6 +89,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.vals.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.keys.iter_mut().for_each(|n| n.reset_replay(ctx));
+        self.vals.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.keys.iter().for_each(|n| n.node.refs(refs));
         self.vals.iter().for_each(|n| n.node.refs(refs))
@@ -126,7 +131,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
     }
-
 }
 
 #[derive(Debug)]
@@ -230,6 +234,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.key.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.source.reset_replay(ctx);
+        self.key.reset_replay(ctx);
+    }
+
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::MapRef(self)
     }
@@ -237,5 +246,4 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_map_ref_node(cx, &self.source.node, &self.key.node)
     }
-
 }
