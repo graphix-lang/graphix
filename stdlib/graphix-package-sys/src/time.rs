@@ -233,7 +233,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                         schedule!(dur)
                     }
                 }
-                now.clone()
+                now.value_cloned()
             },
         )
     }

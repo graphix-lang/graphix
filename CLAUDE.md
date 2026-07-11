@@ -447,7 +447,9 @@ and every feeder the callback body captures fired).
   flap means the compiled shape depends on allocation order somewhere in
   typing/resolution/fusion. Soak ops: `GRAPHIX_FUZZ_PAR`,
   `GRAPHIX_FUZZ_CORPUS` (separate corpus dir PER campaign — shared dirs
-  clobber), and NEVER rebuild while campaigns run. Campaign output
+  clobber), launch campaigns under `nice -n 19` (workers inherit —
+  keeps interactive builds fast while soaks saturate the idle cores),
+  and NEVER rebuild while campaigns run. Campaign output
   defaults OUTSIDE the repo (`~/tmp/target/fuzz/` — the repo's fuzz/
   dir is syncthing-synced; soak corpus dirs go under
   `~/tmp/target/fuzz/<campaign>/`, durable triage summaries stay in
@@ -591,12 +593,18 @@ in `run!` fixtures and bench programs). The decision is recorded in
 - `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
   HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
 - `queue_fn.md` — `queuefn` feature design.
-- `replay_frames.md` — **BUILT (2026-07-11):** `reset_replay` (required
-  `Update`/`Apply` method, replay caches vs semantic state) + evaluation
-  FRAMES (For sync-loop iterations and tail-loop jumps run against a
-  private variables map) + `frame_bottom` (the interp's taint bit for
-  swallowed errors). The value/firing two-channel story — which caches
-  persist (builtin arg slots, closed subtrees) and why.
+- `replay_frames.md` — **BUILT (2026-07-11), v2 same day:**
+  `reset_replay` (required `Update`/`Apply` method, replay caches vs
+  semantic state) + evaluation FRAMES (For sync-loop iterations and
+  tail-loop jumps run against a private variables map) + **TagValue as
+  the interpreter currency** (Eric's call; v2): `Update::update`
+  returns `Option<TagValue>` and `Event.variables` carries it — the
+  kernel's STALE/TAINT disc bits ride every interp value, ops
+  propagate them per the CLIF rules, `Apply::update` stays clean
+  `Value` with `Apply::out_tag` surfacing the tag, and the kernel
+  gains a `last_result` value-channel slot. The v1 `frame_bottom` bit
+  and the fired re-delivery hack are deleted (jul10e broke both
+  within an hour of soaking).
 - `sync_subset.md` — **P0–P3 BUILT on the `sync-subset-proto` branch
   (2026-07-09; see the doc's "Prototype status" section):** repatriate
   CONTROL from Rust builtins into `sync { }` BLOCKS (sequential

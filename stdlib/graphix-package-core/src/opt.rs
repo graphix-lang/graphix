@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
@@ -297,15 +297,15 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) {
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
     }
 
     fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value) {
         ctx.rt.cached_mut().insert(self.x, v.clone());
-        event.variables.insert(self.x, v);
+        event.variables.insert(self.x, TagValue::fired(v));
     }
 
     /// Standard fire-and-forget tick used by map/flat_map/is_some_and/
@@ -323,7 +323,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         on_null: Value,
     ) -> Option<Value> {
         self.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
+        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
             Some(Value::Null) => Some(on_null),
             Some(v) => {
                 self.feed_x(ctx, event, v);
@@ -331,7 +331,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
             }
             None => None,
         };
-        let inner_out = self.inner.update(ctx, event);
+        let inner_out = self.inner.update(ctx, event).map(|tv| tv.value());
         direct.or(inner_out)
     }
 
@@ -528,7 +528,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
+        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
             Some(Value::Null) => {
                 self.pending = None;
                 Some(Value::Null)
@@ -540,7 +540,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
             }
             None => None,
         };
-        let inner_out = self.s.inner.update(ctx, event).map(|b| match b {
+        let inner_out = self.s.inner.update(ctx, event).map(|b| match b.value() {
             Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
             _ => Value::Null,
         });
@@ -741,18 +741,18 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> (bool, bool) {
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
         let a_updated = if let Some(a) = from[0].update(ctx, event) {
-            self.last_a = Some(a);
+            self.last_a = Some(a.value());
             true
         } else {
             false
         };
         let f_updated = if let Some(v) = self.inner.update(ctx, event) {
-            self.last_f = Some(v);
+            self.last_f = Some(v.value());
             true
         } else {
             false

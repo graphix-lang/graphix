@@ -2333,11 +2333,7 @@ pub struct CompiledExpr {
 /// real discriminant; set = "this value MAY be a bottom" (#219). Shared
 /// with the runtime dispatch (`kernel.rs`), which sets it for a missing
 /// input's disc word.
-pub(crate) const TAINT: i64 = 0x4000_0000_0000_0000;
-
-/// [`TAINT`] as a [`emit_helpers::TagValue`] tag byte, for helpers that
-/// mint a tainted result themselves.
-pub(crate) const TAINT_TAG: u8 = (TAINT >> 56) as u8;
+pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 
 /// The reserved "did not fire this cycle" bit of a [`CompiledExpr`]'s
 /// `disc` (bit 61, inside the JIT tag region [`emit_helpers::TagValue`]

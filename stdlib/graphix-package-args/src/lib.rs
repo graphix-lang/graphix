@@ -238,7 +238,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        let spec = from[0].update(ctx, event)?;
+        let spec = from[0].update(ctx, event)?.value();
         if self.fired {
             return None;
         }

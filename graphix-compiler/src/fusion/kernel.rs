@@ -408,12 +408,14 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
         }
         // Side-channel: stash each arg Value at its BindId so the
-        // arg_refs `Ref` nodes read it inside `apply.update`.
+        // arg_refs `Ref` nodes read it inside `apply.update`. FIRED:
+        // the kernel already decided this call happens — the delivery
+        // is the call's argument event.
         let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
         for (i, v) in args.iter().enumerate() {
             let id = self.bind_ids[i];
-            event.variables.insert(id, v.clone());
+            event.variables.insert(id, crate::TagValue::fired(v.clone()));
             set.push(id);
         }
         // First dispatch of a fresh inner Apply = its init cycle:
@@ -466,7 +468,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from.get_mut(0)?.update(ctx, event).map(|v| self.target.cast_value(&ctx.env, v))
+        from.get_mut(0)?
+            .update(ctx, event)
+            .map(|tv| self.target.cast_value(&ctx.env, tv.value()))
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -655,7 +659,9 @@ pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
     // payload is inline (drop is a no-op); a composite/string owns a heap
     // allocation. `TagValue::value` masks the tag byte, so a tainted / stale
     // disc materializes as a valid placeholder Value that is safe to drop.
-    let value = TagValue::from_raw(disc, payload).value();
+    // SAFETY: emit_connect_node marshalled a real owned Value into
+    // these words; only the tag byte may be set on top of it.
+    let value = unsafe { TagValue::from_raw(disc, payload) }.value();
     if disc & ((TAINT | STALE) as u64) != 0 {
         // No value this cycle (tainted) or the RHS did not fire (stale) — drop
         // the owned value, no write (the node-walk's `if let Some(v) = ..`).
@@ -724,6 +730,17 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// every per-slot clone gets its own fresh buffer — matching the
     /// node-walk's per-slot node state.
     state: Box<[u64]>,
+    /// The kernel's RESULT slot on the value channel — the last value
+    /// a run produced. A region is pure by construction (effects
+    /// de-fuse), so when a poll delivers only STALE productions (an
+    /// evaluation frame re-running a node-walked loop around this
+    /// kernel — the only place stale productions originate) the cached
+    /// result is exactly what a re-run would compute; re-surface it
+    /// tagged STALE via [`Apply::out_tag`] instead of running the JIT.
+    /// The `CachedArgs::last_result` twin.
+    last_result: Option<Value>,
+    /// The tag of the last value `update` returned (see `out_tag`).
+    last_out: crate::Tag,
 }
 
 /// Tag for each call-site arg position. The runtime walks the
@@ -947,6 +964,8 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             dyn_slots,
             arg_layout,
             state,
+            last_result: None,
+            last_out: crate::Tag::FIRED,
         };
         node.pre_init_binding_slots(ctx);
         node.pre_init_builtin_slots(ctx)?;
@@ -1052,11 +1071,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // spills to the heap.
         let mut fired_this_cycle: smallvec::SmallVec<[bool; 64]> =
             smallvec::smallvec![false; from.len()];
+        // Any production at all (fired, tainted, OR merely stale) —
+        // drives the stale-resurface below when nothing triggered.
+        let mut any_produced = false;
         for (i, src) in from.iter_mut().enumerate() {
-            if let Some(v) = src.update(ctx, event) {
-                self.args[i] = Some(v);
-                fired_this_cycle[i] = true;
-                any_updated = true;
+            if let Some(tv) = src.update(ctx, event) {
+                any_produced = true;
+                let (v, tag) = tv.into_parts();
+                if tag.is_tainted() {
+                    // A tainted feeder event: drop the retained value so
+                    // the pack below feeds the TAINT placeholder — the
+                    // kernel runs and bottoms only if the taken path
+                    // consumes it (#219).
+                    self.args[i] = None;
+                    fired_this_cycle[i] = true;
+                    any_updated = true;
+                } else {
+                    // A merely-STALE production refreshes the slot (the
+                    // value channel) without firing the kernel; a fired
+                    // one runs it.
+                    self.args[i] = Some(v);
+                    if tag.is_fired() {
+                        fired_this_cycle[i] = true;
+                        any_updated = true;
+                    }
+                }
             }
         }
         // Binding-source fn_params don't sit in `from` (they resolve
@@ -1067,7 +1106,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // into `helper` never reruns after helper's first publish.
         for fp in self.kernel.fn_params.iter() {
             if let FnSource::Binding { bind_id } = &fp.source {
-                if event.variables.contains_key(bind_id) {
+                if event.variables.get(bind_id).is_some_and(|tv| tv.tag().triggers()) {
                     any_updated = true;
                     break;
                 }
@@ -1107,6 +1146,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             any_updated = true;
         }
         if !any_updated {
+            // A poll that delivered only STALE productions (an
+            // evaluation frame re-running the node-walked loop around
+            // this kernel): the region is pure and its inputs' VALUES
+            // are unchanged since the last run, so the cached result IS
+            // what a re-run would compute — re-surface it on the value
+            // channel (tagged STALE via `out_tag`) so the frame's acc
+            // chain can advance without a firing (see `last_result`).
+            if any_produced && let Some(v) = &self.last_result {
+                self.last_out = crate::Tag::STALE;
+                return Some(v.clone());
+            }
             return None;
         }
         if std::env::var("GRAPHIX_DBG_INVOKE").is_ok() {
@@ -1140,7 +1190,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             for id in slot.default_external_refs.iter() {
                 if !event.variables.contains_key(id) {
                     if let Some(v) = ctx.rt.cached().get(id) {
-                        event.variables.insert(*id, v.clone());
+                        event.variables.insert(*id, crate::TagValue::fired(v.clone()));
                     }
                 }
             }
@@ -1223,7 +1273,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 let v = event
                     .variables
                     .get(bind_id)
-                    .cloned()
+                    .map(|tv| tv.value_cloned())
                     .or_else(|| ctx.rt.cached().get(bind_id).cloned())?;
                 fn_arg_values[fn_idx] = v;
             }
@@ -1495,7 +1545,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             // gateway) so a tainted disc the kernel leaked is MASKED, not
             // materialized as a corrupt `Value` (the UB class).
             Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                TagValue::from_raw(out[0], out[1]).value()
+                // SAFETY: the kernel's return path wrote a real Value's
+                // words into the out slot (the pending path returned
+                // before the decode).
+                unsafe { TagValue::from_raw(out[0], out[1]) }.value()
             }
             Some(AbiKind::Null) | None => unreachable!(
                 "JIT decode for a non-fusable / bare-Null kernel \
@@ -1503,7 +1556,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                  producing such a kernel"
             ),
         };
+        // Fill the RESULT slot (the value channel — see `last_result`).
+        self.last_result = Some(v.clone());
+        self.last_out = crate::Tag::FIRED;
         Some(v)
+    }
+
+    fn out_tag(&self) -> crate::Tag {
+        self.last_out
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {

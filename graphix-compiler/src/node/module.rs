@@ -1,5 +1,6 @@
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Update, UserEvent,
+    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue, Update,
+    UserEvent,
     compiler::compile,
     env::Env,
     errf,
@@ -408,19 +409,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> Option<netidx_value::Value> {
+    ) -> Option<TagValue> {
         let mut compiled = false;
+        let mut src_tag = Tag::FIRED;
         if self.dynamic_sig_env.is_some()
-            && let Some(v) = self.source.update(ctx, event)
+            && let Some(tv) = self.source.update(ctx, event)
         {
+            // never compile from a taint placeholder (and don't tear
+            // down the running module on one) — pass the taint on
+            if tv.is_tainted() {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let (v, tag) = tv.into_parts();
+            src_tag = tag;
             self.clear_compiled(ctx);
             match v {
                 Value::String(s) => {
                     if let Err(e) = self.compile_source(ctx, s) {
-                        return Some(errf!(ERR_TAG, "compile error {e:?}"));
+                        return Some(TagValue::tagged(
+                            errf!(ERR_TAG, "compile error {e:?}"),
+                            tag,
+                        ));
                     }
                 }
-                v => return Some(errf!(ERR_TAG, "unexpected {v}")),
+                v => {
+                    return Some(TagValue::tagged(errf!(ERR_TAG, "unexpected {v}"), tag));
+                }
             }
             compiled = true;
             // Prime the fresh nodes' EXTERNAL refs from `ctx.cached` —
@@ -442,7 +456,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     if let std::collections::hash_map::Entry::Vacant(e) =
                         event.variables.entry(id)
                     {
-                        e.insert(v.clone());
+                        // FIRED: the priming is the fresh nodes' init view
+                        e.insert(TagValue::fired(v.clone()));
                     }
                 }
             });
@@ -452,21 +467,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             event.init = true;
         }
         for (inner_id, proxy_id) in &self.proxy {
-            if let Some(v) = event.variables.get(proxy_id) {
-                let v = v.clone();
-                event.variables.insert(*inner_id, v.clone());
-                ctx.rt.cached_mut().insert(*inner_id, v);
+            if let Some(tv) = event.variables.get(proxy_id) {
+                let tv = tv.clone();
+                // the entry's tag flows through the proxy; the clean
+                // cache never holds a taint placeholder
+                if !tv.is_tainted() {
+                    ctx.rt.cached_mut().insert(*inner_id, tv.value_cloned());
+                }
+                event.variables.insert(*inner_id, tv);
             }
         }
         self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
         event.init = init;
         for (inner_id, proxy_id) in &self.proxy {
-            if let Some(v) = event.variables.remove(inner_id) {
-                event.variables.insert(*proxy_id, v.clone());
-                ctx.rt.cached_mut().insert(*proxy_id, v);
+            if let Some(tv) = event.variables.remove(inner_id) {
+                if !tv.is_tainted() {
+                    ctx.rt.cached_mut().insert(*proxy_id, tv.value_cloned());
+                }
+                event.variables.insert(*proxy_id, tv);
             }
         }
-        compiled.then(|| Value::Null)
+        compiled.then(|| TagValue::tagged(Value::Null, src_tag))
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

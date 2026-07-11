@@ -1,11 +1,11 @@
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
-    err, errf,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    UserEvent, defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
     node::{Cached, compiler::compile},
     typ::Type,
-    update_args, wrap,
+    wrap,
 };
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -50,14 +50,29 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         if self.keys.is_empty() && event.init {
-            return Some(Value::Map(CMap::new()));
+            return Some(TagValue::fired(Value::Map(CMap::new())));
         }
-        let (kupdated, kdetermined) = update_args!(self.keys, ctx, event);
-        let (vupdated, vdetermined) = update_args!(self.vals, ctx, event);
-        let (updated, determined) = (kupdated || vupdated, kdetermined && vdetermined);
-        if updated && determined {
+        let mut produced = false;
+        let mut fired = false;
+        let mut determined = true;
+        for c in self.keys.iter_mut().chain(self.vals.iter_mut()) {
+            if let Some(t) = c.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
+            determined &= c.cached.is_some();
+        }
+        if produced && determined {
+            if self.keys.iter().chain(self.vals.iter()).any(|c| c.tag.is_tainted()) {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let mut m = CMap::new();
             for (k, v) in self.keys.iter().zip(self.vals.iter()) {
                 m.insert_cow(
@@ -65,7 +80,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
                     v.cached.as_ref().cloned().unwrap(),
                 );
             }
-            Some(Value::Map(m))
+            Some(TagValue::tagged(Value::Map(m), tag))
         } else {
             None
         }
@@ -178,18 +193,27 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        let up = self.source.update(ctx, event);
-        let up = self.key.update(ctx, event) || up;
-        if !up {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        let s = self.source.update(ctx, event);
+        let k = self.key.update(ctx, event);
+        if s.is_none() && k.is_none() {
             return None;
         }
+        if self.source.tag.is_tainted() || self.key.tag.is_tainted() {
+            return Some(TagValue::tainted(Value::Null));
+        }
+        let fired = s.is_some_and(|t| t.is_fired()) || k.is_some_and(|t| t.is_fired());
+        let tag = if fired { Tag::FIRED } else { Tag::STALE };
         let key = match &self.key.cached {
             Some(key) => key,
             None => return None,
         };
         match &self.source.cached {
-            Some(src) => Some(map_get(src, key)),
+            Some(src) => Some(TagValue::tagged(map_get(src, key), tag)),
             None => None,
         }
     }

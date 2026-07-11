@@ -1,7 +1,7 @@
 use super::{Cached, compiler::compile};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update, UserEvent,
-    deref_typ,
+    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
+    Update, UserEvent, deref_typ,
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_struct_new_node, emit_struct_ref_node,
@@ -9,7 +9,7 @@ use crate::{
         emit_variant_new_node,
     },
     typ::Type,
-    update_args, wrap,
+    wrap,
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -49,18 +49,35 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         if self.n.is_empty() && event.init {
-            return Some(Value::Array(ValArray::from([])));
+            return Some(TagValue::fired(Value::Array(ValArray::from([]))));
         }
-        let (updated, determined) = update_args!(self.n, ctx, event);
-        if updated && determined {
+        let mut produced = false;
+        let mut fired = false;
+        let mut determined = true;
+        for c in self.n.iter_mut() {
+            if let Some(t) = c.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
+            determined &= c.cached.is_some();
+        }
+        if produced && determined {
+            if self.n.iter().any(|c| c.tag.is_tainted()) {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.names.iter().zip(self.n.iter()).map(|(name, n)| {
                 let name = Value::String(name.clone());
                 let v = n.cached.clone().unwrap();
                 Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
             });
-            Some(Value::Array(ValArray::from_iter_exact(iter)))
+            Some(TagValue::tagged(Value::Array(ValArray::from_iter_exact(iter)), tag))
         } else {
             None
         }
@@ -141,6 +158,9 @@ pub struct StructWith<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub source: Node<R, E>,
     current: Option<ValArray>,
+    /// The tag of the resident `current` source value — the same
+    /// contract as [`Cached::tag`]: only the TAINT bit matters at rest.
+    current_tag: Tag,
     pub replace: Box<[Replace<R, E>]>,
 }
 
@@ -166,29 +186,53 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let typ = source.typ().clone();
-        Ok(Box::new(Self { spec, typ, source, current: None, replace }))
+        Ok(Box::new(Self {
+            spec,
+            typ,
+            source,
+            current: None,
+            current_tag: Tag::FIRED,
+            replace,
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        let mut updated = self
-            .source
-            .update(ctx, event)
-            .map(|v| match v {
-                Value::Array(a) => {
-                    self.current = Some(a);
-                    true
-                }
-                _ => false,
-            })
-            .unwrap_or(false);
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        let mut produced = false;
+        let mut fired = false;
+        if let Some(tv) = self.source.update(ctx, event) {
+            let (v, tag) = tv.into_parts();
+            if tag.is_tainted() {
+                self.current_tag = tag;
+                produced = true;
+            } else if let Value::Array(a) = v {
+                self.current = Some(a);
+                self.current_tag = tag;
+                produced = true;
+                fired |= tag.is_fired();
+            }
+        }
         let mut determined = self.current.is_some();
         for r in self.replace.iter_mut() {
-            updated |= r.n.update(ctx, event);
+            if let Some(t) = r.n.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
             determined &= r.n.cached.is_some();
         }
-        if updated && determined {
+        if produced
+            && (self.current_tag.is_tainted()
+                || self.replace.iter().any(|r| r.n.tag.is_tainted()))
+        {
+            return Some(TagValue::tainted(Value::Null));
+        }
+        if produced && determined {
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let mut si = 0;
             let iter =
                 self.current.as_ref().unwrap().iter().enumerate().map(|(i, v)| match v {
@@ -218,7 +262,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                     }
                     _ => v.clone(),
                 });
-            Some(Value::Array(ValArray::from_iter_exact(iter)))
+            Some(TagValue::tagged(Value::Array(ValArray::from_iter_exact(iter)), tag))
         } else {
             None
         }
@@ -239,12 +283,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.current = None;
+        self.current_tag = Tag::FIRED;
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.current = None;
+        self.current_tag = Tag::FIRED;
         self.source.reset_replay(ctx);
         self.replace.iter_mut().for_each(|r| r.n.reset_replay(ctx))
     }
@@ -350,33 +396,47 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         match self.source.update(ctx, event) {
-            Some(Value::Array(a)) => match self.field {
-                Some(i) => a.get(i).and_then(|v| match v {
-                    Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
-                    _ => None,
-                }),
-                None => {
-                    let res = a.iter().enumerate().find_map(|(i, kv)| match kv {
-                        Value::Array(kv) => match &kv[..] {
-                            [Value::String(f), v] if f == &self.field_name => {
-                                Some((i, v.clone()))
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    });
-                    match res {
-                        Some((i, v)) => {
-                            self.field = Some(i);
-                            Some(v)
-                        }
-                        None => None,
-                    }
+            Some(tv) => {
+                if tv.is_tainted() {
+                    return Some(TagValue::tainted(Value::Null));
                 }
-            },
-            Some(_) | None => None,
+                let (v, tag) = tv.into_parts();
+                let res = match v {
+                    Value::Array(a) => match self.field {
+                        Some(i) => a.get(i).and_then(|v| match v {
+                            Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
+                            _ => None,
+                        }),
+                        None => {
+                            let res = a.iter().enumerate().find_map(|(i, kv)| match kv {
+                                Value::Array(kv) => match &kv[..] {
+                                    [Value::String(f), v] if f == &self.field_name => {
+                                        Some((i, v.clone()))
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            });
+                            match res {
+                                Some((i, v)) => {
+                                    self.field = Some(i);
+                                    Some(v)
+                                }
+                                None => None,
+                            }
+                        }
+                    },
+                    _ => None,
+                };
+                res.map(|v| TagValue::tagged(v, tag))
+            }
+            None => None,
         }
     }
 
@@ -471,14 +531,31 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         if self.n.is_empty() && event.init {
-            return Some(Value::Array(ValArray::from([])));
+            return Some(TagValue::fired(Value::Array(ValArray::from([]))));
         }
-        let (updated, determined) = update_args!(self.n, ctx, event);
-        if updated && determined {
+        let mut produced = false;
+        let mut fired = false;
+        let mut determined = true;
+        for c in self.n.iter_mut() {
+            if let Some(t) = c.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
+            determined &= c.cached.is_some();
+        }
+        if produced && determined {
+            if self.n.iter().any(|c| c.tag.is_tainted()) {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.n.iter().map(|n| n.cached.clone().unwrap());
-            Some(Value::Array(ValArray::from_iter_exact(iter)))
+            Some(TagValue::tagged(Value::Array(ValArray::from_iter_exact(iter)), tag))
         } else {
             None
         }
@@ -572,15 +649,36 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         if self.n.len() == 0 {
-            if event.init { Some(Value::String(self.tag.clone())) } else { None }
+            if event.init {
+                Some(TagValue::fired(Value::String(self.tag.clone())))
+            } else {
+                None
+            }
         } else {
-            let (updated, determined) = update_args!(self.n, ctx, event);
-            if updated && determined {
+            let mut produced = false;
+            let mut fired = false;
+            let mut determined = true;
+            for c in self.n.iter_mut() {
+                if let Some(t) = c.update(ctx, event) {
+                    produced = true;
+                    fired |= t.is_fired();
+                }
+                determined &= c.cached.is_some();
+            }
+            if produced && determined {
+                if self.n.iter().any(|c| c.tag.is_tainted()) {
+                    return Some(TagValue::tainted(Value::Null));
+                }
+                let tag = if fired { Tag::FIRED } else { Tag::STALE };
                 let a = iter::once(Value::String(self.tag.clone()))
                     .chain(self.n.iter().map(|n| n.cached.clone().unwrap()));
-                Some(Value::Array(ValArray::from_iter(a)))
+                Some(TagValue::tagged(Value::Array(ValArray::from_iter(a)), tag))
             } else {
                 None
             }
@@ -680,11 +778,22 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        self.source.update(ctx, event).and_then(|v| match v {
-            Value::Array(a) => a.get(self.field).map(|v| v.clone()),
-            Value::Error(v) => Some((*v).clone()),
-            _ => None,
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        self.source.update(ctx, event).and_then(|tv| {
+            if tv.is_tainted() {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let (v, tag) = tv.into_parts();
+            let res = match v {
+                Value::Array(a) => a.get(self.field).map(|v| v.clone()),
+                Value::Error(v) => Some((*v).clone()),
+                _ => None,
+            };
+            res.map(|v| TagValue::tagged(v, tag))
         })
     }
 

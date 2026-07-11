@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, F64(6.1))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
-// mutant: {let f = 'a: Number|x: 'a| -> 'a i64:2 + f64:1.05; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}
-// minimized:
-{let f = 'a: Number|x: 'a| -> 'a i64:0 + f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}

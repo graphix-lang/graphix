@@ -83,119 +83,12 @@ const _: () = {
 
 // ─── TagValue: the tagged Value at the JIT↔runtime boundary ──────────
 //
-// A `TagValue` is bit-identical to `Value` (16 bytes, two integer
-// eightbytes → two registers, so the JIT marshals it exactly like a
-// `Value`), EXCEPT the upper 8 bits of the discriminant word are
-// reserved for a JIT tag. The #219 taint bit lives here; the real
-// `Value` discriminant only uses the low bits (`value_disc` tops out at
-// `0x8000_0000`), so the tag and the discriminant never collide.
-//
-// The point is the BOUNDARY GUARANTEE. A `TagValue` is *uninterpreted*
-// raw words — the only way to recover a `Value` is [`TagValue::value`],
-// which MASKS the tag first. So a tagged (tainted) disc the JIT hands a
-// helper can never be read AS a `Value` discriminant — which is the UB
-// that turned a forgotten `clean_disc` into a process abort (a corrupt
-// disc → `Value::clone`/`drop` → `unreachable_unchecked`). The tag rides
-// through [`Clone`] so taint survives a refcount bump with no manual
-// re-attach. Lives here (not in `netidx-value`): it needs only `Value`'s
-// public `Clone`/`Drop` plus the 16-byte/two-eightbyte layout this
-// module already pins above.
-#[repr(C)]
-pub struct TagValue {
-    disc: u64,
-    payload: u64,
-}
-
-/// The reserved tag byte — the upper 8 bits of the discriminant word.
-const TAG_MASK: u64 = 0xFF00_0000_0000_0000;
-
-impl TagValue {
-    /// Wrap the two raw words the JIT produced (a kernel return's `out`
-    /// slot, a helper result) — the gateway INTO `TagValue` from
-    /// untrusted JIT output. Recover the clean `Value` via
-    /// [`TagValue::value`] (which masks the tag), never a bare
-    /// `transmute`: that's the whole point — a tainted disc the kernel
-    /// leaked can't materialize as a corrupt `Value`.
-    #[inline]
-    pub fn from_raw(disc: u64, payload: u64) -> Self {
-        TagValue { disc, payload }
-    }
-
-    /// Stuff `tag` into the upper 8 bits of `v`'s discriminant.
-    #[inline]
-    pub fn tagged(v: Value, tag: u8) -> Self {
-        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(v) };
-        debug_assert_eq!(disc & TAG_MASK, 0, "Value discriminant overlaps the tag byte");
-        TagValue { disc: disc | ((tag as u64) << 56), payload }
-    }
-
-    /// An untagged `TagValue` (tag = 0).
-    #[inline]
-    pub fn clean(v: Value) -> Self {
-        Self::tagged(v, 0)
-    }
-
-    /// The JIT tag byte (the #219 taint rides in here).
-    #[inline]
-    pub fn tag(&self) -> u8 {
-        (self.disc >> 56) as u8
-    }
-
-    /// Recover the clean `Value`, MASKING the tag. The sole raw-words →
-    /// `Value` gateway; consumes self, transferring payload ownership.
-    #[inline]
-    pub fn value(self) -> Value {
-        let me = std::mem::ManuallyDrop::new(self);
-        unsafe {
-            std::mem::transmute::<[u64; 2], Value>([me.disc & !TAG_MASK, me.payload])
-        }
-    }
-
-    /// True iff the masked discriminant is zero — the pending-sentinel
-    /// word pair a JIT pending path leaves in the `out` slot, which must
-    /// never reach a clone/drop (it isn't a valid `Value`).
-    #[inline]
-    pub fn is_sentinel(&self) -> bool {
-        self.disc & !TAG_MASK == 0
-    }
-
-    /// Borrow the masked `Value` for a read-only operation WITHOUT
-    /// consuming (no refcount change). For helpers the JIT passes a
-    /// borrowed operand (tag-eq, is-null, payload reads): the JIT keeps
-    /// owning its copy.
-    #[inline]
-    pub fn with_value<T>(&self, f: impl FnOnce(&Value) -> T) -> T {
-        let v = std::mem::ManuallyDrop::new(unsafe {
-            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
-        });
-        f(&v)
-    }
-}
-
-impl Clone for TagValue {
-    #[inline]
-    fn clone(&self) -> Self {
-        // Clone the MASKED Value (refcount bump) and re-apply the tag.
-        // `view` is a borrowed view of our own bits — must not drop it.
-        let view = std::mem::ManuallyDrop::new(unsafe {
-            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
-        });
-        let dup: Value = (*view).clone();
-        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(dup) };
-        TagValue { disc: disc | (self.disc & TAG_MASK), payload }
-    }
-}
-
-impl Drop for TagValue {
-    #[inline]
-    fn drop(&mut self) {
-        // Mask the tag and drop as a clean Value, releasing the payload.
-        let v = unsafe {
-            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
-        };
-        drop(v);
-    }
-}
+// Promoted to `crate::tval` when it became the interpreter's value
+// currency as well (design/replay_frames.md v2) — the tag byte is the
+// same disc tag region the kernel uses, so the JIT↔interp seam is
+// representation-identity. Re-imported here for the helpers; the
+// layout checks above are what its transmutes rely on.
+pub use crate::tval::TagValue;
 
 #[inline]
 unsafe fn arr<'a>(p: *const ValArray) -> &'a ValArray {
@@ -768,7 +661,7 @@ macro_rules! value_arith_helper {
             // catchable ArithError.
             match l.value() $op r.value() {
                 Value::Error(_) => {
-                    TagValue::tagged(Value::Null, crate::fusion::emit::TAINT_TAG)
+                    TagValue::tainted(Value::Null)
                 }
                 v => TagValue::clean(v),
             }

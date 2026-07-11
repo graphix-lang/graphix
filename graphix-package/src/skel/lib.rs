@@ -37,7 +37,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|v| match v {
+        from[0].update(ctx, event).map(|tv| match tv.value() {
             Value::Error(_) => Value::Bool(true),
             _ => Value::Bool(false),
         })

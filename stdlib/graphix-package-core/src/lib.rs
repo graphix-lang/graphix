@@ -7,7 +7,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, StaticFnArg,
-    UserEvent,
+    Tag, TagValue, UserEvent,
     effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
@@ -206,34 +206,75 @@ pub fn is_struct(arr: &ValArray) -> bool {
 // ── Shared traits and structs ──────────────────────────────────────
 
 #[derive(Debug)]
-pub struct CachedVals(pub Box<[Option<Value>]>);
+pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 
 impl CachedVals {
     pub fn new<R: Rt, E: UserEvent>(from: &[Node<R, E>]) -> CachedVals {
-        CachedVals(from.into_iter().map(|_| None).collect())
+        CachedVals(
+            from.into_iter().map(|_| None).collect(),
+            from.into_iter().map(|_| Tag::FIRED).collect(),
+        )
     }
 
     pub fn clear(&mut self) {
         for v in &mut self.0 {
             *v = None
         }
+        for t in &mut self.1 {
+            *t = Tag::FIRED
+        }
     }
 
+    /// True if any arg slot currently holds a taint (a poisoned value
+    /// event arrived and no clean production has overwritten it since
+    /// — the kernel's per-slot taint bit).
+    pub fn any_tainted(&self) -> bool {
+        self.1.iter().any(|t| t.is_tainted())
+    }
+
+    /// Update the slots from the arg nodes; `true` iff any production
+    /// TRIGGERED (fired or tainted — a merely-stale production
+    /// refreshes its slot silently). A tainted production marks the
+    /// slot's tag but keeps the previous (helper-safe) value.
     pub fn update<R: Rt, E: UserEvent>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> bool {
-        from.into_iter().enumerate().fold(false, |res, (i, src)| {
-            match src.update(ctx, event) {
-                None => res,
-                v @ Some(_) => {
-                    self.0[i] = v;
-                    true
+        self.update_full(ctx, from, event).is_some_and(|t| t.triggers())
+    }
+
+    /// [`Self::update`] with the full production summary: `None` = no
+    /// production at all; `Some(tag)` = productions arrived — TAINT if
+    /// any tainted, else FIRED if any fired, else STALE (value-channel
+    /// refresh only).
+    pub fn update_full<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Tag> {
+        let mut prod: Option<Tag> = None;
+        for (i, src) in from.iter_mut().enumerate() {
+            if let Some(tv) = src.update(ctx, event) {
+                let (v, tag) = tv.into_parts();
+                if tag.is_tainted() {
+                    self.1[i] = Tag::TAINT;
+                } else {
+                    self.0[i] = Some(v);
+                    self.1[i] = tag;
                 }
+                prod = Some(match prod {
+                    None => tag,
+                    // taint ORs; fired beats stale
+                    Some(p) if p.is_tainted() || tag.is_tainted() => Tag::TAINT,
+                    Some(p) if p.is_fired() || tag.is_fired() => Tag::FIRED,
+                    Some(_) => Tag::STALE,
+                });
             }
-        })
+        }
+        prod
     }
 
     /// Like update, but return the indexes of the nodes that updated
@@ -246,12 +287,15 @@ impl CachedVals {
         event: &mut Event<E>,
     ) {
         for (i, n) in from.iter_mut().enumerate() {
-            match n.update(ctx, event) {
-                None => (),
-                v => {
-                    self.0[i] = v;
-                    up[i] = true
+            if let Some(tv) = n.update(ctx, event) {
+                let (v, tag) = tv.into_parts();
+                if tag.is_tainted() {
+                    self.1[i] = Tag::TAINT;
+                } else {
+                    self.0[i] = Some(v);
+                    self.1[i] = tag;
                 }
+                up[i] = tag.triggers();
             }
         }
     }
@@ -324,6 +368,14 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 #[derive(Debug)]
 pub struct CachedArgs<T> {
     cached: CachedVals,
+    /// The last value `eval` produced — the builtin's RESULT slot on
+    /// the value channel: a merely-stale arg refresh re-surfaces it
+    /// (tagged stale via `out_tag`) instead of re-running `eval`,
+    /// exactly the kernel's DynCall result temp.
+    last_result: Option<Value>,
+    /// The tag of the last value `update` returned (see
+    /// `Apply::out_tag`).
+    last_out: Tag,
     t: T,
 }
 
@@ -342,6 +394,8 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
             cached: CachedVals::new(from),
+            last_result: None,
+            last_out: Tag::FIRED,
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -355,11 +409,33 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if self.cached.update(ctx, from, event) {
-            self.t.eval(ctx, &self.cached)
-        } else {
-            None
+        match self.cached.update_full(ctx, from, event) {
+            None => None,
+            Some(_) if self.cached.any_tainted() => {
+                // conservative DynCall taint: never run eval over a
+                // poisoned slot; produce the tainted placeholder
+                self.last_out = Tag::TAINT;
+                Some(Value::Null)
+            }
+            Some(t) if t.is_fired() => {
+                let res = self.t.eval(ctx, &self.cached);
+                if let Some(v) = &res {
+                    self.last_result = Some(v.clone());
+                }
+                self.last_out = Tag::FIRED;
+                res
+            }
+            Some(_) => {
+                // stale refresh: surface the result slot on the value
+                // channel — eval does NOT re-run
+                self.last_out = Tag::STALE;
+                self.last_result.clone()
+            }
         }
+    }
+
+    fn out_tag(&self) -> Tag {
+        self.last_out
     }
 
     fn typecheck0(
@@ -493,9 +569,9 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         {
             self.queued.push_back(args);
         }
-        let res = event.variables.remove(&self.id).and_then(|v| {
+        let res = event.variables.remove(&self.id).and_then(|tv| {
             self.running = false;
-            self.t.map_value(ctx, v)
+            self.t.map_value(ctx, tv.value())
         });
         if !self.running
             && let Some(args) = self.queued.pop_front()
@@ -803,62 +879,63 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         let slen = self.slots.len();
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.predid, v.clone());
-            event.variables.insert(self.predid, v);
+            event.variables.insert(self.predid, TagValue::fired(v));
         }
-        let (up, resized) =
-            match from[0].update(ctx, event).and_then(|v| T::Collection::select(v)) {
-                Some(a) if a.len() == slen => (Some(a), false),
-                Some(a) if a.len() < slen => {
-                    while self.slots.len() > a.len() {
-                        if let Some(mut s) = self.slots.pop() {
-                            s.delete(ctx)
-                        }
+        let (up, resized) = match from[0]
+            .update(ctx, event)
+            .and_then(|tv| T::Collection::select(tv.value()))
+        {
+            Some(a) if a.len() == slen => (Some(a), false),
+            Some(a) if a.len() < slen => {
+                while self.slots.len() > a.len() {
+                    if let Some(mut s) = self.slots.pop() {
+                        s.delete(ctx)
                     }
-                    (Some(a), true)
                 }
-                Some(a) => {
-                    while self.slots.len() < a.len() {
-                        // Mint this slot's fresh element binding "x" in scope
-                        // (fresh id, no ref_var) and instantiate a fresh
-                        // interpreted CallSite for it — every instantiation
-                        // is `LambdaDef::init` per (site, index).
-                        let id = ctx
-                            .env
-                            .bind_variable(
-                                &self.scope.lexical,
-                                "x",
-                                self.etyp.clone(),
-                                Default::default(),
-                                TArc::new(graphix_compiler::expr::Origin::default()),
-                            )
-                            .id;
-                        let node =
-                            genn::reference(ctx, id, self.etyp.clone(), self.top_id);
-                        let fnode = genn::reference(
-                            ctx,
-                            self.predid,
-                            Type::Fn(self.mftyp.clone()),
-                            self.top_id,
-                        );
-                        let pred = genn::apply(
-                            fnode,
-                            self.scope.clone(),
-                            vec![node],
-                            &self.mftyp,
-                            self.top_id,
-                        );
-                        self.slots.push(Slot { id, pred, cur: None });
-                    }
-                    (Some(a), true)
+                (Some(a), true)
+            }
+            Some(a) => {
+                while self.slots.len() < a.len() {
+                    // Mint this slot's fresh element binding "x" in scope
+                    // (fresh id, no ref_var) and instantiate a fresh
+                    // interpreted CallSite for it — every instantiation
+                    // is `LambdaDef::init` per (site, index).
+                    let id = ctx
+                        .env
+                        .bind_variable(
+                            &self.scope.lexical,
+                            "x",
+                            self.etyp.clone(),
+                            Default::default(),
+                            TArc::new(graphix_compiler::expr::Origin::default()),
+                        )
+                        .id;
+                    let node = genn::reference(ctx, id, self.etyp.clone(), self.top_id);
+                    let fnode = genn::reference(
+                        ctx,
+                        self.predid,
+                        Type::Fn(self.mftyp.clone()),
+                        self.top_id,
+                    );
+                    let pred = genn::apply(
+                        fnode,
+                        self.scope.clone(),
+                        vec![node],
+                        &self.mftyp,
+                        self.top_id,
+                    );
+                    self.slots.push(Slot { id, pred, cur: None });
                 }
-                None => (None, false),
-            };
+                (Some(a), true)
+            }
+            None => (None, false),
+        };
         if let Some(a) = up {
             for (s, v) in self.slots.iter().zip(a.iter_values()) {
                 ctx.rt.cached_mut().insert(s.id, v.clone());
-                event.variables.insert(s.id, v);
+                event.variables.insert(s.id, TagValue::fired(v));
             }
             self.cur = a.clone();
             if a.len() == 0 {
@@ -889,11 +966,11 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
                 if let Entry::Vacant(e) = event.variables.entry(self.predid)
                     && let Some(v) = ctx.rt.cached().get(&self.predid)
                 {
-                    e.insert(v.clone());
+                    e.insert(TagValue::fired(v.clone()));
                 }
             }
             if let Some(v) = s.pred.update(ctx, event) {
-                s.cur = Some(v);
+                s.cur = Some(v.value());
                 up = true;
             }
         }
@@ -1164,7 +1241,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
         // it on every wake (soak jul05 items 9/16/29).
         let mut fired = false;
         let mut resized = false;
-        let init = match from[0].update(ctx, event).and_then(|v| T::Collection::select(v))
+        let init = match from[0]
+            .update(ctx, event)
+            .and_then(|tv| T::Collection::select(tv.value()))
         {
             None => self.nodes.len(),
             Some(a) if a.len() == self.binds.len() => {
@@ -1172,7 +1251,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 fired = true;
                 for (id, v) in self.binds.iter().zip(a.iter_values()) {
                     ctx.rt.cached_mut().insert(*id, v.clone());
-                    event.variables.insert(*id, v.clone());
+                    event.variables.insert(*id, TagValue::fired(v));
                 }
                 self.nodes.len()
             }
@@ -1246,23 +1325,25 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 // Feed element values for all slots.
                 for i in 0..self.binds.len() {
                     ctx.rt.cached_mut().insert(self.binds[i], vals[i].clone());
-                    event.variables.insert(self.binds[i], vals[i].clone());
+                    event
+                        .variables
+                        .insert(self.binds[i], TagValue::fired(vals[i].clone()));
                 }
                 init_idx
             }
         };
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             self.init = Some(v.clone());
             fired = true;
             // Slot 0's accumulator input IS the init value — fire it.
             if let Some(&acc0) = self.accids.first() {
                 ctx.rt.cached_mut().insert(acc0, v.clone());
-                event.variables.insert(acc0, v);
+                event.variables.insert(acc0, TagValue::fired(v));
             }
         }
-        if let Some(v) = from[2].update(ctx, event) {
+        if let Some(v) = from[2].update(ctx, event).map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
         let old_init = event.init;
         for i in 0..self.nodes.len() {
@@ -1280,21 +1361,21 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                 if let Some(v) = ctx.rt.cached().get(&self.fid)
                     && let Entry::Vacant(e) = event.variables.entry(self.fid)
                 {
-                    e.insert(v.clone());
+                    e.insert(TagValue::fired(v.clone()));
                 }
                 if i == 0 {
                     if let Some(v) = self.init.clone()
                         && let Entry::Vacant(e) = event.variables.entry(self.accids[0])
                     {
                         ctx.rt.cached_mut().insert(self.accids[0], v.clone());
-                        e.insert(v);
+                        e.insert(TagValue::fired(v));
                     }
                 } else if let Some(v) = self.held[i - 1].clone() {
                     ctx.rt.cached_mut().insert(self.accids[i], v.clone());
-                    event.variables.insert(self.accids[i], v);
+                    event.variables.insert(self.accids[i], TagValue::fired(v));
                 }
             }
-            match self.nodes[i].update(ctx, event) {
+            match self.nodes[i].update(ctx, event).map(|tv| tv.value()) {
                 Some(v) => {
                     self.inits[i] = Some(v.clone());
                     self.held[i] = Some(v.clone());
@@ -1303,7 +1384,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
                     // element fires a later cycle).
                     if i + 1 < self.accids.len() {
                         ctx.rt.cached_mut().insert(self.accids[i + 1], v.clone());
-                        event.variables.insert(self.accids[i + 1], v);
+                        event.variables.insert(self.accids[i + 1], TagValue::fired(v));
                     }
                 }
                 None => {
@@ -1462,7 +1543,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|v| match v {
+        from[0].update(ctx, event).map(|tv| match tv.value() {
             Value::Error(_) => Value::Bool(true),
             _ => Value::Bool(false),
         })
@@ -1500,7 +1581,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|v| match v {
+        from[0].update(ctx, event).and_then(|tv| match tv.value() {
             v @ Value::Error(_) => Some(v),
             _ => None,
         })
@@ -1537,7 +1618,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|e| Value::Error(triomphe::Arc::new(e)))
+        from[0].update(ctx, event).map(|e| Value::Error(triomphe::Arc::new(e.value())))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -1587,7 +1668,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
                     None
                 } else {
                     self.val = true;
-                    Some(v)
+                    Some(v.value())
                 }
             }),
             _ => None,
@@ -1642,7 +1723,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.cast_to::<usize>().ok())
+            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
@@ -1652,7 +1733,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
                 None => None,
                 Some(n) if *n > 0 => {
                     *n -= 1;
-                    return Some(v);
+                    return Some(v.value());
                 }
                 Some(_) => None,
             },
@@ -1706,19 +1787,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.cast_to::<usize>().ok())
+            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
         match from[1].update(ctx, event) {
             None => None,
             Some(v) => match &mut self.n {
-                None => Some(v),
+                None => Some(v.value()),
                 Some(n) if *n > 0 => {
                     *n -= 1;
                     None
                 }
-                Some(_) => Some(v),
+                Some(_) => Some(v.value()),
             },
         }
     }
@@ -2163,16 +2244,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx, event).map(|tv| tv.value()) {
             self.pending = Some(v.clone());
             ctx.rt.cached_mut().insert(self.x, v.clone());
-            event.variables.insert(self.x, v);
+            event.variables.insert(self.x, TagValue::fired(v));
         }
-        self.pred.update(ctx, event).and_then(|b| match b {
+        self.pred.update(ctx, event).and_then(|b| match b.value() {
             Value::Bool(true) => self.pending.clone(),
             _ => None,
         })
@@ -2254,13 +2335,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
             self.triggered += 1;
         }
         if let Some(v) = from[1].update(ctx, event) {
-            self.queue.push_back(v);
+            self.queue.push_back(v.value());
         }
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
             ctx.rt.set_var(self.id, self.queue.pop_front().unwrap());
         }
-        event.variables.get(&self.id).cloned()
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -2326,7 +2407,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
             self.triggered += 1;
         }
         if let Some(v) = from[1].update(ctx, event) {
-            self.current = Some(v);
+            self.current = Some(v.value());
         }
         if self.triggered > 0
             && let Some(v) = self.current.take()
@@ -2413,7 +2494,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                 }
             }
         }
-        event.variables.get(&self.id).cloned()
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -2652,7 +2733,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|v| {
+        from[0].update(ctx, event).and_then(|tv| {
+            let v = tv.value();
             if Some(&v) != self.0.as_ref() {
                 self.0 = Some(v.clone());
                 Some(v)
@@ -2793,11 +2875,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(v) = from[0].update(ctx, event)
-            && let Ok(d) = v.cast_to::<LogDest>()
+            && let Ok(d) = v.value().cast_to::<LogDest>()
         {
             self.dest = d;
         }
         from[1].update(ctx, event).map(|v| {
+            let v = v.value();
             let tv = TVal { env: &ctx.env, typ: &self.typ, v: &v };
             match self.dest {
                 LogDest::Stderr => {
@@ -2872,11 +2955,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(v) = from[0].update(ctx, event)
-            && let Ok(d) = v.cast_to::<LogDest>()
+            && let Ok(d) = v.value().cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
             match self.dest {
                 LogDest::Stdout => println!("{}: {}", self.scope.lexical, tv),
@@ -2931,11 +3014,11 @@ macro_rules! printfn {
             ) -> Option<Value> {
                 use std::fmt::Write;
                 if let Some(v) = from[0].update(ctx, event)
-                    && let Ok(d) = v.cast_to::<LogDest>()
+                    && let Ok(d) = v.value().cast_to::<LogDest>()
                 {
                     self.dest = d;
                 }
-                if let Some(v) = from[1].update(ctx, event) {
+                if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
                     self.buf.clear();
                     match v {
                         Value::String(s) => write!(self.buf, "{s}"),

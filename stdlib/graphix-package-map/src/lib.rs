@@ -4,7 +4,7 @@
 )]
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
@@ -224,7 +224,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(Value::Map(m)) = from[0].update(ctx, event) {
+        if let Some(Value::Map(m)) = from[0].update(ctx, event).map(|tv| tv.value()) {
             for (k, v) in m.into_iter() {
                 let pair = Value::Array(ValArray::from_iter_exact(
                     [k.clone(), v.clone()].into_iter(),
@@ -232,7 +232,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
                 ctx.rt.set_var(self.id, pair);
             }
         }
-        event.variables.get(&self.id).map(|v| v.clone())
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -286,7 +286,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         if from[0].update(ctx, event).is_some() {
             self.triggered += 1;
         }
-        if let Some(Value::Map(m)) = from[1].update(ctx, event) {
+        if let Some(Value::Map(m)) = from[1].update(ctx, event).map(|tv| tv.value()) {
             let pairs: LPooled<Vec<(Value, Value)>> =
                 m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             if !pairs.is_empty() {
@@ -306,7 +306,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
                 self.queue.pop_front();
             }
         }
-        event.variables.get(&self.id).cloned()
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -387,20 +387,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(v) = from[3].update(ctx, event) {
+            let v = v.value();
             ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
         let mut changed = false;
-        if let Some(Value::Map(m)) = from[0].update(ctx, event) {
+        if let Some(Value::Map(m)) = from[0].update(ctx, event).map(|tv| tv.value()) {
             self.last_m = Some(m);
             changed = true;
         }
         if let Some(k) = from[1].update(ctx, event) {
-            self.last_k = Some(k);
+            self.last_k = Some(k.value());
             changed = true;
         }
         if let Some(d) = from[2].update(ctx, event) {
-            self.last_d = Some(d);
+            self.last_d = Some(d.value());
             changed = true;
         }
         if changed {
@@ -409,11 +410,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Change<R, E> {
             {
                 let current = m.get(k).cloned().unwrap_or_else(|| d.clone());
                 ctx.rt.cached_mut().insert(self.x, current.clone());
-                event.variables.insert(self.x, current);
+                event.variables.insert(self.x, TagValue::fired(current));
             }
         }
         let f_fired = if let Some(v) = self.inner.update(ctx, event) {
-            self.last_f = Some(v);
+            self.last_f = Some(v.value());
             true
         } else {
             false

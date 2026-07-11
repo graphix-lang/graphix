@@ -1,6 +1,7 @@
 use super::{CFlag, Cached, compiler::compile};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent, defetyp,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    defetyp,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
     typ::Type,
@@ -92,12 +93,26 @@ macro_rules! compare_op {
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
-            ) -> Option<Value> {
-                let lhs_up = self.lhs.update(ctx, event);
-                let rhs_up = self.rhs.update(ctx, event);
-                if lhs_up || rhs_up {
+            ) -> Option<TagValue> {
+                // Two-channel propagation, the CLIF `propagate_flags`
+                // twin: ANY production (fired or stale) recomputes and
+                // emits; the result fires iff a consumed production
+                // fired (AND-reduced STALE); consumed-cache taint ORs
+                // in and short-circuits the op.
+                let l = self.lhs.update(ctx, event);
+                let r = self.rhs.update(ctx, event);
+                if l.is_some() || r.is_some() {
+                    if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
+                        return Some(TagValue::tainted(Value::Null));
+                    }
+                    let fired = l.is_some_and(|t| t.is_fired())
+                        || r.is_some_and(|t| t.is_fired());
+                    let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
                     return self.lhs.cached.as_ref().and_then(|lhs| {
-                        self.rhs.cached.as_ref().map(|rhs| (lhs $op rhs).into())
+                        self.rhs
+                            .cached
+                            .as_ref()
+                            .map(|rhs| TagValue::tagged((lhs $op rhs).into(), tag))
                     })
                 }
                 None
@@ -213,10 +228,16 @@ macro_rules! bool_op {
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
-            ) -> Option<Value> {
-                let lhs_up = self.lhs.update(ctx, event);
-                let rhs_up = self.rhs.update(ctx, event);
-                if lhs_up || rhs_up {
+            ) -> Option<TagValue> {
+                let l = self.lhs.update(ctx, event);
+                let r = self.rhs.update(ctx, event);
+                if l.is_some() || r.is_some() {
+                    if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
+                        return Some(TagValue::tainted(Value::Null));
+                    }
+                    let fired = l.is_some_and(|t| t.is_fired())
+                        || r.is_some_and(|t| t.is_fired());
+                    let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
                     // STRICT — like every other binary op, `&&`/`||` need
                     // BOTH operands. A bottom (non-firing) operand makes
                     // the result bottom: `false && ⊥ = ⊥`, `true || ⊥ =
@@ -225,7 +246,9 @@ macro_rules! bool_op {
                     // consumer never commits to a decision before every
                     // input is known.
                     return match (self.lhs.cached.as_ref(), self.rhs.cached.as_ref()) {
-                        (Some(Value::Bool(b0)), Some(Value::Bool(b1))) => Some(Value::Bool(*b0 $op *b1)),
+                        (Some(Value::Bool(b0)), Some(Value::Bool(b1))) => {
+                            Some(TagValue::tagged(Value::Bool(*b0 $op *b1), tag))
+                        }
                         (_, _) => None
                     }
                 }
@@ -326,10 +349,20 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        self.n.update(ctx, event).and_then(|v| match v {
-            Value::Bool(b) => Some(Value::Bool(!b)),
-            _ => None,
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        self.n.update(ctx, event).and_then(|tv| {
+            if tv.is_tainted() {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let (v, tag) = tv.into_parts();
+            match v {
+                Value::Bool(b) => Some(TagValue::tagged(Value::Bool(!b), tag)),
+                _ => None,
+            }
         })
     }
 
@@ -404,22 +437,33 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         // Unchecked negation: integers wrap (two's-complement, matching the
         // JIT's `ineg`); floats/decimal negate directly. `Value` equality
         // collapses Z32/I32 and Z64/I64, so producing the operand's own
         // variant agrees with the JIT's I32/I64-discriminated result.
-        self.n.update(ctx, event).and_then(|v| match v {
-            Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
-            Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
-            Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
-            Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
-            Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
-            Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
-            Value::F32(x) => Some(Value::F32(-x)),
-            Value::F64(x) => Some(Value::F64(-x)),
-            Value::Decimal(x) => Some(Value::Decimal(triomphe::Arc::new(-*x))),
-            _ => None,
+        self.n.update(ctx, event).and_then(|tv| {
+            if tv.is_tainted() {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let (v, tag) = tv.into_parts();
+            let neg = match v {
+                Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
+                Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
+                Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
+                Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
+                Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
+                Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
+                Value::F32(x) => Some(Value::F32(-x)),
+                Value::F64(x) => Some(Value::F64(-x)),
+                Value::Decimal(x) => Some(Value::Decimal(triomphe::Arc::new(-*x))),
+                _ => None,
+            };
+            neg.map(|v| TagValue::tagged(v, tag))
         })
     }
 
@@ -741,23 +785,45 @@ macro_rules! arith_op {
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
-            ) -> Option<Value> {
-                let lhs_up = self.lhs.update(ctx, event);
-                let rhs_up = self.rhs.update(ctx, event);
+            ) -> Option<TagValue> {
+                let l = self.lhs.update(ctx, event);
+                let r = self.rhs.update(ctx, event);
+                let produced = l.is_some() || r.is_some();
+                if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
+                    // never attempt the op on a taint placeholder — pass
+                    // the taint toward its force point (and don't log a
+                    // synthetic error off it)
+                    return if produced {
+                        Some(TagValue::tainted(Value::Null))
+                    } else {
+                        None
+                    };
+                }
                 let lhs = self.lhs.cached.as_ref()?;
                 let rhs = self.rhs.cached.as_ref()?;
-                if lhs_up || rhs_up {
+                if produced {
+                    let fired = l.is_some_and(|t| t.is_fired())
+                        || r.is_some_and(|t| t.is_fired());
+                    let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
                     if !$checked {
                         if let Some(v) = wrapping_int_arith(BinOp::$base, lhs, rhs) {
-                            return Some(v);
+                            return Some(TagValue::tagged(v, tag));
                         }
                     }
                     let result = lhs.clone().$method(rhs.clone());
                     if $checked {
-                        Some(wrap_arith_error(result))
+                        Some(TagValue::tagged(wrap_arith_error(result), tag))
                     } else {
                         match result {
                             Value::Error(e) => {
+                                if ctx.frame_depth > 0 {
+                                    // In a sequential frame this is a
+                                    // GENUINE bottom — the kernel's taint
+                                    // channel, and like the kernel it is
+                                    // SILENT (the log is a reactive-mode
+                                    // debugging aid, not value semantics).
+                                    return Some(TagValue::tainted(Value::Null));
+                                }
                                 log::error!(
                                     "arith error in {} at {} {e}",
                                     self.spec.ori,
@@ -767,14 +833,9 @@ macro_rules! arith_op {
                                     "arith error in {} at {} {e}",
                                     self.spec.ori, self.spec.pos
                                 );
-                                // In a sequential frame this is a GENUINE
-                                // bottom (the kernel's taint), not a quiet
-                                // stale — the enclosing loop must not
-                                // bridge it with cached values.
-                                ctx.mark_frame_bottom();
                                 None
                             }
-                            v => Some(v),
+                            v => Some(TagValue::tagged(v, tag)),
                         }
                     }
                 } else {

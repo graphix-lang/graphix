@@ -6,7 +6,8 @@ use ahash::AHashSet;
 use anyhow::{Result, bail};
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue,
+    UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
@@ -445,17 +446,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
                 ctx.rt.cached_mut().insert(self.nid, len.clone());
-                event.variables.insert(self.nid, len);
+                event.variables.insert(self.nid, TagValue::fired(len));
                 ctx.rt.cached_mut().insert(self.xid, $v.clone());
-                event.variables.insert(self.xid, $v);
+                event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
         if let Some(v) = from[0].update(ctx, event) {
-            self.queue.push_back(v);
+            self.queue.push_back(v.value());
         }
         if let Some(v) = from[1].update(ctx, event) {
+            let v = v.value();
             ctx.rt.cached_mut().insert(self.pid, v.clone());
-            event.variables.insert(self.pid, v);
+            event.variables.insert(self.pid, TagValue::fired(v));
         }
         if self.ready && self.queue.len() > 0 {
             let v = self.queue.pop_front().unwrap();
@@ -470,7 +472,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 None => break None,
                 Some(v) => {
                     self.ready = true;
-                    match v {
+                    match v.value() {
                         Value::Bool(true) => {
                             break Some(Value::Array(ValArray::from_iter_exact(
                                 self.buf.drain(..),
@@ -550,7 +552,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(Value::Array(a)) = from[0].update(ctx, event) {
+        if let Some(Value::Array(a)) = from[0].update(ctx, event).map(|tv| tv.value()) {
             for v in a.iter() {
                 // Cooperative interrupt: abort a wedged iter over a huge
                 // array (partial emit is accepted for a deliberate kill).
@@ -560,7 +562,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
                 ctx.rt.set_var(self.0, v.clone());
             }
         }
-        event.variables.get(&self.0).map(|v| v.clone())
+        event.variables.get(&self.0).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -614,7 +616,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         if from[0].update(ctx, event).is_some() {
             self.triggered += 1;
         }
-        if let Some(Value::Array(a)) = from[1].update(ctx, event) {
+        if let Some(Value::Array(a)) = from[1].update(ctx, event).map(|tv| tv.value()) {
             if a.len() > 0 {
                 self.queue.push_back((0, a));
             }
@@ -633,7 +635,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
                 self.queue.pop_front();
             }
         }
-        event.variables.get(&self.id).cloned()
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

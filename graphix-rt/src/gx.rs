@@ -361,7 +361,8 @@ impl<X: GXExt> GX<X> {
                 match self.event.variables.entry($id) {
                     Entry::Vacant(e) => {
                         self.ctx.rt.cached.insert($id, $v.clone());
-                        e.insert($v);
+                        // an ordinary runtime delivery is a FIRED event
+                        e.insert(graphix_compiler::TagValue::fired($v));
                         if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
                             for id in exps.keys() {
                                 self.ctx.rt.updated.entry(*id).or_insert(false);
@@ -438,13 +439,24 @@ impl<X: GXExt> GX<X> {
                         refs.with_external_refs(|id| {
                             if let Some(v) = self.ctx.rt.cached.get(&id) {
                                 if let Entry::Vacant(e) = self.event.variables.entry(id) {
-                                    e.insert(v.clone());
+                                    // FIRED: an init view — the fresh
+                                    // top sees everything as new
+                                    e.insert(graphix_compiler::TagValue::fired(
+                                        v.clone(),
+                                    ));
                                     clear.push(id);
                                 }
                             }
                         });
                     }
-                    if let Some(v) = n.update(&mut self.ctx, &mut self.event) {
+                    // The runtime delivery boundary is a firing FORCE
+                    // point (the kernel-output twin): only a FIRED
+                    // production becomes an event; a stale or tainted
+                    // one is dropped here.
+                    if let Some(tv) = n.update(&mut self.ctx, &mut self.event)
+                        && tv.is_fired()
+                    {
+                        let v = tv.value();
                         let watched = matches!(
                             self.result_watch.as_ref(),
                             Some((wid, _)) if wid == id

@@ -1,7 +1,7 @@
 use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId, Node,
-    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, Update,
+    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, TagValue, Update,
     UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::{
@@ -749,7 +749,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             refs.with_external_refs(|id| {
                 if let Some(v) = ctx.rt.cached().get(&id) {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
-                        e.insert(v.clone());
+                        // FIRED: first-dispatch init semantics (a fresh
+                        // bind sees everything as new)
+                        e.insert(TagValue::fired(v.clone()));
                         set.push(id);
                     }
                 }
@@ -815,15 +817,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         for arg in self.args.values_mut() {
             if arg.is_default {
                 if let Some(ref mut node) = arg.node {
-                    if let Some(v) = node.update(ctx, event) {
+                    if let Some(tv) = node.update(ctx, event) {
+                        let v = tv.value();
                         ctx.rt.cached_mut().insert(arg.id, v.clone());
-                        event.variables.insert(arg.id, v);
+                        event.variables.insert(arg.id, TagValue::fired(v));
                         set.push(arg.id);
                     }
                 }
             } else if let Entry::Vacant(e) = event.variables.entry(arg.id) {
                 if let Some(v) = ctx.rt.cached().get(&arg.id) {
-                    e.insert(v.clone());
+                    e.insert(TagValue::fired(v.clone()));
                     set.push(arg.id);
                 }
             }
@@ -1020,38 +1023,53 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
+        // A FIRED (or tainted) arg production this cycle — the genuine
+        // -call signal (a stale production is a value-channel refresh,
+        // not an event).
+        let mut arg_fired = false;
         // Update all arg nodes every cycle, publishing values via bind IDs
         for arg in self.args.values_mut() {
             if let Some(ref mut node) = arg.node {
-                if let Some(v) = node.update(ctx, event) {
-                    ctx.rt.cached_mut().insert(arg.id, v.clone());
-                    event.variables.insert(arg.id, v);
+                if let Some(tv) = node.update(ctx, event) {
+                    let (v, tag) = tv.into_parts();
+                    arg_fired |= tag.triggers();
+                    if tag.is_tainted() {
+                        // poison the formal delivery; keep the
+                        // placeholder out of the cross-cycle store
+                        event.variables.insert(arg.id, TagValue::tainted(Value::Null));
+                    } else {
+                        ctx.rt.cached_mut().insert(arg.id, v.clone());
+                        event.variables.insert(arg.id, TagValue::tagged(v, tag));
+                    }
                     set.push(arg.id);
                 }
             }
         }
-        // FRAME-ONLY: re-deliver INVARIANT args (closed expressions —
-        // constants, defaults) when the frame's private variables map
-        // lacks them. A closed arg fires exactly once (its init) and
-        // can't re-produce, so inside an evaluation frame the callee
-        // would otherwise never see it again. Same value every time, no
-        // `set` entry — a cached re-delivery is not a fresh event, so
-        // the tail-call genuine-call gate below is unaffected. The
-        // kernel twin: the DynCall side-channel delivers every arg on
-        // every call. Gated on `frame_depth`: in reactive land the
-        // per-cycle re-delivery would re-fire effectful callees with
-        // const args (an `fs::write_all` with a literal path re-ran
-        // every cycle) — there, quiet-arg persistence rides the callee
-        // body's caches as it always has.
+        // FRAME-ONLY: deliver quiet args on the STALE channel when the
+        // frame's private variables map lacks them and the runtime
+        // cache still holds their value (invariant args survive
+        // `reset_replay`; a closed arg fires exactly once ever and
+        // can't re-produce inside a frame). The kernel twin: DynCall
+        // marshals every arg slot on every call, quiet ones with STALE
+        // discs. The stale tag is what keeps this from re-FIRING
+        // anything — a const-arg callee stays quiet (the reactive-land
+        // effectful-callee hazard that forced the old fired
+        // re-delivery to be gated is structurally gone), and the tag
+        // rides into the callee's formals so its body computes on the
+        // value channel.
         if ctx.frame_depth > 0 {
             for arg in self.args.values() {
-                if arg.is_invariant()
-                    && !event.variables.contains_key(&arg.id)
+                if !event.variables.contains_key(&arg.id)
                     && let Some(v) = ctx.rt.cached().get(&arg.id)
                 {
-                    event.variables.insert(arg.id, v.clone());
+                    event.variables.insert(arg.id, TagValue::stale(v.clone()));
+                    set.push(arg.id);
                 }
             }
         }
@@ -1079,7 +1097,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             let order = self.tail_arg_order.lock();
             let lambda = *self.callee_lambda_id.lock();
             if let (Some(order), Some(lambda)) = (order.as_ref(), lambda) {
-                if !event.init && set.is_empty() {
+                if !event.init && !arg_fired {
+                    for id in set.drain(..) {
+                        event.variables.remove(&id);
+                    }
                     return None;
                 }
                 let args: SmallVec<[Value; 4]> = order
@@ -1114,7 +1135,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // `fnode.update` runs every cycle for its side effects, regardless
         // of variant — evaluate it before the `Static` arm that discards
         // its value (mirrors the old tuple scrutinee's eager evaluation).
-        let fv_new = self.fnode.update(ctx, event);
+        let fv_new = self.fnode.update(ctx, event).map(|tv| tv.value());
         let bound = if let Callee::Static { first_update, .. } = &mut self.callee {
             let first = *first_update;
             *first_update = false;
@@ -1165,8 +1186,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         let bound = match &self.callee {
             Callee::TransientParked { def, ext_refs } => {
                 let wake = event.init
-                    || !set.is_empty()
-                    || ext_refs.iter().any(|id| event.variables.contains_key(id));
+                    || arg_fired
+                    || ext_refs.iter().any(|id| {
+                        event.variables.get(id).is_some_and(|tv| tv.tag().triggers())
+                    });
                 if wake {
                     let fv = def.clone();
                     let lb = fv
@@ -1184,7 +1207,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         };
         let res = match self.callee.apply_mut() {
             None => None,
-            Some(f) if !bound => f.update(ctx, &mut self.arg_refs, event),
+            Some(f) if !bound => {
+                let res = f.update(ctx, &mut self.arg_refs, event);
+                // Reconstitute the two-channel tag across the clean-
+                // Value Apply boundary (see `Apply::out_tag`).
+                res.map(|v| TagValue::tagged(v, f.out_tag()))
+            }
             Some(f) => {
                 let init = mem::replace(&mut event.init, true);
                 let mut refs = Refs::default();
@@ -1192,14 +1220,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 refs.with_external_refs(|id| {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
                         if let Some(v) = ctx.rt.cached().get(&id) {
-                            e.insert(v.clone());
+                            // FIRED: a fresh bind's first dispatch is an
+                            // init view — everything it sees is new to it
+                            e.insert(TagValue::fired(v.clone()));
                             set.push(id);
                         }
                     }
                 });
                 let res = f.update(ctx, &mut self.arg_refs, event);
                 event.init = init;
-                res
+                res.map(|v| TagValue::tagged(v, f.out_tag()))
             }
         };
         // Park a transient binding: the dispatch above was this call —

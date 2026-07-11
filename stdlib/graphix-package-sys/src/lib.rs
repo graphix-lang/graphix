@@ -492,7 +492,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(Value::I64(code)) = from.get_mut(0).and_then(|n| n.update(ctx, event))
+        if let Some(Value::I64(code)) =
+            from.get_mut(0).and_then(|n| n.update(ctx, event)).map(|tv| tv.value())
         {
             use std::io::Write;
             let _ = std::io::stdout().flush();

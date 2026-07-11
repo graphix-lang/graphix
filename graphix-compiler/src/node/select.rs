@@ -1,7 +1,7 @@
 use super::{Cached, compiler::compile, pattern::StructPatternNode};
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
+    TagValue, Update, UserEvent,
     expr::{Expr, ExprId, Pattern},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -77,10 +77,26 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         let Self { selected, arg, arms, typ: _, spec: _ } = self;
         let mut pat_up = false;
-        let arg_up = arg.update(ctx, event);
+        let arg_prod = arg.update(ctx, event);
+        // Destructuring-consumer force (the kernel's is_tainted gate at
+        // dispatch): a tainted scrutinee production can't be matched —
+        // the whole select produces the taint placeholder.
+        if arg.tag.is_tainted() {
+            return if arg_prod.is_some() {
+                Some(TagValue::tainted(Value::Null))
+            } else {
+                None
+            };
+        }
+        let arg_up = arg_prod.is_some();
+        let arg_fired = arg_prod.is_some_and(|t| t.is_fired());
         macro_rules! bind {
             ($i:expr) => {{
                 if let Some(arg) = arg.cached.as_ref() {
@@ -107,9 +123,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 event.variables.len()
             );
         }
+        // An arm result's tag: tainted if the arm's resident value is a
+        // placeholder; else fired iff the arm production or the
+        // scrutinee production fired this cycle (consumption), else
+        // stale (the value channel).
+        macro_rules! emit {
+            ($i:expr, $prod:expr) => {{
+                let i = $i;
+                if arms[i].1.tag.is_tainted() {
+                    Some(TagValue::tainted(Value::Null))
+                } else {
+                    let fired = $prod.is_some_and(|t: Tag| t.is_fired()) || arg_fired;
+                    let tag = if fired { Tag::FIRED } else { Tag::STALE };
+                    arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
+                }
+            }};
+        }
         if !arg_up && !pat_up {
-            self.selected.and_then(|i| {
-                if arms[i].1.update(ctx, event) { arms[i].1.cached.clone() } else { None }
+            self.selected.and_then(|i| match arms[i].1.update(ctx, event) {
+                None => None,
+                prod => emit!(i, prod),
             })
         } else {
             let sel = match arg.cached.as_ref() {
@@ -123,11 +156,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     if arg_up {
                         bind!(i);
                     }
-                    if arms[i].1.update(ctx, event) || arg_up {
-                        arms[i].1.cached.clone()
-                    } else {
-                        None
-                    }
+                    let prod = arms[i].1.update(ctx, event);
+                    if prod.is_some() || arg_up { emit!(i, prod) } else { None }
                 }
                 (Some(i), Some(_) | None) => {
                     let mut set: LPooled<Vec<BindId>> = LPooled::take();
@@ -142,7 +172,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         if let Entry::Vacant(e) = event.variables.entry(id)
                             && let Some(v) = ctx.rt.cached().get(&id)
                         {
-                            e.insert(v.clone());
+                            // FIRED: an arm wake is the arm's init view
+                            e.insert(TagValue::fired(v.clone()));
                             set.push(id);
                         }
                     });
@@ -153,7 +184,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     for id in set.drain(..) {
                         event.variables.remove(&id);
                     }
-                    arms[i].1.cached.clone()
+                    if arms[i].1.tag.is_tainted() {
+                        Some(TagValue::tainted(Value::Null))
+                    } else {
+                        // an arm wake is a fresh dispatch — its result
+                        // is a genuine event
+                        arms[i].1.cached.clone().map(TagValue::fired)
+                    }
                 }
                 (None, Some(j)) => {
                     arms[j].1.node.sleep(ctx);

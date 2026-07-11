@@ -3,7 +3,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
-    UserEvent, deref_typ,
+    TagValue, UserEvent, deref_typ,
     effects::EffectKind,
     err, errf,
     expr::ExprId,
@@ -354,8 +354,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             ((None, _), (_, _)) | ((_, None), (_, _)) | ((_, _), (false, false)) => (),
         }
         event.variables.get(&self.id).map(|v| match &self.cast_typ {
-            Some(typ) => typ.cast_value(&ctx.env, v.clone()),
-            None => v.clone(),
+            Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
+            None => v.value_cloned(),
         })
     }
 
@@ -468,10 +468,12 @@ macro_rules! list {
                     }
                     _ => (),
                 }
-                event.variables.get(&self.id).and_then(|v| match v {
-                    Value::Null => None,
-                    Value::Error(e) => Some(errf!(literal!("ListError"), "{e}")),
-                    v => Some(v.clone()),
+                event.variables.get(&self.id).and_then(|v| {
+                    v.with_value(|v| match v {
+                        Value::Null => None,
+                        Value::Error(e) => Some(errf!(literal!("ListError"), "{e}")),
+                        v => Some(v.clone()),
+                    })
                 })
             }
 
@@ -605,7 +607,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         if up[0] {
             if let Some(v) = self.args.0[0].clone() {
                 ctx.rt.cached_mut().insert(self.pid, v.clone());
-                event.variables.insert(self.pid, v);
+                event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
         match (&up[1..], &self.args.0[1..]) {
@@ -631,13 +633,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     None => req.value.clone(),
                 };
                 ctx.rt.cached_mut().insert(self.x, v.clone());
-                event.variables.insert(self.x, v);
+                event.variables.insert(self.x, TagValue::fired(v));
                 reply = req.send_result;
             }
         }
         if let Some(v) = self.on_write.update(ctx, event) {
             if let Some(reply) = reply {
-                reply.send(v)
+                reply.send(v.value())
             }
         }
         None
@@ -887,7 +889,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         if changed[3] {
             if let Some(v) = self.args.0[3].clone() {
                 ctx.rt.cached_mut().insert(self.pid, v.clone());
-                event.variables.insert(self.pid, v);
+                event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
         if changed[0] || changed[1] || changed[2] {
@@ -954,7 +956,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     None => Value::Array(args),
                 };
                 ctx.rt.cached_mut().insert(self.x, args.clone());
-                event.variables.insert(self.x, args);
+                event.variables.insert(self.x, TagValue::fired(args));
             }};
         }
         if let Some(c) = event.rpc_calls.remove(&self.id) {
@@ -971,7 +973,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 Some(v) => {
                     self.ready = true;
                     if let Some(mut call) = self.queue.pop_front() {
-                        call.reply.send(v);
+                        call.reply.send(v.value());
                     }
                     match self.queue.front() {
                         Some(c) => set!(c),

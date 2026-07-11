@@ -1,0 +1,1 @@
+{let a = array::init(array::iter([i64:0, i64:2, i64:1, i64:4]), |i| i64:0); array::fold(a, i64:0, |acc, x| {array::fold([i64:5, i64:7], i64:0, |a3, x3| x3)})}

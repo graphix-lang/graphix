@@ -11,7 +11,6 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Result, anyhow};
-use netidx_value::Value;
 use std::sync::Arc as StdArc;
 
 /// Wrapper that turns a compiled kernel into an
@@ -101,10 +100,18 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<crate::TagValue> {
         // Delegate to Kernel (Apply) — drives the feeders, sets up
         // the DynCall dispatch handle, invokes JIT (or interp), and
-        // decodes the return value.
+        // decodes the return value. A RUN only surfaces FIRED outputs
+        // (the return gate forces stale/taint to None inside the JIT);
+        // a stale-fed poll re-surfaces the kernel's result slot tagged
+        // STALE (`Kernel::last_result` — the value channel inside an
+        // evaluation frame), so propagate `out_tag`.
         let res = self.inner.update(ctx, &mut self.feeders, event);
         // A lambda dispatch inside the kernel hit the call-depth limit
         // (the `graphix_depth_push` helper flagged it — native code
@@ -118,7 +125,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 spec: self.spec.clone(),
             });
         }
-        res
+        res.map(|v| crate::TagValue::tagged(v, self.inner.out_tag()))
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

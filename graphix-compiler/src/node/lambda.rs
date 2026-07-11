@@ -1,7 +1,7 @@
 use super::{Nop, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId,
-    Node, NodeView, Refs, Rt, Scope, StaticFnArg, Update, UserEvent,
+    Node, NodeView, Refs, Rt, Scope, StaticFnArg, Tag, TagValue, Update, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
@@ -130,6 +130,11 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// recursing) and the JIT (`build_lambda_kernel` emits a native
     /// loop). `false` until the analysis runs / for non-tail lambdas.
     tail_loop: AtomicBool,
+    /// The tag of the last value `update` returned — surfaced through
+    /// `Apply::out_tag` so the owning `CallSite` can reconstitute the
+    /// body result's two-channel tag across the clean-`Value` Apply
+    /// boundary.
+    last_out: Tag,
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -197,12 +202,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
+        // Did anything TRIGGER this dispatch (a fired/tainted formal
+        // delivery, or a real init view)? The tail loop below needs
+        // this to derive its result tag — see the override at its end.
+        let mut entry_fired = event.init;
         for (arg, pat) in from.iter_mut().zip(&self.args) {
-            if let Some(v) = arg.update(ctx, event) {
-                pat.bind(&v, &mut |id, v| {
-                    ctx.rt.cached_mut().insert(id, v.clone());
-                    event.variables.insert(id, v);
-                })
+            if let Some(tv) = arg.update(ctx, event) {
+                let (v, tag) = tv.into_parts();
+                entry_fired |= tag.triggers();
+                if tag.is_tainted() {
+                    // never destructure a taint placeholder; poison the
+                    // formals and keep it out of the cross-cycle store
+                    pat.ids(&mut |id| {
+                        event.variables.insert(id, TagValue::tainted(Value::Null));
+                    });
+                } else {
+                    pat.bind(&v, &mut |id, v| {
+                        ctx.rt.cached_mut().insert(id, v.clone());
+                        event.variables.insert(id, TagValue::tagged(v.clone(), tag));
+                    })
+                }
             }
         }
         // The call-depth guard: each nested (non-tail) lambda dispatch
@@ -293,8 +312,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // arg expression bottoms no longer dispatches with the
             // previous pass's published value. The first pass stays an
             // ordinary poll on the real event (#8, soak jul04).
-            let mut seeds: LPooled<IntMap<BindId, Value>> = LPooled::take();
-            let mut frame: LPooled<IntMap<BindId, Value>> = LPooled::take();
+            let mut seeds: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
+            let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
             let mut reentered = false;
             let res = loop {
                 // Cooperative interrupt: a wedged tail loop aborts to bottom
@@ -313,8 +332,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     ctx.frame_depth -= 1;
                     event.init = prev;
                     mem::swap(&mut event.variables, &mut *frame);
-                    // Swallowed-error bottom — see the For loop's twin.
-                    if ctx.take_frame_bottom() { None } else { res }
+                    res
                 };
                 let mine = matches!(
                     &ctx.pending_tail_call,
@@ -325,11 +343,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 }
                 if !reentered {
                     reentered = true;
+                    // Seeds are the kernel's params: an external that
+                    // FIRED this cycle keeps its real entry; a quiet
+                    // one is seeded STALE from the runtime cache (the
+                    // value channel) — the For loop's twin.
                     let mut refs = Refs::default();
                     self.body.refs(&mut refs);
                     refs.with_external_refs(|id| {
-                        if let Some(v) = ctx.rt.cached().get(&id) {
-                            seeds.insert(id, v.clone());
+                        if let Some(tv) = event.variables.get(&id) {
+                            seeds.insert(id, tv.clone());
+                        } else if let Some(v) = ctx.rt.cached().get(&id) {
+                            seeds.insert(id, TagValue::stale(v.clone()));
                         }
                     });
                 }
@@ -340,7 +364,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
                     pat.bind(v, &mut |id, v| {
                         ctx.rt.cached_mut().insert(id, v.clone());
-                        frame.insert(id, v);
+                        frame.insert(id, TagValue::fired(v));
                     })
                 }
             };
@@ -356,7 +380,35 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     }
                 }
             }
-            res
+            // Result-tag derivation for a loop that actually RE-ENTERED:
+            // every re-entered pass runs under a forced init view (body
+            // constants must re-fire per jump), which poisons the body's
+            // own tag FIRED regardless of what triggered the call.
+            // Derive from the ENTRY instead — the kernel's
+            // rebind-and-jump derives its result disc from the call
+            // site's input discs: fired iff a formal delivery triggered,
+            // the dispatch ran under a real init view, or a captured
+            // input triggered this cycle. A first pass that never jumped
+            // ran on the real event and keeps its organic tag.
+            match res {
+                Some(tv) if reentered && !tv.is_tainted() => {
+                    let entry = entry_fired || {
+                        let mut refs = Refs::default();
+                        self.body.refs(&mut refs);
+                        let mut hit = false;
+                        refs.with_external_refs(|id| {
+                            hit |= event
+                                .variables
+                                .get(&id)
+                                .is_some_and(|tv| tv.tag().triggers());
+                        });
+                        hit
+                    };
+                    let v = tv.value();
+                    Some(if entry { TagValue::fired(v) } else { TagValue::stale(v) })
+                }
+                res => res,
+            }
         };
         match ctx.active_lambdas.entry(self.id) {
             MapEntry::Occupied(mut e) => {
@@ -369,7 +421,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             MapEntry::Vacant(_) => unreachable!("active_lambdas underflow"),
         }
         ctx.control.depth_pop();
-        res
+        // Surface the body result's tag across the clean-Value Apply
+        // boundary (the CallSite reconstitutes via `out_tag`).
+        match res {
+            Some(tv) => {
+                let (v, tag) = tv.into_parts();
+                self.last_out = tag;
+                Some(v)
+            }
+            None => None,
+        }
+    }
+
+    fn out_tag(&self) -> Tag {
+        self.last_out
     }
 
     fn typecheck0(
@@ -511,6 +576,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             typ,
             body,
             tail_loop: AtomicBool::new(false),
+            last_out: Tag::FIRED,
         })
     }
 }
@@ -571,6 +637,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         self.apply.update(ctx, from, event)
+    }
+
+    fn out_tag(&self) -> Tag {
+        // MUST delegate (the reset_replay/emit_clif trap): the default
+        // FIRED would erase a wrapped lambda's stale/taint result tag.
+        self.apply.out_tag()
     }
 
     fn typecheck0(
@@ -911,8 +983,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        event.init.then(|| self.def.clone())
+    ) -> Option<TagValue> {
+        event.init.then(|| TagValue::fired(self.def.clone()))
     }
 
     fn spec(&self) -> &Expr {

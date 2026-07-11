@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent,
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
+    TagValue, Update, UserEvent,
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         emit::{
@@ -71,7 +71,7 @@ macro_rules! update_args {
         let mut updated = false;
         let mut determined = true;
         for n in $args.iter_mut() {
-            updated |= n.update($ctx, $event);
+            updated |= n.update_triggers($ctx, $event);
             determined &= n.cached.is_some();
         }
         (updated, determined)
@@ -150,7 +150,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> Option<TagValue> {
         None
     }
 
@@ -203,7 +203,11 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         self.n.update(ctx, event)
     }
 
@@ -262,6 +266,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 #[derive(Debug)]
 pub struct Cached<R: Rt, E: UserEvent> {
     pub cached: Option<Value>,
+    /// The tag of the resident `cached` value. Only the TAINT bit is
+    /// meaningful at rest (a tainted placeholder parked in a cache
+    /// keeps poisoning consumers until overwritten — the kernel's
+    /// slot-disc twin); firedness is a property of a PRODUCTION, not
+    /// of a cache.
+    pub tag: Tag,
     pub node: Node<R, E>,
     /// Lazily computed: the subtree references no bindings at all, so
     /// its value is identical in every evaluation frame — see
@@ -271,24 +281,51 @@ pub struct Cached<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Cached<R, E> {
     pub fn new(node: Node<R, E>) -> Self {
-        Self { cached: None, node, invariant: std::sync::OnceLock::new() }
+        Self {
+            cached: None,
+            tag: Tag::FIRED,
+            node,
+            invariant: std::sync::OnceLock::new(),
+        }
     }
 
-    /// update the node, return whether the node updated. If it did,
-    /// the updated value will be stored in the cached field, if not,
-    /// the previous value will remain there.
-    pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> bool {
+    /// Update the node, returning the production's tag if it produced
+    /// (`None` = no production). The produced value (and its taint)
+    /// lands in `cached`/`tag`; a merely-STALE production refreshes
+    /// the cache without counting as a firing — use
+    /// [`Self::update_triggers`] where the caller only needs the
+    /// fire-trigger bool.
+    pub fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<Tag> {
         match self.node.update(ctx, event) {
-            None => false,
-            Some(v) => {
+            None => None,
+            Some(tv) => {
+                let (v, tag) = tv.into_parts();
                 self.cached = Some(v);
-                true
+                self.tag = tag;
+                Some(tag)
             }
         }
     }
 
+    /// [`Self::update`], reduced to "should this production trigger
+    /// my evaluation" — true for fired AND tainted productions (taint
+    /// must ride toward a force point), false for stale refreshes and
+    /// silence. The consumed taint is read back off [`Self::tag`].
+    pub fn update_triggers(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> bool {
+        self.update(ctx, event).is_some_and(|t| t.triggers())
+    }
+
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.cached = None;
+        self.tag = Tag::FIRED;
         self.node.sleep(ctx)
     }
 
@@ -309,6 +346,7 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
         });
         if !invariant {
             self.cached = None;
+            self.tag = Tag::FIRED;
         }
         self.node.reset_replay(ctx)
     }
@@ -354,7 +392,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> Option<TagValue> {
         None
     }
 
@@ -427,7 +465,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> Option<TagValue> {
         None
     }
 
@@ -493,8 +531,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if event.init { Some(self.value.clone()) } else { None }
+    ) -> Option<TagValue> {
+        if event.init { Some(TagValue::fired(self.value.clone())) } else { None }
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -578,7 +616,11 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         let res = self.children.iter_mut().fold(None, |_, n| n.update(ctx, event));
         if self.module { None } else { res }
     }
@@ -688,13 +730,30 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         use std::fmt::Write;
         thread_local! {
             static BUF: RefCell<String> = RefCell::new(String::new());
         }
-        let (updated, determined) = update_args!(self.args, ctx, event);
-        if updated && determined {
+        let mut produced = false;
+        let mut fired = false;
+        let mut determined = true;
+        for c in self.args.iter_mut() {
+            if let Some(t) = c.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
+            determined &= c.cached.is_some();
+        }
+        if produced && determined {
+            if self.args.iter().any(|c| c.tag.is_tainted()) {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             BUF.with_borrow_mut(|buf| {
                 buf.clear();
                 for (typ, c) in self.typs.iter().zip(self.args.iter()) {
@@ -704,7 +763,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
                     }
                     .unwrap()
                 }
-                Some(Value::String(buf.as_str().into()))
+                Some(TagValue::tagged(Value::String(buf.as_str().into()), tag))
             })
         } else {
             None
@@ -819,9 +878,18 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(v) = self.node.update(ctx, event) {
-            ctx.rt.set_var(self.id, v)
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        // A variable write requires a FIRED RHS — the interp twin of
+        // the kernel's `set_var_typed` gate (a stale or tainted RHS
+        // must not become a cross-cycle event).
+        if let Some(tv) = self.node.update(ctx, event) {
+            if tv.is_fired() {
+                ctx.rt.set_var(self.id, tv.value())
+            }
         }
         None
     }
@@ -926,15 +994,27 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        let mut up = self.rhs.update(ctx, event);
-        if let Some(Value::U64(id)) = event.variables.get(&self.src_id) {
-            if let Some(target_id) = ctx.env.byref_chain.get(&BindId::from(*id)) {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        // Fired-RHS write gate, as in `Connect` (a stale or tainted
+        // production refreshes the cache but must not write).
+        let mut up = self.rhs.update(ctx, event).is_some_and(|t| t.is_fired());
+        let src = event.variables.get(&self.src_id).and_then(|tv| {
+            tv.with_value(|v| match v {
+                Value::U64(id) => Some(BindId::from(*id)),
+                _ => None,
+            })
+        });
+        if let Some(id) = src {
+            if let Some(target_id) = ctx.env.byref_chain.get(&id) {
                 self.target_id = Some(*target_id);
                 up = true;
             }
         }
-        if up {
+        if up && !self.rhs.tag.is_tainted() {
             if let Some(v) = &self.rhs.cached {
                 if let Some(id) = self.target_id {
                     ctx.rt.set_var(id, v.clone());
@@ -1019,8 +1099,20 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        self.n.update(ctx, event).map(|v| self.target.cast_value(&ctx.env, v))
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        self.n.update(ctx, event).map(|tv| {
+            let (v, tag) = tv.into_parts();
+            if tag.is_tainted() {
+                // never cast a taint placeholder — pass the taint on
+                TagValue::tainted(Value::Null)
+            } else {
+                TagValue::tagged(self.target.cast_value(&ctx.env, v), tag)
+            }
+        })
     }
 
     fn spec(&self) -> &Expr {
@@ -1090,11 +1182,21 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        self.n
-            .iter_mut()
-            .filter_map(|s| s.update(ctx, event))
-            .fold(None, |r, v| r.or(Some(v)))
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        // First production wins, except a triggering (fired/tainted)
+        // production beats an earlier merely-stale refresh.
+        self.n.iter_mut().filter_map(|s| s.update(ctx, event)).fold(
+            None,
+            |r, tv| match &r {
+                None => Some(tv),
+                Some(prev) if !prev.tag().triggers() && tv.tag().triggers() => Some(tv),
+                Some(_) => r,
+            },
+        )
     }
 
     fn spec(&self) -> &Expr {
@@ -1178,19 +1280,33 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(_) = self.trigger.update(ctx, event) {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        // Only a FIRED or TAINTED trigger production counts as a
+        // trigger; a stale refresh of the LHS must not sample.
+        if self.trigger.update(ctx, event).is_some_and(|t| t.tag().triggers()) {
             self.triggered += 1;
         }
         self.arg.update(ctx, event);
         let var = event.variables.get(&self.id).cloned();
+        let held = || match &self.arg.cached {
+            Some(v) if self.arg.tag.is_tainted() => {
+                let _ = v;
+                TagValue::tainted(Value::Null)
+            }
+            Some(v) => TagValue::fired(v.clone()),
+            None => unreachable!(),
+        };
         let res = if self.triggered > 0 && self.arg.cached.is_some() && var.is_none() {
             self.triggered -= 1;
-            self.arg.cached.clone()
+            Some(held())
         } else {
             var
         };
-        if self.arg.cached.is_some() {
+        if self.arg.cached.is_some() && !self.arg.tag.is_tainted() {
             while self.triggered > 0 {
                 self.triggered -= 1;
                 ctx.rt.set_var(self.id, self.arg.cached.clone().unwrap());

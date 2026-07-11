@@ -6,7 +6,8 @@ use anyhow::{Result, bail};
 use arcstr::literal;
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue,
+    UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
@@ -797,11 +798,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(list) = from[0].update(ctx, event) {
-            for v in (ListIter { cur: list }) {
+            for v in (ListIter { cur: list.value() }) {
                 ctx.rt.set_var(self.0, v);
             }
         }
-        event.variables.get(&self.0).cloned()
+        event.variables.get(&self.0).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -855,7 +856,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         if from[0].update(ctx, event).is_some() {
             self.triggered += 1;
         }
-        if let Some(list) = from[1].update(ctx, event) {
+        if let Some(list) = from[1].update(ctx, event).map(|tv| tv.value()) {
             if is_list(&list) {
                 let elems: Vec<Value> = ListIter { cur: list }.collect();
                 if !elems.is_empty() {
@@ -874,7 +875,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
                 self.queue.pop_front();
             }
         }
-        event.variables.get(&self.id).cloned()
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -945,10 +946,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
     ) -> Option<Value> {
         let slen = self.slots.len();
         if let Some(v) = from[1].update(ctx, event) {
+            let v = v.value();
             ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
-        let (size_fired, resized) = match from[0].update(ctx, event) {
+        let (size_fired, resized) = match from[0].update(ctx, event).map(|tv| tv.value())
+        {
             Some(Value::I64(n)) => {
                 // Runaway sizes log + bottom (same limit as array::init /
                 // the JIT's init loop): building per-element slots for
@@ -1007,7 +1010,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
         if resized && self.slots.len() > slen {
             for i in slen..self.slots.len() {
                 let id = self.slots[i].id;
-                event.variables.insert(id, Value::I64(i as i64));
+                event.variables.insert(id, TagValue::fired(Value::I64(i as i64)));
             }
         }
         if size_fired && self.slots.is_empty() {
@@ -1021,11 +1024,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
                 if let Entry::Vacant(e) = event.variables.entry(self.fid)
                     && let Some(v) = ctx.rt.cached().get(&self.fid)
                 {
-                    e.insert(v.clone());
+                    e.insert(TagValue::fired(v.clone()));
                 }
             }
             if let Some(v) = s.pred.update(ctx, event) {
-                s.cur = Some(v);
+                s.cur = Some(v.value());
                 up = true;
             }
         }

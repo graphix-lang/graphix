@@ -1,5 +1,5 @@
 use crate::{
-    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, UserEvent,
+    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, TagValue, UserEvent,
     env::Env,
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
@@ -791,8 +791,8 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         v: &Value,
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
-            ctx.rt.cached_mut().insert(id, v.clone());
-            event.variables.insert(id, v);
+            event.variables.insert(id, TagValue::fired(v.clone()));
+            ctx.rt.cached_mut().insert(id, v);
         })
     }
 
@@ -809,7 +809,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) -> bool {
         match &mut self.guard {
             None => false,
-            Some(g) => g.update(ctx, event),
+            Some(g) => g.update(ctx, event).is_some(),
         }
     }
 

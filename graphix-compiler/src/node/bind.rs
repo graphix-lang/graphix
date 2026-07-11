@@ -1,7 +1,7 @@
 use super::pattern::StructPatternNode;
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Update, UserEvent, bailat,
+    Scope, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -206,13 +206,29 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(v) = self.node.update(ctx, event) {
-            self.pattern.bind(&v, &mut |id, v| {
-                event.variables.insert(id, v.clone());
-                ctx.rt.cached_mut().insert(id, v);
-                ctx.rt.notify_set(id);
-            })
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        if let Some(tv) = self.node.update(ctx, event) {
+            let (v, tag) = tv.into_parts();
+            if tag.is_tainted() {
+                // Never destructure a taint placeholder (the kernel's
+                // destructuring-consumer force): poison each bound name
+                // instead, and keep the placeholder OUT of the
+                // cross-cycle store.
+                self.pattern.ids(&mut |id| {
+                    event.variables.insert(id, TagValue::tainted(Value::Null));
+                    ctx.rt.notify_set(id);
+                });
+            } else {
+                self.pattern.bind(&v, &mut |id, v| {
+                    event.variables.insert(id, TagValue::tagged(v.clone(), tag));
+                    ctx.rt.cached_mut().insert(id, v);
+                    ctx.rt.notify_set(id);
+                })
+            }
         }
         None
     }
@@ -344,7 +360,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> Option<TagValue> {
+        // The entry's tag flows through: an ordinary delivery is
+        // fired, a frame re-delivery/seed is stale, a poisoned bind
+        // is tainted.
         event.variables.get(&self.id).map(|v| v.clone())
     }
 
@@ -426,23 +445,33 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(v) = self.child.update(ctx, event) {
-            if event.init {
-                // Seed the cache WITHOUT queuing a delivery: `Deref`'s
-                // init fallback reads the cache THIS cycle, so the
-                // queued write would arrive next cycle as a duplicate —
-                // every deref (and anything downstream, e.g. an HOF
-                // slot's predicate) re-fired once with the same value
-                // (soak finding corpus-fuzz/divergence_000027; Eric's
-                // ruling 2026-07-04: the echo was the wart, the JIT's
-                // single delivery is correct).
-                ctx.rt.cached_mut().insert(self.id, v);
-            } else {
-                ctx.rt.set_var(self.id, v);
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        // Fired-only write gate: a stale refresh must not re-write the
+        // referent, and a taint placeholder must never enter the
+        // cross-cycle store.
+        if let Some(tv) = self.child.update(ctx, event) {
+            if tv.is_fired() {
+                let v = tv.value();
+                if event.init {
+                    // Seed the cache WITHOUT queuing a delivery: `Deref`'s
+                    // init fallback reads the cache THIS cycle, so the
+                    // queued write would arrive next cycle as a duplicate —
+                    // every deref (and anything downstream, e.g. an HOF
+                    // slot's predicate) re-fired once with the same value
+                    // (soak finding corpus-fuzz/divergence_000027; Eric's
+                    // ruling 2026-07-04: the echo was the wart, the JIT's
+                    // single delivery is correct).
+                    ctx.rt.cached_mut().insert(self.id, v);
+                } else {
+                    ctx.rt.set_var(self.id, v);
+                }
             }
         }
-        if event.init { Some(Value::U64(self.id.inner())) } else { None }
+        if event.init { Some(TagValue::fired(Value::U64(self.id.inner()))) } else { None }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -520,10 +549,17 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(v) = self.child.update(ctx, event) {
-            if let Value::U64(i) | Value::V64(i) = v {
-                let new_id = BindId::from(i);
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        if let Some(tv) = self.child.update(ctx, event) {
+            let id = tv.with_value(|v| match v {
+                Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
+                _ => None,
+            });
+            if let Some(new_id) = id {
                 if self.id != Some(new_id) {
                     if let Some(old) = self.id {
                         ctx.rt.unref_var(old, self.top_id);
@@ -534,7 +570,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             }
         }
         self.id.and_then(|id| match event.variables.get(&id).cloned() {
-            None if event.init => ctx.rt.cached().get(&id).cloned(),
+            None if event.init => ctx.rt.cached().get(&id).cloned().map(TagValue::fired),
             v => v,
         })
     }

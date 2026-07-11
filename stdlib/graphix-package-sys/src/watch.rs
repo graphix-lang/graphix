@@ -277,10 +277,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
     ) -> Option<Value> {
         let poll_interval = from[0]
             .update(ctx, event)
-            .and_then(|v| v.cast_to::<Option<Duration>>().ok().flatten());
+            .and_then(|v| v.value().cast_to::<Option<Duration>>().ok().flatten());
         let batch_size = from[1]
             .update(ctx, event)
-            .and_then(|v| v.cast_to::<Option<i64>>().ok().flatten());
+            .and_then(|v| v.value().cast_to::<Option<i64>>().ok().flatten());
         let trigger = from[2].update(ctx, event);
         match poll_interval {
             Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
@@ -362,8 +362,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         event: &mut Event<E>,
     ) -> Option<Value> {
         let mut up = false;
-        if let Some(Ok(mut int)) =
-            from[0].update(ctx, event).map(|v| v.cast_to::<LPooled<Vec<WInterest>>>())
+        if let Some(Ok(mut int)) = from[0]
+            .update(ctx, event)
+            .map(|v| v.value().cast_to::<LPooled<Vec<WInterest>>>())
         {
             let int = int.drain(..).fold(BitFlags::empty(), |mut acc, fl| {
                 acc.insert(fl.0);
@@ -374,9 +375,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         }
         if let Some(watcher_val) = from[1].update(ctx, event) {
             up = true;
-            self.watcher_val = Some(watcher_val);
+            self.watcher_val = Some(watcher_val.value());
         }
-        if let Some(Ok(path)) = from[2].update(ctx, event).map(|v| v.cast_to::<ArcStr>())
+        if let Some(Ok(path)) =
+            from[2].update(ctx, event).map(|v| v.value().cast_to::<ArcStr>())
         {
             up = true;
             self.path = Some(path);

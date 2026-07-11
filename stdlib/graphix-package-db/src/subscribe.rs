@@ -150,8 +150,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         event: &mut Event<E>,
     ) -> Option<Value> {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
-        let prefix_val = from[0].update(ctx, event);
-        let tree_changed = from[1].update(ctx, event);
+        let prefix_val = from[0].update(ctx, event).map(|tv| tv.value());
+        let tree_changed = from[1].update(ctx, event).map(|tv| tv.value());
         let tree_is_new = tree_changed.is_some();
         if let Some(v) = tree_changed {
             self.tree_val = Some(v);

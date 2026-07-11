@@ -17,6 +17,7 @@ pub mod fusion;
 pub mod ide;
 pub mod node;
 pub mod node_shape;
+pub mod tval;
 pub mod typ;
 
 use compact_str::CompactString;
@@ -26,6 +27,7 @@ use compact_str::CompactString;
 pub use cranelift_codegen;
 pub use cranelift_frontend;
 pub use fusion::FusionStats;
+pub use tval::{Tag, TagValue};
 
 use crate::{
     effects::EffectKind,
@@ -463,7 +465,7 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
     pub init: bool,
-    pub variables: IntMap<BindId, Value>,
+    pub variables: IntMap<BindId, TagValue>,
     pub netidx: IntMap<SubId, subscriber::Event>,
     pub writes: IntMap<Id, WriteRequest>,
     pub rpc_calls: IntMap<BindId, RpcCall>,
@@ -626,6 +628,19 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value>;
+
+    /// The tag of the LAST value [`Self::update`] returned — how an
+    /// `Apply` (whose return stays a clean `Option<Value>`: a builtin
+    /// cannot know fired-ness, its wrapper does) surfaces the
+    /// two-channel tag to the owning `CallSite`. The default FIRED is
+    /// right for every ordinary builtin (a builtin that produced was
+    /// triggered by a fired arg or its own async self-fire); overridden
+    /// by `GXLambda` (its body's tag), `BuiltInLambda` (delegates), the
+    /// `CachedArgs` wrappers (taint short-circuit), and the fused
+    /// `Kernel` (the JIT out slot's disc tags).
+    fn out_tag(&self) -> Tag {
+        Tag::FIRED
+    }
 
     /// delete any internally generated nodes, only needed for
     /// builtins that dynamically generate code at runtime
@@ -890,9 +905,22 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 /// application represented by Apply. Regular graph nodes are used for
 /// every built in node except for builtin functions.
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
-    /// update the node with the specified event and return any output
-    /// it might generate
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value>;
+    /// Update the node with the specified event and return any output
+    /// it might generate. `None` = no production at all;
+    /// `Some(fired v)` = the ordinary event (today's `Some`);
+    /// `Some(stale v)` = a value-channel refresh — the parent caches
+    /// the value but nothing fires (originates only at the evaluation
+    /// frame seam: re-delivered call args, frame seeds);
+    /// `Some(tainted v)` = a possible-bottom placeholder flowing
+    /// toward a force point (originates only at in-frame swallowed
+    /// -error sites). Outside frames every production is fired, so
+    /// reactive semantics are unchanged. See `tval::TagValue` and
+    /// `design/replay_frames.md` v2.
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue>;
 
     /// delete the node and it's children from the specified context
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
@@ -1616,39 +1644,19 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Non-zero while executing inside a sequential evaluation FRAME —
     /// a `For` sync-loop iteration or a tail-loop re-entered pass, both
     /// of which run the body against a private, per-frame variables map
-    /// (see `reset_replay`). Frame-only delivery behaviors (a call
-    /// site's invariant-arg re-delivery) gate on this so reactive-land
-    /// semantics are untouched. A counter, not a bool: frames nest.
+    /// (see `reset_replay`). Frame-only behaviors (a call site's
+    /// stale-channel arg delivery; error sites producing silent tainted
+    /// placeholders instead of the logged None) gate on this so
+    /// reactive-land semantics are untouched. A counter, not a bool:
+    /// frames nest. The per-value fired/taint channels themselves ride
+    /// [`TagValue`] — see `design/replay_frames.md` v2.
     pub(crate) frame_depth: u32,
-    /// A GENUINE bottom (a swallowed error — unchecked arith, a
-    /// handler-less `?`, `$`) occurred inside the current frame. The
-    /// interpreter's single `None` channel conflates bottom with
-    /// legitimately-quiet (a stale input bridged by a value cache), so
-    /// error sites raise this flag and the enclosing loop treats the
-    /// iteration as bottomed even when a downstream cache produced a
-    /// value — the interpreter mirror of the kernel's taint bit.
-    pub(crate) frame_bottom: bool,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn clear(&mut self) {
         self.env.clear();
         self.rt.clear();
-    }
-
-    /// Record a swallowed-error bottom for the enclosing sequential
-    /// frame, if any — see the `frame_bottom` field. A no-op in
-    /// reactive land (the flag is only consulted by frame drivers).
-    pub fn mark_frame_bottom(&mut self) {
-        if self.frame_depth > 0 {
-            self.frame_bottom = true;
-        }
-    }
-
-    /// Take-and-clear the frame-bottom flag — called by a frame driver
-    /// (the `For` sync loop, the tail loop) after each body evaluation.
-    pub(crate) fn take_frame_bottom(&mut self) -> bool {
-        std::mem::take(&mut self.frame_bottom)
     }
 
     /// Build a new execution context.
@@ -1683,7 +1691,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
             frame_depth: 0,
-            frame_bottom: false,
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

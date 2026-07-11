@@ -1,6 +1,6 @@
 use crate::{
     Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
-    Update, UserEvent,
+    TagValue, Update, UserEvent,
     compiler::compile,
     deref_typ,
     env::Env,
@@ -78,13 +78,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        let v = from.get_mut(0)?.update(ctx, event)?;
+        let v = from.get_mut(0)?.update(ctx, event)?.value();
         if let Value::Error(e) = v {
             let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
             let v = Value::Error(Arc::new(e));
             match event.variables.entry(self.handler_id) {
                 Entry::Vacant(slot) => {
-                    slot.insert(v);
+                    slot.insert(TagValue::fired(v));
                 }
                 Entry::Occupied(_) => ctx.rt.set_var(self.handler_id, v),
             }
@@ -151,7 +151,11 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         let res = self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
         let _ = self.handler.update(ctx, event);
         res
@@ -272,22 +276,36 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        match self.n.update(ctx, event) {
-            None => None,
-            Some(Value::Error(e)) => match self.id {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        let tv = self.n.update(ctx, event)?;
+        if tv.is_tainted() {
+            // a taint placeholder is not an error VALUE — pass it on
+            return Some(tv);
+        }
+        let (v, tag) = tv.into_parts();
+        match v {
+            Value::Error(e) => match self.id {
                 Some(id) => {
                     let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
                     let v = Value::Error(Arc::new(e));
                     match event.variables.entry(id) {
-                        Entry::Vacant(e) => {
-                            e.insert(v);
+                        Entry::Vacant(slot) => {
+                            slot.insert(TagValue::fired(v));
                         }
                         Entry::Occupied(_) => ctx.rt.set_var(id, v),
                     }
                     None
                 }
                 None => {
+                    if ctx.frame_depth > 0 {
+                        // in-frame swallowed error: the taint channel,
+                        // silent (the log is a reactive debugging aid)
+                        return Some(TagValue::tainted(Value::Null));
+                    }
                     log::error!(
                         "unhandled error in {} at {} {e}",
                         self.spec.ori,
@@ -297,11 +315,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                         "unhandled error in {} at {} {e}",
                         self.spec.ori, self.spec.pos
                     );
-                    ctx.mark_frame_bottom();
                     None
                 }
             },
-            Some(v) => Some(v),
+            v => Some(TagValue::tagged(v, tag)),
         }
     }
 
@@ -445,15 +462,26 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        match self.n.update(ctx, event) {
-            None => None,
-            Some(Value::Error(e)) => {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        let tv = self.n.update(ctx, event)?;
+        if tv.is_tainted() {
+            return Some(tv);
+        }
+        let (v, tag) = tv.into_parts();
+        match v {
+            Value::Error(e) => {
+                if ctx.frame_depth > 0 {
+                    // in-frame swallowed error: silent taint
+                    return Some(TagValue::tainted(Value::Null));
+                }
                 log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos);
-                ctx.mark_frame_bottom();
                 None
             }
-            Some(v) => Some(v),
+            v => Some(TagValue::tagged(v, tag)),
         }
     }
 

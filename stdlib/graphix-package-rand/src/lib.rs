@@ -103,7 +103,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|a| match a {
+        from[0].update(ctx, event).and_then(|a| match a.value() {
             Value::Array(a) if a.len() > 0 => {
                 Some(a[rng().random_range(0..a.len())].clone())
             }
@@ -142,7 +142,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|a| match a {
+        from[0].update(ctx, event).and_then(|a| match a.value() {
             Value::Array(a) => {
                 self.0.extend(a.iter().cloned());
                 self.0.shuffle(&mut rng());

@@ -9,7 +9,7 @@ use compact_str::format_compact;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, LambdaId,
-    Node, Rt, Scope, UserEvent,
+    Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind,
     errf,
     expr::ExprId,
@@ -755,7 +755,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if changed[4] {
             if let Some(v) = self.args.0[4].clone() {
                 ctx.rt.cached_mut().insert(self.pid, v.clone());
-                event.variables.insert(self.pid, v);
+                event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
         // start/restart server when addr/cert/key/max_connections changes
@@ -839,7 +839,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
                 ctx.rt.cached_mut().insert(self.x, req.clone());
-                event.variables.insert(self.x, req.clone());
+                event.variables.insert(self.x, TagValue::fired(req.clone()));
             }
         }
         // process handler responses
@@ -850,14 +850,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     self.ready = true;
                     if let Some((_, reply)) = self.queue.pop_front() {
                         if let Some(reply) = reply {
-                            let _ = reply.send(v);
+                            let _ = reply.send(v.value());
                         }
                     }
                     match self.queue.front() {
                         Some((req, _)) => {
                             self.ready = false;
                             ctx.rt.cached_mut().insert(self.x, req.clone());
-                            event.variables.insert(self.x, req.clone());
+                            event.variables.insert(self.x, TagValue::fired(req.clone()));
                         }
                         None => break,
                     }

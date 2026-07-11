@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    SourcePosition, UserEvent,
+    SourcePosition, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
@@ -78,7 +78,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         for (i, n) in from.iter_mut().enumerate() {
             if let Some(v) = n.update(ctx, event) {
                 if let Some(bid) = self.arg_bids.get(i) {
-                    delta.push((*bid, v));
+                    delta.push((*bid, v.value()));
                 }
             }
         }
@@ -90,7 +90,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     drop(s);
                     for (bid, v) in delta.drain(..) {
                         ctx.rt.cached_mut().insert(bid, v.clone());
-                        event.variables.insert(bid, v);
+                        event.variables.insert(bid, TagValue::fired(v));
                     }
                     None
                 } else {
@@ -112,7 +112,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        self.pred.update(ctx, event)
+        self.pred.update(ctx, event).map(|tv| tv.value())
     }
 
     fn typecheck0(
@@ -295,7 +295,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx, event).map(|tv| tv.value()) {
             let new_ref = match &v {
                 Value::U64(b) => {
                     let outer = BindId::from(*b);
@@ -308,7 +308,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             s.last_written_depth = s.depth();
         }
         let mut new_lambda: Option<Value> = None;
-        if let Some(v) = from[2].update(ctx, event) {
+        if let Some(v) = from[2].update(ctx, event).map(|tv| tv.value()) {
             // `resolved` is a typecheck-time artifact; a lazily-built
             // instance (an analysis-pred per-slot clone whose swallowed
             // typecheck died upstream) never had one. The runtime `f`
@@ -324,7 +324,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
             ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+            event.variables.insert(self.fid, TagValue::fired(v));
             if self.lambda.is_none() {
                 match self.build_lambda(ctx) {
                     Ok(lv) => {

@@ -1,0 +1,1 @@
+{let n = i64:0; select n {v if v < i64:3 => n <- (v ~ n) + i64:1, _ => never()}; array::fold(cast<Array<i64>>([])$, n, |a, x| a + x)}
