@@ -733,13 +733,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // under the def's restored env, or vice versa — the
         // data_table SortBy case). Name resolution is the recheck's
         // artifact; semantics are its job.
-        // The full-body re-check stays SWALLOWED: it compares partial
-        // inference states across instantiation COPIES (the site mints
-        // several ftype instances — TT-LEFTCOPY lineages — whose cells
-        // legitimately skew mid-inference; hof_variant_find), and the
-        // static union type of mixed promo arith vs a site-narrowed
-        // rtype (param_knot_no_leak). Those are recheck artifacts, not
-        // contradictions.
+        // The full-body re-check stays SWALLOWED. Retried under
+        // single instantiation (2026-07-13): the copy-skew artifact
+        // family (hof_variant_find) is GONE — shared cells work — and
+        // param_knot is moot under homogeneous arith, but three
+        // families still trip strict: abstract-payload shapes whose
+        // errors don't route through the AbstractOpaque-marked
+        // check_contains (abstract_type_in_variant), queuefn's
+        // dynamic shapes, and the guarded recursive-fn-arg re-drive
+        // (rec_fn_arg_compiles — the skipped self-call leaves a
+        // mismatch the swallow previously ate). Each needs its own
+        // triage before the flip can land; the strict ARG-BOUNDARY
+        // check below carries the enforcement meanwhile.
         if let Err(e) = rf.typecheck0(ctx, &mut self.arg_refs) {
             if std::env::var_os("GXDBG_SWALLOW").is_some() {
                 eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
