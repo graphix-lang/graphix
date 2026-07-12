@@ -228,3 +228,9 @@ garbage), but it will keep flooding soak corpora until the acceptance
 model is ruled: this class does not need `$`, null, or promotion
 suppression — ordinary mixed CONCRETE numerics through any in-language
 HOF instance reproduce it.
+
+(Third shape, jul12i first finding on f636dae0: cross-type COMPARE —
+`array::filter(array::init(5, |idx| idx), |x| x > f64:0.)` → interp 7
+(discriminant total order drops all) vs jit 10 (typed scalar compare
+keeps some). No new mechanism; listed for the ruling's completeness.
+The class arrives roughly hourly across campaigns.)
