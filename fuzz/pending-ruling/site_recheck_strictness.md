@@ -234,3 +234,32 @@ HOF instance reproduce it.
 (discriminant total order drops all) vs jit 10 (typed scalar compare
 keeps some). No new mechanism; listed for the ruling's completeness.
 The class arrives roughly hourly across campaigns.)
+
+## SEVERITY ESCALATION (jul12i 000001): the class leaks heap addresses
+
+```
+{let xs = array::filter(array::init(i64:5, |idx: i64| sys::fs::read_all_bin), |x| true);
+ array::fold(xs, i64:7, |acc, x| i64:3 + x)}
+```
+
+Elements are first-class LAMBDA values; `i64:3 + x` through the fold
+instance runs a native add on the element slot — which holds the
+LambdaDef's POINTER — and the program PRINTS it (interp: silent
+bottom; jit: `I64(140331027120307)`, ASLR-varying). The garbage
+variants of this class are not just wrong values: any heap-backed
+Value (Fn, Error, String) mistyped into a scalar slot exfiltrates its
+address to program output.
+
+Mechanical exposure: `bind_elem`'s Scalar arm (fusion/scaffold.rs)
+reads via `graphix_valarray_get_<prim>` with no disc check — the
+static element type is trusted, and this class is precisely the
+static type lying. `elem_disc` already threads the source disc
+(currently identity), so an INTERIM belt is implementable: fetch via
+`get_value`, compare the real clean disc against the expected prim,
+TAINT on mismatch (drop the owned mismatch), cast on match — one
+branch per element, converting every garbage witness into the
+interp's silent bottom. Not built: it papers over the acceptance
+hole at runtime cost on the hottest loop path, and the root fix is
+whatever model gets ruled here ("make invalid states
+unrepresentable"). If the ruling lands far out, the belt may be worth
+it for the address-leak alone — Eric's call.
