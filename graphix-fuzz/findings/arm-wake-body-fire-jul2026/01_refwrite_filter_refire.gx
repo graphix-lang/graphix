@@ -1,0 +1,21 @@
+// bisect: node-walk (interp) bug — the JIT was right; verified against
+// c2/c3 reductions (the bare array literal re-fires in both modes).
+// interp/jit: pre-fix interp emitted only the cycle-0 event and
+// suppressed the cycle-1 re-run; jit emitted both. Post-fix both emit
+// [0:[5,5,100] 1:[1,1,100]].
+// root_cause: in a For frame, a const-body predicate (`|v9| true`)
+// produces STALE (the Constant frame rule), so the filter body's
+// select re-derives its selection through the ARM-WAKE path with a
+// stale scrutinee. The wake's result tag was capped to the TRIGGER
+// (init || arg_fired || pat_up — the jul12a rule), blind to the arm
+// body consuming genuinely FIRED deliveries (the loop's element/acc
+// binds), so every body eval read STALE, body-driven firing saw no
+// fire, and the loop result was suppressed at frame depth 0. The
+// kernel's arm merge fires iff a CONSUMED input fired. Fixed by
+// OR-ing `body_input_fired` — real (Occupied) event.variables
+// deliveries to the arm's external refs with FIRED tags — into the
+// wake's result tag (node/select.rs arm-wake path). jul12a's
+// const-scrutinee-in-fold stays quiet: a const arm references no
+// fired delivery.
+// found: soak-jul12f generate divergence_000000 (2026-07-12).
+{let v1 = i64:5; let v7 = &v1; *v7 <- i64:1; array::filter([v1, v1, i64:100], |v9| true)}

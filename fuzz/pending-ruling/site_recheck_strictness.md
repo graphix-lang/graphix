@@ -172,3 +172,35 @@ Options:
 (b) The JIT widens 'a-returning bodies containing suppressed
     pre-binds to value-shape slots (accept the dynamic typing,
     keep the node-walk semantics).
+
+---
+
+## New live witness (2026-07-12, soak-jul12g fuzz/000000): null through an i64 slot
+
+```
+{let xs = array::filter(array::init(i64:5, |idx: i64| null), |x| x > i64:99);
+ array::fold(xs, i64:7, |acc, x| acc + x)}
+```
+
+- Direct form `array::filter([null, null], |x| x > i64:99)` is a
+  COMPILE ERROR in both modes (the cmp rejects a null operand) —
+  correct and consistent.
+- Through the per-callsite instance path it COMPILES: the predicate
+  body typechecks while the element tvar is still unbound, the cmp's
+  operand pre-bind mints `x := i64`, and the site's later `'a := null`
+  contradiction is eaten by the SWALLOWED setup_bind tc0. The lie
+  ships: the JIT freezes the element slot as scalar I64
+  (`icmp sgt v3, 99` on the Null payload → false → filter drops all),
+  while the interp compares actual Values (total order: Null > I64 →
+  true → filter keeps all, then `7 + null` errors and the program
+  bottoms silently).
+- interp: Trace([]) vs jit: Trace([0:i64:7]) — a permanent divergence
+  on an accepted program, same shape as the F64-dust case above but
+  with a NULL payload riding the scalar slot, and it needs no
+  promotion at all — any unannotated formal + operand pre-bind +
+  swallowed site contradiction reproduces it.
+- Emit-side point fixes can't see it (both cmp operands read as I64
+  statically); the fix is whatever site-recheck model gets ruled here.
+- Witness preserved: soak-jul12g/fuzz/divergence_000000.gx; minimal
+  repro b4.gx in the session scratchpad; also reproducible as written
+  above.

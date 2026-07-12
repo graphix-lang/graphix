@@ -168,13 +168,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     bind!(i);
                     let mut refs = Refs::default();
                     arms[i].1.node.refs(&mut refs);
+                    let mut body_input_fired = false;
                     refs.with_external_refs(|id| {
-                        if let Entry::Vacant(e) = event.variables.entry(id)
-                            && let Some(v) = ctx.rt.cached().get(&id)
-                        {
-                            // FIRED: an arm wake is the arm's init view
-                            e.insert(TagValue::fired(v.clone()));
-                            set.push(id);
+                        match event.variables.entry(id) {
+                            // A REAL delivery to a body input this
+                            // cycle — its honest tag is the one signal
+                            // the forced-init wake below doesn't
+                            // corrupt, and the kernel's arm merge fires
+                            // iff a consumed input fired (a filter
+                            // body's element bind arrives FIRED every
+                            // re-run; jul12f generate 000000).
+                            Entry::Occupied(e) => {
+                                body_input_fired |= e.get().tag().is_fired();
+                            }
+                            Entry::Vacant(e) => {
+                                if let Some(v) = ctx.rt.cached().get(&id) {
+                                    // FIRED: an arm wake is the arm's init view
+                                    e.insert(TagValue::fired(v.clone()));
+                                    set.push(id);
+                                }
+                            }
                         }
                     });
                     let init = event.init;
@@ -198,8 +211,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         // is the value channel (jul12a 000000: a
                         // const-scrutinee select in a fold body fired
                         // every frame, where the kernel's arm merge is
-                        // correctly quiet).
-                        let fired = event.init || arg_fired || pat_up;
+                        // correctly quiet). PLUS `body_input_fired`:
+                        // an arm body that consumed a genuinely FIRED
+                        // delivery (a loop's element/acc bind) fired
+                        // regardless of the scrutinee — a const-body
+                        // predicate makes the scrutinee STALE in every
+                        // frame, and trigger-only capping suppressed
+                        // the whole loop result while the kernel's
+                        // consumed-input merge correctly fired
+                        // (jul12f generate 000000, the filter re-run).
+                        let fired = event.init || arg_fired || pat_up || body_input_fired;
                         let tag = if fired { Tag::FIRED } else { Tag::STALE };
                         arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
                     }

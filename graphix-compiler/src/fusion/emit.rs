@@ -5924,6 +5924,17 @@ fn emit_qop_deliver(
 /// placeholder on the error path, and the String-conventioned
 /// consumer dropped payload 0 — `graphix_arcstr_drop(NULL)` SIGABRT
 /// (soak jul05 item 15, crash_000014).
+/// True iff a FROZEN (concrete, deref'd) type has any error member —
+/// the gate for `emit_qop_node`'s no-union passthrough.
+fn type_may_error(t: &Type) -> bool {
+    match t {
+        Type::Error(_) => true,
+        Type::Primitive(p) => p.contains(netidx_value::Typ::Error),
+        Type::Set(members) => members.iter().any(type_may_error),
+        _ => false,
+    }
+}
+
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
@@ -5942,6 +5953,20 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         ));
     };
     if kernel_abi::nullable_inner(cx.registry(), &inner_typ).is_none() {
+        // Passthrough is only sound when the inner CANNOT be an error.
+        // `nullable_inner` answers "is this a `[T, Error<E>]` union" —
+        // a bare `Error<T>` inner (`error(x)$`) is not a union but is
+        // ALWAYS an error, and passing it through handed the error
+        // Value's payload word to the success consumer as a scalar
+        // (ASLR-varying garbage output; soak jul12f/jul12g fuzz
+        // divergence_000000). The node-walk checks `Value::Error` at
+        // runtime regardless of the static type — an error-bearing
+        // non-union inner de-fuses to it.
+        if type_may_error(&inner_typ) {
+            return Err(anyhow!(
+                "emit_clif: `?`/`$` inner type {inner_typ:?} can be an error                  but is not a [T, Error<E>] union — node-walk handles it"
+            ));
+        }
         // No error possible — passthrough; the handler (if any) never fires.
         return inner.emit_clif(cx);
     }
