@@ -52,21 +52,20 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
                 args,
                 vargs,
                 rtype,
-                constraints,
                 throws,
                 explicit_throws: _,
                 lambda_ids: _,
             } = &**f;
+            // Constraint TYPES live in the signature cells'
+            // conjunctions (phase C); the `TVar` arm above walks each
+            // reachable cell's conjuncts, so the signature-component
+            // walks cover everything the retired list walk reached.
             args.iter().any(|t| would_cycle_inner(addr, &t.typ))
                 || match vargs {
                     None => false,
                     Some(t) => would_cycle_inner(addr, t),
                 }
                 || would_cycle_inner(addr, rtype)
-                || constraints.read().iter().any(|a| {
-                    Arc::as_ptr(&a.0.read().typ).addr() == addr
-                        || would_cycle_inner(addr, &a.1)
-                })
                 || would_cycle_inner(addr, &throws)
         }
     }

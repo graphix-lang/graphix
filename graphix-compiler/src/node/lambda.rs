@@ -18,7 +18,7 @@ use enumflags2::BitFlags;
 use log::error;
 use netidx::{pack::Pack, subscriber::Value, utils::Either};
 use nohash::IntMap;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{
     collections::hash_map::Entry as MapEntry,
@@ -670,9 +670,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
             };
             wrap!(args[i], atyp.check_contains(&ctx.env, &args[i].typ()))?
         }
-        for (tv, tc) in self.typ.constraints.read().iter() {
-            tc.check_contains(&ctx.env, &Type::TVar(tv.clone()))?
-        }
+        // The old post-hoc constraint-list check is retired (phase C):
+        // cell conjuncts are validated at every bind by
+        // `cell_constraints_ok`, which reaches the same cells with a
+        // better error site.
         self.apply.typecheck0(ctx, args)
     }
 
@@ -799,7 +800,6 @@ impl Lambda {
                 Ok((tv, tc))
             })
             .collect::<Result<LPooled<Vec<_>>>>()?;
-        let constraints = Arc::new(RwLock::new(constraints));
         let original_scope = scope.clone();
         let _original_scope = scope.clone();
         let scope = scope.append(&format_compact!("fn{}", id.0));
@@ -849,7 +849,6 @@ impl Lambda {
             let explicit_throws = throws.is_some();
             let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
             Arc::new(FnType {
-                constraints,
                 args,
                 vargs,
                 rtype,
@@ -858,15 +857,21 @@ impl Lambda {
                 lambda_ids: LambdaIds::default(),
             })
         };
-        typ.alias_tvars(&mut LPooled::take());
         // Seed the CELL constraints — the explicit `'a: T |…|` form is
-        // sugar for a constrained cell; `FnType.constraints` remains as
-        // the display/interface artifact (design/tvar_constraints.md
-        // phase B). Seeding AFTER alias_tvars puts the conjunct in the
-        // one shared cell every same-named leaf now points at.
-        let constraints = typ.constraints.read().clone();
-        for (tv, tc) in constraints.iter() {
-            tv.add_cell_constraint(tc.clone());
+        // sugar for a constrained cell, and the cells are the ONLY
+        // store (phase C). Alias same-named leaves onto the declared
+        // quantifier tvars FIRST so the conjunct lands in the one
+        // shared cell every occurrence points at.
+        {
+            let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+            for (tv, _) in constraints.iter() {
+                known.insert(tv.name.clone(), tv.clone());
+            }
+            typ.alias_tvars(&mut known);
+            for (tv, tc) in constraints.iter() {
+                tc.alias_tvars(&mut known);
+                tv.add_cell_constraint(tc.clone());
+            }
         }
         typ.lambda_ids.set_id(id);
         let _typ = typ.clone();

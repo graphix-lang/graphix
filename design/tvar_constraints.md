@@ -415,3 +415,46 @@ rung, deleting the callsite post-hoc constraint check, simplifying
 `static_resolve`'s never/wrapper special cases, and making the fusion
 mono-cache refusal an assert. Each retirement gets its own commit with
 the reasoning, or a note in this doc for why it must stay.
+
+## Phase C as built (2026-07-12): `FnType.constraints` retired
+
+Eric: "I'd like to see constraints in FnType go away soon if it's
+vestigial." It was — the cells have been the semantics since phase B.
+The list is GONE from the struct; every former consumer derives from
+the cells:
+
+- **`FnType::constraint_view()`** — name-sorted `(tvar, constraint)`
+  pairs for signature-reachable cells carrying exactly ONE conjunct
+  (the old listing rule; multi-conjunct cells print at use sites via
+  DerefTVars). Feeds Display/PrettyDisplay (`fn<'a: C>` headers),
+  PartialEq/Ord/Hash, contains/sig_contains constraint checks, and
+  the Pack wire slot.
+- **Construction seeds cells**: the parser (`typexp::fntype`) and the
+  Lambda compile both alias same-named signature leaves onto the
+  declared quantifier tvars FIRST, then `add_cell_constraint` — the
+  conjunct lands in the one shared cell. The AST (`LambdaExpr
+  .constraints`, type-expression pairs) is unchanged: it's the parse
+  product and prints back as written.
+- **Pack keeps the wire slot** (format-compatible): encode writes the
+  derived view (redundant — the TVar codec round-trips each cell's
+  conjunction), decode re-seeds entries onto cells
+  (`add_cell_constraint` dedups).
+- **`sig_matches_int`'s impl-constraint check is now SATISFACTION**:
+  the signature's concrete choice must be ADMITTED by the impl's
+  inferred constraint (`impl_tc.contains(sig_type)` probe), not
+  structurally sig-matched — the old equality check spurious-rejected
+  concretely-typed `.gxi` signatures over inferred-generic impls
+  (the dynamic_module0 sharp edge from the strictness experiment).
+- **Expected wins taken**: the BuiltInLambda post-hoc constraint-list
+  check is deleted (cell binds validate via `cell_constraints_ok`);
+  `would_cycle_inner`'s Fn arm dropped its list walk (the TVar arm
+  already walks cell conjuncts).
+- Orphan quantifiers (a declared `'q` unreachable from the signature)
+  are now invisible — they constrained nothing before and don't
+  print now; round-trip equality holds because both sides derive.
+
+Validation: workspace 2289/0 (1802 fixtures), parser tests + 20k-case
+round-trip proptest, fuzz regress 140/0, detcheck 160/0, all soak
+corpora agree. Remaining from the phase-B wins list: `any_as_tvar`
+retirement and the `reset_tvars` → `instantiate` rename — both still
+deferred, neither blocked by this.

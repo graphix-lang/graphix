@@ -1114,7 +1114,6 @@ fn labeled_argument_lambda() {
             rtype: Type::Primitive(Typ::String.into()),
             throws: Type::Bottom,
             explicit_throws: false,
-            constraints: Arc::new(RwLock::new(LPooled::take())),
             ..Default::default()
         }))),
         value: ExprKind::Lambda(Arc::new(LambdaExpr {

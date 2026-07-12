@@ -30,8 +30,6 @@ use netidx_core::{
     pack::{self, Pack, PackError},
     path::Path,
 };
-use parking_lot::RwLock;
-use poolshark::local::LPooled;
 use std::cell::RefCell;
 use triomphe::Arc;
 
@@ -169,8 +167,15 @@ impl Pack for TVar {
 }
 
 impl Pack for FnType {
+    // The retired constraints LIST keeps its WIRE SLOT for format
+    // compatibility: the cells are the only store (phase C) and the
+    // TVar codec already round-trips each cell's conjunction, so the
+    // slot encodes the derived view (redundant on the wire) and
+    // decode re-seeds any entries onto the cells (a no-op for data
+    // this codec wrote — `add_cell_constraint` dedups).
     fn encoded_len(&self) -> usize {
-        let constraints = self.constraints.read();
+        let constraints: Vec<(TVar, Type)> =
+            self.constraint_view().drain(..).collect();
         self.args.encoded_len()
             + self.vargs.encoded_len()
             + self.rtype.encoded_len()
@@ -183,7 +188,8 @@ impl Pack for FnType {
         self.args.encode(buf)?;
         self.vargs.encode(buf)?;
         self.rtype.encode(buf)?;
-        let constraints = self.constraints.read();
+        let constraints: Vec<(TVar, Type)> =
+            self.constraint_view().drain(..).collect();
         <Vec<(TVar, Type)> as Pack>::encode(&constraints, buf)?;
         self.throws.encode(buf)?;
         self.explicit_throws.encode(buf)
@@ -196,12 +202,13 @@ impl Pack for FnType {
         let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
         let throws = <Type as Pack>::decode(buf)?;
         let explicit_throws = <bool as Pack>::decode(buf)?;
-        let constraints: LPooled<Vec<(TVar, Type)>> = constraints.into_iter().collect();
+        for (tv, tc) in constraints {
+            tv.add_cell_constraint(tc);
+        }
         Ok(FnType {
             args,
             vargs,
             rtype,
-            constraints: Arc::new(RwLock::new(constraints)),
             throws,
             explicit_throws,
             // Provenance only — excluded from FnType identity, rebuilt fresh.

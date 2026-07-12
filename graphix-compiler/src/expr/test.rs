@@ -297,20 +297,37 @@ fn typexp() -> impl Strategy<Value = Type> {
                         });
                     let explicit_throws = throws.is_some();
                     let throws = throws.unwrap_or(Type::Bottom);
-                    Type::Fn(Arc::new(FnType {
+                    let ft = FnType {
                         args: Arc::from_iter(args),
                         vargs,
                         rtype,
-                        constraints: Arc::new(RwLock::new(
-                            constraints
-                                .into_iter()
-                                .map(|(a, t)| (TVar::empty_named(a), t))
-                                .collect(),
-                        )),
                         throws,
                         explicit_throws,
                         ..Default::default()
-                    }))
+                    };
+                    // Mirror the parser: quantifier constraints seed
+                    // CELLS after aliasing same-named signature
+                    // leaves onto the quantifier tvars (phase C — the
+                    // cells are the only store). Orphan quantifiers
+                    // (names not reachable from the signature) are
+                    // invisible to `constraint_view` on BOTH sides of
+                    // the round trip, so equality still holds.
+                    {
+                        let mut known: ahash::AHashMap<ArcStr, TVar> =
+                            ahash::AHashMap::default();
+                        let pairs: Vec<(TVar, Type)> = constraints
+                            .into_iter()
+                            .map(|(a, t)| (TVar::empty_named(a), t))
+                            .collect();
+                        for (tv, _) in pairs.iter() {
+                            known.insert(tv.name.clone(), tv.clone());
+                        }
+                        ft.alias_tvars(&mut known);
+                        for (tv, tc) in pairs {
+                            tv.add_cell_constraint(tc);
+                        }
+                    }
+                    Type::Fn(Arc::new(ft))
                 })
         ]
     })

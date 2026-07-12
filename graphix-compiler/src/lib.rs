@@ -57,7 +57,7 @@ use netidx_protocols::rpc::server::{ArgSpec, RpcCall};
 use netidx_value::{Abstract, abstract_type::AbstractWrapper};
 use node::compiler;
 use nohash::{IntMap, IntSet};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
@@ -697,7 +697,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         static EMPTY: LazyLock<Arc<FnType>> = LazyLock::new(|| {
             Arc::new(FnType {
                 args: Arc::from_iter([]),
-                constraints: Arc::new(RwLock::new(LPooled::take())),
                 rtype: Type::Bottom,
                 throws: Type::Bottom,
                 vargs: None,

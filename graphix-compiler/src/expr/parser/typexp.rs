@@ -17,7 +17,6 @@ use combine::{
     token, unexpected_any, value,
 };
 use netidx::{publisher::Typ, utils::Either};
-use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -78,7 +77,7 @@ where
     .skip(not_prefix())
 }
 
-fn fnconstraints<I>() -> impl Parser<I, Output = Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>>
+fn fnconstraints<I>() -> impl Parser<I, Output = LPooled<Vec<(TVar, Type)>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -94,10 +93,7 @@ where
                 token('>'),
             ),
         )))
-        .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| match cs {
-            Some(cs) => Arc::new(RwLock::new(cs)),
-            None => Arc::new(RwLock::new(LPooled::take())),
-        })
+        .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| cs.unwrap_or_else(LPooled::take))
 }
 
 fn fnlabeled<I>() -> impl Parser<I, Output = FnArgType>
@@ -193,16 +189,31 @@ where
             }
             let explicit_throws = throws.is_some();
             let throws = throws.unwrap_or(Type::Bottom);
-            value(FnType {
+            let ft = FnType {
                 args,
                 vargs,
                 rtype,
-                constraints,
                 throws,
                 explicit_throws,
                 ..Default::default()
-            })
-            .right()
+            };
+            // Quantifier constraints seed CELLS (phase C — the cells
+            // are the only store). Alias the signature's same-named
+            // tvars to the quantifier tvars FIRST so the conjunct
+            // lands in the one cell every occurrence shares; the
+            // constraint types' own tvars go through the same map.
+            {
+                let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+                for (tv, _) in constraints.iter() {
+                    known.insert(tv.name.clone(), tv.clone());
+                }
+                ft.alias_tvars(&mut known);
+                for (tv, tc) in constraints.iter() {
+                    tc.alias_tvars(&mut known);
+                    tv.add_cell_constraint(tc.clone());
+                }
+            }
+            value(ft).right()
         })
 }
 

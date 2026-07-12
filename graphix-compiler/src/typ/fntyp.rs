@@ -16,7 +16,6 @@ use netidx_derive::Pack;
 use nohash::{IntMap, IntSet};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
-use smallvec::{SmallVec, smallvec};
 use std::{
     cmp::{Eq, Ordering, PartialEq},
     fmt::{self, Debug, Write},
@@ -265,16 +264,59 @@ impl LambdaIds {
     }
 }
 
+/// A function signature. Since tvar-constraints phase C the CELLS are
+/// the only constraint store: a quantifier like `fn<'a: Number>`
+/// seeds `'a`'s cell conjunction at construction, and every consumer
+/// that used to read the retired `constraints` LIST derives its view
+/// from the signature's reachable cells ([`FnType::constraint_view`]).
 #[derive(Debug, Clone)]
 pub struct FnType {
     pub args: Arc<[FnArgType]>,
     pub vargs: Option<Type>,
     pub rtype: Type,
-    pub constraints: Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>,
     pub throws: Type,
     pub explicit_throws: bool,
     /// accumulated set of all LambdaIds this type might represent
     pub lambda_ids: LambdaIds,
+}
+
+impl FnType {
+    /// The tvar cells reachable from the SIGNATURE components (args /
+    /// vargs / rtype / throws), by name. The retired constraints
+    /// list's tvars shared these cells by construction (phase B), so
+    /// this is the complete cell set every list walker used to reach.
+    fn sig_tvars(&self) -> LPooled<AHashMap<ArcStr, TVar>> {
+        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        for arg in self.args.iter() {
+            arg.typ.collect_tvars(&mut known);
+        }
+        if let Some(t) = &self.vargs {
+            t.collect_tvars(&mut known);
+        }
+        self.rtype.collect_tvars(&mut known);
+        self.throws.collect_tvars(&mut known);
+        known
+    }
+
+    /// The display/interface view the retired list used to hold:
+    /// name-sorted `(tvar, constraint)` pairs for every reachable
+    /// cell carrying EXACTLY ONE conjunct. Multi-conjunct cells stay
+    /// unlisted (the old listing rule — one type per var; an
+    /// approximation could leak into interface matching), and their
+    /// conjunction still prints at use sites under `DerefTVars`
+    /// ("'a: unbound within A & B").
+    pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
+        let known = self.sig_tvars();
+        let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        for tv in known.values() {
+            let cons = tv.cell_constraints();
+            if let [tc] = &cons[..] {
+                view.push((tv.clone(), tc.clone()));
+            }
+        }
+        view.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+        view
+    }
 }
 
 impl PartialEq for FnType {
@@ -283,7 +325,6 @@ impl PartialEq for FnType {
             args: args0,
             vargs: vargs0,
             rtype: rtype0,
-            constraints: constraints0,
             throws: th0,
             explicit_throws: _,
             lambda_ids: _,
@@ -292,7 +333,6 @@ impl PartialEq for FnType {
             args: args1,
             vargs: vargs1,
             rtype: rtype1,
-            constraints: constraints1,
             throws: th1,
             explicit_throws: _,
             lambda_ids: _,
@@ -300,8 +340,8 @@ impl PartialEq for FnType {
         args0 == args1
             && vargs0 == vargs1
             && rtype0 == rtype1
-            && &*constraints0.read() == &*constraints1.read()
             && th0 == th1
+            && *self.constraint_view() == *other.constraint_view()
     }
 }
 
@@ -314,7 +354,6 @@ impl PartialOrd for FnType {
             args: args0,
             vargs: vargs0,
             rtype: rtype0,
-            constraints: constraints0,
             throws: th0,
             explicit_throws: _,
             lambda_ids: _,
@@ -323,7 +362,6 @@ impl PartialOrd for FnType {
             args: args1,
             vargs: vargs1,
             rtype: rtype1,
-            constraints: constraints1,
             throws: th1,
             explicit_throws: _,
             lambda_ids: _,
@@ -332,7 +370,8 @@ impl PartialOrd for FnType {
             Some(Ordering::Equal) => match vargs0.partial_cmp(vargs1) {
                 Some(Ordering::Equal) => match rtype0.partial_cmp(rtype1) {
                     Some(Ordering::Equal) => {
-                        match constraints0.read().partial_cmp(&*constraints1.read()) {
+                        match (*self.constraint_view()).partial_cmp(&*other.constraint_view())
+                        {
                             Some(Ordering::Equal) => th0.partial_cmp(th1),
                             r => r,
                         }
@@ -354,26 +393,19 @@ impl Ord for FnType {
 
 impl std::hash::Hash for FnType {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Mirror PartialEq: include args, vargs, rtype, constraints
-        // (locked), throws. Skip lambda_ids (provenance) and
-        // explicit_throws (the pretty-printer doesn't preserve it
-        // through round-trip when `throws == Bottom`, so equality
-        // would break parser round-trip tests; for fusion's
-        // monomorphization cache, explicit_throws is folded into
-        // the key separately).
-        let Self {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws: _,
-            lambda_ids: _,
-        } = self;
+        // Mirror PartialEq: include args, vargs, rtype, the
+        // cell-derived constraint view, throws. Skip lambda_ids
+        // (provenance) and explicit_throws (the pretty-printer
+        // doesn't preserve it through round-trip when
+        // `throws == Bottom`, so equality would break parser
+        // round-trip tests; for fusion's monomorphization cache,
+        // explicit_throws is folded into the key separately).
+        let Self { args, vargs, rtype, throws, explicit_throws: _, lambda_ids: _ } =
+            self;
         args.hash(state);
         vargs.hash(state);
         rtype.hash(state);
-        constraints.read().hash(state);
+        self.constraint_view().hash(state);
         throws.hash(state);
     }
 }
@@ -384,7 +416,6 @@ impl Default for FnType {
             args: Arc::from_iter([]),
             vargs: None,
             rtype: Default::default(),
-            constraints: Arc::new(RwLock::new(LPooled::take())),
             throws: Default::default(),
             explicit_throws: false,
             lambda_ids: LambdaIds::default(),
@@ -394,8 +425,7 @@ impl Default for FnType {
 
 impl FnType {
     pub(super) fn normalize_int(&self, seen: &mut IntSet<usize>) -> Self {
-        let Self { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids } =
-            self;
+        let Self { args, vargs, rtype, throws, explicit_throws, lambda_ids } = self;
         let args =
             Arc::from_iter(args.iter().map(|a| FnArgType {
                 kind: a.kind.clone(),
@@ -403,17 +433,10 @@ impl FnType {
             }));
         let vargs = vargs.as_ref().map(|t| t.normalize_int(seen));
         let rtype = rtype.normalize_int(seen);
-        let constraints = Arc::new(RwLock::new(
-            constraints
-                .read()
-                .iter()
-                .map(|(tv, t)| (tv.clone(), t.normalize_int(seen)))
-                .collect(),
-        ));
         let throws = throws.normalize_int(seen);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
-        FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
+        FnType { args, vargs, rtype, throws, explicit_throws, lambda_ids }
     }
 
     /// Deep-clone with all bound TVars replaced by their concrete types.
@@ -423,38 +446,22 @@ impl FnType {
     }
 
     pub(super) fn resolve_tvars_seen_int(&self, seen: &mut IntSet<usize>) -> Self {
-        let Self {
-            args,
-            vargs,
-            rtype,
-            constraints: _,
-            throws,
-            explicit_throws,
-            lambda_ids,
-        } = self;
+        let Self { args, vargs, rtype, throws, explicit_throws, lambda_ids } = self;
         let args = Arc::from_iter(args.iter().map(|a| FnArgType {
             kind: a.kind.clone(),
             typ: a.typ.resolve_tvars_seen_int(seen),
         }));
         let vargs = vargs.as_ref().map(|t| t.resolve_tvars_seen_int(seen));
         let rtype = rtype.resolve_tvars_seen_int(seen);
-        let constraints = Arc::new(RwLock::new(LPooled::take()));
         let throws = throws.resolve_tvars_seen_int(seen);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
-        FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
+        FnType { args, vargs, rtype, throws, explicit_throws, lambda_ids }
     }
 
     pub fn unbind_tvars(&self) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws: _,
-            lambda_ids: _,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws: _, lambda_ids: _ } =
+            self;
         for arg in args.iter() {
             arg.typ.unbind_tvars()
         }
@@ -462,9 +469,6 @@ impl FnType {
             t.unbind_tvars()
         }
         rtype.unbind_tvars();
-        for (tv, _) in constraints.read().iter() {
-            tv.unbind();
-        }
         throws.unbind_tvars();
     }
 
@@ -480,8 +484,7 @@ impl FnType {
     pub fn constrain_known(&self, closed_only: bool) {
         let mut known = LPooled::take();
         self.collect_tvars(&mut known);
-        let mut constraints = self.constraints.write();
-        for (name, tv) in known.drain() {
+        for (_, tv) in known.drain() {
             // clone the binding OUT of the cell guards before acting —
             // add_cell_constraint write-locks the same cell (lock
             // discipline, see CLAUDE.md emit contracts)
@@ -495,58 +498,40 @@ impl FnType {
                     _ => continue,
                 }
             }
-            let listed = constraints.iter().any(|(ltv, _)| ltv.name == name);
-            match bound {
-                Some(t) if t != Type::Bottom && t != Type::Any => {
-                    // Snapshot with PRIVATE cells (`reset_tvars`), and
-                    // leave still-open leaves OPEN: a binding whose
-                    // interior cell is unbound is a PARTIAL fact, and
-                    // closing the leaf (the old `bind_as(Any)`) turned
-                    // "an array of something not yet solved" into the
-                    // false fact `Array<Any>` — `settle` then
-                    // materialized it as a real binding and every
-                    // instance of a nested generic def inherited an
-                    // element type the body never delivers (sync-subset
-                    // P4, the nested in-language map). The fresh open
-                    // leaf still carries the source cell's constraint
-                    // conjunction, so the obligation survives without
-                    // the lie.
-                    let t = t.reset_tvars();
-                    let tc = t.normalize();
-                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
-                        eprintln!(
-                            "CONSTRAIN-KNOWN '{}({:x}) += {tc:?}",
-                            tv.name,
-                            tv.cell_addr()
-                        );
-                    }
-                    // The def-time binding is a FACT every instance must
-                    // honor (observation #4): seed it as a cell conjunct
-                    // even when the name carries an explicit listed
-                    // constraint. The cell is the semantics — it
-                    // survives the def-time unbind and per-site
-                    // freshening, and argument unification checks it AT
-                    // THE BINDING ARG. The list entry remains the
-                    // display/interface artifact
-                    // (design/tvar_constraints.md phase B).
-                    tv.add_cell_constraint(tc.clone());
-                    if !listed {
-                        constraints.push((tv.clone(), tc));
-                    }
+            if let Some(t) = bound
+                && t != Type::Bottom
+                && t != Type::Any
+            {
+                // Snapshot with PRIVATE cells (`reset_tvars`), and
+                // leave still-open leaves OPEN: a binding whose
+                // interior cell is unbound is a PARTIAL fact, and
+                // closing the leaf (the old `bind_as(Any)`) turned
+                // "an array of something not yet solved" into the
+                // false fact `Array<Any>` — `settle` then
+                // materialized it as a real binding and every
+                // instance of a nested generic def inherited an
+                // element type the body never delivers (sync-subset
+                // P4, the nested in-language map). The fresh open
+                // leaf still carries the source cell's constraint
+                // conjunction, so the obligation survives without
+                // the lie.
+                let t = t.reset_tvars();
+                let tc = t.normalize();
+                if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                    eprintln!(
+                        "CONSTRAIN-KNOWN '{}({:x}) += {tc:?}",
+                        tv.name,
+                        tv.cell_addr()
+                    );
                 }
-                Some(_) | None => {
-                    // Constrained-unbound cells (arith's constrain-don't-
-                    // bind) surface in the signature list for display and
-                    // interface files. Multi-conjunct cells are left
-                    // unlisted — the list holds one type per var and an
-                    // approximation could leak into interface matching.
-                    if !listed {
-                        let cons = tv.cell_constraints();
-                        if let [tc] = &cons[..] {
-                            constraints.push((tv.clone(), tc.clone()));
-                        }
-                    }
-                }
+                // The def-time binding is a FACT every instance must
+                // honor (observation #4): a cell conjunct — the cell
+                // is the ONLY store (phase C). It survives the
+                // def-time unbind and per-site freshening, and
+                // argument unification checks it AT THE BINDING ARG;
+                // display/interface listings derive from the cells
+                // (`constraint_view`).
+                tv.add_cell_constraint(tc);
             }
         }
     }
@@ -556,42 +541,21 @@ impl FnType {
     }
 
     /// One cell-identity freshening map across the whole signature —
-    /// see [`Type::reset_tvars_int`]. The constraints-list tvars come
-    /// through the same map, so a list entry starts out sharing its
-    /// arg/rtype cell instead of orphaning at birth.
+    /// see [`Type::reset_tvars_int`]. Cell constraint conjunctions
+    /// travel with the cells (the TVar-level reset copies them), so
+    /// nothing beyond the signature components needs freshening.
     pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Self {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws,
-            lambda_ids,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws, lambda_ids } = self;
         let args = Arc::from_iter(args.iter().map(|a| FnArgType {
             kind: a.kind.clone(),
             typ: a.typ.reset_tvars_int(known),
         }));
         let vargs = vargs.as_ref().map(|t| t.reset_tvars_int(known));
         let rtype = rtype.reset_tvars_int(known);
-        let constraints = Arc::new(RwLock::new(
-            constraints
-                .read()
-                .iter()
-                .map(|(tv, tc)| {
-                    let tv = match Type::TVar(tv.clone()).reset_tvars_int(known) {
-                        Type::TVar(tv) => tv,
-                        _ => unreachable!(),
-                    };
-                    (tv, tc.reset_tvars_int(known))
-                })
-                .collect(),
-        ));
         let throws = throws.reset_tvars_int(known);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
-        FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
+        FnType { args, vargs, rtype, throws, explicit_throws, lambda_ids }
     }
 
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Type>) -> Self {
@@ -603,26 +567,17 @@ impl FnType {
         known: &AHashMap<ArcStr, Type>,
         renamed: &mut AHashMap<ArcStr, TVar>,
     ) -> Self {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws,
-            lambda_ids,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws, lambda_ids } = self;
         let args = Arc::from_iter(args.iter().map(|a| FnArgType {
             kind: a.kind.clone(),
             typ: a.typ.replace_tvars_int(known, renamed),
         }));
         let vargs = vargs.as_ref().map(|t| t.replace_tvars_int(known, renamed));
         let rtype = rtype.replace_tvars_int(known, renamed);
-        let constraints = constraints.clone();
         let throws = throws.replace_tvars_int(known, renamed);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
-        FnType { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
+        FnType { args, vargs, rtype, throws, explicit_throws, lambda_ids }
     }
 
     /// Replace automatically constrained type variables (those with
@@ -637,21 +592,15 @@ impl FnType {
     /// constraints with nothing to fold against.
     pub fn replace_auto_constrained(&self) -> Self {
         let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-        let Self { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids } =
-            self;
-        let constraints: LPooled<Vec<(TVar, Type)>> = constraints
-            .read()
-            .iter()
-            .filter_map(|(tv, ct)| {
-                if tv.name.starts_with("_") {
-                    known.insert(tv.name.clone(), ct.clone());
-                    None
-                } else {
-                    Some((tv.clone(), ct.clone()))
-                }
-            })
-            .collect();
-        let constraints = Arc::new(RwLock::new(constraints));
+        let Self { args, vargs, rtype, throws, explicit_throws, lambda_ids } = self;
+        // Auto ('_N) single-conjunct cells fold to their constraint
+        // type for display; named quantifiers keep their cells (the
+        // constraint stays visible via `constraint_view`).
+        for (tv, ct) in self.constraint_view().drain(..) {
+            if tv.name.starts_with("_") {
+                known.insert(tv.name.clone(), ct);
+            }
+        }
         let mut all_tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut all_tvars);
         for (name, tv) in all_tvars.drain() {
@@ -668,39 +617,21 @@ impl FnType {
         let throws = throws.replace_tvars(&known);
         let explicit_throws = *explicit_throws;
         let lambda_ids = lambda_ids.clone();
-        Self { args, vargs, rtype, constraints, throws, explicit_throws, lambda_ids }
+        Self { args, vargs, rtype, throws, explicit_throws, lambda_ids }
     }
 
     pub fn has_unbound(&self) -> bool {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws: _,
-            lambda_ids: _,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws: _, lambda_ids: _ } =
+            self;
         args.iter().any(|a| a.typ.has_unbound())
             || vargs.as_ref().map(|t| t.has_unbound()).unwrap_or(false)
             || rtype.has_unbound()
-            || constraints
-                .read()
-                .iter()
-                .any(|(tv, tc)| tv.read().typ.read().typ.is_none() || tc.has_unbound())
             || throws.has_unbound()
     }
 
     pub fn bind_as(&self, t: &Type) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws: _,
-            lambda_ids: _,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws: _, lambda_ids: _ } =
+            self;
         for a in args.iter() {
             a.typ.bind_as(t)
         }
@@ -708,27 +639,12 @@ impl FnType {
             va.bind_as(t)
         }
         rtype.bind_as(t);
-        for (tv, tc) in constraints.read().iter() {
-            let tv = tv.read();
-            let mut tv = tv.typ.write();
-            if tv.typ.is_none() {
-                tv.typ = Some(t.clone())
-            }
-            tc.bind_as(t)
-        }
         throws.bind_as(t);
     }
 
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws: _,
-            lambda_ids: _,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws: _, lambda_ids: _ } =
+            self;
         for arg in args.iter() {
             arg.typ.alias_tvars(known)
         }
@@ -736,23 +652,20 @@ impl FnType {
             vargs.alias_tvars(known)
         }
         rtype.alias_tvars(known);
-        for (tv, tc) in constraints.read().iter() {
-            Type::TVar(tv.clone()).alias_tvars(known);
-            tc.alias_tvars(known);
+        // Constraint TYPES live in the signature cells' conjunctions;
+        // alias their interior tvars one level (the retired list's
+        // `tc.alias_tvars` walk).
+        for tv in self.sig_tvars().values() {
+            for tc in tv.cell_constraints() {
+                tc.alias_tvars(known);
+            }
         }
         throws.alias_tvars(known);
     }
 
     pub fn unfreeze_tvars(&self) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws: _,
-            lambda_ids: _,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws: _, lambda_ids: _ } =
+            self;
         for arg in args.iter() {
             arg.typ.unfreeze_tvars()
         }
@@ -760,23 +673,17 @@ impl FnType {
             vargs.unfreeze_tvars()
         }
         rtype.unfreeze_tvars();
-        for (tv, tc) in constraints.read().iter() {
-            Type::TVar(tv.clone()).unfreeze_tvars();
-            tc.unfreeze_tvars();
+        for tv in self.sig_tvars().values() {
+            for tc in tv.cell_constraints() {
+                tc.unfreeze_tvars();
+            }
         }
         throws.unfreeze_tvars();
     }
 
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            constraints,
-            throws,
-            explicit_throws: _,
-            lambda_ids: _,
-        } = self;
+        let FnType { args, vargs, rtype, throws, explicit_throws: _, lambda_ids: _ } =
+            self;
         for arg in args.iter() {
             arg.typ.collect_tvars(known)
         }
@@ -784,9 +691,10 @@ impl FnType {
             vargs.collect_tvars(known)
         }
         rtype.collect_tvars(known);
-        for (tv, tc) in constraints.read().iter() {
-            Type::TVar(tv.clone()).collect_tvars(known);
-            tc.collect_tvars(known);
+        for tv in self.sig_tvars().values() {
+            for tc in tv.cell_constraints() {
+                tc.collect_tvars(known);
+            }
         }
         throws.collect_tvars(known);
     }
@@ -861,16 +769,14 @@ impl FnType {
             }
             && self.rtype.contains_int(flags, env, hist, &t.rtype)?
             && self
-                .constraints
-                .read()
+                .constraint_view()
                 .iter()
                 .map(|(tv, tc)| {
                     tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))
                 })
                 .collect::<Result<AndAc>>()?
                 .0
-            && t.constraints
-                .read()
+            && t.constraint_view()
                 .iter()
                 .map(|(tv, tc)| {
                     tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))
@@ -894,7 +800,6 @@ impl FnType {
             args: args0,
             vargs: vargs0,
             rtype: rtype0,
-            constraints: constraints0,
             throws: tr0,
             explicit_throws: _,
             lambda_ids: _,
@@ -903,7 +808,6 @@ impl FnType {
             args: args1,
             vargs: vargs1,
             rtype: rtype1,
-            constraints: constraints1,
             throws: tr1,
             explicit_throws: _,
             lambda_ids: _,
@@ -921,14 +825,14 @@ impl FnType {
                 (Some(t0), Some(t1)) => t0.contains(env, t1)?,
             }
             && rtype0.contains(env, rtype1)?
-            && constraints0
-                .read()
+            && self
+                .constraint_view()
                 .iter()
                 .map(|(tv, tc)| tc.contains(env, &Type::TVar(tv.clone())))
                 .collect::<Result<AndAc>>()?
                 .0
-            && constraints1
-                .read()
+            && other
+                .constraint_view()
                 .iter()
                 .map(|(tv, tc)| tc.contains(env, &Type::TVar(tv.clone())))
                 .collect::<Result<AndAc>>()?
@@ -970,7 +874,6 @@ impl FnType {
             args: sig_args,
             vargs: sig_vargs,
             rtype: sig_rtype,
-            constraints: sig_constraints,
             throws: sig_throws,
             explicit_throws: _,
             lambda_ids: _,
@@ -979,7 +882,6 @@ impl FnType {
             args: impl_args,
             vargs: impl_vargs,
             rtype: impl_rtype,
-            constraints: impl_constraints,
             throws: impl_throws,
             explicit_throws: _,
             lambda_ids: _,
@@ -1026,8 +928,8 @@ impl FnType {
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist, adts)
             .context("in throws clause")?;
-        let sig_cons = sig_constraints.read();
-        let impl_cons = impl_constraints.read();
+        let sig_cons = self.constraint_view();
+        let impl_cons = impl_fn.constraint_view();
         for (sig_tv, sig_tc) in sig_cons.iter() {
             if !impl_cons
                 .iter()
@@ -1040,11 +942,27 @@ impl FnType {
             match tvar_map.get(&impl_tv.inner_addr()).cloned() {
                 None | Some(Type::TVar(_)) => (),
                 Some(sig_type) => {
-                    sig_type.sig_matches_int(env, impl_tc, tvar_map, hist, adts).with_context(|| {
-                        format!(
-                            "signature has concrete type {sig_type}, implementation constraint is {impl_tc}"
+                    // SATISFACTION, not structural sig-match: the
+                    // signature's concrete choice for this position
+                    // must be ADMITTED by the implementation's
+                    // inferred constraint (`fn(x: i64)` vs an impl
+                    // whose formal is constrained to Number — the
+                    // concrete i64 satisfies it). A structural match
+                    // here spurious-rejected every concretely-typed
+                    // signature over an inferred-generic impl.
+                    let ok = impl_tc
+                        .contains_int(
+                            enumflags2::BitFlags::empty(),
+                            env,
+                            &mut RefHist::new(LPooled::take()),
+                            &sig_type,
                         )
-                    })?;
+                        .unwrap_or(false);
+                    if !ok {
+                        bail!(
+                            "signature has concrete type {sig_type}, which the                              implementation constraint {impl_tc} does not admit"
+                        )
+                    }
                 }
             }
         }
@@ -1084,17 +1002,10 @@ impl FnType {
                 kind: a.kind.clone(),
                 typ: a.typ.scope_refs(scope),
             }));
-        let mut cres: SmallVec<[(TVar, Type); 4]> = smallvec![];
-        for (tv, tc) in self.constraints.read().iter() {
-            let tv = tv.scope_refs(scope);
-            let tc = tc.scope_refs(scope);
-            cres.push((tv, tc));
-        }
         let throws = self.throws.scope_refs(scope);
         FnType {
             args,
             rtype,
-            constraints: Arc::new(RwLock::new(cres.into_iter().collect())),
             vargs,
             throws,
             explicit_throws: self.explicit_throws,
@@ -1105,7 +1016,7 @@ impl FnType {
 
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let constraints = self.constraints.read();
+        let constraints = self.constraint_view();
         if constraints.len() == 0 {
             write!(f, "fn(")?;
         } else {
@@ -1160,7 +1071,7 @@ impl fmt::Display for FnType {
 
 impl PrettyDisplay for FnType {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let constraints = self.constraints.read();
+        let constraints = self.constraint_view();
         if constraints.is_empty() {
             writeln!(buf, "fn(")?;
         } else {
