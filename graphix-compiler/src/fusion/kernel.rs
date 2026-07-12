@@ -1145,6 +1145,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         if !any_updated && !has_dynamic_fn_params && event.init {
             any_updated = true;
         }
+        if std::env::var_os("GXDBG_KPOLL").is_some() {
+            eprintln!(
+                "KPOLL {} init={} any_updated={any_updated} any_produced={any_produced} fired={:?} present={:?} fd={}",
+                self.kernel.fn_name,
+                event.init,
+                &fired_this_cycle[..],
+                self.args.iter().map(|a| a.is_some()).collect::<Vec<_>>(),
+                ctx.frame_depth
+            );
+        }
         if !any_updated {
             // A poll that delivered only STALE productions (an
             // evaluation frame re-running the node-walked loop around
@@ -1153,7 +1163,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             // what a re-run would compute — re-surface it on the value
             // channel (tagged STALE via `out_tag`) so the frame's acc
             // chain can advance without a firing (see `last_result`).
-            if any_produced && let Some(v) = &self.last_result {
+            // Inside a frame the resurface must not require a
+            // production: a ZERO-input const kernel (an inner
+            // callback's `|y| 7` region) has nothing that can produce
+            // after its init poll, and its `None` bottomed the framed
+            // loop via never-until-complete where the node-walk's
+            // Constant now rides the STALE value channel (jul12b
+            // 000000 — the nested-map stall). The Constant frame
+            // rule's kernel twin.
+            if (any_produced || ctx.frame_depth > 0)
+                && let Some(v) = &self.last_result
+            {
                 self.last_out = crate::Tag::STALE;
                 return Some(v.clone());
             }
