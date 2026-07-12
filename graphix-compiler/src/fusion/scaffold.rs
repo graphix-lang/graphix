@@ -568,12 +568,15 @@ pub fn push_field(
 /// helper boundary.
 ///
 /// STALE (firing): COARSE SEQUENTIAL (sync-subset P4) — the loop is
-/// ONE reactive node and fires iff ANY input it consumes fired (the
-/// source array, the init, a captured external, or a body
-/// evaluation). The node-walk `For` re-runs the whole loop with fired
-/// delivery on any input event, and the kernel agrees. The old
-/// per-slot precision (exact resize state-words, the chain-only fold
-/// rule) died with the per-slot machinery.
+/// ONE reactive node and fires iff a loop INPUT fired (the source
+/// array, the init, or a captured external — the interp `For` top
+/// gate) AND the evaluation was an event (a body evaluation fired,
+/// the source is empty, or the first-complete-run priming). Elements
+/// and the acc deliver FIRED by convention, so the input gate is
+/// what keeps an inline loop quiet when an UNRELATED region input
+/// invoked the kernel (see [`Self::apply`]). The old per-slot
+/// precision (exact resize state-words, the chain-only fold rule)
+/// died with the per-slot machinery.
 pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
@@ -698,13 +701,26 @@ impl SlotFlags {
             let ss = cx.b.ins().band_imm(d, STALE);
             src_quiet = cx.b.ins().band(src_quiet, ss);
         }
-        // quiet = slots-quiet AND (non-empty OR sources-quiet)
+        // The loop-INPUT gate, the interp `For` top gate's twin
+        // (`!(iter_up || init_up || ext_fired || event.init) → None`):
+        // a loop EVALUATION only happens when one of the loop's own
+        // inputs fired — elements/acc deliver FIRED by convention, so
+        // an elem-consuming body fires whenever the loop RUNS, and an
+        // inline loop runs whenever its REGION is invoked. Without
+        // the gate, an unrelated region input (a select guard's
+        // feeder) re-fired a const-fed fold on every kernel
+        // invocation where the node-walk's gated For stayed quiet
+        // (jul12d 000000: `select sync { …for…for… } { _ if in0… }`
+        // re-emitted per in0 event). `src_quiet` is exactly the gate
+        // word: sources + captured externals + the init all quiet.
+        //
+        // quiet = empty ? sources-quiet
+        //       : slots-quiet OR loop-inputs-quiet
         let quiet = match self.len {
             Some(len) => {
                 let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
-                let stale_c = cx.b.ins().iconst(types::I64, STALE);
-                let non_empty_word = cx.b.ins().select(empty, src_quiet, stale_c);
-                cx.b.ins().band(slots_word, non_empty_word)
+                let gated = cx.b.ins().bor(slots_word, src_quiet);
+                cx.b.ins().select(empty, src_quiet, gated)
             }
             None => slots_word,
         };

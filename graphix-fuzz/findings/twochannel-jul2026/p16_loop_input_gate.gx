@@ -1,0 +1,2 @@
+// schedule-v1: cap=64 events=512; in0=i64:0
+select sync { let mut m = i64:0; for v in [i64:1, i64:9] {select v > m {true => m = v, false => null}}; m } {i64:0 if in0 % i64:2 == i64:0 => i64:1, _ => i64:5}
