@@ -55,8 +55,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        if self.keys.is_empty() && event.init {
-            return Some(TagValue::fired(Value::Map(CMap::new())));
+        if self.keys.is_empty() {
+            // Empty producer = a constant: FIRED at init, the STALE
+            // value channel inside frames (the Constant frame rule —
+            // a per-site instance's `let res = []` seed died after
+            // frame resets and its For bottomed on the missing init,
+            // firing-jul2026/03).
+            if event.init {
+                return Some(TagValue::fired(Value::Map(CMap::new())));
+            } else if ctx.frame_depth > 0 {
+                return Some(TagValue::stale(Value::Map(CMap::new())));
+            }
+            return None;
         }
         let mut produced = false;
         let mut fired = false;

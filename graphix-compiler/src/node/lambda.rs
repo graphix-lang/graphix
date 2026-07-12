@@ -1122,9 +1122,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             ftyp.throws
                 .check_contains(&ctx.env, &inferred_throws)
                 .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()))?;
-            if ctx.def_gate_depth == 1 {
-                ftyp.constrain_known();
-            }
+            // Record the gate's inferred facts as cell conjuncts at
+            // EVERY gate exit. Skipping nested gates entirely
+            // (8630436f's depth-1 gate) was the typing-acceptance hole
+            // (jul10h 000002): an inline lambda's own body fact
+            // (`n == i64:3` ⟹ 'n ⊇ i64) was never recorded, so a
+            // tuple-passing site validated against a fully-open formal
+            // — no error, and the JIT froze a scalar slot the runtime
+            // fed a tuple. Nested gates record CLOSED facts only —
+            // the entanglement scoping that motivated the depth gate
+            // (see `FnType::constrain_known`).
+            ftyp.constrain_known(ctx.def_gate_depth > 1);
             Ok(())
         });
         ctx.def_gate_depth -= 1;

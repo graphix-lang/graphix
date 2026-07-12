@@ -465,8 +465,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        if self.n.is_empty() && event.init {
-            return Some(TagValue::fired(Value::Array(ValArray::from([]))));
+        if self.n.is_empty() {
+            // Empty producer = a constant: FIRED at init, the STALE
+            // value channel inside frames (the Constant frame rule —
+            // a per-site instance's `let res = []` seed died after
+            // frame resets and its For bottomed on the missing init,
+            // firing-jul2026/03).
+            if event.init {
+                return Some(TagValue::fired(Value::Array(ValArray::from([]))));
+            } else if ctx.frame_depth > 0 {
+                return Some(TagValue::stale(Value::Array(ValArray::from([]))));
+            }
+            return None;
         }
         let mut produced = false;
         let mut fired = false;

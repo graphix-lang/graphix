@@ -94,3 +94,51 @@ but collided with three boundaries:
 Probe: scratchpad u1_tuple_arg.gx (in-repo copy:
 `{f64:0.; let g = |a: i64, b: i64, c| (|n, _| n == i64:3)((a, b), c); g(i64:10, i64:20, i64:5)}`).
 GXDBG_SWALLOW=1 shows the swallowed error on any run.
+
+## UPDATE 2026-07-12 (second session): nested constrain_known RESTORED — most of the family fixed
+
+Eric's architecture memory checked out. `constrain_known` records
+def-gate facts as cell conjuncts; the depth-1 gate (8630436f) was
+skipping every nested lambda. Restored with a `closed_only` mode for
+nested gates (facts with open interior cells stay unrecorded — the
+entanglement scoping that motivated the depth gate; the open-leaf
+snapshot fix alone was not sufficient, an `Array<'b-unbound>` fact
+still perturbed downstream instances). Result:
+
+- u1 / 000002 / 000010: REJECTED consistently in both modes ✓
+- jul12a crash_000001 (SIGSEGV: an unannotated RETURN type bound to
+  `Array` by the site while the body delivers i64 — the JIT deref'd
+  payload 35 as a ValArray pointer): REJECTED in both modes ✓ —
+  the acceptance hole was memory-unsafe, not just divergent.
+- firing-jul2026/03 regression: NOT actually caused by this change —
+  on HEAD both modes were MUTUALLY silent (the pin passed as [] vs
+  []). Root cause was empty literals (`let res: Array<'a> = []`)
+  producing only at `event.init`: a per-site instance's seed died
+  under frame resets and its For bottomed on the missing init. Fixed
+  by extending the Constant frame rule (STALE production at
+  frame_depth > 0) to all zero-part producers (array/tuple/struct/
+  map literals). 03 now emits at cycles 1 AND 2 in both modes —
+  correct under P4 semantics (in-language map = fold-with-push; the
+  body consumes the acc, so source fires drive it; the recorded
+  single emission was MapQ-era).
+
+## The REMAINING ruling: the promotion lie (jul10h 000001 + jul12a 000002)
+
+`'a: Number |x: 'a| -> 'a x + f64:0.` — under 5634fbdc's rigid
+suppression the operand pre-bind is suppressed, so the `+` statically
+returns 'a — but the node-walk's arith PROMOTES, so at an i64 site
+the runtime value is F64 where the static type (and the JIT's frozen
+slot) say i64. The interp now computes correct VALUES (f64 leaks
+through 'a-typed positions benignly in the node-walk); the JIT's
+defensive shape check bottoms → permanent divergence on accepted
+programs. 5634fbdc flagged exactly this class for review.
+
+Options:
+(a) Record the suppressed operand as an OBLIGATION on 'a that sites
+    validate in the PROMOTION order (not set containment):
+    `x + f64:0.` ⟹ 'a ≽ f64 → i64 site rejected, f64 site fine;
+    `x + i64:1` ⟹ 'a ≽ i64 → both sites fine (param_knot_no_leak
+    stays green). Needs a new constraint kind (promotion-ordered).
+(b) The JIT widens 'a-returning bodies containing suppressed
+    pre-binds to value-shape slots (accept the dynamic typing,
+    keep the node-walk semantics).

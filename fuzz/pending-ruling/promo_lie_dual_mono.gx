@@ -1,0 +1,1 @@
+{let f = 'a: Number|x: 'a| -> 'a x + f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}

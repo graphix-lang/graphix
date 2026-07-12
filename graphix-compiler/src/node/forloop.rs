@@ -339,7 +339,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         let init_up = self.init.update_triggers(ctx, event);
         let arr = match self.iter.cached.as_ref() {
             Some(Value::Array(a)) => a.clone(),
-            Some(_) | None => return None,
+            other => {
+                if std::env::var_os("GXDBG_FOR").is_some() {
+                    eprintln!("FOR-NO-SRC spec={} cached={other:?}", self.spec);
+                }
+                return None;
+            }
         };
         // A merely-stale re-delivery of an external is NOT a firing;
         // only fired (or tainted) entries re-run the loop.

@@ -187,9 +187,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     if arms[i].1.tag.is_tainted() {
                         Some(TagValue::tainted(Value::Null))
                     } else {
-                        // an arm wake is a fresh dispatch — its result
-                        // is a genuine event
-                        arms[i].1.cached.clone().map(TagValue::fired)
+                        // The wake's forced init view makes the arm's
+                        // constants produce FIRED regardless of what
+                        // caused the wake — derive the result tag from
+                        // the TRIGGER instead (the tail-loop re-entry
+                        // rule): a real init, a FIRED scrutinee, or a
+                        // guard re-selection is a genuine event; a
+                        // frame's replay-reset re-deriving the SAME
+                        // selection from a stale scrutinee production
+                        // is the value channel (jul12a 000000: a
+                        // const-scrutinee select in a fold body fired
+                        // every frame, where the kernel's arm merge is
+                        // correctly quiet).
+                        let fired = event.init || arg_fired || pat_up;
+                        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+                        arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
                     }
                 }
                 (None, Some(j)) => {

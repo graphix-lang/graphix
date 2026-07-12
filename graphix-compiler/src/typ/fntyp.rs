@@ -468,7 +468,16 @@ impl FnType {
         throws.unbind_tvars();
     }
 
-    pub fn constrain_known(&self) {
+    /// Record the def gate's inferred facts. `closed_only` is the
+    /// NESTED-gate mode (def_gate_depth > 1): a nested lambda's cells
+    /// can still be entangled with the enclosing lambda's in-flight
+    /// inference, so only bindings with NO open interior cells are
+    /// recorded — a fully-closed fact (`'n := i64` from `n == i64:3`)
+    /// is true regardless of how the enclosing solve finishes, while a
+    /// partial one (`Array<'b-unbound>`) snapshots a mid-solve state
+    /// the enclosing gate may still revise (the 8630436f scoping
+    /// concern; recording those regressed firing-jul2026/03).
+    pub fn constrain_known(&self, closed_only: bool) {
         let mut known = LPooled::take();
         self.collect_tvars(&mut known);
         let mut constraints = self.constraints.write();
@@ -477,6 +486,15 @@ impl FnType {
             // add_cell_constraint write-locks the same cell (lock
             // discipline, see CLAUDE.md emit contracts)
             let bound = tv.read().typ.read().typ.clone();
+            if closed_only {
+                match &bound {
+                    Some(t)
+                        if *t != Type::Bottom
+                            && *t != Type::Any
+                            && !t.has_unbound() => {}
+                    _ => continue,
+                }
+            }
             let listed = constraints.iter().any(|(ltv, _)| ltv.name == name);
             match bound {
                 Some(t) if t != Type::Bottom && t != Type::Any => {
