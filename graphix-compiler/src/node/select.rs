@@ -168,6 +168,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     bind!(i);
                     let mut refs = Refs::default();
                     arms[i].1.node.refs(&mut refs);
+                    // The select's OWN pattern binds were just
+                    // inserted by `bind!` above — they derive from the
+                    // SCRUTINEE (whose firing is already the trigger
+                    // signal), so they must not count as fired body
+                    // inputs: counting them made a const-scrutinee
+                    // select fire every frame and the enclosing fold
+                    // over-fire vs the ruled body-driven semantics
+                    // (soak-jul12l divergence_000001, the iter-fed
+                    // const-body fold).
+                    let mut own: LPooled<nohash::IntSet<BindId>> = LPooled::take();
+                    arms[i].0.structure_predicate.ids(&mut |id| {
+                        own.insert(id);
+                    });
                     let mut body_input_fired = false;
                     refs.with_external_refs(|id| {
                         match event.variables.entry(id) {
@@ -179,7 +192,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                             // body's element bind arrives FIRED every
                             // re-run; jul12f generate 000000).
                             Entry::Occupied(e) => {
-                                body_input_fired |= e.get().tag().is_fired();
+                                if !own.contains(&id) {
+                                    body_input_fired |= e.get().tag().is_fired();
+                                }
                             }
                             Entry::Vacant(e) => {
                                 if let Some(v) = ctx.rt.cached().get(&id) {

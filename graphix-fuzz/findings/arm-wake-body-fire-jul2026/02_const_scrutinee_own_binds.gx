@@ -1,0 +1,13 @@
+// bisect: node-walk (interp) bug — the JIT's body-driven quiet was
+// right (Eric's ruling A). The first arm-wake fix (01) OR'd fired
+// event.variables deliveries into the wake's result tag, but the
+// select's OWN pattern binds (inserted by bind_event just before the
+// refs walk) counted too — they derive from the SCRUTINEE, whose
+// firing is already the trigger signal — so a CONST-scrutinee select
+// in a fold body fired every frame and the fold over-fired: the
+// interp fed array::group one value per cycle while the kernel was
+// correctly quiet (interp emitted the group at cycle 4, JIT never).
+// Fixed by excluding the selected arm's pattern ids from the
+// body_input_fired scan (node/select.rs arm-wake path).
+// found: soak-jul12l fuzz divergence_000001 (2026-07-13 era).
+{let a = array::init(array::iter([i64:0, i64:2, i64:1, i64:4]), |i| i + i64:1); let f = array::fold(a, i64:0, |acc, x| {let t = (i64:0, i64:9); select t {(i64:0, y) => y, (x, y) => x + y}}); array::group(f, |n, _| n == i64:4)}
