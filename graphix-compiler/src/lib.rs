@@ -1539,13 +1539,19 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// compiles a program's top-level statements as SEPARATE `compile`
     /// calls, so clearing per-`compile` would hide a lambda defined in
     /// one statement (`let rec f = …`) from a call in a later statement
-    /// (e.g. inside an HOF callback — #203). Cleared once per batch
-    /// alongside `unstable_bindings` (its sibling batch-scoped resolution
-    /// state) at each RT batch entry point. BindIds are globally unique,
-    /// so accumulating across a batch's statements is collision-free; the
-    /// `unstable_bindings` guard still excludes `<-` targets, and the
-    /// per-batch clear keeps a `<-`-reassigned lambda in one batch from
-    /// resolving stalely in the next.
+    /// (e.g. inside an HOF callback — #203). PERSISTENT across batches
+    /// since the jul12 shell resolution-flap fix: the old per-batch
+    /// clear dropped the stdlib's entries before the user file
+    /// compiled, so resolution fell to the `rt.cached()` fallback and
+    /// FUSION became a race against the previous batch's init cycle.
+    /// Each RT batch entry instead prunes the OUTGOING batch's
+    /// `unstable_bindings` (exactly the `<-`-retargeted lambdas the
+    /// clear guarded against — shadowing mints fresh BindIds, so a
+    /// pruned id can't be re-inserted with a stale value), and
+    /// `Bind::delete` removes its ids (bounds growth on long-lived
+    /// LSP/REPL runtimes). BindIds are globally unique, so
+    /// accumulation is collision-free; the `unstable_bindings` guard
+    /// still excludes the current batch's `<-` targets at read time.
     pub bind_to_lambda: IntMap<BindId, Value>,
     /// BindIds of bindings that are the target of a `<-` (Connect)
     /// somewhere in the program. Populated lazily by

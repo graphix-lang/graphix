@@ -557,6 +557,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         // resolve. All `typecheck0` precedes all `typecheck1`, so the
         // entry is present before resolution consumes it.
         for (impl_id, sig_id) in self.proxy.iter() {
+            let hit = ctx.bind_to_lambda.contains_key(impl_id);
+            if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                eprintln!("B2L-PROXY {impl_id:?} -> {sig_id:?} hit={hit}");
+            }
             if let Some(fv) = ctx.bind_to_lambda.get(impl_id).cloned() {
                 ctx.bind_to_lambda.insert(*sig_id, fv);
             }

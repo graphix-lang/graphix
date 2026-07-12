@@ -683,8 +683,23 @@ impl<X: GXExt> GX<X> {
         // re-populates it lazily during the `compile` pass below — every
         // `<-` site inserts the resolved BindId, so by the time the
         // fusion passes run, the set reflects all Connect targets.
+        // Prune the static-resolution index by the OUTGOING batch's
+        // `<-` targets instead of clearing it (see the field doc,
+        // #203 + the jul12 shell resolution FLAP): stable cross-batch
+        // entries (the stdlib's exports above all) must survive into
+        // this batch, or resolution falls to the `rt.cached()`
+        // fallback — whose contents depend on whether the previous
+        // batch's init cycle has RUN yet, making FUSION a race
+        // (release shell: identical program, instances fused on some
+        // runs and node-walked on others). A `<-`-retargeted lambda
+        // is exactly the staleness the old clear guarded against, and
+        // the outgoing unstable set names each one; shadowing mints
+        // fresh BindIds, so a pruned id can never be re-inserted with
+        // a stale value.
+        for id in self.ctx.unstable_bindings.iter() {
+            self.ctx.bind_to_lambda.remove(id);
+        }
         self.ctx.unstable_bindings.clear();
-        self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let mut nodes = exprs
             .iter()
             .map(|e| {
@@ -714,8 +729,23 @@ impl<X: GXExt> GX<X> {
         // `ctx.unstable_bindings` with the resolved BindId as each
         // `<-` site is compiled — clear the carry-over from a
         // previous batch, then let compile populate.
+        // Prune the static-resolution index by the OUTGOING batch's
+        // `<-` targets instead of clearing it (see the field doc,
+        // #203 + the jul12 shell resolution FLAP): stable cross-batch
+        // entries (the stdlib's exports above all) must survive into
+        // this batch, or resolution falls to the `rt.cached()`
+        // fallback — whose contents depend on whether the previous
+        // batch's init cycle has RUN yet, making FUSION a race
+        // (release shell: identical program, instances fused on some
+        // runs and node-walked on others). A `<-`-retargeted lambda
+        // is exactly the staleness the old clear guarded against, and
+        // the outgoing unstable set names each one; shadowing mints
+        // fresh BindIds, so a pruned id can never be re-inserted with
+        // a stale value.
+        for id in self.ctx.unstable_bindings.iter() {
+            self.ctx.bind_to_lambda.remove(id);
+        }
         self.ctx.unstable_bindings.clear();
-        self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let mut nodes = exprs
             .iter()
             .map(|e| compile(&mut self.ctx, self.flags, &scope, e.clone()))
@@ -858,12 +888,15 @@ impl<X: GXExt> GX<X> {
             }))
             .await?;
             info!("resolve time: {:?}", st.elapsed());
-            // Reset the batch-scoped static-resolution index (see its field
-            // doc, #203). Bounds growth on the shared check/lsp runtime and
-            // keeps a `<-`-reassigned lambda from one check from resolving
-            // stalely in the next. (`unstable_bindings` is not reset on this
-            // path — pre-existing; fusion is off under lsp so it's inert.)
-            self.ctx.bind_to_lambda.clear();
+            // Prune by the outgoing `<-` targets, like the load/compile
+            // batch entries (the jul12 resolution-flap fix): stable
+            // entries survive so check diagnostics resolve the same
+            // way run-to-run. Growth is bounded by `Bind::delete`
+            // removing its ids. (`unstable_bindings` is not reset on
+            // this path — pre-existing; fusion is off under lsp.)
+            for id in self.ctx.unstable_bindings.iter() {
+                self.ctx.bind_to_lambda.remove(id);
+            }
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
             for e in exprs.iter() {
                 let res = compile(&mut self.ctx, self.flags, &scope, e.clone())
@@ -918,8 +951,23 @@ impl<X: GXExt> GX<X> {
         // Clear the carry-over `unstable_bindings`; `Connect::compile`
         // re-populates with resolved BindIds as each `<-` site is
         // compiled below.
+        // Prune the static-resolution index by the OUTGOING batch's
+        // `<-` targets instead of clearing it (see the field doc,
+        // #203 + the jul12 shell resolution FLAP): stable cross-batch
+        // entries (the stdlib's exports above all) must survive into
+        // this batch, or resolution falls to the `rt.cached()`
+        // fallback — whose contents depend on whether the previous
+        // batch's init cycle has RUN yet, making FUSION a race
+        // (release shell: identical program, instances fused on some
+        // runs and node-walked on others). A `<-`-retargeted lambda
+        // is exactly the staleness the old clear guarded against, and
+        // the outgoing unstable set names each one; shadowing mints
+        // fresh BindIds, so a pruned id can never be re-inserted with
+        // a stale value.
+        for id in self.ctx.unstable_bindings.iter() {
+            self.ctx.bind_to_lambda.remove(id);
+        }
         self.ctx.unstable_bindings.clear();
-        self.ctx.bind_to_lambda.clear(); // batch-scoped sibling; see field doc (#203)
         let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
             .with_context(|| ori.clone())?;
         let typ = n.typ().clone();

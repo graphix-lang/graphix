@@ -939,6 +939,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // so the `&mut self` for `resolve_static` is unencumbered.
         let target: Option<Value> = match self.fnode.view() {
             NodeView::Ref(r) => {
+                if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                    eprintln!(
+                        "RESOLVE {} id={:?} unstable={} b2l={} cached={}",
+                        self.spec,
+                        r.id,
+                        ctx.unstable_bindings.contains(&r.id),
+                        ctx.bind_to_lambda.contains_key(&r.id),
+                        ctx.rt.cached().get(&r.id).is_some(),
+                    );
+                }
                 if ctx.unstable_bindings.contains(&r.id) {
                     None
                 } else {

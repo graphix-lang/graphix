@@ -204,3 +204,27 @@ Options:
 - Witness preserved: soak-jul12g/fuzz/divergence_000000.gx; minimal
   repro b4.gx in the session scratchpad; also reproducible as written
   above.
+
+### Same-day sibling (soak-jul12h, 3 of its first 4 findings): mixed
+### numeric acc through a map instance
+
+```
+sync { let mut res = i64:0;
+       for v in array::map([i64:1, i64:2], |x| x * f64:2.) {res = res + v};
+       res }
+```
+
+interp Trace([0:f64:6.]) vs jit Trace([]) — and the controls prove the
+class: with the SAME element values delivered from a direct source
+(`[cast<f64>(i64:1)$, f64:2.]`, or a `src: Array<[i64, f64]>` bind)
+the program is a COMPILE ERROR in both modes (the sync-for acc
+unification correctly rejects i64 + f64), and bare `i64:1 + f64:2.`
+computes f64:3 in both modes. Only the map-instance path admits it:
+the instance's result-elem cell reaches the acc unification in a form
+the mono-i64 acc accepts, the loop fuses with an i64 acc slot, and the
+runtime f64 element bottoms the kernel silently while the interp
+promotes dynamically. Conservative direction (JIT quiet, never
+garbage), but it will keep flooding soak corpora until the acceptance
+model is ruled: this class does not need `$`, null, or promotion
+suppression — ordinary mixed CONCRETE numerics through any in-language
+HOF instance reproduce it.

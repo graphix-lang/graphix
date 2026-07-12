@@ -312,6 +312,12 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
   "does this call dispatch and to what" — paired with GXDBG_FOR it
   localized the async-flip above.
+- `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
+  spec, BindId, unstable/b2l/cached hit) plus the index writes
+  (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export
+  bridging). The tool for "why didn't this call site statically
+  resolve" — found the batch-entry `bind_to_lambda.clear()` that made
+  shell fusion a race (the jul12 resolution flap).
 
 ### Type Alias Expansion in Contains
 
@@ -510,9 +516,17 @@ the callee's init flag on the first call ever (a state word — the kernel
 mirror of `Callee::Static`'s `first_update` priming).
 OPEN (P4 performance completion): (1) in-language HOFs build arrays via
 persistent `push` — O(n²); needs owned-acc in-place append recognition;
-(2) the SHELL's static resolution flaps run-to-run (release: an identical
-program's instances fuse on some runs and not others — repro in
-fuzz/pending-ruling/; the fuzz harness path is deterministic, detcheck-clean);
+(2) FIXED 2026-07-12: the SHELL's static resolution flapped run-to-run
+because every RT batch entry CLEARED `bind_to_lambda`, so the user
+file's resolution fell to the `rt.cached()` fallback — a race against
+the stdlib batch's init cycle. Batch entries now prune only the
+outgoing batch's `<-` targets (`unstable_bindings`) and `Bind::delete`
+removes its ids; the persistent index also exposed (and fixed) a
+second latent bug — builtin-bodied lambdas' `intrinsic_effect` was
+constructed `Sync`, so a resolved async builtin (`once`) in a sync-for
+body took the sync gate and hung (masked before by the same race).
+The racy `rt.cached()` fallback REMAINS for destructured/`<-`-retarget
+shapes `bind_to_lambda` can't know — flagged for review;
 (3) instance-body INLINING at the call site (the per-site instance is
 monomorphic, so the dispatch cliff and the destructured/string-formal
 cross-kernel gaps all close by emitting the resolved body inline) — the

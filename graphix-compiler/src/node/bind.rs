@@ -241,6 +241,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The static-resolution index survives across batches since the
+        // jul12 flap fix — a deleted bind's entry must go with it, or a
+        // long-lived runtime (LSP/REPL) accumulates dead LambdaDefs.
+        self.pattern.ids(&mut |id| {
+            ctx.bind_to_lambda.remove(&id);
+        });
         self.node.delete(ctx);
         self.pattern.delete(ctx);
     }
@@ -271,6 +277,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // resolution never descends lambda bodies.
         if let Some(fv) = self.lambda_def_value() {
             self.pattern.ids(&mut |id| {
+                if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                    eprintln!("B2L-INS {id:?} {}", self.spec);
+                }
                 ctx.bind_to_lambda.insert(id, fv.clone());
             });
         }

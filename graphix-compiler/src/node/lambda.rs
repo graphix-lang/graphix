@@ -978,7 +978,20 @@ impl Lambda {
             init,
             scope: original_scope,
             check: Mutex::new(None),
-            intrinsic_effect: Mutex::new(EffectKind::Sync),
+            // A builtin-bodied lambda (`let once = |v| 'once`) never
+            // enters the effect fixpoint (it has no graphix body to
+            // analyze), so its stored fact must be the builtin's
+            // declared EFFECT from creation. The old constant `Sync`
+            // was masked by the resolution race: `once`'s call site
+            // rarely resolved, so `callee_effect` fell through to the
+            // by-name builtin lookup — with `bind_to_lambda` persistent
+            // (the jul12 flap fix) the resolved path reads this fact,
+            // and Sync here ran async builtins on the For sync gate
+            // (the sync_block::async_* hangs).
+            intrinsic_effect: Mutex::new(match &l.body {
+                Either::Right(name) => ctx.builtin_effect(name),
+                Either::Left(_) => EffectKind::Sync,
+            }),
             recursion: Mutex::new(RecursionKind::NotRecursive),
         });
         ctx.lambda_defs.insert(id, def.clone());
