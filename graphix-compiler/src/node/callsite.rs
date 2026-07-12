@@ -548,7 +548,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     {
         if self.resolved_ftype.is_none() {
             if let Some(ftype) = &self.ftype {
-                self.resolved_ftype = Some(ftype.resolve_tvars());
+                // SINGLE AUTHORITATIVE INSTANTIATION (type_copy
+                // discipline, step 4): a SHALLOW clone — every TVar
+                // cell shared with `self.ftype`, the site's one
+                // instance. The old `resolve_tvars()` DETACHED: bound
+                // cells baked to snapshots and unbound cells minted
+                // fresh empty (no conjuncts, no linkage), so the
+                // instance the init adopts, the freeze authority, and
+                // the strict arg check all read a THIRD copy of the
+                // site's types — the copy-skew fork CellMerge only
+                // patched at the points where copies happened to meet.
+                // With shared cells the site's facts and the instance
+                // body's facts collide in one place by construction.
+                self.resolved_ftype = Some(ftype.clone());
             }
         }
         let mut flags = flags;
@@ -1105,11 +1117,37 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // For a user-lambda callee this re-drives the body walk, during
         // which still-unbound nested sites re-attempt static resolution
         // with the param bindings above in scope.
-        let res = apply.typecheck1(ctx, &mut [], &ftype, &fn_args);
-        for id in param_binds.drain(..) {
-            ctx.bind_to_lambda.remove(&id);
+        //
+        // BACK-EDGE GUARD, keyed on the CALL SITE (spec ExprId), not
+        // the callee: a RECURSIVE callee whose self-call passes a
+        // fn-typed arg re-derives its own body here — each level
+        // pre-materializes the param (fresh per-instance BindIds every
+        // time, so the param-binds scoping never converges) and
+        // re-drives again until the compiler stack overflows
+        // (soak-jul12l crash_000000: `let rec sum_to = |n, acc| …
+        // sum_to(n - 1, acc)` with a lambda-valued acc; reachable
+        // since the flap fix made the outer arg's resolution
+        // deterministic). The self-call SITE is shared across
+        // instances (specs are Arc'd), so re-entry means recursion —
+        // while legitimate nesting (map-in-map: same CALLEE, different
+        // sites) must still re-drive (keying on the callee's LambdaId
+        // skipped the inner map's elaboration and broke its captures —
+        // nested_hof_capture_element_and_grandparent). A re-entered
+        // site stays dynamic (the interp tail loop owns it).
+        let site = self.spec.id.inner();
+        let resolving = ctx.fusion.resolving_sites.clone();
+        if resolving.lock().insert(site) {
+            let res = apply.typecheck1(ctx, &mut [], &ftype, &fn_args);
+            resolving.lock().remove(&site);
+            for id in param_binds.drain(..) {
+                ctx.bind_to_lambda.remove(&id);
+            }
+            res?;
+        } else {
+            for id in param_binds.drain(..) {
+                ctx.bind_to_lambda.remove(&id);
+            }
         }
-        res?;
         Ok(())
     }
 }

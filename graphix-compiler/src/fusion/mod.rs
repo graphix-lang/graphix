@@ -122,6 +122,13 @@ pub struct FusionCtx {
     /// forever. `Arc` so the insert/remove can straddle the
     /// `apply.typecheck1(ctx, …)` call without borrowing the `ExecCtx`.
     pub(crate) resolving: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
+    /// Call-site ExprIds whose fn-arg pre-materialization re-drive is
+    /// in progress — the back-edge guard for RECURSIVE callees keyed
+    /// on the SITE, not the callee: a self-call re-enters the same
+    /// source site (its spec Expr is shared across instances), while
+    /// legitimate nesting (map-in-map — same callee, different sites)
+    /// must still re-drive.
+    pub(crate) resolving_sites: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
     /// Whether fusion is enabled for the current compile. Set by
     /// [`crate::compile`] from `!flags.contains(CFlag::FusionDisabled)`.
     /// The in-context mirror of the flag, for the per-slot HOF fusion
@@ -173,6 +180,9 @@ impl FusionCtx {
                 nohash::IntSet::default(),
             )),
             resolving: triomphe::Arc::new(parking_lot::Mutex::new(
+                nohash::IntSet::default(),
+            )),
+            resolving_sites: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
             )),
             enabled: true,

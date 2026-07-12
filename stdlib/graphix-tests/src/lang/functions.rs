@@ -1369,3 +1369,23 @@ const PARAM_KNOT_NO_LEAK: &str = r#"
 // formal or convert explicitly.
 run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, |v: Result<&Value>| matches!(v, Err(_));
      graphix_package_core::testing::FuseExpect::None);
+
+// COMPILE-recursion guard pin (soak-jul12l crash_000000): a recursive
+// callee whose self-call passes a fn-typed arg used to re-drive its
+// own body's fn-arg pre-materialization forever (fresh per-instance
+// param BindIds each level) until the compiler stack overflowed. The
+// back-edge guard keys on the call-SITE ExprId — specs are shared
+// across instances, so self-call re-entry is recursion — while
+// map-in-map (same callee, different sites) still re-drives.
+const REC_FN_ARG_COMPILES: &str = r#"
+{
+  let rec sum_to = |n, acc| select n {
+    i64:0 => acc,
+    _ => sum_to(n - i64:1, acc)
+  };
+  sum_to(i64:3, buffer::to_string)
+}
+"#;
+
+run!(rec_fn_arg_compiles, REC_FN_ARG_COMPILES, |v: Result<&Value>| matches!(v, Ok(_));
+     graphix_package_core::testing::FuseExpect::None);
