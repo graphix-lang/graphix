@@ -162,11 +162,20 @@ macro_rules! compare_op {
                 // pollute cells), then COMMIT the widening direction.
                 let lt = self.lhs.node.typ().clone();
                 let rt = self.rhs.node.typ().clone();
-                let e = BitFlags::empty();
-                if lt.contains_with_flags(e, &ctx.env, &rt)? {
-                    wrap!(self, lt.check_contains(&ctx.env, &rt))?;
-                } else if rt.contains_with_flags(e, &ctx.env, &lt)? {
-                    wrap!(self, rt.check_contains(&ctx.env, &lt))?;
+                // RigidCheck as in the arith tail: a rigid declared
+                // formal never binds from a comparison during its def
+                // gate; inert at sites.
+                use $crate::typ::ContainsFlags as CF;
+                let rc = CF::RigidCheck.into();
+                let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
+                if lt.contains_with_flags(rc, &ctx.env, &rt)? {
+                    if !lt.contains_with_flags(commit, &ctx.env, &rt)? {
+                        wrap!(self, lt.check_contains(&ctx.env, &rt))?;
+                    }
+                } else if rt.contains_with_flags(rc, &ctx.env, &lt)? {
+                    if !rt.contains_with_flags(commit, &ctx.env, &lt)? {
+                        wrap!(self, rt.check_contains(&ctx.env, &lt))?;
+                    }
                 } else {
                     wrap!(
                         self,
@@ -734,73 +743,86 @@ macro_rules! arith_op {
                 Ok(Box::new(Self { spec, typ, lhs, rhs }))
             }
 
-            /// The `ut` result-typing table. Runs at typecheck0 when both
-            /// operand types are already known, otherwise deferred to
-            /// typecheck1 after the operand cells settle
-            /// (design/tvar_constraints.md phase B). Idempotent.
+            /// Homogeneous arithmetic — `fn('a: Number, 'a) -> 'a`
+            /// (Eric's ruling, 2026-07-12): both operands are ONE
+            /// numeric type and the result IS that type. The old
+            /// promotion table (union results, absorber obligations,
+            /// datetime/duration special cases) is gone: runtime
+            /// promotion is unreachable from well-typed graphix,
+            /// datetime/duration arithmetic is explicit `sys::time`
+            /// functions, and concrete literals are inference ANCHORS
+            /// (`2` is always i64 — `x * 2.0` is required when x is
+            /// f64, and `|x| x + i64:1` infers fn(x: i64) -> i64,
+            /// which keeps the interface / fn-subsumption matchers
+            /// structural). Probe both directions without binding,
+            /// commit the widening one (the comparison ops' shape);
+            /// unbound×unbound operands ALIAS into one cell, so
+            /// `|a, b| a + b` is fn('a, 'a) -> 'a with a single cell
+            /// and arith is type-preserving by construction.
+            /// Idempotent — runs at typecheck0, and again from
+            /// typecheck1 after the operand cells settle.
             fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                let lhs = self.lhs.node.typ();
-                let rhs = self.rhs.node.typ();
-                // init types that aren't known by now to Number
-                let typ = Type::Primitive(Typ::number());
-                wrap!(self.lhs.node, typ.contains(&ctx.env, lhs))?;
-                wrap!(self.rhs.node, typ.contains(&ctx.env, rhs))?;
-                // Duration and DateTime can be involved in some arith operations however
-                let typ = Type::Primitive(Typ::number() | Typ::Duration | Typ::DateTime);
-                wrap!(self.lhs.node, typ.check_contains(&ctx.env, lhs))?;
-                wrap!(self.rhs.node, typ.check_contains(&ctx.env, rhs))?;
-                let base = $opn.base_op();
-                let ut = match (
-                    lhs.with_deref(|t| t.cloned()),
-                    rhs.with_deref(|t| t.cloned()),
-                ) {
-                    (None, _) | (_, None) => bail!("type must be known"),
-                    (
-                        Some(lhs @ Type::Primitive(p0)),
-                        Some(rhs @ Type::Primitive(p1)),
-                    ) => {
-                        if p0.contains(Typ::DateTime) {
-                            if p1 == Typ::Duration && (base == Op::Add || base == Op::Sub)
-                            {
-                                Type::Primitive(Typ::DateTime.into())
-                            } else {
-                                bail!("can't perform {lhs} {} {rhs}", $opn)
-                            }
-                        } else if p1.contains(Typ::DateTime) {
-                            if p0 == Typ::Duration && base == Op::Add {
-                                Type::Primitive(Typ::DateTime.into())
-                            } else {
-                                bail!("can't perform {lhs} {} {rhs}", $opn)
-                            }
-                        } else if p0.contains(Typ::Duration) {
-                            if p1 == Typ::Duration && (base == Op::Add || base == Op::Sub)
-                            {
-                                Type::Primitive(Typ::Duration.into())
-                            } else if (Typ::integer() | Typ::F32 | Typ::F64).contains(p1)
-                                && (base == Op::Mul || base == Op::Div)
-                            {
-                                Type::Primitive(Typ::Duration.into())
-                            } else {
-                                bail!("can't perform {lhs} {} {rhs}", $opn)
-                            }
-                        } else if p1.contains(Typ::Duration) {
-                            if (Typ::integer() | Typ::F32 | Typ::F64).contains(p0)
-                                && base == Op::Mul
-                            {
-                                Type::Primitive(Typ::Duration.into())
-                            } else {
-                                bail!("can't perform {lhs} {} {rhs}", $opn)
-                            }
-                        } else {
-                            wrap!(self, lhs.union(&ctx.env, &rhs))?
-                        }
+                let num = Type::Primitive(Typ::number());
+                let lt = self.lhs.node.typ().clone();
+                let rt = self.rhs.node.typ().clone();
+                // Number acceptance: a KNOWN operand must be numeric
+                // NOW (the def-time acceptance gate for a lambda body
+                // is typecheck0-only — `x + "hello"` must reject here
+                // or the JIT emits an i64 add on the string's payload
+                // word and leaks a pointer; #16, soak jul04). An
+                // unbound operand records the conjunct for settle.
+                for (known, t) in [
+                    (lt.with_deref(|t| t.is_some()), &lt),
+                    (rt.with_deref(|t| t.is_some()), &rt),
+                ] {
+                    if known {
+                        wrap!(self, num.check_contains(&ctx.env, t))?;
+                    } else if let Type::TVar(tv) = t {
+                        tv.add_cell_constraint(num.clone());
                     }
-                    (Some(_), Some(_)) => wrap!(self, lhs.union(&ctx.env, rhs))?,
+                }
+                // RigidCheck rides BOTH the probe and the commit: a
+                // DECLARED `'a: Number` formal is rigid while its def
+                // gate is open, and the body must be well-typed for
+                // ARBITRARY 'a — `x + f64:0.` must reject at the def,
+                // not bind the rigid cell to f64 (the
+                // rigid_tvar_body_escape discipline). Outside the gate
+                // rigid counters are zero, so the flag is inert at
+                // sites.
+                use $crate::typ::ContainsFlags as CF;
+                let rc = CF::RigidCheck.into();
+                let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
+                let out = if lt.contains_with_flags(rc, &ctx.env, &rt)? {
+                    if !lt.contains_with_flags(commit, &ctx.env, &rt)? {
+                        wrap!(self, lt.check_contains(&ctx.env, &rt))?;
+                    }
+                    lt
+                } else if rt.contains_with_flags(rc, &ctx.env, &lt)? {
+                    if !rt.contains_with_flags(commit, &ctx.env, &lt)? {
+                        wrap!(self, rt.check_contains(&ctx.env, &lt))?;
+                    }
+                    rt
+                } else {
+                    wrap!(
+                        self,
+                        $crate::format_with_flags(
+                            $crate::PrintFlag::DerefTVars,
+                            || -> Result<Type> {
+                                bail!(
+                                    "cannot compute {lt} {} {rt}: arithmetic \
+                                     is fn('a: Number, 'a) -> 'a — both \
+                                     operands must be one numeric type (cast \
+                                     one side explicitly)",
+                                    $opn
+                                )
+                            }
+                        )
+                    )?
                 };
                 let ut = if $checked {
-                    Type::Set(Arc::from_iter([ut, ARITH_ERR.clone()]))
+                    Type::Set(Arc::from_iter([out, ARITH_ERR.clone()]))
                 } else {
-                    ut
+                    out
                 };
                 wrap!(self, self.typ.check_contains(&ctx.env, &ut))?;
                 Ok(())
@@ -903,139 +925,16 @@ macro_rules! arith_op {
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
-                {
-                    // The operand pre-bind: an UNANNOTATED formal
-                    // paired with a known operand infers MONOMORPHIC
-                    // (first concrete fact wins — `|x| x + i64:1` is
-                    // fn(i64) -> i64; annotate `'a: Number` to get
-                    // promotion polymorphism). Retiring this for
-                    // numerics was tried under ruling (a) and reverted:
-                    // an impl that stays generic breaks the interface /
-                    // fn-subsumption matchers, which compare signatures
-                    // structurally (`val add: fn(x: i64) -> i64` vs
-                    // `fn(x: '_a: [Real, i64])` — dynamic_module0,
-                    // first_class_lambdas). ANNOTATED formals are
-                    // rigid, skip this bind, and get the promotion
-                    // obligation below instead.
-                    let lhs = self.lhs.node.typ();
-                    let rhs = self.rhs.node.typ();
-                    match (lhs.with_deref(|t| t.cloned()), rhs.with_deref(|t| t.cloned()))
-                    {
-                        (None, None) | (Some(_), Some(_)) => (),
-                        (Some(t), None) => {
-                            let _ = rhs.contains(&ctx.env, &t);
-                        }
-                        (None, Some(t)) => {
-                            let _ = lhs.contains(&ctx.env, &t);
-                        }
-                    }
-                }
-                let lk = self.lhs.node.typ().with_deref(|t| t.is_some());
-                let rk = self.rhs.node.typ().with_deref(|t| t.is_some());
-                if lk && rk {
-                    return self.typecheck_tail(ctx);
-                }
-                // A KNOWN operand paired with an unbound one still has to
-                // be arith-compatible — check it NOW (pure containment,
-                // binds nothing). typecheck_tail's full `ut` narrowing is
-                // deferred to typecheck1, but the def-time acceptance gate
-                // for a lambda body is typecheck0 only (typecheck1 on the
-                // body runs only in swallowed per-site rechecks), so a
-                // known-incompatible operand like `x + "hello"` must be
-                // rejected here or it never is — the JIT would otherwise
-                // emit an i64 add on the string's payload word and leak a
-                // pointer (#16, soak jul04).
-                let arith =
-                    Type::Primitive(Typ::number() | Typ::Duration | Typ::DateTime);
-                if lk {
-                    wrap!(
-                        self.lhs.node,
-                        arith.check_contains(&ctx.env, self.lhs.node.typ())
-                    )?;
-                }
-                if rk {
-                    wrap!(
-                        self.rhs.node,
-                        arith.check_contains(&ctx.env, self.rhs.node.typ())
-                    )?;
-                }
-                // Constrain, don't bind (design/tvar_constraints.md
-                // phase B): an unbound operand cell records "arithmetic
-                // happened here" as a cell conjunct; the `ut` table runs
-                // at typecheck1 once the cells settle.
-                //
-                // PROMOTION OBLIGATION (Eric's ruling (a), 2026-07-12):
-                // when the OTHER operand is a concrete numeric, the
-                // generic cell records the ABSORBER set instead of bare
-                // Number — the site's instantiation must be a type the
-                // runtime promotion keeps (`i64 + f64:0.` is F64 at
-                // runtime, so a formal used that way can't instantiate
-                // at i64; `x + i64:1` still admits every float and
-                // i64). The conjunct rides the ordinary constraint
-                // machinery: carried to site copies by `reset_tvars`,
-                // validated by `cell_constraints_ok` at the arg bind —
-                // where the rejection propagates, unlike the instance
-                // body's swallowed union check. Closes the class where
-                // the JIT froze a scalar slot the promoted value never
-                // honors (fuzz/pending-ruling/promo_lie_dual_mono.gx).
-                // Only the current def gate's OWN declared tvars are
-                // eligible (`ExecCtx::promo_eligible`): a param's
-                // quantified 'a reached through `f(y) + 1` must keep
-                // the bare Number conjunct — constraining it re-created
-                // the 5634fbdc poisoned-conjunct class
-                // (first_class_lambdas).
-                let promo = |ctx: &ExecCtx<R, E>,
-                             tv: &$crate::typ::TVar,
-                             other: &Type|
-                 -> Option<Type> {
-                    if !ctx.promo_eligible.contains(&tv.cell_addr()) {
-                        return None;
-                    }
-                    other.with_deref(|t| match t {
-                        Some(Type::Primitive(p)) if p.len() == 1 => {
-                            crate::typ::numeric_absorbers(p.iter().next().unwrap())
-                                .map(Type::Primitive)
-                        }
-                        _ => None,
-                    })
-                };
-                let num = Type::Primitive(Typ::number());
-                if !lk && let Type::TVar(tv) = self.lhs.node.typ() {
-                    match promo(ctx, tv, self.rhs.node.typ()) {
-                        Some(c) => tv.add_cell_constraint(c),
-                        None => tv.add_cell_constraint(num.clone()),
-                    }
-                }
-                if !rk && let Type::TVar(tv) = self.rhs.node.typ() {
-                    match promo(ctx, tv, self.lhs.node.typ()) {
-                        Some(c) => tv.add_cell_constraint(c),
-                        None => tv.add_cell_constraint(num.clone()),
-                    }
-                }
-                // Result: same-cell operands make arith type-preserving,
-                // so the result IS the operand cell (`|a| a + a` stays
-                // polymorphic). Distinct cells get a fresh
-                // number-constrained result cell that typecheck1's `ut`
-                // narrows.
-                let same_cell = match (self.lhs.node.typ(), self.rhs.node.typ()) {
-                    (Type::TVar(a), Type::TVar(b)) => a.same_cell(b),
-                    _ => false,
-                };
-                let rt = if same_cell {
-                    self.lhs.node.typ().clone()
-                } else {
-                    let rt = Type::empty_tvar();
-                    if let Type::TVar(tv) = &rt {
-                        tv.add_cell_constraint(num);
-                    }
-                    rt
-                };
-                let ut = if $checked {
-                    Type::Set(Arc::from_iter([rt, ARITH_ERR.clone()]))
-                } else {
-                    rt
-                };
-                wrap!(self, self.typ.check_contains(&ctx.env, &ut))
+                // The homogeneous unification IS the whole check now —
+                // it subsumes the retired operand pre-bind (an unbound
+                // formal binds to the concrete operand through the
+                // commit direction), the retired promotion-obligation
+                // recording (there is no promotion), and the retired
+                // fresh-result-cell logic (the result IS the unified
+                // operand type — same-cell type preservation falls out
+                // of unbound×unbound aliasing instead of being a
+                // special case).
+                self.typecheck_tail(ctx)
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

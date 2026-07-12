@@ -8,7 +8,7 @@ use std::time::Duration;
 
 const DATETIME_ARITH00: &str = r#"
 {
-    let x: datetime = datetime:"2024-11-05T00:00:00Z" + duration:3600.s;
+    let x: datetime = sys::time::add(datetime:"2024-11-05T00:00:00Z", duration:3600.s);
     x
 }
 "#;
@@ -22,7 +22,7 @@ run!(datetime_arith00, DATETIME_ARITH00, |v: Result<&Value>| match v {
 
 const DATETIME_ARITH01: &str = r#"
 {
-    let x: datetime = datetime:"2024-11-05T00:00:00Z" - duration:3600.s;
+    let x: datetime = sys::time::sub(datetime:"2024-11-05T00:00:00Z", duration:3600.s);
     x
 }
 "#;
@@ -36,7 +36,7 @@ run!(datetime_arith01, DATETIME_ARITH01, |v: Result<&Value>| match v {
 
 const DATETIME_ARITH02: &str = r#"
 {
-    let x: duration = u32:2 * duration:3600.s;
+    let x: duration = sys::time::scale(duration:3600.s, 2.0)$;
     x
 }
 "#;
@@ -48,7 +48,7 @@ run!(datetime_arith02, DATETIME_ARITH02, |v: Result<&Value>| match v {
 
 const DATETIME_ARITH03: &str = r#"
 {
-    let x: duration = duration:3600.s * u32:2;
+    let x: duration = sys::time::scale(duration:1800.s, 4.0)$;
     x
 }
 "#;
@@ -60,7 +60,7 @@ run!(datetime_arith03, DATETIME_ARITH03, |v: Result<&Value>| match v {
 
 const DATETIME_ARITH04: &str = r#"
 {
-    let x: duration = duration:3600.s / u32:2;
+    let x: duration = sys::time::scale(duration:3600.s, 0.5)$;
     x
 }
 "#;
@@ -72,7 +72,7 @@ run!(datetime_arith04, DATETIME_ARITH04, |v: Result<&Value>| match v {
 
 const DATETIME_ARITH05: &str = r#"
 {
-    let x: duration = duration:3600.s - duration:1800.s;
+    let x: duration = sys::time::sub_dur(duration:3600.s, duration:1800.s);
     x
 }
 "#;
@@ -84,7 +84,7 @@ run!(datetime_arith05, DATETIME_ARITH05, |v: Result<&Value>| match v {
 
 const DATETIME_ARITH06: &str = r#"
 {
-    let x: duration = duration:0.s + duration:1800.s;
+    let x: duration = sys::time::add_dur(duration:0.s, duration:1800.s)$;
     x
 }
 "#;
@@ -230,10 +230,7 @@ const DATETIME_ARITH18: &str = r#"
     duration:9999999999999.s *? 99999999999999
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
-run!(datetime_arith18, DATETIME_ARITH18, |v: Result<&Value>| match v {
-    Ok(Value::Error(_)) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+// Homogeneous arithmetic: duration is not a Number — checked or not,
+// the operator rejects at compile time (scaling is sys::time::scale).
+run!(datetime_arith18, DATETIME_ARITH18, |v: Result<&Value>| matches!(v, Err(_));
+     graphix_package_core::testing::FuseExpect::None);

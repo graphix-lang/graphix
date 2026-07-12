@@ -174,7 +174,14 @@ impl Pack for FnType {
     // decode re-seeds any entries onto the cells (a no-op for data
     // this codec wrote — `add_cell_constraint` dedups).
     fn encoded_len(&self) -> usize {
-        let constraints: Vec<(TVar, Type)> = self.constraint_view().drain(..).collect();
+        // The FULL cell pairs, not the declared-quantifier view: the
+        // wire slot transports INFERENCE facts (an unannotated
+        // formal's arith conjunct included), and dropping anonymous
+        // cells let a sandboxed dynamic-module impl cross the wire
+        // fact-free — `|x| x + 1.` matched a `fn(i64) -> i64` sig
+        // (dynamic_module1, 2026-07-12).
+        let constraints: Vec<(TVar, Type)> =
+            self.cell_constraint_pairs().drain(..).collect();
         self.args.encoded_len()
             + self.vargs.encoded_len()
             + self.rtype.encoded_len()
@@ -187,7 +194,8 @@ impl Pack for FnType {
         self.args.encode(buf)?;
         self.vargs.encode(buf)?;
         self.rtype.encode(buf)?;
-        let constraints: Vec<(TVar, Type)> = self.constraint_view().drain(..).collect();
+        let constraints: Vec<(TVar, Type)> =
+            self.cell_constraint_pairs().drain(..).collect();
         <Vec<(TVar, Type)> as Pack>::encode(&constraints, buf)?;
         self.throws.encode(buf)?;
         self.explicit_throws.encode(buf)
@@ -200,8 +208,15 @@ impl Pack for FnType {
         let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
         let throws = <Type as Pack>::decode(buf)?;
         let explicit_throws = <bool as Pack>::decode(buf)?;
-        let quantifiers =
-            Arc::from_iter(constraints.iter().map(|(tv, _)| tv.name.clone()));
+        // Named pairs are the declared quantifiers; anonymous '_N
+        // pairs are transported inference facts (re-seeded below,
+        // never header-printed).
+        let quantifiers = Arc::from_iter(
+            constraints
+                .iter()
+                .filter(|(tv, _)| !tv.name.starts_with('_'))
+                .map(|(tv, _)| tv.name.clone()),
+        );
         for (tv, tc) in constraints {
             tv.add_cell_constraint(tc);
         }

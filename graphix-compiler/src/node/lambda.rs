@@ -1089,28 +1089,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         for tv in named_tvs.values() {
             tv.set_rigid();
         }
-        // Promotion-obligation eligibility (Eric's ruling (a)): the
-        // def's OWN directly-declared tvars — named tvars occurring
-        // outside any fn-typed member (`collect_tvars_no_fn`) — may
-        // receive absorber conjuncts from the body's arithmetic. A
-        // param's quantified 'a is excluded (see
-        // `ExecCtx::promo_eligible`). Track exactly what THIS gate
-        // added so nested gates unwind only their own.
-        let mut own_tvs: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
-        for at in def.typ.args.iter() {
-            at.typ.collect_tvars_no_fn(&mut own_tvs);
-        }
-        if let Some(t) = &def.typ.vargs {
-            t.collect_tvars_no_fn(&mut own_tvs);
-        }
-        def.typ.rtype.collect_tvars_no_fn(&mut own_tvs);
-        own_tvs.retain(|name, _| !name.starts_with('_'));
-        let mut promo_added: LPooled<Vec<usize>> = LPooled::take();
-        for tv in own_tvs.values() {
-            if ctx.promo_eligible.insert(tv.cell_addr()) {
-                promo_added.push(tv.cell_addr());
-            }
-        }
         // While this def's body is checked, a self-call site must knot
         // to the def's own ftype cells (see `ExecCtx::rec_defs`).
         ctx.rec_defs.insert(def.id);
@@ -1179,9 +1157,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             Ok(())
         });
         ctx.def_gate_depth -= 1;
-        for addr in promo_added.drain(..) {
-            ctx.promo_eligible.remove(&addr);
-        }
         ctx.rec_defs.remove(&def.id);
         ctx.env.by_id.remove_cow(&faux_id);
         match prev_catch {

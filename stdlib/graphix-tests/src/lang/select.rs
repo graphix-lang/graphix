@@ -45,10 +45,10 @@ run!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
 
 const SELECTSTRUCT: &str = r#"
 {
-  type T = { foo: string, bar: i64, baz: f64 };
-  let x = { foo: "bar", bar: 42, baz: 84.0 };
+  type T = { foo: string, bar: f64, baz: f64 };
+  let x = { foo: "bar", bar: 42.0, baz: 84.0 };
   select x {
-    T as { foo: "foo", bar: 8, baz } => baz,
+    T as { foo: "foo", bar: 8.0, baz } => baz,
     T as { bar, baz, .. } => bar + baz
   }
 }
@@ -89,8 +89,8 @@ run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
 
 const NESTEDMATCH0: &str = r#"
 {
-  type T = { foo: (string, i64, f64), bar: i64, baz: f64 };
-  let x = { foo: ("bar", 42, 5.0), bar: 42, baz: 84.0 };
+  type T = { foo: (string, f64, f64), bar: i64, baz: f64 };
+  let x = { foo: ("bar", 42.0, 5.0), bar: 42, baz: 84.0 };
   let { foo: (_, x, y), .. }: T = x;
   x + y
 }
@@ -104,8 +104,8 @@ run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
 
 const NESTEDMATCH1: &str = r#"
 {
-  type T = { foo: {x: string, y: i64, z: f64}, bar: i64, baz: f64 };
-  let x = { foo: { x: "bar", y: 42, z: 5.0 }, bar: 42, baz: 84.0 };
+  type T = { foo: {x: string, y: f64, z: f64}, bar: i64, baz: f64 };
+  let x = { foo: { x: "bar", y: 42.0, z: 5.0 }, bar: 42, baz: 84.0 };
   select x {
     T as { foo: { y, z, .. }, .. } => y + z
   }

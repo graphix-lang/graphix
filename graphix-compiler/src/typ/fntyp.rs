@@ -359,7 +359,7 @@ impl FnType {
     /// needs this: an inferred implementation carries its constraints
     /// on auto `'_N` cells that no `fn<...>` header declared, so the
     /// declared-driven `constraint_view` can't see them.
-    fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
+    pub(crate) fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
         let known = self.sig_tvars();
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
         for tv in known.values() {
@@ -1134,30 +1134,34 @@ impl FnType {
                 bail!("missing constraint {sig_tv}: {sig_tc} in implementation")
             }
         }
-        for (impl_tv, impl_tc) in impl_cons.iter() {
-            match tvar_map.get(&impl_tv.inner_addr()).cloned() {
+        // SATISFACTION against the WHOLE conjunction, read from the
+        // CELLS: `cell_constraint_pairs`' single-conjunct rule is the
+        // display listing rule, and an inference cell routinely holds
+        // several conjuncts (the homogeneous-arith Number + the
+        // def-gate's constrain_known binding snapshot) — the old
+        // pair-list walk skipped exactly those cells, so a sandboxed
+        // impl inferred at f64 slipped under a fn(i64) -> i64 sig
+        // (dynamic_module1, 2026-07-12). Every conjunct must admit
+        // the signature's concrete choice.
+        for tv in impl_fn.sig_tvars().values() {
+            match tvar_map.get(&tv.inner_addr()).cloned() {
                 None | Some(Type::TVar(_)) => (),
                 Some(sig_type) => {
-                    // SATISFACTION, not structural sig-match: the
-                    // signature's concrete choice for this position
-                    // must be ADMITTED by the implementation's
-                    // inferred constraint (`fn(x: i64)` vs an impl
-                    // whose formal is constrained to Number — the
-                    // concrete i64 satisfies it). A structural match
-                    // here spurious-rejected every concretely-typed
-                    // signature over an inferred-generic impl.
-                    let ok = impl_tc
-                        .contains_int(
-                            enumflags2::BitFlags::empty(),
-                            env,
-                            &mut RefHist::new(LPooled::take()),
-                            &sig_type,
-                        )
-                        .unwrap_or(false);
-                    if !ok {
-                        bail!(
-                            "signature has concrete type {sig_type}, which the                              implementation constraint {impl_tc} does not admit"
-                        )
+                    for impl_tc in tv.cell_constraints() {
+                        let ok = impl_tc
+                            .contains_int(
+                                enumflags2::BitFlags::empty(),
+                                env,
+                                &mut RefHist::new(LPooled::take()),
+                                &sig_type,
+                            )
+                            .unwrap_or(false);
+                        if !ok {
+                            bail!(
+                                "signature has concrete type {sig_type}, which the \
+                                 implementation constraint {impl_tc} does not admit"
+                            )
+                        }
                     }
                 }
             }

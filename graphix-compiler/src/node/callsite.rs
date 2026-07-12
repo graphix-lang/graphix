@@ -758,6 +758,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                 };
                 let Some(node) = node else { continue };
+                // Only CLOSED formals: an unbound formal cell means
+                // this would be the FIRST unification of the pair,
+                // which the original callsite tc0 already performed
+                // with proper ordering — re-running it here hits the
+                // Set-walk's greedy first-member bind and false-
+                // positives (`radio.gx`: `[null, 'a]` vs a 3-variant
+                // union bound 'a := the first member then failed the
+                // second). The lie classes this check exists for all
+                // present SOLVED cells (the settled elem type the JIT
+                // will freeze).
+                if fa.typ.has_unbound() {
+                    continue;
+                }
                 if let Err(e) = fa.typ.check_contains(&ctx.env, node.typ()) {
                     let artifact =
                         e.downcast_ref::<crate::typ::UnresolvableRef>().is_some()

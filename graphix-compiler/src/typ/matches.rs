@@ -273,6 +273,21 @@ impl Type {
                 })
             }
             (sig_type, Self::TVar(impl_tv)) => {
+                // A BOUND impl tvar is a solved inference fact — the
+                // signature's concrete choice must match it
+                // structurally. Without this, an impl inferred
+                // fn(f64) -> f64 slipped under a `val: fn(i64) -> i64`
+                // sig because its formals are cells: this arm recorded
+                // the instantiation and returned Ok, and the mismatch
+                // was previously caught only by the retired mixed-arith
+                // UNION rtype hitting the catch-all — accidentally
+                // (dynamic_module1, homogeneous-arith fallout
+                // 2026-07-12). Clone the binding out before recursing
+                // (lock discipline).
+                let bound = impl_tv.read().typ.read().typ.clone();
+                if let Some(b) = bound {
+                    return sig_type.sig_matches_int(env, &b, tvar_map, hist, adts);
+                }
                 let impl_tv_addr = impl_tv.inner_addr();
                 match tvar_map.get(&impl_tv_addr) {
                     Some(prev_sig_type) => {

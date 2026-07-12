@@ -22,17 +22,24 @@ run!(lambda, LAMBDA, |v: Result<&Value>| match v {
 
 const FIRST_CLASS_LAMBDAS: &str = r#"
 {
-  let doit = |x: Number| x + 1;
-  let g = |f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1;
+  let doit = |x: i64| x + 1;
+  let g = |f: fn(x: i64) -> i64, y| f(y) + 1;
   g(doit, 1)
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: fn-typed value (dynamic dispatch / HOF param as value)
+// Homogeneous arithmetic note: the previous fixture's
+// `|f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1` is now correctly a
+// compile error — `f(y)` is the param's ARBITRARY rigid 'a, and
+// adding a concrete i64 to arbitrary 'a is exactly the param_knot
+// shape the ruling rejects. First-class fn-typed params are the
+// purpose here, so the fn type is monomorphic — which also lets the
+// site statically resolve and the whole program FUSE (the old
+// generic-param version was pinned None).
 run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LABELED_ARGS: &str = r#"
 {
@@ -1353,7 +1360,12 @@ const PARAM_KNOT_NO_LEAK: &str = r#"
 }
 "#;
 
-run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, |v: Result<&Value>| match v {
-    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(4), Value::F64(f)] if *f == 3.5),
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+// Homogeneous arithmetic (Eric's ruling, 2026-07-12): the DEF is
+// ill-typed — `x + i64:1` cannot be well-typed for ARBITRARY rigid
+// 'a: Number, so the promotion polymorphism this test used to pin
+// (`f(i64:3)` AND `f(f64:2.5)` both legal, per-site runtime
+// promotion) is deliberately GONE. Generic numeric bodies must not
+// mix concrete literals into 'a-typed arithmetic; monomorphize the
+// formal or convert explicitly.
+run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, |v: Result<&Value>| matches!(v, Err(_));
+     graphix_package_core::testing::FuseExpect::None);

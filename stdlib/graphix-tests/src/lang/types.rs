@@ -127,11 +127,10 @@ const EXPLICIT_TYPE_VARS3: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: type variable instantiation in fusion
-run!(explicit_type_vars3, EXPLICIT_TYPE_VARS3, |v: Result<&Value>| match v {
-    Ok(Value::U32(2) | Value::U64(2)) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+// Homogeneous arithmetic (Eric's ruling, 2026-07-12): two DISTINCT
+// quantified operand types can't add — `fn('a: Number, 'a) -> 'a`.
+run!(explicit_type_vars3, EXPLICIT_TYPE_VARS3, |v: Result<&Value>| matches!(v, Err(_));
+     graphix_package_core::testing::FuseExpect::None);
 
 const TYPED_ARRAYS0: &str = r#"
 {
@@ -327,12 +326,11 @@ const MIXED_OPERAND_ACCEPT: &str = r#"
 }
 "#;
 
-// Correct-None: the mixed call settles the derived result cell to the
-// wide Number set — no single register class, the region node-walks.
-run!(mixed_operand_accept, MIXED_OPERAND_ACCEPT, |v: Result<&Value>| matches!(
-    v,
-    Ok(Value::F64(f)) if *f == 3.5
-); graphix_package_core::testing::FuseExpect::None);
+// Homogeneous arithmetic: `|a, b| a + b` aliases both formals into ONE
+// cell (fn('a, 'a) -> 'a), so the i64×f64 call REJECTS — the runtime
+// promotion this used to exercise is unreachable from well-typed code.
+run!(mixed_operand_accept, MIXED_OPERAND_ACCEPT, |v: Result<&Value>| matches!(v, Err(_));
+     graphix_package_core::testing::FuseExpect::None);
 
 // ...and the derived (rtype-only) result cell of a distinct-operand
 // lambda is NOT externally narrowable — the eager derived-cell settle
@@ -413,7 +411,11 @@ run!(promo_obligation_rejects, PROMO_OBLIGATION_REJECTS, |v: Result<&Value>| mat
     Err(_)
 ); graphix_package_core::testing::FuseExpect::None);
 
-// An f64-only use of the same def is fine.
+// ...and so is an f64-only use: under homogeneous arithmetic
+// (fn('a: Number, 'a) -> 'a, Eric's ruling 2026-07-12) the DEF itself
+// is ill-typed — `x + f64:0.` cannot be well-typed for ARBITRARY
+// rigid 'a. Declare `|x: f64|` instead. This deliberately reverses
+// the promotion-obligation semantics ruled in earlier the same week.
 const PROMO_OBLIGATION_F64_OK: &str = r#"
 {
   let f = 'a: Number |x: 'a| -> 'a x + f64:0.;
@@ -423,8 +425,8 @@ const PROMO_OBLIGATION_F64_OK: &str = r#"
 
 run!(promo_obligation_f64_ok, PROMO_OBLIGATION_F64_OK, |v: Result<&Value>| matches!(
     v,
-    Ok(Value::F64(x)) if *x == 2.5
-); graphix_package_core::testing::FuseExpect::Jit);
+    Err(_)
+); graphix_package_core::testing::FuseExpect::None);
 
 // An UNANNOTATED formal infers MONOMORPHIC — the operand pre-bind
 // makes `|x| x + i64:1` a fn(i64) -> i64, so the f64 site rejects.

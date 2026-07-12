@@ -82,7 +82,7 @@ run!(tuples1, TUPLES1, |v: Result<&Value>| match v {
 
 const TUPLES2: &str = r#"
 {
-  let t = ("foo", 42, 23.5);
+  let t = ("foo", 42.0, 23.5);
   select t {
     ("foo", x, y) => x + y,
     _ => never()
@@ -143,7 +143,7 @@ run!(structs0, STRUCTS0, |v: Result<&Value>| match v {
 
 const BINDSTRUCT: &str = r#"
 {
-  let x = { foo: "bar", bar: 42, baz: 84.0 };
+  let x = { foo: "bar", bar: 42.0, baz: 84.0 };
   let { foo: _, bar, baz } = x;
   bar + baz
 }
@@ -182,8 +182,8 @@ run!(structwith0, STRUCTWITH0, |v: Result<&Value>| match v {
 
 const STRUCTWITH1: &str = r#"
 {
-  let x = { foo: "bar", bar: 42, baz: 84.0 };
-  let x = { x with bar: 1 };
+  let x = { foo: "bar", bar: 42.0, baz: 84.0 };
+  let x = { x with bar: 1.0 };
   x.bar + x.baz
 }
 "#;

@@ -298,3 +298,80 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
+
+macro_rules! time_fn {
+    ($ev:ident, $ty:ident, $name:literal, |$a:ident, $b:ident| $body:expr) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
+        impl<R: Rt, E: UserEvent> graphix_package_core::EvalCached<R, E> for $ev {
+            const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
+            const NAME: &str = $name;
+
+            fn eval(
+                &mut self,
+                _ctx: &mut ExecCtx<R, E>,
+                from: &CachedVals,
+            ) -> Option<Value> {
+                let $a = from.get(0)?;
+                let $b = from.get(1)?;
+                Some($body)
+            }
+        }
+        pub(crate) type $ty = graphix_package_core::CachedArgs<$ev>;
+    };
+}
+
+/// Variant tag for the catchable errors the duration functions return.
+static DURATION_ERR_TAG: arcstr::ArcStr = literal!("DurationError");
+
+// The evicted datetime/duration OPERATOR semantics, verbatim (netidx
+// op.rs): datetime ± duration SATURATES at the datetime range limits;
+// duration − duration SATURATES at zero (durations are unsigned —
+// graphix #176 C); duration + duration and scaling are CATCHABLE
+// errors on overflow / negative / NaN (function-land gets the rare-
+// stdlib-fn error discipline, where the operator logged and bottomed).
+time_fn!(TimeAddEv, TimeAdd, "sys_time_add", |t, d| {
+    let t: chrono::DateTime<Utc> = t;
+    let d: Duration = d;
+    match chrono::Duration::from_std(d).ok().and_then(|d| t.checked_add_signed(d)) {
+        Some(t) => Value::from(t),
+        None => Value::from(chrono::DateTime::<Utc>::MAX_UTC),
+    }
+});
+
+time_fn!(TimeSubEv, TimeSub, "sys_time_sub", |t, d| {
+    let t: chrono::DateTime<Utc> = t;
+    let d: Duration = d;
+    match chrono::Duration::from_std(d).ok().and_then(|d| t.checked_sub_signed(d)) {
+        Some(t) => Value::from(t),
+        None => Value::from(chrono::DateTime::<Utc>::MIN_UTC),
+    }
+});
+
+time_fn!(TimeAddDurEv, TimeAddDur, "sys_time_add_dur", |a, b| {
+    let a: Duration = a;
+    let b: Duration = b;
+    match a.checked_add(b) {
+        Some(d) => Value::Duration(d.into()),
+        None => graphix_compiler::err!(DURATION_ERR_TAG, "duration overflow"),
+    }
+});
+
+time_fn!(TimeSubDurEv, TimeSubDur, "sys_time_sub_dur", |a, b| {
+    let a: Duration = a;
+    let b: Duration = b;
+    Value::Duration(a.saturating_sub(b).into())
+});
+
+time_fn!(TimeScaleEv, TimeScale, "sys_time_scale", |d, by| {
+    let d: Duration = d;
+    let by: f64 = by;
+    match Duration::try_from_secs_f64(d.as_secs_f64() * by) {
+        Ok(d) => Value::Duration(d.into()),
+        Err(_) => graphix_compiler::err!(
+            DURATION_ERR_TAG,
+            "invalid duration scale (negative, NaN, or overflow)"
+        ),
+    }
+});
