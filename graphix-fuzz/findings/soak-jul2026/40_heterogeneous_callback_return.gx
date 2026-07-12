@@ -1,0 +1,7 @@
+// bisect: fusion/JIT type confusion (soak-jul12n divergence_000001).
+// array::map's callback body was [i64, f64], while the downstream sync
+// fold settled its result to i64. The instance-body recheck found the
+// mismatch but CallSite::setup_bind swallowed it. The interpreter
+// returned f64:0; fusion produced no event. The closed return-boundary
+// check now rejects the inconsistent callback instance in both modes.
+sync { let mut res = i64:0; for v in array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2) {res = res / v}; res }

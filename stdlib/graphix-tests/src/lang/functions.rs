@@ -1086,6 +1086,40 @@ run!(rtype_rejects_error_arm, RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| {
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
+const CALLSITE_REJECTS_NULLABLE_RETURN: &str = r#"
+{
+  let a = array::init(i64:3, |i| {
+    let l = list::from_array([i64:0, i64:2, i64:3]);
+    list::find(l, |x| x > i64:10)
+  });
+  array::fold(a, i64:0, |acc, x| acc + x)
+}
+"#;
+
+run!(
+    callsite_rejects_nullable_return,
+    CALLSITE_REJECTS_NULLABLE_RETURN,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+const CALLSITE_REJECTS_HETEROGENEOUS_RETURN: &str = r#"
+sync {
+  let mut res = i64:0;
+  for v in array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2) {
+    res = res / v
+  };
+  res
+}
+"#;
+
+run!(
+    callsite_rejects_heterogeneous_return,
+    CALLSITE_REJECTS_HETEROGENEOUS_RETURN,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
 // The `let rec` twin of the above — recursion typing must not admit
 // what the non-recursive form rejects.
 const REC_RTYPE_REJECTS_ERROR_ARM: &str = r#"

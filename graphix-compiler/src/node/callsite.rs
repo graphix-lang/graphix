@@ -27,6 +27,17 @@ use std::{
 };
 use triomphe::Arc as TArc;
 
+fn is_recheck_artifact(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<crate::typ::UnresolvableRef>().is_some()
+        || e.downcast_ref::<crate::typ::AbstractOpaque>().is_some()
+}
+
+fn is_concrete_recheck_endpoint(t: &Type) -> bool {
+    t.with_deref(|t| {
+        t.is_some_and(|t| !matches!(t, Type::Bottom | Type::Any) && !t.has_unbound())
+    })
+}
+
 /// Reject a direct call to a same-cycle (`EffectKind::Sync`) variadic
 /// builtin that supplies NO positional arguments, when the builtin's
 /// signature has no positional formals — e.g. `str::concat()`,
@@ -720,44 +731,41 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.resolved_ftype.as_ref(),
             self.top_id,
         )?;
-        // STRICT instance re-check (Eric's ruling, 2026-07-12): a
-        // semantic contradiction between the site and the instance's
-        // cells is a HARD error — this is the acceptance hole that
-        // shipped typed-slot lies the JIT executed (null on an i64
-        // slot, arith on a LambdaDef pointer — the jul12g/h/i witness
-        // families in site_recheck_strictness.md). Exactly ONE error
-        // class stays swallowed: [`typ::UnresolvableRef`] — a recheck
-        // re-runs NAME RESOLUTION, and the original check resolved
-        // its refs under a transient (env, scope) context that no
-        // longer exists (a caller-scoped alias in an arg type checked
-        // under the def's restored env, or vice versa — the
-        // data_table SortBy case). Name resolution is the recheck's
-        // artifact; semantics are its job.
-        // The full-body re-check stays SWALLOWED. Retried under
-        // single instantiation (2026-07-13): the copy-skew artifact
-        // family (hof_variant_find) is GONE — shared cells work — and
-        // param_knot is moot under homogeneous arith, but three
-        // families still trip strict: abstract-payload shapes whose
-        // errors don't route through the AbstractOpaque-marked
-        // check_contains (abstract_type_in_variant), queuefn's
-        // dynamic shapes, and the guarded recursive-fn-arg re-drive
-        // (rec_fn_arg_compiles — the skipped self-call leaves a
-        // mismatch the swallow previously ate). Each needs its own
-        // triage before the flip can land; the strict ARG-BOUNDARY
-        // check below carries the enforcement meanwhile.
+        // The full-body recheck informs the instance's shared type
+        // cells, but its error cannot be authoritative: abstract
+        // payloads, queuefn's dynamic wrapper shape, and guarded
+        // recursive re-entry do not survive a second walk under the
+        // call site's context. The closed ABI endpoint checks below
+        // enforce the facts that fusion can freeze into slots.
         if let Err(e) = rf.typecheck0(ctx, &mut self.arg_refs) {
             if std::env::var_os("GXDBG_SWALLOW").is_some() {
                 eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
             }
         }
-        // STRICT arg-boundary validation (Eric's ruling, 2026-07-12):
-        // the typed-slot lies all enter at ARG positions — the site's
-        // argument type vs the instance's now-informed formal (the
-        // resolved ftype's cells are shared with the instance, so the
-        // body check above has already recorded the instance's facts
-        // into them). Comparing the two ENDPOINTS is immune to the
-        // copy skew that poisons the full-body recheck. Two error
-        // classes are recheck artifacts and stay swallowed:
+        // An open endpoint cannot prove a contradiction. Once both
+        // ends are closed, a mismatch would expose a value through a
+        // return slot whose frozen ABI does not describe that value.
+        if let ApplyView::Lambda(g) = rf.view()
+            && is_concrete_recheck_endpoint(&g.typ().rtype)
+            && is_concrete_recheck_endpoint(g.body().typ())
+            && let Err(e) = g.typ().rtype.check_contains(&ctx.env, g.body().typ())
+        {
+            if is_recheck_artifact(&e) {
+                if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                    eprintln!(
+                        "SWALLOWED-RETCHECK (recheck artifact) at {}: {e:#}",
+                        self.spec
+                    );
+                }
+            } else {
+                return Err(e).with_context(|| {
+                    format!("in the result of {} at this call site", self.spec)
+                });
+            }
+        }
+        // The input counterpart compares each site argument with its
+        // now-informed instance formal. Two error classes are recheck
+        // artifacts and stay swallowed:
         // `UnresolvableRef` (name resolution ran under a transient
         // (env, scope) context that's gone — data_table SortBy) and
         // `AbstractOpaque` (the private↔public equivalence exists only
@@ -789,10 +797,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     continue;
                 }
                 if let Err(e) = fa.typ.check_contains(&ctx.env, node.typ()) {
-                    let artifact =
-                        e.downcast_ref::<crate::typ::UnresolvableRef>().is_some()
-                            || e.downcast_ref::<crate::typ::AbstractOpaque>().is_some();
-                    if artifact {
+                    if is_recheck_artifact(&e) {
                         if std::env::var_os("GXDBG_SWALLOW").is_some() {
                             eprintln!(
                                 "SWALLOWED-ARGCHECK (recheck artifact) at {}: {e:#}",
