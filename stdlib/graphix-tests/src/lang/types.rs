@@ -450,3 +450,23 @@ run!(promo_obligation_unannotated_mono, PROMO_OBLIGATION_UNANNOTATED_MONO, |v: R
     v,
     Err(_)
 ); graphix_package_core::testing::FuseExpect::None);
+
+// The RESIDUE rule for set-vs-set unification: a set member that is a
+// bare unbound tvar binds to the UNION of the rhs members no concrete
+// lhs member covers, in one act. The old per-member walk let the tvar
+// greedily capture the FIRST uncovered member and reject the second —
+// `[null, 'a] ⊇ [`A, `B]` bound 'a := `A, so a polymorphic
+// optional-selection formal (gui radio's `#selected: &['a, null]`
+// against a multi-variant union) could never typecheck at ANY site.
+const SET_RESIDUE_TVAR_BIND: &str = r#"
+{
+  let f = |sel: [null, 'a], v: 'a| true;
+  let s: [`A, `B] = `A;
+  (f(s, `A), f(s, `B))
+}
+"#;
+
+run!(set_residue_tvar_bind, SET_RESIDUE_TVAR_BIND, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::Bool(true), Value::Bool(true)]),
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

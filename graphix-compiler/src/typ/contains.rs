@@ -615,6 +615,56 @@ impl Type {
                 }
                 Ok(true)
             }
+            // A SET whose members include an unbound BARE tvar vs a
+            // SET: bind the tvar to the RESIDUE — the rhs members no
+            // concrete lhs member covers — in ONE act. The general
+            // per-member walk below lets the bare tvar greedily
+            // capture the FIRST uncovered member and then fails the
+            // second: `[null, 'a] ⊇ [`A, `B]` bound 'a := `A and
+            // rejected `B, so a polymorphic optional-selection formal
+            // (radio's `#selected: &['a, null]` against a 3-variant
+            // union) could never typecheck at ANY site (task #47;
+            // single-site repro, predates jul12).
+            (Self::Set(s0), Self::Set(s1))
+                if s0.iter().any(
+                    |m| matches!(m, Self::TVar(tv) if tv.read().typ.read().typ.is_none()),
+                ) =>
+            {
+                let probe = BitFlags::empty();
+                let bare = |t0: &&Self| matches!(t0, Self::TVar(tv) if tv.read().typ.read().typ.is_none());
+                let mut residue: LPooled<Vec<Type>> = LPooled::take();
+                for m in s1.iter() {
+                    let mut covered = false;
+                    for c in s0.iter().filter(|c| !bare(c)) {
+                        if c.contains_int(probe, env, hist, m)? {
+                            // Commit interior bindings against the
+                            // covering member (structural members
+                            // first, as the general arm orders them).
+                            if !c.contains_int(flags, env, hist, m)? {
+                                return Ok(false);
+                            }
+                            covered = true;
+                            break;
+                        }
+                    }
+                    if !covered {
+                        residue.push(m.clone());
+                    }
+                }
+                if residue.is_empty() {
+                    return Ok(true);
+                }
+                let target = if residue.len() == 1 {
+                    residue[0].clone()
+                } else {
+                    Type::Set(Arc::from_iter(residue.drain(..)))
+                };
+                let target = target.normalize();
+                match s0.iter().find(|m| bare(m)) {
+                    Some(tv_m) => tv_m.contains_int(flags, env, hist, &target),
+                    None => Ok(false),
+                }
+            }
             (t0, Self::Set(s)) => Ok(s
                 .iter()
                 .map(|t1| t0.contains_int(flags, env, hist, t1))
