@@ -1,0 +1,8 @@
+// bisect: typing acceptance bug — ADDRESS LEAK flavor (both modes now
+// compile-reject; pre-fix the JIT ran a native add on the element
+// slot holding the LambdaDef POINTER and printed it, ASLR-varying,
+// while the interp bottomed silently).
+// root_cause: same V1 copy-skew as 01 — fn-valued elements typed into
+// a scalar slot through unlinked instantiation copies.
+// found: soak-jul12i fuzz divergence_000001 (2026-07-12).
+{let xs = array::filter(array::init(i64:5, |idx: i64| sys::fs::read_all_bin), |x| true); array::fold(xs, i64:7, |acc, x| i64:3 + x)}

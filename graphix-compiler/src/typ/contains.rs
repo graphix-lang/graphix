@@ -400,6 +400,7 @@ impl Type {
                     RightAlias,
                     LeftAlias,
                     LeftCopy,
+                    CellMerge,
                 }
                 if t0.would_cycle(tt1) || t1.would_cycle(tt0) {
                     return Ok(true);
@@ -431,9 +432,17 @@ impl Type {
                         }
                         (None, None) => {
                             if t0.frozen && t1.frozen {
-                                return Ok(true);
-                            }
-                            if t0.frozen {
+                                // EXPERIMENT (single-instantiation plan
+                                // input): the old vacuous `Ok(true)`
+                                // here never LINKED the cells — two
+                                // instantiation copies' quantified vars
+                                // unified without sharing state, so
+                                // later facts forked between them (the
+                                // copy-skew acceptance family). Merge
+                                // the CELLS instead: `frozen` gates
+                                // NAME-aliasing, not unification.
+                                ActOrRecurse::Act(Act::CellMerge, None)
+                            } else if t0.frozen {
                                 ActOrRecurse::Act(Act::RightAlias, None)
                             } else {
                                 ActOrRecurse::Act(Act::LeftAlias, None)
@@ -512,9 +521,14 @@ impl Type {
                         }
                         t0.copy(t1)
                     }
-                    Act::RightCopy | Act::RightAlias | Act::LeftAlias | Act::LeftCopy => {
-                        ()
+                    Act::CellMerge if flags.contains(ContainsFlags::AliasTVars) => {
+                        t0.alias_cells(t1)
                     }
+                    Act::RightCopy
+                    | Act::RightAlias
+                    | Act::LeftAlias
+                    | Act::LeftCopy
+                    | Act::CellMerge => (),
                 }
                 Ok(true)
             }

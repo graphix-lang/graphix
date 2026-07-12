@@ -390,6 +390,44 @@ impl TVar {
         self.write().frozen = true;
     }
 
+    /// Merge self's CELL into other's, bypassing the `frozen` gate
+    /// that [`Self::alias`] honors — but keeping its occurs checks.
+    /// `frozen` means "name-aliasing already happened for this var"
+    /// (each var joins a name group once); a UNIFICATION-driven merge
+    /// is a different act: two already-settled groups whose types are
+    /// being equated must share one cell or later facts fork between
+    /// them (the instantiation copy-skew family,
+    /// site_recheck_strictness.md — the vacuous frozen×frozen
+    /// unification was how `elem := null` and `cmp := i64` never met).
+    pub(super) fn alias_cells(&self, other: &Self) {
+        {
+            let self_addr = Arc::as_ptr(&self.read().typ).addr();
+            let other_addr = Arc::as_ptr(&other.read().typ).addr();
+            if self_addr == other_addr {
+                return;
+            }
+            if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+                return;
+            }
+            let scons = self.read().typ.read().constraints.clone();
+            if scons.iter().any(|c| would_cycle_inner(other_addr, c)) {
+                return;
+            }
+        }
+        let mut s = self.write();
+        let o = other.read();
+        if !Arc::ptr_eq(&s.typ, &o.typ) {
+            let mine = s.typ.read().constraints.clone();
+            {
+                let mut oc = o.typ.write();
+                for c in mine {
+                    oc.add_constraint(c);
+                }
+            }
+            s.typ = Arc::clone(&o.typ);
+        }
+    }
+
     /// copy self's binding from other, MERGING constraint lists (self
     /// keeps its own obligations — the bind-site check has already
     /// verified the incoming binding against them).
