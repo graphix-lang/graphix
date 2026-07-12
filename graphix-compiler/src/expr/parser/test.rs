@@ -8,7 +8,6 @@ use crate::{
 };
 use arcstr::literal;
 use netidx::{publisher::Typ, utils::Either};
-use parking_lot::RwLock;
 
 #[allow(unused)]
 fn parse_typexpr(s: &str) -> anyhow::Result<Type> {

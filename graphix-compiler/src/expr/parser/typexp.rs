@@ -195,6 +195,9 @@ where
                 rtype,
                 throws,
                 explicit_throws,
+                quantifiers: Arc::from_iter(
+                    constraints.iter().map(|(tv, _)| tv.name.clone()),
+                ),
                 ..Default::default()
             };
             // Quantifier constraints seed CELLS (phase C — the cells

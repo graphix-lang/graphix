@@ -9,7 +9,6 @@ use chrono::prelude::*;
 use enumflags2::BitFlags;
 use netidx::protocol::value::Typ;
 use netidx_value::PBytes;
-use parking_lot::RwLock;
 use parser::RESERVED;
 use poolshark::local::LPooled;
 use prop::option;
@@ -303,6 +302,9 @@ fn typexp() -> impl Strategy<Value = Type> {
                         rtype,
                         throws,
                         explicit_throws,
+                        quantifiers: Arc::from_iter(
+                            constraints.iter().map(|(a, _)| a.clone()),
+                        ),
                         ..Default::default()
                     };
                     // Mirror the parser: quantifier constraints seed
@@ -324,6 +326,15 @@ fn typexp() -> impl Strategy<Value = Type> {
                         }
                         ft.alias_tvars(&mut known);
                         for (tv, tc) in pairs {
+                            // The parser aliases the constraint TYPE's
+                            // interior too (typexp.rs fntype builder):
+                            // a same-named tvar inside the conjunct IS
+                            // the quantifier (one name, one cell per
+                            // scope). Without this the generator minted
+                            // a distinct interior cell the printed text
+                            // can't express, and reparse aliased it —
+                            // view mismatch (trip3 at 24k cases).
+                            tc.alias_tvars(&mut known);
                             tv.add_cell_constraint(tc);
                         }
                     }

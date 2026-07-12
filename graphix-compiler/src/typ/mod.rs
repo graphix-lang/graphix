@@ -662,9 +662,16 @@ pub(crate) fn numeric_absorbers(o: Typ) -> Option<BitFlags<Typ>> {
         t if width(t) > 0 => {
             let w = width(t);
             let mut s = BitFlags::from(t) | Typ::F32 | Typ::F64 | Typ::Decimal;
-            for c in
-                [Typ::U8, Typ::I8, Typ::U16, Typ::I16, Typ::U32, Typ::I32, Typ::U64, Typ::I64]
-            {
+            for c in [
+                Typ::U8,
+                Typ::I8,
+                Typ::U16,
+                Typ::I16,
+                Typ::U32,
+                Typ::I32,
+                Typ::U64,
+                Typ::I64,
+            ] {
                 if width(c) > w {
                     s |= c;
                 }

@@ -458,3 +458,50 @@ round-trip proptest, fuzz regress 140/0, detcheck 160/0, all soak
 corpora agree. Remaining from the phase-B wins list: `any_as_tvar`
 retirement and the `reset_tvars` → `instantiate` rename — both still
 deferred, neither blocked by this.
+
+### Amendment (same day): `FnType.quantifiers` — the declaration site
+### is syntax the cells cannot carry
+
+The 50k-case round-trip proptest broke the pure derive-from-cells
+design, twice:
+
+1. **Masked reporting**: derived `Debug` on `TVar` recursed cell →
+   constraints → conjunct → same cell forever (proptest overflowed a
+   256 MB stack while trying to PRINT a failing case). `TVar` now has
+   a manual `Debug` with the same cell-addr registry as Display's
+   PRINTING guard; `would_cycle_inner` gained a seen-set for the same
+   cycle shape.
+2. **The real defect**: a self-referential constraint —
+   `fn<'a: fn(x: 'a) -> _>(…)` — is legal surface syntax, and once
+   the parser seeds it, the declaring header and the inner fn that
+   merely MENTIONS `'a` reach the exact same cell and conjunct. A
+   view derived purely from cells cannot tell them apart, so it
+   re-prints (and re-compares) the header at every occurrence:
+   infinite regress. Extent guards can only ELIDE the inner
+   occurrence, which breaks round-trip fidelity instead — the old
+   LIST terminated here precisely because it was per-FnType syntax,
+   not cell-derived. The declaration site is information the cells
+   never had.
+
+Resolution: `FnType.quantifiers: Arc<[ArcStr]>` — the quantifier
+NAMES the `fn<...>` header declared, in source order. Names only:
+the constraint TYPES stay in the cells (phase C stands); this records
+the one fact that was never derivable. `constraint_view` yields pairs
+only for declared names (inner fns declare nothing → the regress
+terminates structurally, with exact print fidelity). Excluded from
+Eq/Ord/Hash — identity remains the view. Consequences threaded
+through:
+
+- `replace_auto_constrained` reads auto `'_N` pairs from the CELLS
+  directly (inference never declares a header, so the declared view
+  can't see them).
+- `sig_matches_int`'s impl side uses `cell_constraint_pairs()` (all
+  reachable single-conjunct cells) — an inferred impl's constraints
+  live on undeclared auto cells.
+- The proptest generator aliases each constraint type's interior
+  through the same known map the parser uses (typexp builder): a
+  same-named tvar inside the conjunct IS the quantifier. The
+  generator previously minted a distinct interior cell the printed
+  text can't express — reparse aliased it and views diverged.
+- Pack wire format unchanged: decode rebuilds `quantifiers` from the
+  encoded pair names.

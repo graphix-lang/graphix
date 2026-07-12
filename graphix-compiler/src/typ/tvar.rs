@@ -19,6 +19,17 @@ use triomphe::Arc;
 atomic_id!(TVarId);
 
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
+    use poolshark::local::LPooled;
+    let mut seen: LPooled<nohash::IntSet<usize>> = LPooled::take();
+    would_cycle_seen(addr, t, &mut seen)
+}
+
+// `seen` holds cell addrs already on the walk: conjunct graphs can be
+// CYCLIC (phase C parser seeding aliases quantifier names across
+// nested fn types), and an unguarded walk looped cell → conjunct →
+// same cell forever whenever the target addr wasn't in the cycle. A
+// revisited cell adds no reachability, so it answers false.
+fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> bool {
     match t {
         Type::Primitive(_) | Type::Any | Type::Bottom | Type::Ref(TypeRef { .. }) => {
             false
@@ -26,27 +37,31 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
         Type::TVar(t) => {
             Arc::as_ptr(&t.read().typ).addr() == addr || {
                 let cell = t.read().typ.clone();
+                if !seen.insert(Arc::as_ptr(&cell).addr()) {
+                    return false;
+                }
                 let cell = cell.read();
                 let in_bind = match &cell.typ {
                     None => false,
-                    Some(t) => would_cycle_inner(addr, t),
+                    Some(t) => would_cycle_seen(addr, t, seen),
                 };
-                in_bind || cell.constraints.iter().any(|c| would_cycle_inner(addr, c))
+                in_bind
+                    || cell.constraints.iter().any(|c| would_cycle_seen(addr, c, seen))
             }
         }
         Type::Abstract { id: _, params } => {
-            params.iter().any(|t| would_cycle_inner(addr, t))
+            params.iter().any(|t| would_cycle_seen(addr, t, seen))
         }
-        Type::Error(t) => would_cycle_inner(addr, t),
-        Type::Array(a) => would_cycle_inner(addr, &**a),
+        Type::Error(t) => would_cycle_seen(addr, t, seen),
+        Type::Array(a) => would_cycle_seen(addr, &**a, seen),
         Type::Map { key, value } => {
-            would_cycle_inner(addr, &**key) || would_cycle_inner(addr, &**value)
+            would_cycle_seen(addr, &**key, seen) || would_cycle_seen(addr, &**value, seen)
         }
-        Type::ByRef(t) => would_cycle_inner(addr, t),
-        Type::Tuple(ts) => ts.iter().any(|t| would_cycle_inner(addr, t)),
-        Type::Variant(_, ts) => ts.iter().any(|t| would_cycle_inner(addr, t)),
-        Type::Struct(ts) => ts.iter().any(|(_, t)| would_cycle_inner(addr, t)),
-        Type::Set(s) => s.iter().any(|t| would_cycle_inner(addr, t)),
+        Type::ByRef(t) => would_cycle_seen(addr, t, seen),
+        Type::Tuple(ts) => ts.iter().any(|t| would_cycle_seen(addr, t, seen)),
+        Type::Variant(_, ts) => ts.iter().any(|t| would_cycle_seen(addr, t, seen)),
+        Type::Struct(ts) => ts.iter().any(|(_, t)| would_cycle_seen(addr, t, seen)),
+        Type::Set(s) => s.iter().any(|t| would_cycle_seen(addr, t, seen)),
         Type::Fn(f) => {
             let FnType {
                 args,
@@ -54,19 +69,20 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
                 rtype,
                 throws,
                 explicit_throws: _,
+                quantifiers: _,
                 lambda_ids: _,
             } = &**f;
             // Constraint TYPES live in the signature cells'
             // conjunctions (phase C); the `TVar` arm above walks each
             // reachable cell's conjuncts, so the signature-component
             // walks cover everything the retired list walk reached.
-            args.iter().any(|t| would_cycle_inner(addr, &t.typ))
+            args.iter().any(|t| would_cycle_seen(addr, &t.typ, seen))
                 || match vargs {
                     None => false,
-                    Some(t) => would_cycle_inner(addr, t),
+                    Some(t) => would_cycle_seen(addr, t, seen),
                 }
-                || would_cycle_inner(addr, rtype)
-                || would_cycle_inner(addr, &throws)
+                || would_cycle_seen(addr, rtype, seen)
+                || would_cycle_seen(addr, &throws, seen)
         }
     }
 }
@@ -131,8 +147,33 @@ pub struct TVarInner {
     pub(crate) typ: RwLock<TVarInnerInner>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TVar(Arc<TVarInner>);
+
+// Manual, cycle-guarded: since cells became the constraint store
+// (phase C) a cell's conjuncts can reach the cell itself (parser
+// seeding aliases quantifier names across nested fn types), and the
+// derived impl recursed cell → constraints → conjunct → same cell
+// until the stack blew — first seen as proptest overflowing while
+// REPORTING a failing case. Same shape as Display's PRINTING guard.
+impl fmt::Debug for TVar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        thread_local! {
+            static DEBUGGING: std::cell::RefCell<nohash::IntSet<usize>> =
+                std::cell::RefCell::new(nohash::IntSet::default());
+        }
+        let addr = self.cell_addr();
+        if !DEBUGGING.with_borrow_mut(|s| s.insert(addr)) {
+            return f
+                .debug_tuple("TVar")
+                .field(&format_args!("'{}: …", self.name))
+                .finish();
+        }
+        let r = f.debug_tuple("TVar").field(&self.0).finish();
+        DEBUGGING.with_borrow_mut(|s| s.remove(&addr));
+        r
+    }
+}
 
 impl fmt::Display for TVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

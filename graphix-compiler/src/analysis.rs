@@ -368,9 +368,7 @@ fn callee_effect<R: Rt, E: UserEvent>(
     // per dispatch — the p7/p9 over-fire class.
     let known = |lid: LambdaId| -> EffectKind {
         eff.get(&lid).copied().unwrap_or_else(|| {
-            lambda_def(ctx, lid)
-                .map(|d| *d.intrinsic_effect.lock())
-                .unwrap_or_default()
+            lambda_def(ctx, lid).map(|d| *d.intrinsic_effect.lock()).unwrap_or_default()
         })
     };
     // Resolved user lambda.

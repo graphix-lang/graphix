@@ -174,8 +174,7 @@ impl Pack for FnType {
     // decode re-seeds any entries onto the cells (a no-op for data
     // this codec wrote — `add_cell_constraint` dedups).
     fn encoded_len(&self) -> usize {
-        let constraints: Vec<(TVar, Type)> =
-            self.constraint_view().drain(..).collect();
+        let constraints: Vec<(TVar, Type)> = self.constraint_view().drain(..).collect();
         self.args.encoded_len()
             + self.vargs.encoded_len()
             + self.rtype.encoded_len()
@@ -188,8 +187,7 @@ impl Pack for FnType {
         self.args.encode(buf)?;
         self.vargs.encode(buf)?;
         self.rtype.encode(buf)?;
-        let constraints: Vec<(TVar, Type)> =
-            self.constraint_view().drain(..).collect();
+        let constraints: Vec<(TVar, Type)> = self.constraint_view().drain(..).collect();
         <Vec<(TVar, Type)> as Pack>::encode(&constraints, buf)?;
         self.throws.encode(buf)?;
         self.explicit_throws.encode(buf)
@@ -202,6 +200,8 @@ impl Pack for FnType {
         let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
         let throws = <Type as Pack>::decode(buf)?;
         let explicit_throws = <bool as Pack>::decode(buf)?;
+        let quantifiers =
+            Arc::from_iter(constraints.iter().map(|(tv, _)| tv.name.clone()));
         for (tv, tc) in constraints {
             tv.add_cell_constraint(tc);
         }
@@ -211,6 +211,7 @@ impl Pack for FnType {
             rtype,
             throws,
             explicit_throws,
+            quantifiers,
             // Provenance only — excluded from FnType identity, rebuilt fresh.
             lambda_ids: LambdaIds::default(),
         })

@@ -854,6 +854,9 @@ impl Lambda {
                 rtype,
                 throws,
                 explicit_throws,
+                quantifiers: Arc::from_iter(
+                    constraints.iter().map(|(tv, _)| tv.name.clone()),
+                ),
                 lambda_ids: LambdaIds::default(),
             })
         };

@@ -1267,11 +1267,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // escape reads as an EVENT to any async consumer (`group`
         // counted a quiet fold's value-channel refresh, jul10h 000007).
         // The kernel twin is the return seam's `is_not_fresh` gate.
-        let res = if ctx.frame_depth == 0 {
-            res.filter(|tv| tv.tag().is_fired())
-        } else {
-            res
-        };
+        let res =
+            if ctx.frame_depth == 0 { res.filter(|tv| tv.tag().is_fired()) } else { res };
         if std::env::var_os("GXDBG_CS").is_some() {
             // Result-tag companion to the pre-dispatch CS line above —
             // localized the tail-loop tag derivation and the fd0 stale
