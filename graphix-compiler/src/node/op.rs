@@ -875,6 +875,19 @@ macro_rules! arith_op {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
                 {
+                    // The operand pre-bind: an UNANNOTATED formal
+                    // paired with a known operand infers MONOMORPHIC
+                    // (first concrete fact wins — `|x| x + i64:1` is
+                    // fn(i64) -> i64; annotate `'a: Number` to get
+                    // promotion polymorphism). Retiring this for
+                    // numerics was tried under ruling (a) and reverted:
+                    // an impl that stays generic breaks the interface /
+                    // fn-subsumption matchers, which compare signatures
+                    // structurally (`val add: fn(x: i64) -> i64` vs
+                    // `fn(x: '_a: [Real, i64])` — dynamic_module0,
+                    // first_class_lambdas). ANNOTATED formals are
+                    // rigid, skip this bind, and get the promotion
+                    // obligation below instead.
                     let lhs = self.lhs.node.typ();
                     let rhs = self.rhs.node.typ();
                     match (lhs.with_deref(|t| t.cloned()), rhs.with_deref(|t| t.cloned()))
@@ -921,12 +934,54 @@ macro_rules! arith_op {
                 // phase B): an unbound operand cell records "arithmetic
                 // happened here" as a cell conjunct; the `ut` table runs
                 // at typecheck1 once the cells settle.
+                //
+                // PROMOTION OBLIGATION (Eric's ruling (a), 2026-07-12):
+                // when the OTHER operand is a concrete numeric, the
+                // generic cell records the ABSORBER set instead of bare
+                // Number — the site's instantiation must be a type the
+                // runtime promotion keeps (`i64 + f64:0.` is F64 at
+                // runtime, so a formal used that way can't instantiate
+                // at i64; `x + i64:1` still admits every float and
+                // i64). The conjunct rides the ordinary constraint
+                // machinery: carried to site copies by `reset_tvars`,
+                // validated by `cell_constraints_ok` at the arg bind —
+                // where the rejection propagates, unlike the instance
+                // body's swallowed union check. Closes the class where
+                // the JIT froze a scalar slot the promoted value never
+                // honors (fuzz/pending-ruling/promo_lie_dual_mono.gx).
+                // Only the current def gate's OWN declared tvars are
+                // eligible (`ExecCtx::promo_eligible`): a param's
+                // quantified 'a reached through `f(y) + 1` must keep
+                // the bare Number conjunct — constraining it re-created
+                // the 5634fbdc poisoned-conjunct class
+                // (first_class_lambdas).
+                let promo = |ctx: &ExecCtx<R, E>,
+                             tv: &$crate::typ::TVar,
+                             other: &Type|
+                 -> Option<Type> {
+                    if !ctx.promo_eligible.contains(&tv.cell_addr()) {
+                        return None;
+                    }
+                    other.with_deref(|t| match t {
+                        Some(Type::Primitive(p)) if p.len() == 1 => {
+                            crate::typ::numeric_absorbers(p.iter().next().unwrap())
+                                .map(Type::Primitive)
+                        }
+                        _ => None,
+                    })
+                };
                 let num = Type::Primitive(Typ::number());
                 if !lk && let Type::TVar(tv) = self.lhs.node.typ() {
-                    tv.add_cell_constraint(num.clone());
+                    match promo(ctx, tv, self.rhs.node.typ()) {
+                        Some(c) => tv.add_cell_constraint(c),
+                        None => tv.add_cell_constraint(num.clone()),
+                    }
                 }
                 if !rk && let Type::TVar(tv) = self.rhs.node.typ() {
-                    tv.add_cell_constraint(num.clone());
+                    match promo(ctx, tv, self.lhs.node.typ()) {
+                        Some(c) => tv.add_cell_constraint(c),
+                        None => tv.add_cell_constraint(num.clone()),
+                    }
                 }
                 // Result: same-cell operands make arith type-preserving,
                 // so the result IS the operand cell (`|a| a + a` stays

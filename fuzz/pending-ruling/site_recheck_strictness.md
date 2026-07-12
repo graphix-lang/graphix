@@ -1,5 +1,35 @@
 # The typing-acceptance family needs a ruling on the elaboration typing model
 
+> **FULLY RESOLVED 2026-07-12 — ERIC RULED (a) on the promotion
+> question, landed as PROMOTION-OBLIGATION conjuncts.** The runtime's
+> mixed-arith absorber set (`typ::numeric_absorbers`, mirroring
+> netidx `apply_op!` exactly, conservative on the direction-dependent
+> ties) is recorded as an ordinary cell-constraint conjunct in
+> arith's constrain-don't-bind pass — zero new machinery (carried by
+> reset_tvars, validated by cell_constraints_ok at the site's arg
+> bind, which propagates). Two scoping lines drawn during
+> validation:
+>
+> 1. ANNOTATED `'a: Number` formals get the obligation (rigid at the
+>    gate suppresses the operand pre-bind, so the conjunct is the
+>    only fact — `x + f64:0.` obliges 'a to the F64 absorbers,
+>    rejecting i64 sites; `x + i64:1` admits every float —
+>    param_knot_no_leak stays green). UNANNOTATED formals keep the
+>    operand pre-bind and infer MONOMORPHIC (first concrete fact
+>    wins): retiring the pre-bind left impls generic, which the
+>    interface / fn-subsumption matchers can't instantiate
+>    (dynamic_module0, first_class_lambdas). Annotate to widen.
+> 2. Only the def's OWN directly-declared tvars are eligible
+>    (`ExecCtx::promo_eligible`, `collect_tvars_no_fn`): a param's
+>    quantified 'a reached through `f(y) + 1` keeps the bare Number
+>    conjunct — constraining it re-created the 5634fbdc
+>    poisoned-conjunct class.
+>
+> Pinned: `promo_obligation_*` in lang/types.rs. With this, EVERY
+> known divergence across all four soak corpora is resolved except
+> jul12b/000000 (a separately-tracked fusion stall, unrelated to
+> typing) — regress 138/0, detcheck 158/0, fixtures 1802/0.
+
 Status 2026-07-12: three open jul10h finds (000001/000002/000010, all
 one family), root-caused, with a FAILED strictness experiment fully
 documented below. The JIT side is SAFE (defensive shape-check bottoms

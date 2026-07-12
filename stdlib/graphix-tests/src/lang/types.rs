@@ -387,3 +387,64 @@ run!(obs4_def_fact_accepts, OBS4_DEF_FACT_ACCEPTS, |v: Result<&Value>| matches!(
     Err(_)
 ); graphix_package_core::testing::FuseExpect::None);
 
+
+// =============================================================================
+// Promotion obligations (Eric's ruling (a), 2026-07-12)
+// =============================================================================
+//
+// A generic arith operand paired with a CONCRETE numeric records the
+// runtime promotion's ABSORBER set as a cell conjunct
+// (`typ::numeric_absorbers`, mirroring netidx `apply_op!`): the site's
+// instantiation must be a type the promotion keeps. `x + f64:0.` is
+// F64 at runtime whatever x is, so an i64 instantiation would make
+// the static type a lie the JIT freezes (the promo-lie class,
+// jul10h 000001 / jul12a 000002).
+
+// The i64 site violates the F64 obligation — rejected.
+const PROMO_OBLIGATION_REJECTS: &str = r#"
+{
+  let f = 'a: Number |x: 'a| -> 'a x + f64:0.;
+  (f(i64:3), f(f64:2.5))
+}
+"#;
+
+run!(promo_obligation_rejects, PROMO_OBLIGATION_REJECTS, |v: Result<&Value>| matches!(
+    v,
+    Err(_)
+); graphix_package_core::testing::FuseExpect::None);
+
+// An f64-only use of the same def is fine.
+const PROMO_OBLIGATION_F64_OK: &str = r#"
+{
+  let f = 'a: Number |x: 'a| -> 'a x + f64:0.;
+  f(f64:2.5)
+}
+"#;
+
+run!(promo_obligation_f64_ok, PROMO_OBLIGATION_F64_OK, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::F64(x)) if *x == 2.5
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// An UNANNOTATED formal infers MONOMORPHIC — the operand pre-bind
+// makes `|x| x + i64:1` a fn(i64) -> i64, so the f64 site rejects.
+// This is the deliberate line under ruling (a): promotion-obligation
+// polymorphism belongs to ANNOTATED `'a: Number` formals (rigid at
+// the gate, so the pre-bind is suppressed and the absorber conjunct
+// carries the obligation — see param_knot_no_leak). An impl left
+// generic here broke interface / fn-subsumption matching
+// (dynamic_module0, first_class_lambdas), which compares signatures
+// structurally. Annotate to widen.
+const PROMO_OBLIGATION_UNANNOTATED_MONO: &str = r#"
+{
+  let f = |x| x + i64:1;
+  (f(i64:3), f(f64:2.5))
+}
+"#;
+
+run!(promo_obligation_unannotated_mono, PROMO_OBLIGATION_UNANNOTATED_MONO, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Err(_)
+); graphix_package_core::testing::FuseExpect::None);

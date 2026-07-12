@@ -1610,6 +1610,17 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// enclosing rigid rtype check then refused its own body
     /// (sync-subset P4, the in-language map).
     pub(crate) def_gate_depth: usize,
+    /// Cell addresses of the def gate(s)' OWN directly-declared tvars
+    /// (named tvars of the def's signature, EXCLUDING those quantified
+    /// inside fn-typed params — `collect_tvars_no_fn`). Arith's
+    /// promotion-obligation hook (node/op.rs, Eric's ruling (a))
+    /// records the absorber conjunct only on these cells: a body
+    /// operation touching a PARAM's quantified 'a must not constrain
+    /// it (the 5634fbdc poisoned-conjunct class,
+    /// first_class_lambdas). Populated/pruned by the gate brackets in
+    /// `Lambda::typecheck0`; nested gates ADD their own and remove
+    /// exactly what they added.
+    pub(crate) promo_eligible: nohash::IntSet<usize>,
     /// All state owned by the fusion subsystem — the JIT module,
     /// kernel caches, abstract-type registry, builtin effects, and the
     /// compile-time fusion flags/counters. Grouped into one struct so
@@ -1683,6 +1694,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             unstable_bindings: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
             rec_defs: nohash::IntSet::default(),
+            promo_eligible: nohash::IntSet::default(),
             def_gate_params: nohash::IntSet::default(),
             def_gate_depth: 0,
             fusion: fusion::FusionCtx::new()?,

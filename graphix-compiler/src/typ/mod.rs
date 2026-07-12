@@ -611,3 +611,66 @@ impl Type {
         }
     }
 }
+
+/// The set of numeric types that ABSORB `o` under the runtime's
+/// mixed-type arithmetic — `T` absorbs `o` iff `T op o` and `o op T`
+/// both produce a `T`-classed value for every value. Mirrors netidx's
+/// `apply_op!` / `apply_op_mixed_int!` / `apply_op_mixed_float!`
+/// (netidx-value/src/op.rs) — the single source of truth for the
+/// node-walk AND the JIT — and is deliberately CONSERVATIVE where
+/// those macros are direction-dependent:
+///
+/// - floats and decimal absorb every integer (both operand orders);
+/// - decimal absorbs the floats;
+/// - a strictly WIDER canonical integer absorbs a narrower one of
+///   either sign (the `size_of` promotion in `apply_op_mixed_int!`);
+/// - SAME-width mixed-sign pairs (i64/u64) and F32/F64 are LEFT-biased
+///   at runtime — excluded here, so a generic formal constrained by
+///   such an operand rejects rather than depend on operand order;
+/// - the v/z wire variants are excluded as absorbers: arithmetic
+///   canonicalizes them (V64 op → U64-classed result), so a v/z-typed
+///   binding could not keep its class.
+///
+/// Used by arithmetic's "constrain, don't bind" pass (node/op.rs): a
+/// generic operand cell paired with a CONCRETE numeric operand records
+/// this set as a cell-constraint conjunct — the promotion OBLIGATION
+/// (Eric's ruling (a), 2026-07-12) — so a site instantiating the cell
+/// with a type the runtime would promote AWAY from is rejected at the
+/// arg bind, instead of the JIT freezing a signature the value never
+/// honors (fuzz/pending-ruling/promo_lie_dual_mono.gx).
+pub(crate) fn numeric_absorbers(o: Typ) -> Option<BitFlags<Typ>> {
+    fn width(t: Typ) -> u32 {
+        match t {
+            Typ::U8 | Typ::I8 => 1,
+            Typ::U16 | Typ::I16 => 2,
+            Typ::U32 | Typ::I32 => 4,
+            Typ::U64 | Typ::I64 => 8,
+            _ => 0,
+        }
+    }
+    let canon = match o {
+        Typ::V32 => Typ::U32,
+        Typ::Z32 => Typ::I32,
+        Typ::V64 => Typ::U64,
+        Typ::Z64 => Typ::I64,
+        t => t,
+    };
+    match canon {
+        Typ::Decimal => Some(Typ::Decimal.into()),
+        Typ::F64 => Some(Typ::F64 | Typ::Decimal),
+        Typ::F32 => Some(Typ::F32 | Typ::Decimal),
+        t if width(t) > 0 => {
+            let w = width(t);
+            let mut s = BitFlags::from(t) | Typ::F32 | Typ::F64 | Typ::Decimal;
+            for c in
+                [Typ::U8, Typ::I8, Typ::U16, Typ::I16, Typ::U32, Typ::I32, Typ::U64, Typ::I64]
+            {
+                if width(c) > w {
+                    s |= c;
+                }
+            }
+            Some(s)
+        }
+        _ => None,
+    }
+}

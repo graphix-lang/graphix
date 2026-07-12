@@ -624,6 +624,59 @@ impl Type {
         }
     }
 
+    /// [`collect_tvars`](Self::collect_tvars), except NESTED `Fn`
+    /// subtrees are skipped: yields the tvars this type quantifies
+    /// DIRECTLY, excluding a fn-typed member's own quantifiers. The
+    /// def gate uses it to scope promotion obligations to the def's
+    /// own declared tvars — a body operation on a PARAM's quantified
+    /// cell (`|f: fn<'a>(x: 'a) -> 'a, y| f(y) + 1`) must not
+    /// constrain the param's 'a (the 5634fbdc poisoned-conjunct
+    /// class).
+    pub(crate) fn collect_tvars_no_fn(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        match self {
+            Type::Fn(_) => (),
+            Type::Bottom | Type::Any | Type::Primitive(_) => (),
+            Type::Ref(TypeRef { params, .. }) => {
+                for t in params.iter() {
+                    t.collect_tvars_no_fn(known);
+                }
+            }
+            Type::Error(t) | Type::Array(t) | Type::ByRef(t) => {
+                t.collect_tvars_no_fn(known)
+            }
+            Type::Map { key, value } => {
+                key.collect_tvars_no_fn(known);
+                value.collect_tvars_no_fn(known);
+            }
+            Type::Tuple(ts) | Type::Variant(_, ts) => {
+                for t in ts.iter() {
+                    t.collect_tvars_no_fn(known)
+                }
+            }
+            Type::Struct(ts) => {
+                for (_, t) in ts.iter() {
+                    t.collect_tvars_no_fn(known)
+                }
+            }
+            Type::TVar(tv) => match known.entry(tv.name.clone()) {
+                Entry::Occupied(_) => (),
+                Entry::Vacant(e) => {
+                    e.insert(tv.clone());
+                }
+            },
+            Type::Set(s) => {
+                for typ in s.iter() {
+                    typ.collect_tvars_no_fn(known)
+                }
+            }
+            Type::Abstract { id: _, params } => {
+                for typ in params.iter() {
+                    typ.collect_tvars_no_fn(known)
+                }
+            }
+        }
+    }
+
     pub fn check_tvars_declared(&self, declared: &AHashSet<ArcStr>) -> Result<()> {
         match self {
             Type::Bottom | Type::Any | Type::Primitive(_) => Ok(()),
