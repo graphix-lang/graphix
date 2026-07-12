@@ -708,25 +708,73 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.resolved_ftype.as_ref(),
             self.top_id,
         )?;
-        // The instance-body re-check stays SWALLOWED — an attempted
-        // strictness (2026-07-12) is documented in
-        // fuzz/pending-ruling/site_recheck_strictness.md: it catches
-        // the real disjoint-cell acceptance holes (jul10h
-        // 000001/000002/000010 — the def gate's `unbind_tvars`
-        // discards body facts, so an unannotated formal reaches every
-        // site fully open and the JIT freezes a type the runtime
-        // contradicts), but the same check REJECTS the pinned
-        // numeric-promotion semantics (`param_knot_no_leak`:
-        // `'a: Number |x: 'a| -> 'a x + i64:1` must accept BOTH an
-        // i64 and an f64 site) and cannot validate cross-module
-        // instances (the body bakes the def module's private
-        // abstract/alias view into its node types; the abstract
-        // registry's expansion is scope-gated). Distinguishing
-        // promotion-flexible facts from genuine conflicts needs a
-        // ruling on the elaboration typing model.
-        if let Err(e) = &rf.typecheck0(ctx, &mut self.arg_refs) {
+        // STRICT instance re-check (Eric's ruling, 2026-07-12): a
+        // semantic contradiction between the site and the instance's
+        // cells is a HARD error — this is the acceptance hole that
+        // shipped typed-slot lies the JIT executed (null on an i64
+        // slot, arith on a LambdaDef pointer — the jul12g/h/i witness
+        // families in site_recheck_strictness.md). Exactly ONE error
+        // class stays swallowed: [`typ::UnresolvableRef`] — a recheck
+        // re-runs NAME RESOLUTION, and the original check resolved
+        // its refs under a transient (env, scope) context that no
+        // longer exists (a caller-scoped alias in an arg type checked
+        // under the def's restored env, or vice versa — the
+        // data_table SortBy case). Name resolution is the recheck's
+        // artifact; semantics are its job.
+        // The full-body re-check stays SWALLOWED: it compares partial
+        // inference states across instantiation COPIES (the site mints
+        // several ftype instances — TT-LEFTCOPY lineages — whose cells
+        // legitimately skew mid-inference; hof_variant_find), and the
+        // static union type of mixed promo arith vs a site-narrowed
+        // rtype (param_knot_no_leak). Those are recheck artifacts, not
+        // contradictions.
+        if let Err(e) = rf.typecheck0(ctx, &mut self.arg_refs) {
             if std::env::var_os("GXDBG_SWALLOW").is_some() {
                 eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
+            }
+        }
+        // STRICT arg-boundary validation (Eric's ruling, 2026-07-12):
+        // the typed-slot lies all enter at ARG positions — the site's
+        // argument type vs the instance's now-informed formal (the
+        // resolved ftype's cells are shared with the instance, so the
+        // body check above has already recorded the instance's facts
+        // into them). Comparing the two ENDPOINTS is immune to the
+        // copy skew that poisons the full-body recheck. Two error
+        // classes are recheck artifacts and stay swallowed:
+        // `UnresolvableRef` (name resolution ran under a transient
+        // (env, scope) context that's gone — data_table SortBy) and
+        // `AbstractOpaque` (the private↔public equivalence exists only
+        // through name resolution inside the defining module — gui
+        // Color).
+        if let Some(ft) = self.resolved_ftype.as_ref() {
+            let mut pos = 0usize;
+            for fa in ft.args.iter() {
+                let node = match fa.label() {
+                    Some(name) => self.arg_named(name),
+                    None => {
+                        let n = self.arg_positional(pos);
+                        pos += 1;
+                        n
+                    }
+                };
+                let Some(node) = node else { continue };
+                if let Err(e) = fa.typ.check_contains(&ctx.env, node.typ()) {
+                    let artifact =
+                        e.downcast_ref::<crate::typ::UnresolvableRef>().is_some()
+                            || e.downcast_ref::<crate::typ::AbstractOpaque>().is_some();
+                    if artifact {
+                        if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                            eprintln!(
+                                "SWALLOWED-ARGCHECK (recheck artifact) at {}: {e:#}",
+                                self.spec
+                            );
+                        }
+                    } else {
+                        return Err(e).with_context(|| {
+                            format!("in the instance of {} at this call site", self.spec)
+                        });
+                    }
+                }
             }
         }
         Ok(rf)
@@ -792,6 +840,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if resolving.lock().insert(lid) {
                 let ftype = f.typ.clone();
                 if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype, &[]) {
+                    if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                        eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
+                    }
                     log::trace!("bind: lazy-bound callee body typecheck1 failed: {e:#}");
                 }
                 resolving.lock().remove(&lid);
@@ -908,6 +959,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             resolving.lock().insert(lid);
             let ftype = def.typ.clone();
             if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype, &[]) {
+                if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                    eprintln!("SWALLOWED-CASCADE-TC1 at {}: {e:#}", self.spec);
+                }
                 log::trace!("#203: callee body typecheck1 failed (de-fuse): {e:#}");
             }
             resolving.lock().remove(&lid);

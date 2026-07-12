@@ -149,10 +149,39 @@ macro_rules! compare_op {
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
-                wrap!(
-                    self,
-                    self.lhs.node.typ().check_contains(&ctx.env, &self.rhs.node.typ())
-                )?;
+                // `fn('a, 'a) -> bool` (Eric's ruling, 2026-07-12):
+                // both operands are ONE type. The old asymmetric
+                // `lhs ⊇ rhs` admitted direction-dependent cross-type
+                // compares whose runtime meaning is the netidx
+                // Typ-DISCRIMINANT order — numeric nonsense for
+                // `i64:1 < f64:2.` (and the instance-elaboration
+                // acceptance witnesses rode exactly that looseness).
+                // PROBE both directions first (empty flags — no
+                // binding: a failed binding walk has no backtracking,
+                // so committing the losing direction first would
+                // pollute cells), then COMMIT the widening direction.
+                let lt = self.lhs.node.typ().clone();
+                let rt = self.rhs.node.typ().clone();
+                let e = BitFlags::empty();
+                if lt.contains_with_flags(e, &ctx.env, &rt)? {
+                    wrap!(self, lt.check_contains(&ctx.env, &rt))?;
+                } else if rt.contains_with_flags(e, &ctx.env, &lt)? {
+                    wrap!(self, rt.check_contains(&ctx.env, &lt))?;
+                } else {
+                    wrap!(
+                        self,
+                        $crate::format_with_flags(
+                            $crate::PrintFlag::DerefTVars,
+                            || -> Result<()> {
+                                bail!(
+                                    "cannot compare {lt} with {rt}: comparison \
+                                     is fn('a, 'a) -> bool — both operands must \
+                                     be one type (cast one side explicitly)"
+                                )
+                            }
+                        )
+                    )?;
+                }
                 wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
             }
 

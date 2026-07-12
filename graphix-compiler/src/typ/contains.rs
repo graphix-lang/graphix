@@ -162,7 +162,21 @@ impl Type {
             Ok(())
         } else {
             format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                bail!("type mismatch {self} does not contain {t}")
+                let e = anyhow::anyhow!("type mismatch {self} does not contain {t}");
+                // Abstract types are OPAQUE to `contains` by design —
+                // their private↔public equivalence exists only through
+                // NAME resolution inside the defining module. A failure
+                // involving one is therefore classifiable by the
+                // call-site instance recheck (the STRICT ruling's one
+                // other legitimate swallow besides `UnresolvableRef`):
+                // the def-time check relished the private view, the
+                // recheck sees the public form, and no walk can relate
+                // them (the gui `Color` family).
+                if self.mentions_abstract(env) || t.mentions_abstract(env) {
+                    Err(e.context(super::AbstractOpaque))
+                } else {
+                    Err(e)
+                }
             })
         }
     }
@@ -182,7 +196,16 @@ impl Type {
             Ok(())
         } else {
             format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                bail!("type mismatch {self} does not contain {t}")
+                let e = anyhow::anyhow!("type mismatch {self} does not contain {t}");
+                // Same classification as `check_contains` — the
+                // instance recheck re-runs THIS def-gate path for the
+                // declared-rtype-vs-body check, where the abstract
+                // boundary bites (the gui Color family).
+                if self.mentions_abstract(env) || t.mentions_abstract(env) {
+                    Err(e.context(super::AbstractOpaque))
+                } else {
+                    Err(e)
+                }
             })
         }
     }

@@ -231,6 +231,37 @@ impl Default for Type {
     }
 }
 
+/// Attached (as anyhow context) to `check_contains` failures where
+/// either side mentions a [`Type::Abstract`]: abstraction is opacity —
+/// the private↔public equivalence exists only through name resolution
+/// inside the defining module, so a recheck comparing across the
+/// boundary can fail without any semantic contradiction. The call-site
+/// instance recheck swallows exactly this class (with
+/// [`UnresolvableRef`]); everywhere else it is inert context.
+#[derive(Debug, Clone, Copy)]
+pub struct AbstractOpaque;
+
+impl std::fmt::Display for AbstractOpaque {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the check crossed an abstract-type boundary")
+    }
+}
+
+/// See [`Type::lookup_ref`] — the classifiable resolution failure.
+#[derive(Debug)]
+pub struct UnresolvableRef {
+    pub name: ModPath,
+    pub scope: ModPath,
+}
+
+impl std::fmt::Display for UnresolvableRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "undefined type {} in {}", self.name, self.scope)
+    }
+}
+
+impl std::error::Error for UnresolvableRef {}
+
 impl Type {
     pub fn empty_tvar() -> Self {
         Type::TVar(TVar::default())
@@ -265,6 +296,71 @@ impl Type {
         }
     }
 
+    /// A `Type::Ref` whose `(scope, name)` can't be resolved in the
+    /// ambient env. STRUCTURED (not just a message) so the call-site
+    /// instance recheck can classify: a recheck re-runs name
+    /// resolution in an env where caller- or def-scoped refs may be
+    /// legitimately unnameable — the original check resolved them
+    /// under a transient (env, scope) context that no longer exists
+    /// (the data_table SortBy case,
+    /// fuzz/pending-ruling/site_recheck_strictness.md). Exactly this
+    /// class stays swallowed there; every OTHER typecheck error is a
+    /// genuine semantic contradiction and is STRICT (Eric's ruling,
+    /// 2026-07-12).
+    /// True iff the type mentions a `Type::Abstract` anywhere,
+    /// looking through bound tvar cells AND `Type::Ref` aliases (an
+    /// alias to an abstract type is the boundary in its unexpanded
+    /// form — `contains` expands refs internally, so the mismatch it
+    /// reports can involve an abstract the surface type only names).
+    /// Cycle-safe on both cells and ref chains. Cold path — only
+    /// consulted while CONSTRUCTING a `check_contains` failure.
+    pub(crate) fn mentions_abstract(&self, env: &Env) -> bool {
+        struct Seen {
+            cells: poolshark::local::LPooled<nohash::IntSet<usize>>,
+            refs: poolshark::local::LPooled<ahash::AHashSet<(ModPath, ModPath)>>,
+        }
+        fn go(t: &Type, env: &Env, seen: &mut Seen) -> bool {
+            match t {
+                Type::Abstract { .. } => true,
+                Type::Bottom | Type::Any | Type::Primitive(_) => false,
+                Type::Ref(tr) => {
+                    if !seen.refs.insert((tr.scope.clone(), tr.name.clone())) {
+                        return false;
+                    }
+                    match t.lookup_ref(env) {
+                        Ok(t) => go(&t, env, seen),
+                        Err(_) => false,
+                    }
+                }
+                Type::Error(t) | Type::Array(t) | Type::ByRef(t) => go(t, env, seen),
+                Type::Map { key, value } => go(key, env, seen) || go(value, env, seen),
+                Type::Tuple(ts) | Type::Variant(_, ts) | Type::Set(ts) => {
+                    ts.iter().any(|t| go(t, env, seen))
+                }
+                Type::Struct(ts) => ts.iter().any(|(_, t)| go(t, env, seen)),
+                Type::TVar(tv) => {
+                    let cell = tv.read().typ.clone();
+                    if !seen.cells.insert(triomphe::Arc::as_ptr(&cell).addr()) {
+                        return false;
+                    }
+                    let bound = cell.read().typ.clone();
+                    bound.map(|t| go(&t, env, seen)).unwrap_or(false)
+                }
+                Type::Fn(f) => {
+                    f.args.iter().any(|a| go(&a.typ, env, seen))
+                        || f.vargs.as_ref().map(|t| go(t, env, seen)).unwrap_or(false)
+                        || go(&f.rtype, env, seen)
+                        || go(&f.throws, env, seen)
+                }
+            }
+        }
+        let mut seen = Seen {
+            cells: poolshark::local::LPooled::take(),
+            refs: poolshark::local::LPooled::take(),
+        };
+        go(self, env, &mut seen)
+    }
+
     pub fn lookup_ref(&self, env: &Env) -> Result<Type> {
         match self {
             Self::Ref(TypeRef { scope, name, params, pos, ori }) => {
@@ -283,7 +379,12 @@ impl Type {
                             )
                         })
                     })
-                    .ok_or_else(|| anyhow!("undefined type {name} in {scope}"))?;
+                    .ok_or_else(|| {
+                        anyhow::Error::new(UnresolvableRef {
+                            name: name.clone(),
+                            scope: scope.clone(),
+                        })
+                    })?;
                 let (canonical_scope, def_pos, def_ori, def_params, def_typ) = resolved;
                 if def_params.len() != params.len() {
                     bail!("{} expects {} type parameters", name, def_params.len());
