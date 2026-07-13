@@ -16,17 +16,59 @@ let to_array = |l: List<'a>| -> Array<'a> 'list_to_array;
 let from_array = |a: Array<'a>| -> List<'a> 'list_from_array;
 let concat = |l: List<'a>, @args: List<'a>| -> List<'a> 'list_concat;
 let flatten = |l: List<List<'a>>| -> List<'a> 'list_flatten;
-let map = |l: List<'a>, f: fn(x: 'a) -> 'b throws 'e| -> List<'b> throws 'e 'list_map;
-let filter = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> List<'a> throws 'e 'list_filter;
-let filter_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> List<'b> throws 'e 'list_filter_map;
-let flat_map = |l: List<'a>, f: fn(x: 'a) -> ['b, List<'b>] throws 'e| -> List<'b> throws 'e 'list_flat_map;
-let fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'list_fold;
-let find = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e 'list_find;
-let find_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'list_find_map;
 let sort = |#dir: Direction = `Ascending, #numeric: bool = false, l: List<'a>| -> List<'a> 'list_sort;
 let enumerate = |l: List<'a>| -> List<(i64, 'a)> 'list_enumerate;
 let zip = |l0: List<'a>, l1: List<'b>| -> List<('a, 'b)> 'list_zip;
 let unzip = |l: List<('a, 'b)>| -> (List<'a>, List<'b>) 'list_unzip;
-let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> List<'a> throws 'e 'list_init;
 let iter = |l: List<'a>| -> 'a 'list_iter;
-let iterq = |#clock: Any, l: List<'a>| -> 'a 'list_iterq
+let iterq = |#clock: Any, l: List<'a>| -> 'a 'list_iterq;
+
+let map = |l: List<'a>, f: fn(x: 'a) -> 'b throws 'e| -> List<'b> throws 'e sync {
+  let mut res: Array<'b> = [];
+  for v in to_array(l) { res = array::push(res, f(v)) };
+  from_array(res)
+};
+
+let filter = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> List<'a> throws 'e sync {
+  let mut res: Array<'a> = [];
+  for v in to_array(l) {
+    select f(v) { true => res = array::push(res, v), false => null }
+  };
+  from_array(res)
+};
+
+let filter_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> List<'b> throws 'e sync {
+  let mut res: Array<'b> = [];
+  for v in to_array(l) {
+    select f(v) { null as _ => null, x => res = array::push(res, x) }
+  };
+  from_array(res)
+};
+
+let flat_map_item = |x: ['a, List<'a>]| -> Array<'a> 'list_flat_map_item;
+
+let flat_map = |l: List<'a>, f: fn(x: 'a) -> ['b, List<'b>] throws 'e| -> List<'b> throws 'e
+  from_array(array::flatten(array::map(to_array(l), |v| flat_map_item(f(v)))));
+
+let fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e sync {
+  let mut acc: 'b = init;
+  for v in to_array(l) { acc = f(acc, v) };
+  acc
+};
+
+let find = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e
+  array::find(to_array(l), f);
+
+let find_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e sync {
+  let mut state: [`Looking, `Found('b)] = `Looking;
+  for v in to_array(l) {
+    select state {
+      `Looking => select f(v) { null as _ => null, x => state = `Found(x) },
+      `Found(_) => null
+    }
+  };
+  select state { `Looking => null, `Found(x) => x }
+};
+
+let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> List<'a> throws 'e
+  from_array(array::init(n, f))

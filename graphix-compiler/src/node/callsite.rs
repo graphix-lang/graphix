@@ -1,7 +1,7 @@
 use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId, Node,
-    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, StaticFnArg, TagValue, Update,
+    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, TagValue, Update,
     UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::{
@@ -150,10 +150,8 @@ fn finalize_lambda<R: Rt, E: UserEvent>(
             .downcast_ref::<LambdaDef<R, E>>()
             .expect("failed to unwrap lambda for typecheck1");
         if let Some(apply) = &mut *ldef.check.lock() {
-            // Scratch `def.check` firing: empty `fn_args` — the HOF
-            // callback hook only fires on the bound apply (try_static_resolve).
             apply
-                .typecheck1(ctx, &mut [], resolved, &[])
+                .typecheck1(ctx, &mut [], resolved)
                 .with_context(|| ErrorContext((**spec).clone()))?;
         }
     }
@@ -477,11 +475,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee.apply().map(|a| a.view())
     }
 
-    /// The resolved callee as a raw `&dyn Apply` (vs the typed
-    /// [`ApplyView`] of [`Self::resolved_apply`]). Fusion discovery uses
-    /// it to call [`crate::Apply::for_each_hof_callback_body`] — reaching
-    /// a HOF builtin's inline-emitted callback body, which the opaque
-    /// `ApplyView::BuiltIn` doesn't expose.
+    /// The resolved callee as a raw `&dyn Apply`.
     pub fn callee_apply(&self) -> Option<&dyn Apply<R, E>> {
         self.callee.apply()
     }
@@ -871,7 +865,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let resolving = ctx.fusion.resolving.clone();
             if resolving.lock().insert(lid) {
                 let ftype = f.typ.clone();
-                if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype, &[]) {
+                if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype) {
                     if std::env::var_os("GXDBG_SWALLOW").is_some() {
                         eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
                     }
@@ -990,7 +984,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let resolving = ctx.fusion.resolving.clone();
             resolving.lock().insert(lid);
             let ftype = def.typ.clone();
-            if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype, &[]) {
+            if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype) {
                 if std::env::var_os("GXDBG_SWALLOW").is_some() {
                     eprintln!("SWALLOWED-CASCADE-TC1 at {}: {e:#}", self.spec);
                 }
@@ -1053,8 +1047,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         self.resolve_static(ctx, def, fv.clone())?;
         // HOF callback pre-materialization: every fn-typed positional arg
-        // that itself resolves to a known lambda becomes a `StaticFnArg`
-        // handed to the just-bound Apply.
+        // whose function-valued arguments resolve to known lambdas.
         let ftype = match self.resolved_ftype() {
             Some(ft) => ft.clone(),
             None => return Ok(()),
@@ -1086,16 +1079,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(apply) = self.callee.apply_mut() else {
             return Ok(());
         };
-        let mut fn_args: Vec<StaticFnArg<'_, R, E>> =
-            Vec::with_capacity(fn_arg_targets.len());
-        for (idx, fv) in &fn_arg_targets {
-            if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
-                fn_args.push(StaticFnArg { arg_idx: *idx, lambda: def });
-            }
-        }
-        if fn_args.is_empty() {
-            return Ok(());
-        }
         // PER-CALLSITE ELABORATION (sync-subset P4): when the bound
         // callee is a user lambda, register each statically-known
         // fn-typed arg under the INSTANCE's arg-pattern BindId in
@@ -1117,10 +1100,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
-        // Bound-instance firing of the CallSite phase: hand the resolved
-        // callbacks to the bound apply's `typecheck1`. `fn_args` non-empty
-        // here (HOF call site) is what distinguishes this from the scratch
-        // `def.check` firing in `finalize_lambda` (empty `fn_args`).
         // For a user-lambda callee this re-drives the body walk, during
         // which still-unbound nested sites re-attempt static resolution
         // with the param bindings above in scope.
@@ -1144,7 +1123,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let site = self.spec.id.inner();
         let resolving = ctx.fusion.resolving_sites.clone();
         if resolving.lock().insert(site) {
-            let res = apply.typecheck1(ctx, &mut [], &ftype, &fn_args);
+            let res = apply.typecheck1(ctx, &mut [], &ftype);
             resolving.lock().remove(&site);
             for id in param_binds.drain(..) {
                 ctx.bind_to_lambda.remove(&id);

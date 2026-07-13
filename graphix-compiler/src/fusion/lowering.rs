@@ -1,23 +1,22 @@
 //! Fusion support library: builtin-call discovery, kernel signature
-//! derivation (lambda callees, per-slot HOF callbacks, body-split
-//! sub-regions), and the abstract-type resolver. Body code generation
+//! derivation (lambda callees and body sub-regions), and the
+//! abstract-type resolver. Body code generation
 //! lives with each node (`Update::emit_clif` / `Apply::emit_clif`,
 //! see `design/distributed_jit.md`); this module supplies the
 //! analysis those emitters consume.
 
 use crate::{
-    ApplyView, BindId, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
+    BindId, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
     env::Env,
-    expr::{Expr, ExprId, ExprKind, ModPath},
+    expr::{ExprId, ExprKind, ModPath},
     fusion::{
-        self, LambdaCallInfo,
-        emit::WrappedKernel,
+        self,
         kernel_abi::{
             self, AbiKind, AbstractRegistry, BuiltinSlot, FnParam, FnSource, KernelSig,
             Seen, abi_kind, freeze_for_abi_normalized, scalar_prim,
         },
     },
-    node::{Cached, callsite::CallSite, genn, lambda::GXLambda},
+    node::{Cached, callsite::CallSite, lambda::GXLambda},
     typ::{FnArgKind, FnType, Type},
 };
 use arcstr::ArcStr;
@@ -139,44 +138,14 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
-    // Collect the inline-emitted HOF callback bodies encountered this
-    // pass; recurse into them afterward (a closure can't re-enter this
-    // fn while it holds `out`). Each body's borrow ties to `node`.
-    let mut hof_bodies: Vec<&Node<R, E>> = Vec::new();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
             try_register_builtin_call_from_callsite(cs, ctx, out);
-            // A HOF builtin inline-emits its callback into the kernel, but
-            // `for_each_node` skips lambda bodies — descend explicitly so
-            // the callback's builtin-calls/casts/qops are discovered.
-            if let Some(apply) = cs.callee_apply() {
-                apply.for_each_hof_callback_body(&mut |body| hof_bodies.push(body));
-            }
         }
         NodeView::TypeCast(tc) => try_register_cast(tc, ctx, out),
         NodeView::Qop(q) => try_register_qop_deliver(q, ctx, out),
         _ => {}
     });
-    for body in hof_bodies {
-        walk_node_for_builtin_calls(body, ctx, out);
-    }
-}
-
-/// Given the synthesized callback-CallSite Node a HOF holds in its
-/// `analysis_pred` (a resolved CallSite to the callback lambda), reach
-/// the callback's BODY node — the SAME chain `MapQ::emit_clif` &c. use,
-/// so the ExprIds match what discovery registers. `None` if the callback
-/// isn't a statically-resolved lambda (then the HOF won't fuse anyway).
-pub fn hof_callback_body<'a, R: Rt, E: UserEvent>(
-    pred: &'a Node<R, E>,
-) -> Option<&'a Node<R, E>> {
-    let NodeView::CallSite(inner_cs) = pred.view() else {
-        return None;
-    };
-    let crate::ApplyView::Lambda(g) = inner_cs.resolved_apply()? else {
-        return None;
-    };
-    Some(g.body())
 }
 
 /// Register the error-delivery DynCall for a handler-ful `?` (a `?`
@@ -976,234 +945,6 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     Some(cached)
 }
 
-/// A callback fused for per-slot reactive dispatch by a HOF builtin
-/// (MapQ / FoldQ / …). Built once at compile time from a concretely-
-/// typed, statically-resolved analysis CallSite via [`fuse_callsite`];
-/// each per-slot invocation builds a fresh [`builder::FusedKernel`] Node
-/// (its own per-instance state) that *shares* the compiled kernel
-/// artifacts via `Arc`. This is the per-slot dispatch primitive of the
-/// impure-HOF-fusion milestone (`design/impure_hof_fusion.md`): the
-/// builtin keeps its own per-slot reactive lifecycle (one graph per
-/// element, fresh BindIds), and only the pure kernel is shared.
-pub struct FusedCallback {
-    /// The whole-body kernel — `build_slot` wraps it in one
-    /// `FusedKernel`. A callback becomes a `FusedCallback` only when its
-    /// WHOLE body lowers to one kernel; an impure callback (async ops in
-    /// the body) instead fuses its maximal sync sub-regions in place via
-    /// the canonical `fusion::fuse` walk at the call site (see
-    /// `MapQ`'s template build) and never becomes a `FusedCallback`.
-    kernel: std::sync::Arc<KernelSig>,
-    wrapped: Option<std::sync::Arc<WrappedKernel>>,
-    /// Captured outer bindings (closure conversion), in kernel-input
-    /// order *after* the formal args. Each is fed by a shared `Ref`
-    /// feeder (to its bind_id) appended after the per-slot element
-    /// feeder(s).
-    captures: Vec<CaptureSlot>,
-    /// Number of formal args — the per-slot element feeders the caller
-    /// supplies. Kernel inputs are `formal args ++ captures`.
-    n_formal: usize,
-    /// Body spec + result type for the per-slot `FusedKernel` Node.
-    spec: Expr,
-    typ: Type,
-}
-
-impl std::fmt::Debug for FusedCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FusedCallback")
-            .field("n_formal", &self.n_formal)
-            .field("captures", &self.captures.len())
-            .field("jit", &self.wrapped.is_some())
-            .finish()
-    }
-}
-
-/// Build a per-slot-dispatchable [`FusedCallback`] from a concretely-
-/// typed, statically-resolved analysis CallSite (e.g. MapQ's
-/// `analysis_pred.pred`) when its WHOLE body lowers to one kernel.
-/// Returns `None` when the callback isn't a resolved lambda or its body
-/// has async ops (so it can't fuse as a single kernel) — the caller then
-/// fuses the body's maximal sync sub-regions in place via
-/// `fusion::fuse` (the impure-HOF split), or falls back to the
-/// interpreted per-slot dispatch. JIT-compiles the kernel when
-/// `ec.fusion.enabled` (interp fallback inside `FusedKernel` handles `None`).
-pub fn fuse_callsite<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-    ec: &mut ExecCtx<R, E>,
-) -> Option<FusedCallback> {
-    let g = match cs.resolved_apply()? {
-        ApplyView::Lambda(g) => g,
-        _ => return None,
-    };
-    // Unique per-`LambdaId` kernel name. There is no Ref fnode here, so
-    // the source-name SAFETY INVARIANT in `ensure_lambda_kernel` would
-    // be violated by reusing a source name — and the per-slot path keys
-    // no name-keyed call resolution anyway, so uniqueness is both
-    // required and sufficient.
-    let kernel_name: ArcStr =
-        compact_str::format_compact!("__hof_{}", g.id().inner()).as_str().into();
-    // A NAMED callback (`array::map(a, f)`) still has a Ref fnode —
-    // thread its BindId so a recursive callback's self-reference is
-    // recognised (tail self-calls fuse via the BindId-matched
-    // `TailCall`; non-tail self-calls de-fuse on the `__hof_*` /
-    // source-name mismatch in `known_fns` — sound, just unfused).
-    let self_bind = match cs.fnode().view() {
-        NodeView::Ref(r) => Some(r.id),
-        _ => None,
-    };
-    let n_formal = g.typ().args.len();
-    let spec = g.body().spec().clone();
-    let typ = g.body().typ().clone();
-    // Phase 1: try fusing the WHOLE body into one kernel (wholly-sync
-    // callback). The signature build is shape gating only; the body is
-    // validated by the compile attempt itself, so a body that doesn't
-    // emit (async ops, unsupported shapes) fails the JIT compile and
-    // falls through to Phase 2: fuse the body's sync sub-regions
-    // instead (`build_body_split`).
-    let site_ftype = cs.resolved_ftype()?.clone();
-    if let Some(cached) = build_lambda_kernel(g, &site_ftype, &kernel_name, self_bind, ec)
-    {
-        // Self-call info for a recursive callback (Node emission
-        // needs it; mirrors `discover_lambda_calls`).
-        let self_call = cached.is_rec.then(|| {
-            (
-                cached.self_bind.expect(
-                    "is_rec without self_bind — build_lambda_kernel \
-                     derives is_rec FROM self_bind",
-                ),
-                LambdaCallInfo {
-                    fn_name: cached.fn_name.clone(),
-                    kernel: cached.kernel.clone(),
-                    arg_types: cached.signature.arg_types.clone(),
-                    captures: cached.captures.clone(),
-                },
-            )
-        });
-        if let Some(wrapped) = jit_compile_split_kernel(
-            ec,
-            &cached.kernel,
-            g.body(),
-            self_call.as_ref(),
-            &cached.apply_sites,
-        ) {
-            return Some(FusedCallback {
-                kernel: cached.kernel,
-                wrapped: Some(wrapped),
-                captures: cached.captures,
-                n_formal,
-                spec,
-                typ,
-            });
-        }
-    }
-    // The whole body didn't lower to one kernel (async ops in the body).
-    // The caller fuses its maximal sync sub-regions in place via
-    // `fusion::fuse` (the impure-HOF split).
-    None
-}
-
-/// JIT-compile the whole-body callback kernel when `ec.fusion.enabled`,
-/// else `None` (the slot node-walks).
-///
-/// `body` is the kernel's body Node and `self_call` its self-recursion
-/// info; the kernel emits by `emit_clif` over the Node. `apply_sites`
-/// is the body's builtin-call discovery (empty for the whole-body
-/// path). The callee set is always empty: a callback body's own call
-/// sites are #203-unresolved, and a self-recursive body resolves
-/// against the kernel's own declaration.
-fn jit_compile_split_kernel<R: Rt, E: UserEvent>(
-    ec: &mut ExecCtx<R, E>,
-    kernel: &std::sync::Arc<KernelSig>,
-    body: &Node<R, E>,
-    self_call: Option<&(BindId, LambdaCallInfo)>,
-    apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
-) -> Option<std::sync::Arc<WrappedKernel>> {
-    if !ec.fusion.enabled {
-        return None;
-    }
-    // #203: discover lambda calls INSIDE the callback body (e.g. mandelbrot's
-    // `iterate`), build their callee kernels, and thread them into the compile
-    // — instead of the empty maps that forced every nested call to de-fuse.
-    // `apply_sites` (the callback body's own sync builtin/cast/qop sites) is
-    // passed by the caller: `build_lambda_kernel` now installs the matching
-    // `fn_params` on this kernel's sig, so the per-slot `FusedKernel` pre-binds
-    // those slots and the body's DynCalls dispatch in-kernel (offset 0 — the
-    // callback IS the parent). A callee body's OWN builtins still need Stage 2's
-    // combined-slot delivery; until then a callee-with-a-builtin de-fuses.
-    let (lambda_sites, callees, callee_bodies) = fusion::discover_lambda_calls(body, ec);
-    let r = fusion::emit::compile_kernel_with_callees_direct(
-        &mut ec.fusion.jit.lock(),
-        kernel,
-        &callees,
-        body,
-        apply_sites,
-        &lambda_sites,
-        &callee_bodies,
-        self_call,
-        &ec.env,
-        &ec.fusion.abstract_registry,
-        // Per-slot HOF callback templates have no region-level lifts.
-        &ahash::AHashSet::default(),
-        // Lambda kernel: native cross-kernel entry bypasses the
-        // node-level reset_replay, so replay words are refused (their
-        // per-iteration reset contract can't be honored — jul10h
-        // 000009). Stateful constructs keep the stateless fallback.
-        false,
-    );
-    match r {
-        Ok(w) => Some(std::sync::Arc::new(w)),
-        Err(e) => {
-            // A failed per-slot compile is a quiet de-fuse (the slot
-            // node-walks) — but never a SILENT one.
-            log::trace!("per-slot kernel `{}` failed to compile: {e:#}", kernel.fn_name);
-            None
-        }
-    }
-}
-
-impl FusedCallback {
-    /// Build a fresh per-slot [`builder::FusedKernel`] Node sharing this
-    /// callback's compiled kernel `Arc`. `element_feeders` are the
-    /// formal-arg feeders the caller supplies per slot (for MapQ: the
-    /// slot's element binding Node); the capture feeders (shared `Ref`s
-    /// to the captured bindings) are appended automatically, in the same
-    /// `formal args ++ captures` order the kernel inputs were built.
-    pub fn build_slot<R: Rt, E: UserEvent>(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        element_feeders: Vec<Node<R, E>>,
-        scope: Scope,
-        top_id: ExprId,
-    ) -> anyhow::Result<Node<R, E>> {
-        if element_feeders.len() != self.n_formal {
-            anyhow::bail!(
-                "fused HOF slot: expected {} formal feeder(s), got {}",
-                self.n_formal,
-                element_feeders.len()
-            );
-        }
-        let kernel = self.kernel.clone();
-        let mut feeders = element_feeders;
-        for cap in &self.captures {
-            let typ = ctx
-                .env
-                .by_id
-                .get(&cap.bind_id)
-                .map(|b| b.typ.clone())
-                .unwrap_or(Type::Bottom);
-            feeders.push(genn::reference(ctx, cap.bind_id, typ, top_id));
-        }
-        fusion::builder::FusedKernel::<R, E>::new(
-            ctx,
-            self.spec.clone(),
-            self.typ.clone(),
-            kernel,
-            self.wrapped.clone(),
-            feeders.into_boxed_slice(),
-            scope,
-            top_id,
-        )
-    }
-}
 
 /// The SHARED structural tail-loop predicate, behind both the JIT's
 /// native-loop gate (`build_lambda_kernel`'s `has_tail`) and the

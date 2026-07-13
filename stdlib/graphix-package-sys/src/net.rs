@@ -254,7 +254,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
-        _fn_args: &[graphix_compiler::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         self.cast_typ = extract_cast_type(Some(resolved));
         if self.cast_typ.is_none() {
@@ -372,7 +371,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
-        _fn_args: &[graphix_compiler::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         self.cast_typ = extract_cast_type(Some(resolved));
         if self.cast_typ.is_none() {
@@ -659,7 +657,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
-        _fn_args: &[graphix_compiler::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         self.cast_typ = extract_publish_cast_type(Some(resolved));
         Ok(())
@@ -998,7 +995,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
-        _fn_args: &[graphix_compiler::StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         self.validate_spec(ctx, resolved)?;
         Ok(())

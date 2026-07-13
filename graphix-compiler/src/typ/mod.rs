@@ -5,7 +5,7 @@ use crate::{
     format_with_flags,
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx::{publisher::Typ, utils::Either};

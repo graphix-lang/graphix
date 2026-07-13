@@ -40,6 +40,13 @@ use std::{
     mem,
     sync::atomic::{AtomicBool, Ordering},
 };
+use triomphe::Arc;
+
+fn map_item(key: &Value, value: &Value) -> Value {
+    Value::Array(netidx_value::ValArray::from_iter_exact(
+        [key.clone(), value.clone()].into_iter(),
+    ))
+}
 
 #[derive(Debug)]
 pub struct For<R: Rt, E: UserEvent> {
@@ -196,21 +203,24 @@ impl<R: Rt, E: UserEvent> For<R, E> {
     /// arrived values allow (an instance's Cached interiors let its
     /// sync part re-fire against a fresh acc binding), and the loop
     /// emits only when a full pass completes — never-until-complete.
-    fn update_async(
+    fn update_async<I>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-        arr: &netidx_value::ValArray,
+        len: usize,
+        values: I,
         init: Value,
         ext_fired: bool,
         iter_up: bool,
         init_up: bool,
-    ) -> Option<TagValue> {
-        let n = arr.len();
+    ) -> Option<TagValue>
+    where
+        I: IntoIterator<Item = Value>,
+    {
         // The array shrank: excess instances' async state dies with
         // their elements (re-evaluation semantics).
         let excess: Vec<usize> =
-            self.instances.keys().copied().filter(|i| *i >= n).collect();
+            self.instances.keys().copied().filter(|i| *i >= len).collect();
         for i in excess {
             if let Some(mut inst) = self.instances.remove(&i) {
                 inst.delete(ctx);
@@ -219,7 +229,7 @@ impl<R: Rt, E: UserEvent> For<R, E> {
         let mut acc = init;
         let mut complete = true;
         let mut inst_fired = false;
-        for (i, v) in arr.iter().enumerate() {
+        for (i, v) in values.into_iter().enumerate() {
             if ctx.control.interrupted() {
                 return None;
             }
@@ -277,7 +287,7 @@ impl<R: Rt, E: UserEvent> For<R, E> {
                     event.variables.insert(id, TagValue::fired(v));
                 });
             }
-            self.elem_pattern.bind(v, &mut |id, v| {
+            self.elem_pattern.bind(&v, &mut |id, v| {
                 ctx.rt.cached_mut().insert(id, v.clone());
                 event.variables.insert(id, TagValue::fired(v));
             });
@@ -327,6 +337,97 @@ impl<R: Rt, E: UserEvent> For<R, E> {
         let fired = iter_up || init_up || ext_fired || inst_fired || event.init;
         if complete && fired { Some(TagValue::fired(acc)) } else { None }
     }
+
+    fn update_sync<I>(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+        len: usize,
+        values: I,
+    ) -> Option<TagValue>
+    where
+        I: IntoIterator<Item = Value>,
+    {
+        if !ctx.control.depth_enter() {
+            ctx.control.depth_pop();
+            return None;
+        }
+        let Some(init) = self.init.cached.clone() else {
+            ctx.control.depth_pop();
+            return None;
+        };
+        let mut acc = Some(init);
+        let mut out = true;
+        let mut fired_any = false;
+        let mut seeds: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
+        for id in self.ext_refs() {
+            if let Some(tv) = event.variables.get(id) {
+                seeds.insert(*id, tv.clone());
+            } else if let Some(v) = ctx.rt.cached().get(id) {
+                seeds.insert(*id, TagValue::stale(v.clone()));
+            }
+        }
+        let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
+        let force_init = !self.primed && len != 0;
+        if force_init {
+            self.primed = true;
+            fired_any = true;
+        }
+        for v in values {
+            if ctx.control.interrupted() {
+                out = false;
+                break;
+            }
+            self.body.reset_replay(ctx);
+            frame.clear();
+            frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
+            if let Some(a) = &acc {
+                self.acc_pattern.bind(a, &mut |id, v| {
+                    ctx.rt.cached_mut().insert(id, v.clone());
+                    frame.insert(id, TagValue::fired(v));
+                });
+            }
+            self.elem_pattern.bind(&v, &mut |id, v| {
+                ctx.rt.cached_mut().insert(id, v.clone());
+                frame.insert(id, TagValue::fired(v));
+            });
+            mem::swap(&mut event.variables, &mut *frame);
+            let saved_init = event.init;
+            event.init = saved_init || force_init;
+            ctx.frame_depth += 1;
+            let r = self.body.update(ctx, event);
+            ctx.frame_depth -= 1;
+            event.init = saved_init;
+            mem::swap(&mut event.variables, &mut *frame);
+            match r {
+                Some(tv) if tv.is_tainted() => {
+                    out = false;
+                    break;
+                }
+                Some(tv) => {
+                    fired_any |= tv.tag().is_fired();
+                    acc = Some(tv.value());
+                }
+                None => {
+                    if std::env::var_os("GXDBG_FOR").is_some() {
+                        eprintln!("FOR-SYNC-BODYNONE spec={} elem={v}", self.spec);
+                    }
+                    out = false;
+                    break;
+                }
+            }
+        }
+        ctx.control.depth_pop();
+        if !out {
+            None
+        } else if len == 0 || fired_any {
+            acc.map(TagValue::fired)
+        } else if ctx.frame_depth > 0 {
+            acc.map(TagValue::stale)
+        } else {
+            None
+        }
+    }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
@@ -337,8 +438,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
     ) -> Option<TagValue> {
         let iter_up = self.iter.update_triggers(ctx, event);
         let init_up = self.init.update_triggers(ctx, event);
-        let arr = match self.iter.cached.as_ref() {
-            Some(Value::Array(a)) => a.clone(),
+        let collection = match self.iter.cached.as_ref() {
+            Some(v @ (Value::Array(_) | Value::Map(_))) => v.clone(),
             other => {
                 if std::env::var_os("GXDBG_FOR").is_some() {
                     eprintln!("FOR-NO-SRC spec={} cached={other:?}", self.spec);
@@ -353,12 +454,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
             .iter()
             .any(|id| event.variables.get(id).is_some_and(|tv| tv.tag().triggers()));
         if self.async_body.load(Ordering::Relaxed) {
-            // The async walk runs EVERY cycle (instances must pump
-            // their own async arrivals, whose ids the For can't know);
-            // emission is gated inside on something having fired.
             let init = self.init.cached.as_ref()?.clone();
-            return self
-                .update_async(ctx, event, &arr, init, ext_fired, iter_up, init_up);
+            return match &collection {
+                Value::Array(a) => self.update_async(
+                    ctx,
+                    event,
+                    a.len(),
+                    a.iter().cloned(),
+                    init,
+                    ext_fired,
+                    iter_up,
+                    init_up,
+                ),
+                Value::Map(m) => self.update_async(
+                    ctx,
+                    event,
+                    m.len(),
+                    m.into_iter().map(|(k, v)| map_item(k, v)),
+                    init,
+                    ext_fired,
+                    iter_up,
+                    init_up,
+                ),
+                _ => unreachable!(),
+            };
         }
         if std::env::var_os("GXDBG_FOR").is_some() {
             eprintln!(
@@ -380,141 +499,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
         if self.iter.tag.is_tainted() || self.init.tag.is_tainted() {
             return (ctx.frame_depth > 0).then(|| TagValue::tainted(Value::Null));
         }
-        // One call-depth unit covers the whole loop (the JIT scaffold's
-        // `emit_depth_unit` twin): sequential element dispatches all
-        // sit at the same level. A trip means the loop must not run —
-        // bottom (never-until-complete).
-        if !ctx.control.depth_enter() {
-            ctx.control.depth_pop();
-            return None;
-        }
-        // A BOTTOM init (`None` cached — a depth-tripped or errored
-        // init expression) bottoms the whole loop; `let mut acc = ⊥`
-        // can't proceed.
-        let Some(init) = self.init.cached.clone() else {
-            ctx.control.depth_pop();
-            return None;
-        };
-        let mut acc: Option<Value> = Some(init);
-        let mut out = true;
-        // Body-driven firing (two-channel): the loop's result fires iff
-        // any body evaluation's RESULT fired — a body that consumes
-        // only stale values computes the acc chain on the value channel
-        // and stays quiet, exactly the kernel's AND-reduced STALE disc.
-        // The first ITERATING run's forced init view counts as fired
-        // (constants materialize = the loop's own init view), and an
-        // empty source falls back to "an input fired" (the top gate).
-        let mut fired_any = false;
-        // FRAME DISCIPLINE (reset_replay): each iteration is a fresh
-        // evaluation frame, delivered exactly like a select-arm wake —
-        // replay caches cleared, then a PRIVATE variables map under a
-        // (first-run) forced init view. Swapping the map instead of
-        // enumerating ids to remove is what makes the frame leak-proof
-        // by construction: a body publish (a shadow bind, a callsite
-        // arg, a callee formal) dies with the frame, so iteration i−1's
-        // sub-results cannot resurrect when iteration i's producer
-        // bottoms. The kernel needs none of this — its temps are SSA,
-        // recomputed per iteration by construction.
-        //
-        // Seeds are the kernel's params: an external that FIRED this
-        // cycle keeps its real entry (fired for the whole pass, every
-        // iteration — the kernel's per-invocation param disc); a quiet
-        // external is seeded STALE from the runtime cache (the value
-        // channel, delivery-fresh per cached-into-Rt).
-        let mut seeds: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
-        for id in self.ext_refs() {
-            if let Some(tv) = event.variables.get(id) {
-                seeds.insert(*id, tv.clone());
-            } else if let Some(v) = ctx.rt.cached().get(id) {
-                seeds.insert(*id, TagValue::stale(v.clone()));
+        match &collection {
+            Value::Array(a) => {
+                self.update_sync(ctx, event, a.len(), a.iter().cloned())
             }
-        }
-        let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
-        // First ITERATING run: force the init view so the body's
-        // constants/defaults materialize into their (frame-surviving)
-        // caches — see the `primed` field. Later runs run un-forced: a
-        // body evaluation fires only from what it consumes, which is
-        // what keeps a const-callback fold quiet after its first-ever
-        // evaluation (the hof-lift-firing pin; the kernel's slots-word
-        // agrees).
-        let force_init = !self.primed && !arr.is_empty();
-        if force_init {
-            self.primed = true;
-            fired_any = true;
-        }
-        for v in arr.iter() {
-            // Cooperative interrupt poll — a wedged huge loop aborts to
-            // bottom, mirroring the scaffold loop head's poll.
-            if ctx.control.interrupted() {
-                out = false;
-                break;
-            }
-            self.body.reset_replay(ctx);
-            frame.clear();
-            frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
-            if let Some(a) = &acc {
-                self.acc_pattern.bind(a, &mut |id, v| {
-                    ctx.rt.cached_mut().insert(id, v.clone());
-                    frame.insert(id, TagValue::fired(v));
-                });
-            }
-            self.elem_pattern.bind(v, &mut |id, v| {
-                ctx.rt.cached_mut().insert(id, v.clone());
-                frame.insert(id, TagValue::fired(v));
-            });
-            mem::swap(&mut event.variables, &mut *frame);
-            let saved_init = event.init;
-            event.init = saved_init || force_init;
-            ctx.frame_depth += 1;
-            let r = self.body.update(ctx, event);
-            ctx.frame_depth -= 1;
-            event.init = saved_init;
-            mem::swap(&mut event.variables, &mut *frame);
-            match r {
-                // A tainted body result is a GENUINE bottom — sticky
-                // (never-until-complete = the sequential break), like
-                // the kernel's loop-carried taint.
-                Some(tv) if tv.is_tainted() => {
-                    out = false;
-                    break;
-                }
-                Some(tv) => {
-                    let tag = tv.tag();
-                    fired_any |= tag.is_fired();
-                    acc = Some(tv.value());
-                }
-                // NEVER-UNTIL-COMPLETE: a bottomed element (nothing in
-                // the body produced, not even the value channel)
-                // suppresses the whole loop's emission this cycle.
-                None => {
-                    if std::env::var_os("GXDBG_FOR").is_some() {
-                        eprintln!("FOR-SYNC-BODYNONE spec={} elem={v}", self.spec);
-                    }
-                    out = false;
-                    break;
-                }
-            }
-        }
-        ctx.control.depth_pop();
-        if !out {
-            return None;
-        }
-        if arr.is_empty() {
-            // Source empty: the result is the init, fired iff an input
-            // fired — the top gate already established that.
-            return acc.map(TagValue::fired);
-        }
-        if fired_any {
-            acc.map(TagValue::fired)
-        } else if ctx.frame_depth > 0 {
-            // Complete pass, nothing fired: the acc chain advanced on
-            // the value channel only — a stale production (the parent
-            // caches the value; nothing downstream fires). Framed
-            // only: at depth 0 the value channel must not escape into
-            // reactive land (see the CallSite gate).
-            acc.map(TagValue::stale)
-        } else {
-            None
+            Value::Map(m) => self.update_sync(
+                ctx,
+                event,
+                m.len(),
+                m.into_iter().map(|(k, v)| map_item(k, v)),
+            ),
+            _ => unreachable!(),
         }
     }
 
@@ -576,10 +571,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for For<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.iter.node, self.iter.node.typecheck0(ctx))?;
         wrap!(self.init.node, self.init.node.typecheck0(ctx))?;
-        // iter must be an Array; its element type feeds the elem
-        // pattern's cells (bound at pattern compile).
-        let elem_t = crate::deref_typ!("array", ctx, self.iter.node.typ(),
-            Some(Type::Array(et)) => Ok((**et).clone())
+        let elem_t = crate::deref_typ!("array or map", ctx, self.iter.node.typ(),
+            Some(Type::Array(et)) => Ok((**et).clone()),
+            Some(Type::Map { key, value }) => Ok(Type::Tuple(Arc::from_iter([
+                (**key).clone(),
+                (**value).clone(),
+            ])))
         );
         let elem_t = wrap!(self.iter.node, elem_t)?;
         wrap!(self.iter.node, self.elem_t.check_contains(&ctx.env, &elem_t))?;

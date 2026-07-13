@@ -658,35 +658,12 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(())
     }
 
-    /// Second typecheck pass ("CallSite phase"). Fires on TWO distinct
-    /// `Apply` instances, distinguished by `fn_args`:
-    ///
-    /// - On the LambdaDef's retained `check` SCRATCH apply, via
-    ///   [`node::callsite::finalize_lambda`], with `fn_args = &[]`.
-    ///   A builtin extracts call-site-directed types here (e.g.
-    ///   `str::parse` reads its target type from `resolved`); a
-    ///   `GXLambda` recurses its body.
-    /// - HOF call sites ONLY: on the per-call-site BOUND apply
-    ///   (`cs.callee`), via `CallSite::try_static_resolve`, with
-    ///   `fn_args` listing the positional indices and `LambdaDef`s of the
-    ///   fn-typed args the compiler proved resolve statically to a single
-    ///   known lambda. A HOF builtin (`MapQ`/`FoldQ`/`Init`) uses these to
-    ///   pre-materialize its callback `analysis_pred` — which fusion's
-    ///   `emit_clif` later inlines. This MUST be built on the bound
-    ///   instance (the one runtime clones per slot), so gate it on
-    ///   `fn_args` (an empty slice means "no statically-resolved
-    ///   callbacks", which auto-no-ops the scratch firing).
-    ///
-    /// Default no-op — a builtin with no call-site work ignores both
-    /// `resolved` and `fn_args`. (Formerly two methods, `typecheck1` +
-    /// `static_resolve_fn_args`; folded into one — the HOF hook is just
-    /// the bound-instance firing of this same phase.)
+    /// Second typecheck pass ("CallSite phase").
     fn typecheck1(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
-        _fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         Ok(())
     }
@@ -711,20 +688,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// node. It is only necessary for builtins to implement this if they create
     /// nodes, such as call sites.
     fn refs<'a>(&self, _refs: &mut Refs) {}
-
-    /// Walk this Apply's INLINE-EMITTED HOF callback bodies for fusion
-    /// discovery. A HOF builtin (`map`/`fold`/`filter`/…) inline-emits
-    /// its callback into the enclosing kernel (the loop scaffold), but
-    /// the callback body is NOT in the node graph reachable by
-    /// `fusion::for_each_node` (it skips lambda bodies) — so a
-    /// builtin-call / cast / qop inside the callback would never be
-    /// discovered and the HOF would de-fuse. A HOF overrides this to hand
-    /// each callback body Node to `f`, reached the SAME way `emit_clif`
-    /// reaches it (the `analysis_pred` chain) so the ExprIds discovery
-    /// registers match what emit looks up. Default: no callbacks. The
-    /// `'a` ties each body's borrow to `self`, so the discovery can
-    /// collect the bodies and walk them after the main pass.
-    fn for_each_hof_callback_body<'a>(&'a self, _f: &mut dyn FnMut(&'a Node<R, E>)) {}
 
     /// put the node to sleep, used in conditions like select for branches that
     /// are not selected. Any cached values should be cleared on sleep.
@@ -796,21 +759,6 @@ pub enum ApplyView<'a, R: Rt, E: UserEvent> {
 pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
     Lambda(&'a mut GXLambda<R, E>),
     BuiltIn,
-}
-
-/// One entry in the `fn_args` slice passed to [`Apply::typecheck1`] (the
-/// bound-instance, HOF-callback firing). Records that the call site's
-/// positional arg at `arg_idx` is fn-typed AND the compiler proved
-/// it resolves statically to a single known `LambdaDef`.
-///
-/// The `LambdaDef` borrow is tied to the `CallSite::try_static_resolve`
-/// call's lifetime; the builtin should consume what it needs from
-/// `lambda` synchronously (e.g. clone its `Arc<FnType>`,
-/// instantiate an internal Apply via `genn::apply` referencing
-/// `lambda.id`) and not store the reference.
-pub struct StaticFnArg<'a, R: Rt, E: UserEvent> {
-    pub arg_idx: usize,
-    pub lambda: &'a LambdaDef<R, E>,
 }
 
 /// Exhaustive typed view of the compiled node graph.

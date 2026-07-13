@@ -158,19 +158,6 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
         let mut to_descend: Vec<&'a Node<R, E>> = Vec::new();
         fusion::for_each_node(node, &mut |n| {
             let NodeView::CallSite(cs) = n.view() else { return };
-            // An HOF builtin holds its statically-resolved callback body
-            // OFF the node graph (MapQ's `analysis_pred`), and the
-            // per-slot templates are CLONED from it (marks preserved by
-            // clone_rebind, clones never re-visited by this pass) — so
-            // recursion/tail facts for anything inside the callback must
-            // be computed here. Unmarked, a deep tail-recursive `let rec`
-            // in a SPLIT callback's node-walk residue stack-dispatched
-            // into the call-depth guard under fusion while `--no-fusion`
-            // (the genn::apply slot path + the bind()-time cascade)
-            // tail-looped it — a mode divergence (soak-jul06d 000000/1).
-            if let Some(apply) = cs.callee_apply() {
-                apply.for_each_hof_callback_body(&mut |body| to_descend.push(body));
-            }
             let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else { return };
             if let NodeView::Ref(r) = cs.fnode().view() {
                 sites.push((g, r.id));

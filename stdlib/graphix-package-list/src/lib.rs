@@ -2,29 +2,22 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{Result, bail};
+use anyhow::Result;
 use arcstr::literal;
-use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
     effects::EffectKind,
     expr::ExprId,
-    node::genn,
-    typ::{FnType, Type},
+    typ::FnType,
 };
-use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, FoldFn, FoldQ, MapCollection, MapFn, MapQ, Slot,
-};
-use graphix_rt::GXRt;
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
 use std::{
-    collections::{VecDeque, hash_map::Entry},
+    collections::VecDeque,
     fmt::Debug,
 };
-use triomphe::Arc as TArc;
 
 // ── Value-level list helpers ─────────────────────────────────────
 
@@ -108,201 +101,13 @@ impl Iterator for ListIter {
     }
 }
 
-// ── MapCollection for lists ──────────────────────────────────────
-
-/// Thin wrapper used by MapQ/FoldQ. Not stored in Values — only lives
-/// inside the reactive node machinery.
-#[derive(Debug, Clone)]
-struct ListColl {
-    value: Value,
-    len: usize,
+fn list_to_array(list: &Value) -> Option<Value> {
+    is_list(list).then(|| {
+        Value::Array(ValArray::from_iter(ListIter {
+            cur: list.clone(),
+        }))
+    })
 }
-
-impl Default for ListColl {
-    fn default() -> Self {
-        Self { value: make_nil(), len: 0 }
-    }
-}
-
-impl MapCollection for ListColl {
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn iter_values(&self) -> impl Iterator<Item = Value> {
-        ListIter { cur: self.value.clone() }
-    }
-
-    fn select(v: Value) -> Option<Self> {
-        let len = count_list(&v)?;
-        Some(ListColl { value: v, len })
-    }
-
-    fn project(self) -> Value {
-        self.value
-    }
-
-    fn etyp(ft: &FnType) -> Result<Type> {
-        // When called from outside the module the first arg is
-        // Type::Abstract { params: [elem], .. }
-        if let Type::Abstract { params, .. } = &ft.args[0].typ {
-            if !params.is_empty() {
-                return Ok(params[0].clone());
-            }
-        }
-        // Inside the module the abstract type is resolved, so fall
-        // back to extracting the element type from the last argument
-        // of whichever function argument we can find (map: fn('a)->...,
-        // fold: fn('b,'a)->..., filter: fn('a)->bool, etc.). The list
-        // element type is always the last parameter of that function.
-        for arg in ft.args.iter() {
-            if let Type::Fn(inner) = &arg.typ {
-                if let Some(last) = inner.args.last() {
-                    return Ok(last.typ.clone());
-                }
-            }
-        }
-        bail!("cannot extract list element type from {:?}", ft.args[0].typ)
-    }
-}
-
-// ── MapFn implementations ────────────────────────────────────────
-
-#[derive(Debug, Default)]
-struct ListMapImpl;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListMapImpl {
-    type Collection = ListColl;
-
-    const NAME: &str = "list_map";
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
-        Some(from_iter_back(slots.iter().map(|s| s.cur.clone().unwrap())))
-    }
-}
-
-type ListMap<R, E> = MapQ<R, E, ListMapImpl>;
-
-#[derive(Debug, Default)]
-struct ListFilterImpl;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilterImpl {
-    type Collection = ListColl;
-
-    const NAME: &str = "list_filter";
-
-    fn finish(&mut self, slots: &[Slot<R, E>], a: &ListColl) -> Option<Value> {
-        Some(from_iter_back(
-            slots.iter().zip(ListIter { cur: a.value.clone() }).filter_map(|(p, v)| {
-                match p.cur {
-                    Some(Value::Bool(true)) => Some(v),
-                    _ => None,
-                }
-            }),
-        ))
-    }
-}
-
-type ListFilter<R, E> = MapQ<R, E, ListFilterImpl>;
-
-#[derive(Debug, Default)]
-struct ListFilterMapImpl;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilterMapImpl {
-    type Collection = ListColl;
-
-    const NAME: &str = "list_filter_map";
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
-        Some(from_iter_back(slots.iter().filter_map(|s| match s.cur.as_ref().unwrap() {
-            Value::Null => None,
-            v => Some(v.clone()),
-        })))
-    }
-}
-
-type ListFilterMap<R, E> = MapQ<R, E, ListFilterMapImpl>;
-
-#[derive(Debug, Default)]
-struct ListFlatMapImpl;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFlatMapImpl {
-    type Collection = ListColl;
-
-    const NAME: &str = "list_flat_map";
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
-        Some(from_iter_back(slots.iter().flat_map(|s| {
-            let v = s.cur.as_ref().unwrap();
-            if is_list(v) {
-                let items: SmallVec<[Value; 32]> = ListIter { cur: v.clone() }.collect();
-                items.into_iter()
-            } else {
-                let mut one: SmallVec<[Value; 32]> = SmallVec::new();
-                one.push(v.clone());
-                one.into_iter()
-            }
-        })))
-    }
-}
-
-type ListFlatMap<R, E> = MapQ<R, E, ListFlatMapImpl>;
-
-#[derive(Debug, Default)]
-struct ListFindImpl;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFindImpl {
-    type Collection = ListColl;
-
-    const NAME: &str = "list_find";
-
-    fn finish(&mut self, slots: &[Slot<R, E>], a: &ListColl) -> Option<Value> {
-        let r = slots
-            .iter()
-            .zip(ListIter { cur: a.value.clone() })
-            .find(|(s, _)| matches!(s.cur.as_ref(), Some(Value::Bool(true))))
-            .map(|(_, v)| v)
-            .unwrap_or(Value::Null);
-        Some(r)
-    }
-}
-
-type ListFind<R, E> = MapQ<R, E, ListFindImpl>;
-
-#[derive(Debug, Default)]
-struct ListFindMapImpl;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFindMapImpl {
-    type Collection = ListColl;
-
-    const NAME: &str = "list_find_map";
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListColl) -> Option<Value> {
-        let r = slots
-            .iter()
-            .find_map(|s| match s.cur.as_ref().unwrap() {
-                Value::Null => None,
-                v => Some(v.clone()),
-            })
-            .unwrap_or(Value::Null);
-        Some(r)
-    }
-}
-
-type ListFindMap<R, E> = MapQ<R, E, ListFindMapImpl>;
-
-// ── FoldFn implementation ────────────────────────────────────────
-
-#[derive(Debug)]
-struct ListFoldImpl;
-
-impl<R: Rt, E: UserEvent> FoldFn<R, E> for ListFoldImpl {
-    type Collection = ListColl;
-
-    const NAME: &str = "list_fold";
-}
-
-type ListFold<R, E> = FoldQ<R, E, ListFoldImpl>;
 
 // ── EvalCached implementations ───────────────────────────────────
 
@@ -565,10 +370,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayEv {
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let list = from.0[0].as_ref()?;
-        if !is_list(list) {
-            return None;
-        }
-        Some(Value::Array(ValArray::from_iter(ListIter { cur: list.clone() })))
+        list_to_array(list)
     }
 }
 
@@ -591,6 +393,26 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
 }
 
 type FromArray = CachedArgs<FromArrayEv>;
+
+#[derive(Debug, Default)]
+struct FlatMapItemEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlatMapItemEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
+    const NAME: &str = "list_flat_map_item";
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        let value = from.0[0].as_ref()?;
+        list_to_array(value).or_else(|| {
+            Some(Value::Array(ValArray::from_iter_exact(
+                [value.clone()].into_iter(),
+            )))
+        })
+    }
+}
+
+type FlatMapItem = CachedArgs<FlatMapItemEv>;
 
 #[derive(Debug, Default)]
 struct ConcatEv(SmallVec<[Value; 32]>);
@@ -895,199 +717,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
     }
 }
 
-#[derive(Debug)]
-struct ListInit<R: Rt, E: UserEvent> {
-    scope: Scope,
-    fid: BindId,
-    top_id: ExprId,
-    mftyp: TArc<FnType>,
-    slots: Vec<Slot<R, E>>,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListInit<R, E> {
-    // Intrinsic sync; predicate effect joins at the call site (M6).
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const NAME: &str = "list_init";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        typ: &'a FnType,
-        resolved: Option<&'d FnType>,
-        scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        match from {
-            [_, _] => {
-                let typ = resolved.unwrap_or(typ);
-                Ok(Box::new(Self {
-                    scope: scope
-                        .append(&format_compact!("fn{}", LambdaId::new().inner())),
-                    fid: BindId::new(),
-                    top_id,
-                    mftyp: match &typ.args[1].typ {
-                        Type::Fn(ft) => ft.clone(),
-                        t => bail!("expected a function not {t}"),
-                    },
-                    slots: vec![],
-                }))
-            }
-            _ => bail!("expected two arguments"),
-        }
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for ListInit<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        let slen = self.slots.len();
-        if let Some(v) = from[1].update(ctx, event) {
-            let v = v.value();
-            ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
-        }
-        let (size_fired, resized) = match from[0].update(ctx, event).map(|tv| tv.value())
-        {
-            Some(Value::I64(n)) => {
-                // Runaway sizes log + bottom (same limit as array::init /
-                // the JIT's init loop): building per-element slots for
-                // `init(i64:MAX, …)` wedges the evaluator un-interruptibly
-                // (soak finding corpus-fuzz/crash_000020).
-                if n > graphix_compiler::node::MAX_ARRAY_INIT_LEN {
-                    log::error!(
-                        "list::init: size {n} exceeds the {} element \
-                         limit — producing no value",
-                        graphix_compiler::node::MAX_ARRAY_INIT_LEN
-                    );
-                    return None;
-                }
-                let n = n.max(0) as usize;
-                if n == slen {
-                    (true, false)
-                } else if n < slen {
-                    while self.slots.len() > n {
-                        if let Some(mut s) = self.slots.pop() {
-                            s.delete(ctx)
-                        }
-                    }
-                    (true, true)
-                } else {
-                    let i_typ = Type::Primitive(Typ::I64.into());
-                    while self.slots.len() < n {
-                        let i = self.slots.len();
-                        let (id, node) = genn::bind(
-                            ctx,
-                            &self.scope.lexical,
-                            "i",
-                            i_typ.clone(),
-                            self.top_id,
-                        );
-                        ctx.rt.cached_mut().insert(id, Value::I64(i as i64));
-                        let fnode = genn::reference(
-                            ctx,
-                            self.fid,
-                            Type::Fn(self.mftyp.clone()),
-                            self.top_id,
-                        );
-                        let pred = genn::apply(
-                            fnode,
-                            self.scope.clone(),
-                            vec![node],
-                            &self.mftyp,
-                            self.top_id,
-                        );
-                        self.slots.push(Slot { id, pred, cur: None });
-                    }
-                    (true, true)
-                }
-            }
-            _ => (false, false),
-        };
-        if resized && self.slots.len() > slen {
-            for i in slen..self.slots.len() {
-                let id = self.slots[i].id;
-                event.variables.insert(id, TagValue::fired(Value::I64(i as i64)));
-            }
-        }
-        if size_fired && self.slots.is_empty() {
-            return Some(make_nil());
-        }
-        let init = event.init;
-        let mut up = resized;
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if i == slen {
-                event.init = true;
-                if let Entry::Vacant(e) = event.variables.entry(self.fid)
-                    && let Some(v) = ctx.rt.cached().get(&self.fid)
-                {
-                    e.insert(TagValue::fired(v.clone()));
-                }
-            }
-            if let Some(v) = s.pred.update(ctx, event) {
-                s.cur = Some(v.value());
-                up = true;
-            }
-        }
-        event.init = init;
-        if up && self.slots.iter().all(|s| s.cur.is_some()) {
-            Some(from_iter_back(self.slots.iter().map(|s| s.cur.clone().unwrap())))
-        } else {
-            None
-        }
-    }
-
-    fn typecheck0(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
-        let i_typ = Type::Primitive(Typ::I64.into());
-        let (_, node) = genn::bind(ctx, &self.scope.lexical, "i", i_typ, self.top_id);
-        let ft = self.mftyp.clone();
-        let fnode = genn::reference(ctx, self.fid, Type::Fn(ft.clone()), self.top_id);
-        let mut node =
-            genn::apply(fnode, self.scope.clone(), vec![node], &ft, self.top_id);
-        let r = node.typecheck0(ctx);
-        node.delete(ctx);
-        r?;
-        Ok(())
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        for s in &self.slots {
-            s.pred.refs(refs)
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.fid);
-        for sl in &mut self.slots {
-            sl.delete(ctx)
-        }
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for sl in &mut self.slots {
-            sl.cur = None;
-            sl.pred.sleep(ctx);
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // Same clearing as sleep plus the published callback fn value
-        // (the id `delete` removes) — per-invocation replay memory.
-        ctx.rt.cached_mut().remove(&self.fid);
-        for sl in &mut self.slots {
-            sl.cur = None;
-            sl.pred.reset_replay(ctx);
-        }
-    }
-}
-
 // ── Package registration ─────────────────────────────────────────
 
 graphix_derive::defpackage! {
@@ -1096,21 +725,14 @@ graphix_derive::defpackage! {
         Cons,
         Drop_ as Drop_,
         Enumerate_ as Enumerate_,
+        FlatMapItem,
         Flatten,
         FromArray,
         Head,
         IsEmpty,
         Len,
-        ListFilter as ListFilter<GXRt<X>, X::UserEvent>,
-        ListFilterMap as ListFilterMap<GXRt<X>, X::UserEvent>,
-        ListFind as ListFind<GXRt<X>, X::UserEvent>,
-        ListFindMap as ListFindMap<GXRt<X>, X::UserEvent>,
-        ListFlatMap as ListFlatMap<GXRt<X>, X::UserEvent>,
-        ListFold as ListFold<GXRt<X>, X::UserEvent>,
-        ListInit as ListInit<GXRt<X>, X::UserEvent>,
         ListIterBI,
         ListIterQ,
-        ListMap as ListMap<GXRt<X>, X::UserEvent>,
         Nil,
         Nth,
         Reverse,

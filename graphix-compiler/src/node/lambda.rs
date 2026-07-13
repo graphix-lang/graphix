@@ -1,7 +1,7 @@
 use super::{Nop, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId,
-    Node, NodeView, Refs, Rt, Scope, StaticFnArg, Tag, TagValue, Update, UserEvent,
+    Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
@@ -463,7 +463,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
-        _fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
         wrap!(self.body, self.body.typecheck1(ctx))
     }
@@ -608,25 +607,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         // silently swallows every builtin's emission hook — the
         // call site falls to DynCall and the builtin "loses fusion"
         // with no error anywhere (it happened: Stage D2 landed
-        // MapQ::emit_clif and no probe inlined until the wrapper
-        // was caught).
+        // Builtin emission would otherwise be swallowed by the wrapper.
         self.apply.emit_clif(callsite, cx)
     }
 
-    fn for_each_hof_callback_body<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
-        // MUST delegate (like emit_clif): the trait default is a no-op,
-        // so a HOF wrapped in BuiltInLambda would silently expose no
-        // callback bodies and its callback's casts/qops/calls would go
-        // undiscovered (the HOF de-fuses with no error).
-        self.apply.for_each_hof_callback_body(f)
-    }
-
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        // MUST delegate (the trap): the trait default `Ok(())` would
-        // silently swallow a wrapped HOF's compile-time callback build,
-        // so the callback would node-walk per element and #[native]
-        // would see nothing — the same class of bug as the emit_clif /
-        // for_each_hof_callback_body delegations above.
         self.apply.fuse(ctx)
     }
 
@@ -682,9 +667,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         args: &mut [Node<R, E>],
         resolved: &FnType,
-        fn_args: &[StaticFnArg<'_, R, E>],
     ) -> Result<()> {
-        self.apply.typecheck1(ctx, args, resolved, fn_args)
+        self.apply.typecheck1(ctx, args, resolved)
     }
 
     fn typ(&self) -> Arc<FnType> {
