@@ -1118,7 +1118,8 @@ impl Corpus {
         // Persisting the finding is the campaign's whole point — a
         // write failure (full disk, dead mount) is a broken HARNESS.
         // Die loudly, as `check_isolated` does on spawn failure.
-        if let Err(e) = std::fs::write(self.dir.join(format!("divergence_{n:06}.gx")), body)
+        if let Err(e) =
+            std::fs::write(self.dir.join(format!("divergence_{n:06}.gx")), body)
         {
             eprintln!("FATAL fuzz harness: cannot write finding: {e}");
             std::process::exit(2);
@@ -1533,7 +1534,7 @@ fn first_clif_difference(a: &str, b: &str) -> String {
 /// #19 class (the stale-layout kernel cache, the by-name clone capture
 /// resolution, and the pointer-ordered callee fn-index assignment all
 /// manifested exactly this way). Driving to quiescence (rather than
-/// compile-only) covers the runtime-lazy per-slot HOF kernels AND
+/// compile-only) covers lazily instantiated collection callbacks AND
 /// removes the compile-vs-shutdown race that made their dumps a coin
 /// flip. A wall-clock timeout on either side (exit 4) skips the pair —
 /// the cut point is inherently racy. `Some(detail)` = FLAP.
@@ -2031,7 +2032,7 @@ mod tests {
             let why: String = stats
                 .failed
                 .iter()
-                .map(|(id, why)| format!("\n  {id:?}: {why}"))
+                .map(|failure| format!("\n  {:?}: {}", failure.id, failure.reason))
                 .collect();
             assert!(
                 stats.fused > 0,
@@ -2041,16 +2042,17 @@ mod tests {
             );
         }
         if fuse == Fuse::Clean {
-            for (id, reason) in &stats.failed {
+            for failure in &stats.failed {
+                let id = failure.id;
+                let reason = &failure.reason;
                 // Structural recurse noise, not coverage gaps: the
                 // attempt-then-recurse protocol logs the ancestor
                 // wrappers ("node does not emit CLIF"), a
                 // function-valued let can never emit by design (the
                 // binding node-walks while its call sites fuse), and a
-                // lambda call site with fn-typed args (the in-language
-                // HOFs) dispatches by node-walk while its per-site
-                // instance BODY fuses (P4 — the `fused > 0` assert
-                // above is what sees the instance's loop kernel).
+                // lambda call site with fn-typed args dispatches by
+                // node-walk while its monomorphic instance body fuses
+                // (the `fused > 0` assert above sees that kernel).
                 assert!(
                     reason.contains("node does not emit CLIF")
                         || reason.contains("function-valued let")
@@ -2324,9 +2326,8 @@ mod tests {
         agree_fused("{ let s = { a: i64:4, b: i64:5 }; s.a + s.b }").await;
     }
 
-    /// Stage D2 probes: inline `array::map` emission on the direct
-    /// path (`Apply::emit_clif` on MapQ → `MapFn::emit_clif` on the
-    /// array package's MapImpl → `scaffold::emit_map_loop`). V1 scope:
+    /// Inline `array::map` emission from the compiler-owned collection
+    /// Node through `scaffold::emit_map_loop`. V1 scope:
     /// BORROWED input arrays + single-name callbacks; the last two
     /// probes pin the deliberate V1 fallbacks (owned input array,
     /// destructured callback) as value-agreeing node-walks — flip them
@@ -2366,10 +2367,8 @@ mod tests {
         // Nested map-in-map: does NOT inline on either path — the
         // inner CallSite lives in the callback's lambda body, which the
         // static resolution in `typecheck1` never descends into, so the
-        // inner MapQ has no analysis_pred (and no bound function) at
-        // emission time. Classic has the identical gap (its lowering
-        // path hits the same unresolved inner site); the runtime
-        // per-slot machinery carries correctness. Flip to
+        // inner collection Node has no resolved callback at emission
+        // time. The runtime per-slot machinery carries correctness. Flip to
         // `agree_fused` when static resolution descends
         // into lambda bodies (Stage E callee-prepass territory).
         agree(
@@ -2395,8 +2394,7 @@ mod tests {
         // reads off the composite element.
         // P4 ASPIRE (instance-body inlining): call-site shape
         // doesn't fully fuse yet — value agreement only.
-        agree("{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }")
-            .await;
+        agree("{ let a = [(i64:1, i64:2)]; array::map(a, |(k, v)| k + v) }").await;
     }
 
     /// Stage D2 probes: inline `array::filter` emission on the direct
@@ -2474,15 +2472,11 @@ mod tests {
         // still the whole tuple)
         // P4 ASPIRE (instance-body inlining): call-site shape
         // doesn't fully fuse yet — value agreement only.
-        agree(
-            "{ let a = [(i64:1, i64:2)]; array::filter(a, |(k, v)| k < v) }",
-        )
-        .await;
+        agree("{ let a = [(i64:1, i64:2)]; array::filter(a, |(k, v)| k < v) }").await;
     }
 
-    /// Stage D2 probes: inline `array::fold` emission on the direct
-    /// path (FoldQ's `Apply::emit_clif` orchestration →
-    /// `FoldImpl::emit_clif` → `scaffold::emit_fold_loop`). The
+    /// Inline `array::fold` emission from the compiler-owned collection
+    /// Node through `scaffold::emit_fold_loop`. The
     /// accumulator threads through the loop as a register Variable
     /// (BindId-bound — the acc and elem resolve BindId-first next to
     /// any same-named outer capture). Fold's contract probes: a
@@ -2910,8 +2904,7 @@ mod tests {
         // scalar element, NOT found (null result)
         // P4 ASPIRE (instance-body inlining): this call-site
         // shape doesn't fully fuse yet — value agreement only.
-        agree("{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }")
-            .await;
+        agree("{ let a = [i64:1, i64:2]; array::find(a, |x| x > i64:9) }").await;
         // composite (tuple) element + accessor predicate — the found
         // element is consumed into the Nullable result, not-matched
         // ones drop per iteration. EXCEEDS classic for single-name

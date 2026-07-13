@@ -4,4 +4,4 @@
 // mismatch but CallSite::setup_bind swallowed it. The interpreter
 // returned f64:0; fusion produced no event. The closed return-boundary
 // check now rejects the inconsistent callback instance in both modes.
-sync { let mut res = i64:0; for v in array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2) {res = res / v}; res }
+array::fold(array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2), i64:0, |res, v| res / v)

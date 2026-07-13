@@ -10,7 +10,7 @@ use ahash::AHashSet;
 use arcstr::{ArcStr, literal};
 use combine::{
     EasyParser, ParseError, Parser, RangeStream, attempt, between, choice, eof,
-    look_ahead, many, none_of, not_followed_by, one_of, optional,
+    look_ahead, many, none_of, not_followed_by, optional,
     parser::{
         char::{space, string},
         combinator::recognize,
@@ -78,7 +78,7 @@ pub const RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
         "if", "i8", "u8", "i16", "u16", "u32", "v32", "i32", "z32", "u64", "v64", "i64",
         "z64", "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
         "bytes", "null", "_", "?", "fn", "Array", "Map", "any", "Any", "use", "rec",
-        "catch", "try", "sync", "for", "mut",
+        "catch", "try",
     ])
 });
 
@@ -383,102 +383,6 @@ where
         })
 }
 
-/// A `{ e; e; ... }` block accepting ONE OR MORE exprs, for positions
-/// where a block is syntactically REQUIRED (sync-block bodies, for
-/// bodies) and the `{x}` / struct-literal / map-postfix ambiguities
-/// can't arise. Produces `Do` (possibly of one expr — only these
-/// positions parse that shape back, and the printer prints for-bodies
-/// and sync blocks with braces always, so round-trips hold).
-fn block1<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(
-            sptoken('{'),
-            sptoken('}'),
-            sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp.to_expr(pos)
-            }),
-        ),
-    )
-        .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
-            let exprs = Arc::from_iter(args.drain(..));
-            ExprKind::Do { exprs }.to_expr(pos)
-        })
-}
-
-/// `sync { e; e; ... }` — the sync-subset block (sequential
-/// semantics; design/sync_subset.md).
-fn sync_block<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position().skip(attempt(string("sync").with(not_prefix()))),
-        spaces().with(between(
-            sptoken('{'),
-            sptoken('}'),
-            sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp.to_expr(pos)
-            }),
-        )),
-    )
-        .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
-            let exprs = Arc::from_iter(args.drain(..));
-            ExprKind::SyncBlock { exprs }.to_expr(pos)
-        })
-}
-
-/// `for <pattern> in <iter> { body }` — legal only inside sync blocks
-/// (enforced at compile). `in` is contextual, not reserved (labeled
-/// args like `#in` stay valid).
-fn for_expr<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position().skip(attempt(string("for").with(not_prefix()))),
-        spaces1().with(structure_pattern()),
-        spaces().skip(string("in").skip(not_prefix())).with(expr()),
-        block1(),
-    )
-        .map(|(pos, pattern, iter, body)| {
-            ExprKind::For { pattern, iter: Arc::new(iter), body: Arc::new(body) }
-                .to_expr(pos)
-        })
-}
-
-/// `name = value` — rebind a `let mut` local (sync blocks only;
-/// enforced at compile). The lookahead rejects `==` and `=>`.
-fn assign<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        attempt(
-            spmodpath()
-                .skip(spaces())
-                .skip(token('='))
-                .skip(not_followed_by(one_of("=>".chars()))),
-        ),
-        expr(),
-    )
-        .map(|(pos, name, value)| {
-            ExprKind::Assign { name, value: Arc::new(value) }.to_expr(pos)
-        })
-}
-
 fn ref_pexp<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -521,18 +425,15 @@ where
         attempt(string("let").skip(spaces1()))
             .with((
                 optional(attempt(string("rec").with(spaces1()))),
-                optional(attempt(string("mut").with(spaces1()))),
                 structure_pattern(),
                 spaces().with(optional(token(':').with(typ()))),
             ))
             .skip(sptoken('=')),
         expr(),
     )
-        .map(|(pos, (rec, mut_, pattern, typ), value)| {
+        .map(|(pos, (rec, pattern, typ), value)| {
             let rec = rec.is_some();
-            let mut_ = mut_.is_some();
-            ExprKind::Bind(Arc::new(BindExpr { rec, mut_, pattern, typ, value }))
-                .to_expr(pos)
+            ExprKind::Bind(Arc::new(BindExpr { rec, pattern, typ, value })).to_expr(pos)
         })
 }
 
@@ -864,12 +765,9 @@ parser! {
                 use_module(),
                 try_catch(),
                 typedef(),
-                sync_block(),
-                for_expr(),
                 letbind(),
                 attempt(lambda()),
                 attempt(connect()),
-                assign(),
                 attempt(arith()),
                 byref(),
                 qop(deref()),

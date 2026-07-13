@@ -516,10 +516,8 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
 // a queuefn (async wrapper) passed as a HOF callback must NOT be statically
 // resolved/fused — that would inline the inner lambda and BYPASS the queue.
 // `qf`'s bind value is a CallSite (`queuefn(...)`), not a `Lambda`, so the
-// value-based discovery in `try_static_resolve` skips it → MapQ gets empty
-// `fn_args` → no `analysis_pred` → the callback does not fuse
-// (`FuseExpect::None`). The fold preserved this by leaving the discovery at
-// the call site untouched; a regression that fused the queuefn callback
+// value-based discovery in `try_static_resolve` skips it, so the collection
+// callback remains dynamic (`FuseExpect::None`). A regression that fused it
 // would flip this to `Jit`. Single-element map so the first (immediate)
 // call produces a value: `qf(7) -> 70`.
 const QUEUEFN_HOF_CALLBACK: &str = r#"
@@ -537,7 +535,7 @@ run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Verify the wrapped fn is called when the wrapper output is fed back to
 // the trigger. Each pop allows the next to fire, so all queued

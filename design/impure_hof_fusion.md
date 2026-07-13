@@ -1,5 +1,10 @@
 # Impure HOF fusion via partial-body splitting (plan)
 
+> **SUPERSEDED (2026-07-13):** `clone_rebind` and callback templates were
+> removed. Collection HOFs are compiler-owned Nodes with a direct Array CLIF
+> path and an interpreted per-slot fallback. See
+> `design/collection_intrinsics.md`. The text below is retained as archaeology.
+
 > **STATUS (2026-07-01): IMPLEMENTED.** The impure-HOF story is built and
 > shipping: an impure callback splits at the async boundary — the sync part
 > fuses + JITs per array slot, the async residue node-walks. **The mechanism

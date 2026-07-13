@@ -135,13 +135,15 @@ impl NumTy {
     /// the boundary values (MIN/MAX — the wrap/overflow surface).
     pub(super) fn literal(self, rng: &mut Rng) -> String {
         let v: &str = match self {
-            NumTy::I8 => ["0", "1", "-1", "7", "100", "-100", "127", "-128"]
-                [rng.below(8)],
-            NumTy::I16 => ["0", "1", "-1", "7", "1000", "-1000", "32767", "-32768"]
-                [rng.below(8)],
+            NumTy::I8 => {
+                ["0", "1", "-1", "7", "100", "-100", "127", "-128"][rng.below(8)]
+            }
+            NumTy::I16 => {
+                ["0", "1", "-1", "7", "1000", "-1000", "32767", "-32768"][rng.below(8)]
+            }
             NumTy::I32 => {
-                ["0", "1", "-1", "42", "100000", "-100000", "2147483647",
-                 "-2147483648"][rng.below(8)]
+                ["0", "1", "-1", "42", "100000", "-100000", "2147483647", "-2147483648"]
+                    [rng.below(8)]
             }
             NumTy::I64 => ["0", "1", "-1", "2", "42", "100", "-100", "7"][rng.below(8)],
             NumTy::U8 => ["0", "1", "2", "100", "255"][rng.below(5)],
@@ -325,10 +327,9 @@ impl GenType {
     /// signature must MATCH the inferred type, it never narrows it.
     pub(super) fn infers_exact(&self) -> bool {
         match self {
-            GenType::Num(_)
-            | GenType::Bool
-            | GenType::Str
-            | GenType::Abstract { .. } => true,
+            GenType::Num(_) | GenType::Bool | GenType::Str | GenType::Abstract { .. } => {
+                true
+            }
             GenType::Variant(_)
             | GenType::Nullable(_)
             | GenType::Ref(_)

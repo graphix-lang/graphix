@@ -17,13 +17,7 @@ use graphix_rt::GXRt;
 use netidx::{path::Path, subscriber::Value};
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
-use std::{
-    any::Any,
-    collections::VecDeque,
-    fmt::Debug,
-    iter,
-    time::Duration,
-};
+use std::{any::Any, collections::VecDeque, fmt::Debug, iter, time::Duration};
 use tokio::time::Instant;
 
 pub(crate) mod buffer;
@@ -610,7 +604,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         // completion. Async builtins never sit inside a sync frame.
     }
 }
-
 
 // ── Core builtins ──────────────────────────────────────────────────
 

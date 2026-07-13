@@ -30,9 +30,7 @@ async fn first_value(flags: BitFlags<CFlag>) -> Result<Value> {
         ),
         (
             netidx_core::path::Path::from("/m0.gx"),
-            graphix_compiler::expr::VfsEntry::from(arcstr::literal!(
-                "let c = u16:1000"
-            )),
+            graphix_compiler::expr::VfsEntry::from(arcstr::literal!("let c = u16:1000")),
         ),
     ]);
     let ctx = graphix_package_core::testing::init_with_flags_and_setup(

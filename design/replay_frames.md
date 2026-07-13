@@ -1,5 +1,11 @@
 # reset_replay and evaluation frames
 
+> **2026-07-13 note:** The `For`/sync-loop portions of this document are
+> historical because that language experiment was removed. The `TagValue`,
+> `reset_replay`, and tail-recursion frame rules remain current. Collection HOF
+> lifecycle now lives in compiler-owned Nodes; see
+> `design/collection_intrinsics.md`.
+
 > Built 2026-07-11 (Eric approved the ruling that morning; it settles
 > what `fuzz/soak-jul10c`'s class-2 residuals and the old tail-arg
 > stale-cache pending ruling were both waiting on). This documents the

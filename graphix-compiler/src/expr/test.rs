@@ -456,67 +456,10 @@ macro_rules! bind {
     ($inner:expr) => {
         ($inner, any::<bool>(), structure_pattern(), option::of(typexp())).prop_map(
             |(value, rec, p, typ)| {
-                ExprKind::Bind(Arc::new(BindExpr {
-                    rec,
-                    mut_: false,
-                    pattern: p,
-                    value,
-                    typ,
-                }))
-                .to_expr_nopos()
+                ExprKind::Bind(Arc::new(BindExpr { rec, pattern: p, value, typ }))
+                    .to_expr_nopos()
             },
         )
-    };
-}
-
-macro_rules! mutbind {
-    ($inner:expr) => {
-        ($inner, valid_fname(), option::of(typexp())).prop_map(|(value, name, typ)| {
-            ExprKind::Bind(Arc::new(BindExpr {
-                rec: false,
-                mut_: true,
-                pattern: StructurePattern::Bind(name.into()),
-                value,
-                typ,
-            }))
-            .to_expr_nopos()
-        })
-    };
-}
-
-macro_rules! sync_block {
-    ($inner:expr) => {
-        collection::vec(
-            prop_oneof![$inner.clone(), assign!($inner), forx!($inner)],
-            (1, 6),
-        )
-        .prop_map(|e| ExprKind::SyncBlock { exprs: Arc::from(e) }.to_expr_nopos())
-    };
-}
-
-macro_rules! forx {
-    ($inner:expr) => {
-        (structure_pattern(), $inner.clone(), collection::vec($inner, (1, 4))).prop_map(
-            |(pattern, iter, body)| {
-                ExprKind::For {
-                    pattern,
-                    iter: Arc::new(iter),
-                    body: Arc::new(
-                        ExprKind::Do { exprs: Arc::from(body) }.to_expr_nopos(),
-                    ),
-                }
-                .to_expr_nopos()
-            },
-        )
-    };
-}
-
-macro_rules! assign {
-    ($inner:expr) => {
-        (valid_fname(), $inner.clone()).prop_map(|(name, value)| {
-            ExprKind::Assign { name: ModPath::from_iter([name]), value: Arc::new(value) }
-                .to_expr_nopos()
-        })
     };
 }
 
@@ -1077,10 +1020,8 @@ fn expr() -> impl Strategy<Value = Expr> {
             try_catch!(inner.clone()),
             typecast!(inner.clone()),
             do_block!(inner.clone()),
-            sync_block!(inner.clone()),
             lambda!(inner.clone()),
             bind!(inner.clone()),
-            mutbind!(inner.clone()),
             connect!(inner.clone()),
             select!(inner.clone()),
             array!(inner.clone()),
@@ -1513,34 +1454,15 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(name0 == name1)
         }
         (ExprKind::Bind(b0), ExprKind::Bind(b1)) => {
-            let BindExpr { rec: r0, mut_: m0, pattern: p0, value: value0, typ: typ0 } =
-                &**b0;
-            let BindExpr { rec: r1, mut_: m1, pattern: p1, value: value1, typ: typ1 } =
-                &**b1;
+            let BindExpr { rec: r0, pattern: p0, value: value0, typ: typ0 } = &**b0;
+            let BindExpr { rec: r1, pattern: p1, value: value1, typ: typ1 } = &**b1;
             dbg!(
                 dbg!(r0 == r1)
-                    && dbg!(m0 == m1)
                     && dbg!(check_structure_pattern(p0, p1))
                     && dbg!(check_type_opt(typ0, typ1))
                     && dbg!(check(value0, value1))
             )
         }
-        (ExprKind::SyncBlock { exprs: e0 }, ExprKind::SyncBlock { exprs: e1 }) => {
-            dbg!(e0.len() == e1.len())
-                && e0.iter().zip(e1.iter()).all(|(e0, e1)| check(e0, e1))
-        }
-        (
-            ExprKind::For { pattern: p0, iter: i0, body: b0 },
-            ExprKind::For { pattern: p1, iter: i1, body: b1 },
-        ) => {
-            dbg!(check_structure_pattern(p0, p1))
-                && dbg!(check(i0, i1))
-                && dbg!(check(b0, b1))
-        }
-        (
-            ExprKind::Assign { name: n0, value: v0 },
-            ExprKind::Assign { name: n1, value: v1 },
-        ) => dbg!(n0 == n1) && dbg!(check(v0, v1)),
         (
             ExprKind::Connect { name: name0, value: value0, deref: d0 },
             ExprKind::Connect { name: name1, value: value1, deref: d1 },

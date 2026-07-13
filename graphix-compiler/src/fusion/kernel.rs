@@ -731,9 +731,6 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// select selection memory — `design/kernel_instance_state.md`).
     /// Zero = "no previous observation": consumers store `value + 1`,
     /// so a fresh instance's init semantics fall out of the zeroing.
-    /// `clone_rebind` goes through the construction chokepoint, so
-    /// every per-slot clone gets its own fresh buffer — matching the
-    /// node-walk's per-slot node state.
     state: Box<[u64]>,
     /// The kernel's RESULT slot on the value channel — the last value
     /// a run produced. A region is pure by construction (effects
@@ -888,34 +885,8 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
     /// The compiled kernel IR this node executes. Used by graph
     /// introspection (`node_shape`) to assert on what a region
     /// actually fused into.
-    /// Write per-instance lifted-target BindIds into the reserved
-    /// state head words — the `clone_rebind` override (construction
-    /// wrote the sig's originals).
-    pub fn set_lifted_ids(&mut self, ids: &[crate::BindId]) {
-        debug_assert_eq!(ids.len(), self.kernel.lifted.len());
-        for (i, id) in ids.iter().enumerate() {
-            self.state[i] = id.inner();
-        }
-    }
-
     pub fn kernel(&self) -> &Arc<KernelSig> {
         &self.kernel
-    }
-
-    /// Clone this node for a fresh array slot ([`crate::Update::clone_rebind`]):
-    /// SHARE the immutable IR / JIT `Arc`s (the kernel is the
-    /// incidental "what `update` does"), but re-run the `build` chokepoint
-    /// so the per-cycle scratch is fresh and the `dyn_slots` are re-inited
-    /// (each slot's inner Apply is a per-slot instance, not shared). `scope`
-    /// + `top_id` are the cloned feeders' scope and the region's spec id.
-    pub fn clone_shared(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        n_args: usize,
-        scope: Scope,
-        top_id: ExprId,
-    ) -> ::anyhow::Result<Self> {
-        Self::new(ctx, self.kernel.clone(), n_args, self.jit.clone(), scope, top_id)
     }
 
     /// Single construction chokepoint: a Kernel dispatches into
@@ -956,9 +927,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         let arg_layout = build_arg_layout(&kernel);
         let mut state = vec![0u64; wrapped.state_words].into_boxed_slice();
         // The reserved head words carry the lifted connect targets'
-        // per-instance BindIds (KernelSig::lifted). Defaults to the
-        // sig's ORIGINAL ids — a `clone_rebind` overrides with freshly
-        // minted ones via `set_lifted_ids`.
+        // BindIds (KernelSig::lifted).
         for (i, id) in kernel.lifted.iter().enumerate() {
             state[i] = id.inner();
         }

@@ -115,26 +115,21 @@ async fn native_hof_callback_recursive_call_fuses_ok() {
     );
 }
 
-// P4: an in-language HOF call site DISPATCHES by node-walk (fn-typed
-// args have no ABI) while the loop fuses inside the per-site instance,
-// so `#[native]` on the call is now a compile error. ASPIRE: inline
-// the site-monomorphic instance body into the enclosing region and
-// flip this back to is_ok.
+// Compiler-owned collection nodes inline their statically instantiated
+// callback body into the enclosing region.
 #[tokio::test]
 async fn native_inlining_hof_callsite_ok() {
     let r =
         eval("#[native]\narray::init(3, |i| i * i + i64:1)", crate::TEST_REGISTER).await;
     assert!(
-        r.is_err(),
-        "#[native] on an in-language HOF call must report the node-walk \
-         dispatch, got {:?}",
+        r.is_ok(),
+        "#[native] on a compiler-owned collection call must compile, got {:?}",
         r.map(|(v, _)| v)
     );
 }
 
-// `#[native]` inside a `list::fold` callback — FoldQ fuses its `(acc, elem)`
-// callback per-element through the per-slot template, so a wholly-sync
-// callback body is native.
+// A wholly synchronous callback inside a compiler-owned `list::fold`
+// can satisfy `#[native]`.
 #[tokio::test]
 async fn native_fold_callback_fusable_ok() {
     let prog = "list::fold(list::from_array([1, 2, 3]), 0, \
@@ -221,18 +216,14 @@ async fn native_connect_composite_rhs_ok() {
     );
 }
 
-// String elements in an array HOF: under P4 the map call site
-// dispatches by node-walk AND the instance's For de-fuses (the
-// cross-kernel call can't marshal the string formal yet), so
-// `#[native]` errors. ASPIRE: instance-body inlining (or string arg
-// marshaling) restores this to is_ok.
+// String elements use the collection scaffold's owned ArcStr binding.
 #[tokio::test]
 async fn native_hof_string_element_ok() {
     let prog = "#[native]\narray::map([\"a\", \"bb\", \"ccc\"], |s| str::len(s))";
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
-        r.is_err(),
-        "a string-element map's call site node-walks under P4, got {:?}",
+        r.is_ok(),
+        "a string-element map must compile natively, got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -304,18 +295,14 @@ async fn native_select_float_conditional_final_ok() {
     );
 }
 
-// HOF destructure leaves: under P4 the `|(pt, n)|` destructured
-// formal has no single BindId, so the callee kernel can't bind its
-// leaves and the call site node-walks — `#[native]` errors. ASPIRE:
-// instance-body inlining (leaf binds off the composite arg, the old
-// Phase 5 machinery's shape) restores is_ok.
+// Collection scaffolds bind destructured composite leaves by BindId.
 #[tokio::test]
 async fn native_hof_composite_leaf_ok() {
     let prog = "#[native]\narray::map([((1, 2), 10), ((3, 4), 20)], |(pt, n)| pt.0 + n)";
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
-        r.is_err(),
-        "a destructured-formal map's call site node-walks under P4, got {:?}",
+        r.is_ok(),
+        "a destructured-formal map must compile natively, got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -339,7 +326,7 @@ async fn native_select_named_rest_defuses() {
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")
-// whose values fused — the `fused_ids` filter suppresses those. `once` is
+// whose values fused — the successful-source filter suppresses those. `once` is
 // classified async (a permanent fusion boundary), so its call is the
 // stable non-fuser here (a recursive lambda call now fuses, #203, so it
 // can no longer play this role); the `let a` value still fuses, exercising

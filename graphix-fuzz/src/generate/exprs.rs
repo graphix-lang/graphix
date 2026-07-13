@@ -204,8 +204,7 @@ fn callback_binder(
 /// array targets, `fold` for scalar targets. Callbacks are generated in
 /// a CLONED scope (params + everything outer visible — captures come
 /// free, and nested HOFs arise naturally through the body's own
-/// `gen_typed` recursion). This is the per-slot template-cloning
-/// surface (`clone_rebind`) the audit's bug 3 lived in.
+/// `gen_typed` recursion).
 fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<String> {
     if depth == 0 {
         return None;

@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     BindId, ExecCtx, Node, Rt, Scope, UserEvent,
-    expr::{ExprId, ModPath, Origin},
+    expr::{ApplyExpr, ExprId, ExprKind, ModPath, Origin},
     typ::{FnType, Type},
 };
 use ahash::AHashMap;
@@ -75,22 +75,57 @@ pub fn apply<R: Rt, E: UserEvent>(
 ) -> Node<R, E> {
     let ftype = typ.reset_tvars();
     ftype.alias_tvars(&mut LPooled::take());
+    apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
+}
+
+pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
+    fnode: Node<R, E>,
+    scope: Scope,
+    args: Vec<Node<R, E>>,
+    typ: &FnType,
+    top_id: ExprId,
+) -> Node<R, E> {
+    apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id)
+}
+
+fn apply_inner<R: Rt, E: UserEvent>(
+    fnode: Node<R, E>,
+    scope: Scope,
+    args: Vec<Node<R, E>>,
+    typ: &FnType,
+    ftype: Option<FnType>,
+    rtype: Type,
+    top_id: ExprId,
+) -> Node<R, E> {
+    let spec = ExprKind::Apply(ApplyExpr {
+        args: Arc::from_iter(
+            args.iter()
+                .zip(typ.args.iter())
+                .map(|(node, farg)| (farg.label().cloned(), node.spec().clone())),
+        ),
+        function: Arc::new(fnode.spec().clone()),
+    })
+    .to_expr_nopos();
+    let mut positional = 0;
     let args: AHashMap<ArgKey, Arg<R, E>> = args
         .into_iter()
         .zip(typ.args.iter())
-        .enumerate()
-        .map(|(i, (node, farg))| {
+        .map(|(node, farg)| {
             let key = match farg.label() {
                 Some(name) => ArgKey::Named(name.clone()),
-                None => ArgKey::Positional(i),
+                None => {
+                    let key = ArgKey::Positional(positional);
+                    positional += 1;
+                    key
+                }
             };
             (key, Arg::new(BindId::new(), Some(node), false))
         })
         .collect();
     Box::new(CallSite {
-        spec: NOP.clone(),
-        rtype: ftype.rtype.clone(),
-        ftype: Some(ftype),
+        spec: Arc::new(spec),
+        rtype,
+        ftype,
         args,
         arg_refs: Vec::new(),
         scope,

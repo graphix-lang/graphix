@@ -385,7 +385,6 @@ run!(obs4_def_fact_accepts, OBS4_DEF_FACT_ACCEPTS, |v: Result<&Value>| matches!(
     Err(_)
 ); graphix_package_core::testing::FuseExpect::None);
 
-
 // =============================================================================
 // Promotion obligations (Eric's ruling (a), 2026-07-12)
 // =============================================================================

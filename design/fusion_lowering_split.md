@@ -3,6 +3,10 @@
 > Status: **proposed, not built.** Captured 2026-06-15 from a design discussion
 > (Eric + Claude). The driver is *legibility* at least as much as performance —
 > see "Why this matters" at the bottom.
+>
+> **2026-07-13 note:** The runtime `clone_rebind` wrinkle described below no
+> longer exists. Collection HOFs are compiler-owned Nodes; see
+> `design/collection_intrinsics.md`.
 
 ## The problem
 
@@ -79,15 +83,12 @@ The bound to keep in mind: the separation is clean exactly to the degree the
 coloring is honest about emittability. Where it isn't, you eat coarse fallback —
 a bounded, well-guarded cost, not the unbounded drift of an unguarded predicate.
 
-## The wrinkle — fusion isn't purely compile-time
+## The former runtime wrinkle
 
-The impure-HOF per-slot path fuses *at runtime*: `MapQ::update` runs
-`fusion::jit_node` on a `clone_rebind`'d template body (the path the
-`splice_child` deletion rerouted, 2026-06-15). So "a pass before lowering" is
-really "a pass before *each* lowering," sometimes mid-execution. The descriptor
-model still holds (color the template, build its descriptor, lower it), but the
-analysis pass and the descriptor type must be invocable from `update()`, not
-only `compile()`. Draw the box around "the fusion pass" with that in mind.
+The old impure-HOF path fused cloned callback templates during execution. That
+mechanism has been deleted. Fusion is compile-time again; an unsupported or
+async collection callback stays in the collection Node's interpreted slot
+graph.
 
 ## Payoff
 

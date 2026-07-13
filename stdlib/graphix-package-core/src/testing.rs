@@ -386,8 +386,7 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 ///   since the counters only exist in debug builds.
 ///
 /// There is no third "fuse but don't JIT" mode: fusion is JIT-only,
-/// so `FusionDisabled` toggles all of fusion (compile-time AND the
-/// runtime per-slot HOF path, via `ExecCtx::fusion_enabled`) on or off.
+/// so `FusionDisabled` toggles all compile-time fusion on or off.
 /// The macro expands to a child module `mod $name {
 /// fn interp() … fn jit() … }` — two `#[tokio::test(flavor =
 /// "current_thread")]` functions, one result per mode.
@@ -541,12 +540,12 @@ macro_rules! run {
                     if let ::std::result::Result::Ok(stats) =
                         ctx.fusion_stats().await
                     {
-                        for (id, why) in stats.failed.iter() {
+                        for failure in stats.failed.iter() {
                             eprintln!(
                                 "FUSEAUDIT-BLOCKER\t{}\t{:?}\t{}",
                                 module_path!(),
-                                id,
-                                why
+                                failure.id,
+                                failure.reason
                             );
                         }
                     }

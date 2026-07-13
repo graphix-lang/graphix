@@ -14,79 +14,11 @@ let enumerate = |a: Array<'a>| -> Array<(i64, 'a)> 'array_enumerate;
 let zip = |a0: Array<'a>, a1: Array<'b>| -> Array<('a, 'b)> 'array_zip;
 let unzip = |a: Array<('a, 'b)>| -> (Array<'a>, Array<'b>) 'array_unzip;
 
-// ── The traversal HOFs, in graphix (sync-subset P4 final) ──────────
-// Sequential loops on the For substrate: a sync callback compiles to
-// one native loop; an async callback rides per-index instantiation +
-// re-evaluation. Never-until-complete emission. Sequential semantics:
-// find/find_map stop CALLING f once found (the old per-slot machinery
-// called f for every element regardless).
-
-let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> Array<'a> throws 'e sync {
-  let mut res: Array<'a> = [];
-  for i in iota(n) { res = push(res, f(i)) };
-  res
-};
-
-let fold = |a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e sync {
-  let mut acc: 'b = init;
-  for v in a { acc = f(acc, v) };
-  acc
-};
-
-let map = |a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e| -> Array<'b> throws 'e sync {
-  let mut res: Array<'b> = [];
-  for v in a { res = push(res, f(v)) };
-  res
-};
-
-let filter = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Array<'a> throws 'e sync {
-  let mut res: Array<'a> = [];
-  for v in a {
-    select f(v) { true => res = push(res, v), false => null }
-  };
-  res
-};
-
-let filter_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Array<'b> throws 'e sync {
-  let mut res: Array<'b> = [];
-  for v in a {
-    select f(v) { null as _ => null, x => res = push(res, x) }
-  };
-  res
-};
-
-let flat_map = |a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>] throws 'e| -> Array<'b> throws 'e sync {
-  let mut res: Array<'b> = [];
-  for v in a {
-    select f(v) { Array<'b> as xs => res = concat(res, xs), x => res = push(res, x) }
-  };
-  res
-};
-
-// find/find_map track a bool `found` flag rather than matching the
-// Option accumulator: a select whose scrutinee is Option<'a> with 'a
-// RIGID (inside this def's gate) trips the dead-arm residue analysis
-// (see fuzz/pending-ruling — select-over-rigid-Option corner).
-let find = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e sync {
-  let mut res: Option<'a> = null;
-  let mut found = false;
-  for v in a {
-    select found {
-      false => select f(v) { true => { res = v; found = true }, false => null },
-      true => null
-    }
-  };
-  res
-};
-
-let find_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e sync {
-  let mut res: Option<'b> = null;
-  let mut found = false;
-  for v in a {
-    select found {
-      false => select f(v) { null as _ => null, x => { res = x; found = true } },
-      true => null
-    }
-  };
-  res
-};
+let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> Array<'a> throws 'e 'array_init;
+let map = |a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e| -> Array<'b> throws 'e 'array_map;
+let filter = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Array<'a> throws 'e 'array_filter;
+let filter_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Array<'b> throws 'e 'array_filter_map;
+let flat_map = |a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>] throws 'e| -> Array<'b> throws 'e 'array_flat_map;
+let find = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e 'array_find;
+let find_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'array_find_map;
+let fold = |a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'array_fold;

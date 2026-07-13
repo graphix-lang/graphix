@@ -868,7 +868,7 @@ macro_rules! arith_op {
                         match result {
                             Value::Error(e) => {
                                 if ctx.frame_depth > 0 {
-                                    // In a sequential frame this is a
+                                    // In an inline callback frame this is a
                                     // GENUINE bottom — the kernel's taint
                                     // channel, and like the kernel it is
                                     // SILENT (the log is a reactive-mode

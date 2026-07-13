@@ -1,4 +1,4 @@
-use super::pattern::StructPatternNode;
+use super::{collection::CollectionIntrinsic, pattern::StructPatternNode};
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, TagValue, Update, UserEvent, bailat,
@@ -71,10 +71,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         top_id: ExprId,
         b: &expr::BindExpr,
     ) -> Result<Node<R, E>> {
-        let expr::BindExpr { rec, mut_, pattern, typ, value } = b;
-        if *mut_ {
-            bailat!(spec, "`let mut` is only legal inside a sync block (P1)")
-        }
+        let expr::BindExpr { rec, pattern, typ, value } = b;
         let (node, pattern, typ) = if *rec {
             if !pattern.single_bind().is_some() {
                 bailat!(spec, "can't use rec on a complex pattern")
@@ -150,7 +147,9 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             if let expr::StructurePattern::Bind(bind_name) = &be.pattern {
                 if let ExprKind::Lambda(lam) = &value.kind {
                     if let netidx::utils::Either::Right(builtin_name) = &lam.body {
-                        if let Type::Fn(fn_type) = node.typ() {
+                        if CollectionIntrinsic::from_name(builtin_name).is_none()
+                            && let Type::Fn(fn_type) = node.typ()
+                        {
                             // Lambda Node's def field holds the
                             // LambdaDef; downcast through NodeView::Lambda
                             // to pull its id. Used at fusion time to

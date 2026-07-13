@@ -311,10 +311,14 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         // Containers / navigation.
         V::Block(b) => kids.extend(b.children.iter()),
         V::Bind(b) => kids.push(&b.node),
-        V::For(fl) => {
-            kids.push(&fl.iter.node);
-            kids.push(&fl.init.node);
-            kids.push(&fl.body);
+        V::MapQ(m) => {
+            kids.push(&m.source.node);
+            kids.push(&m.prototype);
+        }
+        V::FoldQ(m) => {
+            kids.push(&m.source.node);
+            kids.push(&m.init.node);
+            kids.push(&m.prototype);
         }
         V::Module(m) => kids.push(m.source()),
         V::CallSite(cs) => {

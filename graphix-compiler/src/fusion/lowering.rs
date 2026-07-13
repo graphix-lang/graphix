@@ -123,10 +123,10 @@ pub struct BuiltinCallDiscovery {
 /// [`FnParam`] slot ([`FnSource::Builtin`])
 /// and an `apply_sites` entry, capturing the layout `emit_dyncall`
 /// needs to dispatch via the runtime's builtin Apply machinery.
-/// Descent is [`fusion::for_each_node`] — the canonical
-/// full-coverage walker, so lambda bodies are NOT descended (they
-/// are separate kernels with their own discovery pass). Each site
-/// reads the CallSite's resolved FnType and its compiled arg/return
+/// Descent is [`fusion::for_each_emitted_node`]: ordinary lambda bodies
+/// remain separate kernels, while compiler-owned collection callbacks
+/// are included because their bodies emit inline in the caller. Each
+/// site reads the CallSite's resolved FnType and its compiled arg/return
 /// sub-nodes' types (post-typecheck), never the AST.
 ///
 /// Sites whose argument shape can't be lowered (unsupported arg
@@ -138,7 +138,7 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
-    fusion::for_each_node(node, &mut |n| match n.view() {
+    fusion::for_each_emitted_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
             try_register_builtin_call_from_callsite(cs, ctx, out);
         }
@@ -640,14 +640,12 @@ fn resolve_abstract_d<'a>(
             lambda_ids: ft.lambda_ids.clone(),
         })),
         Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
-            ts.iter()
-                .map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
+            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
         )),
         Type::Variant(tag, ts) => Type::Variant(
             tag.clone(),
             Arc::from_iter(
-                ts.iter()
-                    .map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
+                ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
             ),
         ),
         Type::Array(t) => {
@@ -664,11 +662,11 @@ fn resolve_abstract_d<'a>(
             value: Arc::new(resolve_abstract_d(reg, value, env, scope, seen)),
         },
         Type::Set(ts) => Type::Set(Arc::from_iter(
-            ts.iter()
-                .map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
+            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
         )),
         Type::Struct(fs) => Type::Struct(Arc::from_iter(
-            fs.iter().map(|(n, t)| (n.clone(), resolve_abstract_d(reg, t, env, scope, seen))),
+            fs.iter()
+                .map(|(n, t)| (n.clone(), resolve_abstract_d(reg, t, env, scope, seen))),
         )),
         other => other.clone(),
     }
@@ -945,7 +943,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // Discover sync builtin/cast/qop Apply sites in the body so they
     // fuse as DynCalls (the same prepass `try_fuse` runs on a region
     // root). `fn_params` installs the slots on the sig; `apply_sites`
-    // lets the body emitter recognise each call site. The per-slot HOF
+    // lets the body emitter recognise each call site. The inline collection
     // path consumes these directly (the callback body's own builtins);
     // the cross-kernel callee path consumes them via `CalleeBody`
     // (Stage 2 — the runtime combined-slot delivery).
@@ -975,7 +973,6 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     ec.fusion.kernels.lock().insert(key, cached.clone());
     Some(cached)
 }
-
 
 /// The SHARED structural tail-loop predicate, behind both the JIT's
 /// native-loop gate (`build_lambda_kernel`'s `has_tail`) and the

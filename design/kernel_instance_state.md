@@ -38,10 +38,9 @@ they compare against the previous invocation:
    guard-only cycle with an unchanged selection, and the init
    off-by-one the finding pins (interp 4 / jit 5).
 
-Both need one word of memory that survives across kernel invocations
-but belongs to the kernel INSTANCE — a per-slot `clone_rebind` clone
-must get fresh memory, exactly as each node-walk slot owns its own
-`MapQ`/select state.
+Both need one word of memory that survives across kernel invocations but
+belongs to the kernel instance. Each fused region gets fresh memory, just as
+each node instance owns its own state.
 
 ## The design
 
@@ -61,10 +60,8 @@ vocabulary (this is a CONTEXT slot, not an IR).
 
 **Ownership.** The spliced node (the kernel-callable's invocation site,
 where the slots are packed) allocates `Box<[u64]>` zeroed when
-`state_words > 0` and passes the pointer on every call. `clone_rebind`
-allocates a fresh zeroed buffer per clone — per-slot instances get
-per-slot memory for free, matching the node-walk's per-slot async
-state. The template's buffer is never shared.
+`state_words > 0` and passes the pointer on every call. Every runtime Kernel
+owns its buffer; the immutable compiled artifact remains shared.
 
 **Zero means "no previous".** Every consumer stores `value + 1` so the
 zeroed initial state reads as "no previous observation", and init
@@ -92,7 +89,7 @@ bookkeeping only, invisible to value semantics. A kernel with
 - `fusion/kernel_abi.rs`: `INIT_WIRE_SLOTS` 1→2 (rename or document
   slot 1); `KernelSig.state_words`.
 - `fusion/kernel.rs`: pack site pushes the state pointer; the spliced
-  node owns the buffer; `clone_rebind` allocates fresh.
+  node owns the buffer.
 - `fusion/emit.rs`: wrapper→body forwarding of the new slot (the same
   loops that forward the init flag); a `claim_state_word(cx) -> idx`
   helper; the guarded-select consumer.

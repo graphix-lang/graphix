@@ -183,9 +183,7 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// No callee bound yet — the just-compiled state. `fnode` is
     /// re-evaluated every cycle; the first cycle it yields a `LambdaDef`
-    /// Value, `update()` transitions to `DynamicBound` via `bind()`. Also
-    /// the state a *builtin* callee resets to in `clone_rebind`, so the
-    /// clone re-inits a fresh instance on its first update.
+    /// Value, `update()` transitions to `DynamicBound` via `bind()`.
     DynamicUnbound,
     /// Bound to a callee that may still change cycle-to-cycle. `def` is the
     /// `LambdaDef`-wrapped Value, kept for the per-cycle IDENTITY check
@@ -1173,13 +1171,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(apply) = self.callee.apply_mut() else {
             return Ok(());
         };
-        // PER-CALLSITE ELABORATION (sync-subset P4): when the bound
+        // Per-callsite elaboration: when the bound
         // callee is a user lambda, register each statically-known
         // fn-typed arg under the INSTANCE's arg-pattern BindId in
         // `bind_to_lambda` for the duration of the re-driven body
         // typecheck1 below. The instance's body callsites then
-        // statically resolve calls to the lambda PARAM (`f(v)` inside
-        // `|a, f| sync { … f(v) … }`) exactly like calls to a lambda
+        // statically resolve calls to the lambda parameter (`f(v)`)
+        // exactly like calls to a lambda
         // binding — per-instance BindIds are fresh per callsite, so
         // there is no cross-site contamination by construction, and
         // fusion needs no special HOF callback path.
@@ -1282,7 +1280,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         // Tail-call interception. When `analysis::analyze` flagged this
-        // call as a tail-position self-call inside a sync tail-recursive
+        // call as a tail-position self-call inside a synchronous tail-recursive
         // body, don't bind/dispatch (which would recurse on the Rust stack
         // and overflow). Instead stash the just-evaluated rebind args and
         // return — the enclosing `GXLambda::update` loop rebinds the
@@ -1969,6 +1967,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         if let Some(f) = self.callee.apply() {
+            if let Some(cv) = f.emit_clif(self, cx)? {
+                return Ok(cv);
+            }
             // A resolved user-lambda callee is a cross-kernel call:
             // `try_fuse`'s analysis discovered the site and built (or
             // cache-hit) the callee kernel — emit a CLIF `call`
@@ -1979,17 +1980,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
                     return emit_lambda_call_node(cx, self, &info);
                 }
-                bail!(
-                    "emit_clif: lambda call site `{}` not discovered — \
-                     subtree node-walks",
-                    self.spec
-                );
-            }
-            // Builtin-owned emission hook ([`Apply::emit_clif`]).
-            // `Some` is the call's result; `None` falls through to
-            // the DynCall path below.
-            if let Some(cv) = f.emit_clif(self, cx)? {
-                return Ok(cv);
+                return Err(fusion::blocker(
+                    &self.spec,
+                    compact_str::format_compact!(
+                        "emit_clif: lambda call site `{}` not discovered — \
+                         subtree node-walks",
+                        self.spec
+                    ),
+                ));
             }
         }
         // A VALUE-position self-call inside a recursive callee body
@@ -2021,10 +2019,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // positional count (not source position).
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
-            None => bail!(
-                "emit_clif: builtin call site `{}` not discovered — doesn't fuse",
-                self.spec
-            ),
+            None => {
+                return Err(fusion::blocker(
+                    &self.spec,
+                    compact_str::format_compact!(
+                        "emit_clif: builtin call site `{}` not discovered — doesn't fuse",
+                        self.spec
+                    ),
+                ));
+            }
         };
         let spec_apply = match &self.spec.kind {
             ExprKind::Apply(a) => a,

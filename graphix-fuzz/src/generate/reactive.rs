@@ -14,7 +14,10 @@
 
 use netidx::publisher::Value;
 
-use super::{GenCfg, GenCtx, GenType, chance, exprs, types, types::{F64, I64, NumTy}};
+use super::{
+    GenCfg, GenCtx, GenType, chance, exprs, types,
+    types::{F64, I64, NumTy},
+};
 use crate::mutate::Rng;
 use crate::schedule::Schedule;
 
@@ -155,7 +158,9 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
 
 fn injection_value(rng: &mut Rng, ty: &GenType) -> Value {
     match ty {
-        GenType::Num(NumTy::I64) => Value::I64([-3, -1, 0, 1, 2, 3, 5, 7, 12, 100][rng.below(10)]),
+        GenType::Num(NumTy::I64) => {
+            Value::I64([-3, -1, 0, 1, 2, 3, 5, 7, 12, 100][rng.below(10)])
+        }
         GenType::Num(NumTy::F64) => {
             Value::F64([-2.25, -1.0, 0.0, 0.5, 1.5, 3.0, 10.25][rng.below(7)])
         }
@@ -285,10 +290,7 @@ fn cross_cycle(
             _ => {
                 let x = ctx.fresh();
                 // `filter(v, pred)` — value first, predicate second.
-                (
-                    format!("filter({input}, |{x}: i64| {x} > i64:{})", rng.below(5)),
-                    I64,
-                )
+                (format!("filter({input}, |{x}: i64| {x} > i64:{})", rng.below(5)), I64)
             }
         },
         GenType::Num(NumTy::F64) => match rng.below(3) {

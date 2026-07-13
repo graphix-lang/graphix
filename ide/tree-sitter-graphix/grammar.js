@@ -118,9 +118,6 @@ module.exports = grammar({
       $.module,
       $.use,
       $.type_def,
-      $.sync_block,
-      $.for_expression,
-      $.assign,
       $.let_binding,
       $.try_catch,
       $.lambda,
@@ -135,9 +132,6 @@ module.exports = grammar({
       $.module,
       $.use,
       $.type_def,
-      $.sync_block,
-      $.for_expression,
-      $.assign,
       $.let_binding,
       $.connect,
       $.lambda,
@@ -422,7 +416,6 @@ module.exports = grammar({
     let_binding: $ => prec.right(-1, seq(
       'let',
       optional('rec'),
-      optional('mut'),
       field('pattern', $.structure_pattern),
       optional(seq(':', field('type', $._type))),
       '=',
@@ -710,41 +703,6 @@ module.exports = grammar({
       optional(';'),
       '}',
     ),
-
-    // sync-subset (design/sync_subset.md): sequential-semantics block
-    sync_block: $ => seq(
-      'sync',
-      '{',
-      repeat(seq($._expression, ';')),
-      $._expression,
-      optional(';'),
-      '}',
-    ),
-
-    // for <pattern> in <iter> { body } — `in` is contextual
-    for_expression: $ => seq(
-      'for',
-      field('pattern', $.structure_pattern),
-      'in',
-      field('iter', $._expression),
-      field('body', $.block1),
-    ),
-
-    // >=1-expr block, only in for-body position
-    block1: $ => seq(
-      '{',
-      repeat(seq($._expression, ';')),
-      $._expression,
-      optional(';'),
-      '}',
-    ),
-
-    // name = value — rebind a mut local
-    assign: $ => prec.right(-1, seq(
-      field('name', $.module_path),
-      '=',
-      field('value', $._expression),
-    )),
 
     // By-reference and dereference
     by_ref: $ => prec('unary', seq('&', $._expression)),

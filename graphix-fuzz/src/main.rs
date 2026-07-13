@@ -424,10 +424,11 @@ async fn main() -> Result<()> {
         Some("detcheck") => {
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let mut programs: Vec<(String, String)> = graphix_fuzz::corpus::REGRESSION_CORPUS
-                .iter()
-                .map(|(name, prog)| (name.to_string(), prog.to_string()))
-                .collect();
+            let mut programs: Vec<(String, String)> =
+                graphix_fuzz::corpus::REGRESSION_CORPUS
+                    .iter()
+                    .map(|(name, prog)| (name.to_string(), prog.to_string()))
+                    .collect();
             {
                 let mut rng = graphix_fuzz::mutate::Rng::new(seed);
                 for i in 0..n {
@@ -588,8 +589,8 @@ async fn main() -> Result<()> {
                                 "  fusion: attempted={} fused={}",
                                 stats.attempted, stats.fused
                             );
-                            for (id, why) in &stats.failed {
-                                println!("  failed {id:?}: {why}");
+                            for failure in &stats.failed {
+                                println!("  failed {:?}: {}", failure.id, failure.reason);
                             }
                         }
                     }

@@ -286,8 +286,7 @@ pub struct WrappedKernel {
     /// the parent's `fn_params` when there are no callee DynCalls (the
     /// common case). Carried here (not on `KernelSig`) because it's
     /// region-specific — the same callee `KernelSig` lands at different
-    /// `base`s in different regions — and rides into every `Kernel`
-    /// (incl. per-slot `clone_rebind`s, which clone this `Arc`).
+    /// `base`s in different regions — and rides into every `Kernel`.
     pub dyn_fn_params: std::sync::Arc<[kernel_abi::FnParam]>,
     /// Number of `u64` cross-invocation state words the parent's ROOT
     /// body claimed during emission (0 = stateless — the common case).
@@ -489,7 +488,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         apply_sites,
         lambda_sites,
         // None for region parents (a region can't self-call); the
-        // per-slot HOF path's "parent" IS a lambda kernel and passes
+        // collection callback path's "parent" IS a lambda kernel and passes
         // its own self info here.
         self_call: parent_self_call,
         type_env,
@@ -497,8 +496,8 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         // Parent slots lead the combined `dyn_slots` table.
         fn_index_offset: 0,
         // A non-recursive published body gates STALE at its return (the
-        // over-fire fix). A RECURSIVE parent (a self-recursive per-slot
-        // HOF callback) emits its returns in tail position
+        // over-fire fix). A RECURSIVE parent (a self-recursive collection
+        // callback) emits its returns in tail position
         // (`emit_body_tail`), which does NOT fold the select scrutinee's
         // STALE into a constant tail arm — and a recursive kernel produces
         // a value on EVERY dispatch (it's a function call, not a reactive
@@ -561,8 +560,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     let mut wrapped =
         compile_kernel_with_callees_impl(jit, kernel, callees, &emitters, registry)?;
     // Override the parent-only default with the combined table; the
-    // runtime `Kernel` builds its `dyn_slots` from this (and per-slot
-    // `clone_rebind`s clone the `Arc`).
+    // runtime `Kernel` builds its `dyn_slots` from this.
     wrapped.dyn_fn_params = combined.into();
     Ok(wrapped)
 }
@@ -1610,9 +1608,7 @@ pub(crate) struct LowerCtx<'a> {
     /// point. State claims are refused inside loops: a loop-body
     /// construct evaluates once PER SLOT per invocation, so one static
     /// word can't hold per-slot memory (the node-walk gives each slot
-    /// clone its own state; per-slot kernels get theirs via fresh
-    /// buffers per `clone_rebind`, but an inline loop body is one
-    /// function).
+    /// its own state, but an inline loop body is one function).
     loop_depth: std::cell::Cell<u32>,
     /// Cross-kernel call sites resolve their callee's kernel IDENTITY
     /// (`kernel_key` of the site's `info.kernel` Arc) through this map
@@ -2654,9 +2650,8 @@ impl JitEnv {
     /// let a fold callback's captured `x` resolve to the fold ELEMENT
     /// (which FoldQ name-binds as "x") whenever the capture's
     /// instantiation id drifted — a nondeterministic wrong VALUE
-    /// (interp 19 / jit 17, soak jul07h fuzz/divergence_000001; the
-    /// same never-by-name discipline as audit-jul2026/03 in
-    /// clone_rebind). Walks back-to-front.
+    /// (interp 19 / jit 17, soak jul07h fuzz/divergence_000001).
+    /// Walks back-to-front.
     fn lookup(&self, id: BindId, name: &str) -> Option<&Local> {
         if let Some(l) = self.locals.iter().rev().find(|l| l.bind_id == Some(id)) {
             return Some(l);
@@ -2724,6 +2719,17 @@ fn bind_local(
     let vv = ValueVar { disc: dv, payload: pv };
     cx.env.bind(name, vv, kind, bind_id);
     vv
+}
+
+pub(crate) fn bind_scalar_var_with_disc(
+    cx: &mut BodyCx,
+    name: ArcStr,
+    prim: PrimType,
+    payload: Variable,
+    disc: Variable,
+    bind_id: Option<BindId>,
+) {
+    cx.env.bind(name, ValueVar { disc, payload }, LocalKind::Scalar(prim), bind_id);
 }
 
 /// Emit an HOF operand and FORCE its #219 taint (a tainted operand
@@ -3142,7 +3148,7 @@ trait BodyEmitter {
 
     /// Whether this body's kernel return FORCES on not-fresh
     /// (TAINT | STALE). `true` for a PUBLISHED body — the region root /
-    /// a per-slot HOF callback whose result flows through the wrapper
+    /// an inline collection callback whose result flows through the wrapper
     /// to `Kernel::update`: a not-fresh result must yield `None`,
     /// matching the node-walk's "publish only on Some". `false` for a
     /// cross-kernel CALLEE body, which never forces: its result's
@@ -3351,10 +3357,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// callee body (one word can't hold per-call-site memory). Callers
     /// MUST emit their stateless approximation on `None`.
     ///
-    /// The buffer is zero-initialized per instance (fresh per
-    /// `clone_rebind`), so consumers store `value + 1` and read 0 as
-    /// "no previous observation" — init semantics fall out of the
-    /// zeroing. See `design/kernel_instance_state.md`.
+    /// The buffer is zero-initialized per instance, so consumers store
+    /// `value + 1` and read 0 as "no previous observation" — init
+    /// semantics fall out of the zeroing. See
+    /// `design/kernel_instance_state.md`.
     /// State-buffer byte offset of a LIFTED connect target's
     /// per-instance `BindId` word, if `id` is lifted in this kernel.
     pub fn lifted_state_off(&self, id: BindId) -> Option<i32> {
@@ -3530,120 +3536,6 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
 /// catch it — gate on the node itself and de-fuse; the node-walk runs
 /// the subtree and the value simply never fires, which IS the
 /// semantics (soak jul08h `fuzz/crash_000000`).
-/// Emit a `For` loop into the enclosing region — drives
-/// `scaffold::emit_fold_loop` with the P2 `FoldAcc` machinery, sourced
-/// from the node's own patterns and type cells (the `FoldImpl`
-/// emitter's twin, minus the FoldQ plumbing it replaced —
-/// design/sync_subset.md "P4 final scope"). Every gate miss is an
-/// `Err` (de-fuse; the sequential node-walk loop is the fallback).
-pub fn emit_for_node<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    node: &crate::node::forloop::For<R, E>,
-) -> Result<CompiledExpr> {
-    use crate::fusion::kernel_abi;
-    use kernel_abi::AbiKind;
-    use scaffold as scaffold_;
-    let miss = |what: &str| {
-        if std::env::var_os("GXDBG_FOR").is_some() {
-            eprintln!("FORMISS {what} at {:?}", node.spec().id);
-        }
-        anyhow!(
-            "emit_clif: For loop {what} not JIT-representable (spec id {:?}) — \
-             subtree node-walks",
-            node.spec().id
-        )
-    };
-    // Element shape: only what `scaffold::bind_elem` accepts.
-    let in_elem = kernel_abi::freeze_for_abi_normalized(cx.registry(), node.elem_typ())
-        .ok_or_else(|| miss("element type"))?;
-    match kernel_abi::abi_kind(cx.registry(), &in_elem) {
-        Some(
-            AbiKind::Scalar(_)
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::String
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value,
-        ) => {}
-        _ => return Err(miss("element shape")),
-    }
-    let (elem_name, elem_id, elem_binds) = match node.elem_pattern.tuple_leaves() {
-        Some(binds) => (arcstr::literal!("__elem"), None, binds),
-        None => match node.elem_pattern.single_bind_id() {
-            Some(id) => (arcstr::literal!("__elem"), Some(id), Vec::new()),
-            None => return Err(miss("element pattern")),
-        },
-    };
-    let elem_leaves = scaffold_::elem_leaves(cx.registry(), &in_elem, &elem_binds)
-        .ok_or_else(|| miss("element destructure leaves"))?;
-    // The carry shape from the node's own acc knot (init and body were
-    // unified into it at typecheck).
-    let acc_t = kernel_abi::freeze_for_abi_normalized(cx.registry(), node.typ())
-        .ok_or_else(|| miss("accumulator type"))?;
-    let acc_binds = node.acc_pattern.tuple_leaves();
-    let (acc_name, acc_id) = match node.acc_pattern.single_bind_id() {
-        Some(id) => (arcstr::literal!("__acc"), Some(id)),
-        None => (arcstr::literal!("__acc"), None),
-    };
-    let acc_leaves;
-    let acc = match kernel_abi::abi_kind(cx.registry(), &acc_t) {
-        Some(AbiKind::Scalar(p))
-            if acc_binds.is_none() || acc_binds.as_deref() == Some(&[]) =>
-        {
-            scaffold_::FoldAcc::Scalar(p)
-        }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let binds = acc_binds.unwrap_or_default();
-            acc_leaves = scaffold_::elem_leaves(cx.registry(), &acc_t, &binds)
-                .ok_or_else(|| miss("accumulator destructure leaves"))?;
-            scaffold_::FoldAcc::Composite {
-                init_src: node_composite_source(&node.init.node),
-                body_src: node_composite_source(&node.body),
-                leaves: &acc_leaves,
-            }
-        }
-        Some(AbiKind::String)
-            if acc_binds.is_none() || acc_binds.as_deref() == Some(&[]) =>
-        {
-            scaffold_::FoldAcc::Str
-        }
-        _ => return Err(miss("accumulator shape")),
-    };
-    let owned = node_composite_source(&node.iter.node) == CompositeSource::Owned;
-    let arr = node.iter.node.emit_clif(cx)?;
-    scaffold_::emit_fold_loop(
-        cx,
-        scaffold_::ArraySrc { ptr: arr.payload, disc: arr.disc, owned },
-        acc,
-        &acc_name,
-        acc_id,
-        &scaffold_::HofElem {
-            name: &elem_name,
-            id: elem_id,
-            typ: &in_elem,
-            leaves: &elem_leaves,
-        },
-        |cx| node.init.node.emit_clif(cx),
-        |cx| node.body.emit_clif(cx),
-    )
-    .map(|(r, flags)| {
-        // The loop's INPUT discs (source array + the body's captured
-        // externals) feed apply's empty-source term and taint OR;
-        // firing over a non-empty source is body-driven (a body that
-        // consumes a fired capture fires — the capture's disc reaches
-        // it as a param). Env misses are synthetic ids — skip.
-        let mut fire_srcs = Vec::new();
-        for id in node.ext_refs() {
-            if let Some(v) = cx.env.lookup_by_id(*id).map(|l| l.vv.disc) {
-                fire_srcs.push(cx.b.use_var(v));
-            }
-        }
-        flags.apply(cx, r, &[arr.disc], &fire_srcs)
-    })
-}
-
 pub fn node_is_bottom<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
 }
@@ -4012,6 +3904,12 @@ pub(crate) fn emit_const_node(
             };
             let disc = const_stale_gate(cx.b, init, r0);
             Ok(CompiledExpr::new(disc, r1))
+        }
+        Some(AbiKind::Null) => {
+            let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
+            let disc = const_stale_gate(cx.b, init, disc);
+            let payload = cx.b.ins().iconst(types::I64, 0);
+            Ok(CompiledExpr::new(disc, payload))
         }
         other => {
             Err(anyhow!("emit_clif: Constant of shape {other:?} — not yet supported"))
@@ -4437,10 +4335,8 @@ pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
     // them (skip the write).
     let cv = emit_owned_value_operand_node(cx, rhs)?;
     // A LIFTED target's identity is per-INSTANCE: load the BindId from
-    // the reserved state word (written at construction; re-minted per
-    // `clone_rebind` — finding 35: an `iconst` here aliased every
-    // per-slot template clone onto one variable). External targets are
-    // shared by design and stay immediates.
+    // the reserved state word written at construction. External targets
+    // are shared by design and stay immediates.
     let id_val = match cx.lifted_state_off(bind_id) {
         Some(off) => {
             let sp = cx.state_ptr();
@@ -5257,6 +5153,7 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
         // `_push_string` takes it by value (consumes). `_push_arcstr`
         // (which derefs a `*const ArcStr`) would be UB here.
         Some(AbiKind::String) => "graphix_value_buf_push_string",
+        Some(AbiKind::Null) => "graphix_value_buf_push_value",
         other => {
             return Err(anyhow!(
                 "emit_clif: producer field of shape {other:?} — not \
@@ -5280,7 +5177,9 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     // locally-unconsumed bottom into whole-kernel bottom
     // (fuzz/triage-fuzzer-v2/divergence_000001: an UNUSED tuple binding
     // with a bottom element bottomed an unrelated const output).
-    if kernel_abi::is_value_shape(cx.registry(), field.typ()) {
+    if kernel_abi::is_value_shape(cx.registry(), field.typ())
+        || matches!(kernel_abi::abi_kind(cx.registry(), field.typ()), Some(AbiKind::Null))
+    {
         cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
         cx.b.ins().call(push, &[buf, cv.payload]);
@@ -6615,6 +6514,9 @@ fn read_scrut_elem(
 enum SelectArmBind {
     /// `n => ...` — bind the scalar scrutinee itself.
     Scrut(BindId),
+    /// `T as n` over a `[T, null]` scrutinee — bind the matched
+    /// non-null scalar payload after the type-predicate branch.
+    NullableScalar { id: BindId, prim: PrimType },
     /// `` `Tag(n) `` — bind one scalar variant payload. The read uses
     /// `unreachable_unchecked` on a wrong-tag value, so it MUST be
     /// emitted inside the matched region (after the tag-eq branch) —
@@ -7397,6 +7299,20 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     binds.push(SelectArmBind::Scrut(*id));
                     None
                 }
+                SelectScrut::Value { .. } if matches!(scrut_kind, AbiKind::Nullable) => {
+                    let pred =
+                        kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate);
+                    let Some(prim) = pred
+                        .as_ref()
+                        .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
+                    else {
+                        return Err(anyhow!(
+                            "emit_clif: nullable scrutinee bind predicate is not scalar"
+                        ));
+                    };
+                    binds.push(SelectArmBind::NullableScalar { id: *id, prim });
+                    None
+                }
                 SelectScrut::Value { .. }
                 | SelectScrut::Composite { .. }
                 | SelectScrut::Opaque { .. } => {
@@ -7579,6 +7495,28 @@ fn emit_select_arms<R: Rt, E: UserEvent>(
                     // The bound local carries the scrutinee's taint in its
                     // disc (#219).
                     bind_local(cx, name, disc, value, LocalKind::Scalar(prim), Some(*id));
+                }
+                SelectArmBind::NullableScalar { id, prim } => {
+                    let SelectScrut::Value { disc, payload } = scrut else {
+                        return Err(anyhow!(
+                            "emit_clif: nullable scalar bind without a value scrutinee"
+                        ));
+                    };
+                    let name: ArcStr =
+                        compact_str::format_compact!("__pat{}", id.inner())
+                            .as_str()
+                            .into();
+                    let value = cast_u64_to_prim(cx.b, payload, *prim);
+                    let base = scalar_disc(cx.b, *prim);
+                    let bound_disc = propagate_flags(cx.b, base, &[disc]);
+                    bind_local(
+                        cx,
+                        name,
+                        bound_disc,
+                        value,
+                        LocalKind::Scalar(*prim),
+                        Some(*id),
+                    );
                 }
                 SelectArmBind::Payload { id, idx, prim } => {
                     let SelectScrut::Value { disc, payload } = scrut else {

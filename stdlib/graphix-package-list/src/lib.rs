@@ -3,110 +3,24 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::Result;
-use arcstr::literal;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
     effects::EffectKind,
     expr::ExprId,
+    node::collection::list::{
+        Iter as ListIter, cons as make_cons, from_iter as from_iter_back, is_list,
+        is_nil, len as count_list, nil as make_nil, split as get_cons, to_array,
+    },
     typ::FnType,
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
-use std::{
-    collections::VecDeque,
-    fmt::Debug,
-};
-
-// ── Value-level list helpers ─────────────────────────────────────
-
-fn make_nil() -> Value {
-    Value::String(literal!("Nil"))
-}
-
-fn make_cons(head: Value, tail: Value) -> Value {
-    Value::Array(ValArray::from_iter_exact(
-        [Value::String(literal!("Cons")), head, tail].into_iter(),
-    ))
-}
-
-/// Extract head and tail from a Cons cell, or None if Nil/invalid.
-fn get_cons(v: &Value) -> Option<(&Value, &Value)> {
-    match v {
-        Value::Array(a) if a.len() == 3 => match &a[0] {
-            Value::String(s) if &**s == "Cons" => Some((&a[1], &a[2])),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn is_nil(v: &Value) -> bool {
-    matches!(v, Value::String(s) if &**s == "Nil")
-}
-
-fn is_list(v: &Value) -> bool {
-    is_nil(v) || get_cons(v).is_some()
-}
-
-/// Count the number of elements in a list value.
-fn count_list(v: &Value) -> Option<usize> {
-    let mut len = 0;
-    let mut cur = v.clone();
-    loop {
-        if is_nil(&cur) {
-            return Some(len);
-        }
-        match get_cons(&cur) {
-            Some((_, tail)) => {
-                len += 1;
-                cur = tail.clone();
-            }
-            None => return None,
-        }
-    }
-}
-
-/// Build a list from an iterator by collecting to a buffer and folding
-/// right with cons. O(n) time, O(n) temporary space via SmallVec.
-fn from_iter_back(iter: impl Iterator<Item = Value>) -> Value {
-    let mut buf: SmallVec<[Value; 32]> = iter.collect();
-    let mut result = make_nil();
-    while let Some(v) = buf.pop() {
-        result = make_cons(v, result);
-    }
-    result
-}
-
-/// Iterator over list elements. Clones the Arc inside each Value::Array
-/// on each step (O(1) per step).
-struct ListIter {
-    cur: Value,
-}
-
-impl Iterator for ListIter {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Value> {
-        let cur = self.cur.clone();
-        match get_cons(&cur) {
-            Some((head, tail)) => {
-                let head = head.clone();
-                self.cur = tail.clone();
-                Some(head)
-            }
-            None => None,
-        }
-    }
-}
+use std::{collections::VecDeque, fmt::Debug};
 
 fn list_to_array(list: &Value) -> Option<Value> {
-    is_list(list).then(|| {
-        Value::Array(ValArray::from_iter(ListIter {
-            cur: list.clone(),
-        }))
-    })
+    to_array(list).map(Value::Array)
 }
 
 // ── EvalCached implementations ───────────────────────────────────
@@ -298,7 +212,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReverseEv {
             return None;
         }
         let mut result = make_nil();
-        for v in (ListIter { cur: list.clone() }) {
+        for v in ListIter::new(list.clone()) {
             result = make_cons(v, result);
         }
         Some(result)
@@ -324,7 +238,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TakeEv {
         if !is_list(list) {
             return None;
         }
-        Some(from_iter_back(ListIter { cur: list.clone() }.take(n)))
+        Some(from_iter_back(ListIter::new(list.clone()).take(n)))
     }
 }
 
@@ -395,26 +309,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
 type FromArray = CachedArgs<FromArrayEv>;
 
 #[derive(Debug, Default)]
-struct FlatMapItemEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlatMapItemEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "list_flat_map_item";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let value = from.0[0].as_ref()?;
-        list_to_array(value).or_else(|| {
-            Some(Value::Array(ValArray::from_iter_exact(
-                [value.clone()].into_iter(),
-            )))
-        })
-    }
-}
-
-type FlatMapItem = CachedArgs<FlatMapItemEv>;
-
-#[derive(Debug, Default)]
 struct ConcatEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
@@ -429,7 +323,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
         for v in from.0.iter() {
             match v {
                 Some(v) if is_list(v) => {
-                    self.0.extend(ListIter { cur: v.clone() });
+                    self.0.extend(ListIter::new(v.clone()));
                 }
                 _ => present = false,
             }
@@ -459,8 +353,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
         if !is_list(list) {
             return None;
         }
-        for inner in (ListIter { cur: list.clone() }) {
-            self.0.extend(ListIter { cur: inner });
+        for inner in ListIter::new(list.clone()) {
+            self.0.extend(ListIter::new(inner));
         }
         let result = from_iter_back(self.0.drain(..));
         Some(result)
@@ -487,7 +381,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
             {
                 match &**dir {
                     "Ascending" => {
-                        self.0.extend(ListIter { cur: list.clone() });
+                        self.0.extend(ListIter::new(list.clone()));
                         if *numeric {
                             self.0.sort_by(|v0, v1| cn(v0).cmp(&cn(v1)))
                         } else {
@@ -496,7 +390,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
                         Some(from_iter_back(self.0.drain(..)))
                     }
                     "Descending" => {
-                        self.0.extend(ListIter { cur: list.clone() });
+                        self.0.extend(ListIter::new(list.clone()));
                         if *numeric {
                             self.0.sort_by(|a0, a1| cn(a1).cmp(&cn(a0)))
                         } else {
@@ -528,7 +422,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
             return None;
         }
         Some(from_iter_back(
-            ListIter { cur: list.clone() }.enumerate().map(|(i, v)| (i as i64, v).into()),
+            ListIter::new(list.clone()).enumerate().map(|(i, v)| (i as i64, v).into()),
         ))
     }
 }
@@ -550,9 +444,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
             return None;
         }
         Some(from_iter_back(
-            ListIter { cur: l0.clone() }
-                .zip(ListIter { cur: l1.clone() })
-                .map(|p| p.into()),
+            ListIter::new(l0.clone()).zip(ListIter::new(l1.clone())).map(|p| p.into()),
         ))
     }
 }
@@ -574,7 +466,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
         if !is_list(list) {
             return None;
         }
-        for v in (ListIter { cur: list.clone() }) {
+        for v in ListIter::new(list.clone()) {
             if let Value::Array(a) = v {
                 if a.len() == 2 {
                     self.t0.push(a[0].clone());
@@ -620,7 +512,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(list) = from[0].update(ctx, event) {
-            for v in (ListIter { cur: list.value() }) {
+            for v in ListIter::new(list.value()) {
                 ctx.rt.set_var(self.0, v);
             }
         }
@@ -680,7 +572,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         }
         if let Some(list) = from[1].update(ctx, event).map(|tv| tv.value()) {
             if is_list(&list) {
-                let elems: Vec<Value> = ListIter { cur: list }.collect();
+                let elems: Vec<Value> = ListIter::new(list).collect();
                 if !elems.is_empty() {
                     self.queue.push_back((0, elems));
                 }
@@ -725,7 +617,6 @@ graphix_derive::defpackage! {
         Cons,
         Drop_ as Drop_,
         Enumerate_ as Enumerate_,
-        FlatMapItem,
         Flatten,
         FromArray,
         Head,

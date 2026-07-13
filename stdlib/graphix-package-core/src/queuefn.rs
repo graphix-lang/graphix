@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BindMode, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs,
-    Rt, Scope, SourcePosition, TagValue, UserEvent,
+    Apply, BindId, BindMode, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt,
+    Scope, SourcePosition, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},

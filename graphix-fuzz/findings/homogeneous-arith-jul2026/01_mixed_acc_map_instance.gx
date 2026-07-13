@@ -12,4 +12,4 @@
 // obligations) is DELETED. The acc unification now rejects i64 + f64
 // in the instance exactly as it does in the direct form.
 // found: soak-jul12h fuzz divergence_000000 (2026-07-12).
-sync { let mut res = i64:0; for v in array::map([i64:1, i64:2], |x| x * f64:2.) {res = res + v}; res }
+array::fold(array::map([i64:1, i64:2], |x| x * f64:2.), i64:0, |res, v| res + v)

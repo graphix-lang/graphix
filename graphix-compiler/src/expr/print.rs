@@ -351,24 +351,22 @@ impl PrettyDisplay for Sig {
 
 impl fmt::Display for BindExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let BindExpr { rec, mut_, pattern, typ, value } = self;
+        let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
-        let mut_ = if *mut_ { " mut" } else { "" };
         match typ {
-            None => write!(f, "let{}{} {pattern} = {value}", rec, mut_),
-            Some(typ) => write!(f, "let{}{} {pattern}: {typ} = {value}", rec, mut_),
+            None => write!(f, "let{rec} {pattern} = {value}"),
+            Some(typ) => write!(f, "let{rec} {pattern}: {typ} = {value}"),
         }
     }
 }
 
 impl PrettyDisplay for BindExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let BindExpr { rec, mut_, pattern, typ, value } = self;
+        let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
-        let mut_ = if *mut_ { " mut" } else { "" };
         match typ {
-            None => writeln!(buf, "let{}{} {pattern} = ", rec, mut_)?,
-            Some(typ) => writeln!(buf, "let{}{} {pattern}: {typ} = ", rec, mut_)?,
+            None => writeln!(buf, "let{rec} {pattern} = ")?,
+            Some(typ) => writeln!(buf, "let{rec} {pattern}: {typ} = ")?,
         }
         buf.with_indent(2, |buf| value.fmt_pretty(buf))
     }
@@ -690,26 +688,6 @@ impl PrettyDisplay for LambdaExpr {
             }
             Either::Left(body) => match &body.kind {
                 ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
-                ExprKind::SyncBlock { exprs } => {
-                    pretty_print_exprs(buf, exprs, "sync {", "}", ";")
-                }
-                ExprKind::For { pattern, iter, body } => {
-                    writeln!(buf, "for {pattern} in {iter} ")?;
-                    body.fmt_pretty(buf)
-                }
-                ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
-                    // Desugar-internal — printed for diagnostics only,
-                    // deliberately not parseable source.
-                    writeln!(
-                        buf,
-                        "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} "
-                    )?;
-                    body.fmt_pretty(buf)
-                }
-                ExprKind::Assign { name, value } => {
-                    write!(buf, "{name} = ")?;
-                    value.fmt_pretty(buf)
-                }
                 _ => body.fmt_pretty(buf),
             },
         }
@@ -806,26 +784,6 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, "(")?;
                 buf.with_indent(2, |buf| e.fmt_pretty(buf))?;
                 writeln!(buf, ")")
-            }
-            ExprKind::SyncBlock { exprs } => {
-                pretty_print_exprs(buf, exprs, "sync {", "}", ";")
-            }
-            ExprKind::For { pattern, iter, body } => {
-                writeln!(buf, "for {pattern} in {iter} ")?;
-                body.fmt_pretty(buf)
-            }
-            ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
-                // Desugar-internal — printed for diagnostics only,
-                // deliberately not parseable source.
-                writeln!(
-                    buf,
-                    "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} "
-                )?;
-                body.fmt_pretty(buf)
-            }
-            ExprKind::Assign { name, value } => {
-                write!(buf, "{name} = ")?;
-                value.fmt_pretty(buf)
             }
             ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
@@ -982,17 +940,6 @@ impl fmt::Display for ExprKind {
                 v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
             }
             ExprKind::NoOp => Ok(()),
-            ExprKind::SyncBlock { exprs } => print_exprs(f, exprs, "sync { ", " }", "; "),
-            ExprKind::For { pattern, iter, body } => {
-                write!(f, "for {pattern} in {iter} {body}")
-            }
-            ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
-                write!(
-                    f,
-                    "for(acc: {acc_pattern} = {init}) {elem_pattern} in {iter} {body}"
-                )
-            }
-            ExprKind::Assign { name, value } => write!(f, "{name} = {value}"),
             ExprKind::ExplicitParens(e) => write!(f, "({e})"),
             ExprKind::Constant(v) => v.fmt_ext(f, &VAL_ESC, true),
             ExprKind::Bind(b) => write!(f, "{b}"),

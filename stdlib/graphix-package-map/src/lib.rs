@@ -5,9 +5,7 @@
 use anyhow::Result;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
-    effects::EffectKind,
-    expr::ExprId,
-    typ::FnType,
+    effects::EffectKind, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx::subscriber::Value;

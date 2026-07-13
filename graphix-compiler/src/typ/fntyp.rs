@@ -612,8 +612,7 @@ impl FnType {
                 // false fact `Array<Any>` — `settle` then
                 // materialized it as a real binding and every
                 // instance of a nested generic def inherited an
-                // element type the body never delivers (sync-subset
-                // P4, the nested in-language map). The fresh open
+                // element type the body never delivers. The fresh open
                 // leaf still carries the source cell's constraint
                 // conjunction, so the obligation survives without
                 // the lie.

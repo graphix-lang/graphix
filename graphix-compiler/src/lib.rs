@@ -249,11 +249,11 @@ impl Control {
         }
     }
 
-    /// Enter the callback-dispatch level a fused HOF loop's inlined
-    /// body runs at — the kernel twin of the node-walk's per-element
-    /// `depth_push` in `GXLambda::update`. One unit covers the whole
-    /// loop: sequential element dispatches all sit at the same level,
-    /// so the per-element push/pop pairs collapse to one. Increments
+    /// Enter the callback-dispatch level a fused collection node's
+    /// inlined body runs at — the kernel twin of the node-walk's
+    /// per-element `depth_push` in `GXLambda::update`. One unit covers
+    /// the whole collection dispatch because every element runs at the
+    /// same depth. Increments
     /// UNCONDITIONALLY (pair with an unconditional
     /// [`depth_pop`](Self::depth_pop) — no branchy cleanup); `false` =
     /// the limit is reached and the loop must not run, its result
@@ -804,8 +804,9 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Module(&'a node::module::Module<R, E>),
     // Child-bearing non-container
     CallSite(&'a CallSite<R, E>),
+    MapQ(&'a node::collection::MapQBase<R, E>),
+    FoldQ(&'a node::collection::FoldQBase<R, E>),
     Select(&'a node::select::Select<R, E>),
-    For(&'a node::forloop::For<R, E>),
     TryCatch(&'a node::error::TryCatch<R, E>),
     Qop(&'a node::error::Qop<R, E>),
     OrNever(&'a node::error::OrNever<R, E>),
@@ -1089,36 +1090,42 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         // not emit CLIF") but whose VALUE fused in a child sub-region. Report
         // only the LEAF-most failures whose subtree contains NO fused region —
         // the genuine residue (the call/op that node-walks), not the
-        // structural containers above it. Program ExprIds are unique, so this
-        // also isolates this expr's blockers from the stdlib baseline.
-        let fused: AHashSet<ExprId> =
-            ctx.fusion.stats.fused_ids.iter().copied().collect();
-        let mut failed: AHashMap<ExprId, CompactString> = AHashMap::default();
-        for (id, reason) in ctx.fusion.stats.failed.iter() {
-            failed.entry(*id).or_insert_with(|| reason.clone());
-        }
-        let mut report: Vec<ExprId> = Vec::new();
-        node.spec().fold((), &mut |(), e| {
-            if failed.contains_key(&e.id) {
-                let subtree_fused =
-                    e.fold(false, &mut |acc, x| acc || fused.contains(&x.id));
-                let has_failed_desc = e.fold(false, &mut |acc, x| {
-                    acc || (x.id != e.id && failed.contains_key(&x.id))
-                });
-                if !subtree_fused && !has_failed_desc {
-                    report.push(e.id);
+        // structural containers above it. Source identity, rather than the
+        // instance-local ExprId, correlates callback instances with the
+        // compile attempt that produced the failure.
+        let mut report: Vec<&fusion::FusionFailure> = Vec::new();
+        fusion::for_each_node(node, &mut |n| {
+            let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
+                return;
+            };
+            let mut subtree_fused = false;
+            let mut has_failed_desc = false;
+            let mut root = true;
+            fusion::for_each_node(n, &mut |desc| {
+                if root {
+                    root = false;
+                    return;
                 }
+                subtree_fused |= ctx.fusion.stats.source_fused(desc.spec());
+                has_failed_desc |=
+                    ctx.fusion.stats.failure_for_source(desc.spec()).is_some();
+            });
+            if !subtree_fused
+                && !has_failed_desc
+                && !report.iter().any(|prior| prior.id == failure.id)
+            {
+                report.push(failure);
             }
         });
         if std::env::var_os("GXDBG_NATIVE_ALL").is_some() {
-            for (id, why) in ctx.fusion.stats.failed.iter() {
-                eprintln!("NATIVE-ALL {id:?}: {why}");
+            for failure in ctx.fusion.stats.failed.iter() {
+                eprintln!("NATIVE-ALL {:?}: {}", failure.id, failure.reason);
             }
         }
         let mut reasons = CompactString::new("");
-        for id in &report {
+        for failure in &report {
             use std::fmt::Write;
-            let _ = write!(reasons, "\n  - {}", failed[id]);
+            let _ = write!(reasons, "\n  - {}", failure.reason);
         }
         if reasons.is_empty() {
             crate::bailat!(
@@ -1209,7 +1216,7 @@ pub trait Rt: Debug + Any {
     /// The last DELIVERED value of every bound variable. Maintained by
     /// the runtime's cycle loop AT DELIVERY — when a queued `set_var`
     /// actually lands in `event.variables` — so a primed read (select
-    /// arm wake, fresh callsite bind, per-slot HOF dispatch) can never
+    /// arm wake, fresh callsite bind, fresh collection slot) can never
     /// observe a value AHEAD of the delivery stream. Two consequences
     /// the old `ExecCtx`-owned map got wrong: a same-cycle `<-` write
     /// was visible to primers a cycle early (soak jul08l/jul08n), and
@@ -1566,7 +1573,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// widens to `Any` — the recursive lambda's checked signature
     /// silently degrades (soak jul05 items 11/17).
     pub(crate) rec_defs: nohash::IntSet<LambdaId>,
-    /// Param-call KNOT for the def gate (sync-subset P4): the
+    /// Param-call knot for the definition gate: the
     /// fn-typed arg-pattern BindIds of the lambda def(s) currently
     /// being body-checked. A callsite whose fnode is a Ref to one of
     /// these unifies against the param's OWN declared FnType cells
@@ -1579,10 +1586,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// fact conjuncts) runs only at depth 1: a lambda gated INSIDE an
     /// enclosing def's gate (an inline HOF callback) has inferred
     /// cells still entangled with the enclosing inference, and
-    /// recording them as CLOSED facts (`bind_as(Any)` snapshots) let
-    /// the terminal settle bind the shared cell to `Array<Any>` — the
-    /// enclosing rigid rtype check then refused its own body
-    /// (sync-subset P4, the in-language map).
+    /// recording them as CLOSED facts (`bind_as(Any)` snapshots) can
+    /// bind a shared cell to `Array<Any>` and make the enclosing rigid
+    /// return-type check reject its own body.
     pub(crate) def_gate_depth: usize,
     pub(crate) resolving_lambdas:
         Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingLambda>>>,
@@ -1618,10 +1624,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// forwards to embedders through its event stream (the shell prints
     /// them). See [`RtDiagnostic`].
     pub diagnostics: Vec<RtDiagnostic>,
-    /// Non-zero while executing inside a sequential evaluation FRAME —
-    /// a `For` sync-loop iteration or a tail-loop re-entered pass, both
-    /// of which run the body against a private, per-frame variables map
-    /// (see `reset_replay`). Frame-only behaviors (a call site's
+    /// Non-zero while executing a tail-loop re-entry against a private,
+    /// per-frame variables map (see `reset_replay`). Frame-only behaviors
+    /// (a call site's
     /// stale-channel arg delivery; error sites producing silent tainted
     /// placeholders instead of the logged None) gate on this so
     /// reactive-land semantics are untouched. A counter, not a bool:
@@ -1665,9 +1670,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             resolving_lambdas: Arc::new(parking_lot::Mutex::new(
                 nohash::IntMap::default(),
             )),
-            resolving_sites: Arc::new(parking_lot::Mutex::new(
-                nohash::IntSet::default(),
-            )),
+            resolving_sites: Arc::new(parking_lot::Mutex::new(nohash::IntSet::default())),
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             active_lambdas: nohash::IntMap::default(),

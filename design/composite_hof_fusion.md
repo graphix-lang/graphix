@@ -1,5 +1,10 @@
 # Composite-element + destructure-pattern HOF fusion (plan)
 
+> **SUPERSEDED (2026-07-13):** Collection HOFs now live in compiler Nodes and
+> the Array Nodes emit their CLIF loops directly. The per-slot template and
+> `clone_rebind` descriptions below are historical. See
+> `design/collection_intrinsics.md`.
+
 > **STATUS (2026-07-01): IMPLEMENTED for the array HOFs.** All eight array
 > HOFs (`map`/`filter`/`flat_map`/`filter_map`/`find`/`find_map`/`fold`/
 > `init`) fuse as native loops, including composite (tuple/struct) *elements*

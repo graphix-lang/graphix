@@ -774,46 +774,11 @@ impl Expr {
                 let exprs = Arc::from(subexprs!(exprs));
                 expr!(ExprKind::Do { exprs })
             }),
-            ExprKind::SyncBlock { exprs } => Box::pin(async move {
-                let exprs = Arc::from(subexprs!(exprs));
-                expr!(ExprKind::SyncBlock { exprs })
-            }),
-            ExprKind::For { pattern, iter, body } => Box::pin(async move {
-                let iter = iter.resolve_modules_int(scope, prepend, resolvers).await?;
-                let body = body.resolve_modules_int(scope, prepend, resolvers).await?;
-                expr!(ExprKind::For {
-                    pattern: pattern.clone(),
-                    iter: Arc::new(iter),
-                    body: Arc::new(body),
-                })
-            }),
-            ExprKind::Assign { name, value } => Box::pin(async move {
-                let value = value.resolve_modules_int(scope, prepend, resolvers).await?;
-                expr!(ExprKind::Assign { name: name.clone(), value: Arc::new(value) })
-            }),
-            ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
-                Box::pin(async move {
-                    let iter =
-                        iter.resolve_modules_int(scope, prepend, resolvers).await?;
-                    let init =
-                        init.resolve_modules_int(scope, prepend, resolvers).await?;
-                    let body =
-                        body.resolve_modules_int(scope, prepend, resolvers).await?;
-                    expr!(ExprKind::ForFold {
-                        iter: Arc::new(iter),
-                        init: Arc::new(init),
-                        acc_pattern: acc_pattern.clone(),
-                        elem_pattern: elem_pattern.clone(),
-                        body: Arc::new(body),
-                    })
-                })
-            }
             ExprKind::Bind(b) => Box::pin(async move {
-                let BindExpr { rec, mut_, pattern, typ, value } = &*b;
+                let BindExpr { rec, pattern, typ, value } = &*b;
                 let value = value.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Bind(Arc::new(BindExpr {
                     rec: *rec,
-                    mut_: *mut_,
                     pattern: pattern.clone(),
                     typ: typ.clone(),
                     value,

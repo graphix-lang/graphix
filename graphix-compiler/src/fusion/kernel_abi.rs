@@ -1342,11 +1342,9 @@ pub struct KernelSig {
     /// reactive accumulators routed in as feeders whose IDENTITY is
     /// per-INSTANCE data, not code. The first `lifted.len()` words of
     /// the per-instance state buffer hold each target's `BindId`
-    /// (written at construction; a `clone_rebind` mints fresh ids per
-    /// clone — finding 35: baking the id as an `iconst` aliased every
-    /// per-slot clone onto the template's one variable). Emission
-    /// reserves these words (`state_next` starts past them) and
-    /// `emit_connect_node` loads the write target from them.
+    /// (written at construction). Emission reserves these words
+    /// (`state_next` starts past them) and `emit_connect_node` loads
+    /// the write target from them.
     pub lifted: Vec<BindId>,
     pub return_type: Type,
     /// True iff the body contains a self-tail-call. Backends wrap the
@@ -1370,9 +1368,9 @@ pub struct KernelSig {
 /// Slot 1 is the per-kernel-INSTANCE state pointer (`*mut u64`, 0 when
 /// the kernel claimed no state — `WrappedKernel::state_words == 0`): a
 /// zero-initialized buffer owned by the invoking runtime `Kernel` node,
-/// fresh per `clone_rebind`, giving root-body emission sites one word
-/// each of cross-invocation memory (exact HOF resize detection, select
-/// selection memory — `design/kernel_instance_state.md`). Cross-kernel
+/// giving root-body emission sites one word each of cross-invocation
+/// memory (exact HOF resize detection, select selection memory —
+/// `design/kernel_instance_state.md`). Cross-kernel
 /// calls forward the caller's pointer for signature uniformity, but
 /// only the region parent's ROOT body may claim words (a callee is
 /// reached from arbitrarily many call sites, whose claims would alias).

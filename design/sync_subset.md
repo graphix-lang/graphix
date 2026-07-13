@@ -1,5 +1,10 @@
 # The synchronous subset — repatriating control from Rust
 
+> **SUPERSEDED (2026-07-13):** The `sync` language experiment was removed.
+> Reactive collection HOFs are compiler-owned Nodes; see
+> `design/collection_intrinsics.md`. The text below is retained as design
+> history.
+
 Status: **design sketch, v2** (2026-07-09, Eric + Claude). Nothing here
 is built. The near-term per-instance-identity fix for lifted connect
 targets (`KernelSig::lifted`, state-buffer identity words) is landed

@@ -372,10 +372,7 @@ async fn external_datetime_region_param() -> Result<()> {
         .compile(ArcStr::from("let d = datetime:\"2024-01-01T00:00:00Z\";"))
         .await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
-    let res = ctx
-        .rt
-        .compile(ArcStr::from("sys::time::add(d, duration:1.s)"))
-        .await?;
+    let res = ctx.rt.compile(ArcStr::from("sys::time::add(d, duration:1.s)")).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
     tokio::pin!(timeout);

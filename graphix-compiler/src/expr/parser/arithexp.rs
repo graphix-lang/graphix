@@ -82,12 +82,7 @@ where
             spfname().map(Post::Field),
         )))),
         attempt(array_index_suffix()).map(Post::Array),
-        // TIGHT brace: `m{"k"}` is a map access, `m {"k"}` is not — the
-        // whitespace disambiguates a postfix key from a BLOCK following
-        // an expression (`for v in a { .. }`, `select a { .. }`,
-        // sync-subset blocks). Map accesses have always been written
-        // tight; a space here now ends the postfix chain.
-        attempt(between(token('{'), sptoken('}'), expr())).map(Post::Key),
+        attempt(between(sptoken('{'), sptoken('}'), expr())).map(Post::Key),
         attempt(apply_args()).map(Post::Call),
     ))
 }
@@ -233,7 +228,7 @@ parser! {
         // recursed into arith_term for `r`, whose trailing skip ate
         // the space, and the OUTER postfix loop then saw `{i8:0}`
         // flush and built a MapRef (found by the extended round-trip
-        // proptest on the sync-subset `for … in *r { body }` shape).
+        // proptest).
     }
 }
 

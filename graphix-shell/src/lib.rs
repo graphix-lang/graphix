@@ -57,11 +57,11 @@ fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
         failed.len()
     );
     let mut by_reason: LPooled<AHashMap<&str, usize>> = LPooled::take();
-    for (_, reason) in failed {
+    for failure in failed {
         // reasons embed the region's spec text, which can span many
         // lines — the first line identifies the blocker and keeps the
         // grouping tight
-        let reason = reason.lines().next().unwrap_or("").trim_end();
+        let reason = failure.reason.lines().next().unwrap_or("").trim_end();
         *by_reason.entry(reason).or_insert(0) += 1;
     }
     let mut sorted: LPooled<Vec<(&str, usize)>> =

@@ -50,9 +50,10 @@ pub fn try_fuse<R, E>(node: &dyn Update<R, E>, ctx: &mut ExecCtx<R, E>)
 
 Policy lives in each node's `fuse` — that's the point. A sync-capable node tries
 `try_fuse(self, ctx)` then recurses children; an async node just recurses.
-Case-specific fusion logic goes in the node implementing the case: MapQ's per-slot
-template fuse is `template.fuse(ctx)` inside MapQ; callee-kernel handling lives with
-CallSite / the lambda `Apply`. Maximality falls out of top-down order; a failed
+Case-specific fusion logic goes in the node implementing the case: collection
+Nodes emit supported Array loops directly and retain their interpreted slot graph
+when emission fails; callee-kernel handling lives with CallSite / the lambda
+`Apply`. Maximality falls out of top-down order; a failed
 compile falls through to child recursion — better granularity than a central region
 planner (a non-emittable root no longer loses the whole region). The flag check
 (`ctx.fusion.enabled`) is promoted into `compile()`, so it runs once rather than on

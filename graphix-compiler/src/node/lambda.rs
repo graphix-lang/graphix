@@ -1,13 +1,15 @@
 use super::{Nop, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, InitFn,
-    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent,
+    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ErrorContext, Expr, ExprId, ModPath, Origin},
     fusion::emit::{BodyCx, CompiledExpr},
-    node::{callsite::CallSite, pattern::StructPatternNode},
+    node::{
+        callsite::CallSite, collection::CollectionIntrinsic, pattern::StructPatternNode,
+    },
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
     wrap,
 };
@@ -122,6 +124,7 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 pub struct GXLambda<R: Rt, E: UserEvent> {
     id: LambdaId,
     instance_id: LambdaInstanceId,
+    dispatch: LambdaDispatch,
     scope: ModPath,
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
@@ -140,6 +143,12 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// body result's two-channel tag across the clean-`Value` Apply
     /// boundary.
     last_out: Tag,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LambdaDispatch {
+    Graphix,
+    Collection,
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -165,6 +174,14 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     /// Mutable body — for fusion's splicing of inner sub-kernels.
     pub fn body_mut(&mut self) -> &mut Node<R, E> {
         &mut self.body
+    }
+
+    pub(crate) fn inline_callback_body(&self) -> Option<&Node<R, E>> {
+        match self.body.view() {
+            NodeView::MapQ(map) => map.callback_body(),
+            NodeView::FoldQ(fold) => fold.callback_body(),
+            _ => None,
+        }
     }
 
     /// Argument-binding patterns, in signature order. Parallel to
@@ -295,30 +312,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         if ctx.control.interrupted() {
             return None;
         }
-        if !ctx.control.depth_push() {
-            let limit = ctx.control.max_call_depth();
-            if std::env::var("GRAPHIX_DBG_DEPTH").is_ok() {
-                eprintln!(
-                    "DEPTH TRIP lambda id={:?} tail_loop={}",
-                    self.id,
-                    self.tail_loop.load(Ordering::Relaxed)
-                );
+        let depth_pushed = match self.dispatch {
+            LambdaDispatch::Graphix => {
+                if !ctx.control.depth_push() {
+                    let limit = ctx.control.max_call_depth();
+                    if std::env::var("GRAPHIX_DBG_DEPTH").is_ok() {
+                        eprintln!(
+                            "DEPTH TRIP lambda id={:?} tail_loop={}",
+                            self.id,
+                            self.tail_loop.load(Ordering::Relaxed)
+                        );
+                    }
+                    error!(
+                        "call depth limit ({limit}) exceeded in {} — deep non-tail \
+                         recursion produces no value (raise via \
+                         Control::set_max_call_depth)",
+                        self.body.spec()
+                    );
+                    ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
+                        limit,
+                        spec: self.body.spec().clone(),
+                    });
+                    return None;
+                }
+                true
             }
-            error!(
-                "call depth limit ({limit}) exceeded in {} — deep non-tail \
-                 recursion produces no value (raise via \
-                 Control::set_max_call_depth)",
-                self.body.spec()
-            );
-            // Surface the bottom to the user through the runtime's
-            // event stream (the value channel carries nothing, by
-            // design — see `RtDiagnostic`).
-            ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
-                limit,
-                spec: self.body.spec().clone(),
-            });
-            return None;
-        }
+            LambdaDispatch::Collection => false,
+        };
         *ctx.active_lambdas.entry(self.id).or_insert(0) += 1;
         let res = if !self.tail_loop.load(Ordering::Relaxed) {
             self.body.update(ctx, event)
@@ -358,7 +378,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // a fresh evaluation frame — replay caches cleared, and the
             // body run against a PRIVATE variables map (externals seeded
             // from the runtime cache + the jump's rebound formals) under
-            // a forced init view, mirroring the For sync loop. This is
+            // a forced init view. This is
             // what retires the tail-arg stale-cache class: a jump whose
             // arg expression bottoms no longer dispatches with the
             // previous pass's published value. The first pass stays an
@@ -397,7 +417,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     // Seeds are the kernel's params: an external that
                     // FIRED this cycle keeps its real entry; a quiet
                     // one is seeded STALE from the runtime cache (the
-                    // value channel) — the For loop's twin.
+                    // value channel).
                     let mut refs = Refs::default();
                     self.body.refs(&mut refs);
                     refs.with_external_refs(|id| {
@@ -471,7 +491,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             }
             MapEntry::Vacant(_) => unreachable!("active_lambdas underflow"),
         }
-        ctx.control.depth_pop();
+        if depth_pushed {
+            ctx.control.depth_pop();
+        }
         // Surface the body result's tag across the clean-Value Apply
         // boundary (the CallSite reconstitutes via `out_tag`).
         match res {
@@ -518,22 +540,34 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         wrap!(self.body, self.body.typecheck1(ctx))
     }
 
+    fn emit_clif(
+        &self,
+        callsite: &CallSite<R, E>,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
+        match self.body.view() {
+            NodeView::MapQ(map) => map.emit_clif_call(callsite, cx),
+            NodeView::FoldQ(fold) => fold.emit_clif_call(callsite, cx),
+            _ => Ok(None),
+        }
+    }
+
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         // This call-site instance owns a monomorphic body, so give it
-        // the same region-fusion pass as the top-level graph. In-language
-        // HOF loops then compile inside the instance when their callback
-        // calls resolved statically.
-        if std::env::var_os("GXDBG_P4").is_some() {
+        // the same region-fusion pass as the top-level graph. Collection
+        // callbacks then compile inside the instance when their calls
+        // resolved statically.
+        if std::env::var_os("GXDBG_INSTANCE_FUSION").is_some() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
             let r = crate::fusion::fuse(&mut self.body, ctx);
             eprintln!(
-                "P4 GXLambda::fuse id={:?} fused_delta={} new_failures:",
+                "INSTANCE-FUSION GXLambda::fuse id={:?} fused_delta={} new_failures:",
                 self.id,
                 ctx.fusion.stats.fused - fused_before
             );
-            for (id, why) in &ctx.fusion.stats.failed[before..] {
-                eprintln!("  P4-FAIL {id:?}: {why}");
+            for failure in &ctx.fusion.stats.failed[before..] {
+                eprintln!("  INSTANCE-FUSION-FAIL {:?}: {}", failure.id, failure.reason);
             }
             return r;
         }
@@ -591,10 +625,63 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         tid: ExprId,
         body: Expr,
     ) -> Result<Self> {
+        let origin = body.ori.clone();
+        Self::new_with_body(
+            ctx,
+            id,
+            LambdaDispatch::Graphix,
+            typ,
+            argspec,
+            args,
+            scope,
+            origin,
+            |ctx, _| compile(ctx, flags, body, scope, tid),
+        )
+    }
+
+    pub(super) fn new_collection(
+        ctx: &mut ExecCtx<R, E>,
+        id: LambdaId,
+        typ: Arc<FnType>,
+        argspec: Arc<[Arg]>,
+        args: &[Node<R, E>],
+        scope: &Scope,
+        tid: ExprId,
+        spec: Expr,
+        intrinsic: CollectionIntrinsic,
+    ) -> Result<Self> {
+        let origin = spec.ori.clone();
+        Self::new_with_body(
+            ctx,
+            id,
+            LambdaDispatch::Collection,
+            typ.clone(),
+            argspec,
+            args,
+            scope,
+            origin,
+            |ctx, argpats| intrinsic.build(ctx, spec, scope, tid, &typ, argpats),
+        )
+    }
+
+    fn new_with_body(
+        ctx: &mut ExecCtx<R, E>,
+        id: LambdaId,
+        dispatch: LambdaDispatch,
+        typ: Arc<FnType>,
+        argspec: Arc<[Arg]>,
+        args: &[Node<R, E>],
+        scope: &Scope,
+        origin: Arc<Origin>,
+        build_body: impl FnOnce(
+            &mut ExecCtx<R, E>,
+            &[StructPatternNode],
+        ) -> Result<Node<R, E>>,
+    ) -> Result<Self> {
         if args.len() != argspec.len() {
             bail!("arity mismatch, expected {} arguments", argspec.len())
         }
-        let mut argpats = vec![];
+        let mut argpats: LPooled<Vec<StructPatternNode>> = LPooled::take();
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
             let pattern = StructPatternNode::compile(
                 ctx,
@@ -602,7 +689,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                 &a.pattern,
                 scope,
                 a.pos,
-                body.ori.clone(),
+                origin.clone(),
             )?;
             if pattern.is_refutable() {
                 bail!(
@@ -612,12 +699,13 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             }
             argpats.push(pattern);
         }
-        let body = compile(ctx, flags, body, &scope, tid)?;
+        let body = build_body(ctx, &argpats)?;
         Ok(Self {
             id,
             instance_id: LambdaInstanceId::new(),
+            dispatch,
             scope: scope.lexical.clone(),
-            args: Box::from(argpats),
+            args: Box::from_iter(argpats.drain(..)),
             typ,
             body,
             tail_loop: AtomicBool::new(false),
@@ -839,7 +927,9 @@ impl Lambda {
         let env = ctx.env.clone();
         let _env = ctx.env.clone();
         if let Either::Right(builtin) = &l.body {
-            if ctx.builtins.get(builtin.as_str()).is_none() {
+            if CollectionIntrinsic::from_name(builtin).is_none()
+                && ctx.builtins.get(builtin.as_str()).is_none()
+            {
                 bail!("unknown builtin function {builtin}")
             }
             if !ctx.builtins_allowed {
@@ -911,6 +1001,7 @@ impl Lambda {
         typ.lambda_ids.set_id(id);
         let _typ = typ.clone();
         let _argspec = argspec.clone();
+        let _spec = spec.clone();
         let body = l.body.clone();
         let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, mode, tid| {
             // restore the lexical environment to the state it was in
@@ -957,24 +1048,54 @@ impl Lambda {
                     }
                     .map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
                 }
-                Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
-                    None => bail!("unknown builtin function {builtin}"),
-                    Some(init) => {
-                        // Builtin wrappers use the selected instance type;
-                        // the builtin initializer still receives `None` for
-                        // the definition gate and `Some` for either bind path.
-                        let typ = match mode.resolved() {
-                            Some(r) => Arc::new(r.clone()),
-                            None => _typ.clone(),
+                Either::Right(builtin) => {
+                    if let Some(intrinsic) = CollectionIntrinsic::from_name(&builtin) {
+                        let scope = Scope {
+                            dynamic: scope.dynamic.clone(),
+                            lexical: _scope.lexical.clone(),
                         };
-                        let resolved = mode.resolved();
-                        init(ctx, &_typ, resolved, &_scope, args, tid).map(|apply| {
-                            let f: Box<dyn Apply<R, E>> =
-                                Box::new(BuiltInLambda { typ, apply });
-                            f
-                        })
+                        let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
+                            GXLambda::new_collection(
+                                ctx,
+                                id,
+                                typ,
+                                _argspec.clone(),
+                                args,
+                                &scope,
+                                tid,
+                                _spec.clone(),
+                                intrinsic,
+                            )
+                        };
+                        let result = match mode {
+                            BindMode::Static { instance, .. } => {
+                                build(ctx, Arc::new(instance.clone()))
+                            }
+                            BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
+                                .or_else(|_| build(ctx, _typ.clone())),
+                            BindMode::Definition => build(ctx, _typ.clone()),
+                        };
+                        result.map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
+                    } else {
+                        match ctx.builtins.get(&*builtin) {
+                            None => bail!("unknown builtin function {builtin}"),
+                            Some(init) => {
+                                let typ = match mode.resolved() {
+                                    Some(r) => Arc::new(r.clone()),
+                                    None => _typ.clone(),
+                                };
+                                let resolved = mode.resolved();
+                                init(ctx, &_typ, resolved, &_scope, args, tid).map(
+                                    |apply| {
+                                        let f: Box<dyn Apply<R, E>> =
+                                            Box::new(BuiltInLambda { typ, apply });
+                                        f
+                                    },
+                                )
+                            }
+                        }
                     }
-                },
+                }
             })
         });
         let def = ctx.lambdawrap.wrap(LambdaDef {
@@ -985,17 +1106,10 @@ impl Lambda {
             init,
             scope: original_scope,
             check: Mutex::new(None),
-            // A builtin-bodied lambda (`let once = |v| 'once`) never
-            // enters the effect fixpoint (it has no graphix body to
-            // analyze), so its stored fact must be the builtin's
-            // declared EFFECT from creation. The old constant `Sync`
-            // was masked by the resolution race: `once`'s call site
-            // rarely resolved, so `callee_effect` fell through to the
-            // by-name builtin lookup — with `bind_to_lambda` persistent
-            // (the jul12 flap fix) the resolved path reads this fact,
-            // and Sync here ran async builtins on the For sync gate
-            // (the sync_block::async_* hangs).
             intrinsic_effect: Mutex::new(match &l.body {
+                Either::Right(name) if CollectionIntrinsic::from_name(name).is_some() => {
+                    EffectKind::Sync
+                }
                 Either::Right(name) => ctx.builtin_effect(name),
                 Either::Left(_) => EffectKind::Sync,
             }),

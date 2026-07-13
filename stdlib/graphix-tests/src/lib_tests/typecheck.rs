@@ -117,13 +117,11 @@ run!(
 // Higher-order function type propagation
 // ============================================================================
 
-// array::map with json::read — CallSite type must propagate through builtin HOF.
+// array::map with json::read — CallSite type must propagate through the
+// compiler-owned collection node.
 // json::read requires a concrete return type via the CallSite typecheck phase.
-// When passed as a predicate to array::map, the resolved FnType from the outer
-// CallSite must propagate through MapQ to json::read. Currently this fails:
-// MapQ::typecheck ignores the phase and returns Done, so the deferred check
-// cascade never reaches json::read, leaving its cast_typ unset.
-// ASPIRE: Jit (currently None) — blocked on: array::map → Array<Result<i64, multi-variant error>> element not lowerable (Set-with-Error)
+// The resolved FnType from the outer CallSite must reach json::read before
+// static binding freezes the callback instance.
 run!(
     hof_map_json_read,
     r#"{
@@ -133,8 +131,6 @@ run!(
     results[0]
 }"#,
     |v: Result<&Value>| {
-        // When fixed: json::read gets cast_typ, deserializes to Ok(42), is_err => false
-        // Bug present: json::read has no cast_typ, returns Error, is_err => true
         matches!(v, Ok(Value::I64(42)))
     }
 ; graphix_package_core::testing::FuseExpect::Jit);
@@ -149,10 +145,7 @@ run!(
     |v: Result<&Value>| { matches!(v, Err(_)) }
 ; graphix_package_core::testing::FuseExpect::None);
 
-// array::fold — FoldQ: json::read in fold closure, type must propagate
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// array::fold: json::read in the fold closure must receive its concrete type.
 run!(
     hof_fold_json_read,
     r#"{

@@ -217,10 +217,10 @@ which Part 2 closes by making the interp hang too. Don't chase it as a JIT bug.
 - The eager/reactive boundary is `Node::pure`: a pure subtree with an impure
   leaf (a Ref to a reactive value, an async op) is reactive; eager eval stops at
   that boundary and the impure part schedules normally. Same boundary as fusion.
-- Interaction with `clone_rebind` (per-slot HOF graphs): eager eval should
-  compose — a per-slot pure callback evaluates eagerly per element, in one
-  cycle, instead of one cycle per element. This is potentially a *large* win for
-  HOFs over reactive arrays.
+- Interaction with collection Nodes: eager eval should compose with their
+  explicit callback slots, while direct Array CLIF loops remain the native fast
+  path. This is potentially a *large* win for interpreted HOFs over reactive
+  collections.
 
 ---
 

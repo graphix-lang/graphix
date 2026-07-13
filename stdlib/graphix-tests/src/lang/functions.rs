@@ -454,17 +454,15 @@ const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (P4 regression — was Jit): the transitive #203 chain's
-// leaf is now an in-language `array::fold`, and the transitive kernel
-// build doesn't yet discover the fold call site inside `helper`'s
-// body (the region path does — see sfold shapes). Values agree.
+// The transitive call chain includes a compiler-owned array fold in
+// `helper`; direct collection lowering keeps the whole chain native.
 run!(
     dyncall_static_nonfusable,
     KIR_DYNCALL_STATIC_NONFUSABLE,
     |v: Result<&Value>| match v {
         Ok(Value::I64(51)) => true,
         _ => false,
-    }; graphix_package_core::testing::FuseExpect::None);
+    }; graphix_package_core::testing::FuseExpect::Jit);
 
 // #203 Phase C — a deep TRANSITIVE chain g1 -> g2 -> g3. Discovery walks
 // each callee's body in turn, builds every kernel in the closure, and the
@@ -777,13 +775,9 @@ run!(two_monomorphizations_one_region, TWO_MONOMORPHIZATIONS_ONE_REGION, |v: Res
     Ok(Value::F64(11.0))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A fold-callback body whose local (`e`) shares a name with an embedded
-// callee's parameter (audit-jul2026/03): per-slot template cloning used
-// to resolve cloned `Ref`s by NAME against the flat clone scope, so the
-// `+ e` read aliased to `pair`'s freshly re-minted param (= 22 fused vs
-// 21 node-walk). clone_rebind now threads an explicit old->new BindId
-// remap; names never resolve. The `rec` on the callee is load-bearing
-// for the repro shape (it makes the callee embed in the template).
+// A fold-callback body whose local (`e`) shares a name with a nested
+// callee's parameter. It pins BindId-based resolution even though the
+// nested call currently keeps this collection on the node-walk.
 const FOLD_CALLBACK_NAME_COLLISION: &str = r#"
 {
   let rec pair = |e: i64| -> i64 select e { 0 => 0, _ => e * 10 };
@@ -800,7 +794,7 @@ run!(fold_callback_name_collision, FOLD_CALLBACK_NAME_COLLISION, |v: Result<
 >| matches!(
     v,
     Ok(Value::I64(21))
-); graphix_package_core::testing::FuseExpect::Jit);
+); graphix_package_core::testing::FuseExpect::None);
 
 // An ABANDONED kernel-closure build (the base arm's select-with-error-
 // arm de-fuses the rec lambda) used to leave declared-but-undefined
@@ -833,10 +827,9 @@ run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| mat
 // to abort the WHOLE kernel at HOF/composite boundaries where the
 // node-walk bottoms only the consuming path.
 
-// STRICT sequential semantics (P4): a fold whose init BOTTOMS never
-// dispatches — an in-language call waits for every arg, even one the
-// callback never reads (the old per-slot recovery to the last element
-// was FoldQ plumbing). The tail is independent so the fixture
+// A compiler-owned fold whose init BOTTOMS never dispatches: the
+// collection call waits for every argument, even one the callback
+// never reads. The tail is independent so the fixture
 // observes agreement: the tripped fold is silent, the sibling fires.
 const FOLD_BOTTOM_INIT_UNREAD_ACC: &str = r#"
 {
@@ -900,14 +893,8 @@ run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, |v: Result<&Value>| match
     Ok(Value::Bool(false))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// COARSE SEQUENTIAL FIRING (sync-subset P4): the loop is ONE reactive
-// node — it fires whenever ANY input it consumes fires, including a
-// capture read only inside a sleeping select arm (the sequential
-// shared body tree re-runs with fired delivery on any input event;
-// path-sensitive quiet needed the per-element machinery that died
-// with MapQ). Both modes count 1 initial + 4 y events = 5. The old
-// per-slot machinery kept this quiet (count 1) — that precision died
-// with it.
+// A capture read only by a sleeping select arm must not re-fire the
+// retained collection slot.
 const HOF_SLEEPING_ARM_CAPTURE_QUIET: &str = r#"
 {
   let y = array::iter([1, 2, 3, 4]);
@@ -920,10 +907,7 @@ const HOF_SLEEPING_ARM_CAPTURE_QUIET: &str = r#"
 run!(
     hof_sleeping_arm_capture_quiet,
     HOF_SLEEPING_ARM_CAPTURE_QUIET,
-    // 4 or 5: the initial emission may or may not share a cycle with
-    // y's first tick (instance priming vs kernel first-run alignment)
-    // — the assertion is that the loop RE-FIRES per y event at all.
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4 | 5)));
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
     graphix_package_core::testing::FuseExpect::Jit
 );
 
@@ -942,13 +926,8 @@ run!(hof_consumed_capture_fires, HOF_CONSUMED_CAPTURE_FIRES, |v: Result<&Value>|
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// COARSE SEQUENTIAL FIRING (sync-subset P4): a same-length source
-// fire with a CONST callback body re-emits — the source is a loop
-// input and any input fire fires the loop (both modes: 1 initial + 3
-// further y events reaching src = 4). The old exact resize
-// state-word (emit iff resized ∨ slot fired) died with the per-slot
-// machinery; values are still identical per re-fire, only the event
-// count changed.
+// A same-length source update with a constant callback body leaves
+// every retained slot quiet, so the collection emits only initially.
 const HOF_CONST_BODY_PREV_LEN: &str = r#"
 {
   let y = array::iter([1, 2, 3, 4]);
@@ -960,7 +939,7 @@ const HOF_CONST_BODY_PREV_LEN: &str = r#"
 "#;
 
 run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(4)))
+    matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // The call-depth guard (DEFAULT_MAX_CALL_DEPTH = 256), limit±1 in both
@@ -988,13 +967,10 @@ run!(depth_guard_under_limit, DEPTH_GUARD_UNDER_LIMIT, |v: Result<&Value>| {
 // agreement is a first-class assertion there, while the run! harness
 // has no runtime-bottom expectation (it would wait out its timeout).
 
-// Depth accounting with in-language HOFs (P4): f(252) is 253
-// dispatch units, and the base arm's `array::init` charges 3 more —
-// the init instance dispatch, its For loop's unit, and the per-index
-// callback dispatch — peaking at exactly the 256 limit in BOTH modes
-// (measured: n=252 completes, n=253 bottoms, interp and jit agree).
-// A mode that stops charging any of those units completes f(253)
-// where the other bottoms.
+// Depth accounting with compiler-owned collection nodes: f(254) is 255
+// dispatch units and the collection callback is one more, exactly at
+// the 256 limit. The reserved collection marker is compiler plumbing,
+// not another user-lambda dispatch.
 const DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n {
@@ -1004,20 +980,20 @@ const DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT: &str = r#"
     },
     _ => n + f(n - i64:1)
   };
-  f(i64:252)
+  f(i64:254)
 }
 "#;
 
 run!(
     depth_guard_hof_unit_under_limit,
     DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(41778))) };
-    graphix_package_core::testing::FuseExpect::None
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42285))) };
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // A depth trip bottoms the CALL, not the kernel: the tripping f(256)
-// sits in fold's init argument — under STRICT sequential semantics
-// (P4) the fold never dispatches (a call waits for every arg), and
+// sits in fold's init argument, so the fold never dispatches (a call
+// waits for every arg), and
 // the trip stays LOCAL: the independent sibling fold still fires in
 // both modes (the former whole-kernel abort swallowed it — soak
 // jul07h, findings/depth-guard-jul2026/06).
@@ -1353,7 +1329,7 @@ run!(rec_transient_stateless_builtin, REC_TRANSIENT_STATELESS_BUILTIN, |v: Resul
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ── sync-subset P4: in-language generic HOFs (per-callsite elaboration) ──
+// Generic Graphix wrappers over compiler-owned collection nodes.
 // A lambda param called inside another lambda's body now statically
 // resolves per callsite (the def-gate param KNOT types the body against
 // the param's declared cells; `try_static_resolve` registers
@@ -1368,9 +1344,7 @@ const INLANG_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the per-site instance body's fold region does not yet
-// fuse (the P4 elaboration step); the semantics are the deliverable
-// pinned here.
+// The generic wrapper instantiates independently at each call site.
 run!(inlang_map, INLANG_MAP, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => match &t[..] {
         [Value::Array(a), Value::Array(b)] => {

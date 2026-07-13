@@ -98,7 +98,7 @@ pub(super) fn gen_module(
     // instantiation + ABI surface a scalar-only interface never touched.
     // Bare variant literals and `null` coerce at the annotated call
     // site exactly like the annotated-let flow (probed 2026-07-08).
-    let mut iface_type = |rng: &mut Rng, stats: &mut GenStats| match rng.below(10) {
+    let iface_type = |rng: &mut Rng, stats: &mut GenStats| match rng.below(10) {
         0..=4 => types::scalar_type(rng),
         5..=8 => {
             let t = types::random_type(rng, 2);
@@ -194,10 +194,7 @@ pub(super) fn gen_module(
         // 2026-07-08, "signature mismatch" is a hard error).
         if has_gxi && ret.infers_exact() && chance(rng, 0.3) {
             stats.unannotated_ret = true;
-            gx.push_str(&format!(
-                "let {fname} = |{}| {body};\n",
-                sig.join(", ")
-            ));
+            gx.push_str(&format!("let {fname} = |{}| {body};\n", sig.join(", ")));
         } else {
             gx.push_str(&format!(
                 "let {fname} = |{}| -> {} {body};\n",

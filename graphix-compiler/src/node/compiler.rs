@@ -55,46 +55,6 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         }
     }
     match &spec.kind {
-        // sync-subset: a `sync { … }` block desugars into the existing
-        // vocabulary (assignment = shadowing, for = fold over the
-        // assigned set, arm-assigns hoist to tuple yields) and the
-        // desugared expression compiles normally — one specification,
-        // both evaluators (design/sync_subset.md).
-        ExprKind::SyncBlock { exprs } => {
-            let mut desugared =
-                crate::expr::sync_desugar::desugar_sync_block(&spec, exprs)?;
-            // The desugared root REPLACES the sync block, so the block's
-            // decorations (`#[native]` above all) must ride along or the
-            // attribute silently asserts nothing.
-            desugared.dec = spec.dec.clone();
-            return compile(ctx, flags, desugared, scope, top_id);
-        }
-        // Outside a sync block these forms have no meaning; inside one
-        // the desugar consumed them. Anything left is a source error —
-        // the backstop for assignment-as-value and loops outside sync.
-        ExprKind::ForFold { iter, init, acc_pattern, elem_pattern, body } => {
-            crate::node::forloop::For::compile(
-                ctx,
-                flags,
-                spec.clone(),
-                scope,
-                top_id,
-                iter,
-                init,
-                acc_pattern,
-                elem_pattern,
-                body,
-            )
-        }
-        ExprKind::For { .. } => {
-            crate::bailat!(spec, "`for` is only legal inside a sync block")
-        }
-        ExprKind::Assign { .. } => {
-            crate::bailat!(
-                spec,
-                "assignment is a sync-block statement (a block statement or a                  select-arm body targeting a `let mut` of the enclosing sync                  block)"
-            )
-        }
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {
             ExplicitParens::compile(ctx, flags, (**s).clone(), scope, top_id)

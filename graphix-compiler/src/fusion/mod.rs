@@ -1,4 +1,4 @@
-//! Fusion: identify sync (pure) subtrees of the compiled node graph
+//! Fusion: identify eligible pure subtrees of the compiled node graph
 //! and JIT-compile them to native kernels.
 //!
 //! The architecture is distributed (`design/distributed_jit.md`):
@@ -15,7 +15,7 @@
 //! - [`fuse`] — the uniform child-visit protocol (try_fuse,
 //!   else recurse, swap in any replacement).
 //! - [`lowering`] — discovery, signature derivation (lambda callees,
-//!   per-slot HOF callbacks, body splits), abstract-type resolution.
+//!   collection callbacks, body splits), abstract-type resolution.
 //! - [`builder`] — the runtime [`builder::FusedKernel`] carrier.
 
 pub mod builder;
@@ -35,7 +35,7 @@ use crate::{
     ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, Scope, Update,
     UserEvent,
     env::Env,
-    expr::{ExprId, ExprKind},
+    expr::{Expr, ExprId, ExprKind, Origin},
     fusion::{
         kernel_abi::{KernelSig, freeze_for_abi_normalized},
         lowering::{RegionInputKind, resolve_abstract},
@@ -43,6 +43,61 @@ use crate::{
     node::genn,
     typ::{FnType, Type},
 };
+use poolshark::local::LPooled;
+
+#[derive(Debug, Clone)]
+struct FusionSource {
+    origin: triomphe::Arc<Origin>,
+    pos: combine::stream::position::SourcePosition,
+    kind: std::mem::Discriminant<ExprKind>,
+}
+
+impl FusionSource {
+    fn new(spec: &Expr) -> Self {
+        Self {
+            origin: spec.ori.clone(),
+            pos: spec.pos,
+            kind: std::mem::discriminant(&spec.kind),
+        }
+    }
+
+    fn matches(&self, spec: &Expr) -> bool {
+        self.origin.as_ref() == spec.ori.as_ref()
+            && self.pos == spec.pos
+            && self.kind == std::mem::discriminant(&spec.kind)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FusionFailure {
+    pub id: ExprId,
+    pub reason: compact_str::CompactString,
+    source: FusionSource,
+}
+
+impl FusionFailure {
+    pub(crate) fn matches(&self, spec: &Expr) -> bool {
+        self.source.matches(spec)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FusionBlocker {
+    spec: Expr,
+    reason: compact_str::CompactString,
+}
+
+impl std::fmt::Display for FusionBlocker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.reason.fmt(f)
+    }
+}
+
+impl std::error::Error for FusionBlocker {}
+
+pub(crate) fn blocker(spec: &Expr, reason: compact_str::CompactString) -> anyhow::Error {
+    FusionBlocker { spec: spec.clone(), reason }.into()
+}
 
 /// Compile-time fusion outcome counters, accumulated on
 /// [`FusionCtx::stats`] by every `compile()` the context
@@ -65,15 +120,38 @@ pub struct FusionStats {
     /// Regions that compiled + spliced (direct path), or classic-path
     /// splices (for old-vs-new coverage comparison at the flip).
     pub fused: usize,
-    /// Per-failure (region root ExprId, compile error) — the blocker
-    /// profile. Compile-time only; bounded by program size.
-    pub failed: Vec<(ExprId, compact_str::CompactString)>,
+    /// Per-failure source identity and compile error. Compile-time only;
+    /// bounded by program size.
+    pub failed: Vec<FusionFailure>,
     /// Region-root ExprIds that successfully fused. Lets a consumer
     /// (e.g. the `#[native]` reporter) tell a STRUCTURAL `failed` entry —
     /// a `let`/block whose region attempt failed but whose VALUE fused in
     /// a sub-region — from a REAL blocker (a residue node with nothing
     /// fused beneath it). Compile-time only; bounded by program size.
-    pub fused_ids: Vec<ExprId>,
+    fused_sources: Vec<FusionSource>,
+}
+
+impl FusionStats {
+    fn record_failure(&mut self, spec: &Expr, reason: compact_str::CompactString) {
+        self.failed.push(FusionFailure {
+            id: spec.id,
+            reason,
+            source: FusionSource::new(spec),
+        });
+    }
+
+    fn record_fused(&mut self, spec: &Expr) {
+        self.fused += 1;
+        self.fused_sources.push(FusionSource::new(spec));
+    }
+
+    pub(crate) fn failure_for_source(&self, spec: &Expr) -> Option<&FusionFailure> {
+        self.failed.iter().rev().find(|failure| failure.matches(spec))
+    }
+
+    pub(crate) fn source_fused(&self, spec: &Expr) -> bool {
+        self.fused_sources.iter().any(|source| source.matches(spec))
+    }
 }
 
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, grouped here
@@ -360,7 +438,8 @@ pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
     }
     match node.view() {
         NodeView::Bind(b) => rec!(&b.node),
-        NodeView::For(fl) => rec!(&fl.iter.node, &fl.init.node, &fl.body),
+        NodeView::MapQ(m) => rec!(&m.source.node, &m.prototype),
+        NodeView::FoldQ(m) => rec!(&m.source.node, &m.init.node, &m.prototype),
         NodeView::Module(m) => {
             for child in m.nodes.iter() {
                 rec!(child)
@@ -490,6 +569,28 @@ pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
     }
 }
 
+pub(crate) fn for_each_emitted_node<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+    f: &mut dyn FnMut(&'a Node<R, E>),
+) {
+    let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+    stack.push(node);
+    while let Some(node) = stack.pop() {
+        let mut inline: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+        for_each_node(node, &mut |node| {
+            f(node);
+            let NodeView::CallSite(callsite) = node.view() else { return };
+            let Some(ApplyView::Lambda(lambda)) = callsite.resolved_apply() else {
+                return;
+            };
+            if let Some(body) = lambda.inline_callback_body() {
+                inline.push(body);
+            }
+        });
+        stack.extend(inline.drain(..));
+    }
+}
+
 /// One discovered statically-resolved lambda call site in a region
 /// being directly compiled — the lambda-call analogue of
 /// [`lowering::BuiltinCallSiteInfo`]. Recorded by
@@ -599,7 +700,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
         let mut local_sites: nohash::IntMap<ExprId, LambdaCallInfo> =
             nohash::IntMap::default();
         let mut enqueue: Vec<(&'n Node<R, E>, usize)> = Vec::new();
-        for_each_node(body, &mut |n| {
+        for_each_emitted_node(body, &mut |n| {
             let NodeView::CallSite(cs) = n.view() else {
                 return;
             };
@@ -627,7 +728,8 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             let Some(site_ftype) = cs.resolved_ftype() else {
                 return;
             };
-            let Some(cached) = lowering::build_lambda_kernel(g, site_ftype, &name, ctx) else {
+            let Some(cached) = lowering::build_lambda_kernel(g, site_ftype, &name, ctx)
+            else {
                 return;
             };
             let ptr = kernel_abi::kernel_key(&cached.kernel);
@@ -799,13 +901,13 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         // A real blocker, not protocol noise — log it (a silent
         // Ok(None) after `attempted += 1` makes the stats disagree
         // with the failure list).
-        ctx.fusion.stats.failed.push((
-            node.spec().id,
+        ctx.fusion.stats.record_failure(
+            node.spec(),
             compact_str::format_compact!(
                 "non-scalar region inputs share basename `{name}` — \
                  refuse to fuse"
             ),
-        ));
+        );
         return Ok(None);
     }
     // Discover sync-builtin Apply sites BEFORE the kernel build (the
@@ -836,10 +938,10 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             // A frozen region input whose ABI kind doesn't match its
             // Type — a freeze invariant that should hold for well-typed
             // input, but de-fuse rather than panic if it ever doesn't.
-            ctx.fusion.stats.failed.push((
-                source_id,
+            ctx.fusion.stats.record_failure(
+                node.spec(),
                 compact_str::format_compact!("sig_from_inputs: {e:#}"),
-            ));
+            );
             return Ok(None);
         }
     };
@@ -874,10 +976,12 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
-            ctx.fusion
-                .stats
-                .failed
-                .push((source_id, compact_str::format_compact!("{e:#}")));
+            let spec = e
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<FusionBlocker>())
+                .map(|blocker| &blocker.spec)
+                .unwrap_or_else(|| node.spec());
+            ctx.fusion.stats.record_failure(spec, compact_str::format_compact!("{e:#}"));
             return Ok(None);
         }
     };
@@ -935,8 +1039,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                     );
                 }
             }
-            ctx.fusion.stats.fused += 1;
-            ctx.fusion.stats.fused_ids.push(source_id);
+            ctx.fusion.stats.record_fused(node.spec());
             Ok(Some(n))
         }
         Err(e) => {
@@ -944,10 +1047,10 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             // log like any other blocker (a silent Ok(None) here made
             // `attempted` and `failed` disagree, which is exactly the
             // drift FusionStats exists to expose).
-            ctx.fusion.stats.failed.push((
-                source_id,
+            ctx.fusion.stats.record_failure(
+                node.spec(),
                 compact_str::format_compact!("FusedKernel::new: {e:#}"),
-            ));
+            );
             Ok(None)
         }
     }

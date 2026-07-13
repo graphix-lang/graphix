@@ -1,8 +1,7 @@
 //! The runtime carrier for a fused region: [`FusedKernel`] wraps the
 //! JIT artifact + its input feeder Nodes as an ordinary `Update`
-//! node. Built by `fusion::try_fuse` (regions) and
-//! `FusedCallback::build_slot` (per-slot HOF dispatch); the actual
-//! kernel executor is [`Kernel`].
+//! node. Built by `fusion::try_fuse`; the actual kernel executor is
+//! [`Kernel`].
 
 use crate::{
     Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
@@ -17,10 +16,6 @@ use std::sync::Arc as StdArc;
 /// `Update`-implementing Node. Holds the compiled kernel + JIT
 /// artifact and dispatches at `update()` time.
 ///
-/// **Current scope**: kernels with zero or more scalar (primitive)
-/// inputs and a scalar return. Composite inputs / returns are
-/// follow-up work — `fuse()` filters them out so the kernel never
-/// reaches this struct.
 pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
@@ -33,12 +28,6 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// Routing through `Kernel` (instead of re-implementing the
     /// dispatch surface) keeps FusedKernel minimal.
     inner: Kernel<R, E>,
-    /// THIS instance's lifted connect-target ids, parallel to
-    /// `kernel().lifted` (the sig's originals for the first instance;
-    /// freshly minted per `clone_rebind`). The state buffer's reserved
-    /// head words mirror these; clones mint from HERE, not the sig, so
-    /// a clone-of-a-clone remaps the ids its feeders actually carry.
-    lifted: Box<[crate::BindId]>,
     _phantom: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
@@ -74,14 +63,12 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ));
             }
         };
-        let lifted: Box<[crate::BindId]> = kernel.lifted.iter().copied().collect();
         let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
         Ok(Box::new(Self {
             spec,
             typ,
             feeders,
             inner,
-            lifted,
             _phantom: std::marker::PhantomData,
         }))
     }

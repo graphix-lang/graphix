@@ -1,3 +1,8 @@
+> **STATUS (2026-07-13):** The iterator/object exploration is retained, but
+> its `sync`/`for` examples are obsolete. The sync subset was removed and
+> built-in collection HOFs are compiler-owned Nodes; see
+> `design/collection_intrinsics.md`.
+
 We need some way to handle generic programming in graphix. For example instead
 of hard coding the for loop to work with arrays lists, maps, etc, it would be
 nice if there was a generic interface that the user could implement that allowed

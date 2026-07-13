@@ -1,5 +1,10 @@
 # Sync blocks, `await`, and `~!` (force)
 
+> **SUPERSEDED (2026-07-13):** Sync blocks were removed from the language.
+> Collection HOFs are compiler-owned Nodes; see
+> `design/collection_intrinsics.md`. The text below is retained as design
+> history.
+
 > Split out of `design/interfaces.md` (2026-07-10) — that doc keeps the
 > Iter/objects material and points here. This one pins the semantics of
 > sequential code's two boundaries with the reactive graph: how

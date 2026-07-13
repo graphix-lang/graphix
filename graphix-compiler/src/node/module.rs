@@ -202,14 +202,12 @@ fn check_sig<R: Rt, E: UserEvent>(
                     abstract_types.insert(*id, td.typ.clone());
                     // Persist the private representation for scoped
                     // static-instance checks and fusion ABI lowering.
-                    ctx.fusion
-                        .abstract_registry
-                        .insert_scoped(
-                            *id,
-                            Arc::from_iter(td.params.iter().map(|(tv, _)| tv.name.clone())),
-                            td.typ.scope_refs(&scope.lexical),
-                            scope.lexical.clone(),
-                        );
+                    ctx.fusion.abstract_registry.insert_scoped(
+                        *id,
+                        Arc::from_iter(td.params.iter().map(|(tv, _)| tv.name.clone())),
+                        td.typ.scope_refs(&scope.lexical),
+                        scope.lexical.clone(),
+                    );
                 }
                 _ => {
                     if sig_td.name != td.name

@@ -42,8 +42,7 @@ fn union_identical(t0: &Type, t1: &Type) -> bool {
         // rebinds). An UNBOUND tvar stays non-identical to everything
         // but its own cell (items 11/18 above). Without this,
         // `'x: Array<'a: i64>` vs `Array<i64>` failed to collapse and
-        // a select-arm union over equal concrete types survived to
-        // reject `union.0` (sync-block multi-mut accumulators).
+        // a select-arm union over equal concrete types survived.
         (Type::TVar(a), t) | (t, Type::TVar(a)) => {
             let ai = a.read();
             let ab = ai.typ.read();

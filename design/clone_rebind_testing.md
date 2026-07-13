@@ -1,5 +1,10 @@
 # clone_rebind test plan — hunting the silent bugs
 
+> **SUPERSEDED (2026-07-13):** `clone_rebind` was deleted with the callback
+> template architecture. Collection Nodes now create and own explicit runtime
+> CallSites. See `design/collection_intrinsics.md`. This file records the bugs
+> and validation history that informed that decision.
+
 `clone_rebind` (the per-slot graph cloner behind MapQ HOF dispatch) is
 green across the suite, but the suite mostly proves *value correctness on
 the tested paths*. The three things that nag about the design are exactly

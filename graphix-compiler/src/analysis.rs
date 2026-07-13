@@ -12,7 +12,7 @@
 //! overflows. The shared facts let the interpreter loop in place instead
 //! (`GXLambda::update`), matching the JIT.
 //!
-//! Four passes over the reachable call graph:
+//! Three passes over the reachable call graph:
 //!   1. **Effect inference (M6)** — a greatest fixpoint writing each
 //!      reachable lambda's `LambdaDef::intrinsic_effect`. Optimistic start
 //!      (`Sync`), monotonically degrading to `Async`, so mutual recursion
@@ -25,9 +25,6 @@
 //!      tail-position self-call(s) (`CallSite::is_self_tail_call` +
 //!      `tail_arg_order` + `callee_lambda_id`), and record the
 //!      `RecursionKind` summary.
-//!   4. **For body effects** — select the synchronous or asynchronous
-//!      loop elaboration from the same effect facts.
-//!
 //! The STRUCTURAL tail-loop predicate is shared with the JIT
 //! (`fusion::lowering::structural_tail_loop`) — one seam, so the backends
 //! can't disagree on which lambdas are loop-able.
@@ -83,11 +80,7 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
         fusion::for_each_node(node, &mut |n| {
             let NodeView::CallSite(site) = n.view() else { return };
             if let Some(target) = site.static_target() {
-                edges.push(StaticEdge {
-                    caller,
-                    callee: target.instance,
-                    site,
-                });
+                edges.push(StaticEdge { caller, callee: target.instance, site });
             }
             let Some(ApplyView::Lambda(g)) = site.resolved_apply() else {
                 return;
@@ -190,62 +183,10 @@ pub fn analyze<R: Rt, E: UserEvent>(
     // site, descending through callee bodies.
     let sites = collect_resolved_sites(root);
     // Pass 2: effect fixpoint over the reachable bodies.
-    let (eff, self_ids) = infer_effects(&sites, ctx);
+    infer_effects(&sites, ctx);
     // Pass 3: instance call-graph SCCs, recursion + tail marking.
     mark_recursion(&graph, ctx);
-    // Pass 4: For-loop body effects (sync-subset P4 final). An
-    // async-effect body flips the For to per-index instantiation +
-    // re-evaluation (the never-until-complete async elaboration);
-    // reads the pass-2 effect facts through the same node_effect walk.
-    // MUST be fed pass 2's maps: with empty maps every resolved lambda
-    // call read as the Async default, so every in-language HOF body
-    // (`f(acc, v)`) took the per-index instantiation path — 100k body
-    // compiles for a 100k fold (bench/fold_sum, 2026-07-10).
-    mark_for_bodies(root, ctx, &eff, &self_ids);
     Ok(())
-}
-
-/// [`mark_for_bodies`] for a subtree with no precomputed effect facts
-/// (a runtime-compiled `For` instance): run the site discovery +
-/// effect fixpoint over the subtree first.
-pub(crate) fn mark_for_bodies_standalone<R: Rt, E: UserEvent>(
-    root: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
-) {
-    let sites = collect_resolved_sites(root);
-    let (eff, self_ids) = infer_effects(&sites, ctx);
-    mark_for_bodies(root, ctx, &eff, &self_ids);
-}
-
-/// Mark every reachable `For` node whose BODY has an async effect —
-/// walks the root and, like the effect passes, descends resolved
-/// callee bodies (a For inside an in-language HOF's instance body is
-/// the primary customer).
-pub(crate) fn mark_for_bodies<R: Rt, E: UserEvent>(
-    root: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
-    eff: &IntMap<LambdaId, EffectKind>,
-    self_ids: &IntMap<BindId, LambdaId>,
-) {
-    let mut bodies: Vec<&Node<R, E>> = vec![root];
-    let mut seen: ahash::AHashSet<*const u8> = ahash::AHashSet::default();
-    while let Some(b) = bodies.pop() {
-        fusion::for_each_node(b, &mut |n| match n.view() {
-            NodeView::For(fl) => {
-                let e = body_effect(&fl.body, eff, self_ids, ctx);
-                fl.set_async_body(matches!(e, EffectKind::Async));
-            }
-            NodeView::CallSite(cs) => {
-                if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
-                    let ptr = (g as *const GXLambda<R, E>).cast::<u8>();
-                    if seen.insert(ptr) {
-                        bodies.push(g.body());
-                    }
-                }
-            }
-            _ => {}
-        });
-    }
 }
 
 /// Analyze a callee bound at RUNTIME (`CallSite::bind`): the lazy-bound
@@ -268,9 +209,8 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     if let Some(sb) = self_bind {
         sites.push((g, sb));
     }
-    let (eff, self_ids) = infer_effects(&sites, ctx);
+    infer_effects(&sites, ctx);
     mark_recursion(&graph, ctx);
-    mark_for_bodies(g.body(), ctx, &eff, &self_ids);
 }
 
 /// Every reachable resolved-lambda call site, as `(callee, self_bind)`.
@@ -315,13 +255,10 @@ fn infer_effects<R: Rt, E: UserEvent>(
     // sites; its body + effect are one).
     //
     // The (callee, self_bind) pairs double as a BACK-EDGE resolution
-    // table: a #203-unresolved self-call's fnode Ref can miss
-    // `ctx.bind_to_lambda` — a per-slot HOF clone re-mints the `let rec`
-    // binding's BindId without a typecheck0 pass, so the map has no
-    // entry for the re-minted id — and the fallthrough classified the
-    // recursion Async, which disabled the interpreter tail loop and
-    // stack-recursed the residue into the depth guard where `--no-fusion`
-    // tail-looped to the value (soak jul08g fuzz divergence 4).
+    // table: a dynamically-bound recursive callee can be analyzed before
+    // its self-call is present in `ctx.bind_to_lambda`. Falling through
+    // as Async would disable the interpreter tail loop and recurse on the
+    // Rust stack instead.
     let mut bodies: IntMap<LambdaId, &Node<R, E>> = IntMap::default();
     let mut self_ids: IntMap<BindId, LambdaId> = IntMap::default();
     for (g, sb) in sites {
@@ -362,7 +299,7 @@ fn body_effect<R: Rt, E: UserEvent>(
     let mut acc = EffectKind::Sync;
     fusion::for_each_node(body, &mut |n| {
         let e = node_effect(n, eff, self_ids, ctx);
-        if matches!(e, EffectKind::Async) && std::env::var_os("GXDBG_FOR").is_some() {
+        if matches!(e, EffectKind::Async) && std::env::var_os("GXDBG_EFFECT").is_some() {
             eprintln!("EFFECT-ASYNC-NODE node={}", n.spec());
         }
         acc = acc.join(e);
@@ -418,7 +355,8 @@ fn node_effect<R: Rt, E: UserEvent>(
         NodeView::Bind(_)
         | NodeView::Module(_)
         | NodeView::Block(_)
-        | NodeView::For(_)
+        | NodeView::MapQ(_)
+        | NodeView::FoldQ(_)
         | NodeView::Select(_)
         | NodeView::ExplicitParens(_)
         | NodeView::TypeCast(_)
@@ -479,12 +417,10 @@ fn callee_effect<R: Rt, E: UserEvent>(
 ) -> EffectKind {
     // A resolved lambda missing from the LOCAL fixpoint map is one a
     // PRIOR pass analyzed (the subtree walks of `analyze_bound_callee`
-    // / `mark_for_bodies_standalone` only cover their subtree): read
+    // only cover their subtree): read
     // its STORED fact instead of defaulting Async. Silently defaulting
-    // flipped every runtime-bound in-language HOF instance's For to
-    // the per-index async path (the callback resolved fine but lived
-    // outside the local walk), where a const-valued callback re-fired
-    // per dispatch — the p7/p9 over-fire class.
+    // misclassified runtime-bound callees whose definitions live outside
+    // the local walk.
     let known = |lid: LambdaId| -> EffectKind {
         eff.get(&lid).copied().unwrap_or_else(|| {
             lambda_def(ctx, lid).map(|d| *d.intrinsic_effect.lock()).unwrap_or_default()
@@ -499,11 +435,11 @@ fn callee_effect<R: Rt, E: UserEvent>(
     }
     if let NodeView::Ref(r) = cs.fnode().view() {
         // A seeded back-edge (this pass's own (callee, self_bind)
-        // pairs) — the ONLY resolution for a runtime-cloned `let rec`
-        // whose re-minted binding id is absent from `bind_to_lambda`.
+        // pairs) — the resolution for a dynamically-bound `let rec`
+        // whose binding id is absent from `bind_to_lambda`.
         // Checked first: where both tables know the binding, this one
-        // names the ACTUAL instance at the analyzed site (the stale
-        // template def in `bind_to_lambda` isn't in `eff`, so it would
+        // names the ACTUAL instance at the analyzed site (another
+        // definition in `bind_to_lambda` may not be in `eff`, so it would
         // otherwise read as its stored fact).
         if let Some(lid) = self_ids.get(&r.id) {
             return known(*lid);
@@ -525,7 +461,7 @@ fn callee_effect<R: Rt, E: UserEvent>(
         }
     }
     // Unknown dynamic dispatch / fn-typed parameter call.
-    if std::env::var_os("GXDBG_FOR").is_some() {
+    if std::env::var_os("GXDBG_EFFECT").is_some() {
         eprintln!("EFFECT-ASYNC-FALLBACK cs={}", cs.fnode().spec());
     }
     EffectKind::Async
@@ -560,10 +496,11 @@ fn mark_recursion<R: Rt, E: UserEvent>(
             .iter()
             .filter(|edge| edge.caller == Some(*instance) && edge.callee == *instance)
             .collect();
-        let self_bind = self_edges.iter().find_map(|edge| match edge.site.fnode().view() {
-            NodeView::Ref(r) => Some(r.id),
-            _ => None,
-        });
+        let self_bind =
+            self_edges.iter().find_map(|edge| match edge.site.fnode().view() {
+                NodeView::Ref(r) => Some(r.id),
+                _ => None,
+            });
         g.set_self_recursive(!self_edges.is_empty());
         g.set_self_bind(self_bind);
         let only_self = component
@@ -642,10 +579,9 @@ fn body_has_self_tail_call<R: Rt, E: UserEvent>(
             .last()
             .is_some_and(|child| body_has_self_tail_call(child, instance)),
         NodeView::ExplicitParens(ep) => body_has_self_tail_call(&ep.n, instance),
-        NodeView::Select(s) => s
-            .arms
-            .iter()
-            .any(|(_, body)| body_has_self_tail_call(&body.node, instance)),
+        NodeView::Select(s) => {
+            s.arms.iter().any(|(_, body)| body_has_self_tail_call(&body.node, instance))
+        }
         NodeView::CallSite(site) => {
             site.static_target().map(|target| target.instance) == Some(instance)
         }
