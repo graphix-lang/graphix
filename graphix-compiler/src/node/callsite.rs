@@ -793,12 +793,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        let private_site = crate::fusion::lowering::resolve_internal_type(
+        // Eager when tractable, unresolved when huge: a COMPLETE, SMALL
+        // private resolution binds the instance to the resolved signature
+        // (scoped abstracts need their reps at instance boundaries —
+        // abstract-in-variant / parameterized-nested); a signature whose
+        // resolution truncates or unfolds past the size cap (the GUI
+        // widget unions) binds the site type instead — retaining an
+        // eagerly-expanded copy per call site, each re-walked tree-wise
+        // by downstream passes, was the 2026-07-13 41GB OOM, and
+        // `check_instance_type`'s AbstractOpaque fallback resolves lazily
+        // where the instance actually needs it.
+        let private_site = crate::fusion::lowering::resolve_internal_type_complete(
             &ctx.fusion.abstract_registry,
             &Type::Fn(TArc::new(site_ftype.clone())),
             &f.env,
             &f.scope.lexical,
-        );
+            16_384,
+            crate::fusion::lowering::FUSION_SIZE_CAP,
+        )
+        .unwrap_or_else(|| Type::Fn(TArc::new(site_ftype.clone())));
         let Type::Fn(private_site) = private_site else {
             unreachable!("resolving a function type must produce a function type")
         };

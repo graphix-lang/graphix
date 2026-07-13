@@ -21,6 +21,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 use netidx_value::Value;
+use poolshark::local::LPooled;
 
 // Re-export the canonical kernel-ABI types so existing callers
 // (graphix-shell, in-tree tests) keep compiling. The definitive home
@@ -541,9 +542,23 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
 /// can't catch is NON-regular recursion whose params grow each step
 /// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
 /// expansion chain (NOT structural depth) guarantees termination there.
+/// Every caller is FUSION-side (kernel-sig derivation), where a
+/// truncated resolution only de-fuses (freeze rejects the opaque
+/// remainder — never a wrong value or a spurious typecheck failure), so
+/// the budget is small: finishing the expansion of a huge type (the GUI
+/// widget unions) buys nothing — such types have no kernel encoding —
+/// and a per-region resolve of one was the 2026-07-13 compile wedge.
+/// Typecheck-side resolution is [`resolve_internal_type`], with a
+/// generous budget (truncation there can fail a check that should pass).
 pub(crate) fn resolve_abstract(reg: &AbstractRegistry, typ: &Type, env: &Env) -> Type {
-    resolve_abstract_d(reg, typ, env, None, None)
+    let cx =
+        ResolveCx { budget: 2_048, size_cap: FUSION_SIZE_CAP, ..ResolveCx::default() };
+    resolve_abstract_d(reg, typ, env, None, None, &cx)
 }
+
+/// No kernel encodes a type that unfolds past this; resolving further
+/// is work the freeze would discard.
+pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
 
 pub(crate) fn resolve_internal_type(
     reg: &AbstractRegistry,
@@ -551,7 +566,182 @@ pub(crate) fn resolve_internal_type(
     env: &Env,
     scope: &crate::expr::ModPath,
 ) -> Type {
-    resolve_abstract_d(reg, typ, env, Some(scope), None)
+    resolve_abstract_d(reg, typ, env, Some(scope), None, &ResolveCx::default())
+}
+
+/// [`resolve_internal_type`] that only vends a COMPLETE resolution:
+/// `None` when any part truncated (budget or path-length backstop), so
+/// the caller can keep the unresolved form instead of a silently
+/// part-expanded one. `setup_static_bind` uses this to resolve instance
+/// signatures eagerly only when the private form is tractable — an
+/// eagerly-resolved GUI widget signature RETAINED per call site was the
+/// 2026-07-13 41GB OOM, while never resolving broke scoped-abstract
+/// instance semantics (abstract-in-variant / parameterized-nested).
+pub(crate) fn resolve_internal_type_complete(
+    reg: &AbstractRegistry,
+    typ: &Type,
+    env: &Env,
+    scope: &crate::expr::ModPath,
+    budget: u32,
+    size_cap: u32,
+) -> Option<Type> {
+    let cx = ResolveCx { budget, size_cap, ..ResolveCx::default() };
+    let t = resolve_abstract_d(reg, typ, env, Some(scope), None, &cx);
+    (!cx.poisoned.get()).then_some(t)
+}
+
+/// Per-top-level-resolve state. `Seen` bounds each expansion PATH, but
+/// nothing bounded the expansion TREE: an unmemoized walk over types that
+/// repeat at every nesting level is exponential in the nesting depth, and
+/// the deep-cloned results are RETAINED per call site (the GUI
+/// widget/style signatures hit the OOM killer at 41GB expanding per
+/// static call site, 2026-07-13). `memo` caches expansions keyed by
+/// (`ExpandKey`, the set of `Seen` keys the computation consulted): an
+/// entry is valid on any path containing all its dependencies, and a hit
+/// shares the stored `Type`'s Arcs, so a resolve builds a DAG sized by
+/// DISTINCT types instead of a tree sized by paths. `expansions` is a
+/// total-work backstop: exhaustion leaves the remainder opaque (de-fuse /
+/// check-refuse, never a wrong value), the same failure mode as the
+/// per-path length backstop.
+struct ResolveCx {
+    memo: std::cell::RefCell<LPooled<Vec<MemoEntry>>>,
+    /// `Seen` keys consulted by the CURRENT expansion frame's computation
+    /// (the frame's own key excluded on merge-up — a self-hit is not a
+    /// dependency on the caller's path).
+    consulted: std::cell::RefCell<LPooled<Vec<kernel_abi::ExpandKey>>>,
+    /// The current frame's result was truncated (budget, size cap, or
+    /// path-length backstop) — not the true expansion, must not be
+    /// memoized.
+    poisoned: std::cell::Cell<bool>,
+    expansions: std::cell::Cell<u32>,
+    budget: u32,
+    /// Running count of OUTPUT nodes (tree-wise — a memo hit charges its
+    /// entry's recorded unfolded size, not 1), against `size_cap`.
+    /// Callers that would DISCARD an over-large result (the instance-
+    /// signature and fusion resolvers) set the cap so a widget-scale
+    /// resolution aborts as soon as it is knowably too big instead of
+    /// being computed and thrown away per call site.
+    unfolded: std::cell::Cell<u32>,
+    size_cap: u32,
+}
+
+impl Default for ResolveCx {
+    fn default() -> Self {
+        Self {
+            memo: Default::default(),
+            consulted: Default::default(),
+            poisoned: Default::default(),
+            expansions: Default::default(),
+            budget: 65_536,
+            unfolded: Default::default(),
+            size_cap: u32::MAX,
+        }
+    }
+}
+
+struct MemoEntry {
+    key: kernel_abi::ExpandKey,
+    deps: Vec<kernel_abi::ExpandKey>,
+    resolved: Type,
+    /// Unfolded (tree-wise) node count of `resolved`, charged against
+    /// `ResolveCx::size_cap` on every hit.
+    size: u32,
+}
+
+impl ResolveCx {
+    /// Record a `Seen` hit: the current frame's result depends on `key`
+    /// being on the path.
+    fn consult(&self, key: &kernel_abi::ExpandKey) {
+        let mut cur = self.consulted.borrow_mut();
+        if !cur.contains(key) {
+            cur.push(key.clone());
+        }
+    }
+
+    fn lookup(&self, key: &kernel_abi::ExpandKey, seen: Option<&Seen>) -> Option<Type> {
+        let memo = self.memo.borrow();
+        let entry = memo
+            .iter()
+            .find(|e| &e.key == key && e.deps.iter().all(|d| Seen::contains(seen, d)))?;
+        let resolved = entry.resolved.clone();
+        let deps = entry.deps.clone();
+        let size = entry.size;
+        drop(memo);
+        self.count_nodes(size);
+        for d in &deps {
+            self.consult(d);
+        }
+        Some(resolved)
+    }
+
+    /// Count `n` OUTPUT nodes against the size cap; `false` = the result
+    /// has grown past the cap — poisoned, stop expanding.
+    fn count_nodes(&self, n: u32) -> bool {
+        let total = self.unfolded.get().saturating_add(n);
+        self.unfolded.set(total);
+        if total > self.size_cap {
+            self.poisoned.set(true);
+            return false;
+        }
+        true
+    }
+
+    /// Charge one expansion against the budget; `false` = exhausted, the
+    /// caller must leave the type opaque.
+    fn charge(&self) -> bool {
+        let n = self.expansions.get();
+        if n >= self.budget {
+            if n == self.budget {
+                self.expansions.set(n + 1);
+                log::warn!(
+                    "resolve_abstract: expansion budget ({}) exhausted — \
+                     leaving the remainder opaque",
+                    self.budget
+                );
+            }
+            self.poisoned.set(true);
+            return false;
+        }
+        self.expansions.set(n + 1);
+        true
+    }
+
+    /// Run `f` as one expansion frame: track the `Seen` keys it consults,
+    /// memoize the result against them when `memoize` (unless the frame
+    /// was truncated), and merge its dependencies — minus `key` itself —
+    /// into the enclosing frame.
+    fn expand(
+        &self,
+        key: kernel_abi::ExpandKey,
+        memoize: bool,
+        f: impl FnOnce() -> Type,
+    ) -> Type {
+        let saved_consulted =
+            std::mem::replace(&mut *self.consulted.borrow_mut(), LPooled::take());
+        let saved_poisoned = self.poisoned.replace(false);
+        let unfolded_before = self.unfolded.get();
+        let resolved = f();
+        let mut deps =
+            std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
+        let poisoned = self.poisoned.get();
+        deps.retain(|k| k != &key);
+        if memoize && !poisoned {
+            self.memo.borrow_mut().push(MemoEntry {
+                key,
+                deps: deps.iter().cloned().collect(),
+                resolved: resolved.clone(),
+                size: self.unfolded.get() - unfolded_before,
+            });
+        }
+        for k in deps.drain(..) {
+            let mut cur = self.consulted.borrow_mut();
+            if !cur.contains(&k) {
+                cur.push(k);
+            }
+        }
+        self.poisoned.set(saved_poisoned || poisoned);
+        resolved
+    }
 }
 
 fn resolve_abstract_d<'a>(
@@ -560,6 +750,7 @@ fn resolve_abstract_d<'a>(
     env: &Env,
     scope: Option<&crate::expr::ModPath>,
     seen: Option<&'a Seen<'a>>,
+    cx: &ResolveCx,
 ) -> Type {
     use kernel_abi::{ExpandKey, Seen};
     use triomphe::Arc;
@@ -569,8 +760,17 @@ fn resolve_abstract_d<'a>(
     // (named-alias / abstract hops): the case it's FOR is non-regular
     // recursion whose params grow each step (identity can't catch it), but
     // a pathologically long FINITE expansion chain (>256 distinct hops)
-    // would also be left opaque and simply not fuse.
+    // would also be left opaque and simply not fuse. A truncated result
+    // is not the true expansion — poison memoization upward.
     if Seen::len(seen) > 256 {
+        cx.poisoned.set(true);
+        return typ.clone();
+    }
+    // Every visit materializes ~one output node; a memo hit charges its
+    // recorded subtree size in `lookup` instead. Once the accumulated
+    // output crosses the caller's size cap, stop — the result will be
+    // discarded anyway.
+    if !cx.count_nodes(1) {
         return typ.clone();
     }
     match typ {
@@ -591,83 +791,98 @@ fn resolve_abstract_d<'a>(
         // A TVar deref is not an expansion (it can't recurse forever —
         // TVar bindings are occurs-checked), so `seen` passes through.
         Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
-            Some(t) => resolve_abstract_d(reg, &t, env, scope, seen),
+            Some(t) => resolve_abstract_d(reg, &t, env, scope, seen, cx),
             None => typ.clone(),
         },
         Type::Ref(tr) => {
             let key = ExpandKey::Ref(tr.clone());
             if Seen::contains(seen, &key) {
+                cx.consult(&key);
                 return typ.clone(); // recursive named type — leave opaque
             }
+            if let Some(t) = cx.lookup(&key, seen) {
+                return t;
+            }
+            if !cx.charge() {
+                return typ.clone();
+            }
             match typ.lookup_ref(env) {
-                Ok(resolved) => {
-                    let node = Seen::push(seen, key);
-                    resolve_abstract_d(reg, &resolved, env, scope, Some(&node))
-                }
+                Ok(resolved) => cx.expand(key, true, || {
+                    let node = Seen::push(seen, ExpandKey::Ref(tr.clone()));
+                    resolve_abstract_d(reg, &resolved, env, scope, Some(&node), cx)
+                }),
                 _ => typ.clone(),
             }
         }
         Type::Abstract { id, params } => {
             let key = ExpandKey::Abstract(*id);
             if Seen::contains(seen, &key) {
+                cx.consult(&key);
                 return typ.clone(); // recursive abstract — leave opaque
             }
+            if !cx.charge() {
+                return typ.clone();
+            }
+            // No memo for abstracts (`memoize: false`):
+            // `ExpandKey::Abstract` omits `params` — coarse is right for
+            // cycle detection, wrong for caching an instantiation. The
+            // Ref memo carries the tree collapse; the frame still runs so
+            // the self-key drops out of the caller's dependencies.
             let resolved = match scope {
                 Some(scope) => reg.resolve_internal(id, params, scope),
                 None => reg.resolve(id, params),
             };
             match resolved {
-                Some(concrete) => {
-                    let node = Seen::push(seen, key);
-                    resolve_abstract_d(reg, &concrete, env, scope, Some(&node))
-                }
+                Some(concrete) => cx.expand(key, false, || {
+                    let node = Seen::push(seen, ExpandKey::Abstract(*id));
+                    resolve_abstract_d(reg, &concrete, env, scope, Some(&node), cx)
+                }),
                 None => typ.clone(),
             }
         }
         Type::Fn(ft) => Type::Fn(Arc::new(FnType {
             args: Arc::from_iter(ft.args.iter().map(|arg| FnArgType {
                 kind: arg.kind.clone(),
-                typ: resolve_abstract_d(reg, &arg.typ, env, scope, seen),
+                typ: resolve_abstract_d(reg, &arg.typ, env, scope, seen, cx),
             })),
             vargs: ft
                 .vargs
                 .as_ref()
-                .map(|typ| resolve_abstract_d(reg, typ, env, scope, seen)),
-            rtype: resolve_abstract_d(reg, &ft.rtype, env, scope, seen),
-            throws: resolve_abstract_d(reg, &ft.throws, env, scope, seen),
+                .map(|typ| resolve_abstract_d(reg, typ, env, scope, seen, cx)),
+            rtype: resolve_abstract_d(reg, &ft.rtype, env, scope, seen, cx),
+            throws: resolve_abstract_d(reg, &ft.throws, env, scope, seen, cx),
             explicit_throws: ft.explicit_throws,
             quantifiers: ft.quantifiers.clone(),
             lambda_ids: ft.lambda_ids.clone(),
         })),
         Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
+            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen, cx)),
         )),
         Type::Variant(tag, ts) => Type::Variant(
             tag.clone(),
             Arc::from_iter(
-                ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
+                ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen, cx)),
             ),
         ),
         Type::Array(t) => {
-            Type::Array(Arc::new(resolve_abstract_d(reg, t, env, scope, seen)))
+            Type::Array(Arc::new(resolve_abstract_d(reg, t, env, scope, seen, cx)))
         }
         Type::Error(t) => {
-            Type::Error(Arc::new(resolve_abstract_d(reg, t, env, scope, seen)))
+            Type::Error(Arc::new(resolve_abstract_d(reg, t, env, scope, seen, cx)))
         }
         Type::ByRef(t) => {
-            Type::ByRef(Arc::new(resolve_abstract_d(reg, t, env, scope, seen)))
+            Type::ByRef(Arc::new(resolve_abstract_d(reg, t, env, scope, seen, cx)))
         }
         Type::Map { key, value } => Type::Map {
-            key: Arc::new(resolve_abstract_d(reg, key, env, scope, seen)),
-            value: Arc::new(resolve_abstract_d(reg, value, env, scope, seen)),
+            key: Arc::new(resolve_abstract_d(reg, key, env, scope, seen, cx)),
+            value: Arc::new(resolve_abstract_d(reg, value, env, scope, seen, cx)),
         },
         Type::Set(ts) => Type::Set(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
+            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen, cx)),
         )),
-        Type::Struct(fs) => Type::Struct(Arc::from_iter(
-            fs.iter()
-                .map(|(n, t)| (n.clone(), resolve_abstract_d(reg, t, env, scope, seen))),
-        )),
+        Type::Struct(fs) => Type::Struct(Arc::from_iter(fs.iter().map(|(n, t)| {
+            (n.clone(), resolve_abstract_d(reg, t, env, scope, seen, cx))
+        }))),
         other => other.clone(),
     }
 }

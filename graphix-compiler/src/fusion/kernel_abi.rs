@@ -464,7 +464,7 @@ fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
 /// `Ref` to its definition, is. Shared by [`freeze_for_abi`] (abstracts
 /// only — it rejects `Ref`) and `fusion::lowering::resolve_abstract`
 /// (both).
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum ExpandKey {
     Abstract(AbstractId),
     Ref(TypeRef),
@@ -748,9 +748,70 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
 /// nothing and no rung rewrites TVar bindings (`resolve_tvars`
 /// deep-clones).
 pub fn freeze_for_abi_normalized(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
-    freeze_for_abi(reg, t)
-        .or_else(|| freeze_for_abi(reg, &t.normalize()))
-        .or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
+    freeze_for_abi(reg, t).or_else(|| {
+        // The normalize fallbacks cure set/tvar noise ([T, T] → T), not
+        // structural rejects, and `flatten_set`'s merge sweep is
+        // super-linear — on a statically-bound GUI widget-union
+        // signature the fallback normalize was a compile wedge
+        // (2026-07-13). A type this large has no kernel encoding the
+        // RAW freeze above wouldn't already have accepted, so don't pay
+        // to normalize it.
+        if !size_at_most(t, FREEZE_NORMALIZE_SIZE_CAP) {
+            return None;
+        }
+        freeze_for_abi(reg, &t.normalize())
+            .or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
+    })
+}
+
+const FREEZE_NORMALIZE_SIZE_CAP: usize = 512;
+
+/// Capped node count over the type, following bound TVar cells (each
+/// cell counted once — sharing and cyclic bindings can't loop). Counts
+/// STRUCTURAL nodes tree-wise (shared Arcs count per occurrence), so it
+/// measures what a downstream deep-clone or tree-walk of the type would
+/// cost, not the DAG's allocation footprint.
+pub(crate) fn size_at_most(t: &Type, cap: usize) -> bool {
+    let mut stack: LPooled<Vec<Type>> = LPooled::take();
+    let mut seen_cells: LPooled<nohash::IntSet<usize>> = LPooled::take();
+    stack.push(t.clone());
+    let mut n = 0;
+    while let Some(t) = stack.pop() {
+        n += 1;
+        if n > cap {
+            return false;
+        }
+        match t {
+            Type::Bottom | Type::Any | Type::Primitive(_) => (),
+            Type::Ref(tr) => stack.extend(tr.params.iter().cloned()),
+            Type::Abstract { params, .. } => stack.extend(params.iter().cloned()),
+            Type::TVar(tv) => {
+                if seen_cells.insert(tv.cell_addr())
+                    && let Some(bound) = tv.read().typ.read().typ.clone()
+                {
+                    stack.push(bound);
+                }
+            }
+            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
+                stack.extend(ts.iter().cloned())
+            }
+            Type::Struct(fs) => stack.extend(fs.iter().map(|(_, t)| t.clone())),
+            Type::Array(t) | Type::Error(t) | Type::ByRef(t) => stack.push((*t).clone()),
+            Type::Map { key, value } => {
+                stack.push((*key).clone());
+                stack.push((*value).clone());
+            }
+            Type::Fn(ft) => {
+                stack.extend(ft.args.iter().map(|a| a.typ.clone()));
+                if let Some(va) = &ft.vargs {
+                    stack.push(va.clone());
+                }
+                stack.push(ft.rtype.clone());
+                stack.push(ft.throws.clone());
+            }
+        }
+    }
+    true
 }
 
 /// Normalizes ALL THREE option-shaped forms that collapse to

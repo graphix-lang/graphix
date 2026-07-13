@@ -623,32 +623,42 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         let old_len = self.slots.len();
         let mut production = None;
         let mut resized = false;
-        let source_tag = self.base.source.update(ctx, event);
-        if let Some(tag) = source_tag {
+        let mut forced_taint = false;
+        if let Some(tag) = self.base.source.update(ctx, event) {
+            // A tainted source is a placeholder, and an unselectable
+            // value (init's over-limit count) is bottom — neither
+            // carries elements to deliver, but the slot walk below must
+            // still run so slot-internal state sees this cycle's events.
             if tag.is_tainted() {
-                return Some(TagValue::tainted(Value::Null));
-            }
-            let source = T::Collection::select(self.base.source.cached.clone()?)?;
-            while self.slots.len() > source.len() {
-                self.slots.last_mut()?.delete(ctx);
-                self.slots.pop();
-                resized = true;
-            }
-            while self.slots.len() < source.len() {
-                self.add_slot(ctx);
-                resized = true;
-            }
-            for (slot, value) in self.slots.iter().zip(source.values()) {
-                ctx.rt.cached_mut().insert(slot.id, value.clone());
-                event.variables.insert(slot.id, TagValue::tagged(value, tag));
-            }
-            self.current = source;
-            if resized {
-                production = merge_tag(production, tag);
-            }
-            if self.slots.is_empty() {
-                let value = self.operation.finish(&self.slots, &self.current)?;
-                return Some(TagValue::tagged(value, tag));
+                forced_taint = true;
+            } else if let Some(source) = self
+                .base
+                .source
+                .cached
+                .clone()
+                .and_then(|value| T::Collection::select(value))
+            {
+                while self.slots.len() > source.len() {
+                    self.slots.last_mut()?.delete(ctx);
+                    self.slots.pop();
+                    resized = true;
+                }
+                while self.slots.len() < source.len() {
+                    self.add_slot(ctx);
+                    resized = true;
+                }
+                for (slot, value) in self.slots.iter().zip(source.values()) {
+                    ctx.rt.cached_mut().insert(slot.id, value.clone());
+                    event.variables.insert(slot.id, TagValue::tagged(value, tag));
+                }
+                self.current = source;
+                if resized {
+                    production = merge_tag(production, tag);
+                }
+                if self.slots.is_empty() {
+                    let value = self.operation.finish(&self.slots, &self.current)?;
+                    return Some(TagValue::tagged(value, tag));
+                }
             }
         }
 
@@ -679,6 +689,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         }
         event.init = saved_init;
 
+        if forced_taint {
+            return Some(TagValue::tainted(Value::Null));
+        }
         let tag = production?;
         if tag.is_tainted() || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
             return Some(TagValue::tainted(Value::Null));
@@ -993,43 +1006,56 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     ) -> Option<TagValue> {
         let old_len = self.slots.len();
         let mut resized = false;
+        let mut forced_taint = false;
         let mut source_tag = None;
         if let Some(tag) = self.base.source.update(ctx, event) {
+            // A tainted source or init is a placeholder, and an
+            // unselectable source value is bottom — nothing to deliver,
+            // but the slot walk below must still run so slot-internal
+            // state sees this cycle's events.
             if tag.is_tainted() {
-                return Some(TagValue::tainted(Value::Null));
-            }
-            let source = T::Collection::select(self.base.source.cached.clone()?)?;
-            self.source_present = true;
-            source_tag = Some(tag);
-            while self.slots.len() > source.len() {
-                self.slots.last_mut()?.delete(ctx);
-                self.slots.pop();
-                resized = true;
-            }
-            while self.slots.len() < source.len() {
-                self.add_slot(ctx);
-                resized = true;
-            }
-            for (slot, value) in self.slots.iter().zip(source.values()) {
-                ctx.rt.cached_mut().insert(slot.element_id, value.clone());
-                event.variables.insert(slot.element_id, TagValue::tagged(value, tag));
+                forced_taint = true;
+            } else if let Some(source) = self
+                .base
+                .source
+                .cached
+                .clone()
+                .and_then(|value| T::Collection::select(value))
+            {
+                self.source_present = true;
+                source_tag = Some(tag);
+                while self.slots.len() > source.len() {
+                    self.slots.last_mut()?.delete(ctx);
+                    self.slots.pop();
+                    resized = true;
+                }
+                while self.slots.len() < source.len() {
+                    self.add_slot(ctx);
+                    resized = true;
+                }
+                for (slot, value) in self.slots.iter().zip(source.values()) {
+                    ctx.rt.cached_mut().insert(slot.element_id, value.clone());
+                    event.variables.insert(slot.element_id, TagValue::tagged(value, tag));
+                }
             }
         }
 
         let mut init_tag = None;
         if let Some(tag) = self.base.init.update(ctx, event) {
             if tag.is_tainted() {
-                return Some(TagValue::tainted(Value::Null));
-            }
-            self.init = self.base.init.cached.clone();
-            init_tag = Some(tag);
-            if let (Some(slot), Some(value)) = (self.slots.first(), self.init.clone()) {
-                ctx.rt.cached_mut().insert(slot.acc_id, value.clone());
-                event.variables.insert(slot.acc_id, TagValue::tagged(value, tag));
+                forced_taint = true;
+            } else {
+                self.init = self.base.init.cached.clone();
+                init_tag = Some(tag);
+                if let (Some(slot), Some(value)) = (self.slots.first(), self.init.clone())
+                {
+                    ctx.rt.cached_mut().insert(slot.acc_id, value.clone());
+                    event.variables.insert(slot.acc_id, TagValue::tagged(value, tag));
+                }
             }
         }
 
-        if self.slots.is_empty() && self.source_present {
+        if self.slots.is_empty() && self.source_present && !forced_taint {
             let tag = match (source_tag, init_tag) {
                 (None, None) => return None,
                 (Some(a), Some(b)) => merge_tag(Some(a), b)?,
@@ -1095,7 +1121,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         }
         event.init = saved_init;
 
-        if self.slots.iter().any(|slot| slot.tag.is_tainted()) {
+        if forced_taint || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
             return Some(TagValue::tainted(Value::Null));
         }
         if let Some(last) = self.slots.last() {

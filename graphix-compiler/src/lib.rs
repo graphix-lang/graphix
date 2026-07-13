@@ -1693,6 +1693,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
+        if node::collection::CollectionIntrinsic::from_name(T::NAME).is_some() {
+            bail!("{} is a collection intrinsic reserved by the compiler", T::NAME)
+        }
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
                 e.insert(T::init);

@@ -2665,9 +2665,7 @@ impl JitEnv {
         self.locals.iter().rev().find(|l| l.name.as_str() == name)
     }
 
-    /// Resolve a local by BindId only (no name fallback). Used to read a
-    /// captured feeder's disc for HOF firing propagation
-    /// ([`inherit_hof_firing`]).
+    /// Resolve a local by BindId only (no name fallback).
     fn lookup_by_id(&self, id: BindId) -> Option<&Local> {
         self.locals.iter().rev().find(|l| l.bind_id == Some(id))
     }

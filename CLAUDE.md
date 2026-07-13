@@ -299,19 +299,20 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   "who publishes/wakes this bind" — found the dead-eliminated module
   statement (a region waiting forever on a feeder whose producer was
   spliced away, 2026-07-08). Lives in graphix-rt (rt.rs).
-- `GXDBG_FOR=1` — For-loop debugging: the sync gate per update
-  (`FOR-SYNC-GATE`, inputs' fired state), per-index async evaluation
-  (`FOR-ASYNC`), `FOR-MARK-ASYNC` at every analysis flip to the
-  per-index path, and `EFFECT-ASYNC-NODE` naming the node that made a
-  For body read async. The tool for "why is this loop on the async
-  path / why does it (not) fire" — found the subtree-analysis effect
-  fact miss (a resolved lambda outside the local fixpoint map read as
-  Async via unwrap_or_default; jul10e p7/p9 + the double-emission
-  class, 2026-07-11).
+- `GXDBG_EFFECT=1` — effect-analysis debugging: `EFFECT-ASYNC-NODE`
+  names each node that makes a body read async, and
+  `EFFECT-ASYNC-FALLBACK` marks every call site whose callee couldn't
+  be resolved and defaulted Async. The tool for "why did this lambda
+  classify Async" — the surviving core of the old `GXDBG_FOR` (which
+  also traced the For node's sync gate; For is gone, the effect prints
+  found the subtree-analysis effect fact miss, jul10e, 2026-07-11).
+- `GXDBG_INSTANCE_FUSION=1` — print each per-callsite instance's
+  region-fusion pass in `GXLambda::fuse` (fused delta + new failures).
+  The tool for "did this monomorphic instance body fuse and what
+  blocked it".
 - `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
-  "does this call dispatch and to what" — paired with GXDBG_FOR it
-  localized the async-flip above.
+  "does this call dispatch and to what".
 - `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
   spec, BindId, unstable/b2l/cached hit) plus the index writes
   (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export
@@ -323,11 +324,34 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 
 When `contains` encounters a `Type::Ref` (e.g. `Result<T, E>`), the Ref case at `contains.rs:56` expands both sides via `lookup_ref(env)` before recursing. This means TVar bindings established during `contains` store the **expanded** form (e.g. `[T, Error<E>]` instead of `Result<T, E>`). Code that inspects resolved types must handle both the `Type::Ref` form and the expanded `Type::Set` form — see `extract_cast_type` in `graphix-package-core/src/lib.rs` for an example.
 
-### Two-Phase Typecheck and Deferred Checks
+### Two-Phase Typecheck
 
-Builtins that need type information from their call site (e.g. `json::read` for type-directed deserialization) use a two-phase typecheck: return `NeedsCallSite` from `TypecheckPhase::Lambda`, then extract concrete types during `TypecheckPhase::CallSite(resolved)`. The compiler collects deferred check closures during `CallSite::typecheck` and processes them in a `while let Some(check) = ctx.deferred_checks.pop()` loop after primary typechecking. This loop processes cascaded checks automatically — a deferred check that pushes new deferred checks will have those processed in subsequent iterations.
+Every node implements `typecheck0`/`typecheck1` (two passes over the whole
+graph). `typecheck0` also builds `ctx.bind_to_lambda`; `CallSite::typecheck1`
+pre-binds statically-resolvable calls (`try_static_resolve`) and re-drives the
+bound instance's body typecheck with the call's fn-typed args registered
+(per-callsite elaboration), so calls to a lambda *parameter* resolve statically
+inside each instance. The old `NeedsCallSite`/deferred-check machinery is gone
+— a builtin that needs call-site types reads them from its `typecheck1`
+`resolved` argument.
 
-HOF builtins (e.g. `MapQ`, `FoldQ`) that take function-typed arguments must return `NeedsCallSite` and handle the `CallSite(resolved)` phase to update their stored predicate types (`mftyp`, `etyp`) from the resolved FnType. This enables the deferred check cascade to propagate concrete types to inner predicates like `json::read`.
+### Collection intrinsics (MapQ/FoldQ as compiler nodes)
+
+The Array/List/Map traversal HOFs are compiler-owned Nodes
+(`node/collection.rs`, `design/collection_intrinsics.md`). The stdlib `.gx`
+signatures are ordinary lambdas whose builtin-reference bodies use reserved
+marker names (`'array_map`, `'list_fold`, `'map_filter`, …);
+`CollectionIntrinsic::from_name` intercepts those names during lambda
+construction (before the registered-builtin table — `register_builtin` rejects
+them) and builds a `MapQ`/`FoldQ` node as the lambda's body
+(`LambdaDispatch::Collection` — the dispatch charges no call-depth unit; only
+the per-element callback dispatch does). The node owns callback instantiation
+(one prototype CallSite for typecheck/analysis/emission + one live CallSite per
+collection position at runtime), slot identity and prefix retention across
+resizes, per-slot firing/taint/sleep/replay, and result construction. Effect
+inference needs no HOF special case: the prototype's CallSite is a normal call
+site, so an async callback flips the collection lambda Async through the
+ordinary M6 fixpoint.
 
 ## Fusion / JIT subsystem (current state)
 
@@ -425,9 +449,10 @@ enforces it):**
   each site take-and-clears `DYNCALL_PENDING` and continues with the tainted
   placeholder, so `DYNCALL_PENDING` reaching `Kernel::update` means only a
   GENUINE whole-kernel abort (interrupt poll, depth trip, return-gate force,
-  callee abort propagated at the call site by `emit_lambda_call_node`). Known
-  residual of the old behavior: the `array::init` runaway-length guard still
-  whole-kernel aborts (scaffold.rs). `design/representable_bottom.md`.
+  callee abort propagated at the call site by `emit_lambda_call_node`). The
+  old `array::init` runaway-length whole-kernel abort is gone: an over-limit
+  count taints and clamps to zero length in `emit_init_loop`, matching the
+  node-walk's log-and-no-fire. `design/representable_bottom.md`.
 - An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield to
   the scheduler) — accepted/correct; the reactive node-walk's per-cycle
   "continue" is the artifact.
@@ -436,9 +461,13 @@ enforces it):**
 node-walk's non-async firing — an output fires only when an input that feeds it
 actually fired this cycle. A "fired-this-cycle" (`STALE`) bit rides each kernel
 param's disc; a lifted let-bound `connect`-target counter is threaded in as a
-kernel input so reactive counters fuse. HOF results inherit capture-aware firing
-(`inherit_hof_firing`: a result is STALE unless the source array, the HOF init,
-and every feeder the callback body captures fired).
+kernel input so reactive counters fuse. Collection-loop firing is
+`scaffold::SlotFlags`: per-iteration body discs fold into a slots word, a
+per-instance state word holds the previous source length for exact resize
+detection, and `apply` reproduces the interpreted MapQ/FoldQ rule (fires iff
+resized ∨ a slot fired ∨ the source fired empty; fold results are acc-carried
+via `result_is_firing`). A same-length source refresh with a quiet body does
+NOT re-fire — the per-slot precision the P4 sequential loops had lost.
 
 **Testing is differential:**
 
@@ -497,40 +526,34 @@ and every feeder the callback body captures fired).
 - A divergence is **at least as likely a fused/JIT bug as a node-walk one** —
   verify the intended semantics against the node-walk before touching it.
 
-**In-language HOFs (P4 final, 2026-07-10):** the seven array traversal HOFs
-plus `init` are graphix source (`sync` blocks over `For` in array/mod.gx);
-`clone_rebind`, the fused templates, MapQ/FoldQ's fusion tendrils, the per-HOF
-`MapFn::emit_clif` impls, and the map/filter/find loop scaffolds are DELETED
-(+103/−3576). Every instantiation is `LambdaDef::init` per (site, index).
-`GXLambda::fuse` fuses each per-callsite instance BODY unconditionally (the
-`For` loop compiles via `emit_for_node` → `emit_fold_loop`); the HOF CALL SITE
-itself dispatches by node-walk (fn-typed args have no ABI). A sync body with an
-async call flips the `For` to per-index instantiation + re-evaluation
-(analysis pass 4 `mark_for_bodies` — MUST be fed pass 2's effect maps).
-MapQ/FoldQ survive ONLY as node-walk mini-interpreters for `list::`/`map::`
-HOFs until for-over-Map lands. Loop firing is BODY-DRIVEN in both modes:
-elements/acc deliver FIRED, the result fires iff any body evaluation fired (or
-the source is empty and an input fired); body/init taint is STICKY
-(never-until-complete = the sequential break). Cross-kernel call sites force
-the callee's init flag on the first call ever (a state word — the kernel
-mirror of `Callee::Static`'s `first_update` priming).
-OPEN (P4 performance completion): (1) in-language HOFs build arrays via
-persistent `push` — O(n²); needs owned-acc in-place append recognition;
-(2) FIXED 2026-07-12: the SHELL's static resolution flapped run-to-run
-because every RT batch entry CLEARED `bind_to_lambda`, so the user
-file's resolution fell to the `rt.cached()` fallback — a race against
-the stdlib batch's init cycle. Batch entries now prune only the
-outgoing batch's `<-` targets (`unstable_bindings`) and `Bind::delete`
-removes its ids; the persistent index also exposed (and fixed) a
-second latent bug — builtin-bodied lambdas' `intrinsic_effect` was
-constructed `Sync`, so a resolved async builtin (`once`) in a sync-for
-body took the sync gate and hung (masked before by the same race).
-The racy `rt.cached()` fallback REMAINS for destructured/`<-`-retarget
-shapes `bind_to_lambda` can't know — flagged for review;
-(3) instance-body INLINING at the call site (the per-site instance is
-monomorphic, so the dispatch cliff and the destructured/string-formal
-cross-kernel gaps all close by emitting the resolved body inline) — the
-`#[native]` HOF pins and several probes carry ASPIRE notes pointing at it.
+**Collection HOF execution (compiler-owned nodes, 2026-07-13):** the `sync`
+subset, the `For` node, the sync desugar, and the in-language HOF bodies are
+all DELETED (`design/collection_intrinsics.md`; the P4 arc concluded the sync
+subset of Graphix is Rust). MapQ/FoldQ are back as the canonical per-slot
+interpreters — but as compiler Nodes (`node/collection.rs`), not package
+builtins. Fusion: `GXLambda::emit_clif` (the `Apply` hook, consulted FIRST at
+`CallSite::emit_clif`) recognizes a collection-bodied callee and inline-emits
+the loop at the call site via `MapQ/FoldQBase::emit_clif_call`, swapping the
+callsite's actual source/init arg nodes for the lambda-param references —
+supported Array shapes compile through the per-op `MapFn`/`FoldFn::emit_clif`
+impls into the `scaffold::emit_{init,map,filter,filter_map,flat_map,find,
+find_map,fold}_loop` emitters; refusal leaves the node intact on its
+interpreted per-slot semantics (async callbacks always interpret; List/Map
+HOFs interpret pending direct lowering). `for_each_emitted_node` descends
+collection callback bodies during discovery so callee kernels and DynCall
+slots inside callbacks are found. `find`/`find_map` scan ALL slots in both
+modes (a bottom predicate after the match bottoms the find — pinned by
+`find_bottom_after_match`); the P4 sequential early-exit is gone with the
+sequential semantics. Cross-kernel call sites force the callee's init flag on
+the first call ever (a state word — the kernel mirror of `Callee::Static`'s
+`first_update` priming).
+Durable notes from the P4 arc: (1) the SHELL resolution flap is FIXED
+(2026-07-12) — RT batch entries prune only the outgoing batch's `<-` targets
+(`unstable_bindings`) from `bind_to_lambda` instead of clearing it, and
+`Bind::delete` removes its ids; the racy `rt.cached()` fallback REMAINS for
+destructured/`<-`-retarget shapes the index can't know — flagged for review.
+(2) builtin-bodied lambdas' `intrinsic_effect` is read from `BuiltinFacts`,
+not constructed `Sync`.
 
 **Kernel ABI:** kind-grouped params — scalars, then array/tuple/struct pointers,
 then string, then 2-word variant/nullable/value — derived from a single source
@@ -547,9 +570,10 @@ the stmt subtree is effect-free.
 
 ### Coverage (current)
 
-Measured by the FuseExpect audit above: **~71% of the `run!` corpus fuses+JITs
-(≈487 `Jit` / ≈195 `None`, zero annotation drift), and all bench programs
-(`bench/`) fuse fully.** The value-computing vocabulary is essentially complete:
+Measured by the FuseExpect audit above (numbers last measured pre-collection-
+intrinsics, 2026-07-08 — re-run the audit for current figures): **~71% of the
+`run!` corpus fuses+JITs, and all bench programs (`bench/`) fuse fully.** The
+value-computing vocabulary is essentially complete:
 all scalar arithmetic/comparison/logical/cast/checked-arith, every producer
 (struct/tuple/variant/array/map-literal incl. `{s with f: v}`) and accessor
 (field/index/slice/`m{key}`), `?`/`$`, all eight array HOFs as native loops
@@ -559,9 +583,8 @@ those shapes, and HOF-of-HOF fused into one multi-loop kernel; **fold
 accumulators may be composite or string, not just scalar** — tuple/struct/array/
 string accs carry loop-OWNED with clone-borrowed/drop-replaced discipline, acc
 patterns may destructure (`|(a, b), v|`), and the freeze authority is the
-RESOLVED acc type from FoldQ's `mftype.rtype`, since the analysis instance's
-`body.typ()` re-mints generalized tvars unbound — this is what makes pure
-`sync { }` blocks one kernel, sync-subset P2), **`select`
+RESOLVED acc type from the prototype callback's `typ().rtype`, since an
+instance's `body.typ()` re-mints generalized tvars unbound), **`select`
 structural destructuring** (tuple/struct/slice patterns with scalar leaf binds,
 anonymous-rest prefix/suffix, nested patterns via borrowed interior reads, owned
 fresh-producer scrutinees in value position — each arm's length test doubles as
@@ -587,9 +610,11 @@ unless it is hoisted into its own `let` (accepted current design, 2026-07-02).
 The remaining missed-fusion tail (each pinned by a `#[native]` de-fuse test or an
 ASPIRE comment where noted):
 
-1. **HOF callback capturing a *local* lambda** (`array::map(a, |x| g(x))`) — the
-   `g(x)` call inside the per-slot template isn't statically resolved (harder:
-   resolution of captured locals in cloned templates; in `notes`).
+1. **HOF callback calling a nested/rec local lambda** — simple captured-local
+   calls now resolve (per-callsite elaboration + `for_each_emitted_node`
+   discovery), but a rec callee inside a fold callback still keeps the
+   collection on the node-walk (pinned by `fold_callback_name_collision`,
+   FuseExpect::None).
 2. **select residue**: whole-composite/`@`/NAMED-rest binds (owned arm locals —
    `JitEnv::truncate` emits no drops), nested/non-scalar variant payloads,
    owned scrutinees in TAIL position (no merge point to drop at).
@@ -621,13 +646,18 @@ in `run!` fixtures and bench programs). The decision is recorded in
   rationale.
 - `representable_bottom.md` — bottom semantics (the taint channel).
 - `graphix_fuzz.md` — the differential fuzzer.
+- `collection_intrinsics.md` — **current:** the Array/List/Map HOFs as
+  compiler-owned Nodes (reserved marker names → `CollectionIntrinsic` →
+  MapQ/FoldQ nodes; per-slot interpreted semantics + inline CLIF loops).
+  Supersedes the sync subset, `value_returning_loops.md` (planned, never
+  built), and the `clone_rebind` machinery.
 - `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
-  HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
+  SUPERSEDED (historical): the per-slot template / `clone_rebind` era.
 - `queue_fn.md` — `queuefn` feature design.
 - `replay_frames.md` — **BUILT (2026-07-11), v2 same day:**
   `reset_replay` (required `Update`/`Apply` method, replay caches vs
-  semantic state) + evaluation FRAMES (For sync-loop iterations and
-  tail-loop jumps run against a private variables map) + **TagValue as
+  semantic state) + evaluation FRAMES (tail-loop jumps run against a
+  private variables map) + **TagValue as
   the interpreter currency** (Eric's call; v2): `Update::update`
   returns `Option<TagValue>` and `Event.variables` carries it — the
   kernel's STALE/TAINT disc bits ride every interp value, ops
@@ -636,22 +666,14 @@ in `run!` fixtures and bench programs). The decision is recorded in
   gains a `last_result` value-channel slot. The v1 `frame_bottom` bit
   and the fired re-delivery hack are deleted (jul10e broke both
   within an hour of soaking).
-- `sync_subset.md` — **P0–P3 BUILT on the `sync-subset-proto` branch
-  (2026-07-09; see the doc's "Prototype status" section):** repatriate
-  CONTROL from Rust builtins into `sync { }` BLOCKS (sequential
-  semantics, not an execution promise; effects inferred, never in
-  types). The prototype desugars at compile time (`expr/sync_desugar.rs`:
-  assignment = shadowing, `for` = fold over the assigned set) — no new
-  node types, no effect analysis; pure blocks fuse to ONE kernel
-  (`#[native]`-pinned), async bodies ride the impure fold (rung 2
-  free). Mutation is mut PLACES over persistent types (no Vec, freeze
-  = escape). **P4 (stdlib HOFs in-language, retiring clone_rebind and
-  the MapQ/FoldQ mini-interpreters) is gated on per-callsite
-  elaboration** — a lambda-param call in a once-compiled generic body
-  can't statically resolve, so in-language `map` is correct but
-  unfused today. Rust stays the sync subset for COMPUTATION (leaf
-  builtins + novel representations behind abstract types, e.g.
-  `buffer::`). Eric's design, 2026-07-09.
+- `sync_subset.md`, `sync_control.md`, `value_returning_loops.md` —
+  SUPERSEDED (historical): the `sync { }` block prototype (P0–P3 built
+  2026-07-09, P4 2026-07-10) and the never-built generalized-loop plan.
+  Unwound 2026-07-13: modeling slot lifetimes showed a reactive
+  collection HOF is a live per-position subgraph, not a sequential
+  loop — the sync subset of Graphix is Rust. See
+  `collection_intrinsics.md`. Per-callsite elaboration (the P4 gate)
+  survives and is load-bearing for collection callback resolution.
 - `fusion_lowering_split.md` — **proposed, not built:** split `try_fuse`'s welded
   analysis+lowering into a pure analysis pass (color nodes with a `KernelId`,
   build per-kernel descriptors) consumed by a thin lowering pass. Motivated by
