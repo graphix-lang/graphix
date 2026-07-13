@@ -193,12 +193,7 @@ fn find_tree_params(t: &Type) -> Option<&[Type]> {
 
 pub(crate) fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> Option<Typ> {
     let ft = resolved_typ?;
-    // The instance's rtype cells are LIVE since single-instantiation
-    // (`resolved_ftype` shares the site's cells) — resolve bindings
-    // out before shape-matching, per the standing with_deref contract
-    // for resolved-type readers.
-    let rt = ft.rtype.resolve_tvars();
-    find_tree_params(&rt).and_then(|params| prim_typ(&params[0]))
+    find_tree_params(&ft.rtype).and_then(|params| prim_typ(&params[0]))
 }
 
 pub(crate) fn extract_type_strings_from_rtype(
@@ -207,8 +202,7 @@ pub(crate) fn extract_type_strings_from_rtype(
     let Some(ft) = resolved_typ else {
         return (arcstr::literal!("?"), arcstr::literal!("?"));
     };
-    let rt = ft.rtype.resolve_tvars();
-    match find_tree_params(&rt) {
+    match find_tree_params(&ft.rtype) {
         Some(params) if params.len() >= 2 => (
             ArcStr::from(format!("{}", params[0]).as_str()),
             ArcStr::from(format!("{}", params[1]).as_str()),

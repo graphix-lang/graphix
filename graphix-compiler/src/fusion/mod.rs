@@ -658,7 +658,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             // The SITE's resolved FnType keys the kernel cache — see
             // build_lambda_kernel (the instance's g.typ() lies about
             // which monomorphization a later site calls).
-            let Some(site_ftype) = cs.resolved_ftype().or_else(|| cs.ftype()) else {
+            let Some(site_ftype) = cs.resolved_ftype() else {
                 return;
             };
             let Some(cached) =

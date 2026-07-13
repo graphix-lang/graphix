@@ -227,7 +227,12 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// for side effects, value discarded). `def` is the held LambdaDef the
     /// read-through accessors recover typed; `first_update` primes the
     /// body's external refs exactly once.
-    Static { def: Value, apply: Box<dyn Apply<R, E>>, first_update: bool },
+    Static {
+        def: Value,
+        apply: Box<dyn Apply<R, E>>,
+        resolved_ftype: FnType,
+        first_update: bool,
+    },
 }
 
 impl<R: Rt, E: UserEvent> Callee<R, E> {
@@ -375,7 +380,6 @@ fn transient_body_ok<R: Rt, E: UserEvent>(
 pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) spec: TArc<Expr>,
     pub(super) ftype: Option<FnType>,
-    pub(super) resolved_ftype: Option<FnType>,
     pub(super) rtype: Type,
     pub(crate) fnode: Node<R, E>,
     pub(crate) args: AHashMap<ArgKey, Arg<R, E>>,
@@ -417,13 +421,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.ftype.as_ref()
     }
 
-    /// The resolved-and-deref'd function type at this call site. Same
-    /// as `ftype()` but with all bound TVars dereferenced to their
-    /// concrete forms — produced by `FnType::resolve_tvars`. Cached
-    /// inside `Self::bind` after the lambda binds the value, so a
-    /// post-typecheck consumer can ask for it cheaply.
+    /// The detached, resolved function type owned by a statically-bound
+    /// callee instance.
     pub fn resolved_ftype(&self) -> Option<&FnType> {
-        self.resolved_ftype.as_ref()
+        match &self.callee {
+            Callee::Static { resolved_ftype, .. } => Some(resolved_ftype),
+            Callee::DynamicUnbound
+            | Callee::DynamicBound { .. }
+            | Callee::TransientParked { .. } => None,
+        }
     }
 
     /// Source-order argument list. Pair with `args()` to recover the
@@ -517,7 +523,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let site = Self {
             spec,
             ftype: None,
-            resolved_ftype: None,
             rtype: Type::empty_tvar(),
             fnode,
             args,
@@ -537,43 +542,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Box::new(Ref { spec, typ, id, top_id: self.top_id })
     }
 
-    /// Shared "compile arg_refs + call InitFn + typecheck" pipeline
-    /// used by both runtime [`Self::bind`] and the compile-time
-    /// [`Self::resolve_static`] pass. The two callers differ only in
-    /// what they need to do to a live update cycle's `Event` — when
-    /// running at compile time there is no `Event`, when running
-    /// from inside an `update()` cycle we must prime the freshly-
-    /// compiled defaults' external refs into `event.variables`.
-    /// `prime_default_refs` is the per-default-Node hook that handles
-    /// that event-priming; it's a no-op closure for the static path.
-    fn setup_bind<F>(
+    fn prepare_bind<F>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
         f: &LambdaDef<R, E>,
         mut prime_default_refs: F,
-    ) -> Result<Box<dyn Apply<R, E>>>
+    ) -> Result<()>
     where
         F: FnMut(&mut ExecCtx<R, E>, &Refs),
     {
-        if self.resolved_ftype.is_none() {
-            if let Some(ftype) = &self.ftype {
-                // SINGLE AUTHORITATIVE INSTANTIATION (type_copy
-                // discipline, step 4): a SHALLOW clone — every TVar
-                // cell shared with `self.ftype`, the site's one
-                // instance. The old `resolve_tvars()` DETACHED: bound
-                // cells baked to snapshots and unbound cells minted
-                // fresh empty (no conjuncts, no linkage), so the
-                // instance the init adopts, the freeze authority, and
-                // the strict arg check all read a THIRD copy of the
-                // site's types — the copy-skew fork CellMerge only
-                // patched at the points where copies happened to meet.
-                // With shared cells the site's facts and the instance
-                // body's facts collide in one place by construction.
-                self.resolved_ftype = Some(ftype.clone());
-            }
-        }
         let mut flags = flags;
         // we already warned about this
         flags.remove(CFlag::WarnUnhandled);
@@ -724,28 +703,49 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
-        let mut rf = (f.init)(
-            scope,
-            ctx,
-            &mut self.arg_refs,
-            self.resolved_ftype.as_ref(),
-            self.top_id,
-        )?;
-        // The full-body recheck informs the instance's shared type
-        // cells, but its error cannot be authoritative: abstract
-        // payloads, queuefn's dynamic wrapper shape, and guarded
-        // recursive re-entry do not survive a second walk under the
-        // call site's context. The closed ABI endpoint checks below
-        // enforce the facts that fusion can freeze into slots.
-        if let Err(e) = rf.typecheck0(ctx, &mut self.arg_refs) {
+        Ok(())
+    }
+
+    fn init_prepared_bind(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        f: &LambdaDef<R, E>,
+        resolved_ftype: Option<&FnType>,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let mut apply =
+            (f.init)(scope, ctx, &mut self.arg_refs, resolved_ftype, self.top_id)?;
+        if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             if std::env::var_os("GXDBG_SWALLOW").is_some() {
                 eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
             }
         }
-        // An open endpoint cannot prove a contradiction. Once both
-        // ends are closed, a mismatch would expose a value through a
-        // return slot whose frozen ABI does not describe that value.
-        if let ApplyView::Lambda(g) = rf.view()
+        Ok(apply)
+    }
+
+    fn setup_dynamic_bind<F>(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        flags: BitFlags<CFlag>,
+        f: &LambdaDef<R, E>,
+        prime_default_refs: F,
+    ) -> Result<Box<dyn Apply<R, E>>>
+    where
+        F: FnMut(&mut ExecCtx<R, E>, &Refs),
+    {
+        self.prepare_bind(ctx, scope, flags, f, prime_default_refs)?;
+        let resolved_ftype = self.ftype.as_ref().map(FnType::resolve_tvars);
+        self.init_prepared_bind(ctx, scope, f, resolved_ftype.as_ref())
+    }
+
+    fn validate_static_instance(
+        &self,
+        ctx: &ExecCtx<R, E>,
+        apply: &dyn Apply<R, E>,
+        resolved_ftype: &FnType,
+    ) -> Result<()> {
+        if let ApplyView::Lambda(g) = apply.view()
             && is_concrete_recheck_endpoint(&g.typ().rtype)
             && is_concrete_recheck_endpoint(g.body().typ())
             && let Err(e) = g.typ().rtype.check_contains(&ctx.env, g.body().typ())
@@ -763,56 +763,53 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 });
             }
         }
-        // The input counterpart compares each site argument with its
-        // now-informed instance formal. Two error classes are recheck
-        // artifacts and stay swallowed:
-        // `UnresolvableRef` (name resolution ran under a transient
-        // (env, scope) context that's gone — data_table SortBy) and
-        // `AbstractOpaque` (the private↔public equivalence exists only
-        // through name resolution inside the defining module — gui
-        // Color).
-        if let Some(ft) = self.resolved_ftype.as_ref() {
-            let mut pos = 0usize;
-            for fa in ft.args.iter() {
-                let node = match fa.label() {
-                    Some(name) => self.arg_named(name),
-                    None => {
-                        let n = self.arg_positional(pos);
-                        pos += 1;
-                        n
-                    }
-                };
-                let Some(node) = node else { continue };
-                // Only CLOSED formals: an unbound formal cell means
-                // this would be the FIRST unification of the pair,
-                // which the original callsite tc0 already performed
-                // with proper ordering — re-running it here hits the
-                // Set-walk's greedy first-member bind and false-
-                // positives (`radio.gx`: `[null, 'a]` vs a 3-variant
-                // union bound 'a := the first member then failed the
-                // second). The lie classes this check exists for all
-                // present SOLVED cells (the settled elem type the JIT
-                // will freeze).
-                if fa.typ.has_unbound() {
-                    continue;
+        let mut pos = 0usize;
+        for fa in resolved_ftype.args.iter() {
+            let node = match fa.label() {
+                Some(name) => self.arg_named(name),
+                None => {
+                    let n = self.arg_positional(pos);
+                    pos += 1;
+                    n
                 }
-                if let Err(e) = fa.typ.check_contains(&ctx.env, node.typ()) {
-                    if is_recheck_artifact(&e) {
-                        if std::env::var_os("GXDBG_SWALLOW").is_some() {
-                            eprintln!(
-                                "SWALLOWED-ARGCHECK (recheck artifact) at {}: {e:#}",
-                                self.spec
-                            );
-                        }
-                    } else {
-                        return Err(e).with_context(|| {
-                            format!("in the instance of {} at this call site", self.spec)
-                        });
+            };
+            let Some(node) = node else { continue };
+            if fa.typ.has_unbound() {
+                continue;
+            }
+            if let Err(e) = fa.typ.check_contains(&ctx.env, node.typ()) {
+                if is_recheck_artifact(&e) {
+                    if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                        eprintln!(
+                            "SWALLOWED-ARGCHECK (recheck artifact) at {}: {e:#}",
+                            self.spec
+                        );
                     }
+                } else {
+                    return Err(e).with_context(|| {
+                        format!("in the instance of {} at this call site", self.spec)
+                    });
                 }
             }
         }
-        Ok(rf)
+        Ok(())
+    }
+
+    fn setup_static_bind(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        scope: &Scope,
+        flags: BitFlags<CFlag>,
+        f: &LambdaDef<R, E>,
+    ) -> Result<(Box<dyn Apply<R, E>>, FnType)> {
+        self.prepare_bind(ctx, scope, flags, f, |_, _| {})?;
+        let Some(ftype) = self.ftype.as_ref() else {
+            bail!("statically resolving an untyped call site: {}", self.spec)
+        };
+        let resolved_ftype = ftype.resolve_tvars();
+        let apply = self.init_prepared_bind(ctx, scope, f, Some(&resolved_ftype))?;
+        self.validate_static_instance(ctx, &*apply, &resolved_ftype)?;
+        Ok((apply, resolved_ftype.resolve_tvars()))
     }
 
     /// Release the runtime var registrations a [`Callee::TransientParked`]
@@ -843,7 +840,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // `event.variables` from `ctx.cached`, so the bound function
         // sees outer-binding values on its first update inside this
         // same cycle.
-        let apply = self.setup_bind(ctx, &scope, flags, f, |ctx, refs| {
+        let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
             refs.with_external_refs(|id| {
                 if let Some(v) = ctx.rt.cached().get(&id) {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
@@ -944,10 +941,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// to exactly one Lambda (i.e. a `Ref` to a non-`<-`-target binding
     /// whose value is a Lambda, or a direct lambda literal `(|x|…)(42)`).
     ///
-    /// Same arg-build + InitFn + typecheck work as [`Self::bind`],
-    /// minus the event-cycle side effects. The runtime's first
-    /// update through this CallSite handles arg init-priming via the
-    /// `first_static_update` flag set here.
+    /// The runtime's first update through this CallSite handles arg
+    /// init-priming via the `first_static_update` flag set here.
     pub fn resolve_static(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -967,11 +962,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             return Ok(());
         }
         let scope = self.scope.clone();
-        let apply = self.setup_bind(ctx, &scope, self.flags, def, |_, _| {})?;
-        self.callee = Callee::Static { def: fv, apply, first_update: true };
+        let (apply, resolved_ftype) =
+            self.setup_static_bind(ctx, &scope, self.flags, def)?;
+        self.callee =
+            Callee::Static { def: fv, apply, resolved_ftype, first_update: true };
         // #203: drive the resolved callee's BODY through typecheck1 so its OWN
         // nested call sites resolve (the cascade `GXLambda::typecheck1 →
-        // body.typecheck1`). `setup_bind` ran only `typecheck0`, so without
+        // body.typecheck1`). Static setup ran only `typecheck0`, so without
         // this a call inside the body stays `DynamicUnbound` and can't fuse —
         // the gap that made an HOF callback's `iterate(..)` (and any nested
         // call) un-fusable. Guarded by the in-progress `LambdaId` set (the
@@ -1058,7 +1055,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // HOF callback pre-materialization: every fn-typed positional arg
         // that itself resolves to a known lambda becomes a `StaticFnArg`
         // handed to the just-bound Apply.
-        let ftype = match self.resolved_ftype().or_else(|| self.ftype()) {
+        let ftype = match self.resolved_ftype() {
             Some(ft) => ft.clone(),
             None => return Ok(()),
         };
@@ -1741,7 +1738,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         //
         // Cells reachable from an OMITTED defaulted labeled arg are
         // exempt: that arg's type belongs to its default EXPRESSION,
-        // which compiles at static resolution (`setup_bind`, driven
+        // which compiles at static resolution (`setup_static_bind`, driven
         // from `try_static_resolve` below) and binds the cell through
         // the apply's own arg unification — settling first would
         // foreclose it (`rand::rand(#clock:1)` must get `'a := f64`
@@ -1815,7 +1812,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // Labeled-default type check — now sound: in this second pass the
         // closure is complete, so `len() == 1` truly means "exactly one
         // possible callee." Runs AFTER static resolution, whose
-        // `setup_bind` replaced the typecheck0 Nop placeholders with the
+        // `prepare_bind` replaced the typecheck0 Nop placeholders with the
         // per-site COMPILED default nodes — so the check reads the real
         // default's type, and its unification is what binds a
         // defaulted-arg cell the terminal settle deliberately left open

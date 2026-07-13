@@ -42,12 +42,7 @@ pub(crate) mod queuefn;
 /// Returns `None` if `resolved_typ` is absent or `T` contains free tvars.
 pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     let ft = resolved_typ?;
-    // The instance's rtype cells are LIVE since single-instantiation
-    // (`resolved_ftype` shares the site's cells) — resolve bindings out
-    // before shape-matching, per the with_deref contract for
-    // resolved-type readers.
-    let rt = ft.rtype.resolve_tvars();
-    let typ = match &rt {
+    let typ = match &ft.rtype {
         Type::Ref(TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
         {

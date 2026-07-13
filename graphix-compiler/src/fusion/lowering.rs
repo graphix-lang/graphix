@@ -1059,7 +1059,7 @@ pub fn fuse_callsite<R: Rt, E: UserEvent>(
     // emit (async ops, unsupported shapes) fails the JIT compile and
     // falls through to Phase 2: fuse the body's sync sub-regions
     // instead (`build_body_split`).
-    let site_ftype = cs.resolved_ftype().or_else(|| cs.ftype())?.clone();
+    let site_ftype = cs.resolved_ftype()?.clone();
     if let Some(cached) = build_lambda_kernel(g, &site_ftype, &kernel_name, self_bind, ec)
     {
         // Self-call info for a recursive callback (Node emission
