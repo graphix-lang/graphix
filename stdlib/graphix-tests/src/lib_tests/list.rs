@@ -5,9 +5,6 @@ use netidx::subscriber::Value;
 
 // ── Construction ────────────────────────────────────────────────
 
-// P4: list:: HOFs stay on the MapQ/FoldQ node-walk mini-interpreter
-// (no fused templates, no per-slot kernels) until for-over-Map/List
-// lands — their callbacks run interpreted, so fuse: None throughout.
 const LIST_NIL: &str = r#"
   list::is_empty(list::nil(null))
 "#;
@@ -511,7 +508,7 @@ run!(list_flat_map, LIST_FLAT_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── Fold ────────────────────────────────────────────────────────
 
@@ -522,10 +519,6 @@ const LIST_FOLD: &str = r#"
 }
 "#;
 
-// Now fuses + JITs per-element: `list::fold` over a recursive List
-// doesn't batch-loop, so its callback fuses through the per-slot
-// `fuse_callsite` template (FoldQ::fuse), the accumulator chained
-// across slots.
 run!(list_fold, LIST_FOLD, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(55)))
 }; graphix_package_core::testing::FuseExpect::None);
@@ -563,7 +556,7 @@ run!(list_find, LIST_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_FIND_MISS: &str = r#"
 {
@@ -574,7 +567,7 @@ const LIST_FIND_MISS: &str = r#"
 
 run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── Find map ────────────────────────────────────────────────────
 
@@ -591,7 +584,7 @@ const LIST_FIND_MAP: &str = r#"
 
 run!(list_find_map, LIST_FIND_MAP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── Sort ────────────────────────────────────────────────────────
 
@@ -770,7 +763,7 @@ run!(list_init, LIST_INIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_INIT_ZERO: &str = r#"
   list::to_array(list::init(0, |i| i))
@@ -781,7 +774,7 @@ run!(list_init_zero, LIST_INIT_ZERO, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_INIT_TYPE_ERR: &str = r#"
   list::init(3, |i| str::len(i))
@@ -829,7 +822,7 @@ run!(list_iterq, LIST_ITERQ, |v: Result<&Value>| {
 // accumulator chain and recompute the fold (100 + 1 + 2 + 3 = 106). The
 // `run!` harness only captures the FIRST update, so this uses
 // `eval_converged` (the last value after the program settles). Guards the
-// dynamic re-firing the static sums can't reach (FoldQ::update chain).
+// dynamic re-firing the static sums can't reach.
 #[tokio::test]
 async fn list_fold_dynamic_init_converges() {
     let prog = "{ \
@@ -849,15 +842,11 @@ async fn list_fold_dynamic_init_converges() {
     ctx.shutdown().await;
 }
 
-// Tuple-returning find_map callback — the list package has no
-// direct-path scaffold, so the callback always runs through the
-// per-slot template kernel: the composite-body-under-value-shape-
-// return crash family (soak jul05 item 13, crash_000012). Fixed by
-// emit_return_from_node; see lib_tests/array.rs's
-// find_map_captured_array for the family note.
+// Regression for a composite callback return shape (soak jul05 item 13,
+// crash_000012).
 const LIST_FIND_MAP_TUPLE: &str = r#"
 {type T = (string, i64); let l: list::List<T> = list::from_array([("foo", i64:1), ("bar", i64:2)]); list::find_map(l, |(k, v): T| (i64:1, i64:2))}
 "#;
 run!(list_find_map_tuple, LIST_FIND_MAP_TUPLE, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, i64)>()), Ok(Ok((1, 2))))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

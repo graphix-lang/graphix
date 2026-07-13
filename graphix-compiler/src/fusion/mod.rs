@@ -113,30 +113,9 @@ pub struct FusionCtx {
     /// node-walk instead of hanging the compiler. `Arc` so a drop-guard
     /// can hold the set without borrowing the `ExecCtx`.
     pub(crate) building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
-    /// Lambdas whose BODY is CURRENTLY being driven through `typecheck1`
-    /// by `CallSite::resolve_static` (#203 nested-call resolution). A call
-    /// inside a body to a lambda already in this set is a self- or
-    /// mutually-recursive back-edge: `resolve_static` leaves it
-    /// `DynamicUnbound` (the `self_call` emit mechanism handles a self-call;
-    /// a mutual back-edge de-fuses cleanly) instead of recursing the drive
-    /// forever. `Arc` so the insert/remove can straddle the
-    /// `apply.typecheck1(ctx, …)` call without borrowing the `ExecCtx`.
-    pub(crate) resolving: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
-    /// Call-site ExprIds whose fn-arg pre-materialization re-drive is
-    /// in progress — the back-edge guard for RECURSIVE callees keyed
-    /// on the SITE, not the callee: a self-call re-enters the same
-    /// source site (its spec Expr is shared across instances), while
-    /// legitimate nesting (map-in-map — same callee, different sites)
-    /// must still re-drive.
-    pub(crate) resolving_sites: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
     /// Whether fusion is enabled for the current compile. Set by
     /// [`crate::compile`] from `!flags.contains(CFlag::FusionDisabled)`.
-    /// The in-context mirror of the flag, for the per-slot HOF fusion
-    /// path (`fuse_callsite`, `design/impure_hof_fusion.md`) — which
-    /// runs from a HOF builtin's `typecheck1` callback hook and from
-    /// `MapQ::update`, neither of which receives the compile flags.
-    /// Gating it here (not just the compile-time `fuse()` phase) is what
-    /// makes `FusionDisabled` a TRUE node-walk. Defaults `true`.
+    /// Defaults `true`.
     pub enabled: bool,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
@@ -177,12 +156,6 @@ impl FusionCtx {
             jit: parking_lot::Mutex::new(emit::Jit::new()?),
             kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             building: triomphe::Arc::new(parking_lot::Mutex::new(
-                nohash::IntSet::default(),
-            )),
-            resolving: triomphe::Arc::new(parking_lot::Mutex::new(
-                nohash::IntSet::default(),
-            )),
-            resolving_sites: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
             )),
             enabled: true,
@@ -649,21 +622,12 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                     arcstr::ArcStr::from(s)
                 }
             };
-            // The fnode Ref's BindId identifies the binding being called —
-            // build_lambda_kernel uses it to recognise self-recursion.
-            let call_bind = match cs.fnode.view() {
-                NodeView::Ref(r) => Some(r.id),
-                _ => None,
-            };
             // The SITE's resolved FnType keys the kernel cache — see
-            // build_lambda_kernel (the instance's g.typ() lies about
-            // which monomorphization a later site calls).
+            // build_lambda_kernel.
             let Some(site_ftype) = cs.resolved_ftype() else {
                 return;
             };
-            let Some(cached) =
-                lowering::build_lambda_kernel(g, site_ftype, &name, call_bind, ctx)
-            else {
+            let Some(cached) = lowering::build_lambda_kernel(g, site_ftype, &name, ctx) else {
                 return;
             };
             let ptr = kernel_abi::kernel_key(&cached.kernel);

@@ -16,6 +16,7 @@
 
 use crate::{
     BindId,
+    expr::ModPath,
     typ::{AbstractId, Type, TypeRef},
 };
 use arcstr::ArcStr;
@@ -28,10 +29,9 @@ use triomphe::Arc;
 /// `node::module::check_sig` when a signed module's `type X;` is matched
 /// to its impl `type X = …`. The fusion classifiers ([`abi_kind`] /
 /// [`freeze_for_abi`] / `resolve_abstract`) consult it to resolve an
-/// abstract-typed value to its concrete shape — the optimizer peeks
-/// through the abstraction, but only here (the type system keeps it
-/// opaque everywhere else, and the registry is only ever read during
-/// fusion).
+/// abstract-typed value to its concrete shape. Static instance checking
+/// may also resolve a representation, but only from within its defining
+/// module.
 ///
 /// Lives on the `ExecCtx` (a field, not a process-global) so it is
 /// dropped with the context. `AbstractId`s are minted fresh on every
@@ -42,28 +42,68 @@ use triomphe::Arc;
 /// owning context, so context A never needs to resolve an abstract that
 /// context B registered.
 ///
-/// No lock or interior mutability: writes happen during typecheck
-/// (`check_sig`, holding `&mut ExecCtx`) and reads during fusion (a
-/// shared `&AbstractRegistry` borrow), and those phases are disjoint
-/// within a single `compile()`. The old process-global needed an
-/// `RwLock` purely to guard concurrent compiles of *different* contexts
-/// on parallel threads; per-context that contention — and the whole
-/// cross-lock deadlock-avoidance discipline it forced — is gone.
+/// No lock or interior mutability: registration holds `&mut ExecCtx`;
+/// later instance checks and fusion read through a shared borrow. The
+/// old process-global needed an `RwLock` to guard concurrent compiles of
+/// different contexts; per-context storage removes that contention.
+#[derive(Debug)]
+struct AbstractDef {
+    scope: ModPath,
+    params: Arc<[ArcStr]>,
+    typ: Type,
+}
+
 #[derive(Debug, Default)]
-pub struct AbstractRegistry(nohash::IntMap<AbstractId, Type>);
+pub struct AbstractRegistry(nohash::IntMap<AbstractId, AbstractDef>);
 
 impl AbstractRegistry {
-    /// Register `id`'s concrete implementation type. Called by
-    /// `check_sig` during typecheck.
-    pub fn insert(&mut self, id: AbstractId, typ: Type) {
-        self.0.insert(id, typ);
+    #[cfg(test)]
+    fn insert(&mut self, id: AbstractId, typ: Type) {
+        let params: Arc<[ArcStr]> = Arc::from_iter(std::iter::empty());
+        self.insert_scoped(id, params, typ, ModPath::root());
+    }
+
+    pub fn insert_scoped(
+        &mut self,
+        id: AbstractId,
+        params: Arc<[ArcStr]>,
+        typ: Type,
+        scope: ModPath,
+    ) {
+        self.0.insert(id, AbstractDef { scope, params, typ });
     }
 
     /// The concrete implementation type registered for `id`, cloned out
     /// (a few `Arc` bumps) so the classifier holds no borrow across its
     /// recursion. `None` for an unregistered id (non-fusable).
-    pub fn get(&self, id: &AbstractId) -> Option<Type> {
-        self.0.get(id).cloned()
+    pub fn resolve(&self, id: &AbstractId, params: &[Type]) -> Option<Type> {
+        let def = self.0.get(id)?;
+        if def.params.len() != params.len() {
+            return None;
+        }
+        let known = def
+            .params
+            .iter()
+            .cloned()
+            .zip(params.iter().cloned())
+            .collect::<LPooled<ahash::AHashMap<_, _>>>();
+        Some(def.typ.replace_tvars(&known))
+    }
+
+    pub fn resolve_internal(
+        &self,
+        id: &AbstractId,
+        params: &[Type],
+        scope: &ModPath,
+    ) -> Option<Type> {
+        let def = self.0.get(id)?;
+        let mut candidate = netidx::path::Path::parts(&scope.0);
+        let visible = netidx::path::Path::parts(&def.scope.0)
+            .all(|part| candidate.next() == Some(part));
+        if !visible {
+            return None;
+        }
+        self.resolve(id, params)
     }
 }
 
@@ -313,13 +353,13 @@ fn abi_kind_d(reg: &AbstractRegistry, t: &Type, seen: Option<&Seen>) -> Option<A
             Type::Tuple(_) => return Some(AbiKind::Tuple),
             Type::Struct(_) => return Some(AbiKind::Struct),
             Type::Variant(_, _) => return Some(AbiKind::Variant),
-            Type::Abstract { id, params } if params.is_empty() => {
+            Type::Abstract { id, params } => {
                 let key = ExpandKey::Abstract(*id);
                 if Seen::contains(seen, &key) {
                     // Recursive abstract — no flat ABI kind.
                     return None;
                 }
-                let concrete = reg.get(id);
+                let concrete = reg.resolve(id, params);
                 let node = Seen::push(seen, key);
                 return concrete.as_ref().and_then(|c| abi_kind_d(reg, c, Some(&node)));
             }
@@ -620,7 +660,7 @@ fn freeze_for_abi_d(
                 let mut frozen = frozen?;
                 Some(Type::Set(Arc::from_iter(frozen.drain(..))))
             }
-            Type::Abstract { id, params } if params.is_empty() => {
+            Type::Abstract { id, params } => {
                 let key = ExpandKey::Abstract(*id);
                 if Seen::contains(seen, &key) {
                     // Recursive abstract: no fixed kernel-ABI layout, so
@@ -628,12 +668,12 @@ fn freeze_for_abi_d(
                     // fallback.
                     return None;
                 }
-                let concrete = reg.get(id)?;
+                let concrete = reg.resolve(id, params)?;
                 let node = Seen::push(seen, key);
                 freeze_for_abi_d(reg, &concrete, Some(&node))
             }
-            // Everything else: Any, Fn, Ref, ByRef, parameterized
-            // Abstract, multi-member non-option/non-variant Set
+            // Everything else: Any, Fn, Ref, ByRef, multi-member
+            // non-option/non-variant Set
             // (handled above), unbound TVar (None via with_deref).
             _ => None,
         }

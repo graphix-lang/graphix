@@ -556,9 +556,6 @@ run!(
 // Parameterized abstract type with constraint - use concrete type in interface
 // Note: Constrained type parameters in val declarations use a different syntax.
 // This test uses a concrete instantiation to sidestep that complexity.
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_parameterized_constrained,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
@@ -576,12 +573,9 @@ run!(
         type NumWrapper<'a: Number> = 'a;
         let wrap = |x: i64| -> IntWrapper x;
         let double = |w: IntWrapper| -> i64 w + w
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type in nested position (Array of Box)
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_parameterized_nested,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
@@ -600,7 +594,7 @@ run!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let sum_boxes = |boxes: IntBoxArray| -> i64
             array::fold(boxes, 0, |acc, b| acc + b.value)
-    "#; graphix_package_core::testing::FuseExpect::None);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with two type parameters
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a

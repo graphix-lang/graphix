@@ -322,8 +322,13 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("DynCallSlot::pre_init: not a LambdaDef"))?;
         let lambda_ptr = lambda_def as *const _ as *const u8;
-        let new_apply =
-            (lambda_def.init)(&self.scope, ctx, &mut self.arg_refs, None, self.top_id)?;
+        let new_apply = (lambda_def.init)(
+            &self.scope,
+            ctx,
+            &mut self.arg_refs,
+            crate::BindMode::Definition,
+            self.top_id,
+        )?;
         self.current = Some((lambda_ptr, new_apply));
         Ok(())
     }
@@ -398,7 +403,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     &self.scope,
                     ctx,
                     &mut self.arg_refs,
-                    None,
+                    crate::BindMode::Definition,
                     self.top_id,
                 )
                 .ok()?;

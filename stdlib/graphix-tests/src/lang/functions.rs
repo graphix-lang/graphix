@@ -1423,3 +1423,26 @@ const REC_FN_ARG_COMPILES: &str = r#"
 
 run!(rec_fn_arg_compiles, REC_FN_ARG_COMPILES, |v: Result<&Value>| matches!(v, Ok(_));
      graphix_package_core::testing::FuseExpect::None);
+
+const MUTUAL_RECURSIVE_STATIC_CALLS: &str = r#"
+{
+  let rec even = |n: i64| -> bool {
+    let odd = |m: i64| -> bool select m {
+      i64:0 => false,
+      _ => even(m - i64:1)
+    };
+    select n {
+      i64:0 => true,
+      _ => odd(n - i64:1)
+    }
+  };
+  even(i64:10)
+}
+"#;
+
+run!(
+    mutual_recursive_static_calls,
+    MUTUAL_RECURSIVE_STATIC_CALLS,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    graphix_package_core::testing::FuseExpect::None
+);

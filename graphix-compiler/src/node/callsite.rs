@@ -1,8 +1,8 @@
 use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
-    Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, LambdaId, Node,
-    NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, TagValue, Update,
-    UserEvent, deref_typ,
+    Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, LambdaId,
+    LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope,
+    TagValue, Update, UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::{
         self,
@@ -26,17 +26,6 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use triomphe::Arc as TArc;
-
-fn is_recheck_artifact(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<crate::typ::UnresolvableRef>().is_some()
-        || e.downcast_ref::<crate::typ::AbstractOpaque>().is_some()
-}
-
-fn is_concrete_recheck_endpoint(t: &Type) -> bool {
-    t.with_deref(|t| {
-        t.is_some_and(|t| !matches!(t, Type::Bottom | Type::Any) && !t.has_unbound())
-    })
-}
 
 /// Reject a direct call to a same-cycle (`EffectKind::Sync`) variadic
 /// builtin that supplies NO positional arguments, when the builtin's
@@ -233,6 +222,13 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     },
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct StaticCallTarget {
+    pub definition: LambdaId,
+    pub instance: LambdaInstanceId,
+    pub ftype: FnType,
+}
+
 impl<R: Rt, E: UserEvent> Callee<R, E> {
     fn is_bound(&self) -> bool {
         !matches!(self, Callee::DynamicUnbound | Callee::TransientParked { .. })
@@ -387,6 +383,8 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// trio (the `Static` tag carries `first_update`; the old invalid
     /// `statically_resolved && function == None` state is unrepresentable).
     pub(crate) callee: Callee<R, E>,
+    pub(crate) static_target: Option<StaticCallTarget>,
+    pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
@@ -422,12 +420,27 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// The detached, resolved function type owned by a statically-bound
     /// callee instance.
     pub fn resolved_ftype(&self) -> Option<&FnType> {
+        if let Some(target) = &self.static_target {
+            return Some(&target.ftype);
+        }
         match &self.callee {
             Callee::Static { resolved_ftype, .. } => Some(resolved_ftype),
             Callee::DynamicUnbound
             | Callee::DynamicBound { .. }
             | Callee::TransientParked { .. } => None,
         }
+    }
+
+    pub(crate) fn static_target(&self) -> Option<&StaticCallTarget> {
+        self.static_target.as_ref()
+    }
+
+    pub(crate) fn is_recursive_edge(&self) -> bool {
+        self.recursive_edge.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_recursive_edge(&self, recursive: bool) {
+        self.recursive_edge.store(recursive, Ordering::Relaxed)
     }
 
     /// Source-order argument list. Pair with `args()` to recover the
@@ -522,6 +535,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             args,
             arg_refs: Vec::new(),
             callee: Callee::DynamicUnbound,
+            static_target: None,
+            recursive_edge: AtomicBool::new(false),
             flags,
             top_id,
             scope: scope.clone(),
@@ -534,6 +549,32 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn make_ref(&self, id: BindId, typ: Type, spec: TArc<Expr>) -> Node<R, E> {
         Box::new(Ref { spec, typ, id, top_id: self.top_id })
+    }
+
+    fn clear_prepared_bind(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(mut apply) = self.callee.take_apply() {
+            apply.delete(ctx);
+        }
+        for mut n in self.arg_refs.drain(..) {
+            n.delete(ctx);
+        }
+        self.args.retain(|_, arg| {
+            if arg.is_default {
+                ctx.rt.cached_mut().remove(&arg.id);
+                if let Some(mut n) = arg.node.take() {
+                    n.delete(ctx);
+                }
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    fn discard_static_resolution(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.clear_prepared_bind(ctx);
+        self.static_target = None;
+        self.recursive_edge.store(false, Ordering::Relaxed);
     }
 
     fn prepare_bind<F>(
@@ -550,28 +591,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let mut flags = flags;
         // we already warned about this
         flags.remove(CFlag::WarnUnhandled);
-        // Clean up previous binding (no-op on a fresh CallSite).
-        if let Some(mut old_f) = self.callee.take_apply() {
-            old_f.delete(ctx);
-        }
-        for mut n in self.arg_refs.drain(..) {
-            n.delete(ctx);
-        }
-        // Remove and delete default args from a previous bind — or
-        // the `Nop` placeholders the typechecker inserts for missing
-        // labeled-default args. Either way, the real default Node is
-        // re-created in the arg_refs loop below.
-        self.args.retain(|_, arg| {
-            if arg.is_default {
-                ctx.rt.cached_mut().remove(&arg.id);
-                if let Some(mut n) = arg.node.take() {
-                    n.delete(ctx);
-                }
-                false
-            } else {
-                true
-            }
-        });
+        self.clear_prepared_bind(ctx);
         // Build arg_refs in function-signature order.
         let mut pos_idx = 0;
         for (i, farg) in f.typ.args.iter().enumerate() {
@@ -705,16 +725,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
         f: &LambdaDef<R, E>,
-        resolved_ftype: Option<&FnType>,
+        mode: BindMode<'_>,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let mut apply =
-            (f.init)(scope, ctx, &mut self.arg_refs, resolved_ftype, self.top_id)?;
-        if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
-            if std::env::var_os("GXDBG_SWALLOW").is_some() {
-                eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
-            }
-        }
-        Ok(apply)
+        (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)
     }
 
     fn setup_dynamic_bind<F>(
@@ -730,63 +743,44 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     {
         self.prepare_bind(ctx, scope, flags, f, prime_default_refs)?;
         let resolved_ftype = self.ftype.as_ref().map(FnType::resolve_tvars);
-        self.init_prepared_bind(ctx, scope, f, resolved_ftype.as_ref())
-    }
-
-    fn validate_static_instance(
-        &self,
-        ctx: &ExecCtx<R, E>,
-        apply: &dyn Apply<R, E>,
-        resolved_ftype: &FnType,
-    ) -> Result<()> {
-        if let ApplyView::Lambda(g) = apply.view()
-            && is_concrete_recheck_endpoint(&g.typ().rtype)
-            && is_concrete_recheck_endpoint(g.body().typ())
-            && let Err(e) = g.typ().rtype.check_contains(&ctx.env, g.body().typ())
-        {
-            if is_recheck_artifact(&e) {
-                if std::env::var_os("GXDBG_SWALLOW").is_some() {
-                    eprintln!(
-                        "SWALLOWED-RETCHECK (recheck artifact) at {}: {e:#}",
-                        self.spec
-                    );
-                }
-            } else {
-                return Err(e).with_context(|| {
-                    format!("in the result of {} at this call site", self.spec)
-                });
+        let mode = resolved_ftype
+            .as_ref()
+            .map(BindMode::Dynamic)
+            .unwrap_or(BindMode::Definition);
+        let mut apply = self.init_prepared_bind(ctx, scope, f, mode)?;
+        if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
+            if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
             }
         }
-        let mut pos = 0usize;
-        for fa in resolved_ftype.args.iter() {
-            let node = match fa.label() {
-                Some(name) => self.arg_named(name),
-                None => {
-                    let n = self.arg_positional(pos);
-                    pos += 1;
-                    n
-                }
-            };
-            let Some(node) = node else { continue };
-            if fa.typ.has_unbound() {
-                continue;
-            }
-            if let Err(e) = fa.typ.check_contains(&ctx.env, node.typ()) {
-                if is_recheck_artifact(&e) {
-                    if std::env::var_os("GXDBG_SWALLOW").is_some() {
-                        eprintln!(
-                            "SWALLOWED-ARGCHECK (recheck artifact) at {}: {e:#}",
-                            self.spec
-                        );
-                    }
-                } else {
-                    return Err(e).with_context(|| {
-                        format!("in the instance of {} at this call site", self.spec)
-                    });
-                }
+        Ok(apply)
+    }
+
+    fn typecheck_static_defaults(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for arg in self.args.values_mut() {
+            if arg.is_default
+                && let Some(node) = arg.node.as_mut()
+            {
+                wrap!(node, node.typecheck1(ctx))?;
             }
         }
         Ok(())
+    }
+
+    fn instance_ftype(&self) -> Option<FnType> {
+        self.callee.apply().map(|apply| apply.typ().resolve_tvars())
+    }
+
+    fn refresh_static_ftype(&mut self) {
+        let Some(ftype) = self.instance_ftype() else {
+            return;
+        };
+        if let Some(target) = &mut self.static_target {
+            target.ftype = ftype.clone();
+        }
+        if let Callee::Static { resolved_ftype, .. } = &mut self.callee {
+            *resolved_ftype = ftype;
+        }
     }
 
     fn setup_static_bind(
@@ -797,13 +791,50 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         f: &LambdaDef<R, E>,
     ) -> Result<(Box<dyn Apply<R, E>>, FnType)> {
         self.prepare_bind(ctx, scope, flags, f, |_, _| {})?;
-        let Some(ftype) = self.ftype.as_ref() else {
+        if self.ftype.is_none() {
             bail!("statically resolving an untyped call site: {}", self.spec)
+        }
+        let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
+        let private_site = crate::fusion::lowering::resolve_internal_type(
+            &ctx.fusion.abstract_registry,
+            &Type::Fn(TArc::new(site_ftype.clone())),
+            &f.env,
+            &f.scope.lexical,
+        );
+        let Type::Fn(private_site) = private_site else {
+            unreachable!("resolving a function type must produce a function type")
         };
-        let resolved_ftype = ftype.resolve_tvars();
-        let apply = self.init_prepared_bind(ctx, scope, f, Some(&resolved_ftype))?;
-        self.validate_static_instance(ctx, &*apply, &resolved_ftype)?;
-        Ok((apply, resolved_ftype.resolve_tvars()))
+        let same_shape = private_site.args.len() == f.typ.args.len()
+            && private_site
+                .args
+                .iter()
+                .zip(f.typ.args.iter())
+                .all(|(site, definition)| site.kind == definition.kind);
+        let instance_ftype = if same_shape {
+            private_site.as_ref().clone()
+        } else {
+            let definition_ftype = f.typ.reset_tvars();
+            definition_ftype.alias_tvars(&mut LPooled::take());
+            let private_definition = crate::fusion::lowering::resolve_internal_type(
+                &ctx.fusion.abstract_registry,
+                &Type::Fn(TArc::new(definition_ftype)),
+                &f.env,
+                &f.scope.lexical,
+            );
+            let Type::Fn(private_definition) = private_definition else {
+                unreachable!("resolving a function type must produce a function type")
+            };
+            private_site.check_contains(&ctx.env, &private_definition)?;
+            private_definition.resolve_tvars()
+        };
+        let apply = self.init_prepared_bind(
+            ctx,
+            scope,
+            f,
+            BindMode::Static { instance: &instance_ftype, site: &site_ftype },
+        )?;
+        let instance_ftype = apply.typ().as_ref().clone();
+        Ok((apply, instance_ftype))
     }
 
     /// Release the runtime var registrations a [`Callee::TransientParked`]
@@ -861,17 +892,34 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Some(apply) = self.callee.apply_mut()
             && matches!(apply.view(), ApplyView::Lambda(_))
         {
-            let lid = f.id.inner();
-            let resolving = ctx.fusion.resolving.clone();
-            if resolving.lock().insert(lid) {
-                let ftype = f.typ.clone();
-                if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype) {
+            let instance = match apply.view() {
+                ApplyView::Lambda(g) => g.instance_id(),
+                ApplyView::BuiltIn => unreachable!(),
+            };
+            let instance_ftype = apply.typ();
+            let resolving = ctx.resolving_lambdas.clone();
+            let previous = resolving.lock().insert(
+                f.id,
+                crate::ResolvingLambda {
+                    instance,
+                    ftype: instance_ftype.as_ref().clone(),
+                },
+            );
+            if previous.is_none() {
+                if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
                     if std::env::var_os("GXDBG_SWALLOW").is_some() {
                         eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
                     }
                     log::trace!("bind: lazy-bound callee body typecheck1 failed: {e:#}");
                 }
-                resolving.lock().remove(&lid);
+            }
+            match previous {
+                Some(active) => {
+                    resolving.lock().insert(f.id, active);
+                }
+                None => {
+                    resolving.lock().remove(&f.id);
+                }
             }
             if let ApplyView::Lambda(g) = apply.view() {
                 let self_bind = match self.fnode.view() {
@@ -943,56 +991,96 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         def: &LambdaDef<R, E>,
         fv: Value,
     ) -> Result<()> {
-        if matches!(self.callee, Callee::Static { .. }) {
+        if matches!(self.callee, Callee::Static { .. }) || self.static_target.is_some() {
             // Idempotent.
             return Ok(());
         }
-        // #203 self/mutual-recursion cut: if `def`'s body is CURRENTLY being
-        // driven through typecheck1 (below), this call is a recursive
-        // back-edge. Leave it `DynamicUnbound` — a self-call is handled by
-        // the `self_call` emit mechanism, a mutual back-edge de-fuses cleanly
-        // — and don't recurse the drive.
-        if ctx.fusion.resolving.lock().contains(&def.id.inner()) {
+        let active = ctx.resolving_lambdas.lock().get(&def.id).cloned();
+        if let Some(active) = active {
+            let scope = self.scope.clone();
+            self.prepare_bind(ctx, &scope, self.flags, def, |_, _| {})?;
+            self.typecheck_static_defaults(ctx)?;
+            if self.ftype.is_none() {
+                bail!("statically resolving an untyped call site: {}", self.spec)
+            }
+            self.static_target = Some(StaticCallTarget {
+                definition: def.id,
+                instance: active.instance,
+                ftype: active.ftype.resolve_tvars(),
+            });
             return Ok(());
         }
         let scope = self.scope.clone();
-        let (apply, resolved_ftype) =
+        let (apply, instance_ftype) =
             self.setup_static_bind(ctx, &scope, self.flags, def)?;
-        self.callee =
-            Callee::Static { def: fv, apply, resolved_ftype, first_update: true };
-        // #203: drive the resolved callee's BODY through typecheck1 so its OWN
-        // nested call sites resolve (the cascade `GXLambda::typecheck1 →
-        // body.typecheck1`). Static setup ran only `typecheck0`, so without
-        // this a call inside the body stays `DynamicUnbound` and can't fuse —
-        // the gap that made an HOF callback's `iterate(..)` (and any nested
-        // call) un-fusable. Guarded by the in-progress `LambdaId` set (the
-        // back-edge skip above) so recursion terminates. NOT fusion-gated:
-        // `analysis::analyze`'s tail-loop marking only reaches sites with a
-        // `resolved_apply`, and the NODE-WALK consumes those marks — with
-        // the cascade off under `FusionDisabled`, a rec lambda NESTED in
-        // another lambda's body stack-recursed (and, past the depth guard,
-        // bottomed) where the fused path tail-looped: a mode divergence the
-        // depth guard made value-visible (fuzz/triage-fuzzer-v2/
-        // divergence_000008, 2026-07-03). Errors are swallowed — a body
-        // that fails its first typecheck1 stays partly-resolved and its
-        // calls de-fuse (the interp lazy-binds them); never a NEW compile
-        // failure.
-        if let Some(apply) = self.callee.apply_mut()
-            && matches!(apply.view(), ApplyView::Lambda(_))
-        {
-            let lid = def.id.inner();
-            let resolving = ctx.fusion.resolving.clone();
-            resolving.lock().insert(lid);
-            let ftype = def.typ.clone();
-            if let Err(e) = apply.typecheck1(ctx, &mut [], &ftype) {
-                if std::env::var_os("GXDBG_SWALLOW").is_some() {
-                    eprintln!("SWALLOWED-CASCADE-TC1 at {}: {e:#}", self.spec);
-                }
-                log::trace!("#203: callee body typecheck1 failed (de-fuse): {e:#}");
-            }
-            resolving.lock().remove(&lid);
+        let instance = match apply.view() {
+            ApplyView::Lambda(g) => Some(g.instance_id()),
+            ApplyView::BuiltIn => None,
+        };
+        if let Some(instance) = instance {
+            self.static_target = Some(StaticCallTarget {
+                definition: def.id,
+                instance,
+                ftype: instance_ftype.clone(),
+            });
         }
-        Ok(())
+        self.callee = Callee::Static {
+            def: fv,
+            apply,
+            resolved_ftype: instance_ftype.clone(),
+            first_update: true,
+        };
+        let resolving = ctx.resolving_lambdas.clone();
+        let previous = instance.map(|instance| {
+            resolving.lock().insert(
+                def.id,
+                crate::ResolvingLambda { instance, ftype: instance_ftype.clone() },
+            )
+        });
+        let typecheck0 = {
+            let (callee, arg_refs) = (&mut self.callee, &mut self.arg_refs);
+            callee
+                .apply_mut()
+                .expect("static callee must have an apply")
+                .typecheck0(ctx, arg_refs)
+        }
+        .with_context(|| format!("in the instance of {} at this call site", self.spec));
+        let resolved_ftype = self.instance_ftype().unwrap();
+        if let Some(target) = &mut self.static_target {
+            target.ftype = resolved_ftype.clone();
+        }
+        if let Callee::Static { resolved_ftype: stored, .. } = &mut self.callee {
+            *stored = resolved_ftype.clone();
+        }
+        let res = typecheck0.and_then(|()| self.typecheck_static_defaults(ctx)).and_then(
+            |()| {
+                self.callee
+                    .apply_mut()
+                    .expect("static callee must have an apply")
+                    .typecheck1(ctx, &mut [], &resolved_ftype)
+                    .with_context(|| {
+                        format!("in the instance of {} at this call site", self.spec)
+                    })
+            },
+        );
+        let final_ftype = self.instance_ftype().unwrap();
+        if let Some(target) = &mut self.static_target {
+            target.ftype = final_ftype.clone();
+        }
+        if let Callee::Static { resolved_ftype: stored, .. } = &mut self.callee {
+            *stored = final_ftype;
+        }
+        if let Some(previous) = previous {
+            match previous {
+                Some(active) => {
+                    resolving.lock().insert(def.id, active);
+                }
+                None => {
+                    resolving.lock().remove(&def.id);
+                }
+            }
+        }
+        res
     }
 
     /// Static call resolution — folded in from the deleted
@@ -1045,7 +1133,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
             return Ok(());
         };
-        self.resolve_static(ctx, def, fv.clone())?;
+        if let Err(e) = self.resolve_static(ctx, def, fv.clone()) {
+            if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() {
+                self.discard_static_resolution(ctx);
+                return Ok(());
+            }
+            return Err(e);
+        }
         // HOF callback pre-materialization: every fn-typed positional arg
         // whose function-valued arguments resolve to known lambdas.
         let ftype = match self.resolved_ftype() {
@@ -1088,9 +1182,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // `|a, f| sync { … f(v) … }`) exactly like calls to a lambda
         // binding — per-instance BindIds are fresh per callsite, so
         // there is no cross-site contamination by construction, and
-        // fusion needs no new code (it reads resolved CallSites). This
-        // is what lets an in-language HOF compile to the same native
-        // loop MapQ's builtins get.
+        // fusion needs no special HOF callback path.
         let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
         if let ApplyView::Lambda(g) = apply.view() {
             for (idx, fv) in &fn_arg_targets {
@@ -1121,7 +1213,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // nested_hof_capture_element_and_grandparent). A re-entered
         // site stays dynamic (the interp tail loop owns it).
         let site = self.spec.id.inner();
-        let resolving = ctx.fusion.resolving_sites.clone();
+        let resolving = ctx.resolving_sites.clone();
         if resolving.lock().insert(site) {
             let res = apply.typecheck1(ctx, &mut [], &ftype);
             resolving.lock().remove(&site);
@@ -1505,6 +1597,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // for per-site monomorphization.
                 let is_rec_self_call = !ctx.rec_defs.is_empty()
                     && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
+                let active_ftype = {
+                    let resolving = ctx.resolving_lambdas.lock();
+                    ftype
+                        .lambda_ids
+                        .own()
+                        .and_then(|id| resolving.get(&id))
+                        .map(|active| active.ftype.clone())
+                };
                 // A call to one of the enclosing def's fn-typed PARAMS
                 // during its def gate — the param knot (see
                 // `ExecCtx::def_gate_params`).
@@ -1513,7 +1613,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         self.fnode.view(),
                         NodeView::Ref(r) if ctx.def_gate_params.contains(&r.id)
                     );
-                let ftype = if is_rec_self_call || is_param_knot {
+                let ftype = if let Some(active) = active_ftype {
+                    active
+                } else if is_rec_self_call || is_param_knot {
                     // A shallow clone shares every TVar cell with the
                     // def's ftype — the knot.
                     (*ftype).clone()
@@ -1707,6 +1809,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             Some(ftype) => ftype.clone(),
             None => return Ok(()),
         };
+        self.try_static_resolve(ctx)?;
         // Terminal settle for still-unbound constrained cells: bind each
         // to its conjunction's witness. Deferred from typecheck0 (where
         // the old eager version WAS the wide-binder of observations
@@ -1718,7 +1821,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // Cells reachable from an OMITTED defaulted labeled arg are
         // exempt: that arg's type belongs to its default EXPRESSION,
         // which compiles at static resolution (`setup_static_bind`, driven
-        // from `try_static_resolve` below) and binds the cell through
+        // from `try_static_resolve` above) and binds the cell through
         // the apply's own arg unification — settling first would
         // foreclose it (`rand::rand(#clock:1)` must get `'a := f64`
         // from the `0.0`/`1.0` defaults, not `[Int, Float]` wide). A
@@ -1764,6 +1867,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 wrap!(self, tv.settle_or_bottom(&ctx.env))?;
             }
         }
+        self.refresh_static_ftype();
         let resolved = ftype.resolve_tvars();
         let spec = self.spec.clone();
         // The callee's own identities, against the whole resolved type.
@@ -1784,10 +1888,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        // Fold the former `static_resolve` pass in here: pre-bind the
-        // callee + pre-materialize HOF callbacks now that the index is
-        // complete and this site's callbacks are finalized.
-        self.try_static_resolve(ctx)?;
         // Labeled-default type check — now sound: in this second pass the
         // closure is complete, so `len() == 1` truly means "exactly one
         // possible callee." Runs AFTER static resolution, whose
@@ -1852,8 +1952,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         //    its callback template, while a constant arg's `fuse` is the
         //    no-op default. (Fusing genuinely compute-heavy args as
         //    regions is a separate, deliberate enhancement.)
-        // 2. Give the callee its fusion-phase hook: for an HOF builtin,
-        //    `Apply::fuse` builds its per-element callback template now.
+        // 2. Give the callee its fusion-phase hook.
         for arg in self.args.values_mut() {
             if let Some(node) = &mut arg.node {
                 if let Some(new) = node.fuse(ctx)? {
@@ -1910,6 +2009,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let info = info.clone();
                 return emit_lambda_call_node(cx, self, &info);
             }
+        }
+        if self.is_recursive_edge() {
+            bail!("emit_clif: mutually recursive static call edge is not supported")
         }
         // Builtin DynCall. `marshal_arg_indices[i]` is a position in
         // the source-order arg list `spec_apply.args` — which spans

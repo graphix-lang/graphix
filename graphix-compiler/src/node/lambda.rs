@@ -1,10 +1,11 @@
 use super::{Nop, compiler::compile};
 use crate::{
-    Apply, ApplyView, ApplyViewMut, BindId, CFlag, Event, ExecCtx, InitFn, LambdaId,
-    Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
+    Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, InitFn,
+    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
+    Update, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
+    expr::{self, Arg, ErrorContext, Expr, ExprId, ModPath, Origin},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{callsite::CallSite, pattern::StructPatternNode},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
@@ -120,6 +121,8 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 #[derive(Debug)]
 pub struct GXLambda<R: Rt, E: UserEvent> {
     id: LambdaId,
+    instance_id: LambdaInstanceId,
+    scope: ModPath,
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
     typ: Arc<FnType>,
@@ -130,6 +133,8 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// recursing) and the JIT (`build_lambda_kernel` emits a native
     /// loop). `false` until the analysis runs / for non-tail lambdas.
     tail_loop: AtomicBool,
+    self_recursive: AtomicBool,
+    self_bind: Mutex<Option<BindId>>,
     /// The tag of the last value `update` returned — surfaced through
     /// `Apply::out_tag` so the owning `CallSite` can reconstitute the
     /// body result's two-channel tag across the clean-`Value` Apply
@@ -144,6 +149,10 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     /// key for on-demand kernel monomorphization.
     pub fn id(&self) -> LambdaId {
         self.id
+    }
+
+    pub fn instance_id(&self) -> LambdaInstanceId {
+        self.instance_id
     }
 
     /// The compiled body Node — the lambda's expression tree.
@@ -184,6 +193,48 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     /// analysis pass can mark a lambda it reaches through a shared `&Node`.
     pub fn set_tail_loop(&self, v: bool) {
         self.tail_loop.store(v, Ordering::Relaxed)
+    }
+
+    pub fn self_recursive(&self) -> bool {
+        self.self_recursive.load(Ordering::Relaxed)
+    }
+
+    pub fn set_self_recursive(&self, recursive: bool) {
+        self.self_recursive.store(recursive, Ordering::Relaxed)
+    }
+
+    pub fn self_bind(&self) -> Option<BindId> {
+        *self.self_bind.lock()
+    }
+
+    pub fn set_self_bind(&self, bind: Option<BindId>) {
+        *self.self_bind.lock() = bind;
+    }
+}
+
+fn check_instance_type<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    scope: &ModPath,
+    expected: &Type,
+    actual: &Type,
+) -> Result<()> {
+    match expected.check_contains_rigid(&ctx.env, actual) {
+        Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
+            let expected = crate::fusion::lowering::resolve_internal_type(
+                &ctx.fusion.abstract_registry,
+                expected,
+                &ctx.env,
+                scope,
+            );
+            let actual = crate::fusion::lowering::resolve_internal_type(
+                &ctx.fusion.abstract_registry,
+                actual,
+                &ctx.env,
+                scope,
+            );
+            expected.check_contains_rigid(&ctx.env, &actual)
+        }
+        result => result,
     }
 }
 
@@ -444,12 +495,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     ) -> Result<()> {
         for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
             wrap!(arg, arg.typecheck0(ctx))?;
-            wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
+            wrap!(arg, check_instance_type(ctx, &self.scope, typ, &arg.typ()))?;
         }
         wrap!(self.body, self.body.typecheck0(ctx))?;
         wrap!(
             self.body,
-            self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
+            check_instance_type(ctx, &self.scope, &self.typ.rtype, &self.body.typ())
         )?;
         Ok(())
     }
@@ -468,17 +519,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        // Per-callsite elaboration, layer 2 (sync-subset P4): this
-        // instance was built for ONE call site (site-resolved
-        // signature, per-site static resolution of its fn-typed args),
-        // so its body is site-monomorphic — give it the same region
-        // fusion top-level code gets. A fold whose callback statically
-        // resolved to the site's lambda arg then compiles as a native
-        // loop INSIDE the instance; the call dispatch itself
-        // node-walks when the callee can't be a kernel (fn-typed args
-        // have no ABI), but the loops go native. Reached only through
-        // `CallSite::fuse` on the owning site — MapQ's pristine
-        // `analysis_pred` is not on that walk.
+        // This call-site instance owns a monomorphic body, so give it
+        // the same region-fusion pass as the top-level graph. In-language
+        // HOF loops then compile inside the instance when their callback
+        // calls resolved statically.
         if std::env::var_os("GXDBG_P4").is_some() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
@@ -571,10 +615,14 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         let body = compile(ctx, flags, body, &scope, tid)?;
         Ok(Self {
             id,
+            instance_id: LambdaInstanceId::new(),
+            scope: scope.lexical.clone(),
             args: Box::from(argpats),
             typ,
             body,
             tail_loop: AtomicBool::new(false),
+            self_recursive: AtomicBool::new(false),
+            self_bind: Mutex::new(None),
             last_out: Tag::FIRED,
         })
     }
@@ -864,7 +912,7 @@ impl Lambda {
         let _typ = typ.clone();
         let _argspec = argspec.clone();
         let body = l.body.clone();
-        let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, resolved, tid| {
+        let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, mode, tid| {
             // restore the lexical environment to the state it was in
             // when the closure was created
             ctx.with_restored(_env.clone(), |ctx| match body.clone() {
@@ -881,31 +929,11 @@ impl Lambda {
                         dynamic: scope.dynamic.clone(),
                         lexical: _scope.lexical.clone(),
                     };
-                    // The instance's signature is the CALL SITE's resolved
-                    // ftype when the site provides one — NOT the def's
-                    // shared cells. `setup_bind` runs a swallowed
-                    // `typecheck0` on the fresh instance, and against the
-                    // def's ftype those writes were PERMANENT def
-                    // contamination: site 1 (`f(i64:2)`) bound the def's
-                    // 'a := i64 through this path, then site 2's swallowed
-                    // recheck pushed that i64 into ITS caller's still-open
-                    // argument cell — no error anywhere, and the fusion
-                    // ABI later froze an f64-valued binding as an I64 slot
-                    // (#18, soak jul04: the kernel input marshalled as
-                    // absent forever and the output gated). The
-                    // site-resolved signature makes the recheck unify the
-                    // site's own cells — idempotent by construction — and
-                    // it is also the correct monomorphized signature for
-                    // fusion's kernel derivation. (A fully-fresh
-                    // `reset_tvars` instance is NOT usable instead: the
-                    // never-bound cells de-fuse every cross-kernel call.)
-                    //
-                    // Fallback: a LATE-bound lambda's structure can
-                    // legitimately differ from the site's static view
-                    // (arg subtyping, `[fn_a, fn_b]`-typed bindings), and
-                    // building the instance against the site view then
-                    // fails — retry with the def's own signature, exactly
-                    // the pre-#18 behavior for dynamic binds.
+                    // Static user instances use the full definition-shaped
+                    // signature after it has been refined by the call site in
+                    // the definition's private type scope. Dynamic binding may
+                    // retry the shared definition signature because the runtime
+                    // callee can differ from the site's prior view.
                     let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
                         GXLambda::new(
                             ctx,
@@ -919,32 +947,27 @@ impl Lambda {
                             body.clone(),
                         )
                     };
-                    match resolved {
-                        Some(r) => build(ctx, Arc::new(r.clone()))
+                    match mode {
+                        BindMode::Static { instance, .. } => {
+                            build(ctx, Arc::new(instance.clone()))
+                        }
+                        BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
                             .or_else(|_| build(ctx, _typ.clone())),
-                        None => build(ctx, _typ.clone()),
+                        BindMode::Definition => build(ctx, _typ.clone()),
                     }
                     .map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
                 }
                 Either::Right(builtin) => match ctx.builtins.get(&*builtin) {
                     None => bail!("unknown builtin function {builtin}"),
                     Some(init) => {
-                        // Same policy as the Left branch: the wrapper's
-                        // typecheck runs against the CALL SITE's resolved
-                        // signature when the site provides one. `_typ` is
-                        // the def's SHARED cells — `typecheck0`'s
-                        // check_contains through them bound the def
-                        // (`push`'s 'a := the first site's element type),
-                        // and since `reset_tvars` preserves bindings as
-                        // solved facts, every later site inherited the
-                        // first site's types (the nested in-language map
-                        // hang, sync-subset P4). `None` remains the def
-                        // gate's scratch check, where the def's own cells
-                        // are the point and rigidity protects them.
-                        let typ = match resolved {
+                        // Builtin wrappers use the selected instance type;
+                        // the builtin initializer still receives `None` for
+                        // the definition gate and `Some` for either bind path.
+                        let typ = match mode.resolved() {
                             Some(r) => Arc::new(r.clone()),
                             None => _typ.clone(),
                         };
+                        let resolved = mode.resolved();
                         init(ctx, &_typ, resolved, &_scope, args, tid).map(|apply| {
                             let f: Box<dyn Apply<R, E>> =
                                 Box::new(BuiltInLambda { typ, apply });
@@ -1077,8 +1100,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // to the def's own ftype cells (see `ExecCtx::rec_defs`).
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
-        let res = (def.init)(&def.scope, ctx, &mut faux_args, None, ExprId::new())
-            .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
+        let res = (def.init)(
+            &def.scope,
+            ctx,
+            &mut faux_args,
+            BindMode::Definition,
+            ExprId::new(),
+        )
+        .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             // Fn-typed params knot the same way self-calls do: a body

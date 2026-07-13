@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    SourcePosition, TagValue, UserEvent,
+    Apply, BindId, BindMode, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs,
+    Rt, Scope, SourcePosition, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
@@ -231,7 +231,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             move |scope: &Scope,
                   ctx: &mut ExecCtx<R, E>,
                   args: &mut [Node<R, E>],
-                  _resolved: Option<&FnType>,
+                  _mode: BindMode<'_>,
                   tid: ExprId| {
                 build_wrapper_apply(
                     scope,

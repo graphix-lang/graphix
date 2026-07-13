@@ -97,6 +97,8 @@ pub fn apply<R: Rt, E: UserEvent>(
         flags: BitFlags::empty(),
         fnode,
         callee: Callee::DynamicUnbound,
+        static_target: None,
+        recursive_edge: AtomicBool::new(false),
         top_id,
         // Synthetic call sites are never recursion sites.
         is_self_tail_call: AtomicBool::new(false),

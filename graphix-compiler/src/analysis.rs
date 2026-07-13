@@ -12,24 +12,29 @@
 //! overflows. The shared facts let the interpreter loop in place instead
 //! (`GXLambda::update`), matching the JIT.
 //!
-//! Two phases over the reachable call graph:
+//! Four passes over the reachable call graph:
 //!   1. **Effect inference (M6)** — a greatest fixpoint writing each
 //!      reachable lambda's `LambdaDef::intrinsic_effect`. Optimistic start
 //!      (`Sync`), monotonically degrading to `Async`, so mutual recursion
 //!      of pure functions settles on `Sync`.
-//!   2. **Recursion / tail marking** — per resolved-lambda call site, set
+//!   2. **Instance call graph** — collect static call edges, including
+//!      recursive backedges without instantiated `Apply` nodes.
+//!   3. **Recursion / tail marking** — classify SCCs, set
 //!      the callee's `GXLambda::tail_loop` (the operational interpreter
 //!      gate = structural tail-loop AND sync), mark the body's
 //!      tail-position self-call(s) (`CallSite::is_self_tail_call` +
 //!      `tail_arg_order` + `callee_lambda_id`), and record the
 //!      `RecursionKind` summary.
+//!   4. **For body effects** — select the synchronous or asynchronous
+//!      loop elaboration from the same effect facts.
 //!
 //! The STRUCTURAL tail-loop predicate is shared with the JIT
 //! (`fusion::lowering::structural_tail_loop`) — one seam, so the backends
 //! can't disagree on which lambdas are loop-able.
 
 use crate::{
-    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, UserEvent,
+    ApplyView, BindId, ExecCtx, LambdaId, LambdaInstanceId, Node, NodeView, Rt,
+    UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::ExprKind,
     fusion::{self, lowering},
@@ -40,7 +45,138 @@ use crate::{
 };
 use anyhow::Result;
 use nohash::{IntMap, IntSet};
+use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::sync::atomic::Ordering;
+
+struct StaticEdge<'a, R: Rt, E: UserEvent> {
+    caller: Option<LambdaInstanceId>,
+    callee: LambdaInstanceId,
+    site: &'a CallSite<R, E>,
+}
+
+struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
+    instances: IntMap<LambdaInstanceId, &'a GXLambda<R, E>>,
+    edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
+}
+
+fn collect_static_graph<'a, R: Rt, E: UserEvent>(
+    root: &'a Node<R, E>,
+    seed: Option<&'a GXLambda<R, E>>,
+) -> StaticCallGraph<'a, R, E> {
+    let mut instances = IntMap::default();
+    let mut edges: LPooled<Vec<StaticEdge<'a, R, E>>> = LPooled::take();
+    let mut seen = IntSet::default();
+    let mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>> =
+        LPooled::take();
+    match seed {
+        Some(g) => {
+            instances.insert(g.instance_id(), g);
+            seen.insert(g.instance_id());
+            stack.push((g.body(), Some(g.instance_id())));
+        }
+        None => stack.push((root, None)),
+    }
+    while let Some((node, caller)) = stack.pop() {
+        let mut descend: LPooled<Vec<(&'a Node<R, E>, LambdaInstanceId)>> =
+            LPooled::take();
+        fusion::for_each_node(node, &mut |n| {
+            let NodeView::CallSite(site) = n.view() else { return };
+            if let Some(target) = site.static_target() {
+                edges.push(StaticEdge {
+                    caller,
+                    callee: target.instance,
+                    site,
+                });
+            }
+            let Some(ApplyView::Lambda(g)) = site.resolved_apply() else {
+                return;
+            };
+            let instance = g.instance_id();
+            instances.entry(instance).or_insert(g);
+            if seen.insert(instance) {
+                descend.push((g.body(), instance));
+            }
+        });
+        stack.extend(descend.drain(..).map(|(body, instance)| (body, Some(instance))));
+    }
+    StaticCallGraph { instances, edges }
+}
+
+fn strongly_connected<R: Rt, E: UserEvent>(
+    graph: &StaticCallGraph<'_, R, E>,
+) -> (IntMap<LambdaInstanceId, usize>, IntSet<usize>) {
+    let mut forward: IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>> =
+        IntMap::default();
+    let mut reverse: IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>> =
+        IntMap::default();
+    for id in graph.instances.keys().copied() {
+        forward.entry(id).or_default();
+        reverse.entry(id).or_default();
+    }
+    for edge in graph.edges.iter() {
+        let Some(caller) = edge.caller else { continue };
+        if graph.instances.contains_key(&caller)
+            && graph.instances.contains_key(&edge.callee)
+        {
+            forward.entry(caller).or_default().push(edge.callee);
+            reverse.entry(edge.callee).or_default().push(caller);
+        }
+    }
+    let mut visited = IntSet::default();
+    let mut order: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
+    let mut stack: LPooled<Vec<(LambdaInstanceId, bool)>> = LPooled::take();
+    for root in graph.instances.keys().copied() {
+        if visited.contains(&root) {
+            continue;
+        }
+        stack.push((root, false));
+        while let Some((id, finish)) = stack.pop() {
+            if finish {
+                order.push(id);
+            } else if visited.insert(id) {
+                stack.push((id, true));
+                if let Some(next) = forward.get(&id) {
+                    stack.extend(next.iter().copied().map(|id| (id, false)));
+                }
+            }
+        }
+    }
+    let mut components = IntMap::default();
+    let mut component = 0usize;
+    let mut walk: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
+    while let Some(root) = order.pop() {
+        if components.contains_key(&root) {
+            continue;
+        }
+        walk.push(root);
+        while let Some(id) = walk.pop() {
+            if components.insert(id, component).is_some() {
+                continue;
+            }
+            if let Some(next) = reverse.get(&id) {
+                walk.extend(next.iter().copied());
+            }
+        }
+        component += 1;
+    }
+    let mut sizes: IntMap<usize, usize> = IntMap::default();
+    for component in components.values().copied() {
+        *sizes.entry(component).or_default() += 1;
+    }
+    let mut cyclic: IntSet<usize> = sizes
+        .iter()
+        .filter_map(|(component, size)| (*size > 1).then_some(*component))
+        .collect();
+    for edge in graph.edges.iter() {
+        if edge.caller == Some(edge.callee)
+            && let Some(component) = components.get(&edge.callee)
+        {
+            cyclic.insert(*component);
+        }
+    }
+    (components, cyclic)
+}
 
 /// Run the analysis over the whole compiled program. `root` is the
 /// top-level node; `ctx` is read immutably — every result lands via
@@ -49,17 +185,14 @@ pub fn analyze<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
 ) -> Result<()> {
+    let graph = collect_static_graph(root, None);
     // Pass 1: discover every reachable statically-resolved lambda call
-    // site, descending through callee bodies. Each site is a (callee,
-    // self_bind) pair — `self_bind` is the call's `fnode` Ref id, exactly
-    // what `build_lambda_kernel` derives.
+    // site, descending through callee bodies.
     let sites = collect_resolved_sites(root);
     // Pass 2: effect fixpoint over the reachable bodies.
     let (eff, self_ids) = infer_effects(&sites, ctx);
-    // Pass 3: recursion + tail marking (reads the effects from pass 2).
-    for (g, self_bind) in &sites {
-        mark_recursion(g, *self_bind, ctx);
-    }
+    // Pass 3: instance call-graph SCCs, recursion + tail marking.
+    mark_recursion(&graph, ctx);
     // Pass 4: For-loop body effects (sync-subset P4 final). An
     // async-effect body flips the For to per-index instantiation +
     // re-evaluation (the never-until-complete async elaboration);
@@ -130,14 +263,13 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     self_bind: Option<BindId>,
     ctx: &ExecCtx<R, E>,
 ) {
+    let graph = collect_static_graph(g.body(), Some(g));
     let mut sites = collect_resolved_sites(g.body());
     if let Some(sb) = self_bind {
         sites.push((g, sb));
     }
     let (eff, self_ids) = infer_effects(&sites, ctx);
-    for (g, sb) in &sites {
-        mark_recursion(g, *sb, ctx);
-    }
+    mark_recursion(&graph, ctx);
     mark_for_bodies(g.body(), ctx, &eff, &self_ids);
 }
 
@@ -358,6 +490,9 @@ fn callee_effect<R: Rt, E: UserEvent>(
             lambda_def(ctx, lid).map(|d| *d.intrinsic_effect.lock()).unwrap_or_default()
         })
     };
+    if let Some(target) = cs.static_target() {
+        return known(target.definition);
+    }
     // Resolved user lambda.
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return known(g.id());
@@ -396,51 +531,68 @@ fn callee_effect<R: Rt, E: UserEvent>(
     EffectKind::Async
 }
 
-// ── Phase 2: recursion + tail marking ────────────────────────────────
+// ── Phase 3: recursion + tail marking ────────────────────────────────
 
-/// For one resolved-lambda call site `(g, self_bind)`: record `g`'s
-/// recursion summary, and — when `g` is structurally tail-loop-able AND
-/// sync — set the operational `tail_loop` gate and mark the body's
-/// tail-position self-call(s) so the interpreter loops them.
 fn mark_recursion<R: Rt, E: UserEvent>(
-    g: &GXLambda<R, E>,
-    self_bind: BindId,
+    graph: &StaticCallGraph<'_, R, E>,
     ctx: &ExecCtx<R, E>,
 ) {
-    // Recursion summary (diagnostic; the operational facts are tail_loop
-    // + is_self_tail_call). Computed regardless of loop-ability.
-    let tail = lowering::body_has_self_tail_call(g.body(), self_bind);
-    let summary = if tail {
-        RecursionKind::TailRecursive
-    } else if is_self_recursive(g, self_bind) {
-        RecursionKind::Recursive
-    } else {
-        RecursionKind::NotRecursive
-    };
-    if summary != RecursionKind::NotRecursive {
-        if let Some(d) = lambda_def(ctx, g.id()) {
+    let (components, cyclic) = strongly_connected(graph);
+    let mut component_sizes: IntMap<usize, usize> = IntMap::default();
+    for component in components.values().copied() {
+        *component_sizes.entry(component).or_default() += 1;
+    }
+    for edge in graph.edges.iter() {
+        let recursive = edge.caller.is_some_and(|caller| {
+            components.get(&caller) == components.get(&edge.callee)
+                && components
+                    .get(&caller)
+                    .is_some_and(|component| cyclic.contains(component))
+        });
+        edge.site.set_recursive_edge(recursive);
+    }
+    for (instance, g) in &graph.instances {
+        g.set_tail_loop(false);
+        let component = components.get(instance).copied();
+        let recursive = component.is_some_and(|component| cyclic.contains(&component));
+        let self_edges: SmallVec<[&StaticEdge<'_, R, E>; 2]> = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.caller == Some(*instance) && edge.callee == *instance)
+            .collect();
+        let self_bind = self_edges.iter().find_map(|edge| match edge.site.fnode().view() {
+            NodeView::Ref(r) => Some(r.id),
+            _ => None,
+        });
+        g.set_self_recursive(!self_edges.is_empty());
+        g.set_self_bind(self_bind);
+        let only_self = component
+            .and_then(|component| component_sizes.get(&component).copied())
+            == Some(1);
+        let tail = only_self && body_has_self_tail_call(g.body(), *instance);
+        let summary = if tail {
+            RecursionKind::TailRecursive
+        } else if recursive {
+            RecursionKind::Recursive
+        } else {
+            RecursionKind::NotRecursive
+        };
+        if summary != RecursionKind::NotRecursive
+            && let Some(d) = lambda_def(ctx, g.id())
+        {
             let mut r = d.recursion.lock();
             if rank(summary) > rank(*r) {
                 *r = summary;
             }
         }
-    }
-    // The interpreter's tail-loop gate: structural tail-loop (shared with
-    // the JIT) AND sync (so we never loop an async-dependent recursion —
-    // that must advance cycle-by-cycle). Only set when the body's tail
-    // self-call(s) actually get marked, so `tail_loop` never promises a
-    // loop the interpreter can't perform.
-    let structural = lowering::structural_tail_loop(g, self_bind, ctx);
-    let sync = lambda_is_sync(ctx, g.id());
-    if std::env::var("GRAPHIX_DBG_DEPTH").is_ok() {
-        eprintln!(
-            "MARK_RECURSION id={:?} self_bind={:?} structural={structural} sync={sync}",
-            g.id(),
-            self_bind
-        );
-    }
-    if structural && sync && mark_tail_sites(g.body(), self_bind, g.id()) {
-        g.set_tail_loop(true);
+        let structural = self_bind
+            .is_some_and(|self_bind| lowering::structural_tail_loop(g, self_bind, ctx));
+        if structural
+            && lambda_is_sync(ctx, g.id())
+            && mark_tail_sites(g.body(), *instance, g.id())
+        {
+            g.set_tail_loop(true);
+        }
     }
 }
 
@@ -449,23 +601,23 @@ fn mark_recursion<R: Rt, E: UserEvent>(
 /// site was marked.
 fn mark_tail_sites<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
-    self_bind: BindId,
+    instance: LambdaInstanceId,
     callee: LambdaId,
 ) -> bool {
     match node.view() {
         NodeView::Block(b) => {
-            b.children.last().is_some_and(|c| mark_tail_sites(c, self_bind, callee))
+            b.children.last().is_some_and(|c| mark_tail_sites(c, instance, callee))
         }
-        NodeView::ExplicitParens(ep) => mark_tail_sites(&ep.n, self_bind, callee),
+        NodeView::ExplicitParens(ep) => mark_tail_sites(&ep.n, instance, callee),
         NodeView::Select(s) => {
             let mut any = false;
             for (_, body) in s.arms.iter() {
-                any |= mark_tail_sites(&body.node, self_bind, callee);
+                any |= mark_tail_sites(&body.node, instance, callee);
             }
             any
         }
         NodeView::CallSite(cs) => {
-            if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind) {
+            if cs.static_target().map(|target| target.instance) != Some(instance) {
                 return false;
             }
             let Some(order) = positional_arg_order(cs) else {
@@ -475,6 +627,27 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
             *cs.tail_arg_order.lock() = Some(order);
             *cs.callee_lambda_id.lock() = Some(callee);
             true
+        }
+        _ => false,
+    }
+}
+
+fn body_has_self_tail_call<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    instance: LambdaInstanceId,
+) -> bool {
+    match node.view() {
+        NodeView::Block(b) => b
+            .children
+            .last()
+            .is_some_and(|child| body_has_self_tail_call(child, instance)),
+        NodeView::ExplicitParens(ep) => body_has_self_tail_call(&ep.n, instance),
+        NodeView::Select(s) => s
+            .arms
+            .iter()
+            .any(|(_, body)| body_has_self_tail_call(&body.node, instance)),
+        NodeView::CallSite(site) => {
+            site.static_target().map(|target| target.instance) == Some(instance)
         }
         _ => false,
     }
@@ -499,18 +672,6 @@ fn positional_arg_order<R: Rt, E: UserEvent>(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
-
-fn is_self_recursive<R: Rt, E: UserEvent>(g: &GXLambda<R, E>, self_bind: BindId) -> bool {
-    let mut refs = Refs::default();
-    g.body().refs(&mut refs);
-    let mut found = false;
-    refs.with_external_refs(|id| {
-        if id == self_bind {
-            found = true;
-        }
-    });
-    found
-}
 
 fn rank(k: RecursionKind) -> u8 {
     match k {

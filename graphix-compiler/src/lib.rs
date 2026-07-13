@@ -85,11 +85,9 @@ pub enum CFlag {
     WarnUnhandled,
     WarnUnused,
     WarningsAreErrors,
-    /// Disable fusion entirely — both the compile-time whole-graph
-    /// phase AND the runtime per-slot HOF-callback fusion (which gates
-    /// on `ctx.fusion.enabled`, set from this flag). `compile()`
-    /// runs build + typecheck and returns the regular Node graph; no
-    /// kernels are built or spliced anywhere. This is the test harness's
+    /// Disable fusion entirely. `compile()` runs build + typecheck and
+    /// returns the regular Node graph; no kernels are built or spliced.
+    /// This is the test harness's
     /// `interp` mode: the program executes PURELY through the
     /// Update-trait node-walk, the canonical model. The single fusion
     /// control knob — fusion is JIT-only (no interpreter), so there is
@@ -385,6 +383,8 @@ impl From<u64> for LambdaId {
     }
 }
 
+atomic_id!(LambdaInstanceId);
+
 atomic_id!(BindId);
 
 impl From<u64> for BindId {
@@ -583,12 +583,28 @@ impl Refs {
 
 pub type Node<R, E> = Box<dyn Update<R, E>>;
 
+#[derive(Clone, Copy)]
+pub enum BindMode<'a> {
+    Definition,
+    Dynamic(&'a FnType),
+    Static { instance: &'a FnType, site: &'a FnType },
+}
+
+impl<'a> BindMode<'a> {
+    pub fn resolved(self) -> Option<&'a FnType> {
+        match self {
+            Self::Definition => None,
+            Self::Dynamic(ftype) | Self::Static { site: ftype, .. } => Some(ftype),
+        }
+    }
+}
+
 pub type InitFn<R, E> = sync::Arc<
     dyn for<'a, 'b, 'c, 'd> Fn(
             &'a Scope,
             &'b mut ExecCtx<R, E>,
             &'c mut [Node<R, E>],
-            Option<&'d FnType>,
+            BindMode<'d>,
             ExprId,
         ) -> Result<Box<dyn Apply<R, E>>>
         + Send
@@ -956,11 +972,10 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     ///   [`fusion::try_fuse`] on each child) and swapped any
     ///   that returned a replacement.
     ///
-    /// Policy is per-node — that's the point of the design: a
-    /// container recurses, `Bind` fuses its value, MapQ fuses its
-    /// callback template, and the maximal-region property falls out of
-    /// top-down order (the highest subtree whose `try_fuse` succeeds
-    /// is spliced and nothing below it is attempted). The default is
+    /// Policy is per-node: containers choose where to recurse, and the
+    /// maximal-region property falls out of top-down order (the highest
+    /// subtree whose `try_fuse` succeeds is spliced and nothing below it
+    /// is attempted). The default is
     /// `Ok(None)` with no recursion. Only Module, Block, Bind,
     /// CallSite, and TryCatch (plus `Apply` on Lambda) override it to
     /// descend; the other containers (Sample, Connect, Select, Any,
@@ -1450,6 +1465,12 @@ pub(crate) struct PendingTailCall {
     pub(crate) args: smallvec::SmallVec<[Value; 4]>,
 }
 
+#[derive(Clone)]
+pub(crate) struct ResolvingLambda {
+    pub instance: LambdaInstanceId,
+    pub ftype: FnType,
+}
+
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
@@ -1563,6 +1584,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// enclosing rigid rtype check then refused its own body
     /// (sync-subset P4, the in-language map).
     pub(crate) def_gate_depth: usize,
+    pub(crate) resolving_lambdas:
+        Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingLambda>>>,
+    pub(crate) resolving_sites: Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
     /// All state owned by the fusion subsystem — the JIT module,
     /// kernel caches, abstract-type registry, builtin effects, and the
     /// compile-time fusion flags/counters. Grouped into one struct so
@@ -1638,6 +1662,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             rec_defs: nohash::IntSet::default(),
             def_gate_params: nohash::IntSet::default(),
             def_gate_depth: 0,
+            resolving_lambdas: Arc::new(parking_lot::Mutex::new(
+                nohash::IntMap::default(),
+            )),
+            resolving_sites: Arc::new(parking_lot::Mutex::new(
+                nohash::IntSet::default(),
+            )),
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             active_lambdas: nohash::IntMap::default(),

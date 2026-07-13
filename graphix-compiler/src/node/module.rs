@@ -200,16 +200,16 @@ fn check_sig<R: Rt, E: UserEvent>(
                         }
                     }
                     abstract_types.insert(*id, td.typ.clone());
-                    // Persist the abstract→concrete mapping so fusion's
-                    // `abi_kind` can lower abstract-typed values
-                    // to their concrete representation (the abstraction
-                    // stays opaque to the type system; only the optimizer
-                    // peeks). Stored on the `ExecCtx`, so it drops with
-                    // the context (`AbstractId`s are minted fresh per
-                    // compile — a global map would leak).
+                    // Persist the private representation for scoped
+                    // static-instance checks and fusion ABI lowering.
                     ctx.fusion
                         .abstract_registry
-                        .insert(*id, td.typ.scope_refs(&scope.lexical));
+                        .insert_scoped(
+                            *id,
+                            Arc::from_iter(td.params.iter().map(|(tv, _)| tv.name.clone())),
+                            td.typ.scope_refs(&scope.lexical),
+                            scope.lexical.clone(),
+                        );
                 }
                 _ => {
                     if sig_td.name != td.name

@@ -17,7 +17,7 @@ use crate::{
         },
     },
     node::{Cached, callsite::CallSite, lambda::GXLambda},
-    typ::{FnArgKind, FnType, Type},
+    typ::{FnArgKind, FnArgType, FnType, Type},
 };
 use arcstr::ArcStr;
 use netidx_value::Value;
@@ -542,13 +542,23 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
 /// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
 /// expansion chain (NOT structural depth) guarantees termination there.
 pub(crate) fn resolve_abstract(reg: &AbstractRegistry, typ: &Type, env: &Env) -> Type {
-    resolve_abstract_d(reg, typ, env, None)
+    resolve_abstract_d(reg, typ, env, None, None)
+}
+
+pub(crate) fn resolve_internal_type(
+    reg: &AbstractRegistry,
+    typ: &Type,
+    env: &Env,
+    scope: &crate::expr::ModPath,
+) -> Type {
+    resolve_abstract_d(reg, typ, env, Some(scope), None)
 }
 
 fn resolve_abstract_d<'a>(
     reg: &AbstractRegistry,
     typ: &Type,
     env: &Env,
+    scope: Option<&crate::expr::ModPath>,
     seen: Option<&'a Seen<'a>>,
 ) -> Type {
     use kernel_abi::{ExpandKey, Seen};
@@ -581,7 +591,7 @@ fn resolve_abstract_d<'a>(
         // A TVar deref is not an expansion (it can't recurse forever —
         // TVar bindings are occurs-checked), so `seen` passes through.
         Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
-            Some(t) => resolve_abstract_d(reg, &t, env, seen),
+            Some(t) => resolve_abstract_d(reg, &t, env, scope, seen),
             None => typ.clone(),
         },
         Type::Ref(tr) => {
@@ -590,35 +600,75 @@ fn resolve_abstract_d<'a>(
                 return typ.clone(); // recursive named type — leave opaque
             }
             match typ.lookup_ref(env) {
-                Ok(resolved) if !matches!(&resolved, Type::Ref(_)) => {
+                Ok(resolved) => {
                     let node = Seen::push(seen, key);
-                    resolve_abstract_d(reg, &resolved, env, Some(&node))
+                    resolve_abstract_d(reg, &resolved, env, scope, Some(&node))
                 }
                 _ => typ.clone(),
             }
         }
-        Type::Abstract { id, params } if params.is_empty() => {
+        Type::Abstract { id, params } => {
             let key = ExpandKey::Abstract(*id);
             if Seen::contains(seen, &key) {
                 return typ.clone(); // recursive abstract — leave opaque
             }
-            match reg.get(id) {
+            let resolved = match scope {
+                Some(scope) => reg.resolve_internal(id, params, scope),
+                None => reg.resolve(id, params),
+            };
+            match resolved {
                 Some(concrete) => {
                     let node = Seen::push(seen, key);
-                    resolve_abstract_d(reg, &concrete, env, Some(&node))
+                    resolve_abstract_d(reg, &concrete, env, scope, Some(&node))
                 }
                 None => typ.clone(),
             }
         }
+        Type::Fn(ft) => Type::Fn(Arc::new(FnType {
+            args: Arc::from_iter(ft.args.iter().map(|arg| FnArgType {
+                kind: arg.kind.clone(),
+                typ: resolve_abstract_d(reg, &arg.typ, env, scope, seen),
+            })),
+            vargs: ft
+                .vargs
+                .as_ref()
+                .map(|typ| resolve_abstract_d(reg, typ, env, scope, seen)),
+            rtype: resolve_abstract_d(reg, &ft.rtype, env, scope, seen),
+            throws: resolve_abstract_d(reg, &ft.throws, env, scope, seen),
+            explicit_throws: ft.explicit_throws,
+            quantifiers: ft.quantifiers.clone(),
+            lambda_ids: ft.lambda_ids.clone(),
+        })),
         Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(reg, t, env, seen)),
+            ts.iter()
+                .map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
         )),
-        Type::Array(t) => Type::Array(Arc::new(resolve_abstract_d(reg, t, env, seen))),
+        Type::Variant(tag, ts) => Type::Variant(
+            tag.clone(),
+            Arc::from_iter(
+                ts.iter()
+                    .map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
+            ),
+        ),
+        Type::Array(t) => {
+            Type::Array(Arc::new(resolve_abstract_d(reg, t, env, scope, seen)))
+        }
+        Type::Error(t) => {
+            Type::Error(Arc::new(resolve_abstract_d(reg, t, env, scope, seen)))
+        }
+        Type::ByRef(t) => {
+            Type::ByRef(Arc::new(resolve_abstract_d(reg, t, env, scope, seen)))
+        }
+        Type::Map { key, value } => Type::Map {
+            key: Arc::new(resolve_abstract_d(reg, key, env, scope, seen)),
+            value: Arc::new(resolve_abstract_d(reg, value, env, scope, seen)),
+        },
         Type::Set(ts) => Type::Set(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(reg, t, env, seen)),
+            ts.iter()
+                .map(|t| resolve_abstract_d(reg, t, env, scope, seen)),
         )),
         Type::Struct(fs) => Type::Struct(Arc::from_iter(
-            fs.iter().map(|(n, t)| (n.clone(), resolve_abstract_d(reg, t, env, seen))),
+            fs.iter().map(|(n, t)| (n.clone(), resolve_abstract_d(reg, t, env, scope, seen))),
         )),
         other => other.clone(),
     }
@@ -630,35 +680,19 @@ fn resolve_abstract_d<'a>(
 /// Does NOT touch the transient `FusionCtx` (no `known_fns` /
 /// `called_kernels`). Returns the cached kernel plus the transitively-
 /// called sub-kernels discovered during this build (empty on a cache
-/// hit). Shared by `ensure_lambda_kernel` (the region-splice
-/// cross-kernel call path, which then registered the callee) and — the
-/// reason it's extracted — the per-slot HOF dispatch path
-/// (`design/impure_hof_fusion.md`), which wraps the artifact in a
-/// runtime `Kernel` instead.
+/// hit). Used by `ensure_lambda_kernel`, the region-splice cross-kernel
+/// call path, which then registers the callee.
 ///
 /// `kernel_name` becomes the built `CachedKernel.fn_name`; a cache hit
-/// returns the first builder's name. The region-splice path passes the
-/// call site's source name; the per-slot path passes a unique
-/// per-`LambdaId` name (the SAFETY INVARIANT above requires uniqueness
-/// once a kernel is reached without a Ref fnode — there is no
-/// name-keyed call resolution in the per-slot path, so a
-/// first-builder-wins `fn_name` is benign there, but uniqueness keeps
-/// the two paths from cross-contaminating a shared cache entry's name).
-///
-/// `self_bind` is the binding the call site's fnode references (its
-/// `Ref` node's BindId), when there is one. It identifies the lambda's
-/// OWN binding so that (a) the body's self-reference isn't mistaken
-/// for a capture (a rec binding's env type is a TVar-wrapped `Fn`,
-/// which the capture scan can't freeze), (b) self tail-calls lower to
-/// `TailCall` (the rebind-and-jump loop), and (c) `emit_known_fused_call`
-/// can verify a name-resolved call really targets this binding (#206).
+/// returns the first builder's name. `GXLambda` carries its analyzed
+/// self-binding and recursion facts.
 pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     site_ftype: &FnType,
     kernel_name: &ArcStr,
-    self_bind: Option<BindId>,
     ec: &mut ExecCtx<R, E>,
 ) -> Option<CachedKernel> {
+    let self_bind = g.self_bind();
     // Cache key: (LambdaId, the CALL SITE's resolved FnType).
     // `resolve_tvars` deep-clones, dereffing every TVar to its bound
     // concrete type, so monomorphizations agree across syntactically-
@@ -871,17 +905,14 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // invocation), so the loop is gated on every FORMAL being one of
     // those kinds; otherwise self-calls stay plain native recursion
     // (correct, native stack depth).
-    let is_rec = self_bind.is_some_and(|sb| external.iter().any(|id| *id == sb));
+    let is_rec = g.self_recursive();
     // A recursive self-call is a SECOND source of values for the formals
     // (besides the outer call). If inference resolved a formal to the
     // outer call's type but the self-call feeds it a differently-shaped
-    // value — the union the formal should have had was dropped by the
-    // swallowed body recheck — the kernel would marshal that value under
-    // the wrong ABI (a composite pointer read as a scalar leaks it; a
-    // scalar deref'd as a pointer crashes). Refuse to fuse such a lambda;
-    // the call node-walks, which is canonical and correct (#21, soak
-    // jul04). Well-typed recursion (self-call args match the formals)
-    // passes this check untouched.
+    // value, the kernel would marshal that value under the wrong ABI (a
+    // composite pointer read as a scalar leaks it; a scalar deref'd as a
+    // pointer crashes). Static instance checking rejects that mismatch;
+    // retain this ABI check as defense in depth and de-fuse on disagreement.
     if is_rec
         && let Some(sb) = self_bind
         && !self_calls_abi_consistent(g.body(), sb, &formal_kts, ec)
@@ -891,7 +922,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // The native-loop gate is the SHARED structural predicate — the same
     // one `analysis::analyze` uses (sync-gated) for the interpreter's
     // tail-loop, so the two backends can't disagree on which lambdas loop.
-    let has_tail = self_bind.is_some_and(|sb| structural_tail_loop(g, sb, ec));
+    let has_tail = g.tail_loop();
     // The build is pure signature derivation — the body is validated
     // by the compile attempt itself (`emit_clif` over the body Node;
     // "is it fusable IS the compile attempt"). A body that doesn't

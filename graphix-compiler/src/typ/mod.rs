@@ -236,9 +236,9 @@ impl Default for Type {
 /// either side mentions a [`Type::Abstract`]: abstraction is opacity —
 /// the private↔public equivalence exists only through name resolution
 /// inside the defining module, so a recheck comparing across the
-/// boundary can fail without any semantic contradiction. The call-site
-/// instance recheck swallows exactly this class (with
-/// [`UnresolvableRef`]); everywhere else it is inert context.
+/// boundary can fail without any semantic contradiction. Static call
+/// resolution uses this marker to discard an instance it cannot prove
+/// without crossing that boundary; other failures remain fatal.
 #[derive(Debug, Clone, Copy)]
 pub struct AbstractOpaque;
 
@@ -298,16 +298,9 @@ impl Type {
     }
 
     /// A `Type::Ref` whose `(scope, name)` can't be resolved in the
-    /// ambient env. STRUCTURED (not just a message) so the call-site
-    /// instance recheck can classify: a recheck re-runs name
-    /// resolution in an env where caller- or def-scoped refs may be
-    /// legitimately unnameable — the original check resolved them
-    /// under a transient (env, scope) context that no longer exists
-    /// (the data_table SortBy case,
-    /// fuzz/pending-ruling/site_recheck_strictness.md). Exactly this
-    /// class stays swallowed there; every OTHER typecheck error is a
-    /// genuine semantic contradiction and is STRICT (Eric's ruling,
-    /// 2026-07-12).
+    /// ambient env. STRUCTURED (not just a message) because callers may
+    /// need to distinguish a transient name-resolution boundary from a
+    /// semantic type mismatch.
     /// True iff the type mentions a `Type::Abstract` anywhere,
     /// looking through bound tvar cells AND `Type::Ref` aliases (an
     /// alias to an abstract type is the boundary in its unexpanded
@@ -403,11 +396,20 @@ impl Type {
                     }
                 }
                 let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-                for ((tv, ct), arg) in def_params.iter().zip(params.iter()) {
-                    if let Some(ct) = ct {
-                        ct.check_contains(env, arg)?;
-                    }
+                for ((tv, _), arg) in def_params.iter().zip(params.iter()) {
                     known.insert(tv.name.clone(), arg.clone());
+                }
+                for ((_, constraint), arg) in def_params.iter().zip(params.iter()) {
+                    let Some(constraint) = constraint else {
+                        continue;
+                    };
+                    let constraint = constraint.replace_tvars(&known);
+                    match arg {
+                        Type::TVar(tv) if tv.read().typ.read().typ.is_none() => {
+                            tv.add_cell_constraint(constraint)
+                        }
+                        _ => constraint.check_contains(env, arg)?,
+                    }
                 }
                 Ok(def_typ.replace_tvars(&known))
             }

@@ -254,6 +254,10 @@ impl LambdaIds {
         ids
     }
 
+    pub(crate) fn own(&self) -> Option<LambdaId> {
+        self.0.read().own
+    }
+
     pub fn link(&self, other: &LambdaIds) {
         self.0.write().links.insert(other.as_link());
         other.0.write().links.insert(self.as_link());
