@@ -95,6 +95,8 @@ re-run `run.sh` at the next release build to refresh these rows:
 | `fold_sum`       | 2.2 ms    | 4.71 s    | 2129x   |
 | `map_fold`       | 4.6 ms    | 7.10 s    | 1532x   |
 | `filter_fold`    | 3.8 ms    | 5.20 s    | 1383x   |
+| `list_fold_sum`  | 38.3 ms   | 5.80 s    | 151x    |
+| `list_map_fold`  | 64.0 ms   | 9.06 s    | 142x    |
 | `mandelbrot`     | 80.0 ms   | 7.09 s    | 89x     |
 | `tail_sum`       | 35.8 ms   | 1.93 s    | 54x     |
 | `leibniz_pi`     | 74.3 ms   | 3.64 s    | 49x     |
@@ -105,6 +107,13 @@ re-run `run.sh` at the next release build to refresh these rows:
 (`run.sh` rounds the ratio to a whole number, so it prints `symbolic`
 as `1x`; the honest ratio is 0.66x — with fusion *on* it runs ~1.5x
 slower than the node-walk. See the `symbolic` notes below.)
+
+The LIST HOF rows (added 2026-07-14, single-run measurements) lower
+through the flatten boundary: cons chain → ValArray → native loop →
+rebuilt chain. The ~15x gap to their array twins is the honest cost of
+the cons representation — each of the 100k elements is a 3-slot
+ValArray allocated at build and walked at flatten, on both sides of
+every loop.
 
 The HOF benches show the largest gap (node-walk builds a per-element node
 graph); the fully-fused scalar loops (`mandelbrot`, `tail_sum`,

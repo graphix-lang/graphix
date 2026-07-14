@@ -829,6 +829,100 @@ pub extern "C" fn graphix_valarray_empty_boxed() -> *mut ValArray {
     Box::into_raw(Box::new(ValArray::from([])))
 }
 
+// ─── List / Map collection HOF boundary ───────────────────────────
+//
+// The scaffold loops iterate a ValArray; List (a Cons/Nil chain) and
+// Map (a CMap) sources cross this seam by FLATTENING on entry and
+// REBUILDING on exit, through the same canonical functions the
+// interpreted MapQ/FoldQ use (`node::collection::list`,
+// `make_pair`/`split_pair`) — one semantic seam, so the two
+// evaluators agree bit-for-bit. Semantically `list::map(l, f)`
+// lowers as `from_array(array::map(to_array(l), f))`, and the
+// SlotFlags firing rule over the flattened length IS the interpreted
+// ordinal-slot rule (the interpreted MapQ/FoldQ walk is
+// collection-generic).
+
+/// Flatten a graphix List value into an owned ValArray of its
+/// elements. CONSUMES the value (callers marshal via
+/// `emit_owned_value_operand_node`, like the map/value-arith
+/// helpers). A non-list input — the #219 tainted placeholder (Null),
+/// or a malformed chain (unreachable through the typechecker) —
+/// yields an EMPTY array: the source disc's TAINT rides the loop's
+/// SlotFlags, so the result taints and its payload is unobservable,
+/// matching the interpreted forced-taint semantics.
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_list_to_valarray(tv: TagValue) -> *mut ValArray {
+    let v = tv.value(); // consume; masks the tag bits
+    let arr =
+        crate::node::collection::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
+    Box::into_raw(Box::new(arr))
+}
+
+/// The exit boundary for list-returning HOF loops: consume the
+/// finalize'd ValArray and build the cons chain via
+/// `list::from_iter` — the same constructor the interpreted finishes
+/// use.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_valarray_into_list(arr: *mut ValArray) -> TagValue {
+    let arr = unsafe { *Box::from_raw(arr) };
+    TagValue::clean(crate::node::collection::list::from_iter(arr.iter().cloned()))
+}
+
+/// Flatten a Map value into an owned ValArray of 2-element `[k, v]`
+/// pair arrays in key-sorted order — exactly the interpreted
+/// `ValueMap::values` element encoding (`make_pair`). Consumes the
+/// value; non-map input (the tainted placeholder) → empty array, see
+/// [`graphix_list_to_valarray`].
+#[unsafe(no_mangle)]
+pub extern "C" fn graphix_cmap_to_pairs(tv: TagValue) -> *mut ValArray {
+    let v = tv.value(); // consume; masks the tag bits
+    let arr = match &v {
+        Value::Map(m) => ValArray::from_iter(
+            m.into_iter().map(|(k, v)| crate::node::collection::make_pair(k, v)),
+        ),
+        _ => ValArray::from([]),
+    };
+    Box::into_raw(Box::new(arr))
+}
+
+/// The exit boundary for map-returning HOF loops: consume a
+/// finalize'd ValArray of `[k, v]` pairs and build a `Value::Map` via
+/// the same `split_pair` + `CMap::from_iter` the interpreted
+/// `MapMap::finish` uses (identical duplicate-key semantics). A
+/// malformed element is unreachable through the typechecker —
+/// contribute nothing and log rather than abort.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_valarray_into_cmap(arr: *mut ValArray) -> TagValue {
+    let arr = unsafe { *Box::from_raw(arr) };
+    let m = netidx_value::Map::from_iter(arr.iter().filter_map(|v| {
+        let pair = crate::node::collection::split_pair(v);
+        if pair.is_none() {
+            log::error!("graphix_valarray_into_cmap: malformed pair {v:?}");
+        }
+        pair
+    }));
+    TagValue::clean(Value::Map(m))
+}
+
+/// flat_map extend for LIST-valued callback results: walk the cons
+/// chain and push each element. A NON-list value pushes as a single
+/// element — `ListFlatMap::finish`'s fallback, bit-for-bit. Consumes
+/// the value (the loop wraps the body result owned).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_value_buf_extend_from_list(
+    buf: *mut LPooled<Vec<Value>>,
+    tv: TagValue,
+) {
+    use crate::node::collection::list;
+    let v = tv.value(); // consume; masks the tag bits
+    let buf = unsafe { &mut *buf };
+    if list::is_list(&v) {
+        buf.extend(list::Iter::new(v));
+    } else {
+        buf.push(v);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_string_buf_new() -> *mut String {
     Box::into_raw(Box::new(String::new()))
@@ -1744,6 +1838,14 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_value_new_string", graphix_value_new_string as *const u8),
         ("graphix_arcstr_empty", graphix_arcstr_empty as *const u8),
         ("graphix_valarray_empty_boxed", graphix_valarray_empty_boxed as *const u8),
+        ("graphix_list_to_valarray", graphix_list_to_valarray as *const u8),
+        ("graphix_valarray_into_list", graphix_valarray_into_list as *const u8),
+        ("graphix_cmap_to_pairs", graphix_cmap_to_pairs as *const u8),
+        ("graphix_valarray_into_cmap", graphix_valarray_into_cmap as *const u8),
+        (
+            "graphix_value_buf_extend_from_list",
+            graphix_value_buf_extend_from_list as *const u8,
+        ),
         ("graphix_string_buf_new", graphix_string_buf_new as *const u8),
         ("graphix_string_buf_drop", graphix_string_buf_drop as *const u8),
         ("graphix_string_buf_finalize", graphix_string_buf_finalize as *const u8),

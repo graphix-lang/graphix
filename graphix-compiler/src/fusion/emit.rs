@@ -1988,10 +1988,29 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         }
         // Unwrap a `Value::Array` into the composite ABI's owned
         // `*mut ValArray` (consuming / borrowed-read variants).
-        "graphix_value_into_array" | "graphix_value_into_array_borrowed" => {
+        "graphix_value_into_array" | "graphix_value_into_array_borrowed"
+        // List/Map HOF entry boundary: flatten a List (cons chain) /
+        // Map (CMap) Value into an owned ValArray for the loop
+        // scaffolds — same two-words-in / ptr-out shape.
+        | "graphix_list_to_valarray"
+        | "graphix_cmap_to_pairs" => {
             sig.params.push(AbiParam::new(types::I64)); // v.disc
             sig.params.push(AbiParam::new(types::I64)); // v.payload
             sig.returns.push(AbiParam::new(types::I64)); // *mut ValArray
+        }
+        // List/Map HOF exit boundary: consume a finalize'd ValArray,
+        // rebuild the collection Value (cons chain / CMap).
+        "graphix_valarray_into_list" | "graphix_valarray_into_cmap" => {
+            sig.params.push(AbiParam::new(types::I64)); // *mut ValArray
+            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
+            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
+        }
+        // List flat_map extend: buf ptr + an owned list Value (two
+        // words) in, nothing out.
+        "graphix_value_buf_extend_from_list" => {
+            sig.params.push(AbiParam::new(types::I64)); // buf
+            sig.params.push(AbiParam::new(types::I64)); // v.disc
+            sig.params.push(AbiParam::new(types::I64)); // v.payload
         }
         // Value arithmetic (datetime/duration `ValueArith`): two Value
         // args (four words) in, one Value (two words) out.
@@ -5062,7 +5081,7 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
 /// composite is owned-ensured then wrapped via
 /// `graphix_value_new_from_array` (consumes). A possibly-bottom scalar
 /// (its disc may carry `TAINT`) runtime-aborts via `emit_bottom_abort`.
-fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
+pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
 ) -> Result<CompiledExpr> {

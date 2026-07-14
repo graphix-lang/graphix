@@ -83,9 +83,22 @@ fails without changing the graph. The same collection Node then executes its
 canonical per-slot interpreted semantics. Async callbacks always take this
 path, retaining their subscriptions and independent state.
 
-List and Map HOFs currently use the interpreted collection Nodes. Their Node
-boundary leaves room for direct CLIF lowering without changing the language or
-reintroducing callback graph cloning.
+List and Map HOFs lower to the SAME array scaffold loops (2026-07-14)
+through a FLATTEN boundary: the collection Value is consumed by
+`graphix_list_to_valarray` / `graphix_cmap_to_pairs` (walking the
+canonical `list::*` cons functions / `make_pair` — one semantic seam
+with the interpreted finishes), the loop runs over the flattened
+ValArray (the SlotFlags firing rule over the flattened length IS the
+interpreted ordinal-slot rule, since MapQ/FoldQ are
+collection-generic), and collection results rebuild at
+`graphix_valarray_into_{list,cmap}` (`list::from_iter` /
+`split_pair`+`CMap::from_iter`). The enabling ABI rule: recursive
+types freeze to an OPAQUE LEAF (`freeze_for_abi_d`'s Seen-hit returns
+the matched, cell-filled outer ref with frozen params instead of
+refusing), so a List value crosses kernel boundaries as a 2-word
+Variant and every list-typed DynCall registers. Known v1 gap: the
+fold loop has no Value-shaped accumulator carry, so a List/Map-valued
+fold acc interprets (pinned by `list_fold_list_acc_interprets`).
 
 ## Rejected Alternatives
 

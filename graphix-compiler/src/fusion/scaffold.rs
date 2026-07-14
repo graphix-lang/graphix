@@ -1011,17 +1011,33 @@ where
     Ok((result, flags))
 }
 
+/// How a flat_map body result splices into the output buf: an ARRAY
+/// result extends via its owned ValArray ptr (one word); a LIST
+/// result walks the cons chain (an owned two-word Value; a non-list
+/// value pushes as a single element — `ListFlatMap::finish`'s
+/// fallback). Selected per-op so the array path's emitted CLIF stays
+/// instruction-for-instruction identical.
+#[derive(Clone, Copy)]
+pub enum FlatMapExtend {
+    Array,
+    List,
+}
+
 pub fn emit_flat_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
+    extend_kind: FlatMapExtend,
     mut body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
     let mut flags = SlotFlags::new(cx);
-    let extend = cx.helper("graphix_value_buf_extend_from_array")?;
+    let extend = cx.helper(match extend_kind {
+        FlatMapExtend::Array => "graphix_value_buf_extend_from_array",
+        FlatMapExtend::List => "graphix_value_buf_extend_from_list",
+    })?;
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     flags.set_len(len);
@@ -1046,7 +1062,14 @@ where
     drop_owned_leaves(cx, &leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    cx.b.ins().call(extend, &[buf, value.payload]);
+    match extend_kind {
+        FlatMapExtend::Array => {
+            cx.b.ins().call(extend, &[buf, value.payload]);
+        }
+        FlatMapExtend::List => {
+            cx.b.ins().call(extend, &[buf, value.disc, value.payload]);
+        }
+    }
     emit_increment(cx, i_var, i, loop_header);
     cx.b.seal_block(loop_body);
     cx.b.seal_block(loop_header);

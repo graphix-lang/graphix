@@ -211,7 +211,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
     }
     let d = depth - 1;
     match ty {
-        GenType::Array(e) => match rng.below(4) {
+        GenType::Array(e) => match rng.below(6) {
             0 => {
                 // map: element type = ours (50%) or a random scalar.
                 let d_ty = if rng.below(2) == 0 {
@@ -231,6 +231,34 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 let binder = callback_binder(&mut inner, rng, e, &[]);
                 let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
                 Some(format!("array::filter({src}, |{binder}| {body})"))
+            }
+            // LIST HOFs, roundtrip-wrapped so the target type stays
+            // Array (from_array → list HOF → to_array). Exercises the
+            // flatten/rebuild boundary, the cons-chain value shape,
+            // and the list loop lowering (2026-07-14) against the
+            // interpreted per-slot semantics.
+            4 => {
+                let d_ty = if rng.below(2) == 0 {
+                    (**e).clone()
+                } else {
+                    types::scalar_type(rng)
+                };
+                let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
+                let mut inner = ctx.clone();
+                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
+                let body = gen_typed(&inner, rng, e, d.min(2));
+                Some(format!(
+                    "list::to_array(list::map(list::from_array({src}), |{binder}| {body}))"
+                ))
+            }
+            5 => {
+                let src = gen_typed(ctx, rng, ty, d);
+                let mut inner = ctx.clone();
+                let binder = callback_binder(&mut inner, rng, e, &[]);
+                let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+                Some(format!(
+                    "list::to_array(list::filter(list::from_array({src}), |{binder}| {body}))"
+                ))
             }
             // flat_map's callback returns ['b, Array<'b>]. The checker
             // binds 'b to whatever the body IS without backtracking, so
@@ -261,7 +289,14 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             let mut inner = ctx.clone();
             let binder = callback_binder(&mut inner, rng, e, &[]);
             let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
-            Some(format!("array::find({src}, |{binder}| {body})"))
+            if rng.below(3) == 0 {
+                // The list twin (same `[e, null]` return; the
+                // no-match Null is the B7 seam over the FLATTENED
+                // length).
+                Some(format!("list::find(list::from_array({src}), |{binder}| {body})"))
+            } else {
+                Some(format!("array::find({src}, |{binder}| {body})"))
+            }
         }
         _ if ty.is_scalar() => {
             let d_ty =
@@ -292,7 +327,15 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             } else {
                 gen_typed(&inner, rng, ty, d.min(2))
             };
-            Some(format!("array::fold({src}, {init}, |{acc}, {binder}| {body})"))
+            if rng.below(4) == 0 {
+                // The list twin: same acc/element/firing semantics
+                // over the flattened cons chain.
+                Some(format!(
+                    "list::fold(list::from_array({src}), {init}, |{acc}, {binder}| {body})"
+                ))
+            } else {
+                Some(format!("array::fold({src}, {init}, |{acc}, {binder}| {body})"))
+            }
         }
         _ => None,
     }

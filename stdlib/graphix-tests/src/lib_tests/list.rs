@@ -763,7 +763,7 @@ run!(list_init, LIST_INIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_INIT_ZERO: &str = r#"
   list::to_array(list::init(0, |i| i))
@@ -774,7 +774,7 @@ run!(list_init_zero, LIST_INIT_ZERO, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_INIT_TYPE_ERR: &str = r#"
   list::init(3, |i| str::len(i))
@@ -850,3 +850,91 @@ const LIST_FIND_MAP_TUPLE: &str = r#"
 run!(list_find_map_tuple, LIST_FIND_MAP_TUPLE, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, i64)>()), Ok(Ok((1, 2))))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// ─── Direct List-HOF lowering (2026-07-14) ─────────────────────────
+// The loops compile to native kernels (flatten → array scaffold →
+// rebuild; see node/collection.rs and the graphix_list_to_valarray /
+// graphix_valarray_into_list boundary helpers).
+
+// A whole map+fold pipeline as ONE kernel — `#[native]` proves zero
+// node-walk residue end to end.
+const LIST_NATIVE_PIPELINE: &str = r#"
+#[native]
+list::fold(list::map(list::from_array([1, 2, 3]), |x| x * 2), 0, |acc, x| acc + x)
+"#;
+run!(list_native_pipeline, LIST_NATIVE_PIPELINE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(12)))
+});
+
+// Empty-source firing: the fold of an empty list fires with the
+// initializer (the interpreted empty-source early return ↔ the
+// kernel's src_empty SlotFlags term).
+const LIST_FOLD_EMPTY: &str = r#"
+list::fold(list::from_array([]), 42, |acc, x| acc + x)
+"#;
+run!(list_fold_empty, LIST_FOLD_EMPTY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+// Tuple-element destructure: `|(k, v)|` leaves bind from the
+// flattened elements exactly as for arrays.
+const LIST_MAP_TUPLE_DESTRUCTURE: &str = r#"
+{
+  let l = list::from_array([("a", 1), ("b", 2)]);
+  list::to_array(list::map(l, |(k, v)| v * 2))
+}
+"#;
+run!(list_map_tuple_destructure, LIST_MAP_TUPLE_DESTRUCTURE, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<Vec<i64>>()), Ok(Ok(v)) if v == vec![2, 4])
+});
+
+// flat_map splicing an EMPTY list for one element.
+const LIST_FLAT_MAP_EMPTY_SPLICE: &str = r#"
+{
+  let l = list::from_array([1, 2, 3]);
+  list::to_array(list::flat_map(l, |x| select x {
+    2 => list::from_array([]),
+    _ => list::from_array([x, x * 10])
+  }))
+}
+"#;
+run!(list_flat_map_empty_splice, LIST_FLAT_MAP_EMPTY_SPLICE, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<Vec<i64>>()), Ok(Ok(v)) if v == vec![1, 10, 3, 30])
+});
+
+// A LIST-valued fold ACCUMULATOR (the idiomatic reverse) has no
+// FoldAcc carry discipline in the fused fold loop (Scalar/Composite/
+// Str only) — the fold itself stays interpreted, pinned via
+// `#[native]` refusing. If this starts compiling, a FoldAcc::Value
+// discipline landed: flip the assertion and celebrate.
+#[tokio::test]
+async fn list_fold_list_acc_interprets() {
+    let prog = "{ \
+        let l = list::from_array([1, 2, 3]); \
+        #[native] list::fold(l, list::from_array([]), |acc, x| list::cons(x, acc)) \
+    }";
+    let r = graphix_package_core::testing::eval(prog, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_err(),
+        "a list-valued fold acc has no fused carry discipline yet; got {:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
+// Resize convergence: the list grows a cycle in; the fold re-fires
+// with the new length (the kernel's prev-len state word ↔ the
+// interpreted resize rule).
+#[tokio::test]
+async fn list_fold_resize_converges() {
+    let prog = "{ \
+        let l = list::from_array([1, 2, 3]); \
+        l <- select list::len(l) { 3 => l ~ list::from_array([1, 2, 3, 4]), _ => never() }; \
+        list::fold(l, 0, |acc, x| acc + x) \
+    }";
+    let (v, ctx) =
+        graphix_package_core::testing::eval_converged(prog, crate::TEST_REGISTER)
+            .await
+            .expect("eval_converged");
+    assert_eq!(v, Value::I64(10), "fold must re-fire when the list resizes");
+    ctx.shutdown().await;
+}

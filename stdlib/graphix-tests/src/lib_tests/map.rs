@@ -134,7 +134,7 @@ const MAP_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
+// Lowers natively (2026-07-14): const map literal + flattened pair loop.
 run!(map_map, MAP_MAP, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 3
@@ -151,7 +151,7 @@ const MAP_FILTER: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
+// Lowers natively (2026-07-14).
 run!(map_filter, MAP_FILTER, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
@@ -167,7 +167,7 @@ const MAP_FILTER_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: map literal / Map ops not lowered
+// Lowers natively (2026-07-14).
 run!(map_filter_map, MAP_FILTER_MAP, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
@@ -183,9 +183,7 @@ const MAP_FOLD: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Lowers natively (2026-07-14): flattened pair loop, scalar acc.
 run!(map_fold, MAP_FOLD, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
@@ -261,4 +259,50 @@ const MAP_REMOVE: &str = r#"
 run!(map_remove, MAP_REMOVE, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
+});
+
+// ─── Direct Map-HOF lowering (2026-07-14) ──────────────────────────
+
+// The whole HOF as one kernel — `#[native]` proves the loop is IN the
+// kernel (the plain fixtures above can satisfy FuseExpect::Jit via
+// sub-region fusion alone).
+const MAP_FOLD_NATIVE: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2, "c" => 3};
+  #[native] map::fold(m, 0, |acc, (k, v)| acc + v)
+}
+"#;
+run!(map_fold_native, MAP_FOLD_NATIVE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(6)))
+});
+
+const MAP_MAP_NATIVE: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2};
+  #[native] map::map(m, |(k, v)| (k, v * 2))
+}
+"#;
+run!(map_map_native, MAP_MAP_NATIVE, |v: Result<&Value>| match v {
+    Ok(Value::Map(m)) =>
+        m.len() == 2
+            && m[&Value::String(literal!("a"))] == Value::I64(2)
+            && m[&Value::String(literal!("b"))] == Value::I64(4),
+    _ => false,
+});
+
+// Key collision through map::map: both entries map to the same key —
+// the rebuild goes through the ONE CMap::from_iter seam in both
+// evaluators, so whatever the duplicate policy is, they agree.
+const MAP_MAP_KEY_COLLISION: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2};
+  let collided = map::map(m, |(k, v)| ("same", v));
+  (map::len(collided), map::get(collided, "same"))
+}
+"#;
+run!(map_map_key_collision, MAP_MAP_KEY_COLLISION, |v: Result<&Value>| {
+    matches!(
+        v.map(|v| v.clone().cast_to::<(i64, i64)>()),
+        Ok(Ok((1, n))) if n == 1 || n == 2
+    )
 });

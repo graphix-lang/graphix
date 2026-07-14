@@ -575,8 +575,22 @@ callsite's actual source/init arg nodes for the lambda-param references —
 supported Array shapes compile through the per-op `MapFn`/`FoldFn::emit_clif`
 impls into the `scaffold::emit_{init,map,filter,filter_map,flat_map,find,
 find_map,fold}_loop` emitters; refusal leaves the node intact on its
-interpreted per-slot semantics (async callbacks always interpret; List/Map
-HOFs interpret pending direct lowering). `for_each_emitted_node` descends
+interpreted per-slot semantics (async callbacks always interpret). **List and
+Map HOFs lower too (2026-07-14)** via the FLATTEN boundary: the collection
+Value crosses through `graphix_list_to_valarray`/`graphix_cmap_to_pairs`
+(consuming; canonical `list::*`/`make_pair` seam — one semantic seam with the
+interpreted finishes), the ARRAY scaffold loop runs unchanged (the SlotFlags
+rule over the flattened length IS the interpreted ordinal-slot rule), and
+collection results rebuild at `graphix_valarray_into_{list,cmap}`.
+Prerequisite: recursive types freeze to an OPAQUE LEAF
+(`freeze_for_abi_d` Seen-hit returns the matched outer ref, params frozen,
+256-chain backstop) so a List crosses kernel boundaries as a 2-word Variant
+and list-typed DynCalls (`from_array`/`to_array`/`cons`/...) register.
+Known v1 gap: `FoldAcc` has no Value carry, so a List/Map-valued fold
+ACCUMULATOR interprets (pinned by `list_fold_list_acc_interprets`).
+Benches: `list_fold_sum` 151x, `list_map_fold` 142x — the ~15x gap to the
+array twins is the cons representation's per-element allocation, not loop
+overhead. `for_each_emitted_node` descends
 collection callback bodies during discovery so callee kernels and DynCall
 slots inside callbacks are found. `find`/`find_map` scan ALL slots in both
 modes (a bottom predicate after the match bottoms the find — pinned by
