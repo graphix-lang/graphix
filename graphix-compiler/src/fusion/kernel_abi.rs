@@ -567,10 +567,36 @@ impl<'a> Seen<'a> {
         false
     }
 
+    /// Like [`Self::contains`], but yields the MATCHED key from the
+    /// chain. The freeze's opaque-leaf rule wants the OUTER
+    /// occurrence of a recursive ref — its resolution cell is
+    /// provably filled (it just expanded to reach this recurrence),
+    /// where the inner occurrence's cell may still be empty (`Seen`
+    /// keys compare cell-blind).
+    pub(crate) fn find<'b>(
+        mut cur: Option<&'b Self>,
+        key: &ExpandKey,
+    ) -> Option<&'b ExpandKey> {
+        let fp = expand_key_fp(key);
+        while let Some(s) = cur {
+            if s.fp == fp && &s.key == key {
+                return Some(&s.key);
+            }
+            cur = s.prev;
+        }
+        None
+    }
+
     pub(crate) fn len(this: Option<&Self>) -> usize {
         this.map_or(0, |s| s.len)
     }
 }
+
+/// Backstop on the freeze's expansion CHAIN for NON-regular recursion
+/// (`type T<'a> = T<Array<'a>>` — the params grow each step, so
+/// identity detection never fires). Mirrors `resolve_abstract_d`'s
+/// per-path length guard; regular recursion never gets near it.
+const MAX_FREEZE_EXPANSIONS: usize = 256;
 
 /// The kernel-ABI encodability gate. Despite the "freeze" framing this
 /// is not (only) a `Type → Type` normalization — concretizing the TVars
@@ -595,11 +621,20 @@ impl<'a> Seen<'a> {
 /// Recursive abstract and recursive named types terminate by [`Seen`]
 /// cycle detection on the two expansion arms (`Abstract` via the
 /// registry; `Ref` via its carried resolution cell, env-free) and
-/// return `None`, which is correct: a recursive type has
-/// no fixed kernel-ABI layout, so it is unfusable regardless. Nullary
-/// abstracts carry no params, so they cannot "grow" across expansions —
-/// identity detection is therefore complete here and needs no depth
-/// backstop. Structural recursion (array/tuple/struct/variant nesting)
+/// freeze to an OPAQUE LEAF — the recurring node stays unexpanded, so
+/// the frozen output is FINITE and the recursive value crosses the
+/// kernel boundary as a 2-word opaque (`abi_kind` classifies a
+/// variant-union like `List` as `Variant` without recursing payloads;
+/// the List/Map collection lowering and list-typed DynCalls depend on
+/// this). A recursive NON-variant shape (a recursive tuple) also
+/// freezes finitely — such a type is uninhabited at runtime (no base
+/// case), and every consumer classifies per-level, so the leaf is
+/// shape-safe. Consumers that need flat payload structure (select
+/// payload binds, element leaves) refuse the leaf per-node. NON-regular
+/// recursion (`type T<'a> = T<Array<'a>>` — params grow per step, so
+/// identity never matches) is cut by [`MAX_FREEZE_EXPANSIONS`] on the
+/// expansion chain, mirroring `resolve_abstract_d`'s per-path guard.
+/// Structural recursion (array/tuple/struct/variant nesting)
 /// is intentionally unbounded: it terminates on a finite type, and any
 /// type deep enough to overflow it here would already have overflowed
 /// the parser (source nesting is stack-limited) or the typechecker's own
@@ -729,9 +764,19 @@ fn freeze_for_abi_d(
             Type::Abstract { id, params } => {
                 let key = ExpandKey::Abstract(*id);
                 if Seen::contains(seen, &key) {
-                    // Recursive abstract: no fixed kernel-ABI layout, so
-                    // unfusable — `None` is the correct answer, not just a
-                    // fallback.
+                    // Recursive abstract: freeze to an OPAQUE LEAF
+                    // (see the Ref arm below) — the registry id IS
+                    // the identity; params freeze so the leaf is
+                    // TVar-free.
+                    let frozen: Option<LPooled<Vec<Type>>> =
+                        params.iter().map(|p| freeze_for_abi_d(reg, p, seen)).collect();
+                    let mut frozen = frozen?;
+                    return Some(Type::Abstract {
+                        id: *id,
+                        params: Arc::from_iter(frozen.drain(..)),
+                    });
+                }
+                if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
                     return None;
                 }
                 let concrete = reg.resolve(id, params)?;
@@ -739,12 +784,36 @@ fn freeze_for_abi_d(
                 freeze_for_abi_d(reg, &concrete, Some(&node))
             }
             // Name-compressed instance-signature refs expand through
-            // their carried resolution cell (env-free); empty cell or
-            // a recursive named type → `None` = de-fuse, matching the
-            // pre-cell behavior. Mirrors the `abi_kind_d` Ref arm.
+            // their carried resolution cell (env-free); an empty cell
+            // is `None` = de-fuse. A RECURSIVE named type freezes to
+            // an OPAQUE LEAF: the ref stays unexpanded, so the frozen
+            // form is finite (`[`Cons(i64, Ref(List<i64>)), `Nil]`),
+            // `abi_kind` classifies the whole as a 2-word opaque
+            // (Variant — the Set-of-variants arm never recurses
+            // payloads), and consumers that need flat payload
+            // structure (select payload binds, elem leaves) refuse
+            // per-node as they already do for non-scalar payloads.
+            // The leaf reuses the MATCHED (outer) ref — provably
+            // cell-filled — and freezes its params: an unbound-TVar
+            // param would violate the frozen=TVar-free invariant and
+            // alias identities (unbound cells compare equal).
             Type::Ref(tr) => {
                 let key = ExpandKey::Ref(tr.clone());
-                if Seen::contains(seen, &key) {
+                if let Some(matched) = Seen::find(seen, &key) {
+                    let ExpandKey::Ref(outer) = matched else {
+                        unreachable!("a Ref key can only match a Ref entry")
+                    };
+                    let frozen: Option<LPooled<Vec<Type>>> = tr
+                        .params
+                        .iter()
+                        .map(|p| freeze_for_abi_d(reg, p, seen))
+                        .collect();
+                    let mut frozen = frozen?;
+                    return Some(Type::Ref(
+                        outer.with_params(Arc::from_iter(frozen.drain(..))),
+                    ));
+                }
+                if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
                     return None;
                 }
                 let expanded = tr.expand_cell()?;
@@ -1592,9 +1661,10 @@ mod tests {
 
     /// A self-referential abstract type must (a) TERMINATE — not hang or
     /// stack-overflow (the test hanging would itself be the failure) — and
-    /// (b) reject (`None`): a recursive type has no fixed kernel-ABI layout.
+    /// (b) freeze to a FINITE form whose recurrence is an OPAQUE LEAF:
+    /// `(Abstract(id), i64)` with the inner occurrence unexpanded.
     #[test]
-    fn recursive_abstract_terminates_and_rejects() {
+    fn recursive_abstract_freezes_to_opaque_leaf() {
         let mut reg = AbstractRegistry::default();
         let id = AbstractId::new();
         // Concrete impl references its own abstract id: `(Self, i64)`.
@@ -1604,14 +1674,23 @@ mod tests {
         ]));
         reg.insert(id, rec_impl);
         let t = Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
-        assert!(
-            freeze_for_abi(&reg, &t).is_none(),
-            "a recursive abstract is unfusable (and must not loop)"
-        );
+        let frozen = freeze_for_abi(&reg, &t)
+            .expect("a recursive abstract freezes finitely (and must not loop)");
+        match &frozen {
+            Type::Tuple(slots) => {
+                assert!(
+                    matches!(&slots[0], Type::Abstract { id: leaf, .. } if *leaf == id),
+                    "the recurrence must stay an unexpanded opaque leaf, got {frozen}"
+                );
+                assert_eq!(slots[1], i64_t());
+            }
+            other => panic!("expected the expanded tuple, got {other}"),
+        }
     }
 
     /// MUTUAL recursion (abstract A's rep contains B, B's contains A) must
-    /// also terminate + reject — the cons-list carries BOTH ids on the path.
+    /// also terminate — the cons-list carries BOTH ids on the path — and
+    /// freeze with A's re-occurrence as the opaque leaf.
     #[test]
     fn mutually_recursive_abstracts_terminate() {
         let mut reg = AbstractRegistry::default();
@@ -1620,10 +1699,62 @@ mod tests {
         let abst = |id| Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
         reg.insert(a, Type::Tuple(Arc::from_iter([abst(b), i64_t()])));
         reg.insert(b, Type::Tuple(Arc::from_iter([abst(a), i64_t()])));
-        assert!(
-            freeze_for_abi(&reg, &abst(a)).is_none(),
-            "mutually-recursive abstracts are unfusable (and must terminate)"
+        let frozen = freeze_for_abi(&reg, &abst(a))
+            .expect("mutually-recursive abstracts freeze finitely (and must terminate)");
+        // A → (B, i64) → ((A-leaf, i64), i64)
+        match &frozen {
+            Type::Tuple(slots) => match &slots[0] {
+                Type::Tuple(inner) => {
+                    assert!(
+                        matches!(&inner[0], Type::Abstract { id, .. } if *id == a),
+                        "A must recur as an opaque leaf, got {frozen}"
+                    );
+                }
+                other => panic!("expected B's expansion, got {other}"),
+            },
+            other => panic!("expected A's expansion, got {other}"),
+        }
+    }
+
+    /// NON-regular recursion with a params-BLIND key: `ExpandKey::
+    /// Abstract` carries only the id, so a params-growing abstract
+    /// recurrence is caught at the FIRST re-occurrence and freezes to
+    /// a leaf carrying the GROWN (frozen) params — terminating, never
+    /// chasing the growth. (The chain backstop exists for Ref keys,
+    /// which carry params and so never self-match under growth.)
+    #[test]
+    fn non_regular_recursive_abstract_freezes_at_first_recurrence() {
+        let mut reg = AbstractRegistry::default();
+        let id = AbstractId::new();
+        // type T<'a> = (T<Array<'a>>, i64) — the registry substitutes 'a.
+        let tv = crate::typ::TVar::empty_named(arcstr::literal!("a"));
+        let grown = Type::Abstract {
+            id,
+            params: Arc::from_iter([Type::Array(Arc::new(Type::TVar(tv.clone())))]),
+        };
+        let body = Type::Tuple(Arc::from_iter([grown, i64_t()]));
+        reg.insert_scoped(
+            id,
+            Arc::from_iter([arcstr::literal!("a")]),
+            body,
+            crate::expr::ModPath::root(),
         );
+        let t = Type::Abstract { id, params: Arc::from_iter([i64_t()]) };
+        let frozen = freeze_for_abi(&reg, &t)
+            .expect("params-blind abstract recursion terminates at first recurrence");
+        match &frozen {
+            Type::Tuple(slots) => match &slots[0] {
+                Type::Abstract { id: leaf, params } => {
+                    assert_eq!(*leaf, id);
+                    assert!(
+                        matches!(&params[0], Type::Array(e) if **e == i64_t()),
+                        "the leaf carries the grown, frozen params, got {frozen}"
+                    );
+                }
+                other => panic!("expected the opaque leaf, got {other}"),
+            },
+            other => panic!("expected the expanded tuple, got {other}"),
+        }
     }
 
     /// `abi_kind` is the third concretizer with abstract-expansion

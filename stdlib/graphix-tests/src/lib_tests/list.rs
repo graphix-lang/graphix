@@ -48,7 +48,7 @@ run!(list_singleton, LIST_SINGLETON, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Head ────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ const LIST_HEAD_NONEMPTY: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_head_nonempty, LIST_HEAD_NONEMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_HEAD_EMPTY: &str = r#"
   list::head(list::nil(null))
@@ -97,7 +97,7 @@ run!(list_tail_nonempty, LIST_TAIL_NONEMPTY, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_TAIL_EMPTY: &str = r#"
   list::tail(list::nil(null))
@@ -138,7 +138,7 @@ run!(list_uncons_nonempty, LIST_UNCONS_NONEMPTY, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_UNCONS_EMPTY: &str = r#"
   list::uncons(list::nil(null))
@@ -171,7 +171,7 @@ const LIST_IS_EMPTY_FALSE: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_is_empty_false, LIST_IS_EMPTY_FALSE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(false)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Nth ─────────────────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ run!(list_nth, LIST_NTH, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_NTH_OOB: &str = r#"
 {
@@ -213,7 +213,7 @@ run!(list_nth_oob, LIST_NTH_OOB, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Len ─────────────────────────────────────────────────────────
 
@@ -226,7 +226,7 @@ const LIST_LEN: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_len, LIST_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_LEN_EMPTY: &str = r#"
   list::len(list::nil(null))
@@ -256,7 +256,7 @@ run!(list_reverse, LIST_REVERSE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Take / Drop ─────────────────────────────────────────────────
 
@@ -275,7 +275,7 @@ run!(list_take, LIST_TAKE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_TAKE_MORE: &str = r#"
   list::to_array(list::take(10, list::from_array([1, 2, 3])))
@@ -292,7 +292,7 @@ run!(list_take_more, LIST_TAKE_MORE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_DROP: &str = r#"
   list::to_array(list::drop(2, list::from_array([1, 2, 3, 4, 5])))
@@ -309,7 +309,7 @@ run!(list_drop, LIST_DROP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_DROP_MORE: &str = r#"
   list::to_array(list::drop(10, list::from_array([1, 2, 3])))
@@ -323,7 +323,7 @@ run!(list_drop_more, LIST_DROP_MORE, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Conversion roundtrip ────────────────────────────────────────
 
@@ -342,7 +342,7 @@ run!(list_roundtrip, LIST_ROUNDTRIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_FROM_ARRAY_LEN: &str = r#"
   list::len(list::from_array([1, 2, 3]))
@@ -353,7 +353,7 @@ const LIST_FROM_ARRAY_LEN: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_from_array_len, LIST_FROM_ARRAY_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Concat ──────────────────────────────────────────────────────
 
@@ -379,7 +379,7 @@ run!(list_concat, LIST_CONCAT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Flatten ─────────────────────────────────────────────────────
 
@@ -404,7 +404,7 @@ run!(list_flatten, LIST_FLATTEN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Map ─────────────────────────────────────────────────────────
 
@@ -427,7 +427,7 @@ run!(list_map, LIST_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_MAP_TYPE_ERR: &str = r#"
 {
@@ -464,7 +464,7 @@ run!(list_filter, LIST_FILTER, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Filter map ──────────────────────────────────────────────────
 
@@ -489,7 +489,7 @@ run!(list_filter_map, LIST_FILTER_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Flat map ────────────────────────────────────────────────────
 
@@ -508,7 +508,7 @@ run!(list_flat_map, LIST_FLAT_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Fold ────────────────────────────────────────────────────────
 
@@ -521,7 +521,7 @@ const LIST_FOLD: &str = r#"
 
 run!(list_fold, LIST_FOLD, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(55)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Dynamic re-firing is tested as a multi-cycle CONVERGENCE test (the
 // `run!` harness only captures the first update) — see
@@ -556,7 +556,7 @@ run!(list_find, LIST_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_FIND_MISS: &str = r#"
 {
@@ -567,7 +567,7 @@ const LIST_FIND_MISS: &str = r#"
 
 run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Find map ────────────────────────────────────────────────────
 
@@ -584,7 +584,7 @@ const LIST_FIND_MAP: &str = r#"
 
 run!(list_find_map, LIST_FIND_MAP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Sort ────────────────────────────────────────────────────────
 
@@ -603,7 +603,7 @@ run!(list_sort_asc, LIST_SORT_ASC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_SORT_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, list::from_array([5, 3, 1, 4, 2])))
@@ -620,7 +620,7 @@ run!(list_sort_desc, LIST_SORT_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_SORT_NUMERIC: &str = r#"
   list::to_array(list::sort(#numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
@@ -639,7 +639,7 @@ run!(list_sort_numeric, LIST_SORT_NUMERIC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_SORT_NUMERIC_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, #numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
@@ -658,7 +658,7 @@ run!(list_sort_numeric_desc, LIST_SORT_NUMERIC_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Enumerate ───────────────────────────────────────────────────
 
@@ -680,7 +680,7 @@ run!(list_enumerate, LIST_ENUMERATE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Zip ─────────────────────────────────────────────────────────
 
@@ -703,7 +703,7 @@ run!(list_zip, LIST_ZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_ZIP_UNEQUAL: &str = r#"
 {
@@ -724,7 +724,7 @@ run!(list_zip_unequal, LIST_ZIP_UNEQUAL, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Unzip ───────────────────────────────────────────────────────
 
@@ -747,7 +747,7 @@ run!(list_unzip, LIST_UNZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Init ────────────────────────────────────────────────────────
 
@@ -815,7 +815,7 @@ const LIST_ITERQ: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_iterq, LIST_ITERQ, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(8)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Multi-cycle CONVERGENCE: `list::fold`'s init accumulator changes 0 → 100
 // on the second cycle (via `<-`), which must re-fire the whole per-slot
@@ -849,4 +849,4 @@ const LIST_FIND_MAP_TUPLE: &str = r#"
 "#;
 run!(list_find_map_tuple, LIST_FIND_MAP_TUPLE, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, i64)>()), Ok(Ok((1, 2))))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
