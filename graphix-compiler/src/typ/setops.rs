@@ -64,6 +64,7 @@ fn union_identical(t0: &Type, t1: &Type) -> bool {
         (Type::Ref(r0), Type::Ref(r1)) => {
             r0.scope == r1.scope
                 && r0.name == r1.name
+                && r0.cells_agree(r1)
                 && r0.params.len() == r1.params.len()
                 && r0
                     .params
@@ -112,6 +113,7 @@ impl Type {
             (Type::Ref(t0), Type::Ref(t1))
                 if t0.name == t1.name
                     && t0.scope == t1.scope
+                    && t0.cells_agree(t1)
                     && t0.params.len() == t1.params.len() =>
             {
                 let mut params = t0
@@ -121,7 +123,7 @@ impl Type {
                     .map(|(p0, p1)| p0.union_int(env, hist, p1))
                     .collect::<Result<LPooled<Vec<_>>>>()?;
                 let params = Arc::from_iter(params.drain(..));
-                Ok(Self::Ref(TypeRef { params, ..t0.clone() }))
+                Ok(Self::Ref(t0.with_params(params)))
             }
             (tr @ Type::Ref(TypeRef { .. }), t) => {
                 let t0_id = hist.ref_id(tr, env);
@@ -315,10 +317,13 @@ impl Type {
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
-            (
-                Type::Ref(TypeRef { scope: s0, name: n0, .. }),
-                Type::Ref(TypeRef { scope: s1, name: n1, .. }),
-            ) if s0 == s1 && n0 == n1 => Ok(Type::Primitive(BitFlags::empty())),
+            (Type::Ref(tr0), Type::Ref(tr1))
+                if tr0.scope == tr1.scope
+                    && tr0.name == tr1.name
+                    && tr0.cells_agree(tr1) =>
+            {
+                Ok(Type::Primitive(BitFlags::empty()))
+            }
             (t0 @ Type::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Type::Ref(TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);

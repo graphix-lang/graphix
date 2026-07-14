@@ -20,16 +20,20 @@ impl Type {
     ) -> Result<bool> {
         let fl = BitFlags::empty();
         match (self, t) {
-            (
-                Self::Ref(TypeRef { scope: s0, name: n0, params: p0, .. }),
-                Self::Ref(TypeRef { scope: s1, name: n1, params: p1, .. }),
-            ) if s0 == s1 && n0 == n1 => Ok(p0.len() == p1.len()
-                && p0
-                    .iter()
-                    .zip(p1.iter())
-                    .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
-                    .collect::<Result<AndAc>>()?
-                    .0),
+            (Self::Ref(tr0), Self::Ref(tr1))
+                if tr0.scope == tr1.scope
+                    && tr0.name == tr1.name
+                    && tr0.cells_agree(tr1) =>
+            {
+                Ok(tr0.params.len() == tr1.params.len()
+                    && tr0
+                        .params
+                        .iter()
+                        .zip(tr1.params.iter())
+                        .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
+                        .collect::<Result<AndAc>>()?
+                        .0)
+            }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);

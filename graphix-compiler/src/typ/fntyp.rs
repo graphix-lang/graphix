@@ -503,57 +503,62 @@ impl Default for FnType {
 }
 
 impl FnType {
-    pub(super) fn normalize_int(&self, seen: &mut IntSet<usize>) -> Self {
-        let Self { args, vargs, rtype, throws, explicit_throws, quantifiers, lambda_ids } =
-            self;
-        let args =
-            Arc::from_iter(args.iter().map(|a| FnArgType {
-                kind: a.kind.clone(),
-                typ: a.typ.normalize_int(seen),
-            }));
-        let vargs = vargs.as_ref().map(|t| t.normalize_int(seen));
-        let rtype = rtype.normalize_int(seen);
-        let throws = throws.normalize_int(seen);
-        let explicit_throws = *explicit_throws;
-        let lambda_ids = lambda_ids.clone();
-        FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers: quantifiers.clone(),
-            lambda_ids,
-        }
+    /// `None` = already normal — the caller keeps the original (shared).
+    pub(super) fn normalize_int(
+        &self,
+        cx: &mut super::normalize::NormCx,
+    ) -> Option<Self> {
+        self.cow_walk(|t| t.normalize_int(cx))
     }
 
-    /// Deep-clone with all bound TVars replaced by their concrete types.
-    /// Constraints are emptied since all TVars are resolved.
+    /// Snapshot with all bound TVars replaced by their concrete types.
+    /// TVar-free parts are returned SHARED — see [`Type::resolve_tvars`].
     pub fn resolve_tvars(&self) -> Self {
-        self.resolve_tvars_seen_int(&mut poolshark::local::LPooled::take())
+        self.resolve_tvars_seen_int(&mut super::normalize::ResolveTvarsCx::take())
+            .unwrap_or_else(|| self.clone())
     }
 
-    pub(super) fn resolve_tvars_seen_int(&self, seen: &mut IntSet<usize>) -> Self {
+    /// `None` = no TVar anywhere beneath — the caller keeps the original.
+    pub(super) fn resolve_tvars_seen_int(
+        &self,
+        cx: &mut super::normalize::ResolveTvarsCx,
+    ) -> Option<Self> {
+        self.cow_walk(|t| t.resolve_tvars_seen_int(cx))
+    }
+
+    /// Rewrite every type position through `f` (`None` from `f` =
+    /// unchanged), rebuilding only if something changed.
+    pub(crate) fn cow_walk(
+        &self,
+        mut f: impl FnMut(&Type) -> Option<Type>,
+    ) -> Option<Self> {
         let Self { args, vargs, rtype, throws, explicit_throws, quantifiers, lambda_ids } =
             self;
-        let args = Arc::from_iter(args.iter().map(|a| FnArgType {
-            kind: a.kind.clone(),
-            typ: a.typ.resolve_tvars_seen_int(seen),
-        }));
-        let vargs = vargs.as_ref().map(|t| t.resolve_tvars_seen_int(seen));
-        let rtype = rtype.resolve_tvars_seen_int(seen);
-        let throws = throws.resolve_tvars_seen_int(seen);
-        let explicit_throws = *explicit_throws;
-        let lambda_ids = lambda_ids.clone();
-        FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers: quantifiers.clone(),
-            lambda_ids,
+        let new_args = Type::cow_slice(args, |a| {
+            f(&a.typ).map(|typ| FnArgType { kind: a.kind.clone(), typ })
+        });
+        let new_vargs = vargs.as_ref().and_then(&mut f);
+        let new_rtype = f(rtype);
+        let new_throws = f(throws);
+        if new_args.is_none()
+            && new_vargs.is_none()
+            && new_rtype.is_none()
+            && new_throws.is_none()
+        {
+            return None;
         }
+        Some(FnType {
+            args: new_args.unwrap_or_else(|| args.clone()),
+            vargs: match new_vargs {
+                Some(t) => Some(t),
+                None => vargs.clone(),
+            },
+            rtype: new_rtype.unwrap_or_else(|| rtype.clone()),
+            throws: new_throws.unwrap_or_else(|| throws.clone()),
+            explicit_throws: *explicit_throws,
+            quantifiers: quantifiers.clone(),
+            lambda_ids: lambda_ids.clone(),
+        })
     }
 
     pub fn unbind_tvars(&self) {
@@ -638,79 +643,33 @@ impl FnType {
     }
 
     pub fn reset_tvars(&self) -> Self {
-        self.reset_tvars_int(&mut LPooled::take())
+        self.reset_tvars_int(&mut LPooled::take()).unwrap_or_else(|| self.clone())
     }
 
     /// One cell-identity freshening map across the whole signature —
     /// see [`Type::reset_tvars_int`]. Cell constraint conjunctions
     /// travel with the cells (the TVar-level reset copies them), so
     /// nothing beyond the signature components needs freshening.
-    pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Self {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers,
-            lambda_ids,
-        } = self;
-        let args = Arc::from_iter(args.iter().map(|a| FnArgType {
-            kind: a.kind.clone(),
-            typ: a.typ.reset_tvars_int(known),
-        }));
-        let vargs = vargs.as_ref().map(|t| t.reset_tvars_int(known));
-        let rtype = rtype.reset_tvars_int(known);
-        let throws = throws.reset_tvars_int(known);
-        let explicit_throws = *explicit_throws;
-        let lambda_ids = lambda_ids.clone();
-        FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers: quantifiers.clone(),
-            lambda_ids,
-        }
+    /// `None` = no TVar anywhere beneath — keep the original (shared).
+    pub(super) fn reset_tvars_int(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+    ) -> Option<Self> {
+        self.cow_walk(|t| t.reset_tvars_int(known))
     }
 
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Type>) -> Self {
         self.replace_tvars_int(known, &mut LPooled::take())
+            .unwrap_or_else(|| self.clone())
     }
 
+    /// `None` = no TVar anywhere beneath — keep the original (shared).
     pub(super) fn replace_tvars_int(
         &self,
         known: &AHashMap<ArcStr, Type>,
         renamed: &mut AHashMap<ArcStr, TVar>,
-    ) -> Self {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers,
-            lambda_ids,
-        } = self;
-        let args = Arc::from_iter(args.iter().map(|a| FnArgType {
-            kind: a.kind.clone(),
-            typ: a.typ.replace_tvars_int(known, renamed),
-        }));
-        let vargs = vargs.as_ref().map(|t| t.replace_tvars_int(known, renamed));
-        let rtype = rtype.replace_tvars_int(known, renamed);
-        let throws = throws.replace_tvars_int(known, renamed);
-        let explicit_throws = *explicit_throws;
-        let lambda_ids = lambda_ids.clone();
-        FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers: quantifiers.clone(),
-            lambda_ids,
-        }
+    ) -> Option<Self> {
+        self.cow_walk(|t| t.replace_tvars_int(known, renamed))
     }
 
     /// Replace automatically constrained type variables (those with

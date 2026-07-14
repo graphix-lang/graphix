@@ -237,13 +237,13 @@ fn check_instance_type<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     match expected.check_contains_rigid(&ctx.env, actual) {
         Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
-            let expected = crate::fusion::lowering::resolve_internal_type(
+            let expected = crate::fusion::lowering::privatize_type(
                 &ctx.fusion.abstract_registry,
                 expected,
                 &ctx.env,
                 scope,
             );
-            let actual = crate::fusion::lowering::resolve_internal_type(
+            let actual = crate::fusion::lowering::privatize_type(
                 &ctx.fusion.abstract_registry,
                 actual,
                 &ctx.env,
@@ -1098,6 +1098,14 @@ impl Lambda {
                 }
             })
         });
+        // Deliberately NO signature seeding here: at lambda-compile
+        // time the enclosing module tree is mid-registration, and an
+        // early resolve can capture a DIFFERENT def than the name's
+        // final meaning (tui's `list::List` means the tui::list
+        // submodule's type, but resolves to the list PACKAGE's before
+        // that submodule compiles). Cells fill at typecheck (after
+        // all registrations) and the privatize walk makes instance
+        // signatures env-independent at static-bind time.
         let def = ctx.lambdawrap.wrap(LambdaDef {
             id,
             typ: typ.clone(),

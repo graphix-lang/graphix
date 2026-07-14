@@ -97,13 +97,33 @@ impl AbstractRegistry {
         scope: &ModPath,
     ) -> Option<Type> {
         let def = self.0.get(id)?;
-        let mut candidate = netidx::path::Path::parts(&scope.0);
-        let visible = netidx::path::Path::parts(&def.scope.0)
-            .all(|part| candidate.next() == Some(part));
-        if !visible {
+        if !self.visible_from(def, scope) {
             return None;
         }
         self.resolve(id, params)
+    }
+
+    /// The private definition TEMPLATE (formal param names +
+    /// unsubstituted body) for `id`, scope-gated like
+    /// [`Self::resolve_internal`]. The privatize walk uses it to
+    /// re-point a public-view ref's resolution cell at the private
+    /// body without expanding anything — the ref's own params keep
+    /// substituting through `lookup_ref` as usual.
+    pub(crate) fn internal_template(
+        &self,
+        id: &AbstractId,
+        scope: &ModPath,
+    ) -> Option<(Arc<[ArcStr]>, Type)> {
+        let def = self.0.get(id)?;
+        if !self.visible_from(def, scope) {
+            return None;
+        }
+        Some((def.params.clone(), def.typ.clone()))
+    }
+
+    fn visible_from(&self, def: &AbstractDef, scope: &ModPath) -> bool {
+        let mut candidate = netidx::path::Path::parts(&scope.0);
+        netidx::path::Path::parts(&def.scope.0).all(|part| candidate.next() == Some(part))
     }
 }
 
@@ -363,6 +383,21 @@ fn abi_kind_d(reg: &AbstractRegistry, t: &Type, seen: Option<&Seen>) -> Option<A
                 let node = Seen::push(seen, key);
                 return concrete.as_ref().and_then(|c| abi_kind_d(reg, c, Some(&node)));
             }
+            // A ref reaches here through instance signatures, which
+            // stay name-compressed since the privatize walk replaced
+            // eager expansion. Its carried resolution cell makes it
+            // expandable WITHOUT an env; an empty cell (or a recursive
+            // named type — no flat ABI layout) is `None` = de-fuse,
+            // exactly the pre-cell behavior.
+            Type::Ref(tr) => {
+                let key = ExpandKey::Ref(tr.clone());
+                if Seen::contains(seen, &key) {
+                    return None;
+                }
+                let expanded = tr.expand_cell();
+                let node = Seen::push(seen, key);
+                return expanded.as_ref().and_then(|c| abi_kind_d(reg, c, Some(&node)));
+            }
             _ => {}
         }
         // Single-bit primitives.
@@ -483,18 +518,48 @@ pub(crate) enum ExpandKey {
 /// expansions (tiny), so no heap.
 pub(crate) struct Seen<'a> {
     key: ExpandKey,
+    /// [`expand_key_fp`] of `key` — membership walks compare u64s and
+    /// fall back to full equality only on a fingerprint match (the
+    /// `TypeRef` string equality dominated dependency-validity checks
+    /// at GUI scale).
+    fp: u64,
     len: usize,
     prev: Option<&'a Seen<'a>>,
 }
 
+/// Cheap discriminating fingerprint of an [`ExpandKey`] — collisions
+/// only cost a full-equality fallback.
+pub(crate) fn expand_key_fp(key: &ExpandKey) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = ahash::AHasher::default();
+    match key {
+        ExpandKey::Abstract(id) => {
+            0u8.hash(&mut h);
+            id.hash(&mut h);
+        }
+        ExpandKey::Ref(tr) => {
+            1u8.hash(&mut h);
+            tr.scope.hash(&mut h);
+            tr.name.hash(&mut h);
+            tr.params.len().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 impl<'a> Seen<'a> {
     pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: ExpandKey) -> Self {
-        Self { key, len: Self::len(prev) + 1, prev }
+        let fp = expand_key_fp(&key);
+        Self { key, fp, len: Self::len(prev) + 1, prev }
     }
 
-    pub(crate) fn contains(mut cur: Option<&Self>, key: &ExpandKey) -> bool {
+    pub(crate) fn contains(cur: Option<&Self>, key: &ExpandKey) -> bool {
+        Self::contains_fp(cur, expand_key_fp(key), key)
+    }
+
+    pub(crate) fn contains_fp(mut cur: Option<&Self>, fp: u64, key: &ExpandKey) -> bool {
         while let Some(s) = cur {
-            if &s.key == key {
+            if s.fp == fp && &s.key == key {
                 return true;
             }
             cur = s.prev;
@@ -527,9 +592,10 @@ impl<'a> Seen<'a> {
 /// `Map`/`Error` stop the recursion: they are carried as an opaque
 /// two-register `Value`, so their parameters never reach the wire).
 ///
-/// Recursive abstract types terminate by [`Seen`] cycle detection on the
-/// nullary-abstract expansion arm (the only expansion site here — `Ref`
-/// is rejected) and return `None`, which is correct: a recursive type has
+/// Recursive abstract and recursive named types terminate by [`Seen`]
+/// cycle detection on the two expansion arms (`Abstract` via the
+/// registry; `Ref` via its carried resolution cell, env-free) and
+/// return `None`, which is correct: a recursive type has
 /// no fixed kernel-ABI layout, so it is unfusable regardless. Nullary
 /// abstracts carry no params, so they cannot "grow" across expansions —
 /// identity detection is therefore complete here and needs no depth
@@ -672,7 +738,20 @@ fn freeze_for_abi_d(
                 let node = Seen::push(seen, key);
                 freeze_for_abi_d(reg, &concrete, Some(&node))
             }
-            // Everything else: Any, Fn, Ref, ByRef, multi-member
+            // Name-compressed instance-signature refs expand through
+            // their carried resolution cell (env-free); empty cell or
+            // a recursive named type → `None` = de-fuse, matching the
+            // pre-cell behavior. Mirrors the `abi_kind_d` Ref arm.
+            Type::Ref(tr) => {
+                let key = ExpandKey::Ref(tr.clone());
+                if Seen::contains(seen, &key) {
+                    return None;
+                }
+                let expanded = tr.expand_cell()?;
+                let node = Seen::push(seen, key);
+                freeze_for_abi_d(reg, &expanded, Some(&node))
+            }
+            // Everything else: Any, Fn, ByRef, multi-member
             // non-option/non-variant Set
             // (handled above), unbound TVar (None via with_deref).
             _ => None,
@@ -748,70 +827,9 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
 /// nothing and no rung rewrites TVar bindings (`resolve_tvars`
 /// deep-clones).
 pub fn freeze_for_abi_normalized(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
-    freeze_for_abi(reg, t).or_else(|| {
-        // The normalize fallbacks cure set/tvar noise ([T, T] → T), not
-        // structural rejects, and `flatten_set`'s merge sweep is
-        // super-linear — on a statically-bound GUI widget-union
-        // signature the fallback normalize was a compile wedge
-        // (2026-07-13). A type this large has no kernel encoding the
-        // RAW freeze above wouldn't already have accepted, so don't pay
-        // to normalize it.
-        if !size_at_most(t, FREEZE_NORMALIZE_SIZE_CAP) {
-            return None;
-        }
-        freeze_for_abi(reg, &t.normalize())
-            .or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
-    })
-}
-
-const FREEZE_NORMALIZE_SIZE_CAP: usize = 512;
-
-/// Capped node count over the type, following bound TVar cells (each
-/// cell counted once — sharing and cyclic bindings can't loop). Counts
-/// STRUCTURAL nodes tree-wise (shared Arcs count per occurrence), so it
-/// measures what a downstream deep-clone or tree-walk of the type would
-/// cost, not the DAG's allocation footprint.
-pub(crate) fn size_at_most(t: &Type, cap: usize) -> bool {
-    let mut stack: LPooled<Vec<Type>> = LPooled::take();
-    let mut seen_cells: LPooled<nohash::IntSet<usize>> = LPooled::take();
-    stack.push(t.clone());
-    let mut n = 0;
-    while let Some(t) = stack.pop() {
-        n += 1;
-        if n > cap {
-            return false;
-        }
-        match t {
-            Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref(tr) => stack.extend(tr.params.iter().cloned()),
-            Type::Abstract { params, .. } => stack.extend(params.iter().cloned()),
-            Type::TVar(tv) => {
-                if seen_cells.insert(tv.cell_addr())
-                    && let Some(bound) = tv.read().typ.read().typ.clone()
-                {
-                    stack.push(bound);
-                }
-            }
-            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
-                stack.extend(ts.iter().cloned())
-            }
-            Type::Struct(fs) => stack.extend(fs.iter().map(|(_, t)| t.clone())),
-            Type::Array(t) | Type::Error(t) | Type::ByRef(t) => stack.push((*t).clone()),
-            Type::Map { key, value } => {
-                stack.push((*key).clone());
-                stack.push((*value).clone());
-            }
-            Type::Fn(ft) => {
-                stack.extend(ft.args.iter().map(|a| a.typ.clone()));
-                if let Some(va) = &ft.vargs {
-                    stack.push(va.clone());
-                }
-                stack.push(ft.rtype.clone());
-                stack.push(ft.throws.clone());
-            }
-        }
-    }
-    true
+    freeze_for_abi(reg, t)
+        .or_else(|| freeze_for_abi(reg, &t.normalize()))
+        .or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
 }
 
 /// Normalizes ALL THREE option-shaped forms that collapse to

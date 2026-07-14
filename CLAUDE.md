@@ -314,15 +314,52 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
   "does this call dispatch and to what".
 - `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
-  spec, BindId, unstable/b2l/cached hit) plus the index writes
+  spec, BindId, unstable/b2l/cached hit), the index writes
   (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export
-  bridging). The tool for "why didn't this call site statically
-  resolve" — found the batch-entry `bind_to_lambda.clear()` that made
-  shell fusion a race (the jul12 resolution flap).
+  bridging), and `RESOLVE-DISCARD` when a static bind is dropped back
+  to dynamic on `AbstractOpaque`. The tool for "why didn't this call
+  site statically resolve" — found the batch-entry
+  `bind_to_lambda.clear()` that made shell fusion a race (the jul12
+  resolution flap).
 
 ### Type Alias Expansion in Contains
 
 When `contains` encounters a `Type::Ref` (e.g. `Result<T, E>`), the Ref case at `contains.rs:56` expands both sides via `lookup_ref(env)` before recursing. This means TVar bindings established during `contains` store the **expanded** form (e.g. `[T, Error<E>]` instead of `Result<T, E>`). Code that inspects resolved types must handle both the `Type::Ref` form and the expanded `Type::Set` form — see `extract_cast_type` in `graphix-package-core/src/lib.rs` for an example.
+
+### Env-independent TypeRefs (carried resolution cells)
+
+`TypeRef` carries a write-once `Arc<Mutex<Option<Arc<ResolvedRef>>>>`
+cell caching its NAME resolution (`design/env_independent_typerefs.md`,
+2026-07-14) — a ref first resolved in its native env becomes an
+env-independent value, so retained instance signatures stay
+NAME-COMPRESSED instead of being eagerly expanded (the expansion was
+the 41GB GUI wedge and the `contains` exponential residual; both gone,
+GUI suite 163/163 in ~5s). Rules that matter when touching types:
+
+- The cell is params-independent — rebuilds use `TypeRef::with_params`
+  (SHARES the cell; `reset_tvars`/`replace_tvars` copies must keep
+  seeded cells) vs `with_scope` (fresh — scope changes the resolution).
+  Never overwrite a filled cell; contexts needing a different view
+  rebind (`rebind_resolution`, fresh pre-filled cell).
+- Seeding is LAZY by default — a fill is correct only when the
+  resolving env holds the name's FINAL target, and mid-compile envs
+  are truncated by registration order (eager transitive seeding
+  captured the list PACKAGE's `List` for tui's `list::List` submodule
+  ref; removed twice). `Type::seed_refs` (explicit transitive walk)
+  runs only at provably-safe times: `check_sig`'s registry copy
+  (post-module-body) and the privatize walk's rebinds (typecheck1).
+- `same_def` (structural — gates the Ref×Ref name fast paths via
+  `cells_agree`) vs `same_view` (body ALLOCATION identity). The
+  privatize walk rebinds a ref to the env's allocation only on
+  same-def/different-view divergence (interface typedef bodies are
+  registered twice, equal-but-differently-viewed); a DIFFERENT def in
+  the env is a stale-horizon artifact and the cell wins.
+- Typecheck-side bridging is `fusion::lowering::privatize_type` —
+  name-preserving, same-size output (setup_static_bind against
+  `f.env`; check_instance_type's AbstractOpaque retry against
+  `ctx.env`). The fusion-side `resolve_abstract` (capped, expanding)
+  is unchanged; `freeze_for_abi`/`abi_kind` expand refs env-free
+  through the cell (`TypeRef::expand_cell`), unfilled → de-fuse.
 
 ### Two-Phase Typecheck
 
@@ -678,6 +715,16 @@ in `run!` fixtures and bench programs). The decision is recorded in
   analysis+lowering into a pure analysis pass (color nodes with a `KernelId`,
   build per-kernel descriptors) consumed by a thin lowering pass. Motivated by
   legibility.
+- `type_operation_scaling.md` — **built (2026-07-13):** COW/DAG walks +
+  per-pass memos for every core type operation (the six tree-walk
+  explosions the static-instance wedge exposed); holds the "invariants
+  for future type walks". Its open `contains` residual is RESOLVED by:
+- `env_independent_typerefs.md` — **built (2026-07-14):** `TypeRef`'s
+  carried resolution cell (Eric's ruling) — name-compressed,
+  env-independent instance signatures; the privatize walk; seeding
+  invariants; `same_def`/`same_view`; freeze/abi_kind cell Ref arms.
+  Carries one open finding: the two `#[native]`-in-List-callback tests
+  passed vacuously and now fail honestly (pending ruling).
 
 ## Stdlib package notes
 

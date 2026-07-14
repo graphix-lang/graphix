@@ -156,28 +156,80 @@ impl crate::typ::TVar {
     }
 }
 
+/// A non-containment report that formats LAZILY (on Display):
+/// `check_instance_type` PROBES these errors — inspect for
+/// [`super::AbstractOpaque`], resolve, retry — and eagerly rendering a
+/// widget-scale type into a probe message materialized tree-scale
+/// strings per instance arg (2026-07-13). Carries the types as cheap
+/// Arc clones; the message text is unchanged.
+#[derive(Debug)]
+pub struct TypeMismatch {
+    expected: Type,
+    actual: Type,
+}
+
+impl std::fmt::Display for TypeMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+            write!(f, "type mismatch {} does not contain {}", self.expected, self.actual)
+        })
+    }
+}
+
+impl std::error::Error for TypeMismatch {}
+
+/// Content identity: both nodes wrap the SAME content allocation(s), so
+/// they are one type — containment holds reflexively and unification
+/// against oneself is a no-op. This extends `contains_int`'s
+/// reference-identity fast path through copy-on-write sharing (the
+/// sharing-preserving type walks return original Arcs, so the two sides
+/// of an instance check routinely share subtrees; walking them pairwise
+/// was tree-cost over the DAG — the 2026-07-13 widget-type wedge's last
+/// leg). `TVar`/`Ref` deliberately keep the full arms: their pairs are
+/// cheap (no structural recursion) and semantically delicate (aliasing,
+/// rigid rules, ref expansion).
+fn same_content(a: &Type, b: &Type) -> bool {
+    match (a, b) {
+        (Type::Set(x), Type::Set(y)) | (Type::Tuple(x), Type::Tuple(y)) => {
+            (**x).as_ptr() == (**y).as_ptr()
+        }
+        (Type::Struct(x), Type::Struct(y)) => (**x).as_ptr() == (**y).as_ptr(),
+        (Type::Variant(t0, x), Type::Variant(t1, y)) => {
+            t0 == t1 && (**x).as_ptr() == (**y).as_ptr()
+        }
+        (Type::Fn(x), Type::Fn(y)) => Arc::ptr_eq(x, y),
+        (Type::Array(x), Type::Array(y))
+        | (Type::Error(x), Type::Error(y))
+        | (Type::ByRef(x), Type::ByRef(y)) => Arc::ptr_eq(x, y),
+        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+            Arc::ptr_eq(k0, k1) && Arc::ptr_eq(v0, v1)
+        }
+        _ => false,
+    }
+}
+
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
-        if self.contains(env, t)? {
-            Ok(())
+        if self.contains(env, t)? { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
+    }
+
+    fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
+        let e = anyhow::Error::new(TypeMismatch {
+            expected: self.clone(),
+            actual: t.clone(),
+        });
+        // Abstract types are OPAQUE to `contains` by design — their
+        // private↔public equivalence exists only through NAME
+        // resolution inside the defining module. A failure involving
+        // one is therefore classifiable by the call-site instance
+        // recheck (the STRICT ruling's one other legitimate swallow
+        // besides `UnresolvableRef`): the def-time check relished the
+        // private view, the recheck sees the public form, and no walk
+        // can relate them (the gui `Color` family).
+        if self.mentions_abstract(env) || t.mentions_abstract(env) {
+            e.context(super::AbstractOpaque)
         } else {
-            format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                let e = anyhow::anyhow!("type mismatch {self} does not contain {t}");
-                // Abstract types are OPAQUE to `contains` by design —
-                // their private↔public equivalence exists only through
-                // NAME resolution inside the defining module. A failure
-                // involving one is therefore classifiable by the
-                // call-site instance recheck (the STRICT ruling's one
-                // other legitimate swallow besides `UnresolvableRef`):
-                // the def-time check relished the private view, the
-                // recheck sees the public form, and no walk can relate
-                // them (the gui `Color` family).
-                if self.mentions_abstract(env) || t.mentions_abstract(env) {
-                    Err(e.context(super::AbstractOpaque))
-                } else {
-                    Err(e)
-                }
-            })
+            e
         }
     }
 
@@ -192,22 +244,7 @@ impl Type {
             &mut RefHist::new(LPooled::take()),
             t,
         )?;
-        if ok {
-            Ok(())
-        } else {
-            format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                let e = anyhow::anyhow!("type mismatch {self} does not contain {t}");
-                // Same classification as `check_contains` — the
-                // instance recheck re-runs THIS def-gate path for the
-                // declared-rtype-vs-body check, where the abstract
-                // boundary bites (the gui Color family).
-                if self.mentions_abstract(env) || t.mentions_abstract(env) {
-                    Err(e.context(super::AbstractOpaque))
-                } else {
-                    Err(e)
-                }
-            })
-        }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
     pub(super) fn contains_int(
@@ -217,26 +254,57 @@ impl Type {
         hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
-        if (self as *const Type) == (t as *const Type) {
+        if (self as *const Type) == (t as *const Type) || same_content(self, t) {
             return Ok(true);
         }
+        // Pure-probe pair memo — see `RefHist::probe_pairs`. Flagged
+        // calls may BIND cells, so they invalidate instead of caching.
+        if flags.is_empty() {
+            if let Some(r) = hist.probe_get(self, t) {
+                return Ok(r);
+            }
+            let r = self.contains_dispatch(flags, env, hist, t)?;
+            hist.probe_put(self, t, r);
+            return Ok(r);
+        }
+        hist.note_commit();
+        self.contains_dispatch(flags, env, hist, t)
+    }
+
+    fn contains_dispatch(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        t: &Self,
+    ) -> Result<bool> {
         match (self, t) {
-            (
-                Self::Ref(TypeRef { scope: s0, name: n0, params: p0, .. }),
-                Self::Ref(TypeRef { scope: s1, name: n1, params: p1, .. }),
-            ) if s0 == s1 && n0 == n1 => Ok(p0.len() == p1.len()
-                && p0
-                    .iter()
-                    .zip(p1.iter())
-                    .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
-                    .collect::<Result<AndAc>>()?
-                    .0),
+            // cells_agree: name equality no longer implies same
+            // meaning — two filled cells can hold different defs
+            // (cross-env views of an interface name, REPL
+            // redefinition). Disagreement falls through to the
+            // expansion arm, whose verdict is authoritative.
+            (Self::Ref(tr0), Self::Ref(tr1))
+                if tr0.scope == tr1.scope
+                    && tr0.name == tr1.name
+                    && tr0.cells_agree(tr1) =>
+            {
+                Ok(tr0.params.len() == tr1.params.len()
+                    && tr0
+                        .params
+                        .iter()
+                        .zip(tr1.params.iter())
+                        .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
+                        .collect::<Result<AndAc>>()?
+                        .0)
+            }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
-                let t0 = t0.lookup_ref(env)?;
-                let t1 = t1.lookup_ref(env)?;
+                let raw = flags.is_empty();
+                let t0 = hist.expand_ref(t0, t0_id, env, raw)?;
+                let t1 = hist.expand_ref(t1, t1_id, env, raw)?;
                 match hist.get(&(t0_id, t1_id)) {
                     Some(r) => Ok(*r),
                     None => {
@@ -664,6 +732,32 @@ impl Type {
                     Some(tv_m) => tv_m.contains_int(flags, env, hist, &target),
                     None => Ok(false),
                 }
+            }
+            // Member-wise equality pre-pass: an rhs member with an EQUAL
+            // lhs member is covered reflexively (same commit discipline
+            // as the whole-set-equality arm above); only the RESIDUE
+            // takes the general per-member walk. Instance checks compare
+            // equal-but-unshared unions, and without this the general
+            // walk ran O(|s0|·|s1|) recursive probes PER NESTING LEVEL —
+            // exponential over widget-scale unions (2026-07-13).
+            (t0 @ Self::Set(s0), Self::Set(s1)) => {
+                for m in s1.iter() {
+                    match s0.iter().find(|c| *c == m) {
+                        Some(c) => {
+                            if flags.contains(ContainsFlags::InitTVars) {
+                                let mut known = LPooled::take();
+                                c.alias_tvars(&mut known);
+                                m.alias_tvars(&mut known);
+                            }
+                        }
+                        None => {
+                            if !t0.contains_int(flags, env, hist, m)? {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                }
+                Ok(true)
             }
             (t0, Self::Set(s)) => Ok(s
                 .iter()

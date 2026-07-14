@@ -47,7 +47,11 @@ run!(re_captures, RE_CAPTURES, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+    // Upgraded from None (2026-07-14): `re::captures`' return type
+    // names `Array<Captures>`-style refs that used to reach the
+    // freeze un-expanded; the carried resolution cell now expands
+    // them env-free and the program fuses.
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const RE_SPLIT: &str = r#"
   re::split(#pat:r',\\s*', r'foo, bar, baz')

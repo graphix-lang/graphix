@@ -23,12 +23,11 @@ pub(super) static ECHAIN: LazyLock<ModPath> =
     LazyLock::new(|| ModPath::from(["ErrChain"]));
 
 fn typ_echain(param: Type) -> Type {
-    Type::Ref(TypeRef {
-        scope: ModPath::root(),
-        name: ECHAIN.clone(),
-        params: Arc::from_iter([param]),
-        ..Default::default()
-    })
+    Type::Ref(TypeRef::synthetic(
+        ModPath::root(),
+        ECHAIN.clone(),
+        Arc::from_iter([param]),
+    ))
 }
 
 pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {

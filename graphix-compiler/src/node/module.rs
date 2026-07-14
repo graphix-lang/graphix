@@ -130,6 +130,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
+    private_env: &Env,
 ) -> Result<()> {
     let mut has_bind: LPooled<AHashSet<ArcStr>> = LPooled::take();
     let mut abstract_types: LPooled<IntMap<AbstractId, Type>> = LPooled::take();
@@ -202,10 +203,19 @@ fn check_sig<R: Rt, E: UserEvent>(
                     abstract_types.insert(*id, td.typ.clone());
                     // Persist the private representation for scoped
                     // static-instance checks and fusion ABI lowering.
+                    // The body is a fresh allocation whose ref cells
+                    // are empty, and check_sig runs under the OUTER
+                    // env — where these names resolve to the sig's
+                    // PUBLIC entries. Seed against the module's
+                    // private env so the stored body carries the
+                    // private view its names had where they were
+                    // written.
+                    let body = td.typ.scope_refs(&scope.lexical);
+                    body.seed_refs(private_env);
                     ctx.fusion.abstract_registry.insert_scoped(
                         *id,
                         Arc::from_iter(td.params.iter().map(|(tv, _)| tv.name.clone())),
-                        td.typ.scope_refs(&scope.lexical),
+                        body,
                         scope.lexical.clone(),
                     );
                 }
@@ -364,6 +374,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         });
         ctx.builtins_allowed = true;
         let nodes = nodes?;
+        let private_env = self.env.clone();
         match &mut self.dynamic_sig_env {
             None => check_sig(
                 ctx,
@@ -372,6 +383,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 &self.scope,
                 &self.sig,
                 &nodes,
+                &private_env,
             )?,
             Some(env) => ctx.with_restored_mut(env, |ctx| {
                 check_sig(
@@ -381,6 +393,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                     &self.scope,
                     &self.sig,
                     &nodes,
+                    &private_env,
                 )
             })?,
         }

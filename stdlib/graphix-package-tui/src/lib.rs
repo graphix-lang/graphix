@@ -568,12 +568,11 @@ async fn run<X: GXExt>(
 }
 
 static TUITYP: LazyLock<Type> = LazyLock::new(|| {
-    Type::Ref(TypeRef {
-        scope: ModPath::root(),
-        name: ModPath::from(["tui", "Tui"]),
-        params: Arc::from_iter([]),
-        ..Default::default()
-    })
+    Type::Ref(TypeRef::synthetic(
+        ModPath::root(),
+        ModPath::from(["tui", "Tui"]),
+        Arc::from_iter([]),
+    ))
 });
 
 #[async_trait]

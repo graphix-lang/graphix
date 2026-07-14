@@ -743,12 +743,11 @@ fn select1() {
         ),
         (
             Pattern {
-                type_predicate: Some(Type::Ref(TypeRef {
-                    scope: ModPath::root(),
-                    name: ["Foo"].into(),
-                    params: Arc::from_iter([]),
-                    ..Default::default()
-                })),
+                type_predicate: Some(Type::Ref(TypeRef::synthetic(
+                    ModPath::root(),
+                    ["Foo"].into(),
+                    Arc::from_iter([]),
+                ))),
                 structure_predicate: StructurePattern::Struct {
                     all: None,
                     exhaustive: false,
@@ -1019,12 +1018,11 @@ fn apply_typed_lambda() {
                         pattern: StructurePattern::Bind("b".into()),
                         constraint: Some(Type::Set(Arc::from_iter([
                             Type::Primitive(Typ::Null.into()),
-                            Type::Ref(TypeRef {
-                                scope: ModPath::root(),
-                                name: ["Number"].into(),
-                                params: Arc::from_iter([]),
-                                ..Default::default()
-                            }),
+                            Type::Ref(TypeRef::synthetic(
+                                ModPath::root(),
+                                ["Number"].into(),
+                                Arc::from_iter([]),
+                            )),
                         ]))),
                         pos: Default::default(),
                     },
@@ -1083,12 +1081,11 @@ fn labeled_argument_lambda() {
             args: Arc::from_iter([
                 FnArgType {
                     kind: FnArgKind::Labeled { name: "foo".into(), has_default: true },
-                    typ: Type::Ref(TypeRef {
-                        scope: ModPath::root(),
-                        name: ["Number"].into(),
-                        params: Arc::from_iter([]),
-                        ..Default::default()
-                    }),
+                    typ: Type::Ref(TypeRef::synthetic(
+                        ModPath::root(),
+                        ["Number"].into(),
+                        Arc::from_iter([]),
+                    )),
                 },
                 FnArgType {
                     kind: FnArgKind::Labeled { name: "bar".into(), has_default: true },
@@ -1116,12 +1113,11 @@ fn labeled_argument_lambda() {
                     labeled: Some(Some(
                         ExprKind::Constant(Value::I64(3)).to_expr_nopos(),
                     )),
-                    constraint: Some(Type::Ref(TypeRef {
-                        scope: ModPath::root(),
-                        name: ["Number"].into(),
-                        params: Arc::from_iter([]),
-                        ..Default::default()
-                    })),
+                    constraint: Some(Type::Ref(TypeRef::synthetic(
+                        ModPath::root(),
+                        ["Number"].into(),
+                        Arc::from_iter([]),
+                    ))),
                     pos: Default::default(),
                 },
                 Arg {

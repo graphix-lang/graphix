@@ -793,30 +793,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        // Eager when tractable, unresolved when huge: a COMPLETE, SMALL
-        // private resolution binds the instance to the resolved signature
-        // (scoped abstracts need their reps at instance boundaries —
-        // abstract-in-variant / parameterized-nested); a signature whose
-        // resolution truncates or unfolds past the size cap (the GUI
-        // widget unions) binds the site type instead — retaining an
-        // eagerly-expanded copy per call site, each re-walked tree-wise
-        // by downstream passes, was the 2026-07-13 41GB OOM, and
-        // `check_instance_type`'s AbstractOpaque fallback resolves lazily
-        // where the instance actually needs it.
-        let private_site = crate::fusion::lowering::resolve_internal_type_complete(
+        let private_site = crate::fusion::lowering::privatize_type(
             &ctx.fusion.abstract_registry,
             &Type::Fn(TArc::new(site_ftype.clone())),
             &f.env,
             &f.scope.lexical,
-            16_384,
-            crate::fusion::lowering::FUSION_SIZE_CAP,
-        )
-        .unwrap_or_else(|| Type::Fn(TArc::new(site_ftype.clone())));
+        );
         let Type::Fn(private_site) = private_site else {
-            unreachable!("resolving a function type must produce a function type")
+            unreachable!("privatizing a function type must produce a function type")
         };
-        let same_shape = private_site.args.len() == f.typ.args.len()
-            && private_site
+        // Arg count/kinds are resolution-independent — compare the raw
+        // site ftype against the definition directly.
+        let same_shape = site_ftype.args.len() == f.typ.args.len()
+            && site_ftype
                 .args
                 .iter()
                 .zip(f.typ.args.iter())
@@ -826,14 +815,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         } else {
             let definition_ftype = f.typ.reset_tvars();
             definition_ftype.alias_tvars(&mut LPooled::take());
-            let private_definition = crate::fusion::lowering::resolve_internal_type(
+            let private_definition = crate::fusion::lowering::privatize_type(
                 &ctx.fusion.abstract_registry,
                 &Type::Fn(TArc::new(definition_ftype)),
                 &f.env,
                 &f.scope.lexical,
             );
             let Type::Fn(private_definition) = private_definition else {
-                unreachable!("resolving a function type must produce a function type")
+                unreachable!("privatizing a function type must produce a function type")
             };
             private_site.check_contains(&ctx.env, &private_definition)?;
             private_definition.resolve_tvars()
@@ -1146,6 +1135,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         if let Err(e) = self.resolve_static(ctx, def, fv.clone()) {
             if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() {
+                if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                    eprintln!("RESOLVE-DISCARD {}: {e:#}", self.spec);
+                }
                 self.discard_static_resolution(ctx);
                 return Ok(());
             }

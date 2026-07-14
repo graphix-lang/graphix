@@ -17,7 +17,7 @@ use crate::{
         },
     },
     node::{Cached, callsite::CallSite, lambda::GXLambda},
-    typ::{FnArgKind, FnArgType, FnType, Type},
+    typ::{FnArgKind, FnType, Type},
 };
 use arcstr::ArcStr;
 use netidx_value::Value;
@@ -553,41 +553,163 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
 pub(crate) fn resolve_abstract(reg: &AbstractRegistry, typ: &Type, env: &Env) -> Type {
     let cx =
         ResolveCx { budget: 2_048, size_cap: FUSION_SIZE_CAP, ..ResolveCx::default() };
-    resolve_abstract_d(reg, typ, env, None, None, &cx)
+    resolve_abstract_d(reg, typ, env, None, None, &cx).unwrap_or_else(|| typ.clone())
 }
 
 /// No kernel encodes a type that unfolds past this; resolving further
 /// is work the freeze would discard.
 pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
 
-pub(crate) fn resolve_internal_type(
+/// TYPECHECK-side view bridging (scoped static-instance checks,
+/// instance signature binding) — NAME-PRESERVING, replacing the old
+/// EXPANDING typecheck resolver. Output is the same size as the input:
+/// refs stay refs (their carried resolution cells make them
+/// env-independent — see `TypeRef`), so no memo/budget/size machinery
+/// is needed. Two rewrites, both toward the PRIVATE view and both
+/// gated by the registry's scope-visibility check:
+///
+/// - a `Type::Ref` whose resolution body is `Type::Abstract{id}` (the
+///   interface's public entry) is rebound to the registry's private
+///   body TEMPLATE in a fresh cell — the shared original cell is never
+///   overwritten. The instance body then sees the private form through
+///   ordinary `lookup_ref`, still name-compressed;
+/// - a bare `Type::Abstract{id, params}` node substitutes its
+///   registry body (ref-compressed, seeded at `check_sig`), recursing
+///   for nested abstracts under an `AbstractId` cycle guard.
+///
+/// TVars deref-and-recurse (the output carries the binding, like the
+/// fusion resolver — clone out of the guard before recursing, lock
+/// discipline); everything else is a COW walk.
+pub(crate) fn privatize_type(
     reg: &AbstractRegistry,
     typ: &Type,
     env: &Env,
     scope: &crate::expr::ModPath,
 ) -> Type {
-    resolve_abstract_d(reg, typ, env, Some(scope), None, &ResolveCx::default())
+    let mut seen: LPooled<Vec<crate::typ::AbstractId>> = LPooled::take();
+    privatize_d(reg, typ, env, scope, &mut seen).unwrap_or_else(|| typ.clone())
 }
 
-/// [`resolve_internal_type`] that only vends a COMPLETE resolution:
-/// `None` when any part truncated (budget or path-length backstop), so
-/// the caller can keep the unresolved form instead of a silently
-/// part-expanded one. `setup_static_bind` uses this to resolve instance
-/// signatures eagerly only when the private form is tractable — an
-/// eagerly-resolved GUI widget signature RETAINED per call site was the
-/// 2026-07-13 41GB OOM, while never resolving broke scoped-abstract
-/// instance semantics (abstract-in-variant / parameterized-nested).
-pub(crate) fn resolve_internal_type_complete(
+fn privatize_d(
     reg: &AbstractRegistry,
     typ: &Type,
     env: &Env,
     scope: &crate::expr::ModPath,
-    budget: u32,
-    size_cap: u32,
+    seen: &mut Vec<crate::typ::AbstractId>,
 ) -> Option<Type> {
-    let cx = ResolveCx { budget, size_cap, ..ResolveCx::default() };
-    let t = resolve_abstract_d(reg, typ, env, Some(scope), None, &cx);
-    (!cx.poisoned.get()).then_some(t)
+    use triomphe::Arc;
+    match typ {
+        Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
+            Some(t) => Some(privatize_d(reg, &t, env, scope, seen).unwrap_or(t)),
+            None => None,
+        },
+        Type::Ref(tr) => {
+            let params =
+                Type::cow_slice(&tr.params, |t| privatize_d(reg, t, env, scope, seen));
+            // The walk's env view wins over the cell ONLY when both
+            // resolve to the SAME DEFINITION with a different VIEW
+            // (`same_def` && !`same_view`): a site ref reaching here
+            // through the caller's sig-registered allocation carries
+            // the PUBLIC view, whose body's nested refs would leak
+            // abstracts into the instance body ("expected struct not
+            // abstract", the interface-test class) — rebind to the
+            // env's allocation, seeded from this env so the fill
+            // invariant holds. A DIFFERENT definition in the env is a
+            // stale-horizon artifact (f.env is a mid-registration
+            // snapshot; a forward cross-submodule name like tui's
+            // `list::List` resolves there to the list PACKAGE's type)
+            // — the cell, filled post-registration, is the name's
+            // true meaning and wins. Names the env can't see keep
+            // their cells (that's the cell's whole point).
+            let resolution = match (tr.resolve_pure(env), tr.resolved()) {
+                (Some(e), Some(c)) if e.same_def(&c) && !e.same_view(&c) => {
+                    e.typ().seed_refs(env);
+                    Some((e, true))
+                }
+                (_, Some(c)) => Some((c, false)),
+                // Empty cell: REBIND rather than fill — the cell may
+                // be shared into caller-held types, and writing the
+                // walk's (private) view there would leak it to every
+                // aliasing context.
+                (Some(e), None) => {
+                    e.typ().seed_refs(env);
+                    Some((e, true))
+                }
+                (None, None) => None,
+            };
+            let rebound = resolution.and_then(|(r, rebind)| match r.typ() {
+                Type::Abstract { id, .. } => reg
+                    .internal_template(id, scope)
+                    .map(|(formals, body)| Arc::new(r.private_view(&formals, body))),
+                _ => rebind.then_some(r),
+            });
+            match (rebound, params) {
+                (None, None) => None,
+                (rebound, params) => {
+                    let params = params.unwrap_or_else(|| tr.params.clone());
+                    Some(Type::Ref(match rebound {
+                        Some(r) => tr.rebind_resolution(params, r),
+                        None => tr.with_params(params),
+                    }))
+                }
+            }
+        }
+        Type::Abstract { id, params } => {
+            if seen.contains(id) {
+                return None; // recursive abstract — leave opaque
+            }
+            let cow_params =
+                Type::cow_slice(params, |t| privatize_d(reg, t, env, scope, seen));
+            let params = cow_params.as_ref().unwrap_or(params);
+            match reg.resolve_internal(id, params, scope) {
+                Some(body) => {
+                    seen.push(*id);
+                    let r = privatize_d(reg, &body, env, scope, seen).unwrap_or(body);
+                    seen.pop();
+                    Some(r)
+                }
+                None => cow_params.map(|params| Type::Abstract { id: *id, params }),
+            }
+        }
+        Type::Fn(ft) => ft
+            .cow_walk(|t| privatize_d(reg, t, env, scope, seen))
+            .map(|ft| Type::Fn(Arc::new(ft))),
+        Type::Tuple(ts) => Type::cow_slice(ts, |t| privatize_d(reg, t, env, scope, seen))
+            .map(Type::Tuple),
+        Type::Variant(tag, ts) => {
+            Type::cow_slice(ts, |t| privatize_d(reg, t, env, scope, seen))
+                .map(|ts| Type::Variant(tag.clone(), ts))
+        }
+        Type::Array(t) => {
+            privatize_d(reg, t, env, scope, seen).map(|t| Type::Array(Arc::new(t)))
+        }
+        Type::Error(t) => {
+            privatize_d(reg, t, env, scope, seen).map(|t| Type::Error(Arc::new(t)))
+        }
+        Type::ByRef(t) => {
+            privatize_d(reg, t, env, scope, seen).map(|t| Type::ByRef(Arc::new(t)))
+        }
+        Type::Map { key, value } => {
+            match (
+                privatize_d(reg, key, env, scope, seen),
+                privatize_d(reg, value, env, scope, seen),
+            ) {
+                (None, None) => None,
+                (k, v) => Some(Type::Map {
+                    key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
+                    value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
+                }),
+            }
+        }
+        Type::Set(ts) => {
+            Type::cow_slice(ts, |t| privatize_d(reg, t, env, scope, seen)).map(Type::Set)
+        }
+        Type::Struct(fs) => Type::cow_slice(fs, |(n, t)| {
+            privatize_d(reg, t, env, scope, seen).map(|t| (n.clone(), t))
+        })
+        .map(Type::Struct),
+        Type::Bottom | Type::Any | Type::Primitive(_) => None,
+    }
 }
 
 /// Per-top-level-resolve state. `Seen` bounds each expansion PATH, but
@@ -605,6 +727,13 @@ pub(crate) fn resolve_internal_type_complete(
 /// per-path length backstop.
 struct ResolveCx {
     memo: std::cell::RefCell<LPooled<Vec<MemoEntry>>>,
+    /// STRUCTURAL node memo: (variant discriminant, content Arc
+    /// address(es)) → this pass's result for that shared subtree, valid
+    /// on any path containing its recorded `Seen` dependencies. The
+    /// expansion memo (`memo`) dedupes REF expansions; without this one
+    /// every shared composite BETWEEN expansions was re-walked per path
+    /// — tree-cost over the resolved DAG.
+    nodes: std::cell::RefCell<LPooled<ahash::AHashMap<crate::typ::NormKey, NodeEntry>>>,
     /// `Seen` keys consulted by the CURRENT expansion frame's computation
     /// (the frame's own key excluded on merge-up — a self-hit is not a
     /// dependency on the caller's path).
@@ -629,6 +758,7 @@ impl Default for ResolveCx {
     fn default() -> Self {
         Self {
             memo: Default::default(),
+            nodes: Default::default(),
             consulted: Default::default(),
             poisoned: Default::default(),
             expansions: Default::default(),
@@ -639,13 +769,76 @@ impl Default for ResolveCx {
     }
 }
 
+struct NodeEntry {
+    deps: Vec<(u64, kernel_abi::ExpandKey)>,
+    resolved: Option<Type>,
+    size: u32,
+}
+
+struct FrameResult {
+    deps: Vec<(u64, kernel_abi::ExpandKey)>,
+    poisoned: bool,
+    size: u32,
+}
+
+#[derive(Clone)]
 struct MemoEntry {
+    /// [`expand_key_fp`] of `key` — compared first so a lookup scans
+    /// the entry list with u64 compares instead of `TypeRef` string
+    /// equality (which dominated the resolve at GUI scale).
+    fp: u64,
     key: kernel_abi::ExpandKey,
-    deps: Vec<kernel_abi::ExpandKey>,
-    resolved: Type,
+    deps: Vec<(u64, kernel_abi::ExpandKey)>,
+    /// `Some` = the expansion with abstracts substituted (inline it);
+    /// `None` = nothing beneath the ref's expansion resolved — the ref
+    /// stays OPAQUE. Inlining a substitution-free ref buys nothing and
+    /// DESYNCS expansion states across the program: `contains`' ref-pair
+    /// history keys on refs, so one pre-expanded side turns co-inductive
+    /// recursion into an exponential structural walk (the 2026-07-13
+    /// button-click wedge).
+    resolved: Option<Type>,
     /// Unfolded (tree-wise) node count of `resolved`, charged against
     /// `ResolveCx::size_cap` on every hit.
     size: u32,
+}
+
+use kernel_abi::expand_key_fp;
+
+impl std::fmt::Debug for MemoEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MemoEntry(size {})", self.size)
+    }
+}
+
+/// No unbound-TVar anywhere beneath — the type's identity is stable
+/// under `PartialEq`, so it can key a cache. A BOUND cell's binding can
+/// also drift between calls, so any TVar disqualifies.
+fn tvar_free(t: &Type) -> bool {
+    match t {
+        Type::Bottom | Type::Any | Type::Primitive(_) => true,
+        Type::TVar(_) => false,
+        Type::Ref(tr) => tr.params.iter().all(tvar_free),
+        Type::Abstract { params, .. } => params.iter().all(tvar_free),
+        Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
+            ts.iter().all(tvar_free)
+        }
+        Type::Struct(fs) => fs.iter().all(|(_, t)| tvar_free(t)),
+        Type::Array(t) | Type::Error(t) | Type::ByRef(t) => tvar_free(t),
+        Type::Map { key, value } => tvar_free(key) && tvar_free(value),
+        Type::Fn(ft) => {
+            ft.args.iter().all(|a| tvar_free(&a.typ))
+                && ft.vargs.as_ref().is_none_or(tvar_free)
+                && tvar_free(&ft.rtype)
+                && tvar_free(&ft.throws)
+        }
+    }
+}
+
+fn key_closed(key: &kernel_abi::ExpandKey) -> bool {
+    match key {
+        kernel_abi::ExpandKey::Ref(tr) => tr.params.iter().all(tvar_free),
+        kernel_abi::ExpandKey::Abstract(_) => false,
+    }
 }
 
 impl ResolveCx {
@@ -658,20 +851,23 @@ impl ResolveCx {
         }
     }
 
-    fn lookup(&self, key: &kernel_abi::ExpandKey, seen: Option<&Seen>) -> Option<Type> {
-        let memo = self.memo.borrow();
-        let entry = memo
-            .iter()
-            .find(|e| &e.key == key && e.deps.iter().all(|d| Seen::contains(seen, d)))?;
-        let resolved = entry.resolved.clone();
-        let deps = entry.deps.clone();
-        let size = entry.size;
-        drop(memo);
-        self.count_nodes(size);
-        for d in &deps {
+    fn lookup(
+        &self,
+        key: &kernel_abi::ExpandKey,
+        seen: Option<&Seen>,
+    ) -> Option<Option<Type>> {
+        let fp = expand_key_fp(key);
+        let hit = |e: &MemoEntry| {
+            e.fp == fp
+                && &e.key == key
+                && e.deps.iter().all(|(fp, d)| Seen::contains_fp(seen, *fp, d))
+        };
+        let entry = self.memo.borrow().iter().find(|e| hit(e))?.clone();
+        self.count_nodes(entry.size);
+        for (_, d) in &entry.deps {
             self.consult(d);
         }
-        Some(resolved)
+        Some(entry.resolved)
     }
 
     /// Count `n` OUTPUT nodes against the size cap; `false` = the result
@@ -684,6 +880,55 @@ impl ResolveCx {
             return false;
         }
         true
+    }
+
+    /// Structural-memo hit: `Some(result)` when `key` has an entry whose
+    /// path dependencies are all on the current `seen` path. Charges the
+    /// entry's recorded size and re-registers its dependencies.
+    fn node_lookup(
+        &self,
+        key: &crate::typ::NormKey,
+        seen: Option<&Seen>,
+    ) -> Option<Option<Type>> {
+        let nodes = self.nodes.borrow();
+        let e = nodes.get(key)?;
+        if !e.deps.iter().all(|(fp, d)| Seen::contains_fp(seen, *fp, d)) {
+            return None;
+        }
+        let resolved = e.resolved.clone();
+        let deps = e.deps.clone();
+        let size = e.size;
+        drop(nodes);
+        self.count_nodes(size);
+        for (_, d) in &deps {
+            self.consult(d);
+        }
+        Some(resolved)
+    }
+
+    /// Run `f` as a tracked frame: capture the `Seen` keys it consults,
+    /// whether it was truncated, and the output size it accumulated —
+    /// then merge consults/poisoning into the enclosing frame.
+    fn node_frame<R>(&self, f: impl FnOnce(&Self) -> R) -> (R, FrameResult) {
+        let saved_consulted =
+            std::mem::replace(&mut *self.consulted.borrow_mut(), LPooled::take());
+        let saved_poisoned = self.poisoned.replace(false);
+        let before = self.unfolded.get();
+        let r = f(self);
+        let mut delta =
+            std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
+        let poisoned = self.poisoned.get();
+        let size = self.unfolded.get() - before;
+        let deps: Vec<(u64, kernel_abi::ExpandKey)> =
+            delta.iter().map(|k| (expand_key_fp(k), k.clone())).collect();
+        for k in delta.drain(..) {
+            let mut cur = self.consulted.borrow_mut();
+            if !cur.contains(&k) {
+                cur.push(k);
+            }
+        }
+        self.poisoned.set(saved_poisoned || poisoned);
+        (r, FrameResult { deps, poisoned, size })
     }
 
     /// Charge one expansion against the budget; `false` = exhausted, the
@@ -714,8 +959,8 @@ impl ResolveCx {
         &self,
         key: kernel_abi::ExpandKey,
         memoize: bool,
-        f: impl FnOnce() -> Type,
-    ) -> Type {
+        f: impl FnOnce() -> Option<Type>,
+    ) -> Option<Type> {
         let saved_consulted =
             std::mem::replace(&mut *self.consulted.borrow_mut(), LPooled::take());
         let saved_poisoned = self.poisoned.replace(false);
@@ -725,13 +970,19 @@ impl ResolveCx {
             std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
         let poisoned = self.poisoned.get();
         deps.retain(|k| k != &key);
-        if memoize && !poisoned {
-            self.memo.borrow_mut().push(MemoEntry {
+        // CLOSED keys only, even for the per-call memo: an unbound-TVar
+        // param compares equal to any other unbound cell, so a hit for a
+        // different-but-eq key would hand one site's cells to another
+        // and skip `lookup_ref`'s constraint registration.
+        if memoize && !poisoned && key_closed(&key) {
+            let entry = MemoEntry {
+                fp: expand_key_fp(&key),
                 key,
-                deps: deps.iter().cloned().collect(),
+                deps: deps.iter().map(|k| (expand_key_fp(k), k.clone())).collect(),
                 resolved: resolved.clone(),
                 size: self.unfolded.get() - unfolded_before,
-            });
+            };
+            self.memo.borrow_mut().push(entry);
         }
         for k in deps.drain(..) {
             let mut cur = self.consulted.borrow_mut();
@@ -744,6 +995,9 @@ impl ResolveCx {
     }
 }
 
+/// `None` = nothing beneath resolved — the caller keeps the original
+/// (shared). Truncation (budget/size/path backstops) also returns `None`
+/// with `cx.poisoned` set: the remainder stays opaque.
 fn resolve_abstract_d<'a>(
     reg: &AbstractRegistry,
     typ: &Type,
@@ -751,9 +1005,8 @@ fn resolve_abstract_d<'a>(
     scope: Option<&crate::expr::ModPath>,
     seen: Option<&'a Seen<'a>>,
     cx: &ResolveCx,
-) -> Type {
-    use kernel_abi::{ExpandKey, Seen};
-    use triomphe::Arc;
+) -> Option<Type> {
+    use kernel_abi::Seen;
     // Non-regular-recursion backstop (see fn doc). Counts EXPANSIONS, not
     // structural nesting, so finite types of any structural depth are
     // unaffected. It bounds the number of distinct EXPANSIONS on one path
@@ -764,21 +1017,55 @@ fn resolve_abstract_d<'a>(
     // is not the true expansion — poison memoization upward.
     if Seen::len(seen) > 256 {
         cx.poisoned.set(true);
-        return typ.clone();
+        return None;
     }
-    // Every visit materializes ~one output node; a memo hit charges its
-    // recorded subtree size in `lookup` instead. Once the accumulated
-    // output crosses the caller's size cap, stop — the result will be
-    // discarded anyway.
+    // Every visit costs ~one unit against the size cap; a memo hit
+    // charges its recorded subtree size in `lookup` instead. Once the
+    // accumulated work crosses the caller's cap, stop — the result would
+    // be discarded anyway. `None` = the subtree is returned UNCHANGED
+    // (shared) — abstract-free subtrees materialize nothing.
     if !cx.count_nodes(1) {
-        return typ.clone();
+        return None;
     }
+    // Structural node memo: a shared composite reached along many paths
+    // resolves once per (path-dependency) context.
+    let nkey = crate::typ::norm_key(typ);
+    if let Some(k) = &nkey
+        && let Some(hit) = cx.node_lookup(k, seen)
+    {
+        return hit;
+    }
+    let (r, frame) =
+        cx.node_frame(|cx| resolve_abstract_node(reg, typ, env, scope, seen, cx));
+    if let Some(k) = nkey
+        && !frame.poisoned
+    {
+        cx.nodes.borrow_mut().insert(
+            k,
+            NodeEntry { deps: frame.deps, resolved: r.clone(), size: frame.size },
+        );
+    }
+    r
+}
+
+fn resolve_abstract_node<'a>(
+    reg: &AbstractRegistry,
+    typ: &Type,
+    env: &Env,
+    scope: Option<&crate::expr::ModPath>,
+    seen: Option<&'a Seen<'a>>,
+    cx: &ResolveCx,
+) -> Option<Type> {
+    use kernel_abi::{ExpandKey, Seen};
+    use triomphe::Arc;
     match typ {
         // Deref bound TVars and resolve through them — an INFERRED
         // binding type (e.g. a region input's `let` binding, #218) is
         // TVar-wrapped, unlike the declared signature types the
         // classic kernel-build callers pass. An unbound TVar returns
-        // unchanged (freeze rejects it downstream, correctly).
+        // unchanged (freeze rejects it downstream, correctly). The
+        // deref itself is a change: the output carries the BINDING, not
+        // the cell.
         //
         // Clone the inner type OUT of `with_deref` and recurse with
         // the TVar's read guard DROPPED: recursing inside the closure
@@ -791,37 +1078,50 @@ fn resolve_abstract_d<'a>(
         // A TVar deref is not an expansion (it can't recurse forever —
         // TVar bindings are occurs-checked), so `seen` passes through.
         Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
-            Some(t) => resolve_abstract_d(reg, &t, env, scope, seen, cx),
-            None => typ.clone(),
+            Some(t) => {
+                Some(resolve_abstract_d(reg, &t, env, scope, seen, cx).unwrap_or(t))
+            }
+            None => None,
         },
         Type::Ref(tr) => {
             let key = ExpandKey::Ref(tr.clone());
             if Seen::contains(seen, &key) {
                 cx.consult(&key);
-                return typ.clone(); // recursive named type — leave opaque
+                return None; // recursive named type — leave opaque
             }
             if let Some(t) = cx.lookup(&key, seen) {
                 return t;
             }
             if !cx.charge() {
-                return typ.clone();
+                return None;
             }
             match typ.lookup_ref(env) {
+                // Refs INLINE unconditionally: the instance signature
+                // must be env-INDEPENDENT — inside the defining module
+                // `lookup_ref` resolves names to their PRIVATE forms,
+                // and the caller's env cannot reproduce that view (the
+                // scoped-abstract instance semantics, 2026-07-13). The
+                // expansion-state mismatch this creates for `contains`
+                // is paid for there (the pure-probe pair memo), not by
+                // keeping refs opaque.
                 Ok(resolved) => cx.expand(key, true, || {
                     let node = Seen::push(seen, ExpandKey::Ref(tr.clone()));
-                    resolve_abstract_d(reg, &resolved, env, scope, Some(&node), cx)
+                    Some(
+                        resolve_abstract_d(reg, &resolved, env, scope, Some(&node), cx)
+                            .unwrap_or(resolved),
+                    )
                 }),
-                _ => typ.clone(),
+                _ => None,
             }
         }
         Type::Abstract { id, params } => {
             let key = ExpandKey::Abstract(*id);
             if Seen::contains(seen, &key) {
                 cx.consult(&key);
-                return typ.clone(); // recursive abstract — leave opaque
+                return None; // recursive abstract — leave opaque
             }
             if !cx.charge() {
-                return typ.clone();
+                return None;
             }
             // No memo for abstracts (`memoize: false`):
             // `ExpandKey::Abstract` omits `params` — coarse is right for
@@ -835,55 +1135,52 @@ fn resolve_abstract_d<'a>(
             match resolved {
                 Some(concrete) => cx.expand(key, false, || {
                     let node = Seen::push(seen, ExpandKey::Abstract(*id));
-                    resolve_abstract_d(reg, &concrete, env, scope, Some(&node), cx)
+                    Some(
+                        resolve_abstract_d(reg, &concrete, env, scope, Some(&node), cx)
+                            .unwrap_or(concrete),
+                    )
                 }),
-                None => typ.clone(),
+                None => None,
             }
         }
-        Type::Fn(ft) => Type::Fn(Arc::new(FnType {
-            args: Arc::from_iter(ft.args.iter().map(|arg| FnArgType {
-                kind: arg.kind.clone(),
-                typ: resolve_abstract_d(reg, &arg.typ, env, scope, seen, cx),
-            })),
-            vargs: ft
-                .vargs
-                .as_ref()
-                .map(|typ| resolve_abstract_d(reg, typ, env, scope, seen, cx)),
-            rtype: resolve_abstract_d(reg, &ft.rtype, env, scope, seen, cx),
-            throws: resolve_abstract_d(reg, &ft.throws, env, scope, seen, cx),
-            explicit_throws: ft.explicit_throws,
-            quantifiers: ft.quantifiers.clone(),
-            lambda_ids: ft.lambda_ids.clone(),
-        })),
-        Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen, cx)),
-        )),
-        Type::Variant(tag, ts) => Type::Variant(
-            tag.clone(),
-            Arc::from_iter(
-                ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen, cx)),
-            ),
-        ),
-        Type::Array(t) => {
-            Type::Array(Arc::new(resolve_abstract_d(reg, t, env, scope, seen, cx)))
+        Type::Fn(ft) => ft
+            .cow_walk(|t| resolve_abstract_d(reg, t, env, scope, seen, cx))
+            .map(|ft| Type::Fn(Arc::new(ft))),
+        Type::Tuple(ts) => {
+            Type::cow_slice(ts, |t| resolve_abstract_d(reg, t, env, scope, seen, cx))
+                .map(Type::Tuple)
         }
-        Type::Error(t) => {
-            Type::Error(Arc::new(resolve_abstract_d(reg, t, env, scope, seen, cx)))
+        Type::Variant(tag, ts) => {
+            Type::cow_slice(ts, |t| resolve_abstract_d(reg, t, env, scope, seen, cx))
+                .map(|ts| Type::Variant(tag.clone(), ts))
         }
-        Type::ByRef(t) => {
-            Type::ByRef(Arc::new(resolve_abstract_d(reg, t, env, scope, seen, cx)))
+        Type::Array(t) => resolve_abstract_d(reg, t, env, scope, seen, cx)
+            .map(|t| Type::Array(Arc::new(t))),
+        Type::Error(t) => resolve_abstract_d(reg, t, env, scope, seen, cx)
+            .map(|t| Type::Error(Arc::new(t))),
+        Type::ByRef(t) => resolve_abstract_d(reg, t, env, scope, seen, cx)
+            .map(|t| Type::ByRef(Arc::new(t))),
+        Type::Map { key, value } => {
+            match (
+                resolve_abstract_d(reg, key, env, scope, seen, cx),
+                resolve_abstract_d(reg, value, env, scope, seen, cx),
+            ) {
+                (None, None) => None,
+                (k, v) => Some(Type::Map {
+                    key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
+                    value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
+                }),
+            }
         }
-        Type::Map { key, value } => Type::Map {
-            key: Arc::new(resolve_abstract_d(reg, key, env, scope, seen, cx)),
-            value: Arc::new(resolve_abstract_d(reg, value, env, scope, seen, cx)),
-        },
-        Type::Set(ts) => Type::Set(Arc::from_iter(
-            ts.iter().map(|t| resolve_abstract_d(reg, t, env, scope, seen, cx)),
-        )),
-        Type::Struct(fs) => Type::Struct(Arc::from_iter(fs.iter().map(|(n, t)| {
-            (n.clone(), resolve_abstract_d(reg, t, env, scope, seen, cx))
-        }))),
-        other => other.clone(),
+        Type::Set(ts) => {
+            Type::cow_slice(ts, |t| resolve_abstract_d(reg, t, env, scope, seen, cx))
+                .map(Type::Set)
+        }
+        Type::Struct(fs) => Type::cow_slice(fs, |(n, t)| {
+            resolve_abstract_d(reg, t, env, scope, seen, cx).map(|t| (n.clone(), t))
+        })
+        .map(Type::Struct),
+        Type::Bottom | Type::Any | Type::Primitive(_) => None,
     }
 }
 

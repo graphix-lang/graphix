@@ -113,12 +113,11 @@ impl<X: GXExt> Gui<X> {
 }
 
 pub static GUITYP: LazyLock<Type> = LazyLock::new(|| {
-    Type::Array(Arc::new(Type::ByRef(Arc::new(Type::Ref(TypeRef {
-        scope: ModPath::root(),
-        name: ModPath::from(["gui", "Window"]),
-        params: Arc::from_iter([]),
-        ..Default::default()
-    })))))
+    Type::Array(Arc::new(Type::ByRef(Arc::new(Type::Ref(TypeRef::synthetic(
+        ModPath::root(),
+        ModPath::from(["gui", "Window"]),
+        Arc::from_iter([]),
+    ))))))
 });
 
 #[async_trait]

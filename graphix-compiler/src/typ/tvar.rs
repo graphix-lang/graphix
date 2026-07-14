@@ -30,6 +30,39 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
 // same cell forever whenever the target addr wasn't in the cycle. A
 // revisited cell adds no reachability, so it answers false.
 fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> bool {
+    // The query is a pure existence check over an immutable snapshot, so
+    // `seen` is a true visited set (never removed): a fully-explored
+    // subtree that didn't contain `addr` never needs re-exploring. It
+    // holds BOTH cell addresses and composite node addresses — the same
+    // shared composite reached along many paths was re-scanned per path
+    // (tree-cost over the DAG; part of the 2026-07-13 widget-type
+    // compile blowup). Variant-blind address dedup is sound here: the
+    // answer depends only on the leaves reachable from the allocation.
+    let node = match t {
+        Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a) => {
+            Some((**a).as_ptr().addr())
+        }
+        Type::Abstract { params: a, .. } => Some((**a).as_ptr().addr()),
+        Type::Struct(a) => Some((**a).as_ptr().addr()),
+        Type::Fn(f) => Some((&**f as *const FnType).addr()),
+        Type::Array(a) | Type::Error(a) | Type::ByRef(a) => {
+            Some((&**a as *const Type).addr())
+        }
+        // Map carries TWO Arcs; a single-address key could alias a
+        // different (key, value) pairing and skip the value — its
+        // children dedup individually instead.
+        Type::Map { .. }
+        | Type::Primitive(_)
+        | Type::Any
+        | Type::Bottom
+        | Type::Ref(_)
+        | Type::TVar(_) => None,
+    };
+    if let Some(node) = node
+        && !seen.insert(node)
+    {
+        return false;
+    }
     match t {
         Type::Primitive(_) | Type::Any | Type::Bottom | Type::Ref(TypeRef { .. }) => {
             false
@@ -486,23 +519,23 @@ impl TVar {
     }
 
     pub fn normalize(&self) -> Self {
-        use poolshark::local::LPooled;
-        self.normalize_int(&mut LPooled::take())
+        self.normalize_int(&mut super::normalize::NormCx::take())
     }
 
-    pub(super) fn normalize_int(&self, seen: &mut nohash::IntSet<usize>) -> Self {
-        // First visit only (`seen` is keyed by cell address — the walk
-        // reaches one cell along many paths through aliases and shared
-        // subterms, and re-walking is exponential; see
+    pub(super) fn normalize_int(&self, cx: &mut super::normalize::NormCx) -> Self {
+        // First visit only (`cx.cells` is keyed by cell address — the
+        // walk reaches one cell along many paths through aliases and
+        // shared subterms, and re-walking is exponential; see
         // `Type::normalize`). Clone the binding out, normalize
         // UNLOCKED, write back — never recurse under the cell's write
         // guard: parking_lot locks are non-reentrant, so recursing
         // under the guard deadlocked the whole compile (soak jul06h,
         // the other half of the same wedge).
-        if seen.insert(self.cell_addr()) {
+        if cx.cells.insert(self.cell_addr()) {
             let bound = self.read().typ.read().typ.clone();
-            if let Some(t) = bound {
-                let n = t.normalize_int(seen);
+            if let Some(t) = bound
+                && let Some(n) = t.normalize_int(cx)
+            {
                 self.read().typ.write().typ = Some(n);
             }
         }
@@ -828,7 +861,7 @@ impl Type {
     /// will not be modified.
     pub fn reset_tvars(&self) -> Type {
         use poolshark::local::LPooled;
-        self.reset_tvars_int(&mut LPooled::take())
+        self.reset_tvars_int(&mut LPooled::take()).unwrap_or_else(|| self.clone())
     }
 
     /// The freshening map is keyed by CELL identity, not name, so an
@@ -836,47 +869,59 @@ impl Type {
     /// shares one cell between `'a` and the rtype, and every instance
     /// must too (or a narrowing through one leaf silently stops
     /// reaching the others).
-    pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Type {
+    ///
+    /// `None` = no TVar anywhere beneath — the caller keeps the
+    /// original (shared); TVar-free structure has nothing to freshen.
+    pub(super) fn reset_tvars_int(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+    ) -> Option<Type> {
         match self {
-            Type::Bottom => Type::Bottom,
-            Type::Any => Type::Any,
-            Type::Primitive(p) => Type::Primitive(*p),
-            Type::Ref(TypeRef { scope, name, params, .. }) => Type::Ref(TypeRef {
-                scope: scope.clone(),
-                name: name.clone(),
-                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars_int(known))),
-                ..Default::default()
-            }),
-            Type::Error(t0) => Type::Error(Arc::new(t0.reset_tvars_int(known))),
-            Type::Array(t0) => Type::Array(Arc::new(t0.reset_tvars_int(known))),
+            Type::Bottom | Type::Any | Type::Primitive(_) => None,
+            // with_params SHARES the resolution cell — load-bearing:
+            // expand_ref's commit copies come through here and must
+            // keep their seeded resolutions.
+            Type::Ref(tr) => Type::cow_slice(&tr.params, |t| t.reset_tvars_int(known))
+                .map(|params| Type::Ref(tr.with_params(params))),
+            Type::Error(t0) => {
+                t0.reset_tvars_int(known).map(|t| Type::Error(Arc::new(t)))
+            }
+            Type::Array(t0) => {
+                t0.reset_tvars_int(known).map(|t| Type::Array(Arc::new(t)))
+            }
             Type::Map { key, value } => {
-                let key = Arc::new(key.reset_tvars_int(known));
-                let value = Arc::new(value.reset_tvars_int(known));
-                Type::Map { key, value }
+                match (key.reset_tvars_int(known), value.reset_tvars_int(known)) {
+                    (None, None) => None,
+                    (k, v) => Some(Type::Map {
+                        key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
+                        value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
+                    }),
+                }
             }
-            Type::ByRef(t0) => Type::ByRef(Arc::new(t0.reset_tvars_int(known))),
+            Type::ByRef(t0) => {
+                t0.reset_tvars_int(known).map(|t| Type::ByRef(Arc::new(t)))
+            }
             Type::Tuple(ts) => {
-                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.reset_tvars_int(known))))
+                Type::cow_slice(ts, |t| t.reset_tvars_int(known)).map(Type::Tuple)
             }
-            Type::Struct(ts) => Type::Struct(Arc::from_iter(
-                ts.iter().map(|(n, t)| (n.clone(), t.reset_tvars_int(known))),
-            )),
-            Type::Variant(tag, ts) => Type::Variant(
-                tag.clone(),
-                Arc::from_iter(ts.iter().map(|t| t.reset_tvars_int(known))),
-            ),
-            Type::TVar(tv) => {
+            Type::Struct(ts) => Type::cow_slice(ts, |(n, t)| {
+                t.reset_tvars_int(known).map(|t| (n.clone(), t))
+            })
+            .map(Type::Struct),
+            Type::Variant(tag, ts) => Type::cow_slice(ts, |t| t.reset_tvars_int(known))
+                .map(|ts| Type::Variant(tag.clone(), ts)),
+            Type::TVar(tv) => Some({
                 // The fresh cell CARRIES the source's constraint
                 // conjunction — instantiation freshens the binding
                 // slot, never the obligations.
                 let addr = tv.cell_addr();
                 if let Some(fresh) = known.get(&addr) {
-                    return Type::TVar(fresh.clone());
+                    return Some(Type::TVar(fresh.clone()));
                 }
                 let fresh = TVar::empty_named(tv.name.clone());
                 known.insert(addr, fresh.clone());
                 for c in tv.cell_constraints() {
-                    let c = c.reset_tvars_int(known);
+                    let c = c.reset_tvars_int(known).unwrap_or_else(|| c.clone());
                     fresh.add_cell_constraint(c);
                 }
                 // A BOUND source cell is a solved fact (def-body
@@ -894,92 +939,99 @@ impl Type {
                 // map so alias topology is preserved.
                 let bound = tv.read().typ.read().typ.clone();
                 if let Some(t) = bound {
-                    let t = t.reset_tvars_int(known);
+                    let t = t.reset_tvars_int(known).unwrap_or(t);
                     fresh.read().typ.write().typ = Some(t);
                 }
                 Type::TVar(fresh)
-            }
+            }),
             Type::Set(s) => {
-                Type::Set(Arc::from_iter(s.iter().map(|t| t.reset_tvars_int(known))))
+                Type::cow_slice(s, |t| t.reset_tvars_int(known)).map(Type::Set)
             }
-            Type::Fn(fntyp) => Type::Fn(Arc::new(fntyp.reset_tvars_int(known))),
-            Type::Abstract { id, params } => Type::Abstract {
-                id: *id,
-                params: Arc::from_iter(params.iter().map(|t| t.reset_tvars_int(known))),
-            },
+            Type::Fn(fntyp) => {
+                fntyp.reset_tvars_int(known).map(|ft| Type::Fn(Arc::new(ft)))
+            }
+            Type::Abstract { id, params } => {
+                Type::cow_slice(params, |t| t.reset_tvars_int(known))
+                    .map(|params| Type::Abstract { id: *id, params })
+            }
         }
     }
 
     /// return a copy of self with every TVar named in known replaced
     /// with the corresponding type. TVars not in known are replaced with
     /// fresh TVars using unique names to avoid entanglement with the caller's
-    /// TVars that happen to share the same name.
+    /// TVars that happen to share the same name. TVar-free structure is
+    /// returned SHARED, not copied.
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Self>) -> Type {
         use poolshark::local::LPooled;
         self.replace_tvars_int(known, &mut LPooled::take())
+            .unwrap_or_else(|| self.clone())
     }
 
+    /// `None` = no TVar anywhere beneath — the caller keeps the
+    /// original (shared).
     pub(super) fn replace_tvars_int(
         &self,
         known: &AHashMap<ArcStr, Self>,
         renamed: &mut AHashMap<ArcStr, TVar>,
-    ) -> Type {
+    ) -> Option<Type> {
         match self {
-            Type::TVar(tv) => match known.get(&tv.name) {
+            Type::TVar(tv) => Some(match known.get(&tv.name) {
                 Some(t) => t.clone(),
                 None => {
                     let fresh =
                         renamed.entry(tv.name.clone()).or_insert_with(TVar::default);
                     Type::TVar(fresh.clone())
                 }
-            },
-            Type::Bottom => Type::Bottom,
-            Type::Any => Type::Any,
-            Type::Primitive(p) => Type::Primitive(*p),
-            Type::Ref(TypeRef { scope, name, params, .. }) => Type::Ref(TypeRef {
-                scope: scope.clone(),
-                name: name.clone(),
-                params: Arc::from_iter(
-                    params.iter().map(|t| t.replace_tvars_int(known, renamed)),
-                ),
-                ..Default::default()
             }),
+            Type::Bottom | Type::Any | Type::Primitive(_) => None,
+            Type::Ref(tr) => {
+                Type::cow_slice(&tr.params, |t| t.replace_tvars_int(known, renamed))
+                    .map(|params| Type::Ref(tr.with_params(params)))
+            }
             Type::Error(t0) => {
-                Type::Error(Arc::new(t0.replace_tvars_int(known, renamed)))
+                t0.replace_tvars_int(known, renamed).map(|t| Type::Error(Arc::new(t)))
             }
             Type::Array(t0) => {
-                Type::Array(Arc::new(t0.replace_tvars_int(known, renamed)))
+                t0.replace_tvars_int(known, renamed).map(|t| Type::Array(Arc::new(t)))
             }
             Type::Map { key, value } => {
-                let key = Arc::new(key.replace_tvars_int(known, renamed));
-                let value = Arc::new(value.replace_tvars_int(known, renamed));
-                Type::Map { key, value }
+                match (
+                    key.replace_tvars_int(known, renamed),
+                    value.replace_tvars_int(known, renamed),
+                ) {
+                    (None, None) => None,
+                    (k, v) => Some(Type::Map {
+                        key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
+                        value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
+                    }),
+                }
             }
             Type::ByRef(t0) => {
-                Type::ByRef(Arc::new(t0.replace_tvars_int(known, renamed)))
+                t0.replace_tvars_int(known, renamed).map(|t| Type::ByRef(Arc::new(t)))
             }
-            Type::Tuple(ts) => Type::Tuple(Arc::from_iter(
-                ts.iter().map(|t| t.replace_tvars_int(known, renamed)),
-            )),
-            Type::Struct(ts) => Type::Struct(Arc::from_iter(
-                ts.iter().map(|(n, t)| (n.clone(), t.replace_tvars_int(known, renamed))),
-            )),
-            Type::Variant(tag, ts) => Type::Variant(
-                tag.clone(),
-                Arc::from_iter(ts.iter().map(|t| t.replace_tvars_int(known, renamed))),
-            ),
-            Type::Set(s) => Type::Set(Arc::from_iter(
-                s.iter().map(|t| t.replace_tvars_int(known, renamed)),
-            )),
+            Type::Tuple(ts) => {
+                Type::cow_slice(ts, |t| t.replace_tvars_int(known, renamed))
+                    .map(Type::Tuple)
+            }
+            Type::Struct(ts) => Type::cow_slice(ts, |(n, t)| {
+                t.replace_tvars_int(known, renamed).map(|t| (n.clone(), t))
+            })
+            .map(Type::Struct),
+            Type::Variant(tag, ts) => {
+                Type::cow_slice(ts, |t| t.replace_tvars_int(known, renamed))
+                    .map(|ts| Type::Variant(tag.clone(), ts))
+            }
+            Type::Set(s) => {
+                Type::cow_slice(s, |t| t.replace_tvars_int(known, renamed)).map(Type::Set)
+            }
             Type::Fn(fntyp) => {
-                Type::Fn(Arc::new(fntyp.replace_tvars_int(known, renamed)))
+                fntyp.replace_tvars_int(known, renamed).map(|ft| Type::Fn(Arc::new(ft)))
             }
-            Type::Abstract { id, params } => Type::Abstract {
-                id: *id,
-                params: Arc::from_iter(
-                    params.iter().map(|t| t.replace_tvars_int(known, renamed)),
-                ),
-            },
+            Type::Abstract { id, params } => {
+                Type::cow_slice(params, |t| t.replace_tvars_int(known, renamed))
+                    .map(|params| Type::Abstract { id: *id, params })
+            }
         }
     }
 
