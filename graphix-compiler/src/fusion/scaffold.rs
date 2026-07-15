@@ -964,31 +964,34 @@ where
     let is_null = cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
     cx.b.ins().brif(is_null, advance, &[], push_block, &[]);
     cx.b.switch_to_block(push_block);
+    // The result in hand is ALWAYS the callback's 2-word
+    // Nullable-shaped VALUE — never an unwrapped element. Earlier
+    // per-inner-shape arms fed `value.payload` to shape-specific
+    // pushes: for a composite inner that handed a Value's INTERIOR
+    // ValArray bits to a `Box::from_raw` consumer (the type confusion
+    // `graphix_value_into_array`'s docs warn about — SIGSEGV,
+    // soak-jul13b crash_000018: `filter_map(a, |x| a[1..])`), and for
+    // ANY inner the `[T, Error]` result shape can put an Error value
+    // where the arm assumed T (garbage scalar bits, an `Arc<Value>`
+    // misread as ArcStr). The interpreted finish clones the Value
+    // whatever it runtime-is — push it AS a value, bit-for-bit.
     match kernel_abi::abi_kind(cx.registry(), out_elem) {
-        Some(AbiKind::Scalar(prim)) => {
-            let push = cx.helper(value_buf_push_helper(prim)?)?;
-            let scalar = cast_u64_to_prim(cx.b, value.payload, prim);
-            cx.b.ins().call(push, &[buf, scalar]);
-        }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let helper = match out_src {
-                CompositeSource::Owned => "graphix_value_buf_push_array",
-                CompositeSource::Borrowed => "graphix_value_buf_push_array_borrowed",
-            };
-            let push = cx.helper(helper)?;
-            cx.b.ins().call(push, &[buf, value.payload]);
-        }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+        Some(
+            AbiKind::Scalar(_)
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::String
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value,
+        ) => {
             let helper = match out_src {
                 CompositeSource::Owned => "graphix_value_buf_push_value",
                 CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
             };
             let push = cx.helper(helper)?;
             cx.b.ins().call(push, &[buf, value.disc, value.payload]);
-        }
-        Some(AbiKind::String) => {
-            let push = cx.helper("graphix_value_buf_push_string")?;
-            cx.b.ins().call(push, &[buf, value.payload]);
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             return Err(anyhow!("filter_map output element is not representable"));
