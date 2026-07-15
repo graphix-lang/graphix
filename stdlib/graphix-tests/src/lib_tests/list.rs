@@ -902,24 +902,63 @@ run!(list_flat_map_empty_splice, LIST_FLAT_MAP_EMPTY_SPLICE, |v: Result<&Value>|
     matches!(v.map(|v| v.clone().cast_to::<Vec<i64>>()), Ok(Ok(v)) if v == vec![1, 10, 3, 30])
 });
 
-// A LIST-valued fold ACCUMULATOR (the idiomatic reverse) has no
-// FoldAcc carry discipline in the fused fold loop (Scalar/Composite/
-// Str only) — the fold itself stays interpreted, pinned via
-// `#[native]` refusing. If this starts compiling, a FoldAcc::Value
-// discipline landed: flip the assertion and celebrate.
+// A LIST-valued fold ACCUMULATOR — the idiomatic reverse. The
+// FoldAcc::Value carry discipline EXISTS (nullable and map accs fuse,
+// below), but this shape still interprets: the prototype callback's
+// static resolution discards on an ABSTRACT-ID IDENTITY MISMATCH at
+// its return check (`[\`Cons(i64, List<i64>), \`Nil] does not contain
+// <abstract#4>` — the callback's rtype cell holds a DIFFERENT
+// AbstractId for list::List than the registry's; suspected
+// per-decode-unit id remapping divergence). Pinned #[native]-must-
+// fail; flip to the positive assertion when the identity bug is
+// fixed. Repro: design note in the LM commit message.
 #[tokio::test]
 async fn list_fold_list_acc_interprets() {
     let prog = "{ \
         let l = list::from_array([1, 2, 3]); \
-        #[native] list::fold(l, list::from_array([]), |acc, x| list::cons(x, acc)) \
+        let seed: list::List<i64> = list::from_array([]); \
+        let rev = { \
+            let r = #[native] list::fold(l, seed, |acc, x| list::cons(x, acc)); \
+            r \
+        }; \
+        list::to_array(rev) \
     }";
     let r = graphix_package_core::testing::eval(prog, crate::TEST_REGISTER).await;
     assert!(
         r.is_err(),
-        "a list-valued fold acc has no fused carry discipline yet; got {:?}",
+        "the cons-building fold still interprets (abstract-id identity bug); got {:?}",
         r.map(|(v, _)| v)
     );
 }
+
+// The max-by idiom: a NULLABLE accumulator (`[i64, null]`) seeded
+// null, replaced when the element beats the carried best.
+const LIST_FOLD_NULLABLE_ACC: &str = r#"
+{
+  let l = list::from_array([3, 9, 4]);
+  let seed: [i64, null] = null;
+  list::fold(l, seed, |best, x| select best {
+    null as _ => x,
+    i64 as b => select x > b { true => x, false => b }
+  })
+}
+"#;
+run!(list_fold_nullable_acc, LIST_FOLD_NULLABLE_ACC, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(9)))
+});
+
+// The group-by idiom: a MAP accumulator built by `map::insert` (a
+// Sync DynCall) inside the fused fold body.
+const LIST_FOLD_MAP_ACC: &str = r#"
+{
+  let l = list::from_array([("a", 1), ("b", 2), ("a", 10)]);
+  let m = list::fold(l, {"" => 0}, |acc, (k, v)| map::insert(acc, k, v));
+  (map::len(m), map::get(m, "a"), map::get(m, "b"))
+}
+"#;
+run!(list_fold_map_acc, LIST_FOLD_MAP_ACC, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<(i64, i64, i64)>()), Ok(Ok((3, 10, 2))))
+});
 
 // Resize convergence: the list grows a cycle in; the fold re-fires
 // with the new length (the kernel's prev-len state word ↔ the

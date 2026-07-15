@@ -613,6 +613,23 @@ fn emit_collection_fold<R: Rt, E: UserEvent>(
             }
         }
         Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
+        // Value-shaped accumulators (2026-07-14): the list-building
+        // reverse/collect idiom, nullable max-by, variant state
+        // machines, and map group-by all carry an owned two-word
+        // Value through the loop (scaffold::FoldAcc::Value).
+        Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
+            if acc.binds.is_empty() =>
+        {
+            scaffold::FoldAcc::Value {
+                init_src: emit::node_composite_source(init),
+                body_src: emit::node_composite_source(body),
+                kind: match k {
+                    AbiKind::Variant => scaffold::ValueLeafKind::Variant,
+                    AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
+                    _ => scaffold::ValueLeafKind::Value,
+                },
+            }
+        }
         _ => return Ok(None),
     };
     let (value, src) = emit_flattened_source(cx, source, flatten_helper)?;
@@ -1870,6 +1887,23 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ArrayFold {
                 }
             }
             Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
+            // Value-shaped accumulators (2026-07-14): the list-building
+            // reverse/collect idiom, nullable max-by, variant state
+            // machines, and map group-by all carry an owned two-word
+            // Value through the loop (scaffold::FoldAcc::Value).
+            Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
+                if acc.binds.is_empty() =>
+            {
+                scaffold::FoldAcc::Value {
+                    init_src: emit::node_composite_source(init),
+                    body_src: emit::node_composite_source(body),
+                    kind: match k {
+                        AbiKind::Variant => scaffold::ValueLeafKind::Variant,
+                        AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
+                        _ => scaffold::ValueLeafKind::Value,
+                    },
+                }
+            }
             _ => return Ok(None),
         };
         let array = source.emit_clif(cx)?;

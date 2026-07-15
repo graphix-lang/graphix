@@ -128,6 +128,68 @@ fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
 /// retained a check `Apply` (`def.check`), runs that apply's `typecheck1`.
 /// This is the body of the former deferred check, called directly from
 /// `CallSite::typecheck1`.
+/// The call site's per-arg verification (`formal ⊇ arg`), with the
+/// ENTITLED abstract bridge: when the plain check trips the
+/// `AbstractOpaque` boundary and the callee resolves to a single
+/// known `LambdaDef`, retry with both sides privatized under the
+/// CALLEE DEF's scope — the def is entitled to see through its own
+/// signature's abstract types. The canonical case is a collection
+/// callback: the enclosing HOF's privatized instance signature binds
+/// the accumulator at its PRIVATE form, while a builtin's formal
+/// carries the PUBLIC abstract (`list::cons(x, acc)` inside a
+/// caller-side fold callback) — opaque-vs-private trips here, and
+/// only the def-scoped registry view can reconcile them. An
+/// unresolvable or multi-def callee keeps the plain error (no
+/// entitlement to borrow).
+fn check_site_arg<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    callee_scope: &Option<crate::expr::ModPath>,
+    formal: &Type,
+    arg: &Type,
+) -> Result<()> {
+    match formal.check_contains(&ctx.env, arg) {
+        Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
+            let Some(scope) = callee_scope else {
+                return Err(e);
+            };
+            let formal = crate::fusion::lowering::privatize_type(
+                &ctx.fusion.abstract_registry,
+                formal,
+                &ctx.env,
+                scope,
+            );
+            let arg = crate::fusion::lowering::privatize_type(
+                &ctx.fusion.abstract_registry,
+                arg,
+                &ctx.env,
+                scope,
+            );
+            formal.check_contains(&ctx.env, &arg)
+        }
+        r => r,
+    }
+}
+
+/// The callee definition's lexical scope, when the call target
+/// resolves to a single known `LambdaDef` — the same discovery
+/// channel `try_static_resolve` uses (`bind_to_lambda` /
+/// separately-compiled stdlib values / a direct lambda literal).
+/// `None` for dynamic targets: no entitlement to bridge.
+fn callee_def_scope<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    fnode: &Node<R, E>,
+) -> Option<crate::expr::ModPath> {
+    let fv = match fnode.view() {
+        NodeView::Ref(r) if !ctx.unstable_bindings.contains(&r.id) => {
+            ctx.bind_to_lambda.get(&r.id).or_else(|| ctx.rt.cached().get(&r.id)).cloned()
+        }
+        NodeView::Lambda(l) => Some(l.def_value().clone()),
+        _ => None,
+    }?;
+    let def = fv.downcast_ref::<LambdaDef<R, E>>()?;
+    Some(def.scope.lexical.clone())
+}
+
 fn finalize_lambda<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     id: LambdaId,
@@ -1681,6 +1743,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         };
         // Typecheck positional args in order
+        let callee_scope = callee_def_scope(ctx, &self.fnode);
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
             let key = if let FnArgKind::Labeled { name, .. } = &farg.kind {
@@ -1700,7 +1763,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if let Some(n) = arg.node.as_mut() {
                     farg.typ.contains(&ctx.env, n.typ())?;
                     wrap!(n, n.typecheck0(ctx))?;
-                    wrap!(n, farg.typ.check_contains(&ctx.env, n.typ()))?;
+                    wrap!(n, check_site_arg(ctx, &callee_scope, &farg.typ, &n.typ()))?;
                 }
             }
         }
@@ -1714,7 +1777,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         if let Some(ref mut n) = arg.node {
                             typ.contains(&ctx.env, n.typ())?;
                             wrap!(n, n.typecheck0(ctx))?;
-                            wrap!(n, typ.check_contains(&ctx.env, n.typ()))?;
+                            wrap!(n, check_site_arg(ctx, &callee_scope, typ, &n.typ()))?;
                         }
                     }
                     None => break,

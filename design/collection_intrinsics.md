@@ -96,9 +96,24 @@ collection-generic), and collection results rebuild at
 types freeze to an OPAQUE LEAF (`freeze_for_abi_d`'s Seen-hit returns
 the matched, cell-filled outer ref with frozen params instead of
 refusing), so a List value crosses kernel boundaries as a 2-word
-Variant and every list-typed DynCall registers. Known v1 gap: the
-fold loop has no Value-shaped accumulator carry, so a List/Map-valued
-fold acc interprets (pinned by `list_fold_list_acc_interprets`).
+Variant and every list-typed DynCall registers. The fold loop carries
+Value-shaped ACCUMULATORS too (`FoldAcc::Value`, 2026-07-14): an owned
+two-word loop slot whose REAL value disc is carried whole (a nullable
+acc alternates Null and its value disc; a list acc alternates the Nil
+string and the Cons array) with TAINT|STALE riding the disc's tag
+bits — nullable max-by and map group-by folds fuse. The cons-building
+reverse still interprets: its prototype callback discards static
+resolution on an ABSTRACT-ID IDENTITY MISMATCH at the return check
+(two distinct AbstractIds both denoting list::List — suspected
+per-decode-unit remap divergence; pinned by
+`list_fold_list_acc_interprets`). Two entitled abstract bridges landed
+with it: `BuiltInLambda::typecheck0`'s per-arg check and
+`CallSite::typecheck0`'s per-arg verification (`check_site_arg`) both
+retry through `privatize_type` under the CALLEE DEF's scope on
+`AbstractOpaque` — a def is entitled to see through its own
+signature's abstracts, and a collection callback's privatized
+instance signature necessarily mixes private forms into
+outside-module bodies.
 
 ## Rejected Alternatives
 

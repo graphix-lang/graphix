@@ -235,7 +235,20 @@ fn check_instance_type<R: Rt, E: UserEvent>(
     expected: &Type,
     actual: &Type,
 ) -> Result<()> {
-    match expected.check_contains_rigid(&ctx.env, actual) {
+    let probe = expected.check_contains_rigid(&ctx.env, actual);
+    if let Err(e) = &probe
+        && std::env::var_os("GXDBG_INSTCHECK").is_some()
+    {
+        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            eprintln!(
+                "INSTCHECK-PROBE-FAIL scope={scope} opaque={}\n  expected={expected}\n  actual={actual}\n  err={e:#}",
+                e.downcast_ref::<crate::typ::AbstractOpaque>().is_some()
+            );
+            Ok::<_, std::fmt::Error>(())
+        })
+        .ok();
+    }
+    match probe {
         Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
             let expected = crate::fusion::lowering::privatize_type(
                 &ctx.fusion.abstract_registry,
@@ -249,7 +262,18 @@ fn check_instance_type<R: Rt, E: UserEvent>(
                 &ctx.env,
                 scope,
             );
-            expected.check_contains_rigid(&ctx.env, &actual)
+            let r = expected.check_contains_rigid(&ctx.env, &actual);
+            if r.is_err() && std::env::var_os("GXDBG_INSTCHECK").is_some() {
+                crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+                    eprintln!(
+                        "INSTCHECK-RETRY-FAIL scope={scope}\n  expected={expected}\n  actual={actual}\n  err={:#}",
+                        r.as_ref().unwrap_err()
+                    );
+                    Ok::<_, std::fmt::Error>(())
+                })
+                .ok();
+            }
+            r
         }
         result => result,
     }
@@ -720,6 +744,13 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 struct BuiltInLambda<R: Rt, E: UserEvent> {
     typ: Arc<FnType>,
     apply: Box<dyn Apply<R, E> + Send + Sync + 'static>,
+    /// The DEF's fn scope — check_instance_type's privatize gate needs
+    /// a scope inside the defining module so an abstract-typed arg
+    /// bridges to its private form (the cons-building fold callback:
+    /// the acc cell binds the caller's OPAQUE view at the top-level
+    /// unification, and the builtin's declared formal is the private
+    /// view — same seam GXLambda's per-arg checks already bridge).
+    scope: ModPath,
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
@@ -789,7 +820,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
             } else {
                 self.typ.vargs.as_ref().unwrap()
             };
-            wrap!(args[i], atyp.check_contains(&ctx.env, &args[i].typ()))?
+            // Through check_instance_type, not a raw check_contains:
+            // an abstract-typed arg (an acc cell bound to the caller's
+            // OPAQUE view) must bridge to the private form the
+            // declared formal carries — the def-scope privatize retry.
+            wrap!(args[i], check_instance_type(ctx, &self.scope, atyp, &args[i].typ()))?
         }
         // The old post-hoc constraint-list check is retired (phase C):
         // cell conjuncts are validated at every bind by
@@ -1088,7 +1123,11 @@ impl Lambda {
                                 init(ctx, &_typ, resolved, &_scope, args, tid).map(
                                     |apply| {
                                         let f: Box<dyn Apply<R, E>> =
-                                            Box::new(BuiltInLambda { typ, apply });
+                                            Box::new(BuiltInLambda {
+                                                typ,
+                                                apply,
+                                                scope: _scope.lexical.clone(),
+                                            });
                                         f
                                     },
                                 )

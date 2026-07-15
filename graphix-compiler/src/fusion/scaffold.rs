@@ -1153,6 +1153,18 @@ pub enum FoldAcc<'a> {
     /// independently owned — no `ensure_owned` step; the old acc still
     /// drops when replaced.
     Str,
+    /// An OWNED two-word Value (variant / nullable / opaque value —
+    /// e.g. a List or Map accumulator, or the max-by `[T, null]`
+    /// idiom). Unlike the other shapes, the acc's REAL value disc
+    /// varies per iteration (a nullable acc alternates Null and its
+    /// value disc; a List acc alternates the `Nil` string and the
+    /// `Cons` array), so the disc Variable carries the WHOLE disc —
+    /// value bits plus TAINT|STALE — never a re-based constant. The
+    /// loop owns the current acc (`ensure_owned` per src, like
+    /// Composite); the old one drops via `graphix_value_drop` (which
+    /// masks the tag bits). No destructure leaves — a value-shape acc
+    /// pattern is a single name.
+    Value { init_src: CompositeSource, body_src: CompositeSource, kind: ValueLeafKind },
 }
 
 impl FoldAcc<'_> {
@@ -1161,16 +1173,25 @@ impl FoldAcc<'_> {
             FoldAcc::Scalar(p) => LocalKind::Scalar(*p),
             FoldAcc::Composite { .. } => LocalKind::Composite,
             FoldAcc::Str => LocalKind::String,
+            FoldAcc::Value { kind, .. } => match kind {
+                ValueLeafKind::Variant => LocalKind::Variant,
+                ValueLeafKind::Nullable => LocalKind::Nullable,
+                ValueLeafKind::Value => LocalKind::Value,
+            },
         }
     }
 
     /// The clean (untainted, fired) disc for the carried acc shape —
     /// each carry re-bases on this so only TAINT and STALE ride.
+    /// UNREACHABLE for [`FoldAcc::Value`] — its disc carries whole.
     fn base_disc(&self, cx: &mut BodyCx) -> ClifValue {
         match self {
             FoldAcc::Scalar(p) => scalar_disc(cx.b, *p),
             FoldAcc::Composite { .. } => cx.b.ins().iconst(types::I64, value_disc::ARRAY),
             FoldAcc::Str => cx.b.ins().iconst(types::I64, value_disc::STRING),
+            FoldAcc::Value { .. } => {
+                unreachable!("a Value acc's disc is carried whole, never re-based")
+            }
         }
     }
 
@@ -1179,7 +1200,12 @@ impl FoldAcc<'_> {
     /// loop binds it to — `drop_owned_composites`). Emits nothing for
     /// a scalar (not even the `use_var` — scalar CLIF is preserved
     /// instruction-for-instruction).
-    fn drop_old(&self, cx: &mut BodyCx, acc_var: Variable) -> Result<()> {
+    fn drop_old(
+        &self,
+        cx: &mut BodyCx,
+        acc_var: Variable,
+        acc_disc_var: Variable,
+    ) -> Result<()> {
         match self {
             FoldAcc::Scalar(_) => {}
             FoldAcc::Composite { .. } => {
@@ -1192,8 +1218,31 @@ impl FoldAcc<'_> {
                 let old = cx.b.use_var(acc_var);
                 cx.b.ins().call(drop, &[old]);
             }
+            FoldAcc::Value { .. } => {
+                let drop = cx.helper("graphix_value_drop")?;
+                let old_disc = cx.b.use_var(acc_disc_var);
+                let old_pay = cx.b.use_var(acc_var);
+                cx.b.ins().call(drop, &[old_disc, old_pay]);
+            }
         }
         Ok(())
+    }
+
+    /// The next carried disc for a fresh acc value: whole-carried for
+    /// [`FoldAcc::Value`] (real value disc + TAINT|STALE, other tag
+    /// bits stripped), re-based on the shape constant otherwise.
+    fn carry_disc(&self, cx: &mut BodyCx, from_disc: ClifValue) -> ClifValue {
+        match self {
+            FoldAcc::Value { .. } => {
+                const KEEP: i64 = !(0xFFu64 << 56) as i64 | super::TAINT | super::STALE;
+                cx.b.ins().band_imm(from_disc, KEEP)
+            }
+            _ => {
+                let base = self.base_disc(cx);
+                let t = cx.b.ins().band_imm(from_disc, TAINT | STALE);
+                cx.b.ins().bor(base, t)
+            }
+        }
     }
 }
 
@@ -1215,7 +1264,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let acc_var = cx.b.declare_var(match &acc {
         FoldAcc::Scalar(p) => prim_to_clif(*p),
-        FoldAcc::Composite { .. } | FoldAcc::Str => types::I64,
+        FoldAcc::Composite { .. } | FoldAcc::Str | FoldAcc::Value { .. } => types::I64,
     });
     // The acc's TAINT and STALE are LOOP-CARRIED in its own disc
     // Variable. Each carry re-bases on the clean scalar
@@ -1232,17 +1281,21 @@ where
     let init_cv = init(cx)?;
     // A pointer-shaped acc is loop-OWNED from the start: a borrowed
     // init (a Ref to a kernel input / outer local) clones here. String
-    // reads already clone; a scalar owns nothing.
-    let init_pay = match &acc {
+    // reads already clone; a scalar owns nothing. A Value acc owns
+    // both words and carries its REAL disc (see `carry_disc`).
+    let (init_pay, init_disc) = match &acc {
         FoldAcc::Composite { init_src, .. } => {
-            ensure_owned_composite_src(cx, *init_src, init_cv.payload)?
+            (ensure_owned_composite_src(cx, *init_src, init_cv.payload)?, init_cv.disc)
         }
-        FoldAcc::Scalar(_) | FoldAcc::Str => init_cv.payload,
+        FoldAcc::Scalar(_) | FoldAcc::Str => (init_cv.payload, init_cv.disc),
+        FoldAcc::Value { init_src, .. } => {
+            let (d, p) =
+                ensure_owned_value_src(cx, *init_src, init_cv.disc, init_cv.payload)?;
+            (p, d)
+        }
     };
     cx.b.def_var(acc_var, init_pay);
-    let base = acc.base_disc(cx);
-    let t = cx.b.ins().band_imm(init_cv.disc, TAINT | STALE);
-    let d0 = cx.b.ins().bor(base, t);
+    let d0 = acc.carry_disc(cx, init_disc);
     cx.b.def_var(acc_disc_var, d0);
     // After the init emit — the node-walk evaluates fold's init at the
     // CALLER's depth level; only the per-element callback dispatch
@@ -1291,13 +1344,18 @@ where
     // The new acc is made independently owned BEFORE anything drops: a
     // borrowed body result (`|acc, x| acc`) may alias the old acc, an
     // element, or a leaf local.
-    let new_pay = match &acc {
+    let (new_pay, new_disc) = match &acc {
         FoldAcc::Composite { body_src, .. } => {
-            ensure_owned_composite_src(cx, *body_src, new_acc.payload)?
+            (ensure_owned_composite_src(cx, *body_src, new_acc.payload)?, new_acc.disc)
         }
-        FoldAcc::Scalar(_) | FoldAcc::Str => new_acc.payload,
+        FoldAcc::Scalar(_) | FoldAcc::Str => (new_acc.payload, new_acc.disc),
+        FoldAcc::Value { body_src, .. } => {
+            let (d, p) =
+                ensure_owned_value_src(cx, *body_src, new_acc.disc, new_acc.payload)?;
+            (p, d)
+        }
     };
-    acc.drop_old(cx, acc_var)?;
+    acc.drop_old(cx, acc_var, acc_disc_var)?;
     drop_owned_leaves(cx, &acc_owned_leaves)?;
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
@@ -1310,9 +1368,7 @@ where
     // bottom init with a callback that never consumes the acc can recover
     // on the first iteration in both modes.
     cx.b.def_var(acc_var, new_pay);
-    let base = acc.base_disc(cx);
-    let t = cx.b.ins().band_imm(new_acc.disc, TAINT | STALE);
-    let d = cx.b.ins().bor(base, t);
+    let d = acc.carry_disc(cx, new_disc);
     cx.b.def_var(acc_disc_var, d);
     emit_increment(cx, i_var, i_now, loop_header);
     cx.b.seal_block(loop_body);

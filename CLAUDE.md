@@ -586,8 +586,17 @@ Prerequisite: recursive types freeze to an OPAQUE LEAF
 (`freeze_for_abi_d` Seen-hit returns the matched outer ref, params frozen,
 256-chain backstop) so a List crosses kernel boundaries as a 2-word Variant
 and list-typed DynCalls (`from_array`/`to_array`/`cons`/...) register.
-Known v1 gap: `FoldAcc` has no Value carry, so a List/Map-valued fold
-ACCUMULATOR interprets (pinned by `list_fold_list_acc_interprets`).
+`FoldAcc::Value` carries Value-shaped ACCUMULATORS (owned two-word loop
+slot, real disc carried whole with TAINT|STALE in the tag bits) —
+nullable max-by and map group-by folds fuse; the cons-building reverse
+still interprets (abstract-id identity mismatch at the prototype's
+return check — two AbstractIds both denoting list::List; pinned by
+`list_fold_list_acc_interprets`). The entitled abstract bridges:
+`BuiltInLambda::typecheck0` and `CallSite::typecheck0`'s per-arg checks
+(`check_site_arg`) retry through `privatize_type` under the CALLEE
+DEF's scope on `AbstractOpaque` (a def sees through its own
+signature's abstracts; privatized instance signatures mix private
+forms into outside-module callback bodies by design).
 Benches: `list_fold_sum` 151x, `list_map_fold` 142x — the ~15x gap to the
 array twins is the cons representation's per-element allocation, not loop
 overhead. `for_each_emitted_node` descends
