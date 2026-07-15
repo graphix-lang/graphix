@@ -210,41 +210,49 @@ fn same_content(a: &Type, b: &Type) -> bool {
 
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
-        if self.contains(env, t)? { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
+        let mut hist = RefHist::new(LPooled::take());
+        let ok = self.contains_int(
+            ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
+            env,
+            &mut hist,
+            t,
+        )?;
+        if ok { Ok(()) } else { Err(self.contains_mismatch(t, hist.abstract_false)) }
     }
 
-    fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
+    fn contains_mismatch(&self, t: &Self, abstract_false: bool) -> anyhow::Error {
         let e = anyhow::Error::new(TypeMismatch {
             expected: self.clone(),
             actual: t.clone(),
         });
         // Abstract types are OPAQUE to `contains` by design — their
         // private↔public equivalence exists only through NAME
-        // resolution inside the defining module. A failure involving
-        // one is therefore classifiable by the call-site instance
-        // recheck (the STRICT ruling's one other legitimate swallow
-        // besides `UnresolvableRef`): the def-time check relished the
-        // private view, the recheck sees the public form, and no walk
-        // can relate them (the gui `Color` family).
-        if self.mentions_abstract(env) || t.mentions_abstract(env) {
-            e.context(super::AbstractOpaque)
-        } else {
-            e
-        }
+        // resolution inside the defining module. A failure whose walk
+        // hit a false Abstract-PAIR comparison is therefore
+        // classifiable by the call-site instance recheck (the STRICT
+        // ruling's one other legitimate swallow besides
+        // `UnresolvableRef`): the def-time check relished the private
+        // view, the recheck sees the public form, and no walk can
+        // relate them (the gui `Color` family). A failure with no such
+        // comparison is FINAL — an abstract merely mentioned elsewhere
+        // in the tree cannot flip the verdict (see
+        // `RefHist::abstract_false`).
+        if abstract_false { e.context(super::AbstractOpaque) } else { e }
     }
 
     /// [`Self::check_contains`] with RIGID enforcement — the def
     /// gate's acceptance checks only (see `ContainsFlags::RigidCheck`).
     pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
+        let mut hist = RefHist::new(LPooled::take());
         let ok = self.contains_int(
             ContainsFlags::AliasTVars
                 | ContainsFlags::InitTVars
                 | ContainsFlags::RigidCheck,
             env,
-            &mut RefHist::new(LPooled::take()),
+            &mut hist,
             t,
         )?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(t, hist.abstract_false)) }
     }
 
     pub(super) fn contains_int(
@@ -388,14 +396,22 @@ impl Type {
             (
                 Self::Abstract { id: id0, params: p0 },
                 Self::Abstract { id: id1, params: p1 },
-            ) => Ok(id0 == id1
-                && p0.len() == p1.len()
-                && p0
-                    .iter()
-                    .zip(p1.iter())
-                    .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
-                    .collect::<Result<AndAc>>()?
-                    .0),
+            ) => {
+                if id0 != id1 {
+                    // Two ids can denote one abstract across views —
+                    // opacity, not a verdict (same-id param mismatches
+                    // below are structural and stay final).
+                    hist.abstract_false = true;
+                    return Ok(false);
+                }
+                Ok(p0.len() == p1.len()
+                    && p0
+                        .iter()
+                        .zip(p1.iter())
+                        .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
+                        .collect::<Result<AndAc>>()?
+                        .0)
+            }
             (Self::Primitive(p0), Self::Primitive(p1)) => Ok(p0.contains(*p1)),
             (
                 Self::Primitive(p),
@@ -825,9 +841,13 @@ impl Type {
                 }
                 Ok(r)
             }
+            (Self::Abstract { .. }, _) | (_, Self::Abstract { .. }) => {
+                // Opaque against everything else — the private↔public
+                // view seam (`Color` vs its concrete variant set).
+                hist.abstract_false = true;
+                Ok(false)
+            }
             (_, Self::Any)
-            | (Self::Abstract { .. }, _)
-            | (_, Self::Abstract { .. })
             | (_, Self::TVar(_))
             | (Self::TVar(_), _)
             | (Self::Fn(_), _)

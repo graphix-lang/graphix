@@ -72,6 +72,17 @@ struct RefHist<H: IsoPoolable> {
     probe_pins: LPooled<Vec<Type>>,
     epoch: u64,
     next_id: usize,
+    /// An Abstract-PAIR comparison returned false somewhere in this
+    /// walk — the verdict might flip if the abstract were seen through
+    /// its defining module, so a failure is classifiable
+    /// [`AbstractOpaque`] (retry via `privatize_type`). Sticky for the
+    /// walk: a set-member probe's abstract false can over-tag an
+    /// unrelated failure, which only costs a retry that fails honestly.
+    /// A failure with the flag CLEAR is final — no name resolution can
+    /// change it (the tree-wide `mentions_abstract` classification this
+    /// replaces silently dropped genuine mismatches back to dynamic
+    /// binding, soak-jul13b cluster A).
+    abstract_false: bool,
 }
 
 impl<H: IsoPoolable> Deref for RefHist<H> {
@@ -98,6 +109,7 @@ impl<H: IsoPoolable> RefHist<H> {
             probe_pins: LPooled::take(),
             epoch: 0,
             next_id: 0,
+            abstract_false: false,
         }
     }
 
@@ -742,76 +754,6 @@ impl Type {
                     && ft.throws.tvar_free()
             }
         }
-    }
-
-    pub(crate) fn mentions_abstract(&self, env: &Env) -> bool {
-        struct Seen {
-            cells: poolshark::local::LPooled<nohash::IntSet<usize>>,
-            refs: poolshark::local::LPooled<ahash::AHashSet<(ModPath, ModPath)>>,
-            /// Explored composite allocations — a pure existence query
-            /// over an immutable snapshot never needs to re-explore a
-            /// shared subtree (same discipline as `would_cycle_seen`;
-            /// variant-blind address dedup is sound: the answer depends
-            /// only on the leaves reachable from the allocation).
-            nodes: poolshark::local::LPooled<nohash::IntSet<usize>>,
-        }
-        fn go(t: &Type, env: &Env, seen: &mut Seen) -> bool {
-            let node = match t {
-                Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a) => {
-                    Some((**a).as_ptr().addr())
-                }
-                Type::Struct(a) => Some((**a).as_ptr().addr()),
-                Type::Fn(f) => Some((&**f as *const FnType).addr()),
-                Type::Error(a) | Type::Array(a) | Type::ByRef(a) => {
-                    Some((&**a as *const Type).addr())
-                }
-                _ => None,
-            };
-            if let Some(node) = node
-                && !seen.nodes.insert(node)
-            {
-                return false;
-            }
-            match t {
-                Type::Abstract { .. } => true,
-                Type::Bottom | Type::Any | Type::Primitive(_) => false,
-                Type::Ref(tr) => {
-                    if !seen.refs.insert((tr.scope.clone(), tr.name.clone())) {
-                        return false;
-                    }
-                    match t.lookup_ref(env) {
-                        Ok(t) => go(&t, env, seen),
-                        Err(_) => false,
-                    }
-                }
-                Type::Error(t) | Type::Array(t) | Type::ByRef(t) => go(t, env, seen),
-                Type::Map { key, value } => go(key, env, seen) || go(value, env, seen),
-                Type::Tuple(ts) | Type::Variant(_, ts) | Type::Set(ts) => {
-                    ts.iter().any(|t| go(t, env, seen))
-                }
-                Type::Struct(ts) => ts.iter().any(|(_, t)| go(t, env, seen)),
-                Type::TVar(tv) => {
-                    let cell = tv.read().typ.clone();
-                    if !seen.cells.insert(triomphe::Arc::as_ptr(&cell).addr()) {
-                        return false;
-                    }
-                    let bound = cell.read().typ.clone();
-                    bound.map(|t| go(&t, env, seen)).unwrap_or(false)
-                }
-                Type::Fn(f) => {
-                    f.args.iter().any(|a| go(&a.typ, env, seen))
-                        || f.vargs.as_ref().map(|t| go(t, env, seen)).unwrap_or(false)
-                        || go(&f.rtype, env, seen)
-                        || go(&f.throws, env, seen)
-                }
-            }
-        }
-        let mut seen = Seen {
-            cells: poolshark::local::LPooled::take(),
-            refs: poolshark::local::LPooled::take(),
-            nodes: poolshark::local::LPooled::take(),
-        };
-        go(self, env, &mut seen)
     }
 
     /// Deterministically fill the resolution cell of every `Type::Ref`

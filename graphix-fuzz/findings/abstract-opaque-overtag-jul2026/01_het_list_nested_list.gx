@@ -1,0 +1,6 @@
+// bisect: typecheck unsoundness (soak-jul13b divergence_000003 — the
+// abstract-opaque-overtag class, see 00_het_list_fn_fold.gx). Nested
+// list flavor: the het element union carries a List<(i64, i64)>
+// member; interp produced junk arrays, jit pointer-garbage i64s.
+// Compile error in both modes since the classification narrowed.
+{let a = array::init(i64:3, |i| {let l = list::from_array([f64:0., i64:2, list::from_array([(i64:1, i64:10), (i64:2, i64:20), (i64:3, i64:30)])]); list::find(l, |x| x > i64:10)}); array::fold(a, i64:0, |acc, x| acc + x)}

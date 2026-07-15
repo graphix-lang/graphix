@@ -569,6 +569,29 @@ run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A heterogeneous list containing a Fn member flowing through find
+// into Number-constrained arith must REJECT (soak-jul13b cluster A:
+// the mismatch was tree-wide classified AbstractOpaque because the
+// element type mentions List, and RESOLVE-DISCARD silently dropped
+// the site to dynamic — the node-walk bottomed at runtime while the
+// JIT emitted the Value's payload word as an i64).
+const LIST_FIND_HET_FN_FOLD_TYPE_ERR: &str = r#"
+{
+  let a = array::init(3, |i| {
+    let l = list::from_array([null, list::cons, 3]);
+    list::find(l, |x| x > 10)
+  });
+  array::fold(a, 0, |acc, x| acc + x)
+}
+"#;
+
+run!(
+    list_find_het_fn_fold_type_err,
+    LIST_FIND_HET_FN_FOLD_TYPE_ERR,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
 // ── Find map ────────────────────────────────────────────────────
 
 const LIST_FIND_MAP: &str = r#"
