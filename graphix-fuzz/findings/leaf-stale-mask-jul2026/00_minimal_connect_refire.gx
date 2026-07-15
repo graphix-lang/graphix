@@ -1,0 +1,10 @@
+// bisect: fusion/JIT firing bug (soak-jul13b, 13 findings — one root).
+// `bind_elem` passed mask 0 to `bind_leaves`, so |(k, v)| destructure
+// leaves were minted always-FIRED instead of carrying the source
+// collection's event freshness (TAINT|STALE). On kernel re-entry with
+// a quiet source (here: cycle 2, when the connect target lands), the
+// leaves read as fired -> body result fired -> slot fired -> the HOF
+// re-emitted its cached result. The same fold with `e.1` field access
+// was correctly suppressed (the ELEMENT disc carried STALE). Interp
+// fired the fold once; JIT fired it twice.
+{let s = i64:0; s <- i64:7; array::fold([(i64:1, i64:10)], i64:0, |acc, (k, v)| acc + v)}

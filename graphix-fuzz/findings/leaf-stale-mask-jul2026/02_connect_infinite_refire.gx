@@ -1,0 +1,7 @@
+// bisect: fusion/JIT firing bug (soak-jul13b divergence_000011 — the
+// leaf-stale-mask class, see 00_minimal_connect_refire.gx).
+// Self-sustaining flavor: the nested destructure-fold inside the
+// connect RHS's source array re-fired on every re-entry, so the
+// connect rescheduled forever. interp quiesced after [0:0 1:112];
+// jit emitted 112 every cycle until the trace cap.
+{let a = [{let a = [(i64:0, i64:2), (i64:3, i64:4)]; array::fold(a, i64:0, |acc, (k, v)| acc + k + v)}, i64:100, i64:3]; let s = i64:0; s <- array::fold(a, i64:0, |acc, e| acc + e); s}

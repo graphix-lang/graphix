@@ -265,9 +265,11 @@ fn bind_elem(
                 LocalKind::Composite,
                 elem.id,
             );
-            // Destructure leaves — see [`bind_leaves`]. Elements carry
-            // STALE only (a valid array's elements are untainted).
-            let owned_leaves = bind_leaves(cx, elem_ptr, src_disc, 0, elem.leaves)?;
+            // Destructure leaves — see [`bind_leaves`]. Leaves have the
+            // source collection's event freshness, exactly like the
+            // element they were read from.
+            let owned_leaves =
+                bind_leaves(cx, elem_ptr, src_disc, TAINT | STALE, elem.leaves)?;
             Ok((BoundElem::Composite { var }, owned_leaves))
         }
         Some(AbiKind::String) => {
