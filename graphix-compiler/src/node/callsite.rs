@@ -1456,6 +1456,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // captures fired — the retained instance this replaces was
         // reactively live to its captures. Quiet cycles stay parked:
         // the retained twin's passive re-poll produced nothing either.
+        // For a parked rebind: the index into `set` where the wake's
+        // priming deliveries (bind's fired formal/external backfills)
+        // begin — the replay below withdraws them.
+        let mut rebound_parked: Option<usize> = None;
         let bound = match &self.callee {
             Callee::TransientParked { def, ext_refs } => {
                 let wake = event.init
@@ -1469,6 +1473,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         .downcast_ref::<LambdaDef<R, E>>()
                         .expect("parked def must be a lambda");
                     let scope = self.scope.clone();
+                    rebound_parked = Some(set.len());
                     self.bind(ctx, scope, self.flags, fv.clone(), lb, event, &mut set)
                         .expect("failed to re-bind parked lambda");
                     true
@@ -1497,6 +1502,49 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let res = f.update(ctx, &mut self.arg_refs, event);
                 // Reconstitute the two-channel tag across the clean-
                 // Value Apply boundary (see `Apply::out_tag`).
+                res.map(|v| TagValue::tagged(v, f.out_tag()))
+            }
+            Some(f) if rebound_parked.is_some() && !event.init => {
+                // PRIME-then-REPLAY for a parked transient rebind on a
+                // non-init view. The fresh instance needs its
+                // first-dispatch init view (constants fire, formals and
+                // externals delivered from the cache), but that view's
+                // production is FIRED regardless of derivation — a
+                // capture wake whose consumption dead-ends in a
+                // const-valued body re-emitted where the retained twin
+                // it replaces stays quiet (soak-jul13b
+                // generate_000001). So: PRIME the instance against a
+                // PRIVATE variables map (the tail loop's frame
+                // discipline — interior deliveries like select arm
+                // binds contaminate the map, so the whole map is
+                // discarded) and throw the result away —
+                // `transient_body_ok` guarantees the body is pure, so
+                // the extra evaluation is unobservable and its cached
+                // writes reconstruct the twin's steady state. Then
+                // REPLAY against the REAL event with bind's priming
+                // deliveries withdrawn (`set[prime_start..]`): firedness
+                // derives only from what actually fired this cycle,
+                // exactly as it would have through the retained twin.
+                let prime_start = rebound_parked.unwrap();
+                let mut prime_map = event.variables.clone();
+                mem::swap(&mut event.variables, &mut prime_map);
+                let init = mem::replace(&mut event.init, true);
+                let mut refs = Refs::default();
+                f.refs(&mut refs);
+                refs.with_external_refs(|id| {
+                    if let Entry::Vacant(e) = event.variables.entry(id) {
+                        if let Some(v) = ctx.rt.cached().get(&id) {
+                            e.insert(TagValue::fired(v.clone()));
+                        }
+                    }
+                });
+                let _prime = f.update(ctx, &mut self.arg_refs, event);
+                event.init = init;
+                mem::swap(&mut event.variables, &mut prime_map);
+                for id in &set[prime_start..] {
+                    event.variables.remove(id);
+                }
+                let res = f.update(ctx, &mut self.arg_refs, event);
                 res.map(|v| TagValue::tagged(v, f.out_tag()))
             }
             Some(f) => {

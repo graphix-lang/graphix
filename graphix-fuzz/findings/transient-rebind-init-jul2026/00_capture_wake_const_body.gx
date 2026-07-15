@@ -1,0 +1,13 @@
+// bisect: interp over-fire (soak-jul13b generate_divergence_000001).
+// A parked transient recursive callee woken by a CAPTURE fire
+// re-bound and dispatched under the fresh instance's forced init
+// view, so constants fired per activation and the result emitted
+// FIRED even though its derivation dead-ends in a const-valued body
+// — the retained twin (and the JIT's lambda kernel, body-driven per
+// Eric's 2026-07-11 ruling) stays quiet. The rebind now PRIMES the
+// instance against a private variables map (result discarded —
+// transient_body_ok guarantees purity) and REPLAYS against the real
+// event, so firedness derives only from what actually fired.
+// interp emitted 157 at cycles 0 AND 1; jit once. Non-tail recursion
+// is load-bearing (the tail twin runs framed and always agreed).
+{let k = f64:1.0; let f = |a: f64, b: f64| -> i64 i64:42; let r = &k; *r <- f64:0.1; let rec g = |n: i64| -> i64 select n {m if m <= i64:0 => f(k, f64:3.14), m => m + g(m - i64:1)}; g(i64:5) + i64:100}
