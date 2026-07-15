@@ -747,16 +747,15 @@ pub struct Kernel<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
     fn drop(&mut self) {
-        // Free the per-slot state tables the JIT'd code boxed behind
-        // their claimed state words (`graphix_slot_state_table` —
-        // scaffold-loop guarded-select selection memory). Semantic
-        // state: neither `sleep` nor `reset_replay` touches these
-        // words, only instance death does.
-        for w in self.jit.slot_table_words.iter() {
+        // Free the per-slot state-table chains the JIT'd code boxed
+        // behind their claimed anchor words (`graphix_slot_state_table`
+        // — scaffold-loop guarded-select selection memory; a nested
+        // select's anchor owns `own_levels` directory levels, one per
+        // enclosing loop). Semantic state: neither `sleep` nor
+        // `reset_replay` touches these words, only instance death does.
+        for (w, own_levels) in self.jit.slot_table_words.iter() {
             let p = std::mem::replace(&mut self.state[*w as usize], 0);
-            if p != 0 {
-                drop(unsafe { Box::from_raw(p as *mut Vec<u64>) });
-            }
+            super::emit_helpers::free_slot_chain(p, *own_levels as u64);
         }
     }
 }

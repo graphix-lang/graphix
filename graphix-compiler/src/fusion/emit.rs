@@ -302,15 +302,17 @@ pub struct WrappedKernel {
     /// iteration cannot bridge a bottom on the next; semantic/config
     /// words (lifted ids, first-call flags, select memory) survive.
     pub replay_state_words: Vec<u32>,
-    /// Word indices of the ROOT body's PER-SLOT table claims: each
-    /// holds (0 or) a `Box<Vec<u64>>` raw pointer managed by the
-    /// `graphix_slot_state_table` helper — one word per scaffold-loop
-    /// slot ordinal, giving loop-body guarded selects per-slot
-    /// selection memory (see [`BodyCx::open_slot_tables`]). The
-    /// runtime `Kernel`'s `Drop` frees exactly these; `reset_replay`
-    /// never touches them (semantic state, like the static select
-    /// memory word).
-    pub slot_table_words: Vec<u32>,
+    /// `(word index, own_levels)` of the ROOT body's per-slot
+    /// state-table ANCHORS: each word holds (0 or) a `Box<Vec<u64>>`
+    /// raw pointer managed by the `graphix_slot_state_table` helper,
+    /// the root of a chain of owning tables mirroring the select
+    /// site's loop nesting (`own_levels` directory levels, then a
+    /// leaf with one selection word per slot ordinal — see
+    /// [`BodyCx::open_slot_tables`]). The runtime `Kernel`'s `Drop`
+    /// frees the chains (`free_slot_chain`); `reset_replay` never
+    /// touches them (semantic state, like the static select memory
+    /// word).
+    pub slot_table_words: Vec<(u32, u32)>,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -432,7 +434,7 @@ struct CachedKernel {
     /// See [`WrappedKernel::replay_state_words`]; filled in phase 2.
     replay_state_words: Vec<u32>,
     /// See [`WrappedKernel::slot_table_words`]; filled in phase 2.
-    slot_table_words: Vec<u32>,
+    slot_table_words: Vec<(u32, u32)>,
     /// Holds the Arc alive so its raw pointer can't be reused by a
     /// later allocation.
     _kernel: std::sync::Arc<KernelSig>,
@@ -866,7 +868,7 @@ fn define_kernel_body(
     kernel: &std::sync::Arc<KernelSig>,
     funcids: &[(usize, (FuncId, Signature))],
     body_emitter: &dyn BodyEmitter,
-) -> Result<(KernelStrings, KernelValues, usize, Vec<u32>, Vec<u32>)> {
+) -> Result<(KernelStrings, KernelValues, usize, Vec<u32>, Vec<(u32, u32)>)> {
     let self_ptr = kernel_abi::kernel_key(kernel);
     let (func_id, sig) =
         funcids.iter().find(|(p, _)| *p == self_ptr).map(|(_, e)| e.clone()).ok_or_else(
@@ -1239,7 +1241,7 @@ fn compile_into_function(
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
     body_emitter: &dyn BodyEmitter,
-) -> Result<(usize, Vec<u32>, Vec<u32>)> {
+) -> Result<(usize, Vec<u32>, Vec<(u32, u32)>)> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -1577,13 +1579,22 @@ impl KernelValues {
 /// One open scaffold loop's per-slot state tables (see
 /// [`BodyCx::open_slot_tables`]). `depth` is the [`LowerCtx::loop_depth`]
 /// at which the loop BODY runs — a select consults the frame only when
-/// emitted at exactly that depth, so a select behind a further nesting
-/// level (whose slot identity this frame's ordinal can't represent)
-/// falls back to the unrefined guard term.
+/// emitted at exactly that depth (its own table lives in the top
+/// frame; an enclosing frame's ordinal can't identify its slots).
+/// `len`/`src_disc` are the loop's preheader-defined slot count and
+/// source disc — they dominate the loop body, so a NESTED loop's
+/// `open_slot_tables` reads them to emit the directory chain that
+/// anchors its own per-slot tables (one owning level per enclosing
+/// frame).
 pub(crate) struct SlotTableFrame {
     depth: u32,
     /// The loop's slot-ordinal induction variable.
     idx_var: Variable,
+    /// The loop's slot count (post-clamp, preheader-defined).
+    len: ClifValue,
+    /// The loop source's disc — its TAINT bit gates this level's
+    /// logical resize in a nested chain.
+    src_disc: ClifValue,
     /// Guarded-select site (`Select::spec.id`) → per-slot table base
     /// pointer (the `graphix_slot_state_table` result, valid for this
     /// kernel invocation).
@@ -1636,11 +1647,13 @@ pub(crate) struct LowerCtx<'a> {
     /// on one evaluation-frame iteration cannot bridge a bottom on the
     /// next (see [`emit_scalar_taint_cache`]).
     replay_words: std::cell::RefCell<Vec<u32>>,
-    /// Word indices of claims that hold PER-SLOT state tables — a
-    /// `Box<Vec<u64>>` raw pointer managed by the
-    /// `graphix_slot_state_table` helper, freed by the runtime
-    /// `Kernel`'s `Drop` (see [`BodyCx::open_slot_tables`]).
-    slot_table_words: std::cell::RefCell<Vec<u32>>,
+    /// `(word index, own_levels)` of claims that ANCHOR per-slot
+    /// state-table chains — a `Box<Vec<u64>>` raw pointer managed by
+    /// the `graphix_slot_state_table` helper, with `own_levels`
+    /// directory levels below it (one per enclosing loop), freed
+    /// recursively by the runtime `Kernel`'s `Drop` (see
+    /// [`BodyCx::open_slot_tables`]).
+    slot_table_words: std::cell::RefCell<Vec<(u32, u32)>>,
     /// Open scaffold-loop per-slot state-table frames, innermost
     /// last. Pushed/popped by [`BodyCx::open_slot_tables`] /
     /// [`BodyCx::close_slot_tables`] around every scaffold loop; a
@@ -1934,8 +1947,10 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
-        // Per-slot state table: (word: *mut u64, len, valid) -> *mut u64.
+        // Per-slot state table:
+        // (word: *mut u64, len, valid, own_levels) -> *mut u64.
         "graphix_slot_state_table" => {
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
@@ -2599,6 +2614,13 @@ fn is_tainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
 fn is_untainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     let t = b.ins().band_imm(disc, TAINT);
     b.ins().icmp_imm(IntCC::Equal, t, 0)
+}
+
+/// [`is_untainted`] widened to `I64` — the helper-argument form
+/// ([`BodyCx::open_slot_tables`]'s resize gate).
+fn emit_untainted_i64(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
+    let v = is_untainted(b, disc);
+    b.ins().uextend(types::I64, v)
 }
 
 /// True (I8 bool) iff the disc is NOT fresh — [`TAINT`] (bottom) OR
@@ -3497,11 +3519,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// [`claim_state_word`](Self::claim_state_word) for a claimant
-    /// whose observed quantity is LOOP-INVARIANT — identical on every
-    /// iteration of every open scaffold loop (see
-    /// [`node_loop_invariant_ref`]) — so sharing one word across the
-    /// iterations is exact and the in-loop refusal is waived. Callee
-    /// bodies still refuse (one word can't hold per-call-site memory).
+    /// whose word is exact ACROSS loop iterations, waiving the
+    /// in-loop refusal: either the observed quantity is
+    /// LOOP-INVARIANT — identical on every iteration of every open
+    /// scaffold loop (see [`node_loop_invariant_ref`]) — or the word
+    /// is a per-INSTANCE anchor whose per-slot content lives in the
+    /// heap structure it owns (a nested slot-table chain,
+    /// [`open_slot_tables`](Self::open_slot_tables)). Callee bodies
+    /// still refuse (one word can't hold per-call-site memory).
     pub fn claim_state_word_loop_invariant(&self) -> Option<i32> {
         if !self.ctx.state_enabled {
             return None;
@@ -3512,23 +3537,42 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// Open a scaffold loop's per-slot state-table frame. Emitted in
-    /// the loop PREHEADER (once per kernel invocation, `len` and
-    /// `idx_var` in hand, before the jump into the loop): for each
-    /// guarded-select site the caller prewalked out of the loop body
-    /// ([`guarded_select_sites`]), claim one static state word to OWN
-    /// a boxed `Vec<u64>` side table — one word per slot ordinal —
-    /// and call `graphix_slot_state_table` to resize it to `len`
-    /// (prefix-retaining, exactly the interpreted MapQ slot rule:
-    /// shrink truncates, regrow re-creates fresh zeroed slots). A
-    /// TAINTED source (`src_disc`) skips the logical resize — the
-    /// node-walk saw no event — growing only as an in-bounds guard,
-    /// mirroring [`scaffold::SlotFlags::apply`]'s prev-len word.
+    /// the loop PREHEADER (`len` and `idx_var` in hand, before the
+    /// jump into the loop): for each guarded-select site the caller
+    /// prewalked out of the loop body ([`guarded_select_sites`]),
+    /// anchor a chain of owning tables that mirrors the loop nesting
+    /// and ends in a leaf table with one word per slot ordinal:
+    ///
+    /// - At nesting depth 1 the anchor is a plain
+    ///   [`claim_state_word`](Self::claim_state_word) claim and the
+    ///   chain is just the leaf.
+    /// - Inside enclosing loops the anchor still gets ONE static word
+    ///   (a directory word is per-INSTANCE — the per-slot-ness lives
+    ///   in the heap structure — so the in-loop static refusal
+    ///   doesn't apply; `claim_state_word_loop_invariant` carries
+    ///   that exemption), and each enclosing frame contributes one
+    ///   DIRECTORY level: `graphix_slot_state_table` ensures that
+    ///   level's table (sized by the frame's `len`, resize gated by
+    ///   its source taint) and the frame's current ordinal indexes
+    ///   into it, yielding the word that owns the next level. The
+    ///   node-walk twin is the interpreted slot tree — outer slot i
+    ///   owns an inner MapQ instance which owns per-slot selects —
+    ///   with u64s in place of subgraphs. Truncation at any level
+    ///   frees the dropped subtrees (`own_levels`); regrow re-creates
+    ///   fresh — the MapQ prefix-retention lifecycle applied per
+    ///   level. This code runs once per enclosing-iteration (it IS
+    ///   the nested preheader), so ensure calls follow the loop
+    ///   structure's natural cost.
+    ///
+    /// A TAINTED source at any level skips that level's logical
+    /// resize — the node-walk saw no event — growing only as an
+    /// in-bounds guard, mirroring [`scaffold::SlotFlags::apply`]'s
+    /// prev-len word.
     ///
     /// A frame is ALWAYS pushed (possibly with no tables — claims are
-    /// refused in callee bodies and nested loops via
-    /// [`claim_state_word`](Self::claim_state_word), and most loops
-    /// have no guarded selects); [`close_slot_tables`]
-    /// (Self::close_slot_tables) MUST pop it after body emission.
+    /// refused in callee bodies, and most loops have no guarded
+    /// selects); [`close_slot_tables`](Self::close_slot_tables) MUST
+    /// pop it after body emission.
     pub(crate) fn open_slot_tables(
         &mut self,
         sites: &[ExprId],
@@ -3537,21 +3581,56 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         idx_var: Variable,
     ) -> Result<()> {
         let depth = self.ctx.loop_depth.get() + 1;
+        // (len, src_disc, idx_var) of each enclosing loop,
+        // outermost first. Every open loop pushed a frame, so the
+        // stack IS the enclosing-loop chain.
+        let enclosing: Vec<(ClifValue, ClifValue, Variable)> = {
+            let frames = self.ctx.slot_tables.borrow();
+            debug_assert_eq!(
+                frames.len(),
+                self.ctx.loop_depth.get() as usize,
+                "slot-table frames out of sync with loop depth"
+            );
+            frames.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
+        };
+        let n_dirs = enclosing.len();
         let mut tables = Vec::new();
         for id in sites {
-            let Some(off) = self.claim_state_word() else { break };
-            self.ctx.slot_table_words.borrow_mut().push((off / 8) as u32);
+            let anchor = if n_dirs == 0 {
+                self.claim_state_word()
+            } else {
+                self.claim_state_word_loop_invariant()
+            };
+            let Some(off) = anchor else { break };
+            self.ctx
+                .slot_table_words
+                .borrow_mut()
+                .push(((off / 8) as u32, n_dirs as u32));
             let sp = self.state_ptr();
-            let word_addr = self.b.ins().iadd_imm(sp, off as i64);
-            let t = self.b.ins().band_imm(src_disc, TAINT);
-            let valid = self.b.ins().icmp_imm(IntCC::Equal, t, 0);
-            let valid = self.b.ins().uextend(types::I64, valid);
+            let mut word_addr = self.b.ins().iadd_imm(sp, off as i64);
             let helper = self.helper("graphix_slot_state_table")?;
-            let call = self.b.ins().call(helper, &[word_addr, len, valid]);
+            for (k, (flen, fdisc, fidx)) in enclosing.iter().enumerate() {
+                let fvalid = emit_untainted_i64(self.b, *fdisc);
+                let own = self.b.ins().iconst(types::I64, (n_dirs - k) as i64);
+                let call = self.b.ins().call(helper, &[word_addr, *flen, fvalid, own]);
+                let dir = self.b.inst_results(call)[0];
+                let i = self.b.use_var(*fidx);
+                let o = self.b.ins().ishl_imm(i, 3);
+                word_addr = self.b.ins().iadd(dir, o);
+            }
+            let valid = emit_untainted_i64(self.b, src_disc);
+            let leaf = self.b.ins().iconst(types::I64, 0);
+            let call = self.b.ins().call(helper, &[word_addr, len, valid, leaf]);
             let table = self.b.inst_results(call)[0];
             tables.push((*id, table));
         }
-        self.ctx.slot_tables.borrow_mut().push(SlotTableFrame { depth, idx_var, tables });
+        self.ctx.slot_tables.borrow_mut().push(SlotTableFrame {
+            depth,
+            idx_var,
+            len,
+            src_disc,
+            tables,
+        });
         Ok(())
     }
 

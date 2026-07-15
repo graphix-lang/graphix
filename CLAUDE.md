@@ -505,15 +505,18 @@ detection, and `apply` reproduces the interpreted MapQ/FoldQ rule (fires iff
 resized ∨ a slot fired ∨ the source fired empty; fold results are acc-carried
 via `result_is_firing`). A same-length source refresh with a quiet body does
 NOT re-fire — the per-slot precision the P4 sequential loops had lost.
-Guarded selects in loop bodies have PER-SLOT selection memory (2026-07-15,
-Eric's firing rule: an arm fires once when it BECOMES selected + when its body
-deps fire; guard updates that don't change the selection are quiet; guarded
-selects never de-fuse): a claimed state word owns a boxed per-slot `Vec<u64>`
-side table (`graphix_slot_state_table`, MapQ-style prefix retention across
-resizes; freed by `Kernel::drop` via `WrappedKernel::slot_table_words`) —
-`design/kernel_instance_state.md` "Per-slot state tables". Residuals
-(unrefined guard term, duplicate fire only, never a wrong value): guarded
-selects in NESTED loops and in callee bodies.
+Guarded selects in loop bodies have PER-SLOT selection memory at ANY nesting
+depth (2026-07-15, Eric's firing rule: an arm fires once when it BECOMES
+selected + when its body deps fire; guard updates that don't change the
+selection are quiet; guarded selects never de-fuse): each select site anchors
+a chain of owning tables mirroring its loop nesting — one static anchor word,
+one directory level per enclosing loop, a leaf word per slot
+(`graphix_slot_state_table` + `own_levels`; MapQ prefix retention applied per
+level, ragged inner lengths fine; chains freed by `Kernel::drop` via
+`WrappedKernel::slot_table_words`) — `design/kernel_instance_state.md`
+"Per-slot state tables". Remaining residual (unrefined guard term, duplicate
+fire only, never a wrong value): guarded selects in CALLEE bodies — fixing it
+is the per-callsite sub-buffer composition (cross-kernel ABI touch).
 
 **Testing is differential:**
 

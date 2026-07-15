@@ -164,16 +164,36 @@ re-deliver per slot.
 Vecs. Semantic state: `sleep`/`reset_replay` never touch them (same
 choice as the static select word).
 
-**Depth-1 only, deliberate residuals.** A select under a FURTHER
-nesting level (a nested collection loop, `loop_depth == 2`) has a slot
-identity the outer ordinal can't represent — the claim inside the
-nested preheader is refused by the existing `loop_depth > 0` rule and
-the depth check refuses the outer frame, so the unrefined guard term
-stands (duplicate fire, never a wrong value). Same for guarded selects
-in CALLEE bodies (`state_enabled == false`): fixing those is the
-per-callsite sub-buffer composition already noted above (the caller
-could claim in its own space — static word or slot table — and pass
-the address through the cross-kernel ABI).
+**Arbitrary nesting depth (same day — Eric's review: "each loop that
+has a select in it needs its own set of slots").** The word-owns-a-Vec
+trick RECURSES: a directory table's entry is itself an owning word for
+the next level. A select at depth D gets one static ANCHOR word (a
+directory word is per-INSTANCE — its per-slot content lives in the
+heap structure — so `claim_state_word_loop_invariant`'s in-loop
+exemption applies), and its loop's preheader emits the chain: each
+enclosing frame contributes one directory ensure (sized by that
+frame's `len`, resize gated by that frame's source taint, indexed by
+that frame's current ordinal — the frame stack carries `len`/
+`src_disc`/`idx_var`), ending in the leaf table of selection words.
+`graphix_slot_state_table` takes `own_levels` (0 = leaf; k = entries
+own k−1-level subtrees): truncation at any level frees the dropped
+subtrees (`free_slot_chain`, shared with `Kernel::drop`, registration
+is `(word, own_levels)`), regrow re-creates fresh — the MapQ
+prefix-retention lifecycle applied per level, ragged inner lengths
+for free. The chain is emitted at the nested preheader, which runs
+once per enclosing iteration — ensure calls follow the loop
+structure's natural cost. The node-walk twin is the interpreted slot
+TREE (outer slot i owns an inner MapQ instance which owns per-slot
+selects) with u64s in place of subgraphs.
+
+**Remaining residual: CALLEE bodies only** (`state_enabled == false` —
+a guarded select in a cross-kernel callee keeps the unrefined guard
+term: duplicate fire, never a wrong value). Fixing it is the
+per-callsite sub-buffer composition already noted above: the CALLER
+claims the anchor in its own space (static word, or an entry in its
+loop's slot chain) and passes the address through the cross-kernel
+ABI — an ABI touch the loop fix avoided, and the reason it's a
+separate change.
 
 **The arm-lift consumer stays static-only:** a lifted connect target's
 identity is per INSTANCE (state-word BindIds), so a per-slot word
@@ -184,5 +204,9 @@ Pinned by `run!` fixtures `guarded_select_in_loop_selection_memory`
 (guard-only unchanged selection is quiet), `guarded_select_per_slot_
 independence` (two slots with DIFFERENT stable selections stay quiet —
 a shared word would thrash), `guarded_select_slot_table_resize`
-(prefix retention + fresh-slot first-selection fire), and the
-promoted finding `findings/select-slot-memory-jul2026/`.
+(prefix retention + fresh-slot first-selection fire), the nested
+quartet `guarded_select_nested_loop_selection_memory` /
+`_nested_per_pair_independence` (per-(i,j) memory — flat sharing
+would thrash) / `_nested_ragged_resize` (directory grow + ragged
+inner lens) / `_triple_nested` (depth 3), and the promoted findings
+`findings/select-slot-memory-jul2026/` (02 is the nested shape).

@@ -824,6 +824,92 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
+// NESTED-loop selection memory (Eric's review of the depth-1 fix:
+// "each loop that has a select in it needs its own set of slots").
+// The select is two loops deep, so its state chain is anchor word →
+// directory (indexed by the outer ordinal) → leaf table (indexed by
+// the inner ordinal) — `BodyCx::open_slot_tables`' recursive path.
+// Same schedule as the depth-1 fixture: one selection change after
+// the init.
+const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let a = array::map([0], |i| array::map([0], |j| select j { 0 if m == 0 => 1, _ => 2 }));
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_nested_loop_selection_memory,
+    GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// Per-(outer, inner) independence: the four slot pairs hold DIFFERENT
+// stable selections ((i+j) parity) while the guard feeder x fires
+// every cycle — quiet after the init. A table indexed by the inner
+// ordinal alone (or any flat sharing) would alias pairs with
+// different selections and thrash.
+const GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let a = array::map([0, 1], |i| array::map([0, 1], |j| select 0 { 0 if (i + j + x - x) % 2 == 0 => 1, _ => 2 }));
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_nested_per_pair_independence,
+    GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// Ragged inner lengths + outer resize: the outer directory grows
+// 1 → 2 mid-run (retained entry keeps its inner table; the fresh
+// entry's inner table starts fresh) and the two inner tables have
+// different lengths — the chain is sized per level, per slot.
+const GUARDED_SELECT_NESTED_RAGGED_RESIZE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let src = [[10]];
+  src <- select count(x) { 2 => [[10], [20, 30]], _ => never() };
+  let a = array::map(src, |ys| array::map(ys, |y| select 0 { 0 if m == 0 => 1, _ => 2 }));
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_nested_ragged_resize,
+    GUARDED_SELECT_NESTED_RAGGED_RESIZE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// Depth 3 — the chain recursion beyond one directory level.
+const GUARDED_SELECT_TRIPLE_NESTED: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let a = array::map([0], |i| array::map([0], |j| array::map([0], |k| select k { 0 if m == 0 => 1, _ => 2 })));
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_triple_nested,
+    GUARDED_SELECT_TRIPLE_NESTED,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
 // Arm-wake re-seed (soak jul08g fuzz divergence 6): the node-walk
 // updates a newly-taken arm with `event.init = true` (node/select.rs),
 // so an arm-local lifted connect target RE-SEEDS on every re-entry —

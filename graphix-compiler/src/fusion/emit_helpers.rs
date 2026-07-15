@@ -1431,22 +1431,45 @@ pub unsafe extern "C" fn graphix_valarray_len(p: *const ValArray) -> usize {
     unsafe { arr(p).len() }
 }
 
+/// Free a slot-state chain: `word` is (0 or) a `Box<Vec<u64>>` raw
+/// pointer. `own_levels == 0` means the Vec holds plain data (leaf
+/// selection words); `own_levels > 0` means each entry is itself a
+/// chain with one less level. Shared by `graphix_slot_state_table`'s
+/// truncate path and `Kernel::drop`.
+pub fn free_slot_chain(word: u64, own_levels: u64) {
+    if word == 0 {
+        return;
+    }
+    let v = unsafe { Box::from_raw(word as *mut Vec<u64>) };
+    if own_levels > 0 {
+        for e in v.iter() {
+            free_slot_chain(*e, own_levels - 1);
+        }
+    }
+}
+
 /// Per-slot cross-invocation state table for a scaffold loop (see
-/// `BodyCx::open_slot_tables`). The claimed state word at `word` owns
-/// a boxed `Vec<u64>` — one word per slot ordinal, zero = "no previous
-/// observation" — resized here with prefix retention, exactly the
-/// interpreted MapQ/FoldQ slot rule: shrink truncates (dropped slots'
-/// memory is gone), regrow re-creates FRESH zeroed slots. `valid == 0`
-/// (tainted source — the node-walk saw no event) skips the logical
-/// resize, mirroring `SlotFlags::apply`'s prev-len word; the table
-/// still GROWS zero-filled so in-loop accesses up to `len` stay in
-/// bounds. The Vec is freed by `Kernel::drop` via
+/// `BodyCx::open_slot_tables`). The word at `word` — a claimed static
+/// state word, or an entry of an enclosing loop's directory table —
+/// owns a boxed `Vec<u64>`, one word per slot ordinal, zero = "no
+/// previous observation", resized here with prefix retention: exactly
+/// the interpreted MapQ/FoldQ slot rule (shrink truncates — dropped
+/// slots' memory is gone; regrow re-creates FRESH zeroed slots).
+/// `own_levels == 0` is a LEAF table of selection words; `own_levels
+/// > 0` is a DIRECTORY whose entries own the next nesting level's
+/// tables (one owning level per enclosing loop), so truncation frees
+/// the dropped slots' subtrees — the interp rule applied per level.
+/// `valid == 0` (tainted source — the node-walk saw no event) skips
+/// the logical resize, mirroring `SlotFlags::apply`'s prev-len word;
+/// the table still GROWS zero-filled so in-loop accesses up to `len`
+/// stay in bounds. The chain is freed by `Kernel::drop` via
 /// `WrappedKernel::slot_table_words`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_slot_state_table(
     word: *mut u64,
     len: u64,
     valid: u64,
+    own_levels: u64,
 ) -> *mut u64 {
     let word = unsafe { &mut *word };
     if *word == 0 {
@@ -1455,6 +1478,11 @@ pub unsafe extern "C" fn graphix_slot_state_table(
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     let len = len as usize;
     if valid != 0 && len < v.len() {
+        if own_levels > 0 {
+            for e in v[len..].iter() {
+                free_slot_chain(*e, own_levels - 1);
+            }
+        }
         v.truncate(len)
     } else if len > v.len() {
         v.resize(len, 0)
