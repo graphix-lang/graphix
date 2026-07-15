@@ -581,6 +581,28 @@ impl FnType {
         throws.unbind_tvars();
     }
 
+    /// [`Type::unbind_open_tvars`] over the signature — closed
+    /// def-body facts stay bound.
+    pub fn unbind_open_tvars(&self) {
+        let FnType {
+            args,
+            vargs,
+            rtype,
+            throws,
+            explicit_throws: _,
+            quantifiers: _,
+            lambda_ids: _,
+        } = self;
+        for arg in args.iter() {
+            arg.typ.unbind_open_tvars()
+        }
+        if let Some(t) = vargs {
+            t.unbind_open_tvars()
+        }
+        rtype.unbind_open_tvars();
+        throws.unbind_open_tvars();
+    }
+
     /// Record the def gate's inferred facts. `closed_only` is the
     /// NESTED-gate mode (def_gate_depth > 1): a nested lambda's cells
     /// can still be entangled with the enclosing lambda's in-flight

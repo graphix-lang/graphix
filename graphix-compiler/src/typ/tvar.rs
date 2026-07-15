@@ -1065,4 +1065,59 @@ impl Type {
             Type::Fn(fntyp) => fntyp.unbind_tvars(),
         }
     }
+
+    /// [`Self::unbind_tvars`], except a cell whose binding is fully
+    /// CLOSED (no unbound interior anywhere beneath, through bound
+    /// cells — `constrain_known`'s closedness test, taken deep) stays
+    /// BOUND. A closed def-body inference is a SOLVED fact: re-opening
+    /// it downgraded the fact to an upper-bound cell constraint that
+    /// the first consumer to unify could narrow below the def's actual
+    /// delivery — first-writer-wins, with the winner decided by
+    /// typecheck order and therefore by env contents (the select-union
+    /// callback + push_front class: the shell rejected what the fuzz
+    /// driver accepted, same build). Partial (open-interior) bindings
+    /// still unbind — they snapshot mid-solve state an enclosing gate
+    /// may revise.
+    pub(crate) fn unbind_open_tvars(&self) {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Ref(TypeRef { .. }) => {
+                ()
+            }
+            Type::Error(t0) => t0.unbind_open_tvars(),
+            Type::Array(t0) => t0.unbind_open_tvars(),
+            Type::Map { key, value } => {
+                key.unbind_open_tvars();
+                value.unbind_open_tvars();
+            }
+            Type::ByRef(t0) => t0.unbind_open_tvars(),
+            Type::Tuple(ts)
+            | Type::Variant(_, ts)
+            | Type::Set(ts)
+            | Type::Abstract { id: _, params: ts } => {
+                for t in ts.iter() {
+                    t.unbind_open_tvars()
+                }
+            }
+            Type::Struct(ts) => {
+                for (_, t) in ts.iter() {
+                    t.unbind_open_tvars()
+                }
+            }
+            Type::TVar(tv) => {
+                // Bottom/Any are VACUOUS facts (`constrain_known`
+                // skips them too): an inferred `throws := ⊥` means
+                // only "this body observed nothing" — the declared
+                // signature's 'e must stay a variable.
+                let bound = tv.read().typ.read().typ.clone();
+                if let Some(t) = bound
+                    && (t == Type::Bottom
+                        || t == Type::Any
+                        || t.resolve_tvars().has_unbound())
+                {
+                    tv.unbind()
+                }
+            }
+            Type::Fn(fntyp) => fntyp.unbind_open_tvars(),
+        }
+    }
 }

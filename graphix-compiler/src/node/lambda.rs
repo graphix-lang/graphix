@@ -1340,7 +1340,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         for tv in named_tvs.values() {
             tv.clear_rigid();
         }
-        self.typ.unbind_tvars();
+        // CLOSED inferred bindings survive the gate — a solved fact
+        // (the body DELIVERS that type) must not degrade to an
+        // upper-bound constraint a consumer can narrow first. Only
+        // open/partial cells re-open for per-site solving.
+        self.typ.unbind_open_tvars();
         // GRAPHIX_RIGID_AUDIT=1: report a def-gate failure and
         // continue — a CATALOGING tool for surveying which defs the
         // rigid-tvar gate rejects, NOT a semantics-preserving escape:

@@ -627,6 +627,39 @@ run!(array_push_front, ARRAY_PUSH_FRONT, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A select-union callback ([string, Spec]) whose result array feeds
+// push_front with a bare Spec. The callback's CLOSED inferred rtype
+// must survive its def gate BOUND — re-opened to an upper-bound
+// constraint, whichever consumer unified first claimed the cell
+// (push_front narrowed it to bare Spec before the map instance's
+// recheck re-derived the union), so compilability depended on
+// typecheck order and therefore on env contents: the shell rejected
+// what the fuzz driver accepted, same build (2026-07-15, the
+// data_table_virtual break).
+const ARRAY_MAP_UNION_CALLBACK_PUSH_FRONT: &str = r#"
+{
+  type Spec = { name: string };
+  let mk = |n: string| -> Spec { name: n };
+  let a = array::map(["a", "b"], |n| select n { "a" => mk(n), n => n });
+  array::push_front(a, mk("z"))
+}
+"#;
+
+run!(
+    array_map_union_callback_push_front,
+    ARRAY_MAP_UNION_CALLBACK_PUSH_FRONT,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => matches!(
+                &a[..],
+                [Value::Array(_), Value::Array(_), Value::String(s)] if &**s == "b"
+            ),
+            _ => false,
+        }
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
 const ARRAY_WINDOW0: &str = r#"
   array::window(#n:1, [(1, 2), (3, 4)], (5, 6))
 "#;
