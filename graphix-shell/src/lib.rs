@@ -288,17 +288,8 @@ impl<X: GXExt> Shell<X> {
     ) -> Result<Env> {
         let env;
         match &self.mode {
-            Mode::Check(source) => {
-                let initial_scope = match source {
-                    Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
-                    _ => None,
-                };
-                let baseline =
-                    if self.fusion_stats { Some(gx.fusion_stats().await?) } else { None };
-                gx.check(source.clone(), initial_scope).await?;
-                if let Some(baseline) = baseline {
-                    print_fusion_stats(&baseline, &gx.fusion_stats().await?);
-                }
+            Mode::Check(_) => {
+                self.check_with(gx).await?;
                 exit(0)
             }
             Mode::Script(source) => {
@@ -339,6 +330,32 @@ impl<X: GXExt> Shell<X> {
             }
         }
         Ok(env)
+    }
+
+    async fn check_with(&self, gx: &GXHandle<X>) -> Result<()> {
+        let Mode::Check(source) = &self.mode else {
+            bail!("check requires Mode::Check")
+        };
+        let initial_scope = match source {
+            Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
+            _ => None,
+        };
+        let baseline =
+            if self.fusion_stats { Some(gx.fusion_stats().await?) } else { None };
+        gx.check(source.clone(), initial_scope).await?;
+        if let Some(baseline) = baseline {
+            print_fusion_stats(&baseline, &gx.fusion_stats().await?);
+        }
+        Ok(())
+    }
+
+    /// Compile and typecheck the `Mode::Check` source, returning the
+    /// result instead of exiting the process — the embeddable/test
+    /// entry ([`Self::run`] exits after checking, as the CLI expects).
+    pub async fn check(mut self) -> Result<()> {
+        let (tx, _from_gx) = mpsc::channel(100);
+        let gx = self.init(tx).await?;
+        self.check_with(&gx).await
     }
 
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
