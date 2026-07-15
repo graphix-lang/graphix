@@ -1420,3 +1420,29 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
     graphix_package_core::testing::FuseExpect::None
 );
+
+// A tail-jump arg that BOTTOMS every pass rides its previous value
+// instead of killing the call (Eric's ruling 2026-07-15: bottom is
+// "no event this cycle", never a NaN-like poison — the node-walk's
+// dispatch backfills a quiet-or-failed arg from its cache, and the
+// kernel's rebind now keeps the loop-carried previous value on a
+// tainted new formal where it used to whole-kernel abort,
+// soak-jul14b 000004). str::parse("nan") errors, `?` propagates,
+// the acc arg bottoms — the loop keeps acc=0 and reaches the base.
+const TAIL_ARG_BOTTOM_RIDES_CACHE: &str = r#"
+{
+    let rec f = |n: i64, acc: i64| -> f64
+        select n {
+            0 => 0.0,
+            _ => f(n - 1, str::parse("nan")? + n)
+        };
+    f(3, 0)
+}
+"#;
+
+run!(
+    tail_arg_bottom_rides_cache,
+    TAIL_ARG_BOTTOM_RIDES_CACHE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::F64(x)) if *x == 0.0) };
+    graphix_package_core::testing::FuseExpect::Jit
+);

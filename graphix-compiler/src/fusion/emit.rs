@@ -2830,18 +2830,30 @@ fn emit_tail_rebind_jump(
     ctx: &LowerCtx,
     new_vals: Vec<CompiledExpr>,
     sources: &[CompositeSource],
+    taints: &[ClifValue],
 ) -> Result<()> {
     let head = ctx.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
+    // A TAINTED new value keeps the slot's loop-carried previous value
+    // instead of rebinding — the kernel twin of the node-walk dispatch
+    // backfilling a quiet-or-bottomed arg from its cache (combineLatest;
+    // Eric's ruling 2026-07-15). The whole-kernel abort this replaces
+    // made a bottoming jump arg kill the invocation where the node-walk
+    // kept looping on the last good value (soak-jul14b 000004).
     // Back-compat: hand-built test kernels leave `tail_call_slots`
     // empty and assume all params are scalar in declaration order.
     // Drive the rebind positionally in that case.
     if ctx.tail_call_slots.is_none() {
         debug_assert_eq!(new_vals.len(), ctx.param_mark);
         for (i, v) in new_vals.iter().enumerate() {
-            b.def_var(env.locals[i].vv.payload, v.payload);
-            b.def_var(env.locals[i].vv.disc, v.disc);
+            let vv = env.locals[i].vv;
+            let old_p = b.use_var(vv.payload);
+            let old_d = b.use_var(vv.disc);
+            let p = b.ins().select(taints[i], old_p, v.payload);
+            let d = b.ins().select(taints[i], old_d, v.disc);
+            b.def_var(vv.payload, p);
+            b.def_var(vv.disc, d);
         }
         env.truncate(ctx.param_mark);
         b.ins().jump(head, &[]);
@@ -2861,18 +2873,7 @@ fn emit_tail_rebind_jump(
         .helper_refs
         .get("graphix_valarray_clone")
         .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
-    let mut new_vals: Vec<CompiledExpr> = new_vals;
-    for (i, slot) in slots.iter().take(new_vals.len()).enumerate() {
-        if matches!(slot.kind, TailCallSlotKind::ValArray)
-            && sources[i] == CompositeSource::Borrowed
-        {
-            // Clone (refcount bump) so the next iteration holds an
-            // owned reference, separate from any other live alias.
-            let call = b.ins().call(clone_helper, &[new_vals[i].payload]);
-            new_vals[i].payload = b.inst_results(call)[0];
-        }
-    }
-    for (slot, v) in slots.iter().zip(new_vals.iter()) {
+    for ((i, slot), v) in slots.iter().enumerate().zip(new_vals.iter()) {
         match slot.kind {
             TailCallSlotKind::Scalar(_) => {
                 let vv = env
@@ -2881,24 +2882,52 @@ fn emit_tail_rebind_jump(
                         anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
                     })?
                     .vv;
-                b.def_var(vv.payload, v.payload);
-                b.def_var(vv.disc, v.disc);
+                let old_p = b.use_var(vv.payload);
+                let old_d = b.use_var(vv.disc);
+                let p = b.ins().select(taints[i], old_p, v.payload);
+                let d = b.ins().select(taints[i], old_d, v.disc);
+                b.def_var(vv.payload, p);
+                b.def_var(vv.disc, d);
             }
             TailCallSlotKind::ValArray => {
-                // Composite rebind: drop the previously-owned pointer
-                // in the slot, then store the new owned
-                // `*mut ValArray`. This closes the leak we had in
-                // Phase 2.
+                // Composite rebind: drop the previously-owned pointer in
+                // the slot and store the new one — branched on the taint
+                // bit. REPLACE clones a Borrowed new value first (the
+                // next iteration must hold its own reference) and drops
+                // the old slot pointer; KEEP leaves the slot untouched
+                // and drops an Owned new value instead (the unconsumed
+                // production — a Borrowed one is someone else's).
                 let vv = env
                     .lookup_name(&slot.name)
                     .ok_or_else(|| {
                         anyhow!("TailCall: composite slot `{}` not in env", slot.name)
                     })?
                     .vv;
+                let keep_bl = b.create_block();
+                let replace_bl = b.create_block();
+                let cont_bl = b.create_block();
+                b.ins().brif(taints[i], keep_bl, &[], replace_bl, &[]);
+                b.seal_block(keep_bl);
+                b.seal_block(replace_bl);
+                b.switch_to_block(replace_bl);
+                let newp = if sources[i] == CompositeSource::Borrowed {
+                    let call = b.ins().call(clone_helper, &[v.payload]);
+                    b.inst_results(call)[0]
+                } else {
+                    v.payload
+                };
                 let old = b.use_var(vv.payload);
                 b.ins().call(drop_helper, &[old]);
-                b.def_var(vv.payload, v.payload);
+                b.def_var(vv.payload, newp);
                 b.def_var(vv.disc, v.disc);
+                b.ins().jump(cont_bl, &[]);
+                b.switch_to_block(keep_bl);
+                if sources[i] == CompositeSource::Owned {
+                    b.ins().call(drop_helper, &[v.payload]);
+                }
+                b.ins().jump(cont_bl, &[]);
+                b.seal_block(cont_bl);
+                b.switch_to_block(cont_bl);
             }
             TailCallSlotKind::Variant => {
                 return Err(anyhow!("JIT: variant tail-call rebind not yet supported"));
@@ -4793,23 +4822,26 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     let n = spec_apply.args.len();
     let mut new_vals = Vec::with_capacity(n);
     let mut sources = Vec::with_capacity(n);
+    let mut taints = Vec::with_capacity(n);
     for i in 0..n {
         let arg = cs
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
         let cv = arg.emit_clif(cx)?;
-        // A possibly-bottom arg: no value this cycle means no call —
-        // kernel-wide bottom (the node-walk's CallSite wouldn't fire).
-        // `is_untainted` folds to const-true for an untainted disc, so a
-        // normal arg emits no branch. The rebind protocol covers
-        // scalar/composite slots — the full (disc, payload) pair; a
-        // value-shape formal is refused by the tail-loop gate at build.
-        let valid = is_untainted(cx.b, cv.disc);
-        emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
+        // A bottomed arg does NOT abort the call: the node-walk's
+        // dispatch backfills a quiet-or-failed arg from its cached
+        // value (combineLatest — Eric's ruling 2026-07-15: bottom is
+        // "no event this cycle", never a NaN-like poison, so
+        // `sum_to(n - 1, parse(s)? + n)` keeps looping on the last
+        // good acc). The kernel twin: a TAINTED new formal keeps the
+        // loop-carried previous value at the rebind. `is_tainted`
+        // folds to const-false for a proven-fresh disc — no branch on
+        // the hot path.
+        taints.push(is_tainted(cx.b, cv.disc));
         new_vals.push(cv);
         sources.push(node_composite_source(arg));
     }
-    emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, new_vals, &sources)
+    emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, new_vals, &sources, &taints)
 }
 
 /// Bind one `let local = value` into the env by the value's runtime

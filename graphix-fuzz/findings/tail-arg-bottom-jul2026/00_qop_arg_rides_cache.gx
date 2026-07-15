@@ -1,0 +1,9 @@
+// bisect: fusion/JIT under-fire (soak-jul14b fuzz divergence_000004 —
+// the jul08m tail-arg pending ruling, RESOLVED by Eric 2026-07-15:
+// bottom is "no event this cycle", never a NaN-like poison; a call
+// arg that fails to compute rides its cached value, exactly like a
+// quiet arg — the node-walk's combineLatest dispatch semantics). The
+// kernel's tail rebind whole-kernel ABORTED on a tainted jump arg
+// (interp reached the base and emitted f64:0., jit emitted nothing);
+// it now keeps the loop-carried previous value for that slot.
+{let rec sum_to = |n, acc| select n {i64:0 => f64:0., _ => sum_to(n - i64:1, str::parse("notanumber")? + n)}; sum_to(i64:100, i64:0)}
