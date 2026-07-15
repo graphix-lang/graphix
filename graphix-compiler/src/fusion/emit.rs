@@ -82,6 +82,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use std::collections::BTreeMap;
 
 /// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the
@@ -301,6 +302,15 @@ pub struct WrappedKernel {
     /// iteration cannot bridge a bottom on the next; semantic/config
     /// words (lifted ids, first-call flags, select memory) survive.
     pub replay_state_words: Vec<u32>,
+    /// Word indices of the ROOT body's PER-SLOT table claims: each
+    /// holds (0 or) a `Box<Vec<u64>>` raw pointer managed by the
+    /// `graphix_slot_state_table` helper — one word per scaffold-loop
+    /// slot ordinal, giving loop-body guarded selects per-slot
+    /// selection memory (see [`BodyCx::open_slot_tables`]). The
+    /// runtime `Kernel`'s `Drop` frees exactly these; `reset_replay`
+    /// never touches them (semantic state, like the static select
+    /// memory word).
+    pub slot_table_words: Vec<u32>,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -421,6 +431,8 @@ struct CachedKernel {
     signature: Signature,
     /// See [`WrappedKernel::replay_state_words`]; filled in phase 2.
     replay_state_words: Vec<u32>,
+    /// See [`WrappedKernel::slot_table_words`]; filled in phase 2.
+    slot_table_words: Vec<u32>,
     /// Holds the Arc alive so its raw pointer can't be reused by a
     /// later allocation.
     _kernel: std::sync::Arc<KernelSig>,
@@ -749,7 +761,7 @@ fn compile_kernel_with_callees_inner(
                 k.fn_name
             )
         })?;
-        let (strings, values, state_words, replay_words) =
+        let (strings, values, state_words, replay_words, slot_table_words) =
             define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
         *defined += 1;
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base, *layout)) {
@@ -757,6 +769,7 @@ fn compile_kernel_with_callees_inner(
             cached._values = values;
             cached.state_words = state_words;
             cached.replay_state_words = replay_words;
+            cached.slot_table_words = slot_table_words;
         }
     }
     // Phase 3 — compile the uniform wrapper for the parent and
@@ -778,10 +791,12 @@ fn compile_kernel_with_callees_inner(
     // prior compile) still sizes the runtime buffer correctly. Only
     // the parent's ROOT body may claim (callee claims would alias
     // across call sites), so callees' entries stay 0 by construction.
-    let (state_words, replay_state_words) = jit
+    let (state_words, replay_state_words, slot_table_words) = jit
         .by_kernel
         .get(&(parent_ptr, 0, parent_layout))
-        .map(|e| (e.state_words, e.replay_state_words.clone()))
+        .map(|e| {
+            (e.state_words, e.replay_state_words.clone(), e.slot_table_words.clone())
+        })
         .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
     Ok(WrappedKernel {
         wrapper_fn_ptr,
@@ -794,6 +809,7 @@ fn compile_kernel_with_callees_inner(
         dyn_fn_params: kernel.fn_params.iter().cloned().collect(),
         state_words,
         replay_state_words,
+        slot_table_words,
     })
 }
 
@@ -834,6 +850,7 @@ fn ensure_declared(
             _values: KernelValues::empty(),
             state_words: 0,
             replay_state_words: Vec::new(),
+            slot_table_words: Vec::new(),
         },
     );
     to_define.push((k.clone(), base, layout));
@@ -849,7 +866,7 @@ fn define_kernel_body(
     kernel: &std::sync::Arc<KernelSig>,
     funcids: &[(usize, (FuncId, Signature))],
     body_emitter: &dyn BodyEmitter,
-) -> Result<(KernelStrings, KernelValues, usize, Vec<u32>)> {
+) -> Result<(KernelStrings, KernelValues, usize, Vec<u32>, Vec<u32>)> {
     let self_ptr = kernel_abi::kernel_key(kernel);
     let (func_id, sig) =
         funcids.iter().find(|(p, _)| *p == self_ptr).map(|(_, e)| e.clone()).ok_or_else(
@@ -872,7 +889,7 @@ fn define_kernel_body(
     jit.func_ctx.func.signature = sig;
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
-    let (strings, values, state_words, replay_words) = {
+    let (strings, values, state_words, replay_words, slot_table_words) = {
         // Declare each lambda call site's callee as a FuncRef in this
         // function. Done before constructing the FunctionBuilder
         // because both `declare_func_in_func` and `FunctionBuilder::new`
@@ -932,7 +949,7 @@ fn define_kernel_body(
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        let (state_words, replay_words) = compile_into_function(
+        let (state_words, replay_words, slot_table_words) = compile_into_function(
             &mut builder,
             kernel,
             &callee_refs,
@@ -953,6 +970,7 @@ fn define_kernel_body(
             KernelValues::empty().with_lazy(lazy_values.into_inner()),
             state_words,
             replay_words,
+            slot_table_words,
         )
     };
     jit.module
@@ -960,7 +978,7 @@ fn define_kernel_body(
         .context("define_function (shared body)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok((strings, values, state_words, replay_words))
+    Ok((strings, values, state_words, replay_words, slot_table_words))
 }
 
 /// Define the (args*, out*) wrapper that adapts the typed kernel to a
@@ -1221,7 +1239,7 @@ fn compile_into_function(
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
     body_emitter: &dyn BodyEmitter,
-) -> Result<(usize, Vec<u32>)> {
+) -> Result<(usize, Vec<u32>, Vec<u32>)> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -1377,6 +1395,8 @@ fn compile_into_function(
         replay_enabled: body_emitter.allow_replay_state(),
         state_next: std::cell::Cell::new(kernel.lifted.len()),
         replay_words: std::cell::RefCell::new(Vec::new()),
+        slot_table_words: std::cell::RefCell::new(Vec::new()),
+        slot_tables: std::cell::RefCell::new(Vec::new()),
         loop_depth: std::cell::Cell::new(0),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
@@ -1453,7 +1473,8 @@ fn compile_into_function(
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
     let replay_words = lower.replay_words.borrow().clone();
-    Ok((lower.state_next.get(), replay_words))
+    let slot_table_words = lower.slot_table_words.borrow().clone();
+    Ok((lower.state_next.get(), replay_words, slot_table_words))
 }
 
 /// Per-kernel storage of the ArcStrs the JIT'd code references via
@@ -1553,6 +1574,22 @@ impl KernelValues {
 
 /// Per-function lowering context: things that don't change across
 /// statements within a single body.
+/// One open scaffold loop's per-slot state tables (see
+/// [`BodyCx::open_slot_tables`]). `depth` is the [`LowerCtx::loop_depth`]
+/// at which the loop BODY runs — a select consults the frame only when
+/// emitted at exactly that depth, so a select behind a further nesting
+/// level (whose slot identity this frame's ordinal can't represent)
+/// falls back to the unrefined guard term.
+pub(crate) struct SlotTableFrame {
+    depth: u32,
+    /// The loop's slot-ordinal induction variable.
+    idx_var: Variable,
+    /// Guarded-select site (`Select::spec.id`) → per-slot table base
+    /// pointer (the `graphix_slot_state_table` result, valid for this
+    /// kernel invocation).
+    tables: Vec<(ExprId, ClifValue)>,
+}
+
 pub(crate) struct LowerCtx<'a> {
     /// `Some(block)` when the kernel has a tail loop; TailCall jumps
     /// here. `None` for non-tail-recursive kernels.
@@ -1599,6 +1636,18 @@ pub(crate) struct LowerCtx<'a> {
     /// on one evaluation-frame iteration cannot bridge a bottom on the
     /// next (see [`emit_scalar_taint_cache`]).
     replay_words: std::cell::RefCell<Vec<u32>>,
+    /// Word indices of claims that hold PER-SLOT state tables — a
+    /// `Box<Vec<u64>>` raw pointer managed by the
+    /// `graphix_slot_state_table` helper, freed by the runtime
+    /// `Kernel`'s `Drop` (see [`BodyCx::open_slot_tables`]).
+    slot_table_words: std::cell::RefCell<Vec<u32>>,
+    /// Open scaffold-loop per-slot state-table frames, innermost
+    /// last. Pushed/popped by [`BodyCx::open_slot_tables`] /
+    /// [`BodyCx::close_slot_tables`] around every scaffold loop; a
+    /// loop-body guarded select whose static state claim is refused
+    /// consults the top frame for its per-slot word (see
+    /// [`BodyCx::slot_select_word`]).
+    slot_tables: std::cell::RefCell<Vec<SlotTableFrame>>,
     /// The kernel's lifted connect targets, sorted — slot `i`'s id
     /// lives in state word `i`. `emit_connect_node` loads its write
     /// target from there instead of an `iconst` (per-instance
@@ -1882,6 +1931,13 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
         "graphix_valarray_len" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // Per-slot state table: (word: *mut u64, len, valid) -> *mut u64.
+        "graphix_slot_state_table" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
@@ -3453,6 +3509,83 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let idx = self.ctx.state_next.get();
         self.ctx.state_next.set(idx + 1);
         Some((idx * 8) as i32)
+    }
+
+    /// Open a scaffold loop's per-slot state-table frame. Emitted in
+    /// the loop PREHEADER (once per kernel invocation, `len` and
+    /// `idx_var` in hand, before the jump into the loop): for each
+    /// guarded-select site the caller prewalked out of the loop body
+    /// ([`guarded_select_sites`]), claim one static state word to OWN
+    /// a boxed `Vec<u64>` side table — one word per slot ordinal —
+    /// and call `graphix_slot_state_table` to resize it to `len`
+    /// (prefix-retaining, exactly the interpreted MapQ slot rule:
+    /// shrink truncates, regrow re-creates fresh zeroed slots). A
+    /// TAINTED source (`src_disc`) skips the logical resize — the
+    /// node-walk saw no event — growing only as an in-bounds guard,
+    /// mirroring [`scaffold::SlotFlags::apply`]'s prev-len word.
+    ///
+    /// A frame is ALWAYS pushed (possibly with no tables — claims are
+    /// refused in callee bodies and nested loops via
+    /// [`claim_state_word`](Self::claim_state_word), and most loops
+    /// have no guarded selects); [`close_slot_tables`]
+    /// (Self::close_slot_tables) MUST pop it after body emission.
+    pub(crate) fn open_slot_tables(
+        &mut self,
+        sites: &[ExprId],
+        len: ClifValue,
+        src_disc: ClifValue,
+        idx_var: Variable,
+    ) -> Result<()> {
+        let depth = self.ctx.loop_depth.get() + 1;
+        let mut tables = Vec::new();
+        for id in sites {
+            let Some(off) = self.claim_state_word() else { break };
+            self.ctx.slot_table_words.borrow_mut().push((off / 8) as u32);
+            let sp = self.state_ptr();
+            let word_addr = self.b.ins().iadd_imm(sp, off as i64);
+            let t = self.b.ins().band_imm(src_disc, TAINT);
+            let valid = self.b.ins().icmp_imm(IntCC::Equal, t, 0);
+            let valid = self.b.ins().uextend(types::I64, valid);
+            let helper = self.helper("graphix_slot_state_table")?;
+            let call = self.b.ins().call(helper, &[word_addr, len, valid]);
+            let table = self.b.inst_results(call)[0];
+            tables.push((*id, table));
+        }
+        self.ctx.slot_tables.borrow_mut().push(SlotTableFrame { depth, idx_var, tables });
+        Ok(())
+    }
+
+    /// Pop the frame [`open_slot_tables`](Self::open_slot_tables)
+    /// pushed. Every scaffold loop emitter closes right after its
+    /// body emission (before `?`-propagating a body error — the
+    /// kernel is discarded on `Err`, but the pop keeps the frame
+    /// stack honest for sibling loops in the same kernel).
+    pub(crate) fn close_slot_tables(&mut self) {
+        let popped = self.ctx.slot_tables.borrow_mut().pop();
+        debug_assert!(popped.is_some(), "close_slot_tables without an open frame");
+    }
+
+    /// The address of THIS slot's selection-memory word for the
+    /// guarded select at `id`, when the innermost open scaffold loop
+    /// carries a table for it: `table + idx * 8`. `None` (fall back
+    /// to the unrefined guard term) when there is no open loop, the
+    /// select is emitted at a different depth than the frame's body
+    /// (a further nesting level — the frame's ordinal can't identify
+    /// its slots), or the frame claimed no table (callee body /
+    /// nested loop / no state available).
+    pub(crate) fn slot_select_word(&mut self, id: ExprId) -> Option<ClifValue> {
+        let (idx_var, table) = {
+            let frames = self.ctx.slot_tables.borrow();
+            let f = frames.last()?;
+            if f.depth != self.ctx.loop_depth.get() {
+                return None;
+            }
+            let table = f.tables.iter().find(|(eid, _)| *eid == id)?.1;
+            (f.idx_var, table)
+        };
+        let i = self.b.use_var(idx_var);
+        let off = self.b.ins().ishl_imm(i, 3);
+        Some(self.b.ins().iadd(table, off))
     }
 
     /// Bracket scaffold-loop body emission (INCLUDING the loop's own
@@ -6604,6 +6737,27 @@ enum SelectArmBind {
 /// guarded final arm, or a conditional final arm under a possibly-
 /// bottom scrutinee (whose garbage cond bits could miss every arm),
 /// refuse to fuse instead.
+/// Collect the `Select::spec.id` of every guarded select in a
+/// scaffold-loop body. The walk sees exactly the tree the loop will
+/// emit inline (a nested collection HOF's callback body lives behind
+/// its own lambda def, unreachable from here — its selects open their
+/// own loop and are refused per-slot state there by the depth check in
+/// [`BodyCx::slot_select_word`]). The loop emitters claim one per-slot
+/// state table per site (see [`BodyCx::open_slot_tables`]).
+pub(crate) fn guarded_select_sites<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+) -> LPooled<Vec<ExprId>> {
+    let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
+    fusion::for_each_node(node, &mut |n| {
+        if let NodeView::Select(s) = n.view() {
+            if s.arms.iter().any(|(pat, _)| pat.guard.is_some()) {
+                ids.push(s.spec.id);
+            }
+        }
+    });
+    ids
+}
+
 pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
@@ -6663,9 +6817,14 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // const body → NO emission; every selection change → emission), so
     // each taken arm compares-and-records its index and the guard term
     // fires only on a change (fuzz/triage-fuzzer-v2/firing_000005).
-    // Without a word (loop/callee context) the unrefined guard term
-    // stands — a deliberate residual duplicate-fire, never a wrong
-    // value.
+    // Inside a scaffold loop the select is one PER SLOT in the
+    // node-walk (each MapQ/FoldQ slot's subgraph has its own Select
+    // instance), so the static claim is refused and the word comes
+    // from the loop's per-slot side table instead — `table + i*8`
+    // (soak-jul14b fuzz divergence 000009: a guard-only event with an
+    // unchanged selection re-fired every slot). Without either
+    // (callee body, nested loop) the unrefined guard term stands — a
+    // deliberate residual duplicate-fire, never a wrong value.
     let has_guard = sel.arms.iter().any(|(pat, _)| pat.guard.is_some());
     let guard_stale: Option<ClifValue> = if has_guard {
         let mut ids: Vec<BindId> = Vec::new();
@@ -6712,9 +6871,23 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         });
         found
     });
-    let sel_state_off =
-        if has_guard || has_arm_lift { cx.claim_state_word() } else { None };
-    if has_arm_lift && sel_state_off.is_none() {
+    // The word's ADDRESS: static (state_ptr + off) at root level, or
+    // this slot's entry in the loop's side table. The arm-lift re-seed
+    // never reads the table — the lifted write target is per INSTANCE
+    // (one state word), so per-slot memory can't represent it.
+    let sel_state_addr = if has_guard || has_arm_lift {
+        match cx.claim_state_word() {
+            Some(off) => {
+                let sp = cx.state_ptr();
+                Some(cx.b.ins().iadd_imm(sp, off as i64))
+            }
+            None if !has_arm_lift => cx.slot_select_word(sel.spec.id),
+            None => None,
+        }
+    } else {
+        None
+    };
+    if has_arm_lift && sel_state_addr.is_none() {
         return Err(anyhow!(
             "emit_clif: select arm holds a lifted connect target but no \
              per-instance state word is available here — the arm-wake \
@@ -6739,7 +6912,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 merge,
                 scrut_disc,
                 guard_stale,
-                sel_state_off.map(|off| (off, idx)),
+                sel_state_addr.map(|addr| (addr, idx)),
             )
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
@@ -7660,7 +7833,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge: Block,
     scrut_disc: ClifValue,
     guard_stale: Option<ClifValue>,
-    sel_state: Option<(i32, usize)>,
+    sel_state: Option<(ClifValue, usize)>,
 ) -> Result<()> {
     use NodeView;
     let body_frozen =
@@ -7682,14 +7855,13 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     // is skipped for a TAINTED scrutinee: the arm is taken
     // structurally but the node-walk made no selection.
     let base_init = cx.init_flag();
-    let sel_changed = sel_state.map(|(off, idx)| {
-        let sp = cx.state_ptr();
-        let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+    let sel_changed = sel_state.map(|(addr, idx)| {
+        let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
         let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
         let valid = is_untainted(cx.b, scrut_disc);
         let recorded = cx.b.ins().select(valid, tag, stored);
-        cx.b.ins().store(MemFlags::trusted(), recorded, sp, off);
+        cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
         let woke = cx.b.ins().band(changed, valid);
         let woke = cx.b.ins().uextend(types::I64, woke);
         let eff_init = cx.b.ins().bor(base_init, woke);

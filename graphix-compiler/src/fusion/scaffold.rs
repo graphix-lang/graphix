@@ -729,6 +729,7 @@ pub fn emit_init_loop<'a, 'f, 'c, F>(
     idx_id: Option<crate::BindId>,
     out_typ: &Type,
     out_src: CompositeSource,
+    sel_sites: &[ExprId],
     mut body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -753,6 +754,7 @@ where
     let buf = cx.b.inst_results(call)[0];
     register_hof_buf(cx.b, cx.ctx, buf);
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, n, n_disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let loop_exit = cx.b.create_block();
@@ -777,6 +779,7 @@ where
     );
     let value = body(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let value = value?;
     flags.fold(cx, value.disc);
     push_field(cx, buf, value, out_typ, out_src)?;
@@ -797,6 +800,7 @@ pub fn emit_map_loop<'a, 'f, 'c, F>(
     elem: &HofElem,
     out_typ: &Type,
     out_src: CompositeSource,
+    sel_sites: &[ExprId],
     mut body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -808,6 +812,7 @@ where
     flags.set_len(len);
     let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let loop_exit = cx.b.create_block();
@@ -822,6 +827,7 @@ where
     let (bound, leaves) = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
     let value = body(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let value = value?;
     flags.fold(cx, value.disc);
     push_field(cx, buf, value, out_typ, out_src)?;
@@ -843,6 +849,7 @@ pub fn emit_filter_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
+    sel_sites: &[ExprId],
     mut predicate: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -858,6 +865,7 @@ where
     flags.set_len(len);
     let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let push_block = cx.b.create_block();
@@ -875,6 +883,7 @@ where
     let (bound, leaves) = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
     let keep = predicate(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let keep = keep?;
     flags.fold(cx, keep.disc);
     drop_owned_leaves(cx, &leaves)?;
@@ -932,6 +941,7 @@ pub fn emit_filter_map_loop<'a, 'f, 'c, F>(
     elem: &HofElem,
     out_elem: &Type,
     out_src: CompositeSource,
+    sel_sites: &[ExprId],
     mut body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -943,6 +953,7 @@ where
     flags.set_len(len);
     let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let push_block = cx.b.create_block();
@@ -959,6 +970,7 @@ where
     let (bound, leaves) = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
     let value = body(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let value = value?;
     cx.env.truncate(mark);
     flags.fold(cx, value.disc);
@@ -1033,6 +1045,7 @@ pub fn emit_flat_map_loop<'a, 'f, 'c, F>(
     arr: ArraySrc,
     elem: &HofElem,
     extend_kind: FlatMapExtend,
+    sel_sites: &[ExprId],
     mut body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -1048,6 +1061,7 @@ where
     flags.set_len(len);
     let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let loop_exit = cx.b.create_block();
@@ -1062,6 +1076,7 @@ where
     let (bound, leaves) = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
     let value = body(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let value = value?;
     flags.fold(cx, value.disc);
     drop_owned_leaves(cx, &leaves)?;
@@ -1258,6 +1273,7 @@ pub fn emit_fold_loop<'a, 'f, 'c, I, F>(
     acc_name: &ArcStr,
     acc_id: Option<crate::BindId>,
     elem: &HofElem,
+    sel_sites: &[ExprId],
     init: I,
     mut body: F,
 ) -> Result<(CompiledExpr, SlotFlags)>
@@ -1307,6 +1323,7 @@ where
     // enters a unit.
     let len = emit_depth_unit(cx, &taint, len)?;
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let loop_exit = cx.b.create_block();
@@ -1345,6 +1362,7 @@ where
     };
     let new_acc = body(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let new_acc = new_acc?;
     // The new acc is made independently owned BEFORE anything drops: a
     // borrowed body result (`|acc, x| acc`) may alias the old acc, an
@@ -1391,6 +1409,7 @@ pub fn emit_find_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
+    sel_sites: &[ExprId],
     mut predicate: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
@@ -1411,6 +1430,7 @@ where
     let zero64 = cx.b.ins().iconst(types::I64, 0);
     cx.b.def_var(result_payload_var, zero64);
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let take_block = cx.b.create_block();
@@ -1428,6 +1448,7 @@ where
     let (bound, leaves) = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
     let keep = predicate(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let keep = keep?;
     flags.fold(cx, keep.disc);
     drop_owned_leaves(cx, &leaves)?;
@@ -1492,6 +1513,7 @@ pub fn emit_find_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
     elem: &HofElem,
+    sel_sites: &[ExprId],
     mut body: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
@@ -1512,6 +1534,7 @@ where
     let zero64 = cx.b.ins().iconst(types::I64, 0);
     cx.b.def_var(result_payload_var, zero64);
     let i_var = init_counter(cx);
+    cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
     let loop_body = cx.b.create_block();
     let take_block = cx.b.create_block();
@@ -1529,6 +1552,7 @@ where
     let (bound, leaves) = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
     let value = body(cx);
     cx.exit_loop();
+    cx.close_slot_tables();
     let (disc, payload) = value?;
     drop_owned_leaves(cx, &leaves)?;
     drop_owned_elem(cx, &bound)?;

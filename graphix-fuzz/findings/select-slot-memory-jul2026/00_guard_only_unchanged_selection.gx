@@ -1,0 +1,14 @@
+// bisect: fusion/JIT over-fire (soak-jul14b fuzz divergence_000009 —
+// guarded select inside a collection loop). Eric's firing rule
+// (2026-07-15): an arm fires once when it BECOMES selected, then when
+// its body deps fire; a guard update that doesn't change the
+// selection is quiet. The source is CONST so in0 events are
+// guard-only; the schedule holds each selection for two events
+// (odd,odd,even,even), so the node-walk emits on the init selection
+// and the one change while the kernel's loop-body select — which had
+// no selection memory (the static state-word claim is refused inside
+// loops) — re-fired the slot on every in0 event. It now records the
+// taken arm in a per-slot side table (`graphix_slot_state_table`, one
+// word per slot ordinal, MapQ-style prefix retention across resizes).
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:3; in0=i64:2; in0=i64:4
+array::map([i64:7], |x: i64| select i64:0 {i64:0 if in0 % i64:2 == i64:0 => i64:1, _ => i64:2})

@@ -505,6 +505,15 @@ detection, and `apply` reproduces the interpreted MapQ/FoldQ rule (fires iff
 resized ∨ a slot fired ∨ the source fired empty; fold results are acc-carried
 via `result_is_firing`). A same-length source refresh with a quiet body does
 NOT re-fire — the per-slot precision the P4 sequential loops had lost.
+Guarded selects in loop bodies have PER-SLOT selection memory (2026-07-15,
+Eric's firing rule: an arm fires once when it BECOMES selected + when its body
+deps fire; guard updates that don't change the selection are quiet; guarded
+selects never de-fuse): a claimed state word owns a boxed per-slot `Vec<u64>`
+side table (`graphix_slot_state_table`, MapQ-style prefix retention across
+resizes; freed by `Kernel::drop` via `WrappedKernel::slot_table_words`) —
+`design/kernel_instance_state.md` "Per-slot state tables". Residuals
+(unrefined guard term, duplicate fire only, never a wrong value): guarded
+selects in NESTED loops and in callee bodies.
 
 **Testing is differential:**
 

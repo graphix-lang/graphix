@@ -1431,6 +1431,37 @@ pub unsafe extern "C" fn graphix_valarray_len(p: *const ValArray) -> usize {
     unsafe { arr(p).len() }
 }
 
+/// Per-slot cross-invocation state table for a scaffold loop (see
+/// `BodyCx::open_slot_tables`). The claimed state word at `word` owns
+/// a boxed `Vec<u64>` — one word per slot ordinal, zero = "no previous
+/// observation" — resized here with prefix retention, exactly the
+/// interpreted MapQ/FoldQ slot rule: shrink truncates (dropped slots'
+/// memory is gone), regrow re-creates FRESH zeroed slots. `valid == 0`
+/// (tainted source — the node-walk saw no event) skips the logical
+/// resize, mirroring `SlotFlags::apply`'s prev-len word; the table
+/// still GROWS zero-filled so in-loop accesses up to `len` stay in
+/// bounds. The Vec is freed by `Kernel::drop` via
+/// `WrappedKernel::slot_table_words`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_slot_state_table(
+    word: *mut u64,
+    len: u64,
+    valid: u64,
+) -> *mut u64 {
+    let word = unsafe { &mut *word };
+    if *word == 0 {
+        *word = Box::into_raw(Box::new(Vec::<u64>::new())) as u64;
+    }
+    let v = unsafe { &mut *(*word as *mut Vec<u64>) };
+    let len = len as usize;
+    if valid != 0 && len < v.len() {
+        v.truncate(len)
+    } else if len > v.len() {
+        v.resize(len, 0)
+    }
+    v.as_mut_ptr()
+}
+
 /// Two-level struct field read: `arr[sorted_idx]` is itself a
 /// `Value::Array([name, value])` kv-pair; we read slot 1 (the value)
 /// as the named primitive. Struct field read by sorted index.
@@ -1702,6 +1733,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_valarray_get_f32", graphix_valarray_get_f32 as *const u8),
         ("graphix_valarray_get_bool", graphix_valarray_get_bool as *const u8),
         ("graphix_valarray_len", graphix_valarray_len as *const u8),
+        ("graphix_slot_state_table", graphix_slot_state_table as *const u8),
         ("graphix_struct_get_i64", graphix_struct_get_i64 as *const u8),
         ("graphix_struct_get_f64", graphix_struct_get_f64 as *const u8),
         ("graphix_struct_get_i32", graphix_struct_get_i32 as *const u8),

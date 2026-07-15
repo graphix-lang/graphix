@@ -13,6 +13,14 @@ select rule was corrected against the observed node-walk: the scrutinee
 term STAYS (a scrutinee fire re-emits even with a const arm — verified
 2026-07-03); selection memory refines only the GUARD term.
 
+**Extended 2026-07-15 with PER-SLOT state tables** (soak-jul14b fuzz
+divergence 000009; Eric's ruling: guarded selects can't de-fuse —
+"they're the only control flow in the language" — and the firing rule
+is "an arm fires once when it becomes selected, and if its body
+dependencies naturally cause it to fire"; his design sketch: MapQ
+keeps a slot per element, so the kernel needs "a similar structure to
+store the selected arm"). See the section at the end.
+
 ## The problem
 
 A fused kernel is a pure function of its inputs — deliberately. But two
@@ -110,3 +118,71 @@ graphix-tests differential suite must stay green (the shrink under-fire
 hazard is a VALUE bug the `run!` fixtures would catch), and a
 reactive-generation soak (fuzzer-v2 phase 3) exercises the mechanism
 broadly once injection schedules land.
+
+## Per-slot state tables (2026-07-15)
+
+A guarded select inside a scaffold loop is one select PER SLOT in the
+node-walk (each MapQ/FoldQ slot's subgraph owns a Select instance with
+its own selection memory), so the static one-word claim is refused
+there and the guard term fell back to the unrefined feeder fold — one
+duplicate emission per guard-only cycle with an unchanged selection
+(soak-jul14b divergence 000009). The fix gives loop-body selects one
+word per slot without any ABI change:
+
+**The table lives BEHIND an ordinary claimed state word.** The loop
+emitters' PREHEADER runs at `loop_depth == 0`, where `claim_state_word`
+is legal — so the loop claims one static word per guarded-select site
+in its body and hands it to a new runtime helper,
+`graphix_slot_state_table(word, len, valid) -> *mut u64`. The word owns
+a boxed `Vec<u64>` (lazily created on first call); the helper resizes
+it to the loop length with PREFIX RETENTION — shrink truncates, regrow
+re-creates fresh zeroed slots — exactly the interpreted MapQ slot
+lifecycle, so retained slots keep their recorded selection and fresh
+slots read 0 ("no previous"). A TAINTED source skips the logical
+resize (the node-walk saw no event), growing only as an in-bounds
+guard — mirroring `SlotFlags::apply`'s prev-len word rule.
+
+**Wiring.** `guarded_select_sites(body)` (emit.rs) prewalks the loop's
+body tree for guarded-select `ExprId`s — the walk sees exactly the
+tree the loop emits inline (a nested collection HOF's callback body is
+behind its own lambda def, unreachable). Each collection op passes the
+sites into its scaffold emitter; the emitter's preheader calls
+`BodyCx::open_slot_tables` (claim + helper call per site, one
+`SlotTableFrame { depth, idx_var, tables }` pushed always — empty when
+claims are refused) and `close_slot_tables` pops after body emission.
+`emit_select_node`, on a refused static claim, consults the top frame
+via `BodyCx::slot_select_word(spec.id)`: an `ExprId` match AND
+`loop_depth == frame.depth` yields the address `table + i*8`, which
+the arm consumer (`emit_select_value_arm`) uses for the same
+compare-and-record it does at root level — including the selection-
+changed ARM INIT VIEW, so consts/seeds in a newly-selected arm
+re-deliver per slot.
+
+**Ownership.** The claimed words are recorded on
+`WrappedKernel::slot_table_words` (threaded like
+`replay_state_words`); the runtime `Kernel`'s `Drop` frees the boxed
+Vecs. Semantic state: `sleep`/`reset_replay` never touch them (same
+choice as the static select word).
+
+**Depth-1 only, deliberate residuals.** A select under a FURTHER
+nesting level (a nested collection loop, `loop_depth == 2`) has a slot
+identity the outer ordinal can't represent — the claim inside the
+nested preheader is refused by the existing `loop_depth > 0` rule and
+the depth check refuses the outer frame, so the unrefined guard term
+stands (duplicate fire, never a wrong value). Same for guarded selects
+in CALLEE bodies (`state_enabled == false`): fixing those is the
+per-callsite sub-buffer composition already noted above (the caller
+could claim in its own space — static word or slot table — and pass
+the address through the cross-kernel ABI).
+
+**The arm-lift consumer stays static-only:** a lifted connect target's
+identity is per INSTANCE (state-word BindIds), so a per-slot word
+can't reproduce the re-seed; `has_arm_lift` in a loop still `Err`s the
+kernel (de-fuse), unchanged.
+
+Pinned by `run!` fixtures `guarded_select_in_loop_selection_memory`
+(guard-only unchanged selection is quiet), `guarded_select_per_slot_
+independence` (two slots with DIFFERENT stable selections stay quiet —
+a shared word would thrash), `guarded_select_slot_table_resize`
+(prefix retention + fresh-slot first-selection fire), and the
+promoted finding `findings/select-slot-memory-jul2026/`.

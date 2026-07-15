@@ -753,6 +753,77 @@ run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Resul
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// PER-SLOT selection memory (soak-jul14b fuzz divergence 000009,
+// Eric's firing rule 2026-07-15: an arm fires once when it BECOMES
+// selected, then when its body deps fire; a guard update that doesn't
+// change the selection is quiet). Inside a collection loop the select
+// is one per slot in the node-walk, so the kernel's word comes from a
+// per-slot side table (`BodyCx::open_slot_tables`) instead of the
+// static claim. m holds 0 for x=1,2 then 1 for x=3,4 — one selection
+// change after the init, so the map fires twice; the unrefined guard
+// term re-fired every x.
+const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let a = array::map([10], |i| select i { 10 if m == 0 => 1, _ => 2 });
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_in_loop_selection_memory,
+    GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// Per-slot INDEPENDENCE: the two slots hold DIFFERENT stable
+// selections (slot 0 takes arm 0, slot 1 takes arm 1) while the guard
+// feeder x fires every cycle. Each slot's selection never changes, so
+// the map is quiet after the init — a word SHARED across slots would
+// thrash (slot 0 reads slot 1's record as a selection change) and
+// re-fire every cycle.
+const GUARDED_SELECT_PER_SLOT_INDEPENDENCE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let a = array::map([0, 1], |i| select 0 { 0 if x - x + i == 0 => 1, _ => 2 });
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_per_slot_independence,
+    GUARDED_SELECT_PER_SLOT_INDEPENDENCE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// Slot-table resize: the source grows 1 → 2 mid-run. The retained
+// prefix slot keeps its selection memory (no spurious fire) and the
+// fresh slot's first selection fires — exactly the interpreted MapQ
+// slot lifecycle (prefix retention, fresh slots on regrow).
+const GUARDED_SELECT_SLOT_TABLE_RESIZE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let src = [0];
+  src <- select count(x) { 2 => [0, 1], _ => never() };
+  let a = array::map(src, |i| select 0 { 0 if m == 0 => 1, _ => 2 });
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_slot_table_resize,
+    GUARDED_SELECT_SLOT_TABLE_RESIZE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
 // Arm-wake re-seed (soak jul08g fuzz divergence 6): the node-walk
 // updates a newly-taken arm with `event.init = true` (node/select.rs),
 // so an arm-local lifted connect target RE-SEEDS on every re-entry —

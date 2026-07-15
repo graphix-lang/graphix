@@ -745,6 +745,22 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     last_out: crate::Tag,
 }
 
+impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
+    fn drop(&mut self) {
+        // Free the per-slot state tables the JIT'd code boxed behind
+        // their claimed state words (`graphix_slot_state_table` —
+        // scaffold-loop guarded-select selection memory). Semantic
+        // state: neither `sleep` nor `reset_replay` touches these
+        // words, only instance death does.
+        for w in self.jit.slot_table_words.iter() {
+            let p = std::mem::replace(&mut self.state[*w as usize], 0);
+            if p != 0 {
+                drop(unsafe { Box::from_raw(p as *mut Vec<u64>) });
+            }
+        }
+    }
+}
+
 /// Tag for each call-site arg position. The runtime walks the
 /// incoming `from` slice in source-arg order; each entry classifies
 /// the arg into the right slot list (scalar, array, tuple, struct,
