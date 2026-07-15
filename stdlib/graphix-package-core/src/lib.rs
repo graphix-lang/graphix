@@ -59,11 +59,22 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     // deserialization — and the value WOULD flow at runtime, laundering
     // it under the never-arrives type into positions that trust the
     // type system completely. Reject → the builtin's "type must be
-    // known, annotations needed" error, exactly as for unbound.
-    if matches!(typ.with_deref(|t| t.cloned()), Some(Type::Bottom))
-        || matches!(typ, Type::Bottom)
-    {
+    // known, annotations needed" error, exactly as for unbound. The
+    // artifact also arrives as a ⊥ MEMBER of a set: a collection
+    // callback's cell aliasing left `str::parse`'s target as the whole
+    // `[⊥, Error<ParseError>]` union, which a top-level-only check
+    // missed — Bottom has no surface syntax, so a ⊥ member is always a
+    // settle artifact, never an annotated target (soak-jul14b 000003).
+    let is_bottom = |t: &Type| {
+        matches!(t.with_deref(|t| t.cloned()), Some(Type::Bottom))
+            || matches!(t, Type::Bottom)
+    };
+    if is_bottom(&typ) {
         return None;
+    }
+    match typ.with_deref(|t| t.cloned()).unwrap_or_else(|| typ.clone()) {
+        Type::Set(els) if els.iter().any(|e| is_bottom(e)) => return None,
+        _ => (),
     }
     Some(typ)
 }

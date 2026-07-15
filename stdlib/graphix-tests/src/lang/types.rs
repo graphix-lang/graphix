@@ -496,3 +496,28 @@ run!(
     |v: Result<&Value>| { matches!(v, Err(_)) };
     graphix_package_core::testing::FuseExpect::None
 );
+
+// An UNANNOTATED `str::parse` target must reject wherever it appears.
+// Direct and lambda-wrapped sites always did (the builtin's typecheck1
+// bails when no concrete target extracts); inside a COLLECTION
+// callback, cell aliasing left the target as the whole
+// `[⊥, Error<ParseError>]` union — extract_cast_type's ⊥-guard only
+// checked the top level, so the bail never fired, the runtime lazy
+// binds swallowed the validation, and the two modes then diverged on
+// the leftover view (interp: the catchable TypeError as a map key;
+// jit: a cast-transparent naked parse — soak-jul14b 000003). The
+// guard now rejects ⊥ MEMBERS too (⊥ has no surface syntax, so a ⊥
+// member is always a settle artifact).
+const PARSE_UNANNOTATED_IN_CALLBACK_ERR: &str = r#"
+{
+  let m = {"a" => 1, "b" => 2};
+  map::map(m, |(k, v)| (str::parse("42"), v * 2))
+}
+"#;
+
+run!(
+    parse_unannotated_in_callback_err,
+    PARSE_UNANNOTATED_IN_CALLBACK_ERR,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);

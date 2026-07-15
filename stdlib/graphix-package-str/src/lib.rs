@@ -875,6 +875,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
         resolved: &FnType,
     ) -> Result<()> {
         self.cast_typ = extract_cast_type(Some(resolved));
+        if std::env::var_os("GXDBG_PARSE").is_some() {
+            eprintln!("PARSE-TC1 cast_typ={:?} resolved={resolved:?}", self.cast_typ);
+        }
         if self.cast_typ.is_none() {
             bail!("str::parse requires a concrete return type")
         }

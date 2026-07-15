@@ -1,0 +1,14 @@
+// bisect: typecheck validation escape (soak-jul14b fuzz
+// divergence_000003). str::parse's typecheck1 bail ("requires a
+// concrete return type") never fired inside a collection callback:
+// cell aliasing left the target as the whole [⊥, Error<ParseError>]
+// union and extract_cast_type's ⊥-guard only checked the top level —
+// extraction "succeeded", the runtime lazy binds swallowed the
+// validation (SWALLOWED-LAZY-TC1), and the modes diverged on the
+// leftover resolved view: interp per-slot instances extracted None
+// (the catchable TypeError flowed as the map KEY), jit's extracted the
+// cast-transparent union (naked parse → I64(42)). The guard now
+// rejects ⊥ members (no surface syntax — always a settle artifact);
+// this program is a compile error in both modes, same as the direct
+// and lambda-wrapped sites always were.
+{let m = {null => i64:0, "b" => i64:2, "c" => i64:3}; map::map(m, |(k, v)| (str::parse("42"), v * i64:2))}
