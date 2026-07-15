@@ -1362,7 +1362,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.trigger, self.trigger.typecheck0(ctx))?;
-        wrap!(self.arg.node, self.arg.node.typecheck0(ctx))
+        wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
+        // Re-read the RHS type: the compile-time snapshot is ORPHANED
+        // when the child REPLACES its typ field during typecheck0 (a
+        // select sets `self.typ = rtype` — the finding-37 orphan class).
+        // The stale snapshot was the select's pre-typecheck EMPTY
+        // primitive set, which every type contains, so `st <- in0 ~
+        // select {...}` passed the connect containment vacuously and a
+        // mistyped struct flowed at runtime (soak-jul14b 000005).
+        self.typ = self.arg.node.typ().clone();
+        Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

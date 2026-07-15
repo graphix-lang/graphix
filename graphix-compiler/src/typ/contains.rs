@@ -148,6 +148,12 @@ impl crate::typ::TVar {
             }
             if cell.constraints.is_empty() {
                 drop(cell);
+                if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                    eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
+                }
+                if std::env::var("GRAPHIX_DBG_BIND_BT").is_ok() {
+                    eprintln!("{}", std::backtrace::Backtrace::force_capture());
+                }
                 tv.typ.write().typ = Some(Type::Bottom);
                 return Ok(());
             }

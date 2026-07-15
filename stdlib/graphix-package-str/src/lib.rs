@@ -892,6 +892,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
             },
             _ => return None,
         };
+        if std::env::var_os("GXDBG_PARSE").is_some() {
+            eprintln!("PARSE cast_typ={:?}", self.cast_typ);
+        }
         Some(match &self.cast_typ {
             Some(typ) => typ.cast_value(&ctx.env, raw),
             None => errf!("TypeError", "parse requires a concrete type annotation"),

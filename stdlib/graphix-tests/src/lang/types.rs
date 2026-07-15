@@ -469,3 +469,30 @@ run!(set_residue_tvar_bind, SET_RESIDUE_TVAR_BIND, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => matches!(&t[..], [Value::Bool(true), Value::Bool(true)]),
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A connect whose RHS is `trigger ~ select {...}` must still check the
+// RHS against the target's type. `Sample::compile` snapshotted the
+// select's PRE-typecheck typ (the empty primitive set, which every
+// type contains — Select::typecheck0 REPLACES its typ field, orphaning
+// the snapshot: the finding-37 class), so a struct of the wrong shape
+// connected into a differently-shaped binding and flowed at runtime —
+// the JIT then read fields by the declared offsets (i64 42) while the
+// node-walk's Value arith promoted (f64 42.0), soak-jul14b 000005.
+const CONNECT_SAMPLE_SELECT_SHAPE_ERR: &str = r#"
+{
+  let trig = 1;
+  let st = { last: 0, n: 0 };
+  st <- trig ~ select 100 {
+    42 => { b: 1.0, y: 2 },
+    _ => { b: 0.0, y: 42 }
+  };
+  st.n
+}
+"#;
+
+run!(
+    connect_sample_select_shape_err,
+    CONNECT_SAMPLE_SELECT_SHAPE_ERR,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
