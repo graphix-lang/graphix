@@ -2782,7 +2782,10 @@ fn emit_scalar_taint_cache(
     let mem_bl = cx.b.create_block();
     let merge = cx.b.create_block();
     cx.b.append_block_param(merge, types::I64);
-    cx.b.append_block_param(merge, types::I64);
+    // The payload rides at the prim's native CLIF type (jul16e flood:
+    // an I64 param panicked cranelift-frontend on float payloads —
+    // "declared type of variable doesn't match", killing the runtime).
+    cx.b.append_block_param(merge, prim_to_clif(prim));
     cx.b.ins().brif(
         has,
         mem_bl,
