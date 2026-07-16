@@ -30,10 +30,13 @@
 //! `Type::Tuple([..., T, ...])` shape, and the runtime hands
 //! us a `Value::Array(ValArray)` that matches).
 
-use crate::node::{
-    array::{array_index, array_slice_i64, bytes_index},
-    map::map_get,
-    op::wrap_arith_error,
+use crate::{
+    fusion::kernel_abi::SiteLeaf,
+    node::{
+        array::{array_index, array_slice_i64, bytes_index},
+        map::map_get,
+        op::wrap_arith_error,
+    },
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
@@ -1433,17 +1436,34 @@ pub unsafe extern "C" fn graphix_valarray_len(p: *const ValArray) -> usize {
 
 /// Free a slot-state chain: `word` is (0 or) a `Box<Vec<u64>>` raw
 /// pointer. `own_levels == 0` means the Vec holds plain data (leaf
-/// selection words); `own_levels > 0` means each entry is itself a
-/// chain with one less level. Shared by `graphix_slot_state_table`'s
-/// truncate path and `Kernel::drop`.
-pub fn free_slot_chain(word: u64, own_levels: u64) {
+/// selection words) UNLESS `leaf` is given, in which case the Vec is
+/// per-slot call-site BLOCKS whose anchor words own further chains
+/// (see [`SiteLeaf`]); `own_levels > 0` means each entry is itself a
+/// chain with one less level (same leaf at the bottom). Shared by the
+/// resize helpers' truncate paths and `Kernel::drop`.
+pub fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
     if word == 0 {
         return;
     }
     let v = unsafe { Box::from_raw(word as *mut Vec<u64>) };
     if own_levels > 0 {
         for e in v.iter() {
-            free_slot_chain(*e, own_levels - 1);
+            free_slot_chain(*e, own_levels - 1, leaf);
+        }
+    } else if let Some(l) = leaf {
+        free_blocks(&v, l);
+    }
+}
+
+/// Free the anchor-owned chains inside a run of call-site blocks.
+fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
+    for block in words.chunks_exact(leaf.stride as usize) {
+        for a in leaf.anchors.iter() {
+            free_slot_chain(
+                block[a.rel as usize],
+                a.own_levels as u64,
+                a.leaf.as_deref(),
+            );
         }
     }
 }
@@ -1464,13 +1484,20 @@ pub fn free_slot_chain(word: u64, own_levels: u64) {
 /// the table still GROWS zero-filled so in-loop accesses up to `len`
 /// stay in bounds. The chain is freed by `Kernel::drop` via
 /// `WrappedKernel::slot_table_words`.
+/// `leaf` is 0 for plain chains (selection-word leaves), or a baked
+/// `*const SiteLeaf` (kept alive by the kernel cache) when the chain
+/// bottoms out in per-slot call-site BLOCKS — truncation at any
+/// directory level must free through it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_slot_state_table(
     word: *mut u64,
     len: u64,
     valid: u64,
     own_levels: u64,
+    leaf: u64,
 ) -> *mut u64 {
+    let leaf =
+        if leaf == 0 { None } else { Some(unsafe { &*(leaf as *const SiteLeaf) }) };
     let word = unsafe { &mut *word };
     if *word == 0 {
         *word = Box::into_raw(Box::new(Vec::<u64>::new())) as u64;
@@ -1480,9 +1507,37 @@ pub unsafe extern "C" fn graphix_slot_state_table(
     if valid != 0 && len < v.len() {
         if own_levels > 0 {
             for e in v[len..].iter() {
-                free_slot_chain(*e, own_levels - 1);
+                free_slot_chain(*e, own_levels - 1, leaf);
             }
         }
+        v.truncate(len)
+    } else if len > v.len() {
+        v.resize(len, 0)
+    }
+    v.as_mut_ptr()
+}
+
+/// The chain-leaf resize for per-slot CALL-SITE BLOCKS (`SiteLeaf` —
+/// `stride` words per slot ordinal): the Vec's logical length is
+/// `slots * stride`, resized with prefix retention at BLOCK
+/// granularity; truncation frees the dropped blocks' anchor-owned
+/// chains. Same `valid` rule as `graphix_slot_state_table`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn graphix_slot_state_blocks(
+    word: *mut u64,
+    slots: u64,
+    valid: u64,
+    leaf: u64,
+) -> *mut u64 {
+    let leaf_ref = unsafe { &*(leaf as *const SiteLeaf) };
+    let word = unsafe { &mut *word };
+    if *word == 0 {
+        *word = Box::into_raw(Box::new(Vec::<u64>::new())) as u64;
+    }
+    let v = unsafe { &mut *(*word as *mut Vec<u64>) };
+    let len = (slots as usize) * (leaf_ref.stride as usize);
+    if valid != 0 && len < v.len() {
+        free_blocks(&v[len..], leaf_ref);
         v.truncate(len)
     } else if len > v.len() {
         v.resize(len, 0)
@@ -1762,6 +1817,7 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_valarray_get_bool", graphix_valarray_get_bool as *const u8),
         ("graphix_valarray_len", graphix_valarray_len as *const u8),
         ("graphix_slot_state_table", graphix_slot_state_table as *const u8),
+        ("graphix_slot_state_blocks", graphix_slot_state_blocks as *const u8),
         ("graphix_struct_get_i64", graphix_struct_get_i64 as *const u8),
         ("graphix_struct_get_f64", graphix_struct_get_f64 as *const u8),
         ("graphix_struct_get_i32", graphix_struct_get_i32 as *const u8),

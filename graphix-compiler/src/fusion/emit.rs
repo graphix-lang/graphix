@@ -312,7 +312,7 @@ pub struct WrappedKernel {
     /// frees the chains (`free_slot_chain`); `reset_replay` never
     /// touches them (semantic state, like the static select memory
     /// word).
-    pub slot_table_words: Vec<(u32, u32)>,
+    pub slot_table_words: Vec<kernel_abi::SiteAnchor>,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -434,7 +434,15 @@ struct CachedKernel {
     /// See [`WrappedKernel::replay_state_words`]; filled in phase 2.
     replay_state_words: Vec<u32>,
     /// See [`WrappedKernel::slot_table_words`]; filled in phase 2.
-    slot_table_words: Vec<(u32, u32)>,
+    slot_table_words: Vec<kernel_abi::SiteAnchor>,
+    /// The kernel's per-call-site state-block layout ([`SiteLayout`]),
+    /// filled when its body is DEFINED (phase 2, callees before
+    /// parents). `None` = not yet defined — a caller emitting against
+    /// a `None` layout is a recursive back-edge and passes 0.
+    site_layout: Option<SiteLayout>,
+    /// [`kernel_abi::SiteLeaf`]s whose addresses the compiled code
+    /// baked in — kept alive with the code, like `_strings`.
+    _site_leaves: Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
     /// Holds the Arc alive so its raw pointer can't be reused by a
     /// later allocation.
     _kernel: std::sync::Arc<KernelSig>,
@@ -751,7 +759,15 @@ fn compile_kernel_with_callees_inner(
     // `discover_lambda_calls` records a body for every callee it
     // returns; the check guards the invariant rather than a known
     // path.
-    for (k, base, layout) in to_define.iter() {
+    // Definition order is REVERSED (deepest-discovered callees first,
+    // the parent last): a caller's body emission reads its callees'
+    // per-call-site state-block layouts ([`SiteLayout`], recorded at
+    // definition) to size the blocks it supplies. A callee whose
+    // layout is still missing at the caller's definition is a
+    // recursive back-edge (self-calls, mutual-recursion cycles) — the
+    // call site passes 0 and the callee's null-guards degrade to the
+    // no-memory semantics (fresh transient activation).
+    for (k, base, layout) in to_define.iter().rev() {
         let ptr = std::sync::Arc::as_ptr(k) as usize;
         // The emitter is keyed by pointer identity (it's the same body
         // regardless of base); the `fn_index_offset` it carries (== base)
@@ -763,8 +779,16 @@ fn compile_kernel_with_callees_inner(
                 k.fn_name
             )
         })?;
-        let (strings, values, state_words, replay_words, slot_table_words) =
-            define_kernel_body(&mut jit.ctx, k, &funcids, body)?;
+        // Already-defined callee layouts, keyed by kernel identity.
+        // Base/layout variants of the same body share one SiteLayout
+        // (the claims are a body property), so first-found wins.
+        let callee_layouts: BTreeMap<usize, SiteLayout> = jit
+            .by_kernel
+            .iter()
+            .filter_map(|((p, _, _), e)| e.site_layout.as_ref().map(|l| (*p, l.clone())))
+            .collect();
+        let (strings, values, state_words, replay_words, slot_table_words, site, leaves) =
+            define_kernel_body(&mut jit.ctx, k, &funcids, body, &callee_layouts)?;
         *defined += 1;
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base, *layout)) {
             cached._strings = strings;
@@ -772,6 +796,8 @@ fn compile_kernel_with_callees_inner(
             cached.state_words = state_words;
             cached.replay_state_words = replay_words;
             cached.slot_table_words = slot_table_words;
+            cached.site_layout = Some(site);
+            cached._site_leaves = leaves;
         }
     }
     // Phase 3 — compile the uniform wrapper for the parent and
@@ -853,6 +879,8 @@ fn ensure_declared(
             state_words: 0,
             replay_state_words: Vec::new(),
             slot_table_words: Vec::new(),
+            site_layout: None,
+            _site_leaves: Vec::new(),
         },
     );
     to_define.push((k.clone(), base, layout));
@@ -868,7 +896,16 @@ fn define_kernel_body(
     kernel: &std::sync::Arc<KernelSig>,
     funcids: &[(usize, (FuncId, Signature))],
     body_emitter: &dyn BodyEmitter,
-) -> Result<(KernelStrings, KernelValues, usize, Vec<u32>, Vec<(u32, u32)>)> {
+    callee_layouts: &BTreeMap<usize, SiteLayout>,
+) -> Result<(
+    KernelStrings,
+    KernelValues,
+    usize,
+    Vec<u32>,
+    Vec<kernel_abi::SiteAnchor>,
+    SiteLayout,
+    Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
+)> {
     let self_ptr = kernel_abi::kernel_key(kernel);
     let (func_id, sig) =
         funcids.iter().find(|(p, _)| *p == self_ptr).map(|(_, e)| e.clone()).ok_or_else(
@@ -891,7 +928,15 @@ fn define_kernel_body(
     jit.func_ctx.func.signature = sig;
     jit.func_ctx.func.name =
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32());
-    let (strings, values, state_words, replay_words, slot_table_words) = {
+    let (
+        strings,
+        values,
+        state_words,
+        replay_words,
+        slot_table_words,
+        site_layout,
+        site_leaves,
+    ) = {
         // Declare each lambda call site's callee as a FuncRef in this
         // function. Done before constructing the FunctionBuilder
         // because both `declare_func_in_func` and `FunctionBuilder::new`
@@ -947,19 +992,25 @@ fn define_kernel_body(
             std::cell::RefCell::new(Vec::new());
         let lazy_values: std::cell::RefCell<Vec<Box<Value>>> =
             std::cell::RefCell::new(Vec::new());
+        let lazy_site_leaves: std::cell::RefCell<
+            Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
+        > = std::cell::RefCell::new(Vec::new());
         let helper_refs =
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        let (state_words, replay_words, slot_table_words) = compile_into_function(
-            &mut builder,
-            kernel,
-            &callee_refs,
-            &helper_refs,
-            &lazy_strings,
-            &lazy_values,
-            body_emitter,
-        )?;
+        let (state_words, replay_words, slot_table_words, site_layout) =
+            compile_into_function(
+                &mut builder,
+                kernel,
+                &callee_refs,
+                &helper_refs,
+                &lazy_strings,
+                &lazy_values,
+                body_emitter,
+                callee_layouts,
+                &lazy_site_leaves,
+            )?;
         builder.finalize();
         maybe_dump_clif(&jit.func_ctx.func, &kernel.fn_name);
         // Hand `strings`/`values` back to the caller, which stores
@@ -973,6 +1024,8 @@ fn define_kernel_body(
             state_words,
             replay_words,
             slot_table_words,
+            site_layout,
+            lazy_site_leaves.into_inner(),
         )
     };
     jit.module
@@ -980,7 +1033,15 @@ fn define_kernel_body(
         .context("define_function (shared body)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok((strings, values, state_words, replay_words, slot_table_words))
+    Ok((
+        strings,
+        values,
+        state_words,
+        replay_words,
+        slot_table_words,
+        site_layout,
+        site_leaves,
+    ))
 }
 
 /// Define the (args*, out*) wrapper that adapts the typed kernel to a
@@ -1241,7 +1302,9 @@ fn compile_into_function(
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
     body_emitter: &dyn BodyEmitter,
-) -> Result<(usize, Vec<u32>, Vec<(u32, u32)>)> {
+    callee_layouts: &BTreeMap<usize, SiteLayout>,
+    lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
+) -> Result<(usize, Vec<u32>, Vec<kernel_abi::SiteAnchor>, SiteLayout)> {
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -1264,6 +1327,11 @@ fn compile_into_function(
     // [`BodyCx::claim_state_word`]).
     let init_flag = initial_vals[0];
     let state_ptr = initial_vals[1];
+    // Slot 2: the per-call-site state block base — a CALLEE body's
+    // instance memory, supplied by each caller; 0 for parents and on
+    // recursive back-edges (see [`kernel_abi::CTX_WIRE_SLOTS`]), so
+    // every consumer null-guards ([`BodyCx::site_word`]).
+    let site_ptr = initial_vals[2];
     // Bind every kernel param into the env in kind-grouped ABI order
     // (see `KernelSig::abi_params`), reading entry-block params from
     // `initial_vals[d.wire_slot..]`. Composite (array/tuple/struct) and
@@ -1399,6 +1467,12 @@ fn compile_into_function(
         replay_words: std::cell::RefCell::new(Vec::new()),
         slot_table_words: std::cell::RefCell::new(Vec::new()),
         slot_tables: std::cell::RefCell::new(Vec::new()),
+        site_ptr,
+        site_enabled: !body_emitter.allow_state(),
+        site_next: std::cell::Cell::new(0),
+        site_anchors: std::cell::RefCell::new(Vec::new()),
+        callee_layouts,
+        lazy_site_leaves,
         loop_depth: std::cell::Cell::new(0),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
@@ -1476,7 +1550,11 @@ fn compile_into_function(
     b.seal_all_blocks();
     let replay_words = lower.replay_words.borrow().clone();
     let slot_table_words = lower.slot_table_words.borrow().clone();
-    Ok((lower.state_next.get(), replay_words, slot_table_words))
+    let site_layout = SiteLayout {
+        words: lower.site_next.get() as u32,
+        anchors: lower.site_anchors.borrow().clone().into(),
+    };
+    Ok((lower.state_next.get(), replay_words, slot_table_words, site_layout))
 }
 
 /// Per-kernel storage of the ArcStrs the JIT'd code references via
@@ -1576,6 +1654,35 @@ impl KernelValues {
 
 /// Per-function lowering context: things that don't change across
 /// statements within a single body.
+/// A callee kernel's PER-CALL-SITE state-block layout: how many words
+/// its body claimed from the site channel (wire slot 2), and which of
+/// those words ANCHOR slot-table chains (`(rel word idx, own_levels)`
+/// — heap Vecs the block's OWNER must free). Recorded when the callee
+/// body is DEFINED (callees define before parents — reverse
+/// `to_define` order) and read by every CALLER to size and register
+/// the block it supplies; a caller that can't find a layout is
+/// looking at a recursive back-edge (the callee isn't defined yet)
+/// and passes 0.
+#[derive(Debug, Clone)]
+pub(crate) struct SiteLayout {
+    pub(crate) words: u32,
+    pub(crate) anchors: std::sync::Arc<[kernel_abi::SiteAnchor]>,
+}
+
+/// A selection-memory word's address, with its null-guard obligation.
+/// Instance-channel and parent-chain words are backed by storage that
+/// always exists (`Sure`); a CALLEE's site-block words ride a base
+/// that is 0 on recursive back-edges (`Guarded`) — the consumer
+/// branches to the no-memory semantics (unrefined guard term, no arm
+/// init view) when the base is null, which is exactly the node-walk's
+/// fresh transient activation (fresh memory ≡ no memory for a
+/// single-shot activation).
+#[derive(Clone, Copy)]
+pub(crate) enum SelWord {
+    Sure(ClifValue),
+    Guarded { base: ClifValue, addr: ClifValue },
+}
+
 /// One open scaffold loop's per-slot state tables (see
 /// [`BodyCx::open_slot_tables`]). `depth` is the [`LowerCtx::loop_depth`]
 /// at which the loop BODY runs — a select consults the frame only when
@@ -1597,8 +1704,9 @@ pub(crate) struct SlotTableFrame {
     src_disc: ClifValue,
     /// Guarded-select site (`Select::spec.id`) → per-slot table base
     /// pointer (the `graphix_slot_state_table` result, valid for this
-    /// kernel invocation).
-    tables: Vec<(ExprId, ClifValue)>,
+    /// kernel invocation) and whether the table is null-GUARDED (a
+    /// callee loop's chain rides the possibly-0 site block).
+    tables: Vec<(ExprId, ClifValue, bool)>,
 }
 
 pub(crate) struct LowerCtx<'a> {
@@ -1653,7 +1761,31 @@ pub(crate) struct LowerCtx<'a> {
     /// directory levels below it (one per enclosing loop), freed
     /// recursively by the runtime `Kernel`'s `Drop` (see
     /// [`BodyCx::open_slot_tables`]).
-    slot_table_words: std::cell::RefCell<Vec<(u32, u32)>>,
+    slot_table_words: std::cell::RefCell<Vec<kernel_abi::SiteAnchor>>,
+    /// The per-call-site state block base (`I64`, wire slot 2) — a
+    /// CALLEE body's instance memory, supplied by each caller.
+    /// Possibly 0 (region parents, recursive back-edges): every
+    /// consumer null-guards ([`SelWord::Guarded`]).
+    site_ptr: ClifValue,
+    /// Whether THIS body may claim site-block words — true only for
+    /// CALLEE bodies (a region parent's root body uses the instance
+    /// channel; `!BodyEmitter::allow_state`).
+    site_enabled: bool,
+    /// Next unclaimed site-block word. Count + anchors become the
+    /// kernel's [`SiteLayout`], read by every caller.
+    site_next: std::cell::Cell<usize>,
+    /// Site-block words that anchor slot-table chains
+    /// (`(rel word idx, own_levels)`) — freed by the block's OWNER.
+    site_anchors: std::cell::RefCell<Vec<kernel_abi::SiteAnchor>>,
+    /// Already-DEFINED callee site layouts (kernel key →
+    /// [`SiteLayout`]) for the call sites this body emits; a missing
+    /// entry is a recursive back-edge (the call passes 0).
+    callee_layouts: &'a BTreeMap<usize, SiteLayout>,
+    /// Arena of [`kernel_abi::SiteLeaf`]s whose ADDRESSES this body's
+    /// code baked into `graphix_slot_state_table`/`_blocks` calls
+    /// (in-loop call-site blocks) — merged into the per-kernel cache
+    /// entry so they outlive the compiled code, like `lazy_strings`.
+    lazy_site_leaves: &'a std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
     /// Open scaffold-loop per-slot state-table frames, innermost
     /// last. Pushed/popped by [`BodyCx::open_slot_tables`] /
     /// [`BodyCx::close_slot_tables`] around every scaffold loop; a
@@ -1948,12 +2080,19 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64));
         }
         // Per-slot state table:
-        // (word: *mut u64, len, valid, own_levels) -> *mut u64.
+        // (word: *mut u64, len, valid, own_levels, leaf) -> *mut u64.
         "graphix_slot_state_table" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
+            for _ in 0..5 {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // Per-slot call-site blocks:
+        // (word: *mut u64, slots, valid, leaf: *const SiteLeaf) -> *mut u64.
+        "graphix_slot_state_blocks" => {
+            for _ in 0..4 {
+                sig.params.push(AbiParam::new(types::I64));
+            }
             sig.returns.push(AbiParam::new(types::I64));
         }
         // Producer-op builder.
@@ -3601,28 +3740,57 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             } else {
                 self.claim_state_word_loop_invariant()
             };
-            let Some(off) = anchor else { break };
-            self.ctx
-                .slot_table_words
-                .borrow_mut()
-                .push(((off / 8) as u32, n_dirs as u32));
-            let sp = self.state_ptr();
-            let mut word_addr = self.b.ins().iadd_imm(sp, off as i64);
-            let helper = self.helper("graphix_slot_state_table")?;
-            for (k, (flen, fdisc, fidx)) in enclosing.iter().enumerate() {
-                let fvalid = emit_untainted_i64(self.b, *fdisc);
-                let own = self.b.ins().iconst(types::I64, (n_dirs - k) as i64);
-                let call = self.b.ins().call(helper, &[word_addr, *flen, fvalid, own]);
-                let dir = self.b.inst_results(call)[0];
-                let i = self.b.use_var(*fidx);
-                let o = self.b.ins().ishl_imm(i, 3);
-                word_addr = self.b.ins().iadd(dir, o);
+            let entry = match anchor {
+                Some(off) => {
+                    self.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+                        rel: (off / 8) as u32,
+                        own_levels: n_dirs as u32,
+                        leaf: None,
+                    });
+                    let sp = self.state_ptr();
+                    let word_addr = self.b.ins().iadd_imm(sp, off as i64);
+                    let table =
+                        self.emit_slot_chain(word_addr, &enclosing, len, src_disc)?;
+                    Some((table, false))
+                }
+                // A CALLEE body's loop: anchor in the per-call-site
+                // block. The base is 0 on a recursive back-edge —
+                // branch around the chain (dereferencing the anchor
+                // word would fault) and hand the selects a 0 table
+                // (the no-memory semantics, [`SelWord::Guarded`]).
+                None => match self.claim_site_anchor(n_dirs as u32, None) {
+                    Some(off) => {
+                        let base = self.site_ptr();
+                        let word_addr = self.b.ins().iadd_imm(base, off as i64);
+                        let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+                        let chain_bl = self.b.create_block();
+                        let merge = self.b.create_block();
+                        self.b.append_block_param(merge, types::I64);
+                        let zero = self.b.ins().iconst(types::I64, 0);
+                        self.b.ins().brif(
+                            has,
+                            chain_bl,
+                            &[],
+                            merge,
+                            &[BlockArg::Value(zero)],
+                        );
+                        self.b.switch_to_block(chain_bl);
+                        self.b.seal_block(chain_bl);
+                        let table =
+                            self.emit_slot_chain(word_addr, &enclosing, len, src_disc)?;
+                        self.b.ins().jump(merge, &[BlockArg::Value(table)]);
+                        self.b.switch_to_block(merge);
+                        self.b.seal_block(merge);
+                        let table = self.b.block_params(merge)[0];
+                        Some((table, true))
+                    }
+                    None => None,
+                },
+            };
+            match entry {
+                Some((table, guarded)) => tables.push((*id, table, guarded)),
+                None => break,
             }
-            let valid = emit_untainted_i64(self.b, src_disc);
-            let leaf = self.b.ins().iconst(types::I64, 0);
-            let call = self.b.ins().call(helper, &[word_addr, len, valid, leaf]);
-            let table = self.b.inst_results(call)[0];
-            tables.push((*id, table));
         }
         self.ctx.slot_tables.borrow_mut().push(SlotTableFrame {
             depth,
@@ -3632,6 +3800,37 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             tables,
         });
         Ok(())
+    }
+
+    /// Emit the owning-table chain from `word_addr` (an anchor word's
+    /// address) through one directory level per enclosing frame down
+    /// to this loop's LEAF selection table (sized `len`, resize gated
+    /// by `src_disc`'s taint). Returns the leaf table base.
+    fn emit_slot_chain(
+        &mut self,
+        word_addr: ClifValue,
+        enclosing: &[(ClifValue, ClifValue, Variable)],
+        len: ClifValue,
+        src_disc: ClifValue,
+    ) -> Result<ClifValue> {
+        let helper = self.helper("graphix_slot_state_table")?;
+        let n_dirs = enclosing.len();
+        let no_leaf = self.b.ins().iconst(types::I64, 0);
+        let mut word_addr = word_addr;
+        for (k, (flen, fdisc, fidx)) in enclosing.iter().enumerate() {
+            let fvalid = emit_untainted_i64(self.b, *fdisc);
+            let own = self.b.ins().iconst(types::I64, (n_dirs - k) as i64);
+            let call =
+                self.b.ins().call(helper, &[word_addr, *flen, fvalid, own, no_leaf]);
+            let dir = self.b.inst_results(call)[0];
+            let i = self.b.use_var(*fidx);
+            let o = self.b.ins().ishl_imm(i, 3);
+            word_addr = self.b.ins().iadd(dir, o);
+        }
+        let valid = emit_untainted_i64(self.b, src_disc);
+        let own0 = self.b.ins().iconst(types::I64, 0);
+        let call = self.b.ins().call(helper, &[word_addr, len, valid, own0, no_leaf]);
+        Ok(self.b.inst_results(call)[0])
     }
 
     /// Pop the frame [`open_slot_tables`](Self::open_slot_tables)
@@ -3652,19 +3851,75 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// (a further nesting level — the frame's ordinal can't identify
     /// its slots), or the frame claimed no table (callee body /
     /// nested loop / no state available).
-    pub(crate) fn slot_select_word(&mut self, id: ExprId) -> Option<ClifValue> {
-        let (idx_var, table) = {
+    pub(crate) fn slot_select_word(&mut self, id: ExprId) -> Option<SelWord> {
+        let (idx_var, table, guarded) = {
             let frames = self.ctx.slot_tables.borrow();
             let f = frames.last()?;
             if f.depth != self.ctx.loop_depth.get() {
                 return None;
             }
-            let table = f.tables.iter().find(|(eid, _)| *eid == id)?.1;
-            (f.idx_var, table)
+            let (_, table, guarded) = *f.tables.iter().find(|(eid, _, _)| *eid == id)?;
+            (f.idx_var, table, guarded)
         };
         let i = self.b.use_var(idx_var);
         let off = self.b.ins().ishl_imm(i, 3);
-        Some(self.b.ins().iadd(table, off))
+        let addr = self.b.ins().iadd(table, off);
+        Some(if guarded {
+            // A callee loop's chain is anchored in the (possibly null)
+            // site block: `table` is 0 on a recursive back-edge.
+            SelWord::Guarded { base: table, addr }
+        } else {
+            SelWord::Sure(addr)
+        })
+    }
+
+    /// Claim one word of PER-CALL-SITE block memory (wire slot 2) —
+    /// the CALLEE-body twin of [`claim_state_word`]
+    /// (Self::claim_state_word): one compiled callee body, per-call-
+    /// site storage supplied by each caller ([`SiteLayout`]). Returns
+    /// the word's byte offset; `None` outside callee bodies. The
+    /// block BASE may be 0 at runtime (recursive back-edge — a fresh
+    /// transient activation), so every consumer null-guards
+    /// ([`SelWord::Guarded`]).
+    pub(crate) fn claim_site_word(&self) -> Option<i32> {
+        if !self.ctx.site_enabled {
+            return None;
+        }
+        let idx = self.ctx.site_next.get();
+        self.ctx.site_next.set(idx + 1);
+        Some((idx * 8) as i32)
+    }
+
+    /// [`claim_site_word`](Self::claim_site_word) for a word that
+    /// ANCHORS a slot-table chain: registered on the kernel's
+    /// [`SiteLayout`] so the block's OWNER (the caller's runtime
+    /// `Kernel`) frees the chain.
+    pub(crate) fn claim_site_anchor(
+        &self,
+        own_levels: u32,
+        leaf: Option<std::sync::Arc<kernel_abi::SiteLeaf>>,
+    ) -> Option<i32> {
+        let off = self.claim_site_word()?;
+        self.ctx.site_anchors.borrow_mut().push(kernel_abi::SiteAnchor {
+            rel: (off / 8) as u32,
+            own_levels,
+            leaf,
+        });
+        Some(off)
+    }
+
+    /// The per-call-site block base (`I64`, possibly 0 — see
+    /// [`claim_site_word`](Self::claim_site_word)).
+    pub(crate) fn site_ptr(&self) -> ClifValue {
+        self.ctx.site_ptr
+    }
+
+    /// The [`SiteLayout`] of an already-DEFINED callee, by kernel
+    /// identity ([`kernel_abi::kernel_key`]). `None` = recursive
+    /// back-edge (self-calls, mutual-recursion cycles): the call site
+    /// passes 0.
+    pub(crate) fn callee_site_layout(&self, key: usize) -> Option<&'c SiteLayout> {
+        self.ctx.callee_layouts.get(&key)
     }
 
     /// Bracket scaffold-loop body emission (INCLUDING the loop's own
@@ -6904,8 +7159,18 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // unchanged selection re-fired every slot). Without either
     // (callee body, nested loop) the unrefined guard term stands — a
     // deliberate residual duplicate-fire, never a wrong value.
-    let has_guard = sel.arms.iter().any(|(pat, _)| pat.guard.is_some());
-    let guard_stale: Option<ClifValue> = if has_guard {
+    // Guard FEEDERS: the kernel-visible locals any arm's guard reads.
+    // Arm binds aren't in the env (the chain binds them per arm) —
+    // their firing is the scrutinee's, already folded — so a select
+    // whose guards read ONLY pattern binds (`` `Num(x) if x == 0.0 ``,
+    // the symbolic-simplify shape) has an EMPTY feeder set: its guard
+    // term would fold over nothing (a constant) and its selection can
+    // only change when the scrutinee fires, which already fires the
+    // select. Such a select claims NO selection memory and emits no
+    // guard term — the guardless treatment; claiming anyway cost the
+    // recursion-hot symbolic bench ~14% in null-guard branches for
+    // memory that could never refine anything.
+    let guard_feeders: Vec<Variable> = {
         let mut ids: Vec<BindId> = Vec::new();
         for (pat, _) in sel.arms.iter() {
             if let Some(g) = &pat.guard {
@@ -6918,15 +7183,15 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 });
             }
         }
+        ids.iter().filter_map(|id| cx.env.lookup_by_id(*id).map(|l| l.vv.disc)).collect()
+    };
+    let has_guard = !guard_feeders.is_empty();
+    let guard_stale: Option<ClifValue> = if has_guard {
         let mut word = cx.b.ins().iconst(types::I64, STALE);
-        for id in ids {
-            // Arm binds aren't in the env yet (the chain binds them per
-            // arm) — their firing is the scrutinee's, already folded.
-            if let Some(dv) = cx.env.lookup_by_id(id).map(|l| l.vv.disc) {
-                let d = cx.b.use_var(dv);
-                let sb = cx.b.ins().band_imm(d, STALE);
-                word = cx.b.ins().band(word, sb);
-            }
+        for dv in guard_feeders {
+            let d = cx.b.use_var(dv);
+            let sb = cx.b.ins().band_imm(d, STALE);
+            word = cx.b.ins().band(word, sb);
         }
         Some(word)
     } else {
@@ -6950,23 +7215,38 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         });
         found
     });
-    // The word's ADDRESS: static (state_ptr + off) at root level, or
-    // this slot's entry in the loop's side table. The arm-lift re-seed
-    // never reads the table — the lifted write target is per INSTANCE
-    // (one state word), so per-slot memory can't represent it.
-    let sel_state_addr = if has_guard || has_arm_lift {
+    // The word's ADDRESS: static (state_ptr + off) at root level,
+    // this slot's entry in the loop's side table, or — in a CALLEE
+    // body at its root level — a word in the per-call-site state
+    // block (null-guarded: 0 on recursive back-edges). The arm-lift
+    // re-seed never reads a table or a site block — the lifted write
+    // target is per INSTANCE (one state word), so neither per-slot
+    // nor per-call-site memory can represent it.
+    let sel_state = if has_guard || has_arm_lift {
         match cx.claim_state_word() {
             Some(off) => {
                 let sp = cx.state_ptr();
-                Some(cx.b.ins().iadd_imm(sp, off as i64))
+                Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
             }
-            None if !has_arm_lift => cx.slot_select_word(sel.spec.id),
+            None if !has_arm_lift => match cx.slot_select_word(sel.spec.id) {
+                Some(w) => Some(w),
+                // Site words are per CALL SITE, not per slot: a
+                // loop-context select without a table entry must NOT
+                // claim one (it would alias slots) — fall back to the
+                // unrefined guard term instead.
+                None if cx.ctx.loop_depth.get() == 0 => cx.claim_site_word().map(|off| {
+                    let base = cx.site_ptr();
+                    let addr = cx.b.ins().iadd_imm(base, off as i64);
+                    SelWord::Guarded { base, addr }
+                }),
+                None => None,
+            },
             None => None,
         }
     } else {
         None
     };
-    if has_arm_lift && sel_state_addr.is_none() {
+    if has_arm_lift && sel_state.is_none() {
         return Err(anyhow!(
             "emit_clif: select arm holds a lifted connect target but no \
              per-instance state word is available here — the arm-wake \
@@ -6991,7 +7271,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 merge,
                 scrut_disc,
                 guard_stale,
-                sel_state_addr.map(|addr| (addr, idx)),
+                sel_state.map(|w| (w, idx)),
             )
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
@@ -7912,7 +8192,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge: Block,
     scrut_disc: ClifValue,
     guard_stale: Option<ClifValue>,
-    sel_state: Option<(ClifValue, usize)>,
+    sel_state: Option<(SelWord, usize)>,
 ) -> Result<()> {
     use NodeView;
     let body_frozen =
@@ -7934,7 +8214,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     // is skipped for a TAINTED scrutinee: the arm is taken
     // structurally but the node-walk made no selection.
     let base_init = cx.init_flag();
-    let sel_changed = sel_state.map(|(addr, idx)| {
+    let record = |cx: &mut BodyCx, addr: ClifValue, idx: usize| {
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
         let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
@@ -7945,6 +8225,34 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         let woke = cx.b.ins().uextend(types::I64, woke);
         let eff_init = cx.b.ins().bor(base_init, woke);
         (changed, eff_init)
+    };
+    let sel_changed = sel_state.map(|(word, idx)| match word {
+        SelWord::Sure(addr) => record(cx, addr, idx),
+        // A site-block word: 0 base = a recursive back-edge's fresh
+        // transient activation — degrade to the no-memory semantics
+        // (unrefined guard term: changed, no forced arm init).
+        SelWord::Guarded { base, addr } => {
+            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+            let mem_bl = cx.b.create_block();
+            let nomem_bl = cx.b.create_block();
+            let merge = cx.b.create_block();
+            cx.b.append_block_param(merge, types::I8); // changed
+            cx.b.append_block_param(merge, types::I64); // eff_init
+            cx.b.ins().brif(has, mem_bl, &[], nomem_bl, &[]);
+            cx.b.switch_to_block(mem_bl);
+            cx.b.seal_block(mem_bl);
+            let (changed, eff_init) = record(cx, addr, idx);
+            cx.b.ins()
+                .jump(merge, &[BlockArg::Value(changed), BlockArg::Value(eff_init)]);
+            cx.b.switch_to_block(nomem_bl);
+            cx.b.seal_block(nomem_bl);
+            let t = cx.b.ins().iconst(types::I8, 1);
+            cx.b.ins().jump(merge, &[BlockArg::Value(t), BlockArg::Value(base_init)]);
+            cx.b.switch_to_block(merge);
+            cx.b.seal_block(merge);
+            let params = cx.b.block_params(merge);
+            (params[0], params[1])
+        }
     });
     let prev_override = match sel_changed {
         Some((_, eff_init)) => cx.ctx.init_override.replace(Some(eff_init)),
@@ -8267,6 +8575,180 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// that read it, exactly like a node-walk callsite whose output didn't
 /// fire. Genuine aborts (depth trip, interrupt, async pend) still ride
 /// `DYNCALL_PENDING` and bottom the whole caller kernel.
+/// The PER-CALL-SITE state block argument for a cross-kernel call
+/// (wire slot 2): storage for the callee's instance memory (select
+/// selection memory, loop-table anchors), owned by THIS caller and
+/// sized by the callee's recorded [`SiteLayout`]. Four shapes:
+///
+/// - Callee not yet defined (recursive back-edge — self-calls,
+///   mutual-recursion cycles) or claims nothing → `0`; the callee's
+///   null-guards degrade to the no-memory semantics, which for a
+///   single-shot transient activation is exactly the node-walk's
+///   fresh per-activation instance.
+/// - Root call site → a contiguous run of words in this body's own
+///   space (instance words in a parent — the callee's anchors
+///   translate into `slot_table_words` so the existing Drop frees its
+///   chains; site words in a callee, base null-guarded).
+/// - In-loop call site → one block per slot coordinate: the leaf of
+///   an owning chain over ALL open frames, `words` stride per slot —
+///   the node-walk twin of each slot's CallSite owning its own Apply.
+///   Plain leaf when the callee has no anchors; a
+///   [`kernel_abi::SiteLeaf`]-described block leaf otherwise (the
+///   resize helper and Drop free through it, recursively).
+fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> {
+    let key = kernel_abi::kernel_key(&info.kernel);
+    let layout = match cx.callee_site_layout(key) {
+        None => return Ok(cx.b.ins().iconst(types::I64, 0)),
+        Some(l) => l.clone(),
+    };
+    if layout.words == 0 {
+        return Ok(cx.b.ins().iconst(types::I64, 0));
+    }
+    if cx.ctx.loop_depth.get() == 0 {
+        if let Some(first) = cx.claim_state_word() {
+            for _ in 1..layout.words {
+                cx.claim_state_word()
+                    .expect("contiguous instance claims can't fail mid-run");
+            }
+            let base_idx = (first / 8) as u32;
+            for a in layout.anchors.iter() {
+                cx.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+                    rel: base_idx + a.rel,
+                    own_levels: a.own_levels,
+                    leaf: a.leaf.clone(),
+                });
+            }
+            let sp = cx.state_ptr();
+            return Ok(cx.b.ins().iadd_imm(sp, first as i64));
+        }
+        if let Some(first) = cx.claim_site_word() {
+            for _ in 1..layout.words {
+                cx.claim_site_word().expect("contiguous site claims can't fail mid-run");
+            }
+            let base_idx = (first / 8) as u32;
+            for a in layout.anchors.iter() {
+                cx.ctx.site_anchors.borrow_mut().push(kernel_abi::SiteAnchor {
+                    rel: base_idx + a.rel,
+                    own_levels: a.own_levels,
+                    leaf: a.leaf.clone(),
+                });
+            }
+            // Our own block may be 0 (a back-edge activation of THIS
+            // callee) — forward 0, not a garbage offset.
+            let base = cx.site_ptr();
+            let addr = cx.b.ins().iadd_imm(base, first as i64);
+            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+            let zero = cx.b.ins().iconst(types::I64, 0);
+            return Ok(cx.b.ins().select(has, addr, zero));
+        }
+        return Ok(cx.b.ins().iconst(types::I64, 0));
+    }
+    // In-loop call site. The chain runs per innermost iteration (this
+    // IS the loop body) — the ensures are idempotent after the first.
+    let frames: Vec<(ClifValue, ClifValue, Variable)> = {
+        let fs = cx.ctx.slot_tables.borrow();
+        debug_assert_eq!(
+            fs.len(),
+            cx.ctx.loop_depth.get() as usize,
+            "slot-table frames out of sync with loop depth"
+        );
+        fs.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
+    };
+    let n_dirs = frames.len() - 1;
+    let (dirs, leaf_frame) = (&frames[..n_dirs], frames[n_dirs]);
+    let leaf_rt = if layout.anchors.is_empty() {
+        None
+    } else {
+        let l = std::sync::Arc::new(kernel_abi::SiteLeaf {
+            stride: layout.words,
+            anchors: layout.anchors.clone(),
+        });
+        cx.ctx.lazy_site_leaves.borrow_mut().push(l.clone());
+        Some(l)
+    };
+    let anchor = match cx.claim_state_word_loop_invariant() {
+        Some(off) => {
+            cx.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+                rel: (off / 8) as u32,
+                own_levels: n_dirs as u32,
+                leaf: leaf_rt.clone(),
+            });
+            let sp = cx.state_ptr();
+            SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
+        }
+        None => match cx.claim_site_anchor(n_dirs as u32, leaf_rt.clone()) {
+            Some(off) => {
+                let base = cx.site_ptr();
+                let addr = cx.b.ins().iadd_imm(base, off as i64);
+                SelWord::Guarded { base, addr }
+            }
+            None => return Ok(cx.b.ins().iconst(types::I64, 0)),
+        },
+    };
+    let emit_chain = |cx: &mut BodyCx, word_addr: ClifValue| -> Result<ClifValue> {
+        let leaf_ptr = match &leaf_rt {
+            None => cx.b.ins().iconst(types::I64, 0),
+            Some(l) => {
+                cx.b.ins()
+                    .iconst(types::I64, std::sync::Arc::as_ptr(l) as *const u8 as i64)
+            }
+        };
+        let table_helper = cx.helper("graphix_slot_state_table")?;
+        let mut word_addr = word_addr;
+        for (k, (flen, fdisc, fidx)) in dirs.iter().enumerate() {
+            let fvalid = emit_untainted_i64(cx.b, *fdisc);
+            let own = cx.b.ins().iconst(types::I64, (n_dirs - k) as i64);
+            let call =
+                cx.b.ins().call(table_helper, &[word_addr, *flen, fvalid, own, leaf_ptr]);
+            let dir = cx.b.inst_results(call)[0];
+            let i = cx.b.use_var(*fidx);
+            let o = cx.b.ins().ishl_imm(i, 3);
+            word_addr = cx.b.ins().iadd(dir, o);
+        }
+        let (llen, ldisc, lidx) = leaf_frame;
+        let lvalid = emit_untainted_i64(cx.b, ldisc);
+        let table = match &leaf_rt {
+            // No in-block anchors: a plain table of slots*stride words.
+            None => {
+                let stride = cx.b.ins().iconst(types::I64, layout.words as i64);
+                let words = cx.b.ins().imul(llen, stride);
+                let own0 = cx.b.ins().iconst(types::I64, 0);
+                let call =
+                    cx.b.ins()
+                        .call(table_helper, &[word_addr, words, lvalid, own0, leaf_ptr]);
+                cx.b.inst_results(call)[0]
+            }
+            Some(_) => {
+                let blocks_helper = cx.helper("graphix_slot_state_blocks")?;
+                let call =
+                    cx.b.ins().call(blocks_helper, &[word_addr, llen, lvalid, leaf_ptr]);
+                cx.b.inst_results(call)[0]
+            }
+        };
+        let i = cx.b.use_var(lidx);
+        let stride_bytes = cx.b.ins().imul_imm(i, (layout.words as i64) * 8);
+        Ok(cx.b.ins().iadd(table, stride_bytes))
+    };
+    match anchor {
+        SelWord::Sure(word_addr) => emit_chain(cx, word_addr),
+        SelWord::Guarded { base, addr } => {
+            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+            let chain_bl = cx.b.create_block();
+            let merge = cx.b.create_block();
+            cx.b.append_block_param(merge, types::I64);
+            let zero = cx.b.ins().iconst(types::I64, 0);
+            cx.b.ins().brif(has, chain_bl, &[], merge, &[BlockArg::Value(zero)]);
+            cx.b.switch_to_block(chain_bl);
+            cx.b.seal_block(chain_bl);
+            let block = emit_chain(cx, addr)?;
+            cx.b.ins().jump(merge, &[BlockArg::Value(block)]);
+            cx.b.switch_to_block(merge);
+            cx.b.seal_block(merge);
+            Ok(cx.b.block_params(merge)[0])
+        }
+    }
+}
+
 pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
@@ -8463,6 +8945,10 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     };
     clif_args.push(callee_init);
     clif_args.push(cx.state_ptr());
+    // Wire slot 2: the callee's per-call-site state block, from THIS
+    // caller's storage (see `emit_site_block`).
+    let site_block = emit_site_block(cx, info)?;
+    clif_args.push(site_block);
     // Marshal in canonical `abi_params` order — scalars, then composites
     // (array/tuple/struct), then value-shape (variant/nullable) — two
     // words (disc, payload) each. An Owned composite/value Arg is dropped

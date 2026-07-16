@@ -228,46 +228,62 @@ already honest (the jul12a/jul12f trigger-derived tags); this aligns
 the wake/init-view half and dissolves the interp-vs-kernel frame
 seam.
 
-## Per-call-site state blocks (PROPOSED — the third identity coordinate)
+## Per-call-site state blocks (BUILT 2026-07-16 — the third identity coordinate)
 
 A select's node-walk instance identity has three coordinates: region
 instance (static word), loop ordinals (slot-table chains), and CALL
 SITES — the interp gives every CallSite its own Apply instance, hence
 its own select instances, but one compiled callee body is shared
-across call sites, so `state_enabled == false` refuses all claims
-there (selects in callee bodies keep the unrefined guard term;
-`emit_select_node_tail` refuses selection memory outright). The fix
-is the sub-buffer composition sketched in v1:
+across call sites. As built:
 
-- **The callee declares its layout.** A callee body claims words from
-  a CALLEE-BLOCK channel (a local counter, mirroring the instance
-  channel): total word count + the anchor list `(rel_off,
-  own_levels)` for any loop-select chains inside the callee, recorded
-  on its `WrappedKernel`/cache entry. Requires callees to be DEFINED
-  before parents (verify/reorder `to_define`) or the count derived at
-  discovery by prewalk.
-- **The caller supplies the storage.** One added pointer param on
-  every kernel signature (uniform, like the ctx wire slots):
-  `site_state: *mut u64`, null when unused. A root call site claims N
-  static words; a call site inside a loop generalizes the slot chain
-  with LEAF STRIDE N (table len = slots × N, address = table +
-  (i×N)·8) so each slot's callee instance gets its own block —
-  matching the interp, where each loop slot's CallSite owns its own
-  Apply. Self TAIL calls reuse the incoming pointer — the block
-  persists across rebind-jumps and across cycles, exactly the ruled
-  interp semantics now that `selected` survives frame resets. Self
-  NON-tail (native-recursive) calls pass null: interp transient
-  activations are fresh per call, and a single evaluation has no
-  cross-invocation memory to keep.
-- **Drop composes.** The region `Kernel` owns every block (static
-  words or chain leaves); it applies each callee's registered
-  `(rel_off, own_levels)` frees per block instance —
-  `WrappedKernel` aggregates per-call-site (anchor, callee-layout)
-  records the same way `dyn_fn_params` aggregates the region-wide
-  DynCall table.
-- **What it unlocks:** guarded-select selection memory in callee
-  bodies and in tail-recursive bodies (the tail emitter's refusal
-  lifts — compare-and-record against the block word), and eventually
-  per-call-site arm-lift identity. It is the last residual; after it,
-  the identity algebra is closed and any new emission context must
-  only say which coordinates it adds.
+- **Wire slot 2** (`CTX_WIRE_SLOTS` 2→3): the per-call-site state
+  block pointer, uniform on every kernel signature. The wrapper packs
+  0 for region parents; `emit_lambda_call_node` passes the block
+  `emit_site_block` allocated from the CALLER's storage.
+- **The callee declares its layout.** A callee body (`site_enabled =
+  !allow_state`) claims from the site channel: selects at its root
+  level take words directly (`claim_site_word` → `SelWord::Guarded`),
+  and its loop-select chains ANCHOR in the block
+  (`claim_site_anchor`). The final count + anchor list is the
+  kernel's `SiteLayout`, recorded at definition — `to_define` is
+  defined in REVERSE (deepest callees first, parent last) so callers
+  read their callees' layouts; a still-missing layout IS the
+  recursive back-edge discriminator (self-calls, mutual cycles) and
+  the call passes 0.
+- **The caller supplies the storage.** Root call site: a contiguous
+  run in the caller's own space — instance words in a parent (the
+  callee's anchors translate into `slot_table_words`, so the existing
+  Drop frees its chains), site words in a callee (base null-guarded,
+  anchors translate into ITS layout — the recursion composes through
+  callee-of-callee). In-loop call site: one block per slot coordinate
+  — the leaf of an owning chain over ALL open frames with `words`
+  STRIDE per slot; a plain leaf when the callee has no anchors, else
+  a `SiteLeaf`-described block leaf (`graphix_slot_state_blocks`)
+  whose in-block anchors the resize helper and `free_slot_chain` walk
+  RECURSIVELY (`kernel_abi::SiteAnchor`/`SiteLeaf`; baked leaf
+  pointers live in the kernel cache's `_site_leaves` arena) — the
+  deep composition (callee-with-loop-select called from inside a
+  loop) frees exactly.
+- **Null-guards everywhere the base can be 0** (recursive back-edges:
+  fresh transient activation ≡ no memory for a single-shot
+  activation): a guarded select branches to the unrefined-guard/no-
+  init-view semantics; a callee loop's chain branches around the
+  ensure calls and hands its selects a 0 table.
+- **The tail emitter needed NOTHING**: tail-position arms terminate
+  individually and BOTH backends derive the loop-result tag from the
+  ENTRY (formal deliveries + captured inputs — lambda.rs / the kernel
+  return seam), which subsumes guard-feeder firing and selection
+  changes there; value-position selects inside recursive bodies go
+  through `emit_select_node` and pick up the site channel like any
+  callee select. Its arm-lift refusal stays (lift identity is per
+  instance).
+
+The identity algebra is CLOSED: any select in fused code is (region)
+× (loop-ordinal chain) × (call-site chain), each coordinate has its
+storage, and a new emission context must only say which coordinates
+it adds. The remaining select-ADJACENT item is arm-lifted connects in
+loops/callees — a fusion-coverage gap (they de-fuse; the node-walk is
+canonical and correct), not a firing residual. The shared first-call-
+ever word at in-loop call sites was AUDITED (late-created slot,
+const-bodied callee): traces agree — the resize firing path covers
+the new slot's delivery.

@@ -1501,6 +1501,33 @@ pub struct KernelSig {
     pub has_tail_loop: bool,
 }
 
+/// One registered owner of a per-slot state CHAIN (see
+/// `BodyCx::open_slot_tables` / `emit_site_block`): the word at `rel`
+/// (an absolute index into the instance state buffer, or a
+/// block-relative index inside a call-site block / [`SiteLeaf`]) owns
+/// a boxed `Vec<u64>` with `own_levels` directory levels below it;
+/// `leaf` describes the chain's BOTTOM table when its entries are
+/// per-slot call-site BLOCKS rather than plain selection words. The
+/// runtime free (`emit_helpers::free_slot_chain`) and the resize
+/// helpers walk exactly this structure, recursively.
+#[derive(Debug, Clone)]
+pub struct SiteAnchor {
+    pub rel: u32,
+    pub own_levels: u32,
+    pub leaf: Option<std::sync::Arc<SiteLeaf>>,
+}
+
+/// A chain leaf whose entries are per-slot CALL-SITE BLOCKS: `stride`
+/// words per slot ordinal, `anchors` naming the in-block words that
+/// own further chains (a callee's own loop-select tables and
+/// sub-call-site blocks — the recursion that lets
+/// callee-in-loop-in-callee compositions free exactly).
+#[derive(Debug, Clone)]
+pub struct SiteLeaf {
+    pub stride: u32,
+    pub anchors: std::sync::Arc<[SiteAnchor]>,
+}
+
 /// The number of leading `u64` wire slots reserved before the parameter
 /// list, carrying per-kernel cycle context. Every kernel — even a
 /// zero-param constant-only one — carries them, so the ABI is uniform.
@@ -1522,7 +1549,21 @@ pub struct KernelSig {
 /// calls forward the caller's pointer for signature uniformity, but
 /// only the region parent's ROOT body may claim words (a callee is
 /// reached from arbitrarily many call sites, whose claims would alias).
-pub(crate) const CTX_WIRE_SLOTS: usize = 2;
+///
+/// Slot 2 is the PER-CALL-SITE state block pointer (`*mut u64`): a
+/// CALLEE body's cross-invocation memory (select selection memory,
+/// loop slot-table anchors), sized by the callee's own claims
+/// (`site_layout`) and supplied by each CALLER from its own storage —
+/// static instance words at a root call site, per-slot chain-leaf
+/// blocks at an in-loop call site — so one compiled body gets
+/// per-call-site instance state, matching the node-walk's
+/// per-CallSite Apply instances (`design/kernel_instance_state.md`,
+/// "Per-call-site state blocks"). `0` for region parents (the wrapper
+/// packs it), for callees that claim nothing, and on RECURSIVE
+/// back-edges (a fresh transient activation in the node-walk; for a
+/// single-shot activation fresh memory ≡ no memory) — every
+/// site-block consumer null-guards its base.
+pub(crate) const CTX_WIRE_SLOTS: usize = 3;
 
 impl KernelSig {
     /// Iterate the kernel's parameters in canonical kind-grouped ABI

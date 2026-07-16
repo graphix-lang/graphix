@@ -753,9 +753,13 @@ impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
         // select's anchor owns `own_levels` directory levels, one per
         // enclosing loop). Semantic state: neither `sleep` nor
         // `reset_replay` touches these words, only instance death does.
-        for (w, own_levels) in self.jit.slot_table_words.iter() {
-            let p = std::mem::replace(&mut self.state[*w as usize], 0);
-            super::emit_helpers::free_slot_chain(p, *own_levels as u64);
+        for a in self.jit.slot_table_words.iter() {
+            let p = std::mem::replace(&mut self.state[a.rel as usize], 0);
+            super::emit_helpers::free_slot_chain(
+                p,
+                a.own_levels as u64,
+                a.leaf.as_deref(),
+            );
         }
     }
 }
@@ -1401,6 +1405,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         } else {
             self.state.as_mut_ptr() as u64
         });
+        // Slot 2: the per-call-site state block — a CALLEE-only channel
+        // (`CTX_WIRE_SLOTS`); a region parent has none.
+        slots.push(0);
         for (i, p) in k.params.iter().enumerate() {
             let disc = prim_to_value_disc(p.prim) as u64;
             let (disc, payload) = match param_opts[i].as_ref() {

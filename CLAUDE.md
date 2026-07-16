@@ -514,9 +514,17 @@ one directory level per enclosing loop, a leaf word per slot
 (`graphix_slot_state_table` + `own_levels`; MapQ prefix retention applied per
 level, ragged inner lengths fine; chains freed by `Kernel::drop` via
 `WrappedKernel::slot_table_words`) — `design/kernel_instance_state.md`
-"Per-slot state tables". Remaining residual (unrefined guard term, duplicate
-fire only, never a wrong value): guarded selects in CALLEE bodies — fixing it
-is the per-callsite sub-buffer composition (cross-kernel ABI touch).
+"Per-slot state tables". CALLEE bodies have PER-CALL-SITE state blocks
+(2026-07-16, wire slot 2 / `CTX_WIRE_SLOTS` 3): the callee's claims are its
+`SiteLayout` (callees define before parents; a missing layout = recursive
+back-edge, pass 0 + null-guards = fresh transient semantics); callers allocate
+from their own storage (root: contiguous words with anchor translation;
+in-loop: chain leaves with `words` stride, `SiteAnchor`/`SiteLeaf` recursive
+free for deep compositions). The select identity algebra is CLOSED — (region)
+× (loop chain) × (call chain). The tail emitter needs no selection memory
+(entry-derived seam tags on both backends). Remaining select-adjacent item:
+arm-lifted connects in loops/callees still de-fuse (coverage, not
+correctness).
 
 **Testing is differential:**
 

@@ -910,6 +910,135 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
+// PER-CALL-SITE selection memory (design/kernel_instance_state.md
+// "Per-call-site state blocks"): a guarded select in a CALLEE body
+// claims words from the site block the caller supplies (wire slot 2),
+// so the node-walk's per-CallSite Apply instance memory is exact —
+// a guard-only event with an unchanged selection is quiet.
+const GUARDED_SELECT_IN_CALLEE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let f = |k| select k { 0 if m == 0 => 1, _ => 2 };
+  let c = count(f(0));
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(guarded_select_in_callee, GUARDED_SELECT_IN_CALLEE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Per-call-site INDEPENDENCE: one compiled callee, two call sites
+// whose selects hold DIFFERENT stable selections while the guard
+// feeder fires every cycle — quiet after init. Sharing one word
+// across the sites would thrash.
+const GUARDED_SELECT_CALLEE_TWO_SITES: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let f = |k| select 0 { 0 if (x - x + k) % 2 == 0 => 1, _ => 2 };
+  let a = f(0);
+  let b = f(1);
+  let c = count(a) * 10 + count(b);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_callee_two_sites,
+    GUARDED_SELECT_CALLEE_TWO_SITES,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(21))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// A callee called INSIDE a loop gets one block per slot (the chain
+// leaf carries `words` stride): the two slots' selects hold different
+// stable selections and stay quiet.
+const GUARDED_SELECT_CALLEE_IN_LOOP: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let f = |k| select 0 { 0 if (x - x + k) % 2 == 0 => 1, _ => 2 };
+  let a = array::map([0, 1], |i| f(i));
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_callee_in_loop,
+    GUARDED_SELECT_CALLEE_IN_LOOP,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// A callee whose OWN body has a loop-select (its chain anchors in the
+// site block) called at root: the anchors translate into the caller's
+// registered words, so the chain lives in caller storage and Drop
+// frees it.
+const GUARDED_SELECT_CALLEE_INTERNAL_LOOP: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let f = |n| array::map([n], |i| select i { 0 if m == 0 => 1, _ => 2 });
+  let c = count(f(0));
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_callee_internal_loop,
+    GUARDED_SELECT_CALLEE_INTERNAL_LOOP,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// The deep composition: a callee with an internal loop-select, called
+// from INSIDE a loop — per-slot blocks whose in-block anchors own the
+// callee's chains (`SiteLeaf`; the blocks resize helper and Kernel
+// drop free through it recursively).
+const GUARDED_SELECT_CALLEE_LOOP_IN_LOOP: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let f = |n| array::map([n], |i| select 0 { 0 if m == 0 => 1, _ => 2 });
+  let a = array::map([0, 1], |j| f(j));
+  let c = count(a);
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_callee_loop_in_loop,
+    GUARDED_SELECT_CALLEE_LOOP_IN_LOOP,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// A guarded select in value position inside a TAIL-RECURSIVE callee:
+// the entry call supplies the block, tail jumps reuse it (selection
+// persists across iterations and cycles — the ruled reset_replay
+// semantics), and the recursive back-edge shape (null block) never
+// makes a wrong value.
+const GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let rec f = |n| select n {
+    0 => select 0 { 0 if m == 0 => 1, _ => 2 },
+    _ => f(n - 1)
+  };
+  let c = count(f(3));
+  select count(x) { 4 => c, _ => never() }
+}
+"#;
+
+run!(
+    guarded_select_in_tail_recursive_callee,
+    GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
 // Arm-wake re-seed (soak jul08g fuzz divergence 6): the node-walk
 // updates a newly-taken arm with `event.init = true` (node/select.rs),
 // so an arm-local lifted connect target RE-SEEDS on every re-entry —
