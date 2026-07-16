@@ -595,7 +595,7 @@ fn compile_kernel_with_callees_impl(
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     let mut to_define: Vec<(std::sync::Arc<KernelSig>, u32, u32)> = Vec::new();
-    let mut defined = 0usize;
+    let mut defined: Vec<(usize, u32, u32)> = Vec::new();
     let r = compile_kernel_with_callees_inner(
         jit,
         kernel,
@@ -614,20 +614,24 @@ fn compile_kernel_with_callees_impl(
         // whose body was never defined. It would also pin the kernel
         // `Arc` (and its declared symbol) forever.
         //
-        // Entries whose bodies were never defined (`i >= defined`) also
-        // get a TRAP STUB: the module is shared across every fusion
-        // attempt in this ExecCtx, and cranelift's next
-        // `finalize_definitions` — from any LATER successful compile —
-        // panics on a declared-but-undefined Local symbol ("can't
-        // resolve symbol …"), killing the runtime. An already-defined
-        // sibling body from this abandoned attempt may carry a call
-        // relocation to the undefined symbol, so the stub is
-        // load-bearing even though nothing ever calls it (the region
-        // wasn't spliced and the cache entry is gone).
-        for (i, (k, base, layout)) in to_define.iter().enumerate() {
+        // Entries whose bodies were never defined (not in `defined` —
+        // recorded per-key, so this can't drift when the phase-2
+        // definition order changes; the count-plus-forward-order
+        // inference it replaces broke silently when definition
+        // reversed for SiteLayout availability) also get a TRAP STUB:
+        // the module is shared across every fusion attempt in this
+        // ExecCtx, and cranelift's next `finalize_definitions` — from
+        // any LATER successful compile — panics on a declared-but-
+        // undefined Local symbol ("can't resolve symbol …"), killing
+        // the runtime. An already-defined sibling body from this
+        // abandoned attempt may carry a call relocation to the
+        // undefined symbol, so the stub is load-bearing even though
+        // nothing ever calls it (the region wasn't spliced and the
+        // cache entry is gone).
+        for (k, base, layout) in to_define.iter() {
             let key = (std::sync::Arc::as_ptr(k) as usize, *base, *layout);
             if let Some(entry) = jit.by_kernel.remove(&key)
-                && i >= defined
+                && !defined.contains(&key)
                 && let Err(se) =
                     define_stub_body(&mut jit.ctx, entry.func_id, &entry.signature)
             {
@@ -679,7 +683,7 @@ fn compile_kernel_with_callees_inner(
     callees: &[(usize, std::sync::Arc<KernelSig>)],
     emitters: &BTreeMap<usize, &dyn BodyEmitter>,
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
-    defined: &mut usize,
+    defined: &mut Vec<(usize, u32, u32)>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     // Phase 1 — declare every kernel in the closure (parent + all
@@ -789,7 +793,7 @@ fn compile_kernel_with_callees_inner(
             .collect();
         let (strings, values, state_words, replay_words, slot_table_words, site, leaves) =
             define_kernel_body(&mut jit.ctx, k, &funcids, body, &callee_layouts)?;
-        *defined += 1;
+        defined.push((ptr, *base, *layout));
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base, *layout)) {
             cached._strings = strings;
             cached._values = values;
