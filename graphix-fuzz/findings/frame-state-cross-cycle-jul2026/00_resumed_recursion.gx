@@ -1,0 +1,13 @@
+// bisect: interp 6 vs jit 106 on cycle 2 (jul16a fuzz class D). The
+// recursion's innermost frame pass left the body select's `selected`
+// on the base arm; when the connect delivered the new acc seed the
+// next cycle (the scrutinee quiet), the interp fired the RETAINED arm
+// with the fresh acc — observably resuming mid-recursion, where the
+// kernel re-seeds formals from the entry args and recomputes 106.
+// Eric's ruling 2026-07-16: for a tail loop, frame state cannot
+// survive across cycles — the user's model is "each time n or acc
+// fires, the call spits out the sum". Fixed by running the first pass
+// of a genuinely-fired dispatch FRAMED (seeded private map + forced
+// init — a full re-derivation from the current formals) whenever the
+// previous dispatch actually looped.
+{let rec sum_to = |n, acc| select n {i64:0 => acc, _ => sum_to(i64:0, acc + n)}; sum_to(i64:100, {let s = i64:0; s <- array::fold([i64:1, i64:2, i64:3], i64:0, |acc, e| acc + e); s})}

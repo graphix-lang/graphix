@@ -152,12 +152,43 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// body result's two-channel tag across the clean-`Value` Apply
     /// boundary.
     last_out: Tag,
+    /// `true` iff the previous dispatch's tail loop actually RE-ENTERED
+    /// (jumped at least once). Its innermost frame left the body's node
+    /// state mid-recursion (a select's `selected`, operator operand
+    /// caches — the LAST iteration's values); the next genuinely-fired
+    /// dispatch must not incrementally extend that state (Eric's ruling
+    /// 2026-07-16: for a tail loop, frame state cannot survive across
+    /// cycles — the user's model is a fresh call over the current
+    /// formals, and the kernel, whose formals re-seed from the entry
+    /// every invocation, is the reference). Read in `update` to run the
+    /// first pass framed.
+    prev_looped: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum LambdaDispatch {
     Graphix,
     Collection,
+}
+
+/// Build a framed pass's external seeds — the kernel's params: an
+/// external that FIRED this cycle keeps its real entry; a quiet one is
+/// seeded STALE from the runtime cache (the value channel).
+fn seed_externals<R: Rt, E: UserEvent>(
+    body: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+    event: &Event<E>,
+    seeds: &mut IntMap<BindId, TagValue>,
+) {
+    let mut refs = Refs::default();
+    body.refs(&mut refs);
+    refs.with_external_refs(|id| {
+        if let Some(tv) = event.variables.get(&id) {
+            seeds.insert(id, tv.clone());
+        } else if let Some(v) = ctx.rt.cached().get(&id) {
+            seeds.insert(id, TagValue::stale(v.clone()));
+        }
+    });
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -415,10 +446,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // what retires the tail-arg stale-cache class: a jump whose
             // arg expression bottoms no longer dispatches with the
             // previous pass's published value. The first pass stays an
-            // ordinary poll on the real event (#8, soak jul04).
+            // ordinary poll on the real event (#8, soak jul04) — UNLESS
+            // the previous dispatch actually looped: its innermost frame
+            // left the body's node state mid-recursion, and an ordinary
+            // incremental pass would observably RESUME the recursion
+            // (jul16a fuzz class D: only the acc seed refires, the
+            // scrutinee is quiet, and the select fires its retained base
+            // arm with the fresh acc). Frame state cannot survive across
+            // cycles (Eric's ruling 2026-07-16) — run that first pass
+            // framed too: same seeded private map + forced init, a full
+            // re-derivation from the current formals, which is what the
+            // kernel does on every invocation. Quiet polls stay ordinary
+            // passes: they read the leftover state but nothing fires, so
+            // nothing escapes (#8 stays fixed).
             let mut seeds: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
             let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
             let mut reentered = false;
+            let framed = self.prev_looped && !event.init && entry_fired;
+            let mut seeded = false;
+            if framed {
+                seed_externals(&self.body, ctx, event, &mut seeds);
+                seeded = true;
+                self.body.reset_replay(ctx);
+                frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
+            }
             let res = loop {
                 // Cooperative interrupt: a wedged tail loop aborts to bottom
                 // when `interrupt()`/`abort()` is requested (`do_cycle` clears
@@ -426,7 +477,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 if ctx.interrupted() {
                     break None;
                 }
-                let res = if !reentered {
+                let res = if !reentered && !framed {
                     self.body.update(ctx, event)
                 } else {
                     mem::swap(&mut event.variables, &mut *frame);
@@ -445,21 +496,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 if !mine {
                     break res;
                 }
-                if !reentered {
-                    reentered = true;
-                    // Seeds are the kernel's params: an external that
-                    // FIRED this cycle keeps its real entry; a quiet
-                    // one is seeded STALE from the runtime cache (the
-                    // value channel).
-                    let mut refs = Refs::default();
-                    self.body.refs(&mut refs);
-                    refs.with_external_refs(|id| {
-                        if let Some(tv) = event.variables.get(&id) {
-                            seeds.insert(id, tv.clone());
-                        } else if let Some(v) = ctx.rt.cached().get(&id) {
-                            seeds.insert(id, TagValue::stale(v.clone()));
-                        }
-                    });
+                reentered = true;
+                if !seeded {
+                    seeded = true;
+                    seed_externals(&self.body, ctx, event, &mut seeds);
                 }
                 let p = ctx.pending_tail_call.take().unwrap();
                 self.body.reset_replay(ctx);
@@ -480,6 +520,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     }
                 }
             };
+            self.prev_looped = reentered;
             if reentered {
                 for (id, v) in saved.drain(..) {
                     match v {
@@ -492,18 +533,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     }
                 }
             }
-            // Result-tag derivation for a loop that actually RE-ENTERED:
-            // every re-entered pass runs under a forced init view (body
-            // constants must re-fire per jump), which poisons the body's
-            // own tag FIRED regardless of what triggered the call.
-            // Derive from the ENTRY instead — the kernel's
-            // rebind-and-jump derives its result disc from the call
-            // site's input discs: fired iff a formal delivery triggered,
-            // the dispatch ran under a real init view, or a captured
-            // input triggered this cycle. A first pass that never jumped
-            // ran on the real event and keeps its organic tag.
+            // Result-tag derivation for a loop that actually RE-ENTERED
+            // (or ran its first pass framed): every framed pass runs
+            // under a forced init view (body constants must re-fire per
+            // jump), which poisons the body's own tag FIRED regardless
+            // of what triggered the call. Derive from the ENTRY instead
+            // — the kernel's rebind-and-jump derives its result disc
+            // from the call site's input discs: fired iff a formal
+            // delivery triggered, the dispatch ran under a real init
+            // view, or a captured input triggered this cycle. A first
+            // pass that never jumped and wasn't framed ran on the real
+            // event and keeps its organic tag.
             match res {
-                Some(tv) if reentered && !tv.is_tainted() => {
+                Some(tv) if (reentered || framed) && !tv.is_tainted() => {
                     let entry = entry_fired || {
                         let mut refs = Refs::default();
                         self.body.refs(&mut refs);
@@ -753,6 +795,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self_recursive: AtomicBool::new(false),
             self_bind: Mutex::new(None),
             last_out: Tag::FIRED,
+            prev_looped: false,
         })
     }
 }
