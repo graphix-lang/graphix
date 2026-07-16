@@ -1,0 +1,13 @@
+// PENDING TRIAGE (found 2026-07-16 validating the 000000 fix; PRE-EXISTING —
+// reproduces on the jul16d binary, before any of that day's kernel work).
+// A tail loop whose jump arg bottoms on ALTERNATE iterations:
+//   interp: [0:i64:1 1:i64:6]    jit: [0:i64:3 1:i64:8]
+// The jit matches the ruled semantics (a bottomed arg rides the previous
+// formal; a recovering iteration recomputes from the current formals:
+// n=6 ride 0, n=5 -> 1, n=4 ride, n=3 -> 2, n=2 ride, n=1 -> 3). The
+// interp's acc STICKS after the first recovery. Suspect: the tail stash
+// backfills the arg CHANNEL from rt.cached, but frame passes publish to
+// the private variables map, so the channel's cached entry goes stale
+// across frames. Class-B-adjacent, interp-side. NOT a regress pin (the
+// corpus gate requires agreement) — park here until fixed.
+{let s = i64:0; s <- once(i64:5); let f = |x: i64| -> i64 {let rec lp = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => lp(n - i64:1, acc + i64:1 / (n % i64:2))}; lp(i64:6, x)}; f(s)}

@@ -1453,6 +1453,8 @@ fn compile_into_function(
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
+        site_replay: std::cell::RefCell::new(Vec::new()),
+        site_replay_hdr: std::cell::Cell::new(None),
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
@@ -1558,6 +1560,8 @@ fn compile_into_function(
     let site_layout = SiteLayout {
         words: lower.site_next.get() as u32,
         anchors: lower.site_anchors.borrow().clone().into(),
+        replay: lower.site_replay.borrow().clone().into(),
+        replay_hdr: lower.site_replay_hdr.get().map(|h| (h / 8) as u32),
     };
     Ok((lower.state_next.get(), replay_words, slot_table_words, site_layout))
 }
@@ -1672,6 +1676,17 @@ impl KernelValues {
 pub(crate) struct SiteLayout {
     pub(crate) words: u32,
     pub(crate) anchors: std::sync::Arc<[kernel_abi::SiteAnchor]>,
+    /// REPLAY-KIND block words (rel word indices) — the callee's
+    /// interior-bottom taint caches. A caller that can honor the reset
+    /// contract (a region parent's root call site, whose
+    /// `Kernel::reset_replay` zeroes its registered words) translates
+    /// these into its own replay set AND stores 1 to `replay_hdr`,
+    /// activating the caches; every other caller leaves the header 0
+    /// and the caches stay inert. See [`LowerCtx::site_replay_hdr`].
+    pub(crate) replay: std::sync::Arc<[u32]>,
+    /// The block's honor header (rel word index) — `Some` iff `replay`
+    /// is non-empty.
+    pub(crate) replay_hdr: Option<u32>,
 }
 
 /// A selection-memory word's address, with its null-guard obligation.
@@ -1879,6 +1894,21 @@ pub(crate) struct LowerCtx<'a> {
     /// up its per-enclosing-slot prev-length word in the enclosing
     /// frame's chain ([`slot_state_sites`] keyed it by this id).
     collection_site: std::cell::Cell<Option<ExprId>>,
+    /// REPLAY-KIND site words claimed by this (callee) body — rel word
+    /// indices into its per-call-site block, recorded on the
+    /// [`SiteLayout`] so a caller that can honor the reset contract
+    /// registers them for zeroing ([`emit_site_block`]'s region root
+    /// path → the parent's `replay_words`). See
+    /// [`BodyCx::claim_site_word_replay`].
+    site_replay: std::cell::RefCell<Vec<u32>>,
+    /// The block's replay HONOR header word (rel word index), claimed
+    /// lazily with the first replay-kind site claim. The cache sites
+    /// set their `ok` flag FROM this word, so history only accumulates
+    /// when the caller stored 1 here — a caller that can't honor the
+    /// reset contract (a lambda-kernel parent, an in-loop per-slot
+    /// block, a tail-loop body) leaves it 0 and the cache is INERT
+    /// (today's taint-through behavior), never wrong.
+    site_replay_hdr: std::cell::Cell<Option<i32>>,
     /// Direct-path lazy interning arenas (see
     /// [`KernelStrings::lazy`]) — entries appended during emission via
     /// [`BodyCx::interned_str`] / [`BodyCx::interned_value`], harvested
@@ -2713,9 +2743,16 @@ fn taint_if(b: &mut FunctionBuilder, base: ClifValue, cond: ClifValue) -> ClifVa
 /// TAINTED disc with stored history the result becomes (cached value,
 /// scalar base | [`STALE`]) — didn't-fire-this-cycle, exactly the
 /// node-walk — while a genuine no-history taint passes through and
-/// gates at the output as before. Stateless fallback (scaffold loops,
-/// callee bodies): the unwrapped result — the pre-existing conflation,
-/// a documented residual.
+/// gates at the output as before. CALLEE bodies claim from the site
+/// channel instead (jul16a 000000: the callee refusal made a callee's
+/// `0 % 0` taint the whole result where the interp's operand cache
+/// rides the previous value): the two words live in the caller's
+/// per-call-site block, gated by the block's HONOR header —
+/// substitution only ever activates under a caller that registered
+/// the words for `reset_replay` zeroing (a region root call site).
+/// Stateless fallback (scaffold loops, unhonored callers): the
+/// unwrapped result — the pre-existing conflation, a documented
+/// residual.
 fn emit_scalar_taint_cache(
     cx: &mut BodyCx,
     prim: PrimType,
@@ -2726,31 +2763,80 @@ fn emit_scalar_taint_cache(
     // i's bottom inside an evaluation frame — the bridge stays a
     // strictly REACTIVE (cycle-to-cycle) behavior, like the node-walk
     // caches it mirrors.
-    let (Some(off_val), Some(off_ok)) =
+    if let (Some(off_val), Some(off_ok)) =
         (cx.claim_state_word_replay(), cx.claim_state_word_replay())
+    {
+        let sp = cx.state_ptr();
+        let one = cx.b.ins().iconst(types::I64, 1);
+        return emit_taint_cache_at(cx, prim, cv, sp, off_val, off_ok, one);
+    }
+    let (Some((off_val, hdr)), Some((off_ok, _))) =
+        (cx.claim_site_word_replay(), cx.claim_site_word_replay())
     else {
         return cv;
     };
-    let sp = cx.state_ptr();
+    // The site block base is 0 on a recursive back-edge — branch
+    // around the cache (the fresh-transient no-memory semantics).
+    let base = cx.site_ptr();
+    let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+    let mem_bl = cx.b.create_block();
+    let merge = cx.b.create_block();
+    cx.b.append_block_param(merge, types::I64);
+    cx.b.append_block_param(merge, types::I64);
+    cx.b.ins().brif(
+        has,
+        mem_bl,
+        &[],
+        merge,
+        &[BlockArg::Value(cv.disc), BlockArg::Value(cv.payload)],
+    );
+    cx.b.seal_block(mem_bl);
+    cx.b.switch_to_block(mem_bl);
+    // `ok` is set from the HONOR header instead of the constant 1: a
+    // caller that didn't store 1 there (it can't register the words
+    // for reset) keeps `ok` 0 forever and the cache never substitutes.
+    let honor = cx.b.ins().load(types::I64, MemFlags::trusted(), base, hdr);
+    let wrapped = emit_taint_cache_at(cx, prim, cv, base, off_val, off_ok, honor);
+    cx.b.ins()
+        .jump(merge, &[BlockArg::Value(wrapped.disc), BlockArg::Value(wrapped.payload)]);
+    cx.b.seal_block(merge);
+    cx.b.switch_to_block(merge);
+    let disc = cx.b.block_params(merge)[0];
+    let value = cx.b.block_params(merge)[1];
+    CompiledExpr::new(disc, value)
+}
+
+/// The taint-cache load/store/substitute body against two words at
+/// `base + off_val` / `base + off_ok`, with `ok_set` stored as the
+/// valid flag on an untainted compute (1 for state words; the honor
+/// header's value for site words).
+fn emit_taint_cache_at(
+    cx: &mut BodyCx,
+    prim: PrimType,
+    cv: CompiledExpr,
+    base: ClifValue,
+    off_val: i32,
+    off_ok: i32,
+    ok_set: ClifValue,
+) -> CompiledExpr {
     let tainted = is_tainted(cx.b, cv.disc);
     // Loads FIRST: `have` must reflect history from BEFORE this fire.
-    let cur_val = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off_val);
-    let cur_ok = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off_ok);
+    let cur_val = cx.b.ins().load(types::I64, MemFlags::trusted(), base, off_val);
+    let cur_ok = cx.b.ins().load(types::I64, MemFlags::trusted(), base, off_ok);
     // Branchless store: keep the old contents when tainted, else the
-    // fresh value + valid=1.
+    // fresh value + the valid flag.
     let widened = scalar_to_payload_i64(cx.b, prim, cv.payload);
     let new_val = cx.b.ins().select(tainted, cur_val, widened);
-    let one = cx.b.ins().iconst(types::I64, 1);
-    let new_ok = cx.b.ins().select(tainted, cur_ok, one);
-    cx.b.ins().store(MemFlags::trusted(), new_val, sp, off_val);
-    cx.b.ins().store(MemFlags::trusted(), new_ok, sp, off_ok);
+    let new_ok = cx.b.ins().select(tainted, cur_ok, ok_set);
+    cx.b.ins().store(MemFlags::trusted(), new_val, base, off_val);
+    cx.b.ins().store(MemFlags::trusted(), new_ok, base, off_ok);
     // Substitute on tainted-with-history.
     let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cur_ok, 0);
     let use_cache = cx.b.ins().band(tainted, have);
     let cached = cast_u64_to_prim(cx.b, cur_val, prim);
     let value = cx.b.ins().select(use_cache, cached, cv.payload);
-    let base = scalar_disc(cx.b, prim);
-    let stale = cx.b.ins().bor_imm(base, STALE);
+    let disc_base = scalar_disc(cx.b, prim);
+    let stale = cx.b.ins().bor_imm(disc_base, STALE);
     let disc = cx.b.ins().select(use_cache, stale, cv.disc);
     CompiledExpr::new(disc, value)
 }
@@ -3902,6 +3988,36 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let idx = self.ctx.site_next.get();
         self.ctx.site_next.set(idx + 1);
         Some((idx * 8) as i32)
+    }
+
+    /// [`claim_site_word`](Self::claim_site_word) for REPLAY memory in
+    /// a CALLEE body — the site twin of
+    /// [`claim_state_word_replay`](Self::claim_state_word_replay).
+    /// Returns `(word, header)` byte offsets: the word is recorded on
+    /// the [`SiteLayout`] (`replay`) for the caller's reset
+    /// registration, and the block-shared HONOR header (claimed with
+    /// the first replay word) gates the cache — see
+    /// [`LowerCtx::site_replay_hdr`]. Refused inside scaffold loops
+    /// (one per-call-site word would alias slots — the jul10h rule).
+    pub(crate) fn claim_site_word_replay(&self) -> Option<(i32, i32)> {
+        // Also refused in TAIL-LOOP bodies: the caller's cross-cycle
+        // reset can't sever iteration i−1's success from iteration i's
+        // bottom the way the interp's per-frame `reset_replay` does —
+        // the jul10h rule applied across the loop this body IS.
+        if self.ctx.loop_depth.get() > 0 || self.ctx.loop_head.is_some() {
+            return None;
+        }
+        let hdr = match self.ctx.site_replay_hdr.get() {
+            Some(h) => h,
+            None => {
+                let h = self.claim_site_word()?;
+                self.ctx.site_replay_hdr.set(Some(h));
+                h
+            }
+        };
+        let off = self.claim_site_word()?;
+        self.ctx.site_replay.borrow_mut().push((off / 8) as u32);
+        Some((off, hdr))
     }
 
     /// [`claim_site_word`](Self::claim_site_word) for a word that
@@ -8657,6 +8773,27 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                 });
             }
             let sp = cx.state_ptr();
+            // Activate the callee's interior-bottom taint caches iff
+            // THIS body's replay reset contract holds (a region —
+            // `Kernel::reset_replay` zeroes `replay_words`): register
+            // the block's replay-kind words and store 1 to the honor
+            // header. A parent whose resets don't run (a per-slot
+            // collection-callback kernel: `allow_replay` false) leaves
+            // the header 0 — the caches stay inert.
+            if cx.ctx.replay_enabled
+                && let Some(h) = layout.replay_hdr
+            {
+                for o in layout.replay.iter() {
+                    cx.ctx.replay_words.borrow_mut().push(base_idx + o);
+                }
+                let one = cx.b.ins().iconst(types::I64, 1);
+                cx.b.ins().store(
+                    MemFlags::trusted(),
+                    one,
+                    sp,
+                    (first as i64 + (h as i64) * 8) as i32,
+                );
+            }
             return Ok(cx.b.ins().iadd_imm(sp, first as i64));
         }
         if let Some(first) = cx.claim_site_word() {

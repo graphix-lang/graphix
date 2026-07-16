@@ -1,0 +1,14 @@
+// bisect: kernel withholds the second event (jul16a 000000 — long
+// misdiagnosed as a wake miss). The interior-bottom taint cache
+// (emit_scalar_taint_cache) was refused in CALLEE bodies (the jul10h
+// aliasing rule), so the callee's `k % k` at k=0 tainted the whole
+// result where the interp's `+` operand cache rides the previous `%`
+// value: interp [102, 100], jit [102]. Semantics ruled by 000004
+// (bottom = no event this cycle; a prior success rides). Fixed by
+// claiming the cache's two words from the per-call-site block, gated
+// by an HONOR header only a reset-honoring caller sets (a region
+// root call site registers the words on its replay_state_words and
+// stores 1; every other caller — per-slot blocks, lambda-kernel
+// parents, tail-loop bodies — leaves 0 and the cache stays inert,
+// today's behavior).
+{let k = array::iter([u8:2, u8:0]); let f = |v: bool| ((u8:100 + k) + (k % k)); f(true)}
