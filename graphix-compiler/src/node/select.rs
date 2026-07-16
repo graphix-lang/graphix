@@ -271,14 +271,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The stale-selection replay — a quiet scrutinee re-polling the
-        // previously selected arm with the new frame's arm-body inputs
-        // (the `!arg_up && !pat_up` fast path above) — is exactly the
-        // leak this method exists to clear. Drop the selection with the
-        // caches: the next delivery re-derives it from the frame's own
-        // scrutinee and re-primes the arm through the arm-wake path.
-        let Self { selected, arg, arms, typ: _, spec: _ } = self;
-        *selected = None;
+        // The SELECTION is semantic state, not a replay cache (Eric's
+        // ruling 2026-07-16): a frame pass that re-derives a DIFFERENT
+        // selection fires through the ordinary selection-change path
+        // (arm wake, init view); re-deriving the SAME selection is
+        // quiet — an arm fires once when it BECOMES selected, and a
+        // reset that didn't change the selection didn't make it become
+        // selected again. Re-derivation is guaranteed because every
+        // frame pass seeds ALL external refs (lambda.rs frame
+        // discipline) — the scrutinee/guards re-produce and the
+        // same-selection path re-binds the pattern binds. The former
+        // `*selected = None` forced the full arm-wake per pass — a
+        // value-channel redelivery the frame's forced init view
+        // already provides — re-seeding arm-local lifted targets on
+        // UNCHANGED selections, and contradicting fused region
+        // kernels, whose selection words are semantic and survive
+        // `Kernel::reset_replay`.
+        let Self { selected: _, arg, arms, typ: _, spec: _ } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
             arg.reset_replay(ctx);

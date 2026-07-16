@@ -210,3 +210,64 @@ quartet `guarded_select_nested_loop_selection_memory` /
 would thrash) / `_nested_ragged_resize` (directory grow + ragged
 inner lens) / `_triple_nested` (depth 3), and the promoted findings
 `findings/select-slot-memory-jul2026/` (02 is the nested shape).
+
+## Selection is semantic state in the interp too (ruled 2026-07-16)
+
+`Select::reset_replay` no longer clears `selected`. Eric's ruling: if
+a frame reset clears other state and re-evaluation derives a
+DIFFERENT selection, that's a selection change — fire (arm wake, init
+view); re-deriving the SAME selection is quiet. The old clear forced
+the full arm-wake path every frame pass, which was value-channel
+redelivery the frame discipline already provides (every pass runs
+under a forced init view with ALL external refs seeded — lambda.rs),
+and it re-seeded arm-local lifted targets on unchanged selections,
+contradicting the "fires once when it BECOMES selected" rule — and
+contradicting fused region kernels, whose selection words are
+semantic and survive `Kernel::reset_replay`. The firing half was
+already honest (the jul12a/jul12f trigger-derived tags); this aligns
+the wake/init-view half and dissolves the interp-vs-kernel frame
+seam.
+
+## Per-call-site state blocks (PROPOSED — the third identity coordinate)
+
+A select's node-walk instance identity has three coordinates: region
+instance (static word), loop ordinals (slot-table chains), and CALL
+SITES — the interp gives every CallSite its own Apply instance, hence
+its own select instances, but one compiled callee body is shared
+across call sites, so `state_enabled == false` refuses all claims
+there (selects in callee bodies keep the unrefined guard term;
+`emit_select_node_tail` refuses selection memory outright). The fix
+is the sub-buffer composition sketched in v1:
+
+- **The callee declares its layout.** A callee body claims words from
+  a CALLEE-BLOCK channel (a local counter, mirroring the instance
+  channel): total word count + the anchor list `(rel_off,
+  own_levels)` for any loop-select chains inside the callee, recorded
+  on its `WrappedKernel`/cache entry. Requires callees to be DEFINED
+  before parents (verify/reorder `to_define`) or the count derived at
+  discovery by prewalk.
+- **The caller supplies the storage.** One added pointer param on
+  every kernel signature (uniform, like the ctx wire slots):
+  `site_state: *mut u64`, null when unused. A root call site claims N
+  static words; a call site inside a loop generalizes the slot chain
+  with LEAF STRIDE N (table len = slots × N, address = table +
+  (i×N)·8) so each slot's callee instance gets its own block —
+  matching the interp, where each loop slot's CallSite owns its own
+  Apply. Self TAIL calls reuse the incoming pointer — the block
+  persists across rebind-jumps and across cycles, exactly the ruled
+  interp semantics now that `selected` survives frame resets. Self
+  NON-tail (native-recursive) calls pass null: interp transient
+  activations are fresh per call, and a single evaluation has no
+  cross-invocation memory to keep.
+- **Drop composes.** The region `Kernel` owns every block (static
+  words or chain leaves); it applies each callee's registered
+  `(rel_off, own_levels)` frees per block instance —
+  `WrappedKernel` aggregates per-call-site (anchor, callee-layout)
+  records the same way `dyn_fn_params` aggregates the region-wide
+  DynCall table.
+- **What it unlocks:** guarded-select selection memory in callee
+  bodies and in tail-recursive bodies (the tail emitter's refusal
+  lifts — compare-and-record against the block word), and eventually
+  per-call-site arm-lift identity. It is the last residual; after it,
+  the identity algebra is closed and any new emission context must
+  only say which coordinates it adds.
