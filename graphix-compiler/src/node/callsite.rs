@@ -1376,18 +1376,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     }
                     return None;
                 }
-                let args: SmallVec<[Value; 4]> = order
-                    .iter()
-                    .filter_map(|id| ctx.rt.cached().get(id).cloned())
-                    .collect();
-                if args.len() == order.len() {
-                    debug_assert!(ctx.pending_tail_call.is_none());
-                    ctx.pending_tail_call = Some(PendingTailCall { lambda, args });
-                    for id in set.drain(..) {
-                        event.variables.remove(&id);
-                    }
-                    return None;
+                // A `None` arg (bottomed this jump, never cached) makes
+                // the formal RIDE its previous value — the kernel's
+                // taint-gated rebind (`emit_tail_rebind_jump`). The old
+                // all-or-nothing gate fell through to genuine recursion
+                // here, which agreed with the kernel below the depth
+                // limit and silently depth-aborted above it.
+                let args: SmallVec<[Option<Value>; 4]> =
+                    order.iter().map(|id| ctx.rt.cached().get(id).cloned()).collect();
+                debug_assert!(ctx.pending_tail_call.is_none());
+                ctx.pending_tail_call = Some(PendingTailCall { lambda, args });
+                for id in set.drain(..) {
+                    event.variables.remove(&id);
                 }
+                return None;
             }
         }
         // Statically resolved fast path. The `try_static_resolve` step

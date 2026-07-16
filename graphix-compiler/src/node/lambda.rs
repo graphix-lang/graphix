@@ -465,11 +465,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 self.body.reset_replay(ctx);
                 frame.clear();
                 frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
+                // A `None` arg rides the formal's previous value (the
+                // kernel's taint-gated rebind): skip the bind — the
+                // formal's value stays in `ctx.cached` from the last
+                // rebind (or the entry bind), and its absence from the
+                // frame reads back through the cache as STALE, matching
+                // the kernel keeping the old disc.
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
-                    pat.bind(v, &mut |id, v| {
-                        ctx.rt.cached_mut().insert(id, v.clone());
-                        frame.insert(id, TagValue::fired(v));
-                    })
+                    if let Some(v) = v {
+                        pat.bind(v, &mut |id, v| {
+                            ctx.rt.cached_mut().insert(id, v.clone());
+                            frame.insert(id, TagValue::fired(v));
+                        })
+                    }
                 }
             };
             if reentered {

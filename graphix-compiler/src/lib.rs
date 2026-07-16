@@ -1468,8 +1468,17 @@ pub(crate) struct PendingTailCall {
     /// The recursive callee's `LambdaId` — the loop key the owning
     /// `GXLambda::update` matches against `self.id`.
     pub(crate) lambda: LambdaId,
-    /// The self-call's argument values, in callee-formal order.
-    pub(crate) args: smallvec::SmallVec<[Value; 4]>,
+    /// The self-call's argument values, in callee-formal order. `None`
+    /// means the arg expression produced nothing this jump (bottomed,
+    /// or quiet with no cached value) — the formal RIDES its previous
+    /// value, the interp twin of the kernel's taint-gated tail rebind
+    /// (`emit_tail_rebind_jump`; Eric's ruling 2026-07-15/16: a
+    /// bottomed tail-jump arg rides its previous value on BOTH
+    /// backends). Before this, an incomplete arg set fell through to
+    /// genuine depth-charged recursion, so the same loop agreed with
+    /// the kernel below the depth limit and silently aborted above it
+    /// (jul16a fuzz divergence class B).
+    pub(crate) args: smallvec::SmallVec<[Option<Value>; 4]>,
 }
 
 #[derive(Clone)]
