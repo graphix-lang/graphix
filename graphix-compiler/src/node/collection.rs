@@ -646,7 +646,7 @@ fn emit_collection_fold<R: Rt, E: UserEvent>(
             typ: &element_type,
             leaves: &element_leaves,
         },
-        &emit::guarded_select_sites(body),
+        &emit::slot_state_sites(body),
         |cx| init.emit_clif(cx),
         |cx| body.emit_clif(cx),
     )?;
@@ -943,7 +943,10 @@ fn emit_map_call<R: Rt, E: UserEvent, T: MapFn<R, E>>(
     let Some(source) = callsite.arg_positional(0) else {
         return Ok(None);
     };
-    emit_map::<R, E, T>(base, source, cx)
+    let prev = cx.swap_collection_site(Some(callsite.spec.id));
+    let r = emit_map::<R, E, T>(base, source, cx);
+    cx.swap_collection_site(prev);
+    r
 }
 
 trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
@@ -1407,7 +1410,10 @@ fn emit_fold_call<R: Rt, E: UserEvent, T: FoldFn<R, E>>(
     else {
         return Ok(None);
     };
-    emit_fold::<R, E, T>(base, source, init, cx)
+    let prev = cx.swap_collection_site(Some(callsite.spec.id));
+    let r = emit_fold::<R, E, T>(base, source, init, cx);
+    cx.swap_collection_site(prev);
+    r
 }
 
 fn callback<R: Rt, E: UserEvent>(
@@ -1468,7 +1474,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayInit {
             param.id,
             &output_type,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = emit::array_result(cx, ptr);
@@ -1523,7 +1529,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayMap {
             },
             &output_type,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = emit::array_result(cx, ptr);
@@ -1577,7 +1583,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilter {
                 typ: &element_type,
                 leaves: &leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = emit::array_result(cx, ptr);
@@ -1640,7 +1646,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilterMap {
             },
             &output_element,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = emit::array_result(cx, ptr);
@@ -1703,7 +1709,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFlatMap {
                 leaves: &leaves,
             },
             scaffold::FlatMapExtend::Array,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| {
                 let value = body.emit_clif(cx)?;
                 let payload =
@@ -1764,7 +1770,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFind {
                 typ: &element_type,
                 leaves: &leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         if source_invariant {
@@ -1829,7 +1835,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFindMap {
                 typ: &element_type,
                 leaves: &leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| {
                 let value = body.emit_clif(cx)?;
                 emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
@@ -1928,7 +1934,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ArrayFold {
                 typ: &element_type,
                 leaves: &element_leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| init.emit_clif(cx),
             |cx| body.emit_clif(cx),
         )?;
@@ -1987,7 +1993,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListInit {
             param.id,
             &output_type,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
@@ -2039,7 +2045,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListMap {
             },
             &output_type,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
@@ -2092,7 +2098,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilter {
                 typ: &element_type,
                 leaves: &leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
@@ -2154,7 +2160,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilterMap {
             },
             &output_element,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
@@ -2220,7 +2226,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFlatMap {
                 leaves: &leaves,
             },
             scaffold::FlatMapExtend::List,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| {
                 let value = body.emit_clif(cx)?;
                 let (disc, payload) = emit::ensure_owned_value_src(
@@ -2286,7 +2292,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFind {
                 typ: &element_type,
                 leaves: &leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         if source_invariant {
@@ -2350,7 +2356,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFindMap {
                 typ: &element_type,
                 leaves: &leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| {
                 let value = body.emit_clif(cx)?;
                 emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
@@ -2444,7 +2450,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapMap {
             },
             &output_type,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")?;
@@ -2498,7 +2504,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilter {
                 typ: &element_type,
                 leaves: &leaves,
             },
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")?;
@@ -2562,7 +2568,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilterMap {
             },
             &output_element,
             output_source,
-            &emit::guarded_select_sites(body),
+            &emit::slot_state_sites(body),
             |cx| body.emit_clif(cx),
         )?;
         let result = convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")?;

@@ -1,0 +1,5 @@
+// bisect: fusion/JIT over-fire (jul16a fuzz class C — the original
+// classc shape): the callee's internal loop, the callee itself called
+// from a loop — the prev-length word rides the per-slot SITE BLOCK
+// (SiteLeaf chain leaves), composing both fixes in 00/01.
+{let x = array::iter([i64:0, i64:0, i64:0, i64:4]); let m = x / i64:3; let f = |n| array::map([x], |i| select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}); let a = array::map([i64:0, i64:1], |j| f(j)); let c = count(a); a}

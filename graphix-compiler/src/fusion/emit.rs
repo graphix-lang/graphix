@@ -1452,6 +1452,7 @@ fn compile_into_function(
         init_override: std::cell::Cell::new(None),
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
+        collection_site: std::cell::Cell::new(None),
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
@@ -1870,6 +1871,14 @@ pub(crate) struct LowerCtx<'a> {
     /// loop dominates its body) — unlike a JitEnv binding, an entry
     /// never outlives its defining region, so select arms stay safe.
     owned_input_stack: std::cell::RefCell<Vec<Variable>>,
+    /// The collection HOF callsite currently being inline-emitted
+    /// (its loop scaffold is under construction). Set/restored by the
+    /// MapQ/FoldQ `emit_clif_call` wrappers around each op emission
+    /// ([`BodyCx::swap_collection_site`]); read by
+    /// `scaffold::SlotFlags::new` so a NESTED loop's `apply` can look
+    /// up its per-enclosing-slot prev-length word in the enclosing
+    /// frame's chain ([`slot_state_sites`] keyed it by this id).
+    collection_site: std::cell::Cell<Option<ExprId>>,
     /// Direct-path lazy interning arenas (see
     /// [`KernelStrings::lazy`]) — entries appended during emission via
     /// [`BodyCx::interned_str`] / [`BodyCx::interned_value`], harvested
@@ -3847,14 +3856,15 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         debug_assert!(popped.is_some(), "close_slot_tables without an open frame");
     }
 
-    /// The address of THIS slot's selection-memory word for the
-    /// guarded select at `id`, when the innermost open scaffold loop
-    /// carries a table for it: `table + idx * 8`. `None` (fall back
-    /// to the unrefined guard term) when there is no open loop, the
-    /// select is emitted at a different depth than the frame's body
-    /// (a further nesting level — the frame's ordinal can't identify
-    /// its slots), or the frame claimed no table (callee body /
-    /// nested loop / no state available).
+    /// The address of THIS slot's per-slot state word for the site at
+    /// `id` — a guarded select's selection memory, or a nested
+    /// collection loop's prev-length word ([`slot_state_sites`]) —
+    /// when the innermost open scaffold loop carries a table for it:
+    /// `table + idx * 8`. `None` (fall back to the stateless
+    /// approximation) when there is no open loop, the site is emitted
+    /// at a different depth than the frame's body (a further nesting
+    /// level — the frame's ordinal can't identify its slots), or the
+    /// frame claimed no table (no state available).
     pub(crate) fn slot_select_word(&mut self, id: ExprId) -> Option<SelWord> {
         let (idx_var, table, guarded) = {
             let frames = self.ctx.slot_tables.borrow();
@@ -3916,6 +3926,18 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// [`claim_site_word`](Self::claim_site_word)).
     pub(crate) fn site_ptr(&self) -> ClifValue {
         self.ctx.site_ptr
+    }
+
+    /// Set the collection-HOF callsite being inline-emitted (see
+    /// [`LowerCtx::collection_site`]), returning the previous value
+    /// for save/restore around the op emission.
+    pub(crate) fn swap_collection_site(&self, id: Option<ExprId>) -> Option<ExprId> {
+        self.ctx.collection_site.replace(id)
+    }
+
+    /// The collection-HOF callsite currently being inline-emitted.
+    pub(crate) fn collection_site(&self) -> Option<ExprId> {
+        self.ctx.collection_site.get()
     }
 
     /// The [`SiteLayout`] of an already-DEFINED callee, by kernel
@@ -7075,23 +7097,35 @@ enum SelectArmBind {
 /// guarded final arm, or a conditional final arm under a possibly-
 /// bottom scrutinee (whose garbage cond bits could miss every arm),
 /// refuse to fuse instead.
-/// Collect the `Select::spec.id` of every guarded select in a
-/// scaffold-loop body. The walk sees exactly the tree the loop will
-/// emit inline (a nested collection HOF's callback body lives behind
-/// its own lambda def, unreachable from here — its selects open their
-/// own loop and are refused per-slot state there by the depth check in
-/// [`BodyCx::slot_select_word`]). The loop emitters claim one per-slot
-/// state table per site (see [`BodyCx::open_slot_tables`]).
-pub(crate) fn guarded_select_sites<R: Rt, E: UserEvent>(
+/// Collect the per-slot STATE sites in a scaffold-loop body: the
+/// `Select::spec.id` of every guarded select (selection memory) and
+/// the callsite `ExprId` of every nested collection HOF call (a
+/// per-slot PREV-LENGTH word for its loop's exact firing rule —
+/// jul16a fuzz class A: the conservative fallback re-fired a ragged
+/// nested loop on every source refresh). The walk sees exactly the
+/// tree the loop will emit inline (a nested collection HOF's callback
+/// body lives behind its own lambda def, unreachable from here — its
+/// own sites anchor in the chain its loop opens). The loop emitters
+/// claim one per-slot state chain per site (see
+/// [`BodyCx::open_slot_tables`]).
+pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
 ) -> LPooled<Vec<ExprId>> {
     let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
-    fusion::for_each_node(node, &mut |n| {
-        if let NodeView::Select(s) = n.view() {
+    fusion::for_each_node(node, &mut |n| match n.view() {
+        NodeView::Select(s) => {
             if s.arms.iter().any(|(pat, _)| pat.guard.is_some()) {
                 ids.push(s.spec.id);
             }
         }
+        NodeView::CallSite(cs) => {
+            if let Some(crate::ApplyView::Lambda(l)) = cs.resolved_apply()
+                && l.inline_callback_body().is_some()
+            {
+                ids.push(n.spec().id);
+            }
+        }
+        _ => {}
     });
     ids
 }

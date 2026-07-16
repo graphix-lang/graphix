@@ -601,6 +601,11 @@ pub struct SlotFlags {
     len: Option<ClifValue>,
     result_is_firing: bool,
     src_invariant: bool,
+    /// The collection callsite this loop lowers ([`BodyCx::
+    /// collection_site`], captured at loop start) — the key a NESTED
+    /// loop's prev-length word was chained under in the enclosing
+    /// frame ([`emit::slot_state_sites`]).
+    site_id: Option<crate::expr::ExprId>,
 }
 
 impl SlotFlags {
@@ -618,6 +623,7 @@ impl SlotFlags {
             len: None,
             result_is_firing: false,
             src_invariant: false,
+            site_id: cx.collection_site(),
         }
     }
 
@@ -648,10 +654,16 @@ impl SlotFlags {
         cx.b.def_var(self.stale, n);
     }
 
-    /// Apply the exact MapQ/FoldQ firing rule when a state word is
-    /// available. Nested loops over variant sources use the conservative
-    /// source-or-slot approximation because one shared length cannot
-    /// represent independent per-iteration slot sets.
+    /// Apply the exact MapQ/FoldQ firing rule when a prev-length word
+    /// is available: a per-INSTANCE state word in a root body, or a
+    /// per-CALL-SITE word in a callee body (jul16a fuzz classes A+C:
+    /// the callee fallback to the conservative rule re-fired a
+    /// callee's loop on every same-length source refresh with a quiet
+    /// body, where the interp's per-slot rule is quiet — the site
+    /// word extends the exact rule's AVAILABILITY, not its
+    /// semantics). Nested loops over variant sources use the
+    /// conservative source-or-slot approximation because one shared
+    /// length cannot represent independent per-iteration slot sets.
     pub fn apply(
         &self,
         cx: &mut BodyCx,
@@ -676,47 +688,145 @@ impl SlotFlags {
             slots_word
         };
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
-        let exact = match self.len {
-            Some(len) => {
-                let claim = if self.src_invariant {
+        enum PrevLen {
+            State(i32),
+            Chain(SelWord),
+            Site(i32),
+        }
+        let claim = match self.len {
+            None => None,
+            Some(_) => {
+                let state = if self.src_invariant {
                     cx.claim_state_word_loop_invariant()
                 } else {
                     cx.claim_state_word()
                 };
-                claim.map(|off| (len, off))
+                match state {
+                    Some(off) => Some(PrevLen::State(off)),
+                    // Nested loop: a per-ENCLOSING-SLOT word from the
+                    // enclosing frame's chain (the node-walk's inner
+                    // MapQ instance per outer slot), keyed by this
+                    // loop's collection callsite. Works in root and
+                    // callee bodies alike (the chain anchors in the
+                    // state buffer or the site block respectively).
+                    None => match self.site_id.and_then(|id| cx.slot_select_word(id)) {
+                        Some(w) => Some(PrevLen::Chain(w)),
+                        // Callee body: one word per CALL SITE is exact
+                        // when the length is per-instance — a loop at
+                        // the body's root, or an invariant length under
+                        // enclosing loops. A variant length under
+                        // enclosing in-body loops without a chain word
+                        // would alias iterations — conservative.
+                        None if cx.ctx.loop_depth.get() == 0 || self.src_invariant => {
+                            cx.claim_site_word().map(PrevLen::Site)
+                        }
+                        None => None,
+                    },
+                }
             }
-            None => None,
         };
-        match exact {
-            None => {
-                let stale = if self.result_is_firing {
-                    fired_word
-                } else {
-                    cx.b.ins().band(fired_word, src_word)
-                };
-                r.disc = cx.b.ins().bor(r.disc, stale);
-            }
-            Some((len, off)) => {
+        let stale = match claim {
+            None => self.conservative_stale(cx, fired_word, src_word),
+            Some(PrevLen::State(off)) => {
                 let sp = cx.state_ptr();
-                let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-                let lenp1 = cx.b.ins().iadd_imm(len, 1);
-                let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
-                let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
-                let recorded = cx.b.ins().select(valid, lenp1, stored);
-                cx.b.ins().store(MemFlags::trusted(), recorded, sp, off);
-                let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
-                let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
-                let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
-                let src_empty = cx.b.ins().band(src_fired, empty);
-                let fires = cx.b.ins().bor(resized, slot_fired);
-                let fires = cx.b.ins().bor(fires, src_empty);
-                let quiet = cx.b.ins().iconst(types::I64, STALE);
-                let zero = cx.b.ins().iconst(types::I64, 0);
-                let stale = cx.b.ins().select(fires, zero, quiet);
-                r.disc = cx.b.ins().bor(r.disc, stale);
+                let addr = cx.b.ins().iadd_imm(sp, off as i64);
+                self.exact_stale(cx, addr, fired_word, src_word, src_taint)
             }
-        }
+            Some(PrevLen::Chain(SelWord::Sure(addr))) => {
+                self.exact_stale(cx, addr, fired_word, src_word, src_taint)
+            }
+            Some(PrevLen::Chain(SelWord::Guarded { base, addr })) => {
+                self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
+            }
+            // The site block base may be 0 at runtime (recursive
+            // back-edge — a fresh transient activation): branch to the
+            // conservative rule instead of faulting.
+            Some(PrevLen::Site(off)) => {
+                let base = cx.site_ptr();
+                let addr = cx.b.ins().iadd_imm(base, off as i64);
+                self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
+            }
+        };
+        r.disc = cx.b.ins().bor(r.disc, stale);
         r
+    }
+
+    /// [`exact_stale`](Self::exact_stale) behind a null-guard on
+    /// `base` (a site block or chain table that is 0 on a recursive
+    /// back-edge): the conservative rule on the 0 path.
+    fn guarded_exact_stale(
+        &self,
+        cx: &mut BodyCx,
+        base: ClifValue,
+        addr: ClifValue,
+        fired_word: ClifValue,
+        src_word: ClifValue,
+        src_taint: ClifValue,
+    ) -> ClifValue {
+        let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+        let exact_bl = cx.b.create_block();
+        let cons_bl = cx.b.create_block();
+        let merge = cx.b.create_block();
+        cx.b.append_block_param(merge, types::I64);
+        cx.b.ins().brif(has, exact_bl, &[], cons_bl, &[]);
+        cx.b.seal_block(exact_bl);
+        cx.b.seal_block(cons_bl);
+        cx.b.switch_to_block(exact_bl);
+        let stale = self.exact_stale(cx, addr, fired_word, src_word, src_taint);
+        cx.b.ins().jump(merge, &[BlockArg::Value(stale)]);
+        cx.b.switch_to_block(cons_bl);
+        let stale = self.conservative_stale(cx, fired_word, src_word);
+        cx.b.ins().jump(merge, &[BlockArg::Value(stale)]);
+        cx.b.seal_block(merge);
+        cx.b.switch_to_block(merge);
+        cx.b.block_params(merge)[0]
+    }
+
+    /// The exact firing rule's STALE contribution: fires iff resized ∨
+    /// a slot fired ∨ the source fired empty, against the prev-length
+    /// word at `addr` (stored `len + 1`, 0 = no previous observation; a
+    /// TAINTED source skips the logical resize — the node-walk saw no
+    /// event).
+    fn exact_stale(
+        &self,
+        cx: &mut BodyCx,
+        addr: ClifValue,
+        fired_word: ClifValue,
+        src_word: ClifValue,
+        src_taint: ClifValue,
+    ) -> ClifValue {
+        let len = self.len.expect("exact_stale requires a recorded len");
+        let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+        let lenp1 = cx.b.ins().iadd_imm(len, 1);
+        let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
+        let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
+        let recorded = cx.b.ins().select(valid, lenp1, stored);
+        cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
+        let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
+        let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
+        let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
+        let src_empty = cx.b.ins().band(src_fired, empty);
+        let fires = cx.b.ins().bor(resized, slot_fired);
+        let fires = cx.b.ins().bor(fires, src_empty);
+        let quiet = cx.b.ins().iconst(types::I64, STALE);
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        cx.b.ins().select(fires, zero, quiet)
+    }
+
+    /// The conservative source-or-slot STALE contribution (no
+    /// prev-length word): the result reads fired when a slot fired OR
+    /// the source fired.
+    fn conservative_stale(
+        &self,
+        cx: &mut BodyCx,
+        fired_word: ClifValue,
+        src_word: ClifValue,
+    ) -> ClifValue {
+        if self.result_is_firing {
+            fired_word
+        } else {
+            cx.b.ins().band(fired_word, src_word)
+        }
     }
 }
 
