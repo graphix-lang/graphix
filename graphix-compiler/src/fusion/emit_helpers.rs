@@ -18,17 +18,20 @@
 //! emit a normal indirect call from JIT'd code. All pointers are
 //! borrowed for the duration of the call — no ownership transfer.
 //!
-//! Safety contract is the same as `ValArray::get_unchecked`:
-//! - `arr` must be a valid pointer to a `ValArray` that lives at
-//!   least until the call returns.
-//! - `idx` must be `< arr.len()`.
-//! - The slot at `idx` must actually carry a payload of the
-//!   helper's named primitive type.
-//!
-//! Fusion-built kernels statically guarantee all three (the
-//! typechecker pinned the param's `Type::Array<T>` /
-//! `Type::Tuple([..., T, ...])` shape, and the runtime hands
-//! us a `Value::Array(ValArray)` that matches).
+//! Safety contract: pointers (`arr`) must be valid for the duration
+//! of the call — that part is the caller's (the kernel's) burden.
+//! Element/field READS, however, are TOTAL: an out-of-bounds index or
+//! an unexpected slot shape reads as the return shape's PLACEHOLDER
+//! (0 / "" / the empty array / `Value::Null`) instead of trusting the
+//! typechecker's shape proof. The proof is real for values built from
+//! typed data, but #219 taint placeholders are `Value::Null` in
+//! composite element slots by design — a destructure leaf read of a
+//! placeholder element is REACHABLE from user programs (jul16a
+//! crash_000003: `str::parse("42")?` as an `Array<(string, i64)>`
+//! element SIGABRT'd `graphix_valarray_get_arcstr`), and the values
+//! read on those paths are dead under the taint discipline, so any
+//! well-formed value is correct. Totality here is the "helper-safe
+//! placeholder" contract applied to the readers themselves.
 
 use crate::{
     fusion::kernel_abi::SiteLeaf,
@@ -1025,9 +1028,9 @@ pub extern "C" fn graphix_variant_tag_eq(
         let exp = unsafe { &*expected };
         match v {
             Value::String(s) => (s.as_str() == exp.as_str()) as u8,
-            Value::Array(a) => unsafe {
-                let tag = a.get_ref_unchecked::<arcstr::ArcStr>(0);
-                (tag.as_str() == exp.as_str()) as u8
+            Value::Array(a) => match a.get(0) {
+                Some(Value::String(tag)) => (tag.as_str() == exp.as_str()) as u8,
+                _ => 0,
             },
             _ => 0,
         }
@@ -1037,47 +1040,40 @@ pub extern "C" fn graphix_variant_tag_eq(
 }
 
 macro_rules! variant_payload_impl {
-    ($name:ident, $ty:ty) => {
-        /// Read payload slot `payload_idx` of a with-payload variant
-        /// as `$ty`. Slot 0 is the tag; payloads start at slot 1, so
-        /// the JIT-emitted code passes the 0-based payload position
-        /// and we add 1. Borrowed read — the input `Value` is
-        /// `mem::forget`ed so the caller retains ownership.
+    ($($name:ident, $reader:ident, $ty:ty;)+) => {
+        $(/// Read payload slot `payload_idx` of a with-payload variant.
+        /// Slot 0 is the tag; payloads start at slot 1, so the
+        /// JIT-emitted code passes the 0-based payload position and we
+        /// add 1. Borrowed read — the input `Value` is `mem::forget`ed
+        /// so the caller retains ownership. Total: a placeholder
+        /// (`Value::Null`) or short array reads as 0 (see the module's
+        /// totality contract).
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(v: TagValue, payload_idx: usize) -> $ty {
             let r = v.with_value(|v| match v {
-                Value::Array(a) => unsafe { a.get_unchecked::<$ty>(payload_idx + 1) },
-                _ => unsafe { std::hint::unreachable_unchecked() },
+                Value::Array(a) => {
+                    a.get(payload_idx + 1).map($reader).unwrap_or_default()
+                }
+                _ => Default::default(),
             });
             std::mem::forget(v); // borrowed read — caller keeps owning it
             r
-        }
+        })+
     };
 }
 
-variant_payload_impl!(graphix_variant_payload_i64, i64);
-variant_payload_impl!(graphix_variant_payload_f64, f64);
-variant_payload_impl!(graphix_variant_payload_i32, i32);
-variant_payload_impl!(graphix_variant_payload_u32, u32);
-variant_payload_impl!(graphix_variant_payload_f32, f32);
-variant_payload_impl!(graphix_variant_payload_i8, i8);
-variant_payload_impl!(graphix_variant_payload_i16, i16);
-variant_payload_impl!(graphix_variant_payload_u8, u8);
-variant_payload_impl!(graphix_variant_payload_u16, u16);
-variant_payload_impl!(graphix_variant_payload_u64, u64);
-
-/// Bool payload is read from the slot's tag bit (true if the slot
-/// holds `Value::Bool(true)`), not as a generic `bool` —
-/// `ValArray::get_unchecked` doesn't support `bool` directly. Kept
-/// as a separate impl to avoid teaching the macro a special case.
-#[unsafe(no_mangle)]
-pub extern "C" fn graphix_variant_payload_bool(v: TagValue, payload_idx: usize) -> u8 {
-    let r = v.with_value(|v| match v {
-        Value::Array(a) => unsafe { a.get_unchecked::<bool>(payload_idx + 1) as u8 },
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    });
-    std::mem::forget(v); // borrowed read — caller keeps owning it
-    r
+variant_payload_impl! {
+    graphix_variant_payload_i64, read_slot_i64, i64;
+    graphix_variant_payload_f64, read_slot_f64, f64;
+    graphix_variant_payload_i32, read_slot_i32, i32;
+    graphix_variant_payload_u32, read_slot_u32, u32;
+    graphix_variant_payload_f32, read_slot_f32, f32;
+    graphix_variant_payload_i8, read_slot_i8, i8;
+    graphix_variant_payload_i16, read_slot_i16, i16;
+    graphix_variant_payload_u8, read_slot_u8, u8;
+    graphix_variant_payload_u16, read_slot_u16, u16;
+    graphix_variant_payload_u64, read_slot_u64, u64;
+    graphix_variant_payload_bool, read_slot_bool, u8;
 }
 
 // ─── DynCall (HOF) dispatch ──────────────────────────────────────
@@ -1372,61 +1368,71 @@ pub unsafe extern "C" fn graphix_set_var(bind_id: u64, disc: u64, payload: u64) 
     }
 }
 
-/// Read element `idx` of `arr` as an `i64`. JIT-side counterpart of
-/// array/tuple element reads for scalar i64 elements.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_i64(p: *const ValArray, idx: usize) -> i64 {
-    unsafe { arr(p).get_unchecked::<i64>(idx) }
+/// The canonical borrowed-array placeholder — what a shape-mismatched
+/// or out-of-bounds composite read returns (see the module's totality
+/// contract). Static so borrowed interior pointers stay valid forever.
+static EMPTY_ARR: std::sync::LazyLock<ValArray> =
+    std::sync::LazyLock::new(|| ValArray::from_iter_exact(std::iter::empty()));
+
+/// Total scalar slot readers: the slot's payload if it carries the
+/// named primitive family (fixed-width and varint encodings of the
+/// same width read alike — the unchecked reads they replace read the
+/// raw payload word regardless of encoding), the shape's placeholder
+/// (0) otherwise. One reader per family; every scalar element / struct
+/// field / variant payload helper composes these over a bounds-checked
+/// `.get()`.
+macro_rules! slot_readers {
+    ($($fn:ident, $ty:ty, [$($variant:ident)|+];)+) => {
+        $(fn $fn(v: &Value) -> $ty {
+            match v {
+                $(Value::$variant(x) => *x as $ty,)+
+                _ => Default::default(),
+            }
+        })+
+    };
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_f64(p: *const ValArray, idx: usize) -> f64 {
-    unsafe { arr(p).get_unchecked::<f64>(idx) }
+slot_readers! {
+    read_slot_i64, i64, [I64 | Z64];
+    read_slot_u64, u64, [U64 | V64];
+    read_slot_i32, i32, [I32 | Z32];
+    read_slot_u32, u32, [U32 | V32];
+    read_slot_i16, i16, [I16];
+    read_slot_u16, u16, [U16];
+    read_slot_i8, i8, [I8];
+    read_slot_u8, u8, [U8];
+    read_slot_f32, f32, [F32];
+    read_slot_f64, f64, [F64];
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_i32(p: *const ValArray, idx: usize) -> i32 {
-    unsafe { arr(p).get_unchecked::<i32>(idx) }
+fn read_slot_bool(v: &Value) -> u8 {
+    match v {
+        Value::Bool(b) => *b as u8,
+        _ => 0,
+    }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_u32(p: *const ValArray, idx: usize) -> u32 {
-    unsafe { arr(p).get_unchecked::<u32>(idx) }
+macro_rules! valarray_get_scalar {
+    ($($name:ident, $reader:ident, $ty:ty;)+) => {
+        $(#[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(p: *const ValArray, idx: usize) -> $ty {
+            unsafe { arr(p) }.get(idx).map($reader).unwrap_or_default()
+        })+
+    };
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_f32(p: *const ValArray, idx: usize) -> f32 {
-    unsafe { arr(p).get_unchecked::<f32>(idx) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_bool(p: *const ValArray, idx: usize) -> u8 {
-    unsafe { arr(p).get_unchecked::<bool>(idx) as u8 }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_i8(p: *const ValArray, idx: usize) -> i8 {
-    unsafe { arr(p).get_unchecked::<i8>(idx) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_i16(p: *const ValArray, idx: usize) -> i16 {
-    unsafe { arr(p).get_unchecked::<i16>(idx) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_u8(p: *const ValArray, idx: usize) -> u8 {
-    unsafe { arr(p).get_unchecked::<u8>(idx) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_u16(p: *const ValArray, idx: usize) -> u16 {
-    unsafe { arr(p).get_unchecked::<u16>(idx) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_u64(p: *const ValArray, idx: usize) -> u64 {
-    unsafe { arr(p).get_unchecked::<u64>(idx) }
+valarray_get_scalar! {
+    graphix_valarray_get_i64, read_slot_i64, i64;
+    graphix_valarray_get_f64, read_slot_f64, f64;
+    graphix_valarray_get_i32, read_slot_i32, i32;
+    graphix_valarray_get_u32, read_slot_u32, u32;
+    graphix_valarray_get_f32, read_slot_f32, f32;
+    graphix_valarray_get_bool, read_slot_bool, u8;
+    graphix_valarray_get_i8, read_slot_i8, i8;
+    graphix_valarray_get_i16, read_slot_i16, i16;
+    graphix_valarray_get_u8, read_slot_u8, u8;
+    graphix_valarray_get_u16, read_slot_u16, u16;
+    graphix_valarray_get_u64, read_slot_u64, u64;
 }
 
 #[unsafe(no_mangle)]
@@ -1545,113 +1551,40 @@ pub unsafe extern "C" fn graphix_slot_state_blocks(
     v.as_mut_ptr()
 }
 
-/// Two-level struct field read: `arr[sorted_idx]` is itself a
-/// `Value::Array([name, value])` kv-pair; we read slot 1 (the value)
-/// as the named primitive. Struct field read by sorted index.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_i64(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> i64 {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        kv.get_unchecked::<i64>(1)
+/// The struct field's VALUE slot: `arr[sorted_idx]` is a
+/// `Value::Array([name, value])` kv-pair; slot 1 is the value.
+/// Total — `None` on OOB or a non-pair slot (a placeholder struct).
+fn struct_field(p: &ValArray, sorted_idx: usize) -> Option<&Value> {
+    match p.get(sorted_idx)? {
+        Value::Array(kv) => kv.get(1),
+        _ => None,
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_f64(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> f64 {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        kv.get_unchecked::<f64>(1)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_i32(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> i32 {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        kv.get_unchecked::<i32>(1)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_u32(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> u32 {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        kv.get_unchecked::<u32>(1)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_f32(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> f32 {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        kv.get_unchecked::<f32>(1)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_bool(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> u8 {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        kv.get_unchecked::<bool>(1) as u8
-    }
-}
-
-macro_rules! struct_get_impl {
-    ($name:ident, $ty:ty) => {
-        #[unsafe(no_mangle)]
+/// Two-level struct field reads by sorted index — total, composing
+/// [`struct_field`] with the [`slot_readers`].
+macro_rules! struct_get_scalar {
+    ($($name:ident, $reader:ident, $ty:ty;)+) => {
+        $(#[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(p: *const ValArray, sorted_idx: usize) -> $ty {
-            unsafe {
-                let kv = match &arr(p)[sorted_idx] {
-                    Value::Array(a) => a,
-                    _ => std::hint::unreachable_unchecked(),
-                };
-                kv.get_unchecked::<$ty>(1)
-            }
-        }
+            struct_field(unsafe { arr(p) }, sorted_idx).map($reader).unwrap_or_default()
+        })+
     };
 }
 
-struct_get_impl!(graphix_struct_get_i8, i8);
-struct_get_impl!(graphix_struct_get_i16, i16);
-struct_get_impl!(graphix_struct_get_u8, u8);
-struct_get_impl!(graphix_struct_get_u16, u16);
-struct_get_impl!(graphix_struct_get_u64, u64);
+struct_get_scalar! {
+    graphix_struct_get_i64, read_slot_i64, i64;
+    graphix_struct_get_f64, read_slot_f64, f64;
+    graphix_struct_get_i32, read_slot_i32, i32;
+    graphix_struct_get_u32, read_slot_u32, u32;
+    graphix_struct_get_f32, read_slot_f32, f32;
+    graphix_struct_get_bool, read_slot_bool, u8;
+    graphix_struct_get_i8, read_slot_i8, i8;
+    graphix_struct_get_i16, read_slot_i16, i16;
+    graphix_struct_get_u8, read_slot_u8, u8;
+    graphix_struct_get_u16, read_slot_u16, u16;
+    graphix_struct_get_u64, read_slot_u64, u64;
+}
 
 // ─── Non-primitive element reads ──────────────────────────────────
 //
@@ -1679,37 +1612,44 @@ pub unsafe extern "C" fn graphix_valarray_index(
     TagValue::clean(array_index(unsafe { arr(p) }, idx))
 }
 
+/// Total slot-as-array reads (see the module's totality contract):
+/// the placeholder is the static EMPTY array.
+fn slot_array(v: Option<&Value>) -> &ValArray {
+    match v {
+        Some(Value::Array(a)) => a,
+        _ => &EMPTY_ARR,
+    }
+}
+
+fn slot_arcstr(v: Option<&Value>) -> arcstr::ArcStr {
+    match v {
+        Some(Value::String(s)) => s.clone(),
+        _ => arcstr::ArcStr::new(),
+    }
+}
+
 /// `arr[idx]` as an owned `*mut ValArray` (Array/Tuple/Struct elem).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_valarray_get_array(
     p: *const ValArray,
     idx: usize,
 ) -> *mut ValArray {
-    unsafe {
-        match &arr(p)[idx] {
-            Value::Array(a) => Box::into_raw(Box::new(a.clone())),
-            _ => std::hint::unreachable_unchecked(),
-        }
-    }
+    Box::into_raw(Box::new(slot_array(unsafe { arr(p) }.get(idx)).clone()))
 }
 
 /// `arr[idx]` as a BORROWED `*const ValArray` — an interior pointer
-/// into the parent's element slot. Valid for exactly as long as the
-/// parent array is alive and unmutated; used by select's nested
-/// structural patterns, whose scrutinee is a borrowed env slot pinned
-/// across the whole arm chain (values are immutable, so the interior
-/// pointer is stable). NEVER pass this to a consuming/dropping helper.
+/// into the parent's element slot (or the static empty placeholder).
+/// Valid for exactly as long as the parent array is alive and
+/// unmutated; used by select's nested structural patterns, whose
+/// scrutinee is a borrowed env slot pinned across the whole arm chain
+/// (values are immutable, so the interior pointer is stable). NEVER
+/// pass this to a consuming/dropping helper.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_valarray_get_array_borrowed(
     p: *const ValArray,
     idx: usize,
 ) -> *const ValArray {
-    unsafe {
-        match &arr(p)[idx] {
-            Value::Array(a) => a as *const ValArray,
-            _ => std::hint::unreachable_unchecked(),
-        }
-    }
+    slot_array(unsafe { arr(p) }.get(idx)) as *const ValArray
 }
 
 /// Struct field read (`arr[sorted_idx]` is a `[name, value]` kv-pair;
@@ -1720,16 +1660,7 @@ pub unsafe extern "C" fn graphix_struct_get_array_borrowed(
     p: *const ValArray,
     sorted_idx: usize,
 ) -> *const ValArray {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        match &kv[1] {
-            Value::Array(a) => a as *const ValArray,
-            _ => std::hint::unreachable_unchecked(),
-        }
-    }
+    slot_array(struct_field(unsafe { arr(p) }, sorted_idx)) as *const ValArray
 }
 
 /// `arr[idx]` as an owned `ArcStr` (String elem).
@@ -1738,12 +1669,7 @@ pub unsafe extern "C" fn graphix_valarray_get_arcstr(
     p: *const ValArray,
     idx: usize,
 ) -> arcstr::ArcStr {
-    unsafe {
-        match &arr(p)[idx] {
-            Value::String(s) => s.clone(),
-            _ => std::hint::unreachable_unchecked(),
-        }
-    }
+    slot_arcstr(unsafe { arr(p) }.get(idx))
 }
 
 /// `arr[idx]` as an owned `Value` (value-shape elem). Clones the slot.
@@ -1752,7 +1678,7 @@ pub unsafe extern "C" fn graphix_valarray_get_value(
     p: *const ValArray,
     idx: usize,
 ) -> TagValue {
-    TagValue::clean(unsafe { arr(p)[idx].clone() })
+    TagValue::clean(unsafe { arr(p) }.get(idx).cloned().unwrap_or(Value::Null))
 }
 
 /// Struct field read (two-level: `arr[sorted_idx]` is a `[name,
@@ -1762,16 +1688,9 @@ pub unsafe extern "C" fn graphix_struct_get_array(
     p: *const ValArray,
     sorted_idx: usize,
 ) -> *mut ValArray {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        match &kv[1] {
-            Value::Array(a) => Box::into_raw(Box::new(a.clone())),
-            _ => std::hint::unreachable_unchecked(),
-        }
-    }
+    Box::into_raw(Box::new(
+        slot_array(struct_field(unsafe { arr(p) }, sorted_idx)).clone(),
+    ))
 }
 
 #[unsafe(no_mangle)]
@@ -1779,16 +1698,7 @@ pub unsafe extern "C" fn graphix_struct_get_arcstr(
     p: *const ValArray,
     sorted_idx: usize,
 ) -> arcstr::ArcStr {
-    unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        match &kv[1] {
-            Value::String(s) => s.clone(),
-            _ => std::hint::unreachable_unchecked(),
-        }
-    }
+    slot_arcstr(struct_field(unsafe { arr(p) }, sorted_idx))
 }
 
 #[unsafe(no_mangle)]
@@ -1796,13 +1706,9 @@ pub unsafe extern "C" fn graphix_struct_get_value(
     p: *const ValArray,
     sorted_idx: usize,
 ) -> TagValue {
-    TagValue::clean(unsafe {
-        let kv = match &arr(p)[sorted_idx] {
-            Value::Array(a) => a,
-            _ => std::hint::unreachable_unchecked(),
-        };
-        kv[1].clone()
-    })
+    TagValue::clean(
+        struct_field(unsafe { arr(p) }, sorted_idx).cloned().unwrap_or(Value::Null),
+    )
 }
 
 /// Build the list of (name, fn pointer) pairs to register with the
