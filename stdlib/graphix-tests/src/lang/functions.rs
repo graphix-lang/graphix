@@ -1267,12 +1267,20 @@ run!(rec_transient_capture_wake, REC_TRANSIENT_CAPTURE_WAKE, |v: Result<&Value>|
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A body holding a STATEFUL sync builtin (`count`) refuses the
-// transient gate (`transient_body_ok`) — its per-instance state must
-// keep accumulating across fires exactly as the retained unfold
-// always did: three levels of count step 1,2,3 across the three
-// fires, so the sums are [3, 6, 9] (fresh state per call would give
-// [3, 3, 3]).
+// RULED SEMANTICS (Eric, 2026-07-16): state inside a recursive
+// function PERSISTS across fires, like reactive state anywhere else —
+// recursion doesn't reset it. A stateful builtin in the body keeps the
+// retained-unfold instances (`count` is EFFECT=Async so its body is
+// excluded from parking structurally; the sync accumulators
+// sum/min/max/mean/product refuse `transient_body_ok`'s STATELESS
+// check — both roads lead to retention, one semantics): three levels
+// of count step 1,2,3 across the three fires, so the sums are
+// [3, 6, 9]. (Fresh state per call — [3, 3, 3] — was considered and
+// rejected: it either splits the accumulator family across the
+// fusion-safety classification or requires resetting async builtins
+// too. Node state persisting is also the class-D-consistent answer:
+// evaluation-FRAME state dies across cycles, semantic NODE state
+// lives.)
 const REC_TRANSIENT_STATEFUL_RETAINED: &str = r#"
 {
   let go = 0;
