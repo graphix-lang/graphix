@@ -3234,6 +3234,26 @@ mod trace_probes {
         }
     }
 
+    /// A trace whose observable is a FIRST-CLASS FUNCTION value is
+    /// compile-stable: fn values are LambdaDefs compared by minted id
+    /// (never equal across two compiles), normalized to the lambda's
+    /// printed source by `trace::normalize` (the 2026-07-16 selfcheck
+    /// find — this program flaked under BOTH modes).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn selfcheck_fn_valued_trace_is_stable() {
+        let prog = r#"
+{
+  let rec sum_to = |n, acc| select n {
+    i64:0 => acc,
+    _ => sum_to(n - i64:1, acc)
+  };
+  sum_to(i64:3, buffer::to_string)
+}
+"#;
+        let flaky = selfcheck_one(prog, std::time::Duration::from_secs(60)).await;
+        assert_eq!(flaky, Vec::<&'static str>::new());
+    }
+
     /// A bottom program (div-by-zero) resolves instantly with an
     /// anchor-only trace — the empty-trace agreement that replaces the
     /// old full-timeout sleep for bottom programs.

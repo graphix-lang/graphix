@@ -37,6 +37,15 @@ use triomphe::Arc;
 
 pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub id: LambdaId,
+    /// The lambda's pretty-printed SOURCE — a compile-stable identity
+    /// for contexts where the minted `id` can't compare (two compiles
+    /// of the same program mint different ids; the differential
+    /// oracle normalizes fn values to this). Deliberately NOT used by
+    /// the compiler's own equality: `PartialEq` below stays id-based
+    /// because callsite rebind detection (`Callee::DynamicBound { def
+    /// } if def == &v`) must distinguish same-source closures over
+    /// different captured environments.
+    pub src: ArcStr,
     pub env: Env,
     pub scope: Scope,
     pub argspec: Arc<[Arg]>,
@@ -1147,6 +1156,7 @@ impl Lambda {
         // signatures env-independent at static-bind time.
         let def = ctx.lambdawrap.wrap(LambdaDef {
             id,
+            src: ArcStr::from(spec.to_string()),
             typ: typ.clone(),
             env,
             argspec,

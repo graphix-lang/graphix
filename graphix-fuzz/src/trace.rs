@@ -18,9 +18,10 @@
 //! part of the bug bucket so the minimizer can't morph a missing-fire
 //! bug into a value bug while reducing.
 
-use graphix_compiler::expr::ExprId;
-use graphix_rt::{TraceEvent, TraceSegment};
+use graphix_compiler::{NoUserEvent, expr::ExprId, node::lambda::LambdaDef};
+use graphix_rt::{GXRt, NoExt, TraceEvent, TraceSegment};
 use netidx::publisher::Value;
+use triomphe::Arc;
 
 /// Runtime-side trace budgets (see [`graphix_rt::GXHandle::trace_start`]):
 /// total recorded events per trace, and active cycles per segment. Both
@@ -40,9 +41,34 @@ pub struct Epoch {
     pub capped: bool,
 }
 
+/// Recorded values must be COMPILE-STABLE, but a first-class FUNCTION
+/// value is a `LambdaDef` whose equality is its minted `LambdaId` —
+/// never equal across two compiles of the same program (the callsite
+/// rebind check needs that identity, so the compiler's equality can't
+/// change), so a program whose observable contains one flaked
+/// selfcheck under BOTH modes (`sum_to(i64:3, buffer::to_string)`,
+/// 2026-07-16). Normalize fn values — recursively through composites
+/// — to the lambda's printed SOURCE (`LambdaDef::src`): id-free, so
+/// same-program traces compare stable, while interp and jit returning
+/// DIFFERENT lambdas still diverge honestly.
+fn normalize(v: &Value) -> Value {
+    match v {
+        Value::Array(a) => Value::Array(a.iter().map(normalize).collect()),
+        Value::Error(e) => Value::Error(Arc::new(normalize(e))),
+        Value::Map(m) => {
+            Value::Map(m.into_iter().map(|(k, v)| (normalize(k), normalize(v))).collect())
+        }
+        v => match v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>() {
+            Some(def) => Value::String(def.src.clone()),
+            None => v.clone(),
+        },
+    }
+}
+
 impl Epoch {
     /// Project a runtime segment onto the watched expr: anchor at the
-    /// segment's first event, keep `Updated(eid)` values.
+    /// segment's first event, keep `Updated(eid)` values (fn values
+    /// normalized to their source — see [`normalize`]).
     pub fn from_segment(seg: &TraceSegment, eid: ExprId) -> Self {
         let anchor = match seg.events.first() {
             None => 0,
@@ -55,7 +81,7 @@ impl Epoch {
             .iter()
             .filter_map(|e| match e {
                 TraceEvent::Updated { cycle, id, value } if *id == eid => {
-                    Some(((*cycle - anchor) as u32, value.clone()))
+                    Some(((*cycle - anchor) as u32, normalize(value)))
                 }
                 TraceEvent::Updated { .. } | TraceEvent::Compiled { .. } => None,
             })
