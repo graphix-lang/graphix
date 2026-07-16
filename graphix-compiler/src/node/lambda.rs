@@ -506,17 +506,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 frame.clear();
                 frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
                 // A `None` arg rides the formal's previous value (the
-                // kernel's taint-gated rebind): skip the bind — the
-                // formal's value stays in `ctx.cached` from the last
-                // rebind (or the entry bind), and its absence from the
-                // frame reads back through the cache as STALE, matching
-                // the kernel keeping the old disc.
+                // kernel's taint-gated rebind, which keeps the old
+                // payload in the loop slot). The frame entry must be
+                // OVERWRITTEN with the last-rebind value from
+                // `ctx.cached`, stale-tagged: merely skipping the bind
+                // left the SEED entry — the ENTRY call's formal value —
+                // masking every intermediate rebind, so a loop whose
+                // arg bottomed on alternate iterations recomputed each
+                // recovery from the entry value (tailalt, 2026-07-16:
+                // `acc + 1/(n%2)` stuck at entry+1 where the kernel
+                // rides the running acc).
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
-                    if let Some(v) = v {
-                        pat.bind(v, &mut |id, v| {
+                    match v {
+                        Some(v) => pat.bind(v, &mut |id, v| {
                             ctx.rt.cached_mut().insert(id, v.clone());
                             frame.insert(id, TagValue::fired(v));
-                        })
+                        }),
+                        None => pat.ids(&mut |id| {
+                            if let Some(v) = ctx.rt.cached().get(&id) {
+                                frame.insert(id, TagValue::stale(v.clone()));
+                            }
+                        }),
                     }
                 }
             };
