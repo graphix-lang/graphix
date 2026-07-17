@@ -65,16 +65,27 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     // `[⊥, Error<ParseError>]` union, which a top-level-only check
     // missed — Bottom has no surface syntax, so a ⊥ member is always a
     // settle artifact, never an annotated target (soak-jul14b 000003).
-    let is_bottom = |t: &Type| {
-        matches!(t.with_deref(|t| t.cloned()), Some(Type::Bottom))
-            || matches!(t, Type::Bottom)
-    };
-    if is_bottom(&typ) {
-        return None;
+    // The walk is RECURSIVE through set members (jul16g divergence
+    // 000000: a nested-map callback's artifact arrived as
+    // `[[⊥, Error<ParseError>], Error<ParseError>]` — the ⊥ one level
+    // inside a set MEMBER, which the one-level check accepted; the
+    // fused parse then cast through the garbage union while the
+    // interp's runtime slot instance erred). Depth-capped against
+    // pathological recursive unions; recursion only descends Sets, so
+    // ordinary recursive types (variant members) terminate naturally.
+    fn contains_bottom(t: &Type, depth: u32) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        let t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
+        match t {
+            Type::Bottom => true,
+            Type::Set(els) => els.iter().any(|e| contains_bottom(e, depth + 1)),
+            _ => false,
+        }
     }
-    match typ.with_deref(|t| t.cloned()).unwrap_or_else(|| typ.clone()) {
-        Type::Set(els) if els.iter().any(|e| is_bottom(e)) => return None,
-        _ => (),
+    if contains_bottom(&typ, 0) {
+        return None;
     }
     Some(typ)
 }
