@@ -47,22 +47,70 @@ pub struct Epoch {
 /// rebind check needs that identity, so the compiler's equality can't
 /// change), so a program whose observable contains one flaked
 /// selfcheck under BOTH modes (`sum_to(i64:3, buffer::to_string)`,
-/// 2026-07-16). Normalize fn values — recursively through composites
-/// — to the lambda's printed SOURCE (`LambdaDef::src`): id-free, so
+/// 2026-07-16). Normalize fn values — through composites — to the
+/// lambda's printed SOURCE (`LambdaDef::src`): id-free, so
 /// same-program traces compare stable, while interp and jit returning
 /// DIFFERENT lambdas still diverge honestly.
+///
+/// Iterative post-order rebuild: value nesting depth is
+/// program-controlled (a 500k-element `list::init` is a 500k-deep cons
+/// chain — the recursive version overflowed the harness's stack,
+/// jul17a crash_000003), so the walk carries explicit stacks.
 fn normalize(v: &Value) -> Value {
-    match v {
-        Value::Array(a) => Value::Array(a.iter().map(normalize).collect()),
-        Value::Error(e) => Value::Error(Arc::new(normalize(e))),
-        Value::Map(m) => {
-            Value::Map(m.into_iter().map(|(k, v)| (normalize(k), normalize(v))).collect())
-        }
-        v => match v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>() {
-            Some(def) => Value::String(def.src.clone()),
-            None => v.clone(),
-        },
+    enum Task<'a> {
+        Visit(&'a Value),
+        BuildArray(usize),
+        BuildError,
+        BuildMap(usize),
     }
+    let mut work: Vec<Task> = vec![Task::Visit(v)];
+    let mut out: Vec<Value> = Vec::new();
+    while let Some(t) = work.pop() {
+        match t {
+            Task::Visit(Value::Array(a)) => {
+                work.push(Task::BuildArray(a.len()));
+                for e in a.iter().rev() {
+                    work.push(Task::Visit(e));
+                }
+            }
+            Task::Visit(Value::Error(e)) => {
+                work.push(Task::BuildError);
+                work.push(Task::Visit(e));
+            }
+            Task::Visit(Value::Map(m)) => {
+                work.push(Task::BuildMap(m.len()));
+                let pairs: Vec<(&Value, &Value)> = m.into_iter().collect();
+                for (k, v) in pairs.into_iter().rev() {
+                    work.push(Task::Visit(v));
+                    work.push(Task::Visit(k));
+                }
+            }
+            Task::Visit(v) => {
+                out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>() {
+                    Some(def) => Value::String(def.src.clone()),
+                    None => v.clone(),
+                })
+            }
+            Task::BuildArray(n) => {
+                let arr: Value = Value::Array(out.drain(out.len() - n..).collect());
+                out.push(arr);
+            }
+            Task::BuildError => {
+                let e = out.pop().expect("normalize: error payload missing");
+                out.push(Value::Error(Arc::new(e)));
+            }
+            Task::BuildMap(n) => {
+                let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(n);
+                let mut it = out.drain(out.len() - n * 2..);
+                while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                    pairs.push((k, v));
+                }
+                drop(it);
+                out.push(Value::Map(pairs.into_iter().collect()));
+            }
+        }
+    }
+    out.pop().expect("normalize: empty result stack")
 }
 
 impl Epoch {

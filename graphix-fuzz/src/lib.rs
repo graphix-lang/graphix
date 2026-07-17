@@ -649,7 +649,13 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     if matches!(&interp, Outcome::Timeout)
         && matches!(&jit, Outcome::Trace(t) if t.epochs.iter().any(|e| !e.events.is_empty()))
     {
-        let slow = run_program(code, Mode::Interp, timeout * 8).await;
+        // Absolute floor: the scale gap is unbounded (a 500k
+        // `array::init` is ~10s of node-walk CPU vs instant native, and
+        // soak load stretches CPU seconds into wall minutes — jul17a
+        // divergence_000000), so a pure multiple of a small lane budget
+        // under-escalates exactly when the machine is busiest.
+        let slow_budget = (timeout * 8).max(Duration::from_secs(60));
+        let slow = run_program(code, Mode::Interp, slow_budget).await;
         if slow.agrees_with_at(&jit, tier) {
             return None;
         }
@@ -1646,8 +1652,16 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
     // The child runs interp+jit with its own internal per-mode `timeout`
     // (Timeout is a NORMAL outcome there) — the outer deadline only
     // catches a wedged child (a compile-time hang, a runaway that dodges
-    // the guard page), with margin for pool contention.
-    let deadline = timeout * 4 + Duration::from_secs(30);
+    // the guard page), with margin for pool contention. It must cover
+    // the child's whole legitimate worst case: the concurrent first
+    // runs, `check()`'s escalation retry (whose budget has a 60s
+    // floor), and the nondeterminism re-run — a compute-bound
+    // single-cycle program can't be preempted by the internal timeout
+    // (no await point mid-cycle), so under-margining reaps children
+    // that would have self-cleared (jul17a crash_000001).
+    let deadline = timeout * 4
+        + (timeout * 8).max(Duration::from_secs(60))
+        + Duration::from_secs(30);
     let out = match tokio::time::timeout(deadline, child.wait_with_output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return PoolResult::Crash(format!("wait: {e}")),
