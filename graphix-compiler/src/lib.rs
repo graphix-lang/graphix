@@ -1642,6 +1642,15 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// frames nest. The per-value fired/taint channels themselves ride
     /// [`TagValue`] — see `design/replay_frames.md` v2.
     pub(crate) frame_depth: u32,
+    /// The REAL `event.init` of the dispatch whose evaluation frames
+    /// are currently running (frames FORCE `event.init` for
+    /// re-derivation, so literal nodes can't read the flag directly).
+    /// The interp twin of the kernel's `init_flag` wire slot, which is
+    /// uniform across all of an invocation's loop iterations: a
+    /// constant inside a frame produces FIRED iff the dispatch itself
+    /// was a genuine init (`const_stale_gate`). Only meaningful when
+    /// `frame_depth > 0`.
+    pub(crate) frame_init: bool,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1686,6 +1695,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
             frame_depth: 0,
+            frame_init: false,
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

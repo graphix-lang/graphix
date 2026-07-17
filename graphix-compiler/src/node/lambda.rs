@@ -191,6 +191,20 @@ fn seed_externals<R: Rt, E: UserEvent>(
     });
 }
 
+/// True iff any of the body's external refs — formals or CAPTURES —
+/// delivered a triggering event this cycle: the interp's read of the
+/// kernel's "any param fired" entry condition (kernel params are
+/// formals ++ captures).
+fn externals_triggered<R: Rt, E: UserEvent>(body: &Node<R, E>, event: &Event<E>) -> bool {
+    let mut refs = Refs::default();
+    body.refs(&mut refs);
+    let mut hit = false;
+    refs.with_external_refs(|id| {
+        hit |= event.variables.get(&id).is_some_and(|tv| tv.tag().triggers());
+    });
+    hit
+}
+
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     /// The lambda definition's stable id. All `GXLambda` instances
     /// produced from the same `LambdaDef::init` carry the same id;
@@ -462,7 +476,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             let mut seeds: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
             let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
             let mut reentered = false;
-            let framed = self.prev_looped && !event.init && entry_fired;
+            // "Genuinely fired" includes CAPTURES, not just formal
+            // deliveries: the kernel's params are formals ++ captures,
+            // so a capture fire re-runs the whole body there. A
+            // capture-fed jump arg (`countdown(n - 1, x / 3)`) left
+            // the interp's recursive arm ASLEEP on capture-only
+            // cycles (the retained tail-select arm gated it) — fired
+            // once where the kernel fired per capture event (jul16g
+            // fuzz divergence 000001). Safe now that framed
+            // re-derivation carries the honest tag algebra (the
+            // tail-spine no-fold + becoming-selected rules in
+            // node/select.rs — replay-frames v3): re-deriving is not
+            // re-firing.
+            let framed = self.prev_looped
+                && !event.init
+                && (entry_fired || externals_triggered(&self.body, event));
             let mut seeded = false;
             if framed {
                 seed_externals(&self.body, ctx, event, &mut seeds);
@@ -482,9 +510,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 } else {
                     mem::swap(&mut event.variables, &mut *frame);
                     let prev = mem::replace(&mut event.init, true);
+                    // The dispatch's REAL init rides beside the forced
+                    // one: literal nodes inside frames produce FIRED
+                    // iff the dispatch itself was a genuine init — the
+                    // kernel's `init_flag`, uniform across all of an
+                    // invocation's iterations (`const_stale_gate`). A
+                    // dispatch already INSIDE another loop's frames
+                    // saw the outer's forced flag, so the real init
+                    // INHERITS through nesting (the kernel threads the
+                    // parent's flag into callee invocations).
+                    let real = if ctx.frame_depth > 0 { ctx.frame_init } else { prev };
+                    let prev_fi = mem::replace(&mut ctx.frame_init, real);
                     ctx.frame_depth += 1;
                     let res = self.body.update(ctx, event);
                     ctx.frame_depth -= 1;
+                    ctx.frame_init = prev_fi;
                     event.init = prev;
                     mem::swap(&mut event.variables, &mut *frame);
                     res
@@ -503,19 +543,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 }
                 let p = ctx.pending_tail_call.take().unwrap();
                 self.body.reset_replay(ctx);
-                frame.clear();
+                // A `None` arg rides the formal's previous ENTRY —
+                // value AND tag — exactly the kernel's taint-gated
+                // rebind, which keeps both the old payload and the old
+                // disc in the loop slot. Riding the value alone with a
+                // forced STALE tag under-fired: a formal delivered
+                // FIRED at entry (or rebound FIRED earlier in this
+                // same evaluation) stays fired when a later jump rides
+                // it (tailalt3's final-jump ride read the base arm
+                // stale; countdown's init emission was suppressed the
+                // same way). Lookup order: the previous frame (last
+                // rebind in this evaluation), the real event (the
+                // entry delivery), the runtime cache (stale value
+                // channel).
+                let prev: LPooled<IntMap<BindId, TagValue>> =
+                    mem::replace(&mut frame, LPooled::take());
                 frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
-                // A `None` arg rides the formal's previous value (the
-                // kernel's taint-gated rebind, which keeps the old
-                // payload in the loop slot). The frame entry must be
-                // OVERWRITTEN with the last-rebind value from
-                // `ctx.cached`, stale-tagged: merely skipping the bind
-                // left the SEED entry — the ENTRY call's formal value —
-                // masking every intermediate rebind, so a loop whose
-                // arg bottomed on alternate iterations recomputed each
-                // recovery from the entry value (tailalt, 2026-07-16:
-                // `acc + 1/(n%2)` stuck at entry+1 where the kernel
-                // rides the running acc).
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
                     match v {
                         Some(v) => pat.bind(v, &mut |id, v| {
@@ -523,8 +566,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                             frame.insert(id, TagValue::fired(v));
                         }),
                         None => pat.ids(&mut |id| {
-                            if let Some(v) = ctx.rt.cached().get(&id) {
-                                frame.insert(id, TagValue::stale(v.clone()));
+                            let tv = prev.get(&id).cloned().or_else(|| {
+                                event.variables.get(&id).cloned().or_else(|| {
+                                    ctx.rt
+                                        .cached()
+                                        .get(&id)
+                                        .map(|v| TagValue::stale(v.clone()))
+                                })
+                            });
+                            if let Some(tv) = tv {
+                                frame.insert(id, tv);
                             }
                         }),
                     }
@@ -556,20 +607,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // event and keeps its organic tag.
             match res {
                 Some(tv) if (reentered || framed) && !tv.is_tainted() => {
-                    let entry = entry_fired || {
-                        let mut refs = Refs::default();
-                        self.body.refs(&mut refs);
-                        let mut hit = false;
-                        refs.with_external_refs(|id| {
-                            hit |= event
-                                .variables
-                                .get(&id)
-                                .is_some_and(|tv| tv.tag().triggers());
-                        });
-                        hit
-                    };
-                    let v = tv.value();
-                    Some(if entry { TagValue::fired(v) } else { TagValue::stale(v) })
+                    // DOWNGRADE-only (replay-frames v3): with
+                    // constants stale inside frames, frame-forced
+                    // init never counting as a fire, and the
+                    // tail-spine no-scrutinee-fold, the body's
+                    // organic tag IS the kernel's disc algebra — ride
+                    // it. The stale force below only protects the #8
+                    // class (a dispatch nothing genuinely triggered
+                    // must not emit); the old unconditional
+                    // FIRED-upgrade re-fired results whose fired
+                    // inputs a quiet select had suppressed.
+                    let entry = entry_fired || externals_triggered(&self.body, event);
+                    if entry { Some(tv) } else { Some(TagValue::stale(tv.value())) }
                 }
                 res => res,
             }
@@ -1248,10 +1297,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // production rule as `Constant`: FIRED at init, the STALE
         // value channel inside frames (a framed `let f = |..| ..`
         // re-binds quietly so the body's call sites stay computable).
-        if event.init {
+        // Frame depth first — frames force init (see Constant).
+        if ctx.frame_depth > 0 {
+            if ctx.frame_init {
+                Some(TagValue::fired(self.def.clone()))
+            } else {
+                Some(TagValue::stale(self.def.clone()))
+            }
+        } else if event.init {
             Some(TagValue::fired(self.def.clone()))
-        } else if ctx.frame_depth > 0 {
-            Some(TagValue::stale(self.def.clone()))
         } else {
             None
         }

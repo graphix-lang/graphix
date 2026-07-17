@@ -61,10 +61,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
             // a per-site instance's `let res = []` seed died after
             // frame resets and its For bottomed on the missing init,
             // firing-jul2026/03).
-            if event.init {
+            // Frame depth first — frames force init (see Constant).
+            if ctx.frame_depth > 0 {
+                return Some(if ctx.frame_init {
+                    TagValue::fired(Value::Map(CMap::new()))
+                } else {
+                    TagValue::stale(Value::Map(CMap::new()))
+                });
+            } else if event.init {
                 return Some(TagValue::fired(Value::Map(CMap::new())));
-            } else if ctx.frame_depth > 0 {
-                return Some(TagValue::stale(Value::Map(CMap::new())));
             }
             return None;
         }

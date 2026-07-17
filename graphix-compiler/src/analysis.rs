@@ -551,6 +551,13 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
             for (_, body) in s.arms.iter() {
                 any |= mark_tail_sites(&body.node, instance, callee);
             }
+            if any {
+                // This select is on the TAIL SPINE — its emits ride
+                // the arm's organic tag inside evaluation frames (the
+                // interp twin of the kernel's `emit_body_tail`
+                // no-scrutinee-fold rule; see `Select::tail_position`).
+                s.tail_position.store(true, Ordering::Relaxed);
+            }
             any
         }
         NodeView::CallSite(cs) => {

@@ -15,7 +15,7 @@ use enumflags2::BitFlags;
 use netidx::subscriber::Value;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
-use std::collections::hash_map::Entry;
+use std::{collections::hash_map::Entry, sync::atomic::Ordering};
 
 atomic_id!(SelectId);
 
@@ -26,6 +26,18 @@ pub struct Select<R: Rt, E: UserEvent> {
     pub arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
     pub typ: Type,
     pub(crate) spec: Expr,
+    /// `true` iff this select sits on a tail-recursive lambda's TAIL
+    /// SPINE (the dispatch select whose arms terminate the loop or
+    /// jump — marked by `analysis::mark_tail_sites`, written through
+    /// `&self` hence the atomic). A tail select's emit rides the
+    /// ARM's organic tag alone: the scrutinee is the loop variable,
+    /// and its per-iteration firing (jump rebinds deliver FIRED) is
+    /// loop plumbing, not an observable event — the interp twin of
+    /// the kernel's `emit_body_tail` no-scrutinee-fold rule. Value-
+    /// position selects keep the normal fold (result fires iff the
+    /// arm production or the consumed scrutinee fired — the #178
+    /// disc algebra).
+    pub(crate) tail_position: std::sync::atomic::AtomicBool,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
@@ -39,7 +51,14 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         spec: Expr,
     ) -> Node<R, E> {
         let arms = arms.into_iter().map(|(p, n)| (p, Cached::new(n))).collect::<Vec<_>>();
-        Box::new(Self { spec, typ, arg: Cached::new(arg), arms, selected: None })
+        Box::new(Self {
+            spec,
+            typ,
+            arg: Cached::new(arg),
+            arms,
+            selected: None,
+            tail_position: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
     pub(crate) fn compile(
@@ -72,7 +91,14 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             .collect::<Result<Vec<_>>>()
             .with_context(|| format!("in select at {}", spec.pos))?;
         let typ = Type::empty_tvar();
-        Ok(Box::new(Self { spec, typ, arg, arms, selected: None }))
+        Ok(Box::new(Self {
+            spec,
+            typ,
+            arg,
+            arms,
+            selected: None,
+            tail_position: std::sync::atomic::AtomicBool::new(false),
+        }))
     }
 }
 
@@ -82,7 +108,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        let Self { selected, arg, arms, typ: _, spec: _ } = self;
+        let Self { selected, arg, arms, typ: _, spec: _, tail_position } = self;
         let mut pat_up = false;
         let arg_prod = arg.update(ctx, event);
         // Destructuring-consumer force (the kernel's is_tainted gate at
@@ -123,9 +149,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 event.variables.len()
             );
         }
+        // TAIL-SPINE selects inside evaluation FRAMES ride the ARM's
+        // organic tag alone: the scrutinee is the loop variable, whose
+        // per-jump FIRED deliveries are loop plumbing, not observable
+        // events (the kernel's `emit_body_tail` no-scrutinee-fold
+        // rule; replay-frames v3, 2026-07-16 — a call's result is an
+        // event iff an input the result depends on fired). At frame
+        // depth 0 the scrutinee firing is a genuine entry event and
+        // the normal fold applies.
+        let tail = tail_position.load(Ordering::Relaxed) && ctx.frame_depth > 0;
         // An arm result's tag: tainted if the arm's resident value is a
-        // placeholder; else fired iff the arm production or the
-        // scrutinee production fired this cycle (consumption), else
+        // placeholder; else fired iff the arm production fired, or the
+        // scrutinee production fired and was consumed (the #178 disc
+        // algebra fold — suppressed on the in-frame tail spine); else
         // stale (the value channel).
         macro_rules! emit {
             ($i:expr, $prod:expr) => {{
@@ -133,7 +169,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 if arms[i].1.tag.is_tainted() {
                     Some(TagValue::tainted(Value::Null))
                 } else {
-                    let fired = $prod.is_some_and(|t: Tag| t.is_fired()) || arg_fired;
+                    let fired =
+                        $prod.is_some_and(|t: Tag| t.is_fired()) || (arg_fired && !tail);
                     let tag = if fired { Tag::FIRED } else { Tag::STALE };
                     arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
                 }
@@ -166,78 +203,58 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     }
                     *selected = Some(i);
                     bind!(i);
+                    // Seed the woken arm's quiet externals from the
+                    // runtime cache so it can evaluate (the arm's init
+                    // view); already-delivered ids keep their honest
+                    // event entries.
                     let mut refs = Refs::default();
                     arms[i].1.node.refs(&mut refs);
-                    // The select's OWN pattern binds were just
-                    // inserted by `bind!` above — they derive from the
-                    // SCRUTINEE (whose firing is already the trigger
-                    // signal), so they must not count as fired body
-                    // inputs: counting them made a const-scrutinee
-                    // select fire every frame and the enclosing fold
-                    // over-fire vs the ruled body-driven semantics
-                    // (soak-jul12l divergence_000001, the iter-fed
-                    // const-body fold).
-                    let mut own: LPooled<nohash::IntSet<BindId>> = LPooled::take();
-                    arms[i].0.structure_predicate.ids(&mut |id| {
-                        own.insert(id);
-                    });
-                    let mut body_input_fired = false;
                     refs.with_external_refs(|id| {
-                        match event.variables.entry(id) {
-                            // A REAL delivery to a body input this
-                            // cycle — its honest tag is the one signal
-                            // the forced-init wake below doesn't
-                            // corrupt, and the kernel's arm merge fires
-                            // iff a consumed input fired (a filter
-                            // body's element bind arrives FIRED every
-                            // re-run; jul12f generate 000000).
-                            Entry::Occupied(e) => {
-                                if !own.contains(&id) {
-                                    body_input_fired |= e.get().tag().is_fired();
-                                }
-                            }
-                            Entry::Vacant(e) => {
-                                if let Some(v) = ctx.rt.cached().get(&id) {
-                                    // FIRED: an arm wake is the arm's init view
-                                    e.insert(TagValue::fired(v.clone()));
-                                    set.push(id);
-                                }
+                        if let Entry::Vacant(e) = event.variables.entry(id) {
+                            if let Some(v) = ctx.rt.cached().get(&id) {
+                                // FIRED: an arm wake is the arm's init view
+                                e.insert(TagValue::fired(v.clone()));
+                                set.push(id);
                             }
                         }
                     });
                     let init = event.init;
                     event.init = true;
-                    arms[i].1.update(ctx, event);
+                    let prod = arms[i].1.update(ctx, event);
                     event.init = init;
                     for id in set.drain(..) {
                         event.variables.remove(&id);
                     }
                     if arms[i].1.tag.is_tainted() {
                         Some(TagValue::tainted(Value::Null))
-                    } else {
-                        // The wake's forced init view makes the arm's
-                        // constants produce FIRED regardless of what
-                        // caused the wake — derive the result tag from
-                        // the TRIGGER instead (the tail-loop re-entry
-                        // rule): a real init, a FIRED scrutinee, or a
-                        // guard re-selection is a genuine event; a
-                        // frame's replay-reset re-deriving the SAME
-                        // selection from a stale scrutinee production
-                        // is the value channel (jul12a 000000: a
-                        // const-scrutinee select in a fold body fired
-                        // every frame, where the kernel's arm merge is
-                        // correctly quiet). PLUS `body_input_fired`:
-                        // an arm body that consumed a genuinely FIRED
-                        // delivery (a loop's element/acc bind) fired
-                        // regardless of the scrutinee — a const-body
-                        // predicate makes the scrutinee STALE in every
-                        // frame, and trigger-only capping suppressed
-                        // the whole loop result while the kernel's
-                        // consumed-input merge correctly fired
-                        // (jul12f generate 000000, the filter re-run).
-                        let fired = event.init || arg_fired || pat_up || body_input_fired;
+                    } else if tail {
+                        // A selection change on the in-frame tail
+                        // spine is loop mechanics (the dispatch arm
+                        // oscillates between the jump and base arms
+                        // every framed evaluation) — the result is an
+                        // event iff the arm's own production fired
+                        // (jump-rebound formals and frame seeds carry
+                        // honest tags, so the organic tag IS the
+                        // kernel's disc algebra). Residual: a guard-
+                        // driven re-selection of a const arm on the
+                        // tail spine reads stale here where the
+                        // kernel's entry-derived seam fires — no known
+                        // witness; revisit if the fuzzer finds one.
+                        let fired = prod.is_some_and(|t| t.is_fired());
                         let tag = if fired { Tag::FIRED } else { Tag::STALE };
                         arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
+                    } else {
+                        // BECOMING selected is the fire (Eric's ruled
+                        // select semantics; the kernel's selection-
+                        // memory word compare). `selected` is semantic
+                        // state that persists across frames and cycles
+                        // (5e246d2f), so reaching this path at all
+                        // means the selection genuinely changed — the
+                        // old trigger-derivation (and its
+                        // body_input_fired approximation, which
+                        // over-counted deliveries a quiet inner select
+                        // had suppressed) is subsumed.
+                        arms[i].1.cached.clone().map(|v| TagValue::fired(v))
                     }
                 }
                 (None, Some(j)) => {
@@ -251,7 +268,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let Self { selected: _, arg, arms, typ: _, spec: _ } = self;
+        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
         arg.node.delete(ctx);
         for (pat, arg) in arms {
             arg.node.delete(ctx);
@@ -260,7 +277,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let Self { selected: _, arg, arms, typ: _, spec: _ } = self;
+        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
         arg.sleep(ctx);
         for (pat, arg) in arms {
             arg.sleep(ctx);
@@ -287,7 +304,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // UNCHANGED selections, and contradicting fused region
         // kernels, whose selection words are semantic and survive
         // `Kernel::reset_replay`.
-        let Self { selected: _, arg, arms, typ: _, spec: _ } = self;
+        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
             arg.reset_replay(ctx);
@@ -298,7 +315,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        let Self { selected: _, arg, arms, typ: _, spec: _ } = self;
+        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
         arg.node.refs(refs);
         for (pat, arg) in arms {
             arg.node.refs(refs);

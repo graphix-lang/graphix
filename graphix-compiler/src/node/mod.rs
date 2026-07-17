@@ -532,16 +532,31 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        if event.init {
-            Some(TagValue::fired(self.value.clone()))
-        } else if ctx.frame_depth > 0 {
+        // FRAME DEPTH FIRST: frames force `event.init`, so checking
+        // init before the frame gate made constants produce FIRED on
+        // every framed evaluation — the frame-stale arm was
+        // unreachable exactly where it was written for. Latent while
+        // the select/lambda result derivations were trigger-coarse;
+        // surfaced by the organic-tag algebra (replay-frames v3 —
+        // gtailr epoch 2: a quiet-selection cycle fired because the
+        // inner select's CONST scrutinee read as fired-under-forced-
+        // init). A genuine init is always frame depth 0.
+        if ctx.frame_depth > 0 {
             // In-frame VALUE channel: the kernel recomputes every
             // constant per invocation with a `const_stale_gate`d disc
-            // — the node-walk twin is a STALE production on every
-            // framed evaluation, so a body that reads only constants
-            // computes (quietly) instead of bottoming when the frame
-            // discipline has cleared its consumers' operand caches.
-            Some(TagValue::stale(self.value.clone()))
+            // — FIRED iff the dispatch itself was a genuine init
+            // (`ctx.frame_init`, the invocation-uniform kernel
+            // `init_flag`), else the STALE value channel, so a body
+            // that reads only constants computes (quietly) instead of
+            // bottoming when the frame discipline has cleared its
+            // consumers' operand caches.
+            if ctx.frame_init {
+                Some(TagValue::fired(self.value.clone()))
+            } else {
+                Some(TagValue::stale(self.value.clone()))
+            }
+        } else if event.init {
+            Some(TagValue::fired(self.value.clone()))
         } else {
             None
         }
