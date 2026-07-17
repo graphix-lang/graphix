@@ -12,7 +12,10 @@ use graphix_fuzz::{
     Corpus, Mode, Outcome, check, fuzz, generate_campaign, minimize,
     regression_corpus_len, run_regression,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 /// Parse an iteration count. `forever`/`inf`/`0` → run forever (`None`);
 /// a number → that many; absent/garbage → a sane default.
@@ -28,19 +31,41 @@ fn fmt_iters(iters: Option<usize>) -> String {
     iters.map_or_else(|| "forever".to_string(), |n| n.to_string())
 }
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+// The base budgets below are tuned for ryouko; the soak fleet's other
+// machines are slower and non-uniform, so every budget scales by
+// GRAPHIX_FUZZ_TIMEOUT_SCALE (an integer multiplier, default 1, set
+// per machine at campaign launch like GRAPHIX_FUZZ_PAR). Scaling at
+// the source keeps every derived margin — the isolated child's outer
+// deadline, the check() escalation floor's *relative* part — coherent.
+static TIMEOUT_SCALE: LazyLock<u32> = LazyLock::new(|| {
+    std::env::var("GRAPHIX_FUZZ_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n| (1..=100).contains(n))
+        .unwrap_or(1)
+});
+
+fn timeout() -> Duration {
+    Duration::from_secs(10) * *TIMEOUT_SCALE
+}
+
 // A regression surfaces fast (crash / value mismatch); a legitimately-
 // bottom program just needs to confirm "still all-Timeout", so a short
 // per-program timeout keeps the gate quick even as the corpus grows.
-const REGRESS_TIMEOUT: Duration = Duration::from_secs(3);
+fn regress_timeout() -> Duration {
+    Duration::from_secs(3) * *TIMEOUT_SCALE
+}
+
 // Campaign timeout: generated/mutated programs terminate in milliseconds
 // or produce bottom — a short timeout means a bottom program doesn't sleep
 // 30s (3 modes × 10s), so the worker pool refills fast and the cores stay
 // busy. A real divergence (value mismatch / crash) surfaces well within 3s.
-const CAMPAIGN_TIMEOUT: Duration = Duration::from_secs(3);
+fn campaign_timeout() -> Duration {
+    Duration::from_secs(3) * *TIMEOUT_SCALE
+}
 
 async fn print_regression() -> usize {
-    let regr = run_regression(REGRESS_TIMEOUT).await;
+    let regr = run_regression(regress_timeout()).await;
     println!(
         "regression corpus: {} programs, {} regressions",
         regression_corpus_len(),
@@ -283,7 +308,7 @@ async fn main() -> Result<()> {
             let mut next = 0usize;
             let spawn = |set: &mut tokio::task::JoinSet<_>, i: usize, p: String| {
                 set.spawn(async move {
-                    (i, graphix_fuzz::run_program(&p, Mode::Interp, TIMEOUT).await)
+                    (i, graphix_fuzz::run_program(&p, Mode::Interp, timeout()).await)
                 });
             };
             while next < progs.len() && set.len() < par {
@@ -367,7 +392,7 @@ async fn main() -> Result<()> {
             // The generous per-run timeout keeps loaded-gate JIT runs
             // (which pay compile cost under heavy parallelism) from
             // breaching the backstop and reading as flakes.
-            let flaky = graphix_fuzz::selfcheck(iters, seed, TIMEOUT).await;
+            let flaky = graphix_fuzz::selfcheck(iters, seed, timeout()).await;
             if flaky.is_empty() {
                 println!("selfcheck OK — every trace deterministic in both modes");
             } else {
@@ -402,7 +427,7 @@ async fn main() -> Result<()> {
         // (the cut is inherently racy; the parent skips the pair).
         Some("detcheck-one") => {
             let code = read_stdin()?;
-            match graphix_fuzz::run_program(code.trim(), Mode::Jit, TIMEOUT).await {
+            match graphix_fuzz::run_program(code.trim(), Mode::Jit, timeout()).await {
                 graphix_fuzz::Outcome::CompileErr(e) => {
                     eprintln!("COMPILE REJECT: {e}");
                     std::process::exit(3);
@@ -440,7 +465,7 @@ async fn main() -> Result<()> {
                 graphix_fuzz::oracle_tier(prog) == graphix_fuzz::OracleTier::Exact
             });
             let skipped = total - programs.len();
-            let flaps = graphix_fuzz::detcheck(programs, TIMEOUT).await;
+            let flaps = graphix_fuzz::detcheck(programs, timeout()).await;
             for (name, detail) in &flaps {
                 println!("FLAP {name}: {detail}");
             }
@@ -456,7 +481,7 @@ async fn main() -> Result<()> {
         }
         Some("check-one") => {
             let code = read_stdin()?;
-            let status = match check(code.trim(), CAMPAIGN_TIMEOUT).await {
+            let status = match check(code.trim(), campaign_timeout()).await {
                 None => 0,
                 Some(_) => 10,
             };
@@ -471,7 +496,7 @@ async fn main() -> Result<()> {
         Some("selfcheck-one") => {
             let code = read_stdin()?;
             let mut mask = 0;
-            for mode in graphix_fuzz::selfcheck_one(code.trim(), TIMEOUT).await {
+            for mode in graphix_fuzz::selfcheck_one(code.trim(), timeout()).await {
                 match mode {
                     "interp" => mask |= 1,
                     "jit" => mask |= 2,
@@ -491,7 +516,7 @@ async fn main() -> Result<()> {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("minimize-one requires an output path"))?;
             let code = read_stdin()?;
-            let (min, _) = minimize(code.trim(), CAMPAIGN_TIMEOUT, 80).await;
+            let (min, _) = minimize(code.trim(), campaign_timeout(), 80).await;
             std::fs::write(&out_path, min)?;
         }
         Some(cmd @ ("generate" | "fuzz")) => {
@@ -534,9 +559,10 @@ async fn main() -> Result<()> {
                 out.display()
             );
             let stats = if cmd == "fuzz" {
-                fuzz(iters, seed, CAMPAIGN_TIMEOUT, &corpus).await
+                fuzz(iters, seed, campaign_timeout(), &corpus).await
             } else {
-                generate_campaign(iters, seed, CAMPAIGN_TIMEOUT, &corpus, reactive).await
+                generate_campaign(iters, seed, campaign_timeout(), &corpus, reactive)
+                    .await
             };
             // (Only reached in finite mode; `forever` runs until killed.)
             let new = corpus.len() - before;
@@ -558,8 +584,8 @@ async fn main() -> Result<()> {
                 None => bail!("usage: graphix-fuzz minimize <file>"),
             };
             let code = std::fs::read_to_string(path)?;
-            let (min, calls) = minimize(code.trim(), TIMEOUT, 200).await;
-            match check(&min, TIMEOUT).await {
+            let (min, calls) = minimize(code.trim(), timeout(), 200).await;
+            match check(&min, timeout()).await {
                 None => println!("no divergence to minimize (program agrees)"),
                 Some(d) => {
                     println!("minimized ({calls} checks) — {}", d.bisect());
@@ -579,7 +605,7 @@ async fn main() -> Result<()> {
                 "run" => {
                     for mode in [Mode::Interp, Mode::Jit] {
                         let (o, stats) =
-                            graphix_fuzz::run_program_with_stats(code, mode, TIMEOUT)
+                            graphix_fuzz::run_program_with_stats(code, mode, timeout())
                                 .await;
                         println!("{mode:?}: {}", render(&o));
                         // Stats are compile-time fusion counters; only the
@@ -595,7 +621,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                "check" => match check(code, TIMEOUT).await {
+                "check" => match check(code, timeout()).await {
                     None => println!("AGREE — interp and jit produce the same result"),
                     Some(d) => {
                         println!("DIVERGENCE — {}", d.bisect());

@@ -346,56 +346,27 @@ async fn drive(
         future::pending::<()>().await
     };
     tokio::pin!(drain);
+    // A deadline breach IS `Timeout`, always — on EVERY step. The
+    // interrupt + grace still run, but only so the runtime unwinds
+    // cleanly, never to reclassify. Reclassification (an interrupted
+    // step that then completes reports its normal result) was a RACE
+    // on any step: `interrupt()` is a one-shot flag polled by fused
+    // kernels and node-walk guards, so it may have ABORTED an in-
+    // flight cycle's output to bottom before the step completed — the
+    // run then looks clean but its trace is silently missing events.
+    // Wait steps learned this from the deref-echo class (soak jul05
+    // items 3/20/24: Timeout vs Trace([]) flipped run-to-run); the
+    // compile step kept a lenient reclassify-and-continue because a
+    // slow stdlib compile under gate load must not read as a wedged
+    // program — but the FIRST UPDATE CYCLE runs inside compile, so an
+    // interrupt landing there bottomed a fused kernel's only output
+    // and recorded an empty-but-uncapped epoch 0 as a "divergence"
+    // (mazikeen jul17b divergences 000000/000001 — load-only, AGREE
+    // 4/4 idle on the same binary). Honest Timeout is safe now that
+    // `check()`'s escalation ladder retries one-sided timeouts at a
+    // 60s-floored budget: legitimately slow runs self-clear, wedged
+    // ones stay Timeout.
     macro_rules! bounded {
-        ($fut:expr, $on_ok:pat => $ok:expr, $on_err:pat => $err:expr) => {{
-            let f = $fut;
-            tokio::pin!(f);
-            tokio::select! {
-                biased;
-                r = &mut f => match r { $on_ok => $ok, $on_err => $err },
-                _ = &mut drain => unreachable!(),
-                _ = &mut deadline => {
-                    // A wedged evaluator may be ABORTABLE: runaway call
-                    // trees and scaffold loops poll the cooperative
-                    // interrupt. Set it and give a grace period — a
-                    // bottom-and-answer becomes a normal outcome
-                    // instead of a killed child slot.
-                    ctx.rt.interrupt();
-                    match tokio::time::timeout(
-                        Duration::from_millis(750),
-                        &mut f,
-                    )
-                    .await
-                    {
-                        Ok(r) => {
-                            // Re-arm: a completed Sleep must not be
-                            // re-polled, and the remaining steps get a
-                            // fresh budget.
-                            deadline
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + timeout);
-                            match r { $on_ok => $ok, $on_err => $err }
-                        }
-                        Err(_) => return Outcome::Timeout,
-                    }
-                }
-            }
-        }};
-    }
-    // The wall-clock-breached twin of `bounded!` for the VERDICT-
-    // carrying wait steps: a deadline breach IS `Timeout`, always. The
-    // interrupt + grace still run — but only so the runtime unwinds
-    // cleanly, never to reclassify. `bounded!`'s reclassification (an
-    // interrupted step that then completes reports its normal result)
-    // is right for the compile steps — a slow stdlib compile under gate
-    // load must not read as a wedged program — but on a wait step it
-    // made the verdict a RACE: `interrupt()` is a one-shot flag cleared
-    // at cycle end, so for a fast-cycling reactive runaway (the
-    // deref-echo class, soak jul05 items 3/20/24) it lands in a poll
-    // window only sometimes — the same program flipped between Timeout
-    // (interrupt lost, grace expired) and Trace([]) (echo died, idle
-    // resolved) run-to-run, in BOTH modes independently.
-    macro_rules! wait_bounded {
         ($fut:expr, $on_ok:pat => $ok:expr, $on_err:pat => $err:expr) => {{
             let f = $fut;
             tokio::pin!(f);
@@ -423,7 +394,7 @@ async fn drive(
     // 150ms/epoch tax would slow every campaign check).
     macro_rules! wait_settled {
         () => {{
-            let mut seg = wait_bounded!(
+            let mut seg = bounded!(
                 ctx.rt.trace_wait_idle(),
                 Ok(s) => s,
                 Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
@@ -431,7 +402,7 @@ async fn drive(
             if tier == OracleTier::FinalValues {
                 for _ in 0..8 {
                     tokio::time::sleep(Duration::from_millis(150)).await;
-                    let more = wait_bounded!(
+                    let more = bounded!(
                         ctx.rt.trace_wait_idle(),
                         Ok(s) => s,
                         Err(e) => {
