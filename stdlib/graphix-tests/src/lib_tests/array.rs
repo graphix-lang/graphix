@@ -475,6 +475,62 @@ run!(array_fold_may_bottom, ARRAY_FOLD_MAY_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 });
 
+// A VALUE-shaped fold acc (the slice init types it `[Array, Error]`)
+// whose body's OWN shape is a narrower union member. The body's raw
+// emission is a composite box pointer — pairing it as a Value payload
+// was a type confusion that SIGSEGV'd every downstream consumer
+// (jul16h/jul17a, findings/value-shape-seam-jul2026). The init and
+// body now normalize through `emit_owned_value_operand_node`.
+const ARRAY_FOLD_VALUE_ACC_ELEM_BODY: &str = r#"
+{
+  let a = [1, 2, 3, 4];
+  array::fold([[9], [7]], a[1..3], |acc, v| v)
+}
+"#;
+
+run!(array_fold_value_acc_elem_body, ARRAY_FOLD_VALUE_ACC_ELEM_BODY, |v: Result<
+    &Value,
+>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(7)]),
+        _ => false,
+    }
+});
+
+// Same seam, fresh-literal body (jul17a crash_000002).
+const ARRAY_FOLD_VALUE_ACC_LITERAL_BODY: &str = r#"
+{
+  let a = [1, 2, 3, 4];
+  array::fold([[9], [7]], a[0..3], |acc, v| [5, 6])
+}
+"#;
+
+run!(
+    array_fold_value_acc_literal_body,
+    ARRAY_FOLD_VALUE_ACC_LITERAL_BODY,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(5), Value::I64(6)]),
+            _ => false,
+        }
+    }
+);
+
+// Same seam, scalar body: the acc is `[i64, Error]` (index init), the
+// body a bare scalar — its payload widens through the same normalize.
+const ARRAY_FOLD_VALUE_ACC_SCALAR_BODY: &str = r#"
+{
+  let a = [1, 2, 3];
+  array::fold([4, 5], a[0], |acc, x| x)
+}
+"#;
+
+run!(array_fold_value_acc_scalar_body, ARRAY_FOLD_VALUE_ACC_SCALAR_BODY, |v: Result<
+    &Value,
+>| {
+    matches!(v, Ok(Value::I64(5)))
+});
+
 // A may-bottom find predicate fuses (runtime-aborts via `emit_forced`);
 // `10 / x > 4` matches the first x with 10/x > 4, i.e. x = 2.
 const ARRAY_FIND_MAY_BOTTOM: &str = r#"

@@ -1454,3 +1454,23 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::F64(x)) if *x == 0.0) };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// A bare-Array arg node under a VALUE-shaped signature slot
+// (`[Array<i64>, null]`): the marshal raw-emitted the composite box
+// pointer as the in-band Value payload — the callee then decoded
+// garbage (jul17a, findings/value-shape-seam-jul2026/03; the call-arg
+// twin of the FoldAcc::Value seam). Narrower-than-slot args now
+// normalize through `emit_owned_value_operand_node`.
+const CALL_ARG_VALUE_SLOT_NARROW: &str = r#"
+{
+    let f = |v: [Array<i64>, null]| v;
+    f([1, 2])
+}
+"#;
+
+run!(call_arg_value_slot_narrow, CALL_ARG_VALUE_SLOT_NARROW, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(2)]),
+        _ => false,
+    }
+});

@@ -5782,6 +5782,10 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
             let disc = propagate_flags(cx.b, rd, &[cv.disc]);
             Ok(CompiledExpr::new(disc, rp))
         }
+        // A Null node's raw (disc, payload) IS a valid Value pairing
+        // (`Value::Null` never reads its payload word, and dropping it
+        // is a no-op) — same treatment as `emit_push_field_node`.
+        Some(AbiKind::Null) => node.emit_clif(cx),
         other => Err(anyhow!("emit_clif: value operand has unexpected type {other:?}")),
     }
 }
@@ -9142,9 +9146,35 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Variant)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)));
     for s in order {
-        let cv = emit_slot(cx, s)?;
+        // A value-shaped slot (typed from the SIGNATURE) may receive an
+        // arg node whose OWN shape is a narrower union member — a bare
+        // Array arg for a `[Array, null]` param raw-emits a composite
+        // box pointer, which is NOT a Value payload (jul17a probe p2,
+        // the fold crash_000002's twin seam). Normalize such args
+        // through `emit_owned_value_operand_node`; a node already
+        // value-shaped keeps the raw borrowed/owned protocol.
+        let normalized = match s {
+            LambdaCallSlot::Arg(n, _)
+                if matches!(
+                    kernel_abi::abi_kind(reg, s.typ()),
+                    Some(AbiKind::Variant | AbiKind::Nullable)
+                ) && !matches!(
+                    kernel_abi::abi_kind(reg, n.typ()),
+                    Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
+                ) =>
+            {
+                true
+            }
+            _ => false,
+        };
+        let cv = if normalized {
+            let LambdaCallSlot::Arg(n, _) = s else { unreachable!() };
+            emit_owned_value_operand_node(cx, n)?
+        } else {
+            emit_slot(cx, s)?
+        };
         if let LambdaCallSlot::Arg(n, _) = s {
-            if node_composite_source(n) == CompositeSource::Owned {
+            if normalized || node_composite_source(n) == CompositeSource::Owned {
                 match kernel_abi::abi_kind(reg, s.typ()) {
                     Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                         drops.push(CallArgDrop::Composite(cv.payload));

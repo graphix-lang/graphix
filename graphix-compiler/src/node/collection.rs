@@ -616,13 +616,22 @@ fn emit_collection_fold<R: Rt, E: UserEvent>(
         // Value-shaped accumulators (2026-07-14): the list-building
         // reverse/collect idiom, nullable max-by, variant state
         // machines, and map group-by all carry an owned two-word
-        // Value through the loop (scaffold::FoldAcc::Value).
+        // Value through the loop (scaffold::FoldAcc::Value). Init and
+        // body normalize through `emit_owned_value_operand_node` per
+        // their OWN shapes, which may be narrower members of the acc
+        // union — see `ArrayFold::emit_clif`'s twin arm.
         Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
             if acc.binds.is_empty() =>
         {
+            for n in [init, body] {
+                match kernel_abi::abi_kind(cx.registry(), n.typ()) {
+                    Some(AbiKind::Unit) | None => return Ok(None),
+                    Some(_) => {}
+                }
+            }
             scaffold::FoldAcc::Value {
-                init_src: emit::node_composite_source(init),
-                body_src: emit::node_composite_source(body),
+                init_src: CompositeSource::Owned,
+                body_src: CompositeSource::Owned,
                 kind: match k {
                     AbiKind::Variant => scaffold::ValueLeafKind::Variant,
                     AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
@@ -632,6 +641,7 @@ fn emit_collection_fold<R: Rt, E: UserEvent>(
         }
         _ => return Ok(None),
     };
+    let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
     let (value, src) = emit_flattened_source(cx, source, flatten_helper)?;
     let source_invariant = emit::node_loop_invariant_ref(cx, source);
     let (result, mut flags) = scaffold::emit_fold_loop(
@@ -647,8 +657,20 @@ fn emit_collection_fold<R: Rt, E: UserEvent>(
             leaves: &element_leaves,
         },
         &emit::slot_state_sites(body),
-        |cx| init.emit_clif(cx),
-        |cx| body.emit_clif(cx),
+        |cx| {
+            if value_acc {
+                emit::emit_owned_value_operand_node(cx, init)
+            } else {
+                init.emit_clif(cx)
+            }
+        },
+        |cx| {
+            if value_acc {
+                emit::emit_owned_value_operand_node(cx, body)
+            } else {
+                body.emit_clif(cx)
+            }
+        },
     )?;
     if source_invariant {
         flags.set_src_invariant();
@@ -1904,13 +1926,27 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ArrayFold {
             // Value-shaped accumulators (2026-07-14): the list-building
             // reverse/collect idiom, nullable max-by, variant state
             // machines, and map group-by all carry an owned two-word
-            // Value through the loop (scaffold::FoldAcc::Value).
+            // Value through the loop (scaffold::FoldAcc::Value). The
+            // acc's SHAPE comes from the resolved signature; the init
+            // and body nodes emit by their OWN shapes, which may be
+            // NARROWER members of the acc union (a bare-Array init for
+            // a `[Array, Error]` acc paired a composite box pointer as
+            // a Value payload — jul17a crash_000002). Both emit through
+            // `emit_owned_value_operand_node`, which normalizes any
+            // shape to an owned proper Value — so the srcs are Owned
+            // and unknowable shapes de-fuse here.
             Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
                 if acc.binds.is_empty() =>
             {
+                for n in [init, body] {
+                    match kernel_abi::abi_kind(cx.registry(), n.typ()) {
+                        Some(AbiKind::Unit) | None => return Ok(None),
+                        Some(_) => {}
+                    }
+                }
                 scaffold::FoldAcc::Value {
-                    init_src: emit::node_composite_source(init),
-                    body_src: emit::node_composite_source(body),
+                    init_src: CompositeSource::Owned,
+                    body_src: CompositeSource::Owned,
                     kind: match k {
                         AbiKind::Variant => scaffold::ValueLeafKind::Variant,
                         AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
@@ -1920,6 +1956,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ArrayFold {
             }
             _ => return Ok(None),
         };
+        let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
         let array = source.emit_clif(cx)?;
         let source_invariant = emit::node_loop_invariant_ref(cx, source);
         let (result, mut flags) = scaffold::emit_fold_loop(
@@ -1935,8 +1972,20 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ArrayFold {
                 leaves: &element_leaves,
             },
             &emit::slot_state_sites(body),
-            |cx| init.emit_clif(cx),
-            |cx| body.emit_clif(cx),
+            |cx| {
+                if value_acc {
+                    emit::emit_owned_value_operand_node(cx, init)
+                } else {
+                    init.emit_clif(cx)
+                }
+            },
+            |cx| {
+                if value_acc {
+                    emit::emit_owned_value_operand_node(cx, body)
+                } else {
+                    body.emit_clif(cx)
+                }
+            },
         )?;
         if source_invariant {
             flags.set_src_invariant();
