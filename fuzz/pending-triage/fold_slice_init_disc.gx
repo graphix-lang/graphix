@@ -1,0 +1,14 @@
+// PENDING — JIT-side abort (found by jul16h's last hours, PRE-existing
+// relative to replay-frames v3; reproduces on 9039c312). Interp: [2].
+// Jit: panic_invalid_enum_construction in netidx_value::Typ::get — a
+// Value with a GARBAGE DISCRIMINANT crossed into a netidx helper, the
+// classic unclean-disc seam (a TAINT/STALE-flagged or mispaired disc
+// must be clean_disc'd before any Value-typed helper crossing). The
+// shape: array::fold whose INIT is a bare slice result (`a[1..3]` —
+// a maybe-error UNION, value-shaped 2-word) feeding the fold's
+// Array-typed acc slot; suspect the init marshal / FoldAcc setup for
+// a union-shaped init skips the clean/narrow. Morning plan: gdb frame
+// above Typ::get identifies the helper; GRAPHIX_DBG_KERNELS +
+// GRAPHIX_DUMP_CLIF on the fold region; check emit_fold_loop's init
+// classification for value-shaped inits.
+array::fold([[i64:1], [i64:2]], {let a = [i64:1, i64:2, i64:3, i64:4]; a[i64:1..i64:3]}, |acc, v| v)
