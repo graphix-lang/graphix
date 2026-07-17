@@ -19,7 +19,16 @@ use triomphe::Arc;
 #[bitflags]
 #[repr(u8)]
 pub enum IsAFlags {
-    /// When set, Type::Abstract matches any Value::Abstract
+    /// When set, Type::Abstract matches ANY value. An abstract type's
+    /// representation is hidden, so a checked match is impossible from
+    /// outside its module — the one consumer (the `TVal` printer)
+    /// trusts the typechecker instead. Without the flag an abstract
+    /// matches nothing: runtime dispatch (`select`) must never claim a
+    /// value it can't verify. The old halfway reading (flag = match
+    /// `Value::Abstract` carriers only) mis-flagged every hidden-rep
+    /// abstract (a `list::List` result printed through the mismatch
+    /// diagnostic, whose unbounded Debug dump then overflowed the
+    /// stack — jul17a crash_000003).
     MatchAbstract,
 }
 
@@ -291,9 +300,7 @@ impl Type {
                 }
             },
             Type::Primitive(t) => t.contains(Typ::get(&v)),
-            Type::Abstract { .. } => {
-                flags.contains(IsAFlags::MatchAbstract) && matches!(v, Value::Abstract(_))
-            }
+            Type::Abstract { .. } => flags.contains(IsAFlags::MatchAbstract),
             Type::Any => true,
             Type::Array(et) => match v {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
