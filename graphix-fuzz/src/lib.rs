@@ -660,6 +660,23 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
             return None;
         }
     }
+    // The symmetric direction — jit Timeout against a value-bearing
+    // interp trace — is as likely a STARVED jit child (both modes run
+    // concurrently; under full soak load the wall clock stretches past
+    // the lane budget — jul17a generate/divergence_000000, which
+    // AGREEd 6/6 on an idle machine on both binaries) as a genuine
+    // native hang. Same escalation: a real wedged kernel (an infinite
+    // pure tail loop can't yield) still times out at the bigger budget
+    // and keeps the finding.
+    if matches!(&jit, Outcome::Timeout)
+        && matches!(&interp, Outcome::Trace(t) if t.epochs.iter().any(|e| !e.events.is_empty()))
+    {
+        let slow_budget = (timeout * 8).max(Duration::from_secs(60));
+        let slow = run_program(code, Mode::Jit, slow_budget).await;
+        if interp.agrees_with_at(&slow, tier) {
+            return None;
+        }
+    }
     // Suspected divergence — but first rule out nondeterminism: a value
     // whose identity/Display isn't deterministic (a lambda or abstract
     // value's id, a leaked environmental value the tier markers missed)
