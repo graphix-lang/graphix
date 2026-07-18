@@ -784,14 +784,23 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         })
     }
 
+    /// Deliver the scrutinee's destructured leaves to this arm's
+    /// binds, carrying the SCRUTINEE's production tag (Eric's ruling
+    /// 2026-07-18, tail_jump_fired_plumbing): the kernel's arm-bind
+    /// leaves carry the scrutinee's disc, so a value-channel refresh
+    /// (stale scrutinee — a framed re-derivation from a quiet entry)
+    /// binds STALE leaves instead of minting FIRED ones. The
+    /// becoming-selected FIRE comes from the selection-change rule at
+    /// the select's emit, never from poisoning the binds.
     pub(super) fn bind_event(
         &self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
         v: &Value,
+        tag: crate::Tag,
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
-            event.variables.insert(id, TagValue::fired(v.clone()));
+            event.variables.insert(id, TagValue::tagged(v.clone(), tag));
             ctx.rt.cached_mut().insert(id, v);
         })
     }

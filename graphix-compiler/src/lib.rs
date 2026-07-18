@@ -1478,7 +1478,16 @@ pub(crate) struct PendingTailCall {
     /// genuine depth-charged recursion, so the same loop agreed with
     /// the kernel below the depth limit and silently aborted above it
     /// (jul16a fuzz divergence class B).
-    pub(crate) args: smallvec::SmallVec<[Option<Value>; 4]>,
+    ///
+    /// Each present arg carries its production TAG (Eric's ruling
+    /// 2026-07-18, the tail_jump_fired_plumbing pin): the rebind used
+    /// to deliver every jumped formal unconditionally FIRED — bare
+    /// `Value`s left it nothing else to go on — which manufactured
+    /// freshness for results that depend on nothing that fired (an
+    /// `n - 1` chain from a quiet entry read as an event). The tag is
+    /// the arg expression's honest production tag, so freshness rides
+    /// the dataflow exactly as the kernel's disc carry does.
+    pub(crate) args: smallvec::SmallVec<[Option<TagValue>; 4]>,
 }
 
 #[derive(Clone)]

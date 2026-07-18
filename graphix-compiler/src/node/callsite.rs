@@ -1382,8 +1382,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // all-or-nothing gate fell through to genuine recursion
                 // here, which agreed with the kernel below the depth
                 // limit and silently depth-aborted above it.
-                let args: SmallVec<[Option<Value>; 4]> =
-                    order.iter().map(|id| ctx.rt.cached().get(id).cloned()).collect();
+                //
+                // Each present arg carries its HONEST production tag
+                // (Eric's ruling 2026-07-18, tail_jump_fired_plumbing):
+                // the production published into `event.variables` just
+                // above — fired if the arg expression genuinely fired,
+                // stale for a frame backfill / value-channel refresh. A
+                // TAINTED production is the bottomed case → ride. A
+                // quiet arg with only a cross-cycle cached value rides
+                // the STALE channel — the kernel's marshaled quiet
+                // slot. Stashing bare cached Values here forced the
+                // rebind to mint FIRED unconditionally, manufacturing
+                // freshness for results that depend on nothing that
+                // fired.
+                let args: SmallVec<[Option<TagValue>; 4]> = order
+                    .iter()
+                    .map(|id| match event.variables.get(id) {
+                        Some(tv) if !tv.tag().is_tainted() => Some(tv.clone()),
+                        Some(_) => None,
+                        None => {
+                            ctx.rt.cached().get(id).map(|v| TagValue::stale(v.clone()))
+                        }
+                    })
+                    .collect();
                 debug_assert!(ctx.pending_tail_call.is_none());
                 ctx.pending_tail_call = Some(PendingTailCall { lambda, args });
                 for id in set.drain(..) {

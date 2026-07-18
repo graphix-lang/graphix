@@ -561,10 +561,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
                 for (v, pat) in p.args.iter().zip(self.args.iter()) {
                     match v {
-                        Some(v) => pat.bind(v, &mut |id, v| {
-                            ctx.rt.cached_mut().insert(id, v.clone());
-                            frame.insert(id, TagValue::fired(v));
-                        }),
+                        // The jump's production tag rides into the
+                        // formal delivery (Eric's ruling 2026-07-18,
+                        // tail_jump_fired_plumbing): an `n - 1` chain
+                        // from a quiet entry stays STALE through the
+                        // loop instead of being minted FIRED — the
+                        // kernel's rebind disc carry.
+                        Some(tv) => {
+                            let (v, tag) = tv.clone().into_parts();
+                            pat.bind(&v, &mut |id, v| {
+                                ctx.rt.cached_mut().insert(id, v.clone());
+                                frame.insert(id, TagValue::tagged(v, tag));
+                            })
+                        }
                         None => pat.ids(&mut |id| {
                             let tv = prev.get(&id).cloned().or_else(|| {
                                 event.variables.get(&id).cloned().or_else(|| {

@@ -123,17 +123,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
         let arg_up = arg_prod.is_some();
         let arg_fired = arg_prod.is_some_and(|t| t.is_fired());
+        // Arm binds carry the SCRUTINEE's production tag (the kernel's
+        // arm-bind disc carry): a stale scrutinee production — a
+        // framed re-derivation from a quiet entry — binds STALE
+        // leaves; a wake with NO production this update (a guard-flip
+        // re-selection) binds the value channel. Firing comes from the
+        // selection/emission rules, never from the binds themselves
+        // (Eric's ruling 2026-07-18, tail_jump_fired_plumbing).
+        let bind_tag = arg_prod.unwrap_or(Tag::STALE);
         macro_rules! bind {
             ($i:expr) => {{
                 if let Some(arg) = arg.cached.as_ref() {
-                    arms[$i].0.bind_event(ctx, event, arg);
+                    arms[$i].0.bind_event(ctx, event, arg, bind_tag);
                 }
             }};
         }
         for (pat, _) in arms.iter_mut() {
             if arg_up && pat.guard.is_some() {
                 if let Some(arg) = arg.cached.as_ref() {
-                    pat.bind_event(ctx, event, arg);
+                    pat.bind_event(ctx, event, arg, bind_tag);
                 }
             }
             pat_up |= pat.update(ctx, event);
