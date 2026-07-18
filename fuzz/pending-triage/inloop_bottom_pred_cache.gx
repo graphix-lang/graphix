@@ -1,0 +1,14 @@
+// PENDING — jul17c katana divergence 000002: the DOCUMENTED in-loop
+// residual of the 07-16 interior-bottom taint-cache fix (honor-gated
+// replay site words are region-root active, in-loop inert), now with
+// a live witness. The filter predicate `10/x` bottoms on the div0
+// cycle (x=0 from the array::iter slot); the interp's per-slot
+// operand cache rides the previous verdict (kept) so the output
+// re-emits with the new value under the stale verdict, while the
+// kernel's taint forces bottom for the whole output:
+//   interp: [1:[1,2,1]  2:[1,2,2]  3:[1,2,0]  4:[1,2]]
+//   jit:    [1:[1,2,1]  2:[1,2,2]           4:[1,2]]
+// Fix direction: extend the honor-gated replay words to loop slots
+// (the per-slot state-table machinery already provides the identity
+// coordinates — anchor × loop chain × site chain).
+{let a = [i64:1, i64:2, array::iter([i64:1, i64:2, i64:0, i64:4]), i64:4, i64:5, i64:6, i64:7, i64:8]; array::filter(a, |x| i64:10 / x > i64:2)}

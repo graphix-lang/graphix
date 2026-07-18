@@ -499,8 +499,19 @@ impl Type {
                     None
                 }
             }
-            (Type::TVar(tv0), Type::TVar(tv1)) if tv0.name == tv1.name && tv0 == tv1 => {
-                Some(Type::TVar(tv0.clone()))
+            // STRICT tvar identity (`union_identical`, the setops
+            // union rule): `TVar::eq` calls two distinct UNBOUND cells
+            // equal (None == None) and default-minted cells share a
+            // name, so the old `tv0 == tv1` guard merged a select
+            // union's base-arm cell into the rec-return cell — the
+            // dropped cell's future binding vanished and the survivor
+            // terminal-settled ⊥ (jul17c katana divergence 000001:
+            // `[i64, ⊥]` elem flattened to i64 and the kernel compared
+            // a Fn element's payload bits as i64).
+            (t0v @ Type::TVar(_), t1v @ Type::TVar(_))
+                if super::setops::union_identical(t0v, t1v) =>
+            {
+                Some(t0v.clone())
             }
             (Type::TVar(tv), t) => {
                 tv.read().typ.read().typ.as_ref().and_then(|tv| tv.merge(t))

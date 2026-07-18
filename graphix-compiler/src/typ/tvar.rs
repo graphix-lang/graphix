@@ -414,6 +414,25 @@ impl TVar {
                         oc.add_constraint(c);
                     }
                 }
+                // FORWARD-LINK the abandoned cell before moving off it:
+                // other TVar structs may share the old allocation, and
+                // without the link they orphan — later facts fork
+                // between the allocations and the orphan terminal-
+                // settles ⊥ (jul17c katana divergence 000001: a rec
+                // def's return-cell copy severed from the acc chain, so
+                // the elem union flattened `[i64, ⊥]` → i64 and the
+                // kernel compared a Fn element's payload bits as i64).
+                // The occurs check above guarantees `other` doesn't
+                // reach this cell, so the link can't close a cycle. A
+                // cell that already holds a binding keeps it — the
+                // link only rescues cells that would otherwise stay
+                // open forever.
+                {
+                    let mut sc = s.typ.write();
+                    if sc.typ.is_none() {
+                        sc.typ = Some(Type::TVar(other.clone()));
+                    }
+                }
                 s.typ = Arc::clone(&o.typ);
             }
         }
@@ -464,6 +483,14 @@ impl TVar {
                 let mut oc = o.typ.write();
                 for c in mine {
                     oc.add_constraint(c);
+                }
+            }
+            // Same forward-link as [`Self::alias`] — sharers of the
+            // abandoned cell must follow the merge.
+            {
+                let mut sc = s.typ.write();
+                if sc.typ.is_none() {
+                    sc.typ = Some(Type::TVar(other.clone()));
                 }
             }
             s.typ = Arc::clone(&o.typ);

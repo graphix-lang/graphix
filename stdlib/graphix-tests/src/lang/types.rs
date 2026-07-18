@@ -521,3 +521,123 @@ run!(
     |v: Result<&Value>| { matches!(v, Err(_)) };
     graphix_package_core::testing::FuseExpect::None
 );
+
+// A let-bound BARE cast (no `$`/`?`). The cast node's static type is
+// the fallible `[T, Error]` union, so `emit_let_node` classifies it as
+// a 2-word Value and declares an I64 payload var — but the scalar
+// fast path in `emit_cast_node` used to return a raw F64-typed
+// payload, and the def_var type mismatch panicked cranelift's
+// frontend, killing the runtime thread (jul17c katana divergence
+// 000000, "runtime did not respond"). `$`/`?` consumers only worked
+// by accident (same-width bitcast is an identity). The fast path now
+// widens to the Value wire shape.
+const CAST_LET_WIRE_SHAPE: &str = r#"
+{
+  let v = cast<f64>(i64:-9223372036854775808);
+  v;
+  42
+}
+"#;
+
+run!(cast_let_wire_shape, CAST_LET_WIRE_SHAPE, |v: Result<&Value>| match v {
+    Ok(&Value::I64(42)) => true,
+    _ => false,
+});
+
+// The f32 twin was a second latent frontend panic (declared F32 var
+// def'd with the wire word), plus the `$` consumer over the widened
+// shape.
+const CAST_LET_WIRE_SHAPE_F32: &str = r#"
+{
+  let v = cast<f32>(i64:3);
+  v;
+  cast<f32>(f64:1.5)$
+}
+"#;
+
+run!(cast_let_wire_shape_f32, CAST_LET_WIRE_SHAPE_F32, |v: Result<&Value>| match v {
+    Ok(&Value::F32(f)) => f == 1.5,
+    _ => false,
+});
+
+// Narrow float→int casts saturate AT THE TARGET WIDTH (Rust `as`
+// semantics — the node-walk's `Value::cast`). The x64 backend has no
+// encoding for an i8/i16 fcvt (cranelift emit unreachable — the
+// jit_generated_sweep `cast<u8>(f64)$` crash), so `compile_cast`
+// converts at i32, clamps to the target range (i32-width saturation
+// alone wraps 300 → u8:44), and reduces. Narrow int→float widens
+// before the fcvt for the same encoding reason.
+const CAST_NARROW_SATURATES: &str = r#"
+(
+  cast<u8>(f64:300.5)$,
+  cast<i8>(f64:-300.5)$,
+  cast<i16>(f64:70000.0)$,
+  cast<f64>(i8:-5)$
+)
+"#;
+
+run!(cast_narrow_saturates, CAST_NARROW_SATURATES, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        &**a == &[Value::U8(255), Value::I8(-128), Value::I16(32767), Value::F64(-5.0)]
+    }
+    _ => false,
+});
+
+// A rec def whose base arm returns a PARAM: the return relates to the
+// acc only through tvar cell aliasing, and `TVar::alias` used to
+// redirect the aliasing STRUCT's cell Arc without forward-linking the
+// abandoned allocation — any other struct sharing it orphaned, later
+// facts forked between the allocations, and the orphan
+// terminal-settled ⊥. The elem union then flattened `[i64, ⊥]` → i64
+// and the kernel compared the non-i64 element's payload bits as i64
+// (jul17c katana divergence 000001). With the forward link the elem
+// types honestly (`[i64, string]` here), which refuses the scalar
+// loop — the HOF interprets and the total order answers ("hi" > 3 is
+// true: strings sort above ints).
+const REC_RETURN_PARAM_ELEM: &str = r#"
+{
+  let a = [0, {let rec f = |n, acc| select n {0 => acc, _ => f(n - 1, acc)}; f(3, "hi")}, 4];
+  array::map(a, |x| x > 3)
+}
+"#;
+
+run!(
+    rec_return_param_elem,
+    REC_RETURN_PARAM_ELEM,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            &**a == &[Value::Bool(false), Value::Bool(true), Value::Bool(true)]
+        }
+        _ => false,
+    };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The Fn-element twin (the original finding's shape): the element
+// union is honestly `[i64, fn(...)]`, freeze refuses it, and both
+// modes agree the Fn sorts above 3 in the total order.
+const REC_RETURN_FN_ELEM: &str = r#"
+{
+  let a = [0, 0, {let rec f = |n, acc| select n {0 => acc, _ => f(n - 1, acc)}; f(3, buffer::to_string)}, 4, 0];
+  array::map(a, |x| x > 3)
+}
+"#;
+
+run!(
+    rec_return_fn_elem,
+    REC_RETURN_FN_ELEM,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            &**a
+                == &[
+                    Value::Bool(false),
+                    Value::Bool(false),
+                    Value::Bool(true),
+                    Value::Bool(true),
+                    Value::Bool(false),
+                ]
+        }
+        _ => false,
+    };
+    graphix_package_core::testing::FuseExpect::None
+);

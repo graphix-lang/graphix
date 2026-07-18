@@ -597,9 +597,27 @@ impl Type {
                         t1.copy(t0)
                     }
                     Act::RightAlias if flags.contains(ContainsFlags::AliasTVars) => {
+                        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                            eprintln!(
+                                "RALIAS '{}({:x}) -> '{}({:x})",
+                                t1.name,
+                                t1.cell_addr(),
+                                t0.name,
+                                t0.cell_addr()
+                            );
+                        }
                         t1.alias(t0)
                     }
                     Act::LeftAlias if flags.contains(ContainsFlags::AliasTVars) => {
+                        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                            eprintln!(
+                                "LALIAS '{}({:x}) -> '{}({:x})",
+                                t0.name,
+                                t0.cell_addr(),
+                                t1.name,
+                                t1.cell_addr()
+                            );
+                        }
                         t0.alias(t1)
                     }
                     Act::LeftCopy

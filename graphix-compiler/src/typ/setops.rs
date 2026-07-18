@@ -22,7 +22,7 @@ use triomphe::Arc;
 /// fused field read leaked the string payload as an i64 (item 18).
 /// `Fn` keeps plain equality: two structurally-equal signatures are
 /// the same type (alpha equivalence), and fn-typed values don't fuse.
-fn union_identical(t0: &Type, t1: &Type) -> bool {
+pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
     match (t0, t1) {
         (Type::TVar(a), Type::TVar(b)) => {
             let ai = a.read();

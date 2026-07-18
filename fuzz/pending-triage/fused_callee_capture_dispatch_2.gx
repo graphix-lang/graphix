@@ -1,0 +1,13 @@
+// PENDING — jul17c ryouko generate divergence 000000: second witness
+// of fused_callee_capture_dispatch.gx (same class, organic). The
+// connect `*v12 <- i64:2` fires the capture v3 feeding the rec
+// callee v5's base arm; the interp re-fires the program output next
+// cycle, the fused composition never re-invokes:
+//   interp: [0:{c:0}  1:{c:0}]    jit: [0:{c:0}]
+// New evidence from this witness's triage (GRAPHIX_DBG_INVOKE on the
+// original pin): at steady state the fused composition shows NO
+// framed re-entry (no init=true kernel invokes), while pure interp
+// re-enters the tail loop framed every cycle (prev_looped) — the gap
+// is upstream of the kernel, in the tail-loop/callsite dispatch gate
+// reading only arg fires (`arg_fired`/`event.init`), not captures.
+{let v2 = 'a: Number|v0: 'a, v1: 'a| -> 'a v0; let v3: i64 = v2((i64:100 - i64:0), (i64:-100 - i64:-100)); let v4: z64 = v2((z64:1 *? z64:42)$, (-(z64:0))); let rec v5 = |v6: i64| -> i64 select v6 {v7 if v7 <= i64:0 => v2(v7, v3), v7 => v5(v7 - i64:1)}; let v8 = v5(i64:12); let v4 = select v8 {i64:2 if true => (cast<f64>(z32:-1)$ / f64:3.14), v9 if str::ends_with(#sfx: "", "hello") => (f64:0.1 * v2(f64:0., f64:0.)), v5 => v2(f64:0.1, (f64:0. % f64:-1.))}; let v9 = select v3 {v9 => array::fold(["graphix", "xyz", "xyz"], "xyz", |v10, v11| "xyz")}; let v10 = mod d0 dynamic { sandbox whitelist [ core, array, str ]; sig { val g0: fn(a0: string) -> string; val g1: fn(a0: i64, a1: u8) -> bool }; source "let g0 = |v10: string| -> string \"\[false\]-\[(false || false)\]\";\nlet g1 = |v11: i64, v12: u8| -> bool str::starts_with(#pfx: \"graphix\", \"a\")" }; let v11 = select v10 {error as _ => (!false), null as _ => d0::g1(i64:0, u8:1)}; let v12 = &v3; *v12 <- i64:2; { c: v4 }}

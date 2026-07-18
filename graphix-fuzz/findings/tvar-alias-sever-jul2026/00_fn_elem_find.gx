@@ -1,0 +1,12 @@
+// jul17c katana divergence 000001: `TVar::alias` redirected the
+// aliasing STRUCT's cell Arc without forward-linking the abandoned
+// allocation, so other structs sharing it orphaned and later facts
+// forked between the allocations — the orphaned rec-return cell
+// terminal-settled ⊥, the elem union flattened `[i64, ⊥]` → i64, and
+// the kernel compared the Fn element's payload bits as a scalar i64
+// (find skipped it; the node-walk's total order has Fn > 3 → the find
+// returns the fn). Fixed by forward-linking the abandoned cell (bind
+// it to `TVar(other)`) in `alias`/`alias_cells` — the elem now types
+// honestly as `[i64, fn(...)]`, freeze refuses it, and both modes
+// agree through the interpreted HOF.
+{let a = [i64:0, i64:0, {let rec sum_to = |n, acc| select n {i64:0 => acc, _ => sum_to(n - i64:1, acc)}; sum_to(i64:3, buffer::to_string)}, i64:4, i64:0]; array::find(a, |x| x > i64:3)}
