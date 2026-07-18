@@ -641,3 +641,25 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::None
 );
+
+// A rec fn that returns ITSELF has an infinite type (`μt. fn(...) -> t`)
+// — no finite annotation-free form exists. The occurs check refuses to
+// bind the result cell, and before jul18c the refusal was silent: the
+// open cell terminal-settled ⊥, the array's elem union flattened
+// `[i64, ⊥]` → i64, and the kernel compared the Fn element's payload
+// bits as a scalar (jul18c fleet, ryouko + katana). Now the refusal is
+// recorded on the cell and the terminal settle rejects it: "cannot
+// infer a finite type".
+const REC_RETURN_SELF_REJECTS: &str = r#"
+{
+  let a = [0, 0, {let rec f = |n, acc| f; f(0, buffer::to_string)}, 4, 0];
+  array::map(a, |x| x > 3)
+}
+"#;
+
+run!(
+    rec_return_self_rejects,
+    REC_RETURN_SELF_REJECTS,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);

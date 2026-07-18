@@ -147,6 +147,20 @@ impl crate::typ::TVar {
                 return Ok(());
             }
             if cell.constraints.is_empty() {
+                // An occurs check refused this cell's only binding: the
+                // solution is an INFINITE type (`let rec f = |n, acc| f`),
+                // and ⊥-settling it would LIE — ⊥ is vacuous in unions,
+                // so consumers see the other members and the kernel
+                // reads a Fn value's payload bits as a scalar (jul18c).
+                // No finite annotation-free type exists; reject.
+                if cell.cycle_refused {
+                    bail!(
+                        "cannot infer a finite type here: unification \
+                         requires a type that contains itself (e.g. a \
+                         function that returns itself); declare a named \
+                         recursive type and annotate the binding"
+                    )
+                }
                 drop(cell);
                 if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
                     eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
@@ -493,6 +507,8 @@ impl Type {
                     CellMerge,
                 }
                 if t0.would_cycle(tt1) || t1.would_cycle(tt0) {
+                    t0.mark_cycle_refused();
+                    t1.mark_cycle_refused();
                     return Ok(true);
                 }
                 // Both-bound recursion happens OUTSIDE the guard block:
@@ -512,6 +528,8 @@ impl Type {
                         return Ok(true);
                     }
                     if would_cycle_inner(addr0, tt1) || would_cycle_inner(addr1, tt0) {
+                        t0.typ.write().cycle_refused = true;
+                        t1.typ.write().cycle_refused = true;
                         return Ok(true);
                     }
                     let t0i = t0.typ.read();

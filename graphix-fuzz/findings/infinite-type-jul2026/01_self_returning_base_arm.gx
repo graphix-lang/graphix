@@ -1,0 +1,5 @@
+// katana jul18c un-minimized mutant: the same infinite type reached
+// through a plausible-looking rec — the base arm returns f itself, so
+// the return type is [Fn(... -> 'r), 'r]: still μ-recursive, still no
+// finite form. Must compile-reject in both modes like 00.
+{let a = [i64:0, i64:0, {let rec f = |n, acc| select n {i64:0 => f, _ => f(n - i64:1, acc)}; f(i64:3, buffer::to_string)}, i64:4, i64:0]; array::map(a, |x| x < i64:100)}

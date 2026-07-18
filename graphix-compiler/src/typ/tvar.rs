@@ -135,6 +135,17 @@ fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> 
 pub struct TCell {
     pub(crate) typ: Option<Type>,
     pub(crate) constraints: smallvec::SmallVec<[Type; 1]>,
+    /// An occurs check refused to bind or link this cell: the type it
+    /// was being equated with reaches the cell itself, so the only
+    /// solution is an INFINITE type (`let rec f = |n, acc| f` — f's
+    /// return type is f's own type). The refusal is silent at the
+    /// bind site (later writers may still refine the cell), but a
+    /// flagged cell that reaches the terminal settle still open and
+    /// unconstrained must ERROR rather than default to ⊥ — the ⊥ is
+    /// vacuous in unions, so the value's type collapses to the OTHER
+    /// members and the kernel compares a Fn element's payload bits as
+    /// a scalar (jul18c fleet divergence, both findings).
+    pub(crate) cycle_refused: bool,
     /// RIGID: a DECLARED (user-annotated, named) lambda tvar during its
     /// def's body check. A rigid unbound cell never binds — the body
     /// must be well-typed for ARBITRARY 'a (within the constraints), so
@@ -156,7 +167,12 @@ pub struct TCell {
 
 impl TCell {
     fn bound(typ: Type) -> Self {
-        TCell { typ: Some(typ), constraints: smallvec::SmallVec::new(), rigid: 0 }
+        TCell {
+            typ: Some(typ),
+            constraints: smallvec::SmallVec::new(),
+            rigid: 0,
+            cycle_refused: false,
+        }
     }
 
     /// Add `c` to the conjunction unless an equal member is present.
@@ -393,10 +409,14 @@ impl TVar {
             let other_addr = Arc::as_ptr(&other.read().typ).addr();
             if self_addr != other_addr {
                 if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+                    self.mark_cycle_refused();
+                    other.mark_cycle_refused();
                     return;
                 }
                 let scons = self.read().typ.read().constraints.clone();
                 if scons.iter().any(|c| would_cycle_inner(other_addr, c)) {
+                    self.mark_cycle_refused();
+                    other.mark_cycle_refused();
                     return;
                 }
             }
@@ -459,10 +479,14 @@ impl TVar {
                 return;
             }
             if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+                self.mark_cycle_refused();
+                other.mark_cycle_refused();
                 return;
             }
             let scons = self.read().typ.read().constraints.clone();
             if scons.iter().any(|c| would_cycle_inner(other_addr, c)) {
+                self.mark_cycle_refused();
+                other.mark_cycle_refused();
                 return;
             }
         }
@@ -507,6 +531,7 @@ impl TVar {
         {
             let self_addr = Arc::as_ptr(&self.read().typ).addr();
             if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+                self.mark_cycle_refused();
                 return;
             }
         }
@@ -592,6 +617,15 @@ impl TVar {
 
     pub(crate) fn is_rigid(&self) -> bool {
         self.read().typ.read().rigid > 0
+    }
+
+    /// Record an occurs-check refusal on this cell — see
+    /// [`TCell::cycle_refused`].
+    pub(super) fn mark_cycle_refused(&self) {
+        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+            eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
+        }
+        self.read().typ.write().cycle_refused = true;
     }
 
     pub(super) fn would_cycle(&self, t: &Type) -> bool {
@@ -950,6 +984,16 @@ impl Type {
                 for c in tv.cell_constraints() {
                     let c = c.reset_tvars_int(known).unwrap_or_else(|| c.clone());
                     fresh.add_cell_constraint(c);
+                }
+                // `cycle_refused` rides the copy: the instance preserves
+                // the source's alias topology, so a var whose only
+                // solution was infinite in the def is infinite in every
+                // instance too. Without the carry the def-gate refusal
+                // was recorded on the def cell while the INSTANCE cell
+                // reached the terminal settle unflagged and ⊥-settled —
+                // the exact lie this flag exists to reject (jul18c).
+                if tv.read().typ.read().cycle_refused {
+                    fresh.read().typ.write().cycle_refused = true;
                 }
                 // A BOUND source cell is a solved fact (def-body
                 // inference — instances never write def cells, see the
