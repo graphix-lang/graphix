@@ -65,7 +65,7 @@ fn value() -> impl Strategy<Value = Value> {
         Just(Value::Null),
     ];
     leaf.prop_recursive(1, 1, 1, |inner| {
-        prop_oneof![inner.clone().prop_map(|v| Value::Error(Arc::new(v))),]
+        prop_oneof![inner.clone().prop_map(|v| Value::Error(v.into())),]
     })
 }
 

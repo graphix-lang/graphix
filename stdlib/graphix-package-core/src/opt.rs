@@ -235,7 +235,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), Some(e)) => {
-                Some(Value::Error(triomphe::Arc::new(e.clone())))
+                Some(Value::Error(e.clone().into()))
             }
             (Some(v), _) => Some(v.clone()),
             _ => None,
@@ -896,7 +896,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
-        let wrap_err = |e: Value| Value::Error(triomphe::Arc::new(e));
+        let wrap_err = |e: Value| Value::Error(e.into());
         if a_up {
             match &self.s.last_a {
                 // a null without cached f stays silent until f produces.

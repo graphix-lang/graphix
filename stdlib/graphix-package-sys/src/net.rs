@@ -102,7 +102,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                         self.dv = Either::Right(vec![]);
                     }
                     let e = errf!(literal!("WriteError"), "invalid path {path:?}");
-                    return Some(Value::Error(TArc::new(e)));
+                    return Some(Value::Error(e.into()));
                 }
                 Some(path) => {
                     let dv = ctx.rt.subscribe(
@@ -592,7 +592,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     Err(e) => {
                         let msg: ArcStr = format_compact!("{e:?}").as_str().into();
                         let e: Value = (literal!("PublishError"), msg).into();
-                        return Some(Value::Error(TArc::new(e)));
+                        return Some(Value::Error(e.into()));
                     }
                     Ok(id) => {
                         self.current = Some((path, id));
@@ -934,7 +934,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 {
                     let e: ArcStr = format_compact!("{e:?}").as_str().into();
                     let e: Value = (literal!("PublishRpcError"), e).into();
-                    return Some(Value::Error(TArc::new(e)));
+                    return Some(Value::Error(e.into()));
                 }
                 self.current = Some(path);
             }

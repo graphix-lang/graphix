@@ -149,7 +149,7 @@ macro_rules! or_err {
             Ok(v) => v,
             Err(e) => {
                 let e = ArcStr::from(format_compact!("{e:?}").as_str());
-                let e = Value::Error(Arc::new(Value::String(e)));
+                let e = Value::Error(Value::String(e).into());
                 return ($bindid, e);
             }
         }

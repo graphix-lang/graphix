@@ -108,7 +108,7 @@ impl Type {
                     Value::Error(v) => (*v).clone(),
                     v => v,
                 };
-                Ok(Value::Error(Arc::new(e.cast_value_int(env, hist, v)?)))
+                Ok(Value::Error(e.cast_value_int(env, hist, v)?.into()))
             }
             Type::Array(et) => match v {
                 Value::Array(elts) => {

@@ -731,7 +731,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|e| Value::Error(triomphe::Arc::new(e.value())))
+        from[0].update(ctx, event).map(|e| Value::Error(e.value().into()))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

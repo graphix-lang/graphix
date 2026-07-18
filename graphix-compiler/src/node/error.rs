@@ -80,7 +80,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
         let v = from.get_mut(0)?.update(ctx, event)?.value();
         if let Value::Error(e) = v {
             let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
-            let v = Value::Error(Arc::new(e));
+            let v = Value::Error(e.into());
             match event.variables.entry(self.handler_id) {
                 Entry::Vacant(slot) => {
                     slot.insert(TagValue::fired(v));
@@ -290,7 +290,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             Value::Error(e) => match self.id {
                 Some(id) => {
                     let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
-                    let v = Value::Error(Arc::new(e));
+                    let v = Value::Error(e.into());
                     match event.variables.entry(id) {
                         Entry::Vacant(slot) => {
                             slot.insert(TagValue::fired(v));

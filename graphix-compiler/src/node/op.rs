@@ -623,7 +623,7 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
             let tag = Value::String(ARITH_ERR_TAG.clone());
             let err = Value::from(format_compact!("{e}"));
             let var = Value::Array(ValArray::from_iter([tag, err]));
-            Value::Error(Arc::new(var))
+            Value::Error(var.into())
         }
         v => v,
     }

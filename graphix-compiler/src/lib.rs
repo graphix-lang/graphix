@@ -341,7 +341,7 @@ macro_rules! tdbg {
 macro_rules! err {
     ($tag:expr, $err:literal) => {{
         let e: Value = ($tag.clone(), ::arcstr::literal!($err)).into();
-        Value::Error(::triomphe::Arc::new(e))
+        Value::Error(e.into())
     }};
 }
 
@@ -350,12 +350,12 @@ macro_rules! errf {
     ($tag:expr, $fmt:expr, $($args:expr),*) => {{
         let msg: ArcStr = ::compact_str::format_compact!($fmt, $($args),*).as_str().into();
         let e: Value = ($tag.clone(), msg).into();
-        Value::Error(::triomphe::Arc::new(e))
+        Value::Error(e.into())
     }};
     ($tag:expr, $fmt:expr) => {{
         let msg: ArcStr = ::compact_str::format_compact!($fmt).as_str().into();
         let e: Value = ($tag.clone(), msg).into();
-        Value::Error(::triomphe::Arc::new(e))
+        Value::Error(e.into())
     }};
 }
 

@@ -97,7 +97,7 @@ fn normalize(v: &Value) -> Value {
             }
             Task::BuildError => {
                 let e = out.pop().expect("normalize: error payload missing");
-                out.push(Value::Error(Arc::new(e)));
+                out.push(Value::Error(e.into()));
             }
             Task::BuildMap(n) => {
                 let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(n);
