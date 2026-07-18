@@ -21,7 +21,6 @@
 use graphix_compiler::{NoUserEvent, expr::ExprId, node::lambda::LambdaDef};
 use graphix_rt::{GXRt, NoExt, TraceEvent, TraceSegment};
 use netidx::publisher::Value;
-use triomphe::Arc;
 
 /// Runtime-side trace budgets (see [`graphix_rt::GXHandle::trace_start`]):
 /// total recorded events per trace, and active cycles per segment. Both

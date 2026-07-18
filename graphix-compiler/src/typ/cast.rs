@@ -13,7 +13,6 @@ use netidx::publisher::{Typ, Value};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::iter;
-use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
