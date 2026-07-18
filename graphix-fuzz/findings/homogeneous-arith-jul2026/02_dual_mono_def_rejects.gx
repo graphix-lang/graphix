@@ -1,0 +1,9 @@
+// PROMOTED 2026-07-18 (covered by the homogeneous-arith ruling,
+// Eric 2026-07-12 — promotion machinery deleted): `x + f64:0.` with
+// x: 'a: Number is ill-typed AT THE DEF (arithmetic is
+// fn('a: Number, 'a) -> 'a; "both operands must be one numeric type,
+// cast one side explicitly"), so the dual i64/f64 instantiation this
+// probe was built around is never reached. Both modes compile-reject
+// identically — pins the def-time rejection alongside the
+// promo_obligation_* fixtures in lang/types.rs.
+{let f = 'a: Number|x: 'a| -> 'a x + f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}
