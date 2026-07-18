@@ -1,0 +1,8 @@
+// PROMOTED 2026-07-18 after trace-level verification against the
+// body-driven firing ruling (Eric ruled A, 2026-07-11; class closed
+// 2026-07-18 — the residual DynCall always-fired arg stash was the
+// same always-FIRED-delivery family as the tail-stash/arm-bind seams
+// the honest-tags fix retired). Expected trace (both modes): 0,7,7,7 — resizes/fresh slots fire, const body otherwise quiet.
+// (Original braced single-expr block body is no longer legal syntax;
+// the brace-less twin pins the same fold shape.)
+{let a = array::init(array::iter([i64:0, i64:2, i64:1, i64:4]), |i| i64:0); array::fold(a, i64:0, |acc, x| array::fold([i64:5, i64:7], i64:0, |a3, x3| x3))}
