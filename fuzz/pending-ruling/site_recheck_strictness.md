@@ -1,5 +1,19 @@
 # The typing-acceptance family needs a ruling on the elaboration typing model
 
+> **ACCEPTANCE HOLE CLOSED 2026-07-18 (b9d004b0, no strictness
+> machinery needed):** `TVar::alias`/`alias_cells` now FORWARD-LINK
+> the abandoned cell, so the def gate's fact and the site's fact
+> share cells — `u1_tuple_arg.gx` (this directory) compile-rejects in
+> BOTH modes ("'n: i64 does not contain (i64, i64)" at the `(a, b)`
+> arg), which is the outcome the reverted strictness experiment
+> chased, achieved without touching `setup_bind`'s swallow. The
+> cross-module boundaries that broke the experiment stay green (the
+> gui package suite passes). All probes in this directory AGREE on
+> that stack. Remaining for Eric: bless the rejection as the intended
+> semantics (the analysis below argued "arguably a program that
+> should never have compiled"), then this file and its probes promote
+> to the corpus.
+
 > **FULLY RESOLVED 2026-07-12 — ERIC RULED (a) on the promotion
 > question, landed as PROMOTION-OBLIGATION conjuncts.** The runtime's
 > mixed-arith absorber set (`typ::numeric_absorbers`, mirroring

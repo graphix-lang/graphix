@@ -1,5 +1,11 @@
 # Const-valued fold body vs a firing source: which mode is right?
 
+> **PROBES ALL AGREE 2026-07-18 (b9d004b0 stack):** p1/p4/p6/p7/p8
+> every one — the DynCall always-fired arg stash class has no live
+> witness left after the accumulated fixes. Once Eric confirms, the
+> probes promote to the corpus and this file retires to the analysis
+> record.
+
 > **RESOLVED — ERIC RULED A (body-driven), 2026-07-11.** Landed as
 > interp-side semantics, not the anticipated DynCall ABI change:
 > (1) `Constant`/`Lambda` nodes produce STALE inside frames (the

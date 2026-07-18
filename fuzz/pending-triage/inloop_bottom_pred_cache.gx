@@ -12,3 +12,15 @@
 // (the per-slot state-table machinery already provides the identity
 // coordinates — anchor × loop chain × site chain).
 {let a = [i64:1, i64:2, array::iter([i64:1, i64:2, i64:0, i64:4]), i64:4, i64:5, i64:6, i64:7, i64:8]; array::filter(a, |x| i64:10 / x > i64:2)}
+// DESIGN SKETCH (2026-07-18): extend emit_scalar_taint_cache's
+// stateless-in-loop fallback with PER-SLOT storage via the slot-table
+// chain machinery — the loop scaffold prewalks taint-cache sites
+// (like guarded_select_sites) and opens TWO chains per site (value +
+// ok words per slot ordinal; prefix retention on resize matches the
+// interp's retained per-slot node caches). Callers must pass the
+// site's ExprId (qop/arith emitters have it). One new runtime piece:
+// Kernel::reset_replay must ZERO the cache chains' leaf words through
+// the directory structure (selection-memory chains stay — selection
+// persists per ruling; caches must not bridge frames) — a recursive
+// helper over the SiteLeaf/table heap, registered beside
+// replay_state_words.

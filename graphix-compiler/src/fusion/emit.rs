@@ -1449,6 +1449,7 @@ fn compile_into_function(
         helper_refs,
         tail_call_slots,
         tail_scrut_stale,
+        tail_sel_path: std::cell::RefCell::new(Vec::new()),
         init_override: std::cell::Cell::new(None),
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
@@ -1853,6 +1854,22 @@ pub(crate) struct LowerCtx<'a> {
     /// fires when the arm-selecting scrutinee fired — the tail-arm
     /// mirror of the value-position select's merge-point fold.
     tail_scrut_stale: Variable,
+    /// The enclosing GUARDED tail selects' (selection word, taken arm
+    /// index) on the CURRENT arm-emission path. `emit_select_node_tail`
+    /// pushes one entry per guarded select around each arm's body
+    /// emission; `emit_kernel_return` — reached only on TERMINATING
+    /// paths — compares each word against the taken index and folds a
+    /// selection CHANGE into the returned disc (becoming-selected
+    /// fires, Eric's ruled select semantics), then records the index.
+    /// Jump arms never reach a return, so intra-invocation loop
+    /// mechanics (the dispatch arm oscillating per iteration) never
+    /// touch the word — the compare is final-selection vs the previous
+    /// invocation's final selection, which is exactly the node-walk's
+    /// cross-cycle `selected` memory as seen from its depth-0 retained
+    /// -arm pass (jul17c capture-dispatch pin: a guard reading a
+    /// CAPTURE flips selection while the entry stays quiet — the old
+    /// entry-derived seam tag could never fire it).
+    tail_sel_path: std::cell::RefCell<Vec<(SelWord, usize)>>,
     /// Effective-init override for select ARM bodies. The node-walk
     /// updates a newly-taken arm with `event.init = true`
     /// (node/select.rs — an arm WAKE is an init view: seeds re-fire,
@@ -4420,6 +4437,60 @@ fn emit_kernel_return(
         let cleaned = cx.b.ins().band_imm(cv.disc, !STALE);
         cv.disc = cx.b.ins().bor(cleaned, folded);
     }
+    // Becoming-selected firing for the enclosing GUARDED tail selects
+    // (`LowerCtx::tail_sel_path`): this return IS the invocation's
+    // final selection for each select on the path — compare each
+    // selection word against the taken arm index, fire on change, and
+    // record. The scrutinee was forced valid before the arms ran, so
+    // the record is unconditional here (the node-walk updates
+    // `selected` before the arm body too).
+    {
+        let path: smallvec::SmallVec<[(SelWord, usize); 4]> =
+            cx.ctx.tail_sel_path.borrow().iter().copied().collect();
+        for (word, idx) in path {
+            let record = |cx: &mut BodyCx, addr: ClifValue| -> ClifValue {
+                let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+                let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
+                let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
+                cx.b.ins().store(MemFlags::trusted(), tag, addr, 0);
+                // STALE when unchanged (the fold identity), 0 on a
+                // selection change (forces FIRED).
+                let stale_c = cx.b.ins().iconst(types::I64, STALE);
+                let zero = cx.b.ins().iconst(types::I64, 0);
+                cx.b.ins().select(changed, zero, stale_c)
+            };
+            let mask = match word {
+                SelWord::Sure(addr) => record(cx, addr),
+                // Null site block (recursive back-edge): fresh
+                // transient semantics — no memory ≡ becoming selected,
+                // matching the node-walk's fresh instance
+                // (`selected: None` → first evaluation fires).
+                SelWord::Guarded { base, addr } => {
+                    let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+                    let mem_bl = cx.b.create_block();
+                    let nomem_bl = cx.b.create_block();
+                    let merge = cx.b.create_block();
+                    cx.b.append_block_param(merge, types::I64);
+                    cx.b.ins().brif(has, mem_bl, &[], nomem_bl, &[]);
+                    cx.b.switch_to_block(mem_bl);
+                    cx.b.seal_block(mem_bl);
+                    let mask = record(cx, addr);
+                    cx.b.ins().jump(merge, &[BlockArg::Value(mask)]);
+                    cx.b.switch_to_block(nomem_bl);
+                    cx.b.seal_block(nomem_bl);
+                    let zero = cx.b.ins().iconst(types::I64, 0);
+                    cx.b.ins().jump(merge, &[BlockArg::Value(zero)]);
+                    cx.b.switch_to_block(merge);
+                    cx.b.seal_block(merge);
+                    cx.b.block_params(merge)[0]
+                }
+            };
+            let vs = cx.b.ins().band_imm(cv.disc, STALE);
+            let folded = cx.b.ins().band(vs, mask);
+            let cleaned = cx.b.ins().band_imm(cv.disc, !STALE);
+            cv.disc = cx.b.ins().bor(cleaned, folded);
+        }
+    }
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
@@ -5381,6 +5452,46 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         let n = cx.b.ins().band(cur, ss);
         cx.b.def_var(cx.ctx.tail_scrut_stale, n);
     }
+    // GUARDED tail selects need SELECTION MEMORY (jul17c capture-
+    // dispatch pin): a guard reading a non-entry input (a capture) can
+    // flip the selection while the scrutinee stays quiet, and the
+    // scrutinee fold above can never see it — the node-walk fires the
+    // becoming-selected arm from its persistent `selected` memory.
+    // Same feeder rule as the value-position emitter: guards reading
+    // only pattern binds change selection only when the scrutinee
+    // fires (already folded), so they claim nothing (the recursion-hot
+    // guardless/bind-guard shapes stay word-free). The word records
+    // TERMINATING-arm indices only (`tail_sel_path` — recorded at
+    // `emit_kernel_return`), so the compare is final selection vs the
+    // previous invocation's final selection.
+    let has_feeder_guard = sel.arms.iter().any(|(pat, _)| {
+        pat.guard.as_ref().is_some_and(|g| {
+            let mut refs = crate::Refs::default();
+            g.node.refs(&mut refs);
+            let mut found = false;
+            refs.with_external_refs(|id| {
+                if cx.env.lookup_by_id(id).is_some() {
+                    found = true;
+                }
+            });
+            found
+        })
+    });
+    let sel_word: Option<SelWord> = if has_feeder_guard {
+        match cx.claim_state_word() {
+            Some(off) => {
+                let sp = cx.state_ptr();
+                Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
+            }
+            None => cx.claim_site_word().map(|off| {
+                let base = cx.site_ptr();
+                let addr = cx.b.ins().iadd_imm(base, off as i64);
+                SelWord::Guarded { base, addr }
+            }),
+        }
+    } else {
+        None
+    };
     // Tail position: a missing (tainted) scrutinee RETURNS the tainted
     // placeholder early — a value-level bottom. In a callee it rides
     // back through CALLEE_RESULT_FLAGS and bottoms only the call's
@@ -5404,6 +5515,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(arms_bl);
         cx.b.seal_block(arms_bl);
     }
+    let arm_index = std::cell::Cell::new(0usize);
     emit_select_arms(
         cx,
         sel,
@@ -5411,7 +5523,19 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         scrut_kind,
         &scrut_typ,
         &mut |cx, body, mark| {
+            let idx = arm_index.get();
+            arm_index.set(idx + 1);
+            // Scope this select's (word, arm) onto the terminating-path
+            // stack: a return inside this arm records it; a tail JUMP
+            // never returns, leaving the word untouched by loop
+            // mechanics.
+            if let Some(w) = sel_word {
+                cx.ctx.tail_sel_path.borrow_mut().push((w, idx));
+            }
             emit_body_tail(cx, &body.node, ret)?;
+            if sel_word.is_some() {
+                cx.ctx.tail_sel_path.borrow_mut().pop();
+            }
             // The arm terminated; pop its binds for the next arm's
             // compile-time scope. (Arm binds are scalars — no drops.)
             cx.env.truncate(mark);

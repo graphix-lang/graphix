@@ -1092,3 +1092,40 @@ run!(select_arm_local_reseed_fold, SELECT_ARM_LOCAL_RESEED_FOLD, |v: Result<&Val
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A GUARD reading a CAPTURE inside a rec callee's TAIL select: the
+// selection flips while the entry (the const call arg) stays quiet,
+// so the callee's firing can't be entry-derived — guarded tail
+// selects claim SELECTION MEMORY recorded on terminating returns, and
+// a final-selection change fires the result (becoming-selected, the
+// node-walk's depth-0 retained-arm semantics; jul17c capture-dispatch
+// pin). The ruled emission sequence: 2 (init, m absent), 1 (m=0
+// selects the guard arm), quiet (m re-fires 0 — same selection), 2
+// (m=1 deselects). The old entry-derived seam tag returned STALE
+// after init and emitted only the first 2.
+const TAIL_SELECT_GUARD_CAPTURE_MEMORY: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let m = x / 3;
+  let rec f = |n| select n {
+    0 => select 0 { 0 if m == 0 => 1, _ => 2 },
+    _ => f(n - 1)
+  };
+  array::group(f(3), |n, _| n == 3)
+}
+"#;
+
+run!(
+    tail_select_guard_capture_memory,
+    TAIL_SELECT_GUARD_CAPTURE_MEMORY,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => {
+                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                    == vec![2, 1, 2]
+            }
+            _ => false,
+        }
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);
