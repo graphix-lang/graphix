@@ -4930,7 +4930,17 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
             let value = compile_cast(cx.b, cv.payload, src, tgt);
             let base = scalar_disc(cx.b, tgt);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
-            return Ok(CompiledExpr::new(disc, value));
+            // The cast NODE's static type is the fallible `[T, Error]`
+            // union, so every consumer classifies it as a 2-word Value
+            // and expects the I64 payload word — a raw F64-typed result
+            // here type-mismatched `bind_local`'s declared payload var
+            // (cranelift frontend panic; jul17c katana divergence
+            // 000000: `let v = cast<f64>(f64:0.)`). `$`/`?` only worked
+            // by accident (same-width bitcast is an identity for F64,
+            // passthrough for I64). Widen to the wire shape; the qop
+            // unwrap narrows back with `cast_u64_to_prim`.
+            let payload = scalar_to_payload_i64(cx.b, tgt, value);
+            return Ok(CompiledExpr::new(disc, payload));
         }
     }
     // Any other cast (non-scalar source like `datetime`, or non-scalar
@@ -9896,6 +9906,19 @@ fn compile_cast(
             v
         }
     } else if src.is_integer() && dst.is_float() {
+        // x64 int→float converts need a 32/64-bit source — widen a
+        // narrow int first (the backend has no encoding for an i8/i16
+        // fcvt source; sibling of the narrow fcvt-to-int unreachable
+        // below).
+        let v = if src_size < 4 {
+            if src.is_signed() {
+                b.ins().sextend(types::I32, v)
+            } else {
+                b.ins().uextend(types::I32, v)
+            }
+        } else {
+            v
+        };
         if src.is_signed() {
             b.ins().fcvt_from_sint(dst_ty, v)
         } else {
@@ -9903,7 +9926,30 @@ fn compile_cast(
         }
     } else if src.is_float() && dst.is_integer() {
         // Saturating to match Rust `as` semantics on out-of-range.
-        if dst.is_signed() {
+        // The x64 backend can only encode fcvt to i32/i64
+        // (`fcvt_to_uint_sat.i8` hit cranelift's emit unreachable —
+        // jit_generated_sweep, `cast<u8>(f64)$`), so narrow targets
+        // convert at i32, clamp to the TARGET's range (the i32-width
+        // saturation alone would wrap 300 → u8:44 where Rust `as` —
+        // and the node-walk's `Value::cast` — clamp to 255), then
+        // reduce.
+        if dst_size < 4 {
+            if dst.is_signed() {
+                let wide = b.ins().fcvt_to_sint_sat(types::I32, v);
+                let (lo, hi) = if dst_size == 1 { (-128, 127) } else { (-32768, 32767) };
+                let lo = b.ins().iconst(types::I32, lo);
+                let hi = b.ins().iconst(types::I32, hi);
+                let clamped = b.ins().smax(wide, lo);
+                let clamped = b.ins().smin(clamped, hi);
+                b.ins().ireduce(dst_ty, clamped)
+            } else {
+                let wide = b.ins().fcvt_to_uint_sat(types::I32, v);
+                let hi = if dst_size == 1 { 255 } else { 65535 };
+                let hi = b.ins().iconst(types::I32, hi);
+                let clamped = b.ins().umin(wide, hi);
+                b.ins().ireduce(dst_ty, clamped)
+            }
+        } else if dst.is_signed() {
             b.ins().fcvt_to_sint_sat(dst_ty, v)
         } else {
             b.ins().fcvt_to_uint_sat(dst_ty, v)

@@ -1,0 +1,8 @@
+// jit_generated_sweep (exposed by the 00 wire-shape fix): the x64
+// backend has no encoding for a narrow (i8/i16) fcvt —
+// `fcvt_to_uint_sat.i8` hit cranelift's emit unreachable and killed
+// the runtime. `compile_cast` now converts at i32, clamps to the
+// TARGET's range (i32-width saturation alone wraps 300 → u8:44 where
+// Rust `as` — and the node-walk's `Value::cast` — clamp to 255), then
+// reduces; narrow int→float widens before the fcvt.
+{ let v1 = |v0: u8, v1: bool| -> i8 ((i8:1 + i8:1) * i8:-1); cast<u8>(((f64:3.14 - f64:0.0) * (f64:-1.0 * f64:0.0)))$ }
