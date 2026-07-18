@@ -1515,6 +1515,13 @@ pub struct SiteAnchor {
     pub rel: u32,
     pub own_levels: u32,
     pub leaf: Option<std::sync::Arc<SiteLeaf>>,
+    /// REPLAY-kind chain: `Kernel::reset_replay`/`sleep` free the
+    /// chain and null the anchor (the emitted code rebuilds fresh —
+    /// zero = no history), so a per-slot interior-bottom cache can't
+    /// bridge evaluation frames — the chain twin of
+    /// `replay_state_words`. Selection-memory chains stay `false`
+    /// (semantic state, survives per ruling; only `Drop` frees them).
+    pub reset: bool,
 }
 
 /// A chain leaf whose entries are per-slot CALL-SITE BLOCKS: `stride`

@@ -2775,6 +2775,20 @@ fn emit_scalar_taint_cache(
     prim: PrimType,
     cv: CompiledExpr,
 ) -> CompiledExpr {
+    // IN-LOOP sites: per-slot (value, ok) pairs via a reset-registered
+    // slot chain ([`BodyCx::claim_slot_cache_words`]) — one word pair
+    // per slot ordinal, so slot i−1's success can't bridge slot i's
+    // bottom (the jul10h aliasing rule that used to force the
+    // stateless degrade here). The interp twin is each slot's retained
+    // node caches. Callee-body loops still degrade (no reset
+    // authority over caller-hosted storage).
+    if cx.ctx.loop_depth.get() > 0 {
+        if let Some(addr) = cx.claim_slot_cache_words() {
+            let one = cx.b.ins().iconst(types::I64, 1);
+            return emit_taint_cache_at(cx, prim, cv, addr, 0, 8, one);
+        }
+        return cv;
+    }
     // REPLAY words: `Kernel::reset_replay` zeroes them (ok = 0 = "no
     // history"), so iteration i−1's success can't bridge iteration
     // i's bottom inside an evaluation frame — the bridge stays a
@@ -3865,6 +3879,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                         rel: (off / 8) as u32,
                         own_levels: n_dirs as u32,
                         leaf: None,
+                        reset: false,
                     });
                     let sp = self.state_ptr();
                     let word_addr = self.b.ins().iadd_imm(sp, off as i64);
@@ -3993,6 +4008,52 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         })
     }
 
+    /// PER-SLOT interior-bottom cache storage for an in-loop
+    /// [`emit_scalar_taint_cache`] site: a two-word (value, ok) pair
+    /// per slot ordinal, in a chain claimed ON DEMAND at the site's
+    /// emission (the leaf sized `len * 2`, pair-addressed, prefix
+    /// retention at pair granularity — exactly the interp's retained
+    /// per-slot node caches across resizes). The anchor is registered
+    /// `reset: true`: `Kernel::reset_replay`/`sleep` FREE the chain
+    /// (fresh = zero), so a slot's cached success can't bridge an
+    /// evaluation frame — the chain twin of `claim_state_word_replay`,
+    /// per-slot so it can't alias slots (the jul10h rule that forced
+    /// the old in-loop stateless degrade — jul17c katana divergence
+    /// 000002, the filter `10/x` witness). Returns the slot's VALUE
+    /// word address (the ok word is at +8). `None` in callee bodies
+    /// (per-call-site chains would need caller-side reset authority —
+    /// the honor problem; documented degrade) and when the innermost
+    /// frame isn't this emission's loop.
+    pub(crate) fn claim_slot_cache_words(&mut self) -> Option<ClifValue> {
+        let (idx_var, len, src_disc, enclosing) = {
+            let frames = self.ctx.slot_tables.borrow();
+            let f = frames.last()?;
+            if f.depth != self.ctx.loop_depth.get() {
+                return None;
+            }
+            let enclosing: Vec<(ClifValue, ClifValue, Variable)> = frames
+                [..frames.len() - 1]
+                .iter()
+                .map(|g| (g.len, g.src_disc, g.idx_var))
+                .collect();
+            (f.idx_var, f.len, f.src_disc, enclosing)
+        };
+        let off = self.claim_state_word_loop_invariant()?;
+        self.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+            rel: (off / 8) as u32,
+            own_levels: enclosing.len() as u32,
+            leaf: None,
+            reset: true,
+        });
+        let sp = self.state_ptr();
+        let word_addr = self.b.ins().iadd_imm(sp, off as i64);
+        let len2 = self.b.ins().ishl_imm(len, 1);
+        let table = self.emit_slot_chain(word_addr, &enclosing, len2, src_disc).ok()?;
+        let i = self.b.use_var(idx_var);
+        let o = self.b.ins().ishl_imm(i, 4);
+        Some(self.b.ins().iadd(table, o))
+    }
+
     /// Claim one word of PER-CALL-SITE block memory (wire slot 2) —
     /// the CALLEE-body twin of [`claim_state_word`]
     /// (Self::claim_state_word): one compiled callee body, per-call-
@@ -4054,6 +4115,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             rel: (off / 8) as u32,
             own_levels,
             leaf,
+            reset: false,
         });
         Some(off)
     }
@@ -8911,6 +8973,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                     rel: base_idx + a.rel,
                     own_levels: a.own_levels,
                     leaf: a.leaf.clone(),
+                    reset: a.reset,
                 });
             }
             let sp = cx.state_ptr();
@@ -8947,6 +9010,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                     rel: base_idx + a.rel,
                     own_levels: a.own_levels,
                     leaf: a.leaf.clone(),
+                    reset: a.reset,
                 });
             }
             // Our own block may be 0 (a back-edge activation of THIS
@@ -8988,6 +9052,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                 rel: (off / 8) as u32,
                 own_levels: n_dirs as u32,
                 leaf: leaf_rt.clone(),
+                reset: false,
             });
             let sp = cx.state_ptr();
             SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))

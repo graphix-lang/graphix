@@ -908,6 +908,24 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         &self.kernel
     }
 
+    /// Free the RESET-kind slot chains (per-slot interior-bottom
+    /// caches — `SiteAnchor::reset`) and null their anchors: the
+    /// emitted code rebuilds a fresh zeroed chain on the next
+    /// invocation (`graphix_slot_state_table` on a 0 word), so fresh
+    /// = no history, exactly the flat `replay_state_words` zeroing.
+    /// Selection-memory chains (`reset: false`) are untouched —
+    /// semantic state, freed only by `Drop`.
+    fn free_reset_chains(&mut self) {
+        for a in self.jit.slot_table_words.iter().filter(|a| a.reset) {
+            let p = std::mem::replace(&mut self.state[a.rel as usize], 0);
+            super::emit_helpers::free_slot_chain(
+                p,
+                a.own_levels as u64,
+                a.leaf.as_deref(),
+            );
+        }
+    }
+
     /// Single construction chokepoint: a Kernel dispatches into
     /// `wrapped`, the JIT artifact — there is no other way to make
     /// one (JIT failure means the region is never spliced and the
@@ -1604,6 +1622,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
         }
+        self.free_reset_chains();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -1620,6 +1639,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
         }
+        self.free_reset_chains();
         if std::env::var_os("GXDBG_RESET").is_some() {
             eprintln!("KERNEL-RESET words={:?}", self.jit.replay_state_words);
         }

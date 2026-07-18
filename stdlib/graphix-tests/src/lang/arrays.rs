@@ -450,3 +450,38 @@ run!(fold_acc_elem_body, FOLD_ACC_ELEM_BODY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2)]),
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// An in-loop interior-bottom: the filter predicate `10/x` bottoms on
+// the div0 cycle (x=0 from the array::iter slot). The interp's
+// per-slot node caches ride the previous verdict, so the output
+// re-emits `[1,2,0]` under the stale-true verdict; the kernel now
+// matches via per-slot (value, ok) cache pairs in a reset-registered
+// slot chain (`claim_slot_cache_words` — jul17c katana divergence
+// 000002, previously the documented stateless-in-loop degrade which
+// bottomed the whole output on that cycle).
+const FILTER_DIV0_SLOT_CACHE: &str = r#"
+{
+  let a = [1, 2, array::iter([1, 2, 0, 4]), 4, 5, 6, 7, 8];
+  let out = array::filter(a, |x| 10 / x > 2);
+  array::group(out, |n, _| n == 4)
+}
+"#;
+
+run!(filter_div0_slot_cache, FILTER_DIV0_SLOT_CACHE, |v: Result<&Value>| {
+    let expect: Vec<Vec<i64>> = vec![vec![1, 2, 1], vec![1, 2, 2], vec![1, 2, 0], vec![1, 2]];
+    match v {
+        Ok(Value::Array(gs)) => {
+            gs.len() == expect.len()
+                && gs.iter().zip(expect.iter()).all(|(g, e)| match g {
+                    Value::Array(a) => {
+                        a.iter()
+                            .map(|v| v.clone().cast_to::<i64>().unwrap())
+                            .collect::<Vec<_>>()
+                            == *e
+                    }
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
