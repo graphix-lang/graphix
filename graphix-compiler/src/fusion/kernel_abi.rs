@@ -1054,135 +1054,74 @@ pub fn nullable_type(inner: Type) -> Type {
     Type::Set(triomphe::Arc::from_iter([inner, null_type()]))
 }
 
-/// One input to a fused kernel — a binding the kernel reads. `name` is
-/// the source-level identifier; `bind_id` is set when the input came
-/// from `discover_inputs` walking a real graph, `None` for synthetic
-/// inputs (lambda args, let-bindings introduced by the body emitter).
+/// One parameter of a fused kernel, in SOURCE order — the unified
+/// Value ABI's single parameter list. The vec's order IS the ABI
+/// order (wire slots assign sequentially), the runtime packer's arg
+/// order, and the tail-rebind order; there is no kind grouping and no
+/// parallel per-kind bookkeeping. `bind_id` is set when the input
+/// came from `discover_inputs` walking a real graph, `None` for
+/// synthetic inputs (lambda formals).
 #[derive(Debug, Clone)]
-pub struct Input {
+pub struct KernelParam {
     pub name: ArcStr,
-    pub prim: PrimType,
+    pub kind: ParamKind,
     pub bind_id: Option<BindId>,
 }
 
-/// An array value passed as a kernel parameter. The element type is
-/// any [`Type`] — primitive or nested composite. Runtime value is
-/// `&ValArray`; for primitive elements the JIT loads via
-/// `arr.get_unchecked::<T>(i)`, for composite elements via a
-/// `*mut Value` accessor.
+/// The shape of one kernel parameter, carrying the kind-specific
+/// static metadata the body emitter and runtime packer need. Wire
+/// shape is uniform regardless (a two-word Value pair); this drives
+/// element/field reads, entry binding, and value validation.
 #[derive(Debug, Clone)]
-pub struct ArrayInput {
-    pub name: ArcStr,
-    pub elem: Type,
-    pub bind_id: Option<BindId>,
-}
-
-/// A tuple value passed as a kernel parameter. Per-slot types can be
-/// any [`Type`] (nested tuples / structs / variants / arrays
-/// allowed). Same `&ValArray` runtime boundary as [`ArrayInput`].
-#[derive(Debug, Clone)]
-pub struct TupleInput {
-    pub name: ArcStr,
-    pub elems: Vec<Type>,
-    pub bind_id: Option<BindId>,
-}
-
-/// A struct value passed as a kernel parameter. Field types can be
-/// any [`Type`]. Same `&ValArray` boundary, with fields stored at
-/// compile-time-known sorted-by-name positions.
-#[derive(Debug, Clone)]
-pub struct StructInput {
-    pub name: ArcStr,
-    pub fields: Vec<(ArcStr, Type)>,
-    pub bind_id: Option<BindId>,
-}
-
-/// A variant value passed as a kernel parameter. Payload types per
-/// case can be any [`Type`]. Same `&ValArray` boundary as
-/// tuples/structs, but the slot at index 0 is the tag string (an
-/// interned `ArcStr`) and payloads start at index 1. `cases`
-/// enumerates the legal `(tag, payload_types)` shapes — at runtime
-/// exactly one of these is active per value.
-#[derive(Debug, Clone)]
-pub struct VariantInput {
-    pub name: ArcStr,
-    pub cases: Vec<(ArcStr, Vec<Type>)>,
-    pub bind_id: Option<BindId>,
-}
-
-/// A nullable-typed kernel input — graphix's `[T, null]` option
-/// shape. Runtime representation is a `Value` that is either
-/// `Value::Null` or `T`'s runtime form. `elem` is the inner type
-/// (always non-null; the nullability is implicit in this slot
-/// list's identity).
-#[derive(Debug, Clone)]
-pub struct NullableInput {
-    pub name: ArcStr,
-    pub elem: Type,
-    pub bind_id: Option<BindId>,
-}
-
-/// A string-typed kernel let-binding. Strings only appear as
-/// in-kernel locals — never as kernel params (no string args on
-/// either backend) and never as `RegionInput` (no string region-
-/// input shape). Runtime representation is an owned `ArcStr` slot
-/// in the env's string table.
-#[derive(Debug, Clone)]
-pub struct StringInput {
-    pub name: ArcStr,
-    pub bind_id: Option<BindId>,
-}
-
-/// A Value-shape kernel let-binding whose type is `DateTime` or
-/// `Duration`. Unlike `NullableInput` (which stores only the inner
-/// `T` of `[T, null]`), this carries the full `Type` so a `Ref`
-/// read resolves to the correct `DateTime`/`Duration` type. Runtime
-/// representation rides the interpreter's `nullables` Value slot
-/// (a name→Value map); the JIT uses the `nullables` `ValueVar` slot.
-#[derive(Debug, Clone)]
-pub struct ValueInput {
-    pub name: ArcStr,
-    pub typ: Type,
-    pub bind_id: Option<BindId>,
-}
-
-/// Per-source-arg metadata used by the tail-call renderer to assign
-/// each new value to the right destination. Populated by
-/// `build_kir_kernel` in lambda argspec order — so
-/// `tail_call_slots[i]` describes the destination of the `i`th
-/// tail-call arg.
-#[derive(Debug, Clone)]
-pub struct TailCallSlot {
-    pub name: ArcStr,
-    pub kind: TailCallSlotKind,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum TailCallSlotKind {
+pub enum ParamKind {
     Scalar(PrimType),
-    /// Array / Tuple / Struct — all share the `ValArray` runtime
-    /// representation. Body signature receives `&ValArray`; tail-call
-    /// rebinding clones an owned `ValArray` into the shadowed local.
-    ValArray,
-    /// Variant — runtime representation is `Value` (`String` for
-    /// nullary, `Array` for with-payload). Body signature receives
-    /// `&Value`; tail-call rebinding clones an owned `Value`.
-    Variant,
-    /// `[T, null]` option shape — runtime representation is `Value`
-    /// (either `Value::Null` or `T`'s form). Tail-call rebinding
-    /// clones an owned `Value` into the shadowed local via
-    /// `rebind_nullable`. Same wire format as `Variant` but routed
-    /// to `env.nullables` rather than `env.variants`.
-    Nullable,
-    /// String — runtime representation is an owned `ArcStr` (one
-    /// machine word). Body signature receives the ArcStr; tail-call
-    /// rebinding clones (refcount-bump) into the shadowed local.
+    /// Array — `elem` is the element type (primitive or nested
+    /// composite).
+    Array {
+        elem: Type,
+    },
+    /// Tuple — per-slot types (nesting allowed).
+    Tuple {
+        elems: Vec<Type>,
+    },
+    /// Struct — fields at compile-time-known sorted-by-name
+    /// positions.
+    Struct {
+        fields: Vec<(ArcStr, Type)>,
+    },
+    /// Variant — the slot at runtime index 0 is the tag string,
+    /// payloads start at index 1. `cases` enumerates the legal
+    /// `(tag, payload_types)` shapes.
+    Variant {
+        cases: Vec<(ArcStr, Vec<Type>)>,
+    },
+    /// `[T, null]` option shape — `elem` is the inner (non-null)
+    /// type.
+    Nullable {
+        elem: Type,
+    },
     String,
-    /// Bare value-shape (`DateTime`/`Duration`/`Bytes`) — runtime
-    /// representation is `Value` (two words). Routed to
-    /// `env.nullables` like `Nullable`, but re-wrapped to the slot's
-    /// declared type on read.
-    Value,
+    /// Bare value shape (`DateTime`/`Duration`/`Bytes`) — carries the
+    /// full `Type` so a `Ref` read re-wraps correctly.
+    Value {
+        typ: Type,
+    },
+}
+
+impl ParamKind {
+    /// The wire-classification this parameter binds under.
+    pub fn abi(&self) -> AbiParamKind {
+        match self {
+            ParamKind::Scalar(p) => AbiParamKind::Scalar(*p),
+            ParamKind::Array { .. } => AbiParamKind::Array,
+            ParamKind::Tuple { .. } => AbiParamKind::Tuple,
+            ParamKind::Struct { .. } => AbiParamKind::Struct,
+            ParamKind::Variant { .. } => AbiParamKind::Variant,
+            ParamKind::Nullable { .. } => AbiParamKind::Nullable,
+            ParamKind::String => AbiParamKind::String,
+            ParamKind::Value { .. } => AbiParamKind::Value,
+        }
+    }
 }
 
 /// A function-typed kernel "parameter" — really a slot in the
@@ -1388,9 +1327,10 @@ impl AbiParamKind {
     }
 }
 
-/// One kernel parameter at the ABI boundary, in kind-grouped order.
-/// `wire_slot` is the starting `u64` slot index in the flat boundary
-/// layout; the param spans `kind.wire_words()` consecutive slots.
+/// One kernel parameter at the ABI boundary, in SOURCE order (the
+/// unified single list — vec order is ABI order). `wire_slot` is the
+/// starting `u64` slot index in the flat boundary layout; the param
+/// spans `kind.wire_words()` consecutive slots.
 #[derive(Debug, Clone, Copy)]
 pub struct AbiParamDesc<'a> {
     pub name: &'a ArcStr,
@@ -1440,51 +1380,15 @@ pub struct KernelSig {
     /// diagnostics only — never resolve calls by it (see
     /// [`kernel_key`]).
     pub fn_name: ArcStr,
-    /// Primitive parameters in declaration order. Each is also visible
-    /// as a local in the body.
-    pub params: Vec<Input>,
+    /// The kernel's parameters in SOURCE order — the unified single
+    /// list. Vec order IS the ABI order (see [`KernelParam`]). Each
+    /// is also visible as a local in the body.
+    pub params: Vec<KernelParam>,
     /// Function-typed parameters in declaration order. Distinct from
     /// `params` because the interpreter holds them in a separate
     /// fn-args table (the value is a `LambdaDef`, not a primitive).
     /// a DynCall's `fn_index` indexes into this table.
     pub fn_params: Vec<FnParam>,
-    /// Array-typed parameters. Sibling to `params`; kept separate so
-    /// the scalar pipeline doesn't need to know about array types.
-    /// array length/element reads reference these by name.
-    pub array_params: Vec<ArrayInput>,
-    /// Tuple-typed parameters. Tuple element reads reference these by
-    /// name + sorted index.
-    pub tuple_params: Vec<TupleInput>,
-    /// Struct-typed parameters. Struct field reads reference these
-    /// by name + field-name (resolved to sorted index at lowering).
-    pub struct_params: Vec<StructInput>,
-    /// Variant-typed parameters. Variant tag-eq / payload reads
-    /// reference these by name; the runtime layout puts the tag string
-    /// at slot 0 and payloads at slots 1..N.
-    pub variant_params: Vec<VariantInput>,
-    /// `[T, null]` option-shape parameters. Is-null checks and local
-    /// reads against names here yield the slot's `Value` (either
-    /// `Value::Null` or `T`'s runtime form). Stored separately from
-    /// `variant_params` even though both use `Value` at runtime —
-    /// the consumer ops and the env slot list differ.
-    pub nullable_params: Vec<NullableInput>,
-    /// String-typed parameters. Runtime representation is a single
-    /// machine word holding an `ArcStr` thin pointer; the kernel
-    /// clones (refcount-bump) on entry and reads via `env.strings`.
-    pub string_params: Vec<StringInput>,
-    /// Bare value-shape parameters — `DateTime` / `Duration` /
-    /// `Bytes`. Two-word `Value` wire shape like variant/nullable,
-    /// but carries the full `Type` (no inner `elem` indirection)
-    /// so a `Local` read re-wraps to the right type. Rides the same
-    /// `env.nullables` Value slot as those types' locals.
-    pub value_params: Vec<ValueInput>,
-    /// Per-source-position metadata so the tail-call renderer can
-    /// assign each new arg value to the right destination
-    /// regardless of which slot list (scalar / array / tuple /
-    /// struct) the destination lives in. Length matches the
-    /// lambda's source argspec order. Only populated when
-    /// `has_tail_loop` is true; otherwise empty.
-    pub tail_call_slots: Vec<TailCallSlot>,
     /// LIFTED connect-target inputs (sorted by `BindId`): let-bound
     /// reactive accumulators routed in as feeders whose IDENTITY is
     /// per-INSTANCE data, not code. The first `lifted.len()` words of
@@ -1572,63 +1476,26 @@ pub struct SiteLeaf {
 pub(crate) const CTX_WIRE_SLOTS: usize = 3;
 
 impl KernelSig {
-    /// Iterate the kernel's parameters in canonical kind-grouped ABI
-    /// order, each tagged with its wire-slot offset. This is THE
-    /// definition of the parameter calling convention — every ABI site
-    /// consumes it rather than re-deriving the order. Wire slots start
-    /// after the [`CTX_WIRE_SLOTS`] leading cycle-context words.
+    /// Iterate the kernel's parameters in ABI order — the `params`
+    /// vec's SOURCE order, each tagged with its wire-slot offset. This
+    /// is THE definition of the parameter calling convention — every
+    /// ABI site consumes it rather than re-deriving an order. Wire
+    /// slots start after the [`CTX_WIRE_SLOTS`] leading cycle-context
+    /// words.
     pub fn abi_params(&self) -> impl Iterator<Item = AbiParamDesc<'_>> {
-        let scalars = self
-            .params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::Scalar(p.prim), p.bind_id));
-        let arrays =
-            self.array_params.iter().map(|p| (&p.name, AbiParamKind::Array, p.bind_id));
-        let tuples =
-            self.tuple_params.iter().map(|p| (&p.name, AbiParamKind::Tuple, p.bind_id));
-        let structs =
-            self.struct_params.iter().map(|p| (&p.name, AbiParamKind::Struct, p.bind_id));
-        let variants = self
-            .variant_params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::Variant, p.bind_id));
-        let nullables = self
-            .nullable_params
-            .iter()
-            .map(|p| (&p.name, AbiParamKind::Nullable, p.bind_id));
-        let strings =
-            self.string_params.iter().map(|p| (&p.name, AbiParamKind::String, p.bind_id));
-        let values =
-            self.value_params.iter().map(|p| (&p.name, AbiParamKind::Value, p.bind_id));
-        scalars
-            .chain(arrays)
-            .chain(tuples)
-            .chain(structs)
-            .chain(strings)
-            .chain(variants)
-            .chain(nullables)
-            .chain(values)
-            .scan(CTX_WIRE_SLOTS, |off, (name, kind, bind_id)| {
-                let wire_slot = *off;
-                *off += kind.wire_words();
-                Some(AbiParamDesc { name, kind, wire_slot, bind_id })
-            })
+        self.params.iter().enumerate().map(|(i, p)| AbiParamDesc {
+            name: &p.name,
+            kind: p.kind.abi(),
+            wire_slot: CTX_WIRE_SLOTS + 2 * i,
+            bind_id: p.bind_id,
+        })
     }
 
     /// Total number of `u64` wire slots the boundary buffer occupies —
     /// the [`CTX_WIRE_SLOTS`] leading cycle-context words plus two per
-    /// param (`disc`, `payload`) now that every kind carries a disc word
-    /// for #219 taint.
+    /// param (`disc`, `payload`).
     pub fn abi_param_wire_slots(&self) -> usize {
-        CTX_WIRE_SLOTS
-            + 2 * (self.params.len()
-                + self.array_params.len()
-                + self.tuple_params.len()
-                + self.struct_params.len()
-                + self.string_params.len()
-                + self.variant_params.len()
-                + self.nullable_params.len()
-                + self.value_params.len())
+        CTX_WIRE_SLOTS + 2 * self.params.len()
     }
 
     /// Total wire slots the dispatch packs and the wrapper unpacks.

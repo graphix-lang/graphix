@@ -1141,59 +1141,34 @@ fn region_is_identity<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
 }
 
 /// Build a [`KernelSig`] straight from a typed input list
-/// — signature only, no body. The single source of truth for per-kind slot routing
-/// (one slot per input, one [`kernel_abi::TailCallSlot`] per input in
-/// source order — the runtime's `build_arg_layout` reads the slot list
-/// for per-position routing even in non-tail kernels). Used by every
-/// kernel-build path: `try_fuse` regions, lambda kernels
-/// (`build_lambda_kernel` — formals carry `bind_id: None`, captures
-/// their binding), and body-split sub-regions.
+/// — signature only, no body. One [`kernel_abi::KernelParam`] per
+/// input in SOURCE order (vec order is ABI order — the wrapper, the
+/// runtime packer, the entry binder, and the tail-rebind all follow
+/// it; there is no per-kind grouping). Used by every kernel-build
+/// path: `try_fuse` regions, lambda kernels (`build_lambda_kernel` —
+/// formals carry `bind_id: None`, captures their binding), and
+/// body-split sub-regions.
 ///
-/// The second return is the flat per-input graphix type list in slot
-/// order — [`kernel_abi::KnownFusedFn::arg_types`], the caller-side
-/// type authority for cross-kernel call marshalling.
+/// The second return is the flat per-input graphix type list in the
+/// same order — [`kernel_abi::KnownFusedFn::arg_types`], the
+/// caller-side type authority for cross-kernel call marshalling.
 pub(crate) fn sig_from_inputs<'k>(
     fn_name: arcstr::ArcStr,
     inputs: impl IntoIterator<Item = (arcstr::ArcStr, &'k RegionInputKind, Option<BindId>)>,
     return_type: Type,
 ) -> anyhow::Result<(KernelSig, Vec<Type>)> {
-    use kernel_abi::{
-        ArrayInput, Input, NullableInput, StringInput, StructInput, TailCallSlot,
-        TailCallSlotKind, TupleInput, ValueInput, VariantInput,
-    };
-    let mut sig = KernelSig {
-        fn_name,
-        params: Vec::new(),
-        fn_params: Vec::new(),
-        array_params: Vec::new(),
-        tuple_params: Vec::new(),
-        struct_params: Vec::new(),
-        variant_params: Vec::new(),
-        nullable_params: Vec::new(),
-        string_params: Vec::new(),
-        value_params: Vec::new(),
-        tail_call_slots: Vec::new(),
-        return_type,
-        has_tail_loop: false,
-        lifted: Vec::new(),
-    };
+    use kernel_abi::{KernelParam, ParamKind};
+    let mut params: Vec<KernelParam> = Vec::new();
     let mut arg_types: Vec<Type> = Vec::new();
     for (name, kind, bind_id) in inputs.into_iter() {
-        let slot_kind = match kind {
+        let (kind, typ) = match kind {
             RegionInputKind::Prim(prim) => {
-                sig.params.push(Input { name: name.clone(), prim: *prim, bind_id });
-                arg_types.push(kernel_abi::prim_type(*prim));
-                TailCallSlotKind::Scalar(*prim)
+                (ParamKind::Scalar(*prim), kernel_abi::prim_type(*prim))
             }
-            RegionInputKind::Array(elem) => {
-                sig.array_params.push(ArrayInput {
-                    name: name.clone(),
-                    elem: elem.clone(),
-                    bind_id,
-                });
-                arg_types.push(kernel_abi::array_type(elem.clone()));
-                TailCallSlotKind::ValArray
-            }
+            RegionInputKind::Array(elem) => (
+                ParamKind::Array { elem: elem.clone() },
+                kernel_abi::array_type(elem.clone()),
+            ),
             RegionInputKind::Tuple(t) => {
                 let elems = kernel_abi::tuple_slots(t).map(<[Type]>::to_vec).ok_or_else(
                     || {
@@ -1203,9 +1178,7 @@ pub(crate) fn sig_from_inputs<'k>(
                         )
                     },
                 )?;
-                sig.tuple_params.push(TupleInput { name: name.clone(), elems, bind_id });
-                arg_types.push(t.clone());
-                TailCallSlotKind::ValArray
+                (ParamKind::Tuple { elems }, t.clone())
             }
             RegionInputKind::Struct(t) => {
                 let fields = kernel_abi::struct_fields(t)
@@ -1216,13 +1189,7 @@ pub(crate) fn sig_from_inputs<'k>(
                              Type::Struct (freeze invariant)"
                         )
                     })?;
-                sig.struct_params.push(StructInput {
-                    name: name.clone(),
-                    fields,
-                    bind_id,
-                });
-                arg_types.push(t.clone());
-                TailCallSlotKind::ValArray
+                (ParamKind::Struct { fields }, t.clone())
             }
             RegionInputKind::Variant(t) => {
                 let cases = kernel_abi::variant_cases(t).ok_or_else(|| {
@@ -1231,39 +1198,25 @@ pub(crate) fn sig_from_inputs<'k>(
                          Type (freeze invariant)"
                     )
                 })?;
-                sig.variant_params.push(VariantInput {
-                    name: name.clone(),
-                    cases,
-                    bind_id,
-                });
-                arg_types.push(t.clone());
-                TailCallSlotKind::Variant
+                (ParamKind::Variant { cases }, t.clone())
             }
-            RegionInputKind::Nullable(elem) => {
-                sig.nullable_params.push(NullableInput {
-                    name: name.clone(),
-                    elem: elem.clone(),
-                    bind_id,
-                });
-                arg_types.push(kernel_abi::nullable_type(elem.clone()));
-                TailCallSlotKind::Nullable
-            }
-            RegionInputKind::String => {
-                sig.string_params.push(StringInput { name: name.clone(), bind_id });
-                arg_types.push(kernel_abi::string_type());
-                TailCallSlotKind::String
-            }
-            RegionInputKind::Value(t) => {
-                sig.value_params.push(ValueInput {
-                    name: name.clone(),
-                    typ: t.clone(),
-                    bind_id,
-                });
-                arg_types.push(t.clone());
-                TailCallSlotKind::Value
-            }
+            RegionInputKind::Nullable(elem) => (
+                ParamKind::Nullable { elem: elem.clone() },
+                kernel_abi::nullable_type(elem.clone()),
+            ),
+            RegionInputKind::String => (ParamKind::String, kernel_abi::string_type()),
+            RegionInputKind::Value(t) => (ParamKind::Value { typ: t.clone() }, t.clone()),
         };
-        sig.tail_call_slots.push(TailCallSlot { name, kind: slot_kind });
+        params.push(KernelParam { name, kind, bind_id });
+        arg_types.push(typ);
     }
+    let sig = KernelSig {
+        fn_name,
+        params,
+        fn_params: Vec::new(),
+        return_type,
+        has_tail_loop: false,
+        lifted: Vec::new(),
+    };
     Ok((sig, arg_types))
 }

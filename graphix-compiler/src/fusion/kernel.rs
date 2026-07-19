@@ -670,28 +670,19 @@ impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
         }
     }
 }
-
-/// Tag for each call-site arg position. The runtime walks the
-/// incoming `from` slice in source-arg order; each entry classifies
-/// the arg into the right slot list (scalar, array, tuple, struct,
-/// variant, fn) and stores its index within that list.
+/// Routing for one incoming runtime arg position: a value-bearing
+/// kernel param (index into `KernelSig::params` — SOURCE order, the
+/// unified single list) or an HOF fn arg (index into `fn_params`).
 #[derive(Debug, Clone, Copy)]
 enum ArgKind {
-    Prim(u32),
+    Param(u32),
     Fn(u32),
-    Array(u32),
-    Tuple(u32),
-    Struct(u32),
-    Variant(u32),
-    Nullable(u32),
-    String(u32),
-    Value(u32),
 }
 
 /// Total number of input slots the runtime passes into a Kernel for
-/// this kernel — scalar params + all composite params + HOF-arg fn
-/// params (Binding-source fn params resolve through ctx.cached and
-/// don't count). Equals `arg_layout.len()`.
+/// this kernel — value-bearing params + HOF-arg fn params
+/// (Binding-source fn params resolve through ctx.cached and don't
+/// count). Equals `arg_layout.len()`.
 pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
     use FnSource;
     let param_source_count = kernel
@@ -699,101 +690,35 @@ pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
         .iter()
         .filter(|fp| matches!(fp.source, FnSource::Param { .. }))
         .count();
-    kernel.tail_call_slots.len() + param_source_count
+    kernel.params.len() + param_source_count
 }
 
+/// Per-position routing for the runtime's incoming args: HOF fn args
+/// sit at their source positions (`FnSource::Param { arg_pos }`),
+/// value-bearing params fill the remaining positions in `params`
+/// order (which IS source order — the unified list).
 fn build_arg_layout(kernel: &KernelSig) -> Vec<ArgKind> {
-    use kernel_abi::{FnSource, TailCallSlotKind};
-    // `tail_call_slots` is populated for every kernel and lists
-    // params in source-declared order. Each slot carries a name
-    // matching one of the kernel's *_params lists. Walking this list
-    // gives us per-position routing; the corresponding within-list
-    // index falls out of a running counter per kind.
-    //
-    // Fn params don't appear in `tail_call_slots` (the constructor
-    // bails on fn args in tail-call kernels). For non-tail kernels
-    // tail_call_slots is also populated for the non-fn params, so we
-    // detect fn positions separately by walking fn_params.
-    let mut out =
-        Vec::with_capacity(kernel.tail_call_slots.len() + kernel.fn_params.len());
-    let mut prim_idx: u32 = 0;
-    let mut array_idx: u32 = 0;
-    let mut tuple_idx: u32 = 0;
-    let mut struct_idx: u32 = 0;
-    let mut variant_idx: u32 = 0;
-    let mut nullable_idx: u32 = 0;
-    let mut string_idx: u32 = 0;
-    let mut value_idx: u32 = 0;
-    // Count of HOF-arg fn_params (Binding-source ones don't take a
-    // positional input). Combined with `tail_call_slots.len()` to
-    // size the layout.
-    let param_source_count = kernel
-        .fn_params
-        .iter()
-        .filter(|fp| matches!(fp.source, FnSource::Param { .. }))
-        .count();
-    let total = kernel.tail_call_slots.len() + param_source_count;
-    let mut tail_iter = kernel.tail_call_slots.iter();
+    use kernel_abi::FnSource;
+    let total = total_kernel_arity(kernel);
+    let mut out = Vec::with_capacity(total);
+    let mut param_idx: u32 = 0;
     for i in 0..total {
-        // Fn params occupy a fixed position via FnSource::Param. If
-        // this position is one of them, emit a Fn slot.
         let fn_match = kernel.fn_params.iter().position(|fp| {
             matches!(fp.source, FnSource::Param { arg_pos } if arg_pos as usize == i)
         });
-        if let Some(fn_idx) = fn_match {
-            out.push(ArgKind::Fn(fn_idx as u32));
-            continue;
-        }
-        // Otherwise pull the next tail_call_slot entry — that
-        // describes which scalar/composite list the arg belongs to.
-        let slot = tail_iter.next().expect(
-            "arg_layout: ran out of tail_call_slots before filling all \
-             positions — fusion built an inconsistent kernel",
-        );
-        match slot.kind {
-            TailCallSlotKind::Scalar(_) => {
-                out.push(ArgKind::Prim(prim_idx));
-                prim_idx += 1;
-            }
-            TailCallSlotKind::ValArray => {
-                // Disambiguate by looking at which list the name
-                // appears in. ValArray covers Array/Tuple/Struct;
-                // names are unique across slot lists by construction.
-                if kernel.array_params.iter().any(|a| a.name == slot.name) {
-                    out.push(ArgKind::Array(array_idx));
-                    array_idx += 1;
-                } else if kernel.tuple_params.iter().any(|t| t.name == slot.name) {
-                    out.push(ArgKind::Tuple(tuple_idx));
-                    tuple_idx += 1;
-                } else if kernel.struct_params.iter().any(|s| s.name == slot.name) {
-                    out.push(ArgKind::Struct(struct_idx));
-                    struct_idx += 1;
-                } else {
-                    panic!(
-                        "arg_layout: ValArray slot `{}` not found in any \
-                         composite param list",
-                        slot.name
-                    );
-                }
-            }
-            TailCallSlotKind::Variant => {
-                out.push(ArgKind::Variant(variant_idx));
-                variant_idx += 1;
-            }
-            TailCallSlotKind::Nullable => {
-                out.push(ArgKind::Nullable(nullable_idx));
-                nullable_idx += 1;
-            }
-            TailCallSlotKind::String => {
-                out.push(ArgKind::String(string_idx));
-                string_idx += 1;
-            }
-            TailCallSlotKind::Value => {
-                out.push(ArgKind::Value(value_idx));
-                value_idx += 1;
+        match fn_match {
+            Some(fn_idx) => out.push(ArgKind::Fn(fn_idx as u32)),
+            None => {
+                out.push(ArgKind::Param(param_idx));
+                param_idx += 1;
             }
         }
     }
+    assert_eq!(
+        param_idx as usize,
+        kernel.params.len(),
+        "arg_layout: fn positions and params disagree with total arity"
+    );
     out
 }
 
@@ -1147,14 +1072,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // binding (scalars, arrays, tuples, structs, variants, nullables,
         // strings, values).
         let k = &self.kernel;
-        let base_array = k.params.len();
-        let base_tuple = base_array + k.array_params.len();
-        let base_struct = base_tuple + k.tuple_params.len();
-        let base_variant = base_struct + k.struct_params.len();
-        let base_nullable = base_variant + k.variant_params.len();
-        let base_string = base_nullable + k.nullable_params.len();
-        let base_value = base_string + k.string_params.len();
-        let n_params = base_value + k.value_params.len();
+        let n_params = k.params.len();
         let mut param_opts: Vec<Option<Value>> = vec![None; n_params];
         // Per-param-slot "fired this cycle", indexed like `param_opts`.
         // A present-but-not-fired param packs its disc with STALE (it
@@ -1178,27 +1096,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for (i, kind) in self.arg_layout.iter().enumerate() {
             let v = self.args[i].clone();
             let fired = fired_this_cycle[i];
-            // Set both `param_opts[slot]` and `param_fired[slot]` for a
-            // value-bearing param; `ArgKind::Fn` carries no disc word, so
-            // it touches neither.
-            let mut put = |slot: usize, val: Option<Value>| {
-                param_opts[slot] = val;
-                param_fired[slot] = fired;
-            };
             match *kind {
-                ArgKind::Prim(idx) => put(idx as usize, v),
+                ArgKind::Param(idx) => {
+                    param_opts[idx as usize] = v;
+                    param_fired[idx as usize] = fired;
+                }
                 ArgKind::Fn(fn_idx) => {
                     if let Some(v) = v {
                         fn_arg_values[fn_idx as usize] = v;
                     }
                 }
-                ArgKind::Array(idx) => put(base_array + idx as usize, v),
-                ArgKind::Tuple(idx) => put(base_tuple + idx as usize, v),
-                ArgKind::Struct(idx) => put(base_struct + idx as usize, v),
-                ArgKind::Variant(idx) => put(base_variant + idx as usize, v),
-                ArgKind::Nullable(idx) => put(base_nullable + idx as usize, v),
-                ArgKind::String(idx) => put(base_string + idx as usize, v),
-                ArgKind::Value(idx) => put(base_value + idx as usize, v),
             }
         }
         // Resolve Binding-source fn slots by reading the BindId out
@@ -1216,14 +1123,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 fn_arg_values[fn_idx] = v;
             }
         }
-        // JIT dispatch. Every param is two wire words: a disc (carrying
-        // #219 taint) then a payload. A MISSING input is NOT an abort —
-        // it's a helper-safe placeholder (`Value::Null` / empty ValArray
-        // / empty ArcStr) with `TAINT` set in its disc, so the kernel
-        // runs and bottoms only if the taken path consumes it. The
-        // ValArray / ArcStr placeholders must be non-null so the entry
-        // clone (`graphix_valarray_clone` / `graphix_arcstr_clone`) is
-        // harmless.
+        // JIT dispatch — the unified Value ABI. Every param is two wire
+        // words: a disc (a genuine one-hot Value discriminant carrying
+        // #219 TAINT / STALE) then the genuine Value payload word. A
+        // MISSING input is NOT an abort — it packs the kind's
+        // helper-safe placeholder (`Value::Null` / empty ValArray /
+        // empty ArcStr) with `TAINT` set, so the kernel runs and
+        // bottoms only if the taken path consumes it. A value that
+        // doesn't match the compiled slot shape is the
+        // never-tvar/obs-4 typechecker-unsoundness class (the static
+        // type lied about the runtime value) — treated as MISSING so
+        // the runtime survives; the divergence stays visible to the
+        // fuzzer as a missing fire.
         let wrapped = &self.jit;
         let taint = TAINT as u64;
         // A present param that did NOT fire this cycle (a retained cached
@@ -1237,93 +1148,134 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             let p = v as *const Value as *const u64;
             unsafe { (*p, *p.add(1)) }
         };
-        let null_disc = bits(&Value::Null).0;
-        let empty_arr = ValArray::from([]);
-        let empty_str = arcstr::ArcStr::new();
-        let arr_disc = bits(&Value::Array(empty_arr.clone())).0;
-        let str_disc = bits(&Value::String(empty_str.clone())).0;
-        // Composite args: present clone or the empty placeholder, tagged
-        // with the disc (`ARRAY`, plus TAINT when absent). The ValArray
-        // must outlive the wrapper call (the JIT'd helpers dereference
-        // the pointer), so these smallvecs live for the rest of `update`.
-        let composite = |i: usize| -> (u64, ValArray) {
-            match param_opts[i].as_ref() {
-                Some(Value::Array(a)) => {
-                    let disc = if param_fired[i] { arr_disc } else { arr_disc | stale };
-                    (disc, a.clone())
-                }
-                None => (arr_disc | taint, empty_arr.clone()),
-                // Shape mismatch = the typechecker-unsoundness class —
-                // missing-input placeholder instead of killing the
-                // runtime (see the scalar arm; soak finding
-                // corpus-fuzz/divergence_000006).
-                Some(v) => {
+        // STAGE one Value per param, in params (= ABI) order: the
+        // present value validated against the declared shape, or the
+        // kind's tainted placeholder. The staged Values stay alive in
+        // this smallvec across the wrapper call (the kernel
+        // refcount-bumps what it keeps at entry); the wire words are
+        // exactly `bits(&staged)` — with a scalar exception below.
+        use kernel_abi::ParamKind;
+        let staged: smallvec::SmallVec<[(u64, Value); 16]> = k
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let flag = if param_fired[i] { 0 } else { stale };
+                let mismatch = |v: &Value| {
                     log::error!(
-                        "kernel composite param: runtime {v:?} isn't an \
-                         Array (typechecker static/dynamic mismatch) — \
-                         treating as bottom"
+                        "kernel param `{}`: runtime {v:?} doesn't match the \
+                         compiled {:?} slot (typechecker static/dynamic \
+                         mismatch) — treating as bottom",
+                        p.name,
+                        p.kind,
                     );
-                    (arr_disc | taint, empty_arr.clone())
-                }
-            }
-        };
-        let array_args: smallvec::SmallVec<[(u64, ValArray); 4]> =
-            (0..k.array_params.len()).map(|j| composite(base_array + j)).collect();
-        let tuple_args: smallvec::SmallVec<[(u64, ValArray); 4]> =
-            (0..k.tuple_params.len()).map(|j| composite(base_tuple + j)).collect();
-        let struct_args: smallvec::SmallVec<[(u64, ValArray); 4]> =
-            (0..k.struct_params.len()).map(|j| composite(base_struct + j)).collect();
-        // String args: present clone or empty placeholder.
-        let string_args: smallvec::SmallVec<[(u64, arcstr::ArcStr); 4]> =
-            (0..k.string_params.len())
-                .map(|j| match param_opts[base_string + j].as_ref() {
-                    Some(Value::String(s)) => {
-                        let d = if param_fired[base_string + j] {
-                            str_disc
-                        } else {
-                            str_disc | stale
+                };
+                match (&p.kind, param_opts[i].as_ref()) {
+                    // Scalars pack via `pack_value_to_u64` (exact
+                    // sign/zero extension — a narrow Value's upper
+                    // payload bytes are padding, so `bits` alone would
+                    // read uninitialized memory). The staged Value is
+                    // the ORIGINAL (kept for uniformity; scalars own
+                    // nothing).
+                    (ParamKind::Scalar(prim), Some(v)) => {
+                        match pack_value_to_u64(v, *prim) {
+                            Some(payload) => {
+                                let disc = prim_to_value_disc(*prim) as u64 | flag;
+                                return (disc, Value::Null, payload, true);
+                            }
+                            None => {
+                                mismatch(v);
+                                let disc = prim_to_value_disc(*prim) as u64 | taint;
+                                return (disc, Value::Null, 0, true);
+                            }
+                        }
+                    }
+                    (ParamKind::Scalar(prim), None) => {
+                        let disc = prim_to_value_disc(*prim) as u64 | taint;
+                        return (disc, Value::Null, 0, true);
+                    }
+                    (
+                        ParamKind::Array { .. }
+                        | ParamKind::Tuple { .. }
+                        | ParamKind::Struct { .. },
+                        v,
+                    ) => {
+                        let staged = match v {
+                            Some(v @ Value::Array(_)) => Some(v.clone()),
+                            Some(v) => {
+                                mismatch(v);
+                                None
+                            }
+                            None => None,
                         };
-                        (d, s.clone())
+                        match staged {
+                            Some(v) => {
+                                let disc = bits(&v).0 | flag;
+                                (disc, v, 0, false)
+                            }
+                            None => {
+                                let v = Value::Array(ValArray::from([]));
+                                let disc = bits(&v).0 | taint;
+                                (disc, v, 0, false)
+                            }
+                        }
                     }
-                    None => (str_disc | taint, empty_str.clone()),
-                    // Shape mismatch = the typechecker-unsoundness
-                    // class — see the scalar arm.
-                    Some(v) => {
-                        log::error!(
-                            "kernel string param: runtime {v:?} isn't a \
-                             String (typechecker static/dynamic mismatch) \
-                             — treating as bottom"
-                        );
-                        (str_disc | taint, empty_str.clone())
+                    (ParamKind::String, v) => {
+                        let staged = match v {
+                            Some(v @ Value::String(_)) => Some(v.clone()),
+                            Some(v) => {
+                                mismatch(v);
+                                None
+                            }
+                            None => None,
+                        };
+                        match staged {
+                            Some(v) => {
+                                let disc = bits(&v).0 | flag;
+                                (disc, v, 0, false)
+                            }
+                            None => {
+                                let v = Value::String(arcstr::ArcStr::new());
+                                let disc = bits(&v).0 | taint;
+                                (disc, v, 0, false)
+                            }
+                        }
                     }
-                })
-                .collect();
-        // Value-shape args (variant / nullable / bare value): present
-        // clone with its real disc, or `Value::Null` + TAINT.
-        let value_arg = |i: usize| -> (u64, Value) {
-            match param_opts[i].as_ref() {
-                Some(v) => {
-                    let d = if param_fired[i] { bits(v).0 } else { bits(v).0 | stale };
-                    (d, v.clone())
+                    // Variant / Nullable / bare value shapes carry any
+                    // Value with its real disc — no shape validation
+                    // (a union's member set is the type system's
+                    // concern; the kernel's consumers dispatch on the
+                    // disc).
+                    (
+                        ParamKind::Variant { .. }
+                        | ParamKind::Nullable { .. }
+                        | ParamKind::Value { .. },
+                        v,
+                    ) => match v {
+                        Some(v) => {
+                            let disc = bits(v).0 | flag;
+                            (disc, v.clone(), 0, false)
+                        }
+                        None => {
+                            let v = Value::Null;
+                            let disc = bits(&v).0 | taint;
+                            (disc, v, 0, false)
+                        }
+                    },
                 }
-                None => (null_disc | taint, Value::Null),
-            }
-        };
-        let variant_args: smallvec::SmallVec<[(u64, Value); 4]> =
-            (0..k.variant_params.len()).map(|j| value_arg(base_variant + j)).collect();
-        let nullable_args: smallvec::SmallVec<[(u64, Value); 4]> =
-            (0..k.nullable_params.len()).map(|j| value_arg(base_nullable + j)).collect();
-        let value_args: smallvec::SmallVec<[(u64, Value); 4]> =
-            (0..k.value_params.len()).map(|j| value_arg(base_value + j)).collect();
-        // Pack the slots in canonical `abi_params` order — scalars,
-        // arrays, tuples, structs, strings, variants, nullables, values —
-        // two words (disc, payload) each.
+            })
+            .map(|(disc, staged, scalar_payload, is_scalar)| {
+                // Second stage folds the two shapes into (disc,
+                // payload-source): scalars carry their packed word,
+                // everything else reads the staged Value's payload word
+                // at push time (below, while `staged` is alive).
+                (disc, if is_scalar { Value::U64(scalar_payload) } else { staged })
+            })
+            .collect();
+        // Pack the wire slots: context words then (disc, payload) per
+        // param in ABI (= params) order.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
-        // Leading cycle-context words (see `CTX_WIRE_SLOTS`), forwarded
-        // by the wrapper to the body: the `event.init` flag (each
-        // constant reads it to gate its STALE bit) and this instance's
-        // state-buffer pointer (0 when the kernel claimed no state).
         slots.push(event.init as u64);
         slots.push(if self.state.is_empty() {
             0
@@ -1333,59 +1285,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // Slot 2: the per-call-site state block — a CALLEE-only channel
         // (`CTX_WIRE_SLOTS`); a region parent has none.
         slots.push(0);
-        for (i, p) in k.params.iter().enumerate() {
-            let disc = prim_to_value_disc(p.prim) as u64;
-            let (disc, payload) = match param_opts[i].as_ref() {
-                // A value that doesn't match the compiled slot shape is
-                // the never-tvar/obs-4 typechecker-unsoundness class
-                // (the static type lied about the runtime value) —
-                // treat it as a MISSING input (tainted placeholder) so
-                // the runtime survives; the divergence stays visible to
-                // the fuzzer as a missing fire. Previously a panic that
-                // killed the runtime (soak corpus-fuzz/divergence_000003).
-                Some(v) => match pack_value_to_u64(v, p.prim) {
-                    Some(bits) => {
-                        let disc = if param_fired[i] { disc } else { disc | stale };
-                        (disc, bits)
-                    }
-                    None => {
-                        log::error!(
-                            "kernel scalar param {i}: runtime {v:?} doesn't \
-                             match the compiled {:?} slot (typechecker \
-                             static/dynamic mismatch) — treating as bottom",
-                            p.prim
-                        );
-                        (disc | taint, 0)
-                    }
+        for (i, (disc, staged)) in staged.iter().enumerate() {
+            slots.push(*disc);
+            match &k.params[i].kind {
+                ParamKind::Scalar(_) => match staged {
+                    Value::U64(payload) => slots.push(*payload),
+                    _ => unreachable!("scalar param staged non-U64 payload carrier"),
                 },
-                None => (disc | taint, 0),
-            };
-            slots.push(disc);
-            slots.push(payload);
-        }
-        // Composite boundary: `ValArray` is `repr(transparent)` over a
-        // thin Arc — the handle's BITS are `Value::Array`'s payload
-        // word (unified Value ABI). Borrowed: the staged smallvec keeps
-        // the ValArray alive; the kernel refcount-bumps on entry.
-        for (disc, a) in array_args.iter().chain(&tuple_args).chain(&struct_args) {
-            slots.push(*disc);
-            slots.push(unsafe { *(a as *const ValArray as *const u64) });
-        }
-        // String boundary: the `ArcStr` is `repr(transparent)` over
-        // `NonNull<ThinInner>`, so the pointer word IS the value. The
-        // kernel refcount-bumps on entry; `string_args` keeps it alive.
-        for (disc, s) in &string_args {
-            let p = s as *const arcstr::ArcStr as *const u64;
-            slots.push(*disc);
-            unsafe { slots.push(*p) };
-        }
-        // Variant / Nullable / bare value boundary: the (disc, payload)
-        // words; the disc carries TAINT for a missing input. The kernel
-        // clones on entry; the smallvecs keep the Values alive.
-        for (disc, v) in variant_args.iter().chain(&nullable_args).chain(&value_args) {
-            let p = v as *const Value as *const u64;
-            slots.push(*disc);
-            unsafe { slots.push(*p.add(1)) };
+                _ => slots.push(bits(staged).1),
+            }
         }
         // Drift guard: the packed slot count must equal the kernel's
         // declared ABI footprint.

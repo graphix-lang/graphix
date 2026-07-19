@@ -1423,11 +1423,8 @@ fn compile_into_function(
         None
     };
 
-    let tail_call_slots = if kernel.tail_call_slots.is_empty() {
-        None
-    } else {
-        Some(kernel.tail_call_slots.as_slice())
-    };
+    let tail_call_slots =
+        if kernel.params.is_empty() { None } else { Some(kernel.params.as_slice()) };
     let lower = LowerCtx {
         loop_head,
         param_mark,
@@ -1803,7 +1800,7 @@ pub(crate) struct LowerCtx<'a> {
     /// composite slots hit `env.composites`. `None` for kernels
     /// without a tail loop (or that hand-built fixtures leave
     /// empty).
-    tail_call_slots: Option<&'a [kernel_abi::TailCallSlot]>,
+    tail_call_slots: Option<&'a [kernel_abi::KernelParam]>,
     /// Control-dependence firing accumulator: the AND over every
     /// TAIL-position select scrutinee's STALE bit on the executed path
     /// (`emit_select_node_tail` folds each in; STALE-set = no tail
@@ -3152,7 +3149,7 @@ fn emit_tail_rebind_jump(
     // runtime arg layout — `arg_layout`, kernel.rs); a tail call
     // rebinds only the leading FORMALS.
     debug_assert!(new_vals.len() <= slots.len());
-    use kernel_abi::TailCallSlotKind;
+    use kernel_abi::AbiParamKind;
     let drop_helper = ctx
         .helper_refs
         .get("graphix_valarray_drop")
@@ -3162,8 +3159,8 @@ fn emit_tail_rebind_jump(
         .get("graphix_valarray_clone")
         .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
     for ((i, slot), v) in slots.iter().enumerate().zip(new_vals.iter()) {
-        match slot.kind {
-            TailCallSlotKind::Scalar(_) => {
+        match slot.kind.abi() {
+            AbiParamKind::Scalar(_) => {
                 let vv = env
                     .lookup_name(&slot.name)
                     .ok_or_else(|| {
@@ -3177,7 +3174,7 @@ fn emit_tail_rebind_jump(
                 b.def_var(vv.payload, p);
                 b.def_var(vv.disc, d);
             }
-            TailCallSlotKind::ValArray => {
+            AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
                 // Composite rebind: drop the previously-owned pointer in
                 // the slot and store the new one — branched on the taint
                 // bit. REPLACE clones a Borrowed new value first (the
@@ -3217,10 +3214,10 @@ fn emit_tail_rebind_jump(
                 b.seal_block(cont_bl);
                 b.switch_to_block(cont_bl);
             }
-            TailCallSlotKind::Variant => {
+            AbiParamKind::Variant => {
                 return Err(anyhow!("JIT: variant tail-call rebind not yet supported"));
             }
-            TailCallSlotKind::Nullable => {
+            AbiParamKind::Nullable => {
                 // The tail-loop gate (`build_lambda_kernel`'s
                 // all-formals-Prim/Array/Tuple/Struct check) keeps
                 // Nullable formals out of tail loops, so this is
@@ -3231,7 +3228,7 @@ fn emit_tail_rebind_jump(
                      the tail-loop gate should have refused this kernel"
                 ));
             }
-            TailCallSlotKind::String | TailCallSlotKind::Value => {
+            AbiParamKind::String | AbiParamKind::Value => {
                 // A recursive lambda whose tail-call rebinds a String
                 // / value-shape param. The JIT doesn't lower the
                 // owned-ArcStr / two-word Value rebind yet; bail so
@@ -9249,9 +9246,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             }
         }
     };
-    let is_kind = |s: &&LambdaCallSlot<R, E>, k: AbiKind| {
-        kernel_abi::abi_kind(reg, s.typ()) == Some(k)
-    };
     let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len() * 2 + 1);
     let mut drops: Vec<CallArgDrop> = Vec::new();
     // The call-depth guard (Phase 4): every non-tail lambda dispatch —
@@ -9341,23 +9335,12 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // caller's storage (see `emit_site_block`).
     let site_block = emit_site_block(cx, info)?;
     clif_args.push(site_block);
-    // Marshal in canonical `abi_params` order — scalars, arrays,
-    // tuples, structs, strings, variants, nullables, values — two
-    // words (disc, payload) each. An Owned composite/string/value Arg
-    // is dropped after the call (the callee refcount-bumps on entry).
-    let order = slots
-        .iter()
-        .filter(|s| {
-            matches!(kernel_abi::abi_kind(reg, s.typ()), Some(AbiKind::Scalar(_)))
-        })
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Array)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Tuple)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::String)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Variant)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Value)));
-    for s in order {
+    // Marshal in `abi_params` order — which IS the callee signature's
+    // SOURCE order (formals in ftype order, then captures — exactly
+    // how `build_lambda_kernel` constructed `sig.params`), two words
+    // (disc, payload) each. An Owned composite/string/value Arg is
+    // dropped after the call (the callee refcount-bumps on entry).
+    for s in slots.iter() {
         // Under the unified Value ABI a composite/string arg's pair IS
         // a genuine Value, so a value-shaped slot (typed from the
         // SIGNATURE) fed a narrower union member needs no wrapping —

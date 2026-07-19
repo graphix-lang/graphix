@@ -26,7 +26,7 @@ use poolshark::local::LPooled;
 // Re-export the canonical kernel-ABI types so existing callers
 // (graphix-shell, in-tree tests) keep compiling. The definitive home
 // is `kernel_abi`.
-pub use kernel_abi::{Input, KnownFusedFn, PrimType};
+pub use kernel_abi::{KnownFusedFn, PrimType};
 
 /// Cached entry in [`FusionCtx::kernels`]. One per
 /// `(LambdaId, Arc<FnType>)` monomorphization of a lambda definition.
