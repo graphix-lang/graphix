@@ -576,6 +576,12 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
     }
 }
 
+// CR claude for eric: this walk, mark_tail_sites above,
+// lowering.rs::body_has_self_tail_call, and emit_body_tail's dispatch
+// all encode "what is a tail position" independently, and the JIT's
+// set must match the analysis's or a TailCall emits without its loop.
+// Propose one shared tail-position walker so the agreement is
+// structural. See design/code_review_2026_07_19.md A5.
 fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     instance: LambdaInstanceId,

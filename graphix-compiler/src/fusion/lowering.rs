@@ -1184,14 +1184,12 @@ fn resolve_abstract_node<'a>(
     }
 }
 
-/// FusionCtx-free core of [`ensure_lambda_kernel`]: build (or cache-hit)
-/// the fused [`CachedKernel`] for a resolved, concretely-typed lambda
-/// `g`, populating the per-`ExecCtx` `(LambdaId, resolved FnType)` cache.
-/// Does NOT touch the transient `FusionCtx` (no `known_fns` /
-/// `called_kernels`). Returns the cached kernel plus the transitively-
-/// called sub-kernels discovered during this build (empty on a cache
-/// hit). Used by `ensure_lambda_kernel`, the region-splice cross-kernel
-/// call path, which then registers the callee.
+/// Build (or cache-hit) the fused [`CachedKernel`] signature for a
+/// resolved, concretely-typed lambda `g`, populating the per-`ExecCtx`
+/// `(LambdaId, resolved FnType)` cache. Pure signature derivation —
+/// the body is validated by the compile attempt itself ("is it
+/// fusable" IS the compile attempt); `None` = the lambda has no
+/// kernel-representable signature and its call sites node-walk.
 ///
 /// `kernel_name` becomes the built `CachedKernel.fn_name`; a cache hit
 /// returns the first builder's name. `GXLambda` carries its analyzed
@@ -1243,10 +1241,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     }
     // Re-entrancy guard: a lambda whose body (transitively) builds a
     // lambda that calls back into THIS one — mutual recursion — would
-    // recurse this build forever: the cache entry above only lands on
-    // completion, and the per-build `known_fns` registration only
-    // covers SELF-recursion (a kernel knows its own name before its
-    // body emits). Refuse the re-entered build instead: the inner
+    // recurse this build forever (the cache entry above only lands on
+    // completion). Refuse the re-entered build instead: the inner
     // call site doesn't lower, the enclosing body emission fails, and
     // the whole chain de-fuses to the node-walk. Mutually-recursive
     // lambdas are a fusion gap, not a compiler hang.
@@ -1625,12 +1621,11 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     ok
 }
 
-/// Per-input slot classification. Mirrors the param shapes
-/// [`build_kir_kernel`] derives from a `LambdaExpr`'s argspec —
-/// scalar primitive, array of primitive, tuple/struct/variant of
-/// primitives. Function-typed inputs are not supported in the M8.4
-/// initial model (a region has no HOF params; HOF callees come in
-/// through the `known` map as cross-kernel call targets).
+/// Per-input slot classification — the analysis-side view a
+/// [`kernel_abi::KernelParam`] is built from (`fusion::sig_from_inputs`
+/// translates each into its `ParamKind`). Function-typed inputs are
+/// not value slots (they ride `fn_params` / the statically-resolved
+/// call path).
 #[derive(Debug, Clone)]
 pub enum RegionInputKind {
     Prim(PrimType),
@@ -1649,13 +1644,11 @@ pub enum RegionInputKind {
     /// that is either `Value::Null` or `T`'s form. The carried `Type`
     /// is the non-null inner element type (frozen).
     Nullable(Type),
-    /// String — runtime representation is an owned `ArcStr` (one
-    /// machine word). Bound into the kernel's `string_params`.
+    /// String — the payload word is an owned `ArcStr`'s bits.
     String,
     /// Bare value-shape (`DateTime`/`Duration`/`Bytes`/`Map`/`Error`) —
-    /// two-word `Value` wire shape; carries the full `Type` so a
-    /// `Local` read re-wraps to the right type. Bound into
-    /// `value_params`.
+    /// carries the full `Type` so a `Local` read re-wraps to the
+    /// right type.
     Value(Type),
 }
 
@@ -1664,14 +1657,8 @@ pub enum RegionInputKind {
 /// Returns `None` for types that have no kernel-input representation:
 /// - `Unit` (no value), bare `Null` (always widened to `Nullable<T>`
 ///   at the construction site).
-/// - function types (handled via the `fn_inputs` channel or the
+/// - function types (handled via the `fn_params` channel or the
 ///   statically-resolved-call path, not as a value slot).
-///
-/// `String` and the bare value-shape types (`DateTime`/`Duration`/
-/// `Bytes`/`Map`/`Error`) ARE representable: a String input rides the
-/// `string_params` 1-word ABI slot, a value-shape input rides the
-/// `value_params` 2-word slot — both with full backend (interp + JIT)
-/// marshalling.
 pub(crate) fn type_to_region_input_kind(
     reg: &AbstractRegistry,
     t: Type,
@@ -1679,10 +1666,10 @@ pub(crate) fn type_to_region_input_kind(
     use AbiKind;
     // FREEZE at the boundary. The Type comes from a binding's declared
     // type, which may still wrap a (bound) TVar or a Ref. `abi_kind`
-    // derefs, so it classifies a TVar-bound `Tuple` as `Tuple` — but the
-    // non-derefing accessors (`tuple_slots`/`struct_fields`/`array_elem`)
-    // that `populate_kernel_inputs` later runs on the STORED `Type`
-    // would then return `None` and silently produce an empty slot. Store
+    // derefs, so it classifies a TVar-bound `Tuple` as `Tuple` — but
+    // the non-derefing accessors (`tuple_slots`/`struct_fields`/
+    // `array_elem`) later run on the STORED `Type` (via
+    // `sig_from_inputs` / the emitters) and would return `None`. Store
     // the concrete frozen `Type` so those accessors always succeed.
     let t = kernel_abi::freeze_for_abi(reg, &t)?;
     match abi_kind(reg, &t)? {

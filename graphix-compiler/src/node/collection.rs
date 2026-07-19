@@ -1446,6 +1446,14 @@ fn callback<R: Rt, E: UserEvent>(
     Some(callback)
 }
 
+// CR claude for eric: the 19 MapFn/FoldFn impls below are template
+// clones — each List/Map op differs from its Array twin only in a
+// flatten helper + a result-convert helper, with the eligibility
+// gates repeated verbatim (ArrayFold::emit_clif vs
+// emit_collection_fold duplicate the whole acc-shape classification).
+// Propose parameterizing the op trait (SOURCE_FLATTEN /
+// result-convert hooks): ~900 lines → ~300, gates single-sourced.
+// See design/code_review_2026_07_19.md A3.
 #[derive(Debug, Default)]
 struct ArrayInit;
 

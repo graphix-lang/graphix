@@ -17,20 +17,19 @@
 //! ## Calling convention
 //!
 //! The compiled function uses the host platform's default C calling
-//! convention (SystemV on Linux, Windows-fastcall on Windows).
-//! Parameters are laid out in "kind-grouped" order — all scalars
-//! first, then composite pointers, then two-word `Value`s — defined
-//! once by [`KernelSig::abi_params`] and consumed by every ABI site
-//! (the signature builder, the wrapper unpacker, the entry binder,
-//! and the runtime arg packer in `kernel`). Per-kind wire shape:
-//!
-//! - scalar `i8/i16/i32/i64/u8/u16/u32/u64` → CLIF `I8`/`I16`/`I32`/`I64`;
-//!   `f32/f64` → `F32`/`F64`; `bool` → `I8` (0 = false, non-zero = true)
-//! - array/tuple/struct → one `I64` (a `*ValArray`)
-//! - string → one `I64` (an `ArcStr` thin pointer)
-//! - variant/nullable (`[T, null]`) → two `I64`s, a `repr(u64)`
-//!   `Value`'s (disc, payload), matching the SysV two-register
-//!   16-byte aggregate ABI
+//! convention (SystemV on Linux, Windows-fastcall on Windows) and
+//! the unified Value ABI (`design/unified_value_abi.md`): parameters
+//! in SOURCE order — defined once by [`KernelSig::abi_params`] and
+//! consumed by every ABI site (the signature builder, the wrapper
+//! unpacker, the entry binder, and the runtime arg packer in
+//! `kernel`) — each a two-word `(disc, payload)` pair. The disc is
+//! an `I64` carrying the genuine one-hot `Value` discriminant plus
+//! the TAINT/STALE tag bits; the payload is the genuine `Value`
+//! payload word (`ValArray` bits, `ArcStr` bits, a value-shape's
+//! payload), except that a SCALAR payload keeps its natural CLIF
+//! register class (`F64`, `I32`, …) interior to and between kernels
+//! — the widened memory form appears only at the wrapper/packer
+//! seams (`scalar_to_payload_i64` / `pack_value_to_u64`).
 //!
 //! The runtime calls through the uniform-slot [`WrappedKernel`]
 //! (args*, out* — see `define_wrapper`).
@@ -183,8 +182,8 @@ impl JitCtx {
 /// kernel and a wrapper that calls it in the same module before a
 /// single `finalize_definitions` call.
 ///
-/// Push the kernel's parameter `AbiParam`s onto `sig` in kind-grouped
-/// ABI order. Derives the order + wire footprint from
+/// Push the kernel's parameter `AbiParam`s onto `sig` in ABI (=
+/// source) order. Derives the order + wire footprint from
 /// [`KernelSig::abi_params`] — the single source of truth — so this
 /// and [`ensure_declared`] can't drift.
 fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
@@ -1141,12 +1140,13 @@ fn define_wrapper_body(
         let args_ptr = b.block_params(entry)[0];
         let out_ptr = b.block_params(entry)[1];
 
-        // Load each kernel param from the `args` slot buffer in
-        // kind-grouped ABI order (see `KernelSig::abi_params`). Scalar
-        // params load at their narrow CLIF type; composite params load
-        // one `I64` (a `*ValArray` the caller stored as u64); variant /
-        // nullable params load two `I64`s (disc, payload).
-        // `d.wire_slot` is the param's starting 8-byte slot offset.
+        // Load each kernel param from the `args` slot buffer in ABI
+        // (= source) order (see `KernelSig::abi_params`): two slots
+        // per param — the disc at `I64`, then the payload at its
+        // natural CLIF type (a scalar's prim — sound because the
+        // packer stores the sign/zero-extended Value form — else
+        // `I64`). `d.wire_slot` is the param's starting 8-byte slot
+        // offset.
         let mut typed_args = Vec::with_capacity(kernel.abi_param_wire_slots());
         // The leading cycle-context word(s) (the `event.init` flag) sit
         // at the front of the args buffer, BEFORE the params — load and
@@ -1323,7 +1323,7 @@ fn compile_into_function(
     // recursive back-edges (see [`kernel_abi::CTX_WIRE_SLOTS`]), so
     // every consumer null-guards ([`BodyCx::site_word`]).
     let site_ptr = initial_vals[2];
-    // Bind every kernel param into the env in kind-grouped ABI order
+    // Bind every kernel param into the env in ABI (= source) order
     // (see `KernelSig::abi_params`), reading entry-block params from
     // `initial_vals[d.wire_slot..]`. Composite (array/tuple/struct) and
     // value-shape (variant/nullable) params are refcount-cloned at
@@ -1523,40 +1523,21 @@ fn compile_into_function(
 }
 
 /// Per-kernel storage of the ArcStrs the JIT'd code references via
-/// stable `*const ArcStr` pointers.
+/// stable `*const ArcStr` pointers — the lazily-interned entries from
+/// emission ([`BodyCx::interned_str`]). Each unique string is interned
+/// through the global [`intern`] table (which gives back a
+/// refcount-shared canonical `ArcStr`) and individually boxed so its
+/// address survives Vec growth; the baked pointers point INTO the
+/// boxes, valid for as long as this table (and hence the owning
+/// kernel cache entry / `WrappedKernel`) is alive. There is no
+/// pre-walk (a Node prewalk mirroring emission coverage would be a
+/// silent-drift dangling-pointer hazard); interning happens AT
+/// emission, so coverage is exact by construction.
 ///
-/// Each unique string used by the kernel is interned through the
-/// global [`intern`] table (which gives back a
-/// refcount-shared canonical `ArcStr`), and the canonical clone is
-/// stored at a fixed index in `slots`. Codegen emits an `iconst`
-/// of `&slots[index]` for each reference; the pointer is valid for
-/// as long as the boxed slice (and hence the owning `WrappedKernel`)
-/// is alive.
-///
-/// On drop, every `ArcStr` in `slots` drops, decrementing the
-/// shared `Arc<str>` refcounts. When the last live kernel that
-/// uses a particular string drops, the global interner's GC pass
-/// can reclaim that entry.
-///
-/// The `index` map is only used at compile time (codegen lookup);
-/// once compile is done, only `slots` matters at runtime.
+/// On drop, every `ArcStr` drops, decrementing the shared `Arc<str>`
+/// refcounts, so the global interner's GC pass can reclaim entries
+/// whose last consumer is gone.
 pub struct KernelStrings {
-    /// Stable-address ArcStr slots. Codegen-emitted pointers point
-    /// into this slice. `Box<[ArcStr]>` is heap-allocated and the
-    /// Box never moves its allocation — moving the Box value only
-    /// moves a 16-byte pointer, not the data.
-    slots: Box<[ArcStr]>,
-    /// String → index lookup, populated during the pre-walk.
-    /// Dropped after codegen would be fine, but we keep it for
-    /// debug-print symmetry; cost is small.
-    index: BTreeMap<ArcStr, usize>,
-    /// Lazily-interned entries from direct-path emission
-    /// ([`BodyCx::interned_str`]) — each individually boxed so its
-    /// address survives Vec growth; the baked pointers point INTO the
-    /// boxes. There is no pre-walk on the direct path (a Node prewalk
-    /// mirroring emission coverage would be a silent-drift dangling-
-    /// pointer hazard); interning happens AT emission, so coverage is
-    /// exact by construction.
     lazy: Vec<Box<ArcStr>>,
 }
 
@@ -1564,56 +1545,36 @@ impl KernelStrings {
     /// An empty string table — for kernels that reference no strings,
     /// or as a placeholder before the real table is built.
     pub fn empty() -> Self {
-        Self { slots: Box::new([]), index: BTreeMap::new(), lazy: Vec::new() }
+        Self { lazy: Vec::new() }
     }
 
-    /// Attach direct-path lazily-interned entries (see the `lazy`
-    /// field) so they live exactly as long as this table — i.e. as
-    /// long as the compiled code that baked their addresses.
+    /// Attach the emission arena's entries so they live exactly as
+    /// long as this table — i.e. as long as the compiled code that
+    /// baked their addresses.
     pub fn with_lazy(mut self, lazy: Vec<Box<ArcStr>>) -> Self {
         self.lazy = lazy;
         self
     }
-
-    /// Stable `*const ArcStr` for `s`, or `None` on a lookup miss
-    /// (de-fuses rather than panicking). Unused on the direct path,
-    /// which interns at emission via `interned_str`; retained for the
-    /// pre-walk pointer-baking path.
-    pub fn get(&self, s: &ArcStr) -> Option<*const ArcStr> {
-        let i = *self.index.get(s)?;
-        Some(&self.slots[i] as *const ArcStr)
-    }
 }
 
 /// Per-kernel value-shape constants table — stable-address `Value`
-/// slots whose `*const Value` the codegen bakes for value-shape
+/// entries whose `*const Value` the codegen bakes for value-shape
 /// constants (datetime/duration/bytes/map). Mirrors
-/// [`KernelStrings`]: the `Box<[Value]>` never moves its heap
-/// allocation, so the baked pointers stay valid as long as the table
-/// (held on the kernel) lives. (Scalar `Const`s aren't interned — they
-/// lower inline.)
+/// [`KernelStrings`]. (Scalar `Const`s aren't interned — they lower
+/// inline.)
 pub struct KernelValues {
-    slots: Box<[Value]>,
-    /// Direct-path lazily-interned value-shape constants — see
-    /// [`KernelStrings::lazy`].
     lazy: Vec<Box<Value>>,
 }
 
 impl KernelValues {
     pub fn empty() -> Self {
-        Self { slots: Box::new([]), lazy: Vec::new() }
+        Self { lazy: Vec::new() }
     }
 
     /// See [`KernelStrings::with_lazy`].
     pub fn with_lazy(mut self, lazy: Vec<Box<Value>>) -> Self {
         self.lazy = lazy;
         self
-    }
-
-    /// Stable `*const Value` for `v`, or `None` on a miss (de-fuses
-    /// rather than panicking). See [`KernelStrings::get`].
-    pub fn get(&self, v: &Value) -> Option<*const Value> {
-        self.slots.iter().find(|s| *s == v).map(|s| s as *const Value)
     }
 }
 
@@ -1685,6 +1646,12 @@ pub(crate) struct SlotTableFrame {
     tables: Vec<(ExprId, ClifValue, bool)>,
 }
 
+// CR claude for eric: ~35 fields; the per-instance state channel and
+// the per-call-site channel are structural twins (ptr/enabled/next/
+// replay/anchors) that want to be two instances of one sub-struct,
+// with the tail machinery a third. Also proposing splitting emit.rs
+// along its existing section markers (10.2k lines = 18% of the
+// compiler in one file). See design/code_review_2026_07_19.md A2/A6.
 pub(crate) struct LowerCtx<'a> {
     /// `Some(block)` when the kernel has a tail loop; TailCall jumps
     /// here. `None` for non-tail-recursive kernels.
@@ -2014,9 +1981,14 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
     // 32-bit register write clears the upper bits.)
     let uext = |ty| AbiParam::new(ty).uext();
     let sext = |ty| AbiParam::new(ty).sext();
-    // Manual per-helper signature wiring — explicit is clearer than
-    // a clever scheme when adding new helpers means revisiting this
-    // anyway.
+    // CR claude for eric: this is the third hand-synchronized
+    // per-helper registry (definition in emit_helpers.rs, all_symbols'
+    // name→ptr table, this name→sig table), joined only by string
+    // names — and a wrong signature here is silent UB, not an error.
+    // Propose one declarative macro deriving symbol + CLIF sig from
+    // the helper's Rust parameter types (~600 lines deleted across the
+    // two files, drift class gone). See
+    // design/code_review_2026_07_19.md A1.
     match name {
         // Read helpers: (ptr: i64, idx: i64) -> <prim>
         "graphix_valarray_get_i64" | "graphix_struct_get_i64" => {
@@ -2524,9 +2496,7 @@ mod value_disc {
     pub const F64: i64 = 0x0000_2000;
     pub const BOOL: i64 = 0x0000_4000;
     pub const NULL: i64 = 0x0000_8000;
-    #[allow(dead_code)]
     pub const STRING: i64 = 0x8000_0000;
-    #[allow(dead_code)]
     pub const ARRAY: i64 = 0x1000_0000;
 }
 
@@ -3483,9 +3453,8 @@ trait BodyEmitter {
     /// to `Kernel::update`: a not-fresh result must yield `None`,
     /// matching the node-walk's "publish only on Some". `false` for a
     /// cross-kernel CALLEE body, which never forces: its result's
-    /// not-fresh bits ride back to the caller as DATA — in-band for
-    /// two-word (value-shape) returns, via `CALLEE_RESULT_FLAGS` for
-    /// one-word returns (`emit_flag_not_fresh`) — so a bottomed or
+    /// not-fresh bits ride back to the caller as DATA, in-band in the
+    /// returned disc (the unified Value ABI) — so a bottomed or
     /// unfired callee result bottoms only the caller's consumers that
     /// read it (#219), like a node-walk callsite that produced no
     /// value. Default `true`.
@@ -5473,7 +5442,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     };
     // Tail position: a missing (tainted) scrutinee RETURNS the tainted
     // placeholder early — a value-level bottom. In a callee it rides
-    // back through CALLEE_RESULT_FLAGS and bottoms only the call's
+    // back in-band in the returned disc and bottoms only the call's
     // consumers (the node-walk's select-on-⊥ produces nothing for THIS
     // result only: a recursive callee's depth-tripped tail select used
     // to emit_bottom_abort here, which the caller escalated to a
@@ -5830,14 +5799,12 @@ fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
 
 /// Compile a `ValueArith` / `ValueEq` / bytes / map / slice operand as
 /// an OWNED `(disc, payload)` Value — the consuming helpers take both
-/// operands by value. The Node twin of `compile_owned_value_operand`:
-/// a value-shape operand clones a Borrowed read via
-/// `ensure_owned_value_src`; a scalar is promoted to a fresh
-/// `Value::<prim>` by inline packing; a String (already owned at
-/// production) is wrapped via `graphix_value_new_string` (consumes); a
-/// composite is owned-ensured then wrapped via
-/// `graphix_value_new_from_array` (consumes). A possibly-bottom scalar
-/// (its disc may carry `TAINT`) runtime-aborts via `emit_bottom_abort`.
+/// operands by value. A value-shape operand clones a Borrowed read via
+/// `ensure_owned_value_src`; a scalar widens its payload to the 8-byte
+/// Value word by inline packing (its disc already IS the Value disc);
+/// a String's owned ArcStr bits and a composite's owned ValArray bits
+/// ARE the Value payload word under the unified Value ABI — only the
+/// disc is minted, with the source's TAINT/STALE folded on.
 pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
@@ -6519,12 +6486,10 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// `a[i..j]` — the source as an OWNED Value (the helper consumes it;
-/// a composite source is wrapped
-/// via `graphix_value_new_from_array`), present bounds as integer
-/// scalars with a flag bit each, absent bounds pass 0 with the bit
-/// cleared. Result is `Nullable<source>` (shared
-/// `node::array::array_slice` semantics).
+/// `a[i..j]` — the source as an OWNED Value (the helper consumes it),
+/// present bounds as integer scalars with a flag bit each, absent
+/// bounds pass 0 with the bit cleared. Result is `Nullable<source>`
+/// (shared `node::array::array_slice` semantics).
 pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -6840,11 +6805,12 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // Extract success T (now known non-error). The unwrap
             // result is Owned, so a String/composite success from a
             // Borrowed inner must be cloned. String: the ArcStr bits
-            // inside a Value ARE the string ABI's one-word
-            // representation. Composite: the payload word is the
-            // ValArray BITS, but the composite ABI is a boxed
-            // ValArray bits — unwrap via `graphix_value_into_array`
-            // (consumes) / `_borrowed` (clones inner) (#199).
+            // inside a Value ARE the string ABI's word. Composite: the
+            // payload word IS the ValArray bits, but the narrowing
+            // stays CHECKED — unwrap via `graphix_value_into_array`
+            // (consumes) / `_borrowed` (clones inner), which abort
+            // defined on a non-Array (the tainted Null placeholder is
+            // reachable here, #199).
             let v = match kernel_abi::abi_kind(cx.registry(), &success_typ) {
                 Some(AbiKind::String) => {
                     if inner_owned {
@@ -8905,29 +8871,22 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 }
 
 /// Cross-kernel lambda call. The flat formals+captures list is
-/// assembled in the same pre-group order the callee's input list uses
-/// (formal args in FnType parameter order, then captures in
-/// `CaptureSlot` order), then kind-grouped to the callee's ABI (see
-/// [`KernelSig::abi_params`]): scalars, composite pointers
-/// (array→tuple→struct), value-shape pairs (variant→nullable). Owned
-/// composite/value ARGS are dropped after the call (the callee clones
-/// every composite/value param on entry); captures are env READS
-/// (borrowed) and never drop. Captures resolve BindId-first with a
-/// name fallback; V1 supports scalar + composite captures — a
-/// value-shape capture Errs (those env tables are still name-keyed)
-/// and the subtree node-walks. Every arg/capture is passed as TWO words
-/// (disc + payload), so a may-bottom scalar arg forwards its `TAINT` to
-/// the callee (which bottoms if it consumes it) — no de-fuse. The
-/// result is unpacked per the callee's return ABI: one CLIF result for
-/// scalar / composite-pointer returns, a two-word `(disc, payload)` pair
-/// for variant/nullable — owned. A one-word RETURN has no disc: the
-/// callee records its result's not-fresh (TAINT/STALE) bits in
-/// `CALLEE_RESULT_FLAGS` (`emit_flag_not_fresh`) and the caller takes
-/// them here, OR-ing into the synthesized disc — a bottomed or unfired
-/// callee RESULT rides back as data (#219), bottoming only consumers
-/// that read it, exactly like a node-walk callsite whose output didn't
-/// fire. Genuine aborts (depth trip, interrupt, async pend) still ride
-/// `DYNCALL_PENDING` and bottom the whole caller kernel.
+/// assembled in the callee's signature order — formal args in FnType
+/// parameter order, then captures in `CaptureSlot` order — which IS
+/// the ABI order (see [`KernelSig::abi_params`]); each slot marshals
+/// as a two-word `(disc, payload)` Value pair, so a may-bottom arg
+/// forwards its `TAINT` to the callee (which bottoms if it consumes
+/// it) — no de-fuse. Owned composite/string/value ARGS are dropped
+/// after the call (the callee clones every param on entry); captures
+/// are env READS (borrowed) and never drop. Captures resolve
+/// BindId-first (a capture whose id misses Errs and the region
+/// de-fuses — never a silent wrong binding). The result is the
+/// callee's two-word return pair, TAINT/STALE in-band in the disc — a
+/// bottomed or unfired callee RESULT rides back as data (#219),
+/// bottoming only consumers that read it, exactly like a node-walk
+/// callsite whose output didn't fire. Genuine aborts (depth trip,
+/// interrupt, async pend) still ride `DYNCALL_PENDING` and bottom the
+/// whole caller kernel.
 /// The PER-CALL-SITE state block argument for a cross-kernel call
 /// (wire slot 2): storage for the callee's instance memory (select
 /// selection memory, loop-table anchors), owned by THIS caller and
@@ -9798,6 +9757,12 @@ fn widen_to_i64(b: &mut FunctionBuilder, v: ClifValue, p: PrimType) -> Result<Cl
 /// extended (we use unsigned `uextend` because the payload's
 /// interpretation is fixed by the discriminant; truncation back
 /// preserves bits). f32/f64 bitcast through their integer mirror.
+// CR claude for eric: `pack_value_to_u64` (the Rust twin) SIGN-extends
+// signed prims, so a kernel-produced payload word differs from a
+// runtime-packed one in the upper bytes. Harmless today (every
+// consumer truncates), but it breaks the design doc's "the payload
+// word IS the Value encoding" invariant — either sextend signed prims
+// here or amend design/unified_value_abi.md. See review doc C1.
 fn scalar_to_payload_i64(
     b: &mut FunctionBuilder,
     p: PrimType,
@@ -9823,26 +9788,6 @@ fn scalar_to_payload_i64(
                 .with_endianness(cranelift_codegen::ir::Endianness::Little),
             v,
         ),
-    }
-}
-
-/// Kept for documentation; superseded by inline packing via
-/// `prim_to_value_disc` + `scalar_to_payload_i64`. Will be deleted
-/// once no callers remain.
-#[allow(dead_code)]
-fn value_new_prim_helper(p: PrimType) -> &'static str {
-    match p {
-        PrimType::I8 => "graphix_value_new_i8",
-        PrimType::I16 => "graphix_value_new_i16",
-        PrimType::I32 => "graphix_value_new_i32",
-        PrimType::I64 => "graphix_value_new_i64",
-        PrimType::U8 => "graphix_value_new_u8",
-        PrimType::U16 => "graphix_value_new_u16",
-        PrimType::U32 => "graphix_value_new_u32",
-        PrimType::U64 => "graphix_value_new_u64",
-        PrimType::F32 => "graphix_value_new_f32",
-        PrimType::F64 => "graphix_value_new_f64",
-        PrimType::Bool => "graphix_value_new_bool",
     }
 }
 

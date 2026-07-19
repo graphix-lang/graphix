@@ -633,8 +633,6 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         module: bool,
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R, E>> {
-        // Snapshot fusion-visibility state so binds *inside* this
-        // block don't leak their consts into the outer scope.
         let result: Result<Box<[Node<R, E>]>> =
             exprs.iter().map(|e| compile(ctx, flags, e.clone(), scope, top_id)).collect();
         let children = result?;
@@ -1320,10 +1318,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.arg.update(ctx, event);
         let var = event.variables.get(&self.id).cloned();
         let held = || match &self.arg.cached {
-            Some(v) if self.arg.tag.is_tainted() => {
-                let _ = v;
-                TagValue::tainted(Value::Null)
-            }
+            Some(_) if self.arg.tag.is_tainted() => TagValue::tainted(Value::Null),
             Some(v) => TagValue::fired(v.clone()),
             None => unreachable!(),
         };

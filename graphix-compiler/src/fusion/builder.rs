@@ -28,7 +28,6 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// Routing through `Kernel` (instead of re-implementing the
     /// dispatch surface) keeps FusedKernel minimal.
     inner: Kernel<R, E>,
-    _phantom: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
 impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
@@ -64,13 +63,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             }
         };
         let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
-        Ok(Box::new(Self {
-            spec,
-            typ,
-            feeders,
-            inner,
-            _phantom: std::marker::PhantomData,
-        }))
+        Ok(Box::new(Self { spec, typ, feeders, inner }))
     }
 
     /// The compiled kernel IR this region fused into. Used by graph
@@ -133,6 +126,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Deliberately does NOT sleep `self.inner`: the kernel's input
+        // slots are kept for the arm-wake cached replay (a re-selected
+        // arm's kernel must fire from its retained inputs). Contrast
+        // `reset_replay` below, which clears them.
         for feeder in self.feeders.iter_mut() {
             feeder.sleep(ctx);
         }

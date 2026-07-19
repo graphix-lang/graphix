@@ -477,13 +477,10 @@ pub extern "C" fn graphix_depth_pop() {
     })
 }
 
-/// Push a `Value::String(s)` slot. The string is identified by an
-/// `ArcStr` already interned somewhere; we pass the raw pointer
-/// (which is `Arc<str>` data — see `ArcStr::as_ptr`) plus length.
-/// For now this codepath isn't used; we add it when VariantNew /
-/// StructNew names need to be threaded through. (Field names for
-/// StructNew are compile-time constants — handled in the codegen
-/// by emitting a different helper that takes the ArcStr by ptr.)
+/// Push a `Value::String` slot cloned from an interned static: `ptr`
+/// is a stable `*const ArcStr` (a kernel strings-table slot — struct
+/// field names, variant tags); the clone bumps the refcount and the
+/// caller's table entry stays owned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_value_buf_push_arcstr(
     buf: *mut LPooled<Vec<Value>>,
@@ -796,10 +793,6 @@ pub extern "C" fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
     dup
 }
 
-/// Start a fresh string-buffer for interpolation/concat. Returns a heap-
-/// owned `*mut String`; caller eventually pairs with
-/// `graphix_string_buf_finalize` (success) or `graphix_string_buf_drop`
-/// (pending path).
 /// The empty-`ArcStr` placeholder for a tainted String position — the
 /// static empty (clone/drop are no-ops on it), returned as the raw
 /// thin-pointer bits the String ABI uses. Helper-safe by construction.
@@ -1546,14 +1539,14 @@ struct_get_scalar! {
 
 // ─── Non-primitive element reads ──────────────────────────────────
 //
-// Mirror the interp's `extract_composite_or_scalar` for element types
-// the scalar `get_<prim>` helpers can't handle: composite
-// (Array/Tuple/Struct → a `*mut ValArray`), String (→ an `ArcStr`),
-// and value-shape (Variant/Nullable/DateTime/Duration/Bytes → a
-// two-register `Value`). Each returns an OWNED value — a fresh
-// box / refcount-bumped clone — so the source ValArray keeps its own
-// ref and the kernel's scope-exit drop of the source plus the
-// consumer's drop of the result don't double-free.
+// Element reads for types the scalar `get_<prim>` helpers can't
+// handle: composite (Array/Tuple/Struct → ValArray bits), String
+// (→ ArcStr bits), and value-shape (Variant/Nullable/DateTime/
+// Duration/Bytes → a two-register `Value`). Each returns an OWNED
+// value — a refcount-bumped clone (except the explicitly `_borrowed`
+// variants) — so the source ValArray keeps its own ref and the
+// kernel's scope-exit drop of the source plus the consumer's drop of
+// the result don't double-free.
 
 /// `arr[idx]` with the full source-level `array[i]` semantics — bounds
 /// check, negative-from-end indexing, and the `ArrayIndexError` value

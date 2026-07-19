@@ -160,7 +160,6 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         lambda_id: Option<LambdaId>,
     ) -> ::anyhow::Result<()> {
         use ::anyhow::anyhow;
-        use BuiltinSlot;
         // Restore the lambda's env + lexical scope so labeled-default
         // expressions that reference free variables visible only in
         // the lambda's original module scope (e.g. `default_escape`
@@ -518,17 +517,16 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
 ) -> DynCallRet {
-    use DynCallRet;
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
     let fn_arg_values = unsafe { &*state.fn_arg_values };
     let ctx = unsafe { &mut *state.ctx };
     let event = unsafe { &mut *state.event };
-    // Drain args buf — helper takes ownership.
-    let args_vec: Vec<Value> = unsafe {
-        let mut owned = *Box::from_raw(args);
-        owned.drain(..).collect()
-    };
+    // Take ownership of the args buf; the LPooled vec returns to its
+    // pool when dropped at function end. (Previously drained into a
+    // fresh Vec — a per-DynCall allocation that also forfeited the
+    // pool return.)
+    let args_vec = unsafe { *Box::from_raw(args) };
     let slot = &mut slots[fn_index as usize];
     let lambda_v = &fn_arg_values[fn_index as usize];
     match slot.dispatch(lambda_v, ctx, event, &args_vec) {
@@ -597,20 +595,16 @@ pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
 }
 
 /// Wraps a [`KernelSig`] as an [`Apply<R, E>`] so the runtime can call
-/// into the interpreter through the same dispatch path it uses for
+/// into a compiled kernel through the same dispatch path it uses for
 /// every other function. On each `update` cycle we drive the input
-/// nodes, cache their values, and (once every input slot is populated)
-/// run [`eval_kernel`] over the `Value` args — or, when the JIT slot is
-/// filled, dispatch into native code via the wrapper.
+/// nodes, cache their values, decide whether anything fired, and
+/// dispatch into native code via the wrapper.
 ///
 /// Generic over `R, E` because the per-DynCall-slot state holds
-/// `Box<dyn Apply<R, E>>` and `Node<R, E>`. (Pre-DynCall versions
-/// were intentionally non-generic; the tradeoff is now in DynCall's
-/// favor.)
+/// `Box<dyn Apply<R, E>>` and `Node<R, E>`.
 pub struct Kernel<R: Rt, E: UserEvent> {
-    /// The IR. `Arc` so structurally-identical kernels can share
-    /// state (and, in M4e, share the JIT-compiled function pointer
-    /// via an IR-hash cache).
+    /// The kernel's ABI contract; the `Arc` is also its identity (the
+    /// JIT's `by_kernel` cache keys on the pointer).
     kernel: Arc<KernelSig>,
     /// Per-cycle input cache, parallel to the `from` slice the runtime
     /// passes into `update`. `None` means "haven't seen a value yet";
@@ -684,7 +678,6 @@ enum ArgKind {
 /// (Binding-source fn params resolve through ctx.cached and don't
 /// count). Equals `arg_layout.len()`.
 pub fn total_kernel_arity(kernel: &KernelSig) -> usize {
-    use FnSource;
     let param_source_count = kernel
         .fn_params
         .iter()
@@ -909,9 +902,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // Per-feeder "fired THIS cycle" (vs retained-from-a-prior-cycle).
         // `self.args[i]` records presence only — a `Some` may be fresh or
         // cached — so this is the sole source of the STALE distinction the
-        // packing below stamps into each param's disc. Stack-resident:
-        // region inputs are capped at 64 (`try_fuse`), so this never
-        // spills to the heap.
+        // packing below stamps into each param's disc. Stack-resident up
+        // to 64 inputs; wider regions (there is no input-count ceiling)
+        // spill to the heap.
         let mut fired_this_cycle: smallvec::SmallVec<[bool; 64]> =
             smallvec::smallvec![false; from.len()];
         // Any production at all (fired, tainted, OR merely stale) —
@@ -1058,19 +1051,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 }
             }
         }
-        // Build the kernel's value-bearing args in declaration order
-        // (`param_opts`) plus the fn-arg values for the DynCall
-        // dispatcher. Unlike the old classification, a MISSING input is
-        // NOT a whole-kernel abort: it feeds `None` (bottom) into
-        // `param_opts`, and the kernel emits `None` only if the OUTPUT
-        // consumes that bottom — `select c { 0 => x, 1 => never_fired }`
-        // with `c=0` must still yield `x`. (The JIT path below behaves the
-        // same via #219: a missing input feeds a taint-marked helper-safe
+        // Build the kernel's value-bearing args in params (= source)
+        // order (`param_opts`) plus the fn-arg values for the DynCall
+        // dispatcher. A MISSING input is NOT a whole-kernel abort: it
+        // feeds `None` (bottom) into `param_opts`, and the kernel emits
+        // `None` only if the OUTPUT consumes that bottom — `select c
+        // { 0 => x, 1 => never_fired }` with `c=0` must still yield `x`
+        // (#219: a missing input packs a taint-marked helper-safe
         // placeholder, and the kernel bottoms only if the taken output
-        // path consumes it.) `param_opts` slots are placed by per-kind base offset
-        // so the order matches `eval_kernel_full`'s declaration-order
-        // binding (scalars, arrays, tuples, structs, variants, nullables,
-        // strings, values).
+        // path consumes it).
         let k = &self.kernel;
         let n_params = k.params.len();
         let mut param_opts: Vec<Option<Value>> = vec![None; n_params];
@@ -1078,7 +1067,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // A present-but-not-fired param packs its disc with STALE (it
         // carries a cached value that did NOT update this cycle), so the
         // kernel's firing gates (return / set_var) read the node-walk's
-        // combineLatest firing faithfully. Stack-resident (≤64 inputs).
+        // combineLatest firing faithfully.
         let mut param_fired: smallvec::SmallVec<[bool; 64]> =
             smallvec::smallvec![false; n_params];
         // Sized to the COMBINED slot table (`dyn_slots.len()`), not just

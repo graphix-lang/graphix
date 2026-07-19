@@ -918,11 +918,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         callsite: &CallSite<R, E>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
-        // Without this delegation the trait default's `Ok(None)`
-        // silently swallows every builtin's emission hook — the
-        // call site falls to DynCall and the builtin "loses fusion"
-        // with no error anywhere (it happened: Stage D2 landed
-        // Builtin emission would otherwise be swallowed by the wrapper.
+        // MUST delegate: the trait default's `Ok(None)` would silently
+        // swallow every builtin's emission hook — the call site falls
+        // to DynCall and the builtin "loses fusion" with no error
+        // anywhere (it happened when Stage D2 landed).
         self.apply.emit_clif(callsite, cx)
     }
 
@@ -1104,7 +1103,6 @@ impl Lambda {
             })
             .collect::<Result<LPooled<Vec<_>>>>()?;
         let original_scope = scope.clone();
-        let _original_scope = scope.clone();
         let scope = scope.append(&format_compact!("fn{}", id.0));
         let _scope = scope.clone();
         let env = ctx.env.clone();

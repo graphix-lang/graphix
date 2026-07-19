@@ -4,10 +4,11 @@
 //! Everything here is derived from netidx [`Type`]s: the closed
 //! register-scalar set ([`PrimType`]), the runtime shape classifier
 //! ([`abi_kind`] / [`AbiKind`]), type freezing ([`freeze_for_abi`]),
-//! the typed kernel input slots, and [`KernelSig`] — the kind-grouped
-//! parameter/return wire layout every ABI site derives from instead
-//! of hand-walking per-kind lists. The JIT emits CLIF straight from
-//! the node graph; this module holds the durable, body-free contract.
+//! the typed kernel input slots, and [`KernelSig`] — the single
+//! source-ordered parameter list every ABI site derives its wire
+//! layout from (the unified Value ABI). The JIT emits CLIF straight
+//! from the node graph; this module holds the durable, body-free
+//! contract.
 //!
 //! [`KnownFusedFn`] (the caller-side cross-kernel call signature) rides
 //! along here too — it's ABI proper. The scalar operator taxonomy
@@ -1264,55 +1265,45 @@ pub fn scalar_prim_of_value(v: &Value) -> Option<PrimType> {
 
 // ─── Kernel ABI layout — single source of truth ──────────────────
 //
-// The kernel calling convention is "kind-grouped": parameters are
-// laid out at the JIT/runtime boundary as all `Scalar` params first
-// (each one machine word at the prim's CLIF type), then all
-// pointer-shaped composite params (array/tuple/struct, each one
-// machine word holding a `*ValArray`), then all two-word `Value`
-// params (variant/nullable, each two words: disc + payload). Returns
-// follow an analogous rule.
+// The kernel calling convention is the unified Value ABI
+// (`design/unified_value_abi.md`): parameters are laid out at the
+// JIT/runtime boundary in SOURCE order — `KernelSig::params`' vec
+// order IS the ABI order — with a uniform two-word `(disc, payload)`
+// footprint per param, both words the genuine netidx `Value`
+// encoding (TAINT/STALE riding the disc's tag byte). Returns are the
+// same two-word pair.
 //
-// Every ABI site — the two JIT signature builders, the uniform
-// wrapper's slot unpacker, the kernel entry-block binder, and the
-// runtime arg packer — derives its ordering and wire footprint from
+// Every ABI site — the JIT signature builder, the uniform wrapper's
+// slot unpacker, the kernel entry-block binder, and the runtime arg
+// packer — derives its ordering and wire footprint from
 // `KernelSig::abi_params` / `abi_return` / `abi_param_wire_slots`
-// rather than hand-walking the per-kind `*_params` lists. Keeping the
-// order in one place is what makes a mistake a compile error (a new
-// `AbiParamKind` variant forces every match) instead of a silent
-// bit-reinterpretation at one drifted site. Kind-grouped (rather than
-// source-positional) is retained deliberately: it matches the
-// kernel's existing entry ABI and keeps the per-kind clone-on-entry /
-// drop-on-exit codegen a clean per-list walk. Foreign callers, if
-// ever wanted, get a separate generated C-ABI wrapper — they don't
-// constrain this internal convention.
+// rather than re-deriving an order. Keeping it in one place is what
+// makes a mistake a compile error (a new `AbiParamKind` variant
+// forces every match) instead of a silent bit-reinterpretation at
+// one drifted site. Foreign callers, if ever wanted, get a separate
+// generated C-ABI wrapper — they don't constrain this internal
+// convention.
 
 /// The kind of a single kernel parameter, in enough detail to drive
 /// both the wire encoding (how many machine words, what CLIF type)
 /// and the env-slot binding (which `bind_*` the entry code calls).
+/// Wire shape is uniform — every kind is a two-word `(disc, payload)`
+/// pair whose payload word is the genuine `Value` encoding (a
+/// scalar's widened bits, `ValArray` bits, `ArcStr` bits, a
+/// value-shape's payload word). The kinds stay distinct because entry
+/// binding and body emission differ per kind (clone helper, local
+/// kind, element accessors), not because the wire differs.
 #[derive(Debug, Clone, Copy)]
 pub enum AbiParamKind {
-    /// One machine word at the prim's CLIF type. Binds via `env.bind`.
     Scalar(PrimType),
-    /// One machine word holding a `*ValArray`; binds via
-    /// `env.bind_composite`. Array/Tuple/Struct share this wire shape
-    /// but stay distinct so the runtime packer can pull each from the
-    /// right `*_args` vector.
     Array,
     Tuple,
     Struct,
-    /// Two machine words (disc, payload) of a `repr(u64)` `Value`.
-    /// Binds via `env.bind_variant`.
     Variant,
-    /// Two machine words (disc, payload). Binds via `env.bind_nullable`
-    /// — same wire shape as `Variant`, different env slot list.
     Nullable,
-    /// One machine word holding an `ArcStr` thin pointer. Binds via
-    /// `env.bind_string` (after a refcount-bump clone on entry).
     String,
-    /// Two machine words (disc, payload) of a bare value-shape
-    /// `Value` — `DateTime` / `Duration` / `Bytes`. Same wire shape
-    /// as `Nullable`/`Variant`; binds into the `env.nullables` Value
-    /// slot (re-wrapped to the right type at `Local`-read time).
+    /// Bare value shape — `DateTime` / `Duration` / `Bytes` / `Map` /
+    /// `Error`.
     Value,
 }
 

@@ -652,6 +652,15 @@ impl TVar {
     }
 }
 
+// CR claude for eric: the eight structural walks below (plus
+// privatize_d / resolve_abstract_node / tvar_free in lowering.rs) each
+// hand-roll the exhaustive Type match, and they silently DISAGREE on
+// the Ref arm (alias/collect/unfreeze walk Ref.params;
+// unbind/unbind_open/has_unbound skip them — has_unbound on a Ref
+// with unbound params answers false). Propose shared
+// for_each_child/cow_children walkers so each walk is just its
+// interesting arms and the Ref-arm policy is an explicit override.
+// See design/code_review_2026_07_19.md A4.
 impl Type {
     pub fn unfreeze_tvars(&self) {
         match self {
