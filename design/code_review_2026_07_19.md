@@ -71,6 +71,12 @@ the legibility motivation of `design/fusion_lowering_split.md` applied
 where it bites hardest.
 
 ### A3. Deduplicate the collection-intrinsic ops (`node/collection.rs`)
+**DONE:** `Flavor` enum (Array/List/CMap source + result hooks) +
+one `emit_*_kind` fn per loop kind; the 21 ops delegate; the
+`Slot::new`/`FoldSlot::new` reference construction hoisted. CLIF
+verified instruction-identical across the refactor (4 programs, 88
+kernels).
+
 The 19 `MapFn`/`FoldFn` impls are template clones: every List/Map op
 differs from its Array twin ONLY in a flatten helper
 (`graphix_list_to_valarray` / `graphix_cmap_to_pairs` / none) and a

@@ -407,9 +407,9 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
             element_type.clone(),
             top_id,
         );
+        let function =
+            genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
         let call = if prototype {
-            let function =
-                genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
             genn::apply_prototype(
                 function,
                 scope.clone(),
@@ -418,8 +418,6 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
                 top_id,
             )
         } else {
-            let function =
-                genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
             genn::apply(function, scope.clone(), vec![element], callback_type, top_id)
         };
         Self { id, call, value: None, tag: Tag::STALE }
@@ -511,7 +509,9 @@ fn is_unit_or_null(registry: &kernel_abi::AbstractRegistry, typ: &Type) -> bool 
     matches!(kernel_abi::abi_kind(registry, typ), Some(AbiKind::Unit | AbiKind::Null))
 }
 
-fn finish_array_result(
+/// Fold the loop's [`scaffold::SlotFlags`] and the source's firing
+/// into the emitted result — the shared tail of every kind emitter.
+fn finish_loop_result(
     cx: &mut BodyCx,
     result: CompiledExpr,
     mut flags: scaffold::SlotFlags,
@@ -560,122 +560,6 @@ fn convert_collection_result(
     let rs = cx.b.inst_results(call);
     let (disc, payload) = (rs[0], rs[1]);
     Ok(CompiledExpr::new(disc, payload))
-}
-
-/// The `ArrayFold::emit_clif` body over a FLATTENED List/Map source —
-/// shared by `ListFold`/`MapFold`. Acc shapes are the fold loop's
-/// existing Scalar/Composite/Str set: a List- or Map-valued
-/// ACCUMULATOR (`|acc, x| list::cons(x, acc)` — AbiKind
-/// Variant/Value) has no `FoldAcc` carry discipline yet and stays
-/// interpreted (pinned by `list_fold_list_acc_interprets`).
-fn emit_collection_fold<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    init: &Node<R, E>,
-    body: &Node<R, E>,
-    acc: &CallbackParam,
-    element: &CallbackParam,
-    acc_type: &Type,
-    element_type: &Type,
-    flatten_helper: &'static str,
-) -> Result<Option<CompiledExpr>> {
-    use kernel_abi::AbiKind;
-
-    let Some((element_type, element_leaves)) =
-        bindable_array_element(cx, element_type, &element.binds)
-    else {
-        return Ok(None);
-    };
-    let Some(acc_type) = kernel_abi::freeze_for_abi_normalized(cx.registry(), acc_type)
-    else {
-        return Ok(None);
-    };
-    let acc_leaves = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let Some(leaves) =
-                scaffold::elem_leaves(cx.registry(), &acc_type, &acc.binds)
-            else {
-                return Ok(None);
-            };
-            Some(leaves)
-        }
-        _ => None,
-    };
-    let acc_shape = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
-        Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
-            scaffold::FoldAcc::Scalar(prim)
-        }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            scaffold::FoldAcc::Composite {
-                init_src: emit::node_composite_source(init),
-                body_src: emit::node_composite_source(body),
-                leaves: acc_leaves.as_deref().unwrap(),
-            }
-        }
-        Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
-        // Value-shaped accumulators (2026-07-14): the list-building
-        // reverse/collect idiom, nullable max-by, variant state
-        // machines, and map group-by all carry an owned two-word
-        // Value through the loop (scaffold::FoldAcc::Value). Init and
-        // body normalize through `emit_owned_value_operand_node` per
-        // their OWN shapes, which may be narrower members of the acc
-        // union — see `ArrayFold::emit_clif`'s twin arm.
-        Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
-            if acc.binds.is_empty() =>
-        {
-            for n in [init, body] {
-                match kernel_abi::abi_kind(cx.registry(), n.typ()) {
-                    Some(AbiKind::Unit) | None => return Ok(None),
-                    Some(_) => {}
-                }
-            }
-            scaffold::FoldAcc::Value {
-                init_src: CompositeSource::Owned,
-                body_src: CompositeSource::Owned,
-                kind: match k {
-                    AbiKind::Variant => scaffold::ValueLeafKind::Variant,
-                    AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
-                    _ => scaffold::ValueLeafKind::Value,
-                },
-            }
-        }
-        _ => return Ok(None),
-    };
-    let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
-    let (value, src) = emit_flattened_source(cx, source, flatten_helper)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let (result, mut flags) = scaffold::emit_fold_loop(
-        cx,
-        src,
-        acc_shape,
-        &acc.name,
-        acc.id,
-        &scaffold::HofElem {
-            name: &element.name,
-            id: element.id,
-            typ: &element_type,
-            leaves: &element_leaves,
-        },
-        &emit::slot_state_sites(body),
-        |cx| {
-            if value_acc {
-                emit::emit_owned_value_operand_node(cx, init)
-            } else {
-                init.emit_clif(cx)
-            }
-        },
-        |cx| {
-            if value_acc {
-                emit::emit_owned_value_operand_node(cx, body)
-            } else {
-                body.emit_clif(cx)
-            }
-        },
-    )?;
-    if source_invariant {
-        flags.set_src_invariant();
-    }
-    Ok(Some(flags.apply(cx, result, &[value.disc])))
 }
 
 #[derive(Debug)]
@@ -1018,9 +902,9 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
             element_type.clone(),
             top_id,
         );
+        let function =
+            genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
         let call = if prototype {
-            let function =
-                genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
             genn::apply_prototype(
                 function,
                 scope.clone(),
@@ -1029,8 +913,6 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
                 top_id,
             )
         } else {
-            let function =
-                genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
             genn::apply(
                 function,
                 scope.clone(),
@@ -1462,14 +1344,505 @@ fn callback<R: Rt, E: UserEvent>(
     Some(callback)
 }
 
-// CR claude for eric: the 19 MapFn/FoldFn impls below are template
-// clones — each List/Map op differs from its Array twin only in a
-// flatten helper + a result-convert helper, with the eligibility
-// gates repeated verbatim (ArrayFold::emit_clif vs
-// emit_collection_fold duplicate the whole acc-shape classification).
-// Propose parameterizing the op trait (SOURCE_FLATTEN /
-// result-convert hooks): ~900 lines → ~300, gates single-sourced.
-// See design/code_review_2026_07_19.md A3.
+// ─── Collection flavors and the shared kind emitters ─────────────
+//
+// A List/Map op's CLIF emission differs from its Array twin ONLY in
+// the [`Flavor`] hooks: how the source becomes the scaffold loop's
+// ValArray and how the loop's finalized array converts back to the
+// flavor's collection Value (`design/collection_intrinsics.md` — the
+// FLATTEN boundary). Each loop KIND's eligibility gates and loop
+// shape live in exactly one `emit_*_kind` fn below; the op impls
+// delegate with their flavor. The interpreted side (`finish`) stays
+// per-op — the result construction genuinely differs per collection.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flavor {
+    Array,
+    List,
+    CMap,
+}
+
+impl Flavor {
+    /// Emit the loop source: the flavor's collection expression
+    /// marshalled to the scaffold's ValArray. Returns the SOURCE's
+    /// (disc, payload) — its disc drives the firing wrap — plus the
+    /// loop's [`scaffold::ArraySrc`]. List/CMap flatten through their
+    /// consuming helpers; an Array is the loop representation already.
+    fn emit_source<R: Rt, E: UserEvent>(
+        self,
+        cx: &mut BodyCx,
+        source: &Node<R, E>,
+    ) -> Result<(CompiledExpr, scaffold::ArraySrc)> {
+        match self {
+            Self::Array => {
+                let owned = emit::node_composite_source(source) == CompositeSource::Owned;
+                let array = source.emit_clif(cx)?;
+                let src =
+                    scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned };
+                Ok((array, src))
+            }
+            Self::List => emit_flattened_source(cx, source, "graphix_list_to_valarray"),
+            Self::CMap => emit_flattened_source(cx, source, "graphix_cmap_to_pairs"),
+        }
+    }
+
+    /// The exit boundary for collection-returning loops: the loop's
+    /// finalized ValArray as this flavor's collection Value.
+    fn emit_result(self, cx: &mut BodyCx, ptr: ClifValue) -> Result<CompiledExpr> {
+        match self {
+            Self::Array => Ok(emit::array_result(cx, ptr)),
+            Self::List => {
+                convert_collection_result(cx, ptr, "graphix_valarray_into_list")
+            }
+            Self::CMap => {
+                convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")
+            }
+        }
+    }
+}
+
+/// The filter/find gate: the callback must compile to a bool scalar.
+fn predicate_is_bool<R: Rt, E: UserEvent>(cx: &BodyCx, body: &Node<R, E>) -> bool {
+    kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+        .as_ref()
+        .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
+        == Some(PrimType::Bool)
+}
+
+fn emit_init_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    body: &Node<R, E>,
+    param: &CallbackParam,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    if !param.binds.is_empty() {
+        return Ok(None);
+    }
+    let count_prim =
+        match kernel_abi::freeze_for_abi_normalized(cx.registry(), source.typ())
+            .as_ref()
+            .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
+        {
+            Some(prim) if prim.is_integer() => prim,
+            _ => return Ok(None),
+        };
+    let Some(output_type) =
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+    else {
+        return Ok(None);
+    };
+    if is_unit_or_null(cx.registry(), &output_type) {
+        return Ok(None);
+    }
+    let count = source.emit_clif(cx)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let output_source = emit::node_composite_source(body);
+    let (ptr, flags) = scaffold::emit_init_loop(
+        cx,
+        count.payload,
+        count.disc,
+        count_prim,
+        &param.name,
+        param.id,
+        &output_type,
+        output_source,
+        &emit::slot_state_sites(body),
+        |cx| body.emit_clif(cx),
+    )?;
+    let result = flavor.emit_result(cx, ptr)?;
+    Ok(Some(finish_loop_result(cx, result, flags, &count, source_invariant)))
+}
+
+fn emit_map_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    body: &Node<R, E>,
+    param: &CallbackParam,
+    element_type: &Type,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    let Some((element_type, leaves)) =
+        bindable_array_element(cx, element_type, &param.binds)
+    else {
+        return Ok(None);
+    };
+    let Some(output_type) =
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+    else {
+        return Ok(None);
+    };
+    if is_unit_or_null(cx.registry(), &output_type) {
+        return Ok(None);
+    }
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let output_source = emit::node_composite_source(body);
+    let (ptr, flags) = scaffold::emit_map_loop(
+        cx,
+        src,
+        &scaffold::HofElem {
+            name: &param.name,
+            id: param.id,
+            typ: &element_type,
+            leaves: &leaves,
+        },
+        &output_type,
+        output_source,
+        &emit::slot_state_sites(body),
+        |cx| body.emit_clif(cx),
+    )?;
+    let result = flavor.emit_result(cx, ptr)?;
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
+fn emit_filter_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    body: &Node<R, E>,
+    param: &CallbackParam,
+    element_type: &Type,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    let Some((element_type, leaves)) =
+        bindable_array_element(cx, element_type, &param.binds)
+    else {
+        return Ok(None);
+    };
+    if !predicate_is_bool(cx, body) {
+        return Ok(None);
+    }
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let (ptr, flags) = scaffold::emit_filter_loop(
+        cx,
+        src,
+        &scaffold::HofElem {
+            name: &param.name,
+            id: param.id,
+            typ: &element_type,
+            leaves: &leaves,
+        },
+        &emit::slot_state_sites(body),
+        |cx| body.emit_clif(cx),
+    )?;
+    let result = flavor.emit_result(cx, ptr)?;
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
+fn emit_filter_map_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    body: &Node<R, E>,
+    param: &CallbackParam,
+    element_type: &Type,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    let Some((element_type, leaves)) =
+        bindable_array_element(cx, element_type, &param.binds)
+    else {
+        return Ok(None);
+    };
+    let Some(output_type) =
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+    else {
+        return Ok(None);
+    };
+    let Some(output_element) = kernel_abi::nullable_inner(cx.registry(), &output_type)
+    else {
+        return Ok(None);
+    };
+    if is_unit_or_null(cx.registry(), &output_element) {
+        return Ok(None);
+    }
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let output_source = emit::node_composite_source(body);
+    let (ptr, flags) = scaffold::emit_filter_map_loop(
+        cx,
+        src,
+        &scaffold::HofElem {
+            name: &param.name,
+            id: param.id,
+            typ: &element_type,
+            leaves: &leaves,
+        },
+        &output_element,
+        output_source,
+        &emit::slot_state_sites(body),
+        |cx| body.emit_clif(cx),
+    )?;
+    let result = flavor.emit_result(cx, ptr)?;
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
+fn emit_flat_map_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    body: &Node<R, E>,
+    param: &CallbackParam,
+    element_type: &Type,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    use kernel_abi::AbiKind;
+
+    let Some((element_type, leaves)) =
+        bindable_array_element(cx, element_type, &param.binds)
+    else {
+        return Ok(None);
+    };
+    // The output gate and extend mode are the flavor's: an Array
+    // callback returns an Array; a List callback returns a List (a
+    // 2-word opaque Variant after the recursive-leaf freeze), and the
+    // extend helper walks it — including the interpreted "non-list
+    // value pushes as a single element" fallback. No CMap flat_map
+    // intrinsic exists.
+    let output_kind = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+        .as_ref()
+        .and_then(|typ| kernel_abi::abi_kind(cx.registry(), typ));
+    let extend = match (flavor, output_kind) {
+        (Flavor::Array, Some(AbiKind::Array)) => scaffold::FlatMapExtend::Array,
+        (Flavor::List, Some(AbiKind::Variant)) => scaffold::FlatMapExtend::List,
+        _ => return Ok(None),
+    };
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let body_source = emit::node_composite_source(body);
+    let (ptr, flags) = scaffold::emit_flat_map_loop(
+        cx,
+        src,
+        &scaffold::HofElem {
+            name: &param.name,
+            id: param.id,
+            typ: &element_type,
+            leaves: &leaves,
+        },
+        extend,
+        &emit::slot_state_sites(body),
+        |cx| {
+            // An Array body yields a composite payload word; a List
+            // body yields a full 2-word value.
+            let value = body.emit_clif(cx)?;
+            match flavor {
+                Flavor::Array => {
+                    let payload =
+                        emit::ensure_owned_composite_src(cx, body_source, value.payload)?;
+                    Ok(CompiledExpr::new(value.disc, payload))
+                }
+                Flavor::List | Flavor::CMap => {
+                    let (disc, payload) = emit::ensure_owned_value_src(
+                        cx,
+                        body_source,
+                        value.disc,
+                        value.payload,
+                    )?;
+                    Ok(CompiledExpr::new(disc, payload))
+                }
+            }
+        },
+    )?;
+    let result = flavor.emit_result(cx, ptr)?;
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
+fn emit_find_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    body: &Node<R, E>,
+    param: &CallbackParam,
+    element_type: &Type,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    let Some((element_type, leaves)) =
+        bindable_array_element(cx, element_type, &param.binds)
+    else {
+        return Ok(None);
+    };
+    if !predicate_is_bool(cx, body) {
+        return Ok(None);
+    }
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let ((disc, payload), flags) = scaffold::emit_find_loop(
+        cx,
+        src,
+        &scaffold::HofElem {
+            name: &param.name,
+            id: param.id,
+            typ: &element_type,
+            leaves: &leaves,
+        },
+        &emit::slot_state_sites(body),
+        |cx| body.emit_clif(cx),
+    )?;
+    let result = CompiledExpr::new(disc, payload);
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
+fn emit_find_map_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    body: &Node<R, E>,
+    param: &CallbackParam,
+    element_type: &Type,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    use kernel_abi::AbiKind;
+
+    let Some((element_type, leaves)) =
+        bindable_array_element(cx, element_type, &param.binds)
+    else {
+        return Ok(None);
+    };
+    let output_is_nullable = matches!(
+        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+            .as_ref()
+            .and_then(|typ| kernel_abi::abi_kind(cx.registry(), typ)),
+        Some(AbiKind::Nullable)
+    );
+    if !output_is_nullable {
+        return Ok(None);
+    }
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let body_source = emit::node_composite_source(body);
+    let ((disc, payload), flags) = scaffold::emit_find_map_loop(
+        cx,
+        src,
+        &scaffold::HofElem {
+            name: &param.name,
+            id: param.id,
+            typ: &element_type,
+            leaves: &leaves,
+        },
+        &emit::slot_state_sites(body),
+        |cx| {
+            let value = body.emit_clif(cx)?;
+            emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
+        },
+    )?;
+    let result = CompiledExpr::new(disc, payload);
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
+/// The fold kind. Acc shapes are the fold loop's Scalar/Composite/
+/// Str/Value set — a List- or Map-valued ACCUMULATOR (`|acc, x|
+/// list::cons(x, acc)`) has no `FoldAcc` carry discipline yet and
+/// stays interpreted (pinned by `list_fold_list_acc_interprets`).
+fn emit_fold_kind<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    init: &Node<R, E>,
+    body: &Node<R, E>,
+    acc: &CallbackParam,
+    element: &CallbackParam,
+    acc_type: &Type,
+    element_type: &Type,
+    flavor: Flavor,
+) -> Result<Option<CompiledExpr>> {
+    use kernel_abi::AbiKind;
+
+    let Some((element_type, element_leaves)) =
+        bindable_array_element(cx, element_type, &element.binds)
+    else {
+        return Ok(None);
+    };
+    let Some(acc_type) = kernel_abi::freeze_for_abi_normalized(cx.registry(), acc_type)
+    else {
+        return Ok(None);
+    };
+    let acc_leaves = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let Some(leaves) =
+                scaffold::elem_leaves(cx.registry(), &acc_type, &acc.binds)
+            else {
+                return Ok(None);
+            };
+            Some(leaves)
+        }
+        _ => None,
+    };
+    let acc_shape = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
+        Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
+            scaffold::FoldAcc::Scalar(prim)
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            scaffold::FoldAcc::Composite {
+                init_src: emit::node_composite_source(init),
+                body_src: emit::node_composite_source(body),
+                leaves: acc_leaves.as_deref().unwrap(),
+            }
+        }
+        Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
+        // Value-shaped accumulators (2026-07-14): the list-building
+        // reverse/collect idiom, nullable max-by, variant state
+        // machines, and map group-by all carry an owned two-word
+        // Value through the loop (scaffold::FoldAcc::Value). The
+        // acc's SHAPE comes from the resolved signature; the init
+        // and body nodes emit by their OWN shapes, which may be
+        // NARROWER members of the acc union (a bare-Array init for
+        // a `[Array, Error]` acc paired a composite box pointer as
+        // a Value payload — jul17a crash_000002). Both emit through
+        // `emit_owned_value_operand_node`, which normalizes any
+        // shape to an owned proper Value — so the srcs are Owned
+        // and unknowable shapes de-fuse here.
+        Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
+            if acc.binds.is_empty() =>
+        {
+            for n in [init, body] {
+                match kernel_abi::abi_kind(cx.registry(), n.typ()) {
+                    Some(AbiKind::Unit) | None => return Ok(None),
+                    Some(_) => {}
+                }
+            }
+            scaffold::FoldAcc::Value {
+                init_src: CompositeSource::Owned,
+                body_src: CompositeSource::Owned,
+                kind: match k {
+                    AbiKind::Variant => scaffold::ValueLeafKind::Variant,
+                    AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
+                    _ => scaffold::ValueLeafKind::Value,
+                },
+            }
+        }
+        _ => return Ok(None),
+    };
+    let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let (result, flags) = scaffold::emit_fold_loop(
+        cx,
+        src,
+        acc_shape,
+        &acc.name,
+        acc.id,
+        &scaffold::HofElem {
+            name: &element.name,
+            id: element.id,
+            typ: &element_type,
+            leaves: &element_leaves,
+        },
+        &emit::slot_state_sites(body),
+        |cx| {
+            if value_acc {
+                emit::emit_owned_value_operand_node(cx, init)
+            } else {
+                init.emit_clif(cx)
+            }
+        },
+        |cx| {
+            if value_acc {
+                emit::emit_owned_value_operand_node(cx, body)
+            } else {
+                body.emit_clif(cx)
+            }
+        },
+    )?;
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
+// ─── The ops: interpreted `finish` per collection, emit by kind ───
+
 #[derive(Debug, Default)]
 struct ArrayInit;
 
@@ -1489,42 +1862,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayInit {
         param: &CallbackParam,
         _: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        if !param.binds.is_empty() {
-            return Ok(None);
-        }
-        let count_prim =
-            match kernel_abi::freeze_for_abi_normalized(cx.registry(), source.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-            {
-                Some(prim) if prim.is_integer() => prim,
-                _ => return Ok(None),
-            };
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_type) {
-            return Ok(None);
-        }
-        let count = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_init_loop(
-            cx,
-            count.payload,
-            count.disc,
-            count_prim,
-            &param.name,
-            param.id,
-            &output_type,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = emit::array_result(cx, ptr);
-        Ok(Some(finish_array_result(cx, result, flags, &count, source_invariant)))
+        emit_init_kind(cx, source, body, param, Flavor::Array)
     }
 }
 
@@ -1547,39 +1885,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_type) {
-            return Ok(None);
-        }
-        let owned = emit::node_composite_source(source) == CompositeSource::Owned;
-        let array = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_map_loop(
-            cx,
-            scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned },
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &output_type,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = emit::array_result(cx, ptr);
-        Ok(Some(finish_array_result(cx, result, flags, &array, source_invariant)))
+        emit_map_kind(cx, source, body, param, element_type, Flavor::Array)
     }
 }
 
@@ -1604,36 +1910,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilter {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let predicate_is_bool =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-                == Some(PrimType::Bool);
-        if !predicate_is_bool {
-            return Ok(None);
-        }
-        let owned = emit::node_composite_source(source) == CompositeSource::Owned;
-        let array = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let (ptr, flags) = scaffold::emit_filter_loop(
-            cx,
-            scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned },
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = emit::array_result(cx, ptr);
-        Ok(Some(finish_array_result(cx, result, flags, &array, source_invariant)))
+        emit_filter_kind(cx, source, body, param, element_type, Flavor::Array)
     }
 }
 
@@ -1659,44 +1936,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilterMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        let Some(output_element) =
-            kernel_abi::nullable_inner(cx.registry(), &output_type)
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_element) {
-            return Ok(None);
-        }
-        let owned = emit::node_composite_source(source) == CompositeSource::Owned;
-        let array = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_filter_map_loop(
-            cx,
-            scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned },
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &output_element,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = emit::array_result(cx, ptr);
-        Ok(Some(finish_array_result(cx, result, flags, &array, source_invariant)))
+        emit_filter_map_kind(cx, source, body, param, element_type, Flavor::Array)
     }
 }
 
@@ -1724,47 +1964,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFlatMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let output_is_array =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .is_some_and(|typ| {
-                    matches!(
-                        kernel_abi::abi_kind(cx.registry(), typ),
-                        Some(kernel_abi::AbiKind::Array)
-                    )
-                });
-        if !output_is_array {
-            return Ok(None);
-        }
-        let owned = emit::node_composite_source(source) == CompositeSource::Owned;
-        let array = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let body_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_flat_map_loop(
-            cx,
-            scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned },
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            scaffold::FlatMapExtend::Array,
-            &emit::slot_state_sites(body),
-            |cx| {
-                let value = body.emit_clif(cx)?;
-                let payload =
-                    emit::ensure_owned_composite_src(cx, body_source, value.payload)?;
-                Ok(CompiledExpr::new(value.disc, payload))
-            },
-        )?;
-        let result = emit::array_result(cx, ptr);
-        Ok(Some(finish_array_result(cx, result, flags, &array, source_invariant)))
+        emit_flat_map_kind(cx, source, body, param, element_type, Flavor::Array)
     }
 }
 
@@ -1791,39 +1991,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFind {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let predicate_is_bool =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-                == Some(PrimType::Bool);
-        if !predicate_is_bool {
-            return Ok(None);
-        }
-        let owned = emit::node_composite_source(source) == CompositeSource::Owned;
-        let array = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let ((disc, payload), mut flags) = scaffold::emit_find_loop(
-            cx,
-            scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned },
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        if source_invariant {
-            flags.set_src_invariant();
-        }
-        let result = CompiledExpr::new(disc, payload);
-        Ok(Some(flags.apply(cx, result, &[array.disc])))
+        emit_find_kind(cx, source, body, param, element_type, Flavor::Array)
     }
 }
 
@@ -1852,46 +2020,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFindMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        use kernel_abi::AbiKind;
-
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let output_is_nullable = matches!(
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::abi_kind(cx.registry(), typ)),
-            Some(AbiKind::Nullable)
-        );
-        if !output_is_nullable {
-            return Ok(None);
-        }
-        let owned = emit::node_composite_source(source) == CompositeSource::Owned;
-        let array = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let body_source = emit::node_composite_source(body);
-        let ((disc, payload), mut flags) = scaffold::emit_find_map_loop(
-            cx,
-            scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned },
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| {
-                let value = body.emit_clif(cx)?;
-                emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
-            },
-        )?;
-        if source_invariant {
-            flags.set_src_invariant();
-        }
-        let result = CompiledExpr::new(disc, payload);
-        Ok(Some(flags.apply(cx, result, &[array.disc])))
+        emit_find_map_kind(cx, source, body, param, element_type, Flavor::Array)
     }
 }
 
@@ -1911,110 +2040,17 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ArrayFold {
         acc_type: &Type,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        use kernel_abi::AbiKind;
-
-        let Some((element_type, element_leaves)) =
-            bindable_array_element(cx, element_type, &element.binds)
-        else {
-            return Ok(None);
-        };
-        let owned = emit::node_composite_source(source) == CompositeSource::Owned;
-        let Some(acc_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), acc_type)
-        else {
-            return Ok(None);
-        };
-        let acc_leaves = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
-            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                let Some(leaves) =
-                    scaffold::elem_leaves(cx.registry(), &acc_type, &acc.binds)
-                else {
-                    return Ok(None);
-                };
-                Some(leaves)
-            }
-            _ => None,
-        };
-        let acc_shape = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
-            Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
-                scaffold::FoldAcc::Scalar(prim)
-            }
-            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                scaffold::FoldAcc::Composite {
-                    init_src: emit::node_composite_source(init),
-                    body_src: emit::node_composite_source(body),
-                    leaves: acc_leaves.as_deref().unwrap(),
-                }
-            }
-            Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
-            // Value-shaped accumulators (2026-07-14): the list-building
-            // reverse/collect idiom, nullable max-by, variant state
-            // machines, and map group-by all carry an owned two-word
-            // Value through the loop (scaffold::FoldAcc::Value). The
-            // acc's SHAPE comes from the resolved signature; the init
-            // and body nodes emit by their OWN shapes, which may be
-            // NARROWER members of the acc union (a bare-Array init for
-            // a `[Array, Error]` acc paired a composite box pointer as
-            // a Value payload — jul17a crash_000002). Both emit through
-            // `emit_owned_value_operand_node`, which normalizes any
-            // shape to an owned proper Value — so the srcs are Owned
-            // and unknowable shapes de-fuse here.
-            Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
-                if acc.binds.is_empty() =>
-            {
-                for n in [init, body] {
-                    match kernel_abi::abi_kind(cx.registry(), n.typ()) {
-                        Some(AbiKind::Unit) | None => return Ok(None),
-                        Some(_) => {}
-                    }
-                }
-                scaffold::FoldAcc::Value {
-                    init_src: CompositeSource::Owned,
-                    body_src: CompositeSource::Owned,
-                    kind: match k {
-                        AbiKind::Variant => scaffold::ValueLeafKind::Variant,
-                        AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
-                        _ => scaffold::ValueLeafKind::Value,
-                    },
-                }
-            }
-            _ => return Ok(None),
-        };
-        let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
-        let array = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let (result, mut flags) = scaffold::emit_fold_loop(
+        emit_fold_kind(
             cx,
-            scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned },
-            acc_shape,
-            &acc.name,
-            acc.id,
-            &scaffold::HofElem {
-                name: &element.name,
-                id: element.id,
-                typ: &element_type,
-                leaves: &element_leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| {
-                if value_acc {
-                    emit::emit_owned_value_operand_node(cx, init)
-                } else {
-                    init.emit_clif(cx)
-                }
-            },
-            |cx| {
-                if value_acc {
-                    emit::emit_owned_value_operand_node(cx, body)
-                } else {
-                    body.emit_clif(cx)
-                }
-            },
-        )?;
-        if source_invariant {
-            flags.set_src_invariant();
-        }
-        Ok(Some(flags.apply(cx, result, &[array.disc])))
+            source,
+            init,
+            body,
+            acc,
+            element,
+            acc_type,
+            element_type,
+            Flavor::Array,
+        )
     }
 }
 
@@ -2035,42 +2071,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListInit {
         param: &CallbackParam,
         _: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        if !param.binds.is_empty() {
-            return Ok(None);
-        }
-        let count_prim =
-            match kernel_abi::freeze_for_abi_normalized(cx.registry(), source.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-            {
-                Some(prim) if prim.is_integer() => prim,
-                _ => return Ok(None),
-            };
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_type) {
-            return Ok(None);
-        }
-        let count = source.emit_clif(cx)?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_init_loop(
-            cx,
-            count.payload,
-            count.disc,
-            count_prim,
-            &param.name,
-            param.id,
-            &output_type,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
-        Ok(Some(finish_array_result(cx, result, flags, &count, source_invariant)))
+        emit_init_kind(cx, source, body, param, Flavor::List)
     }
 }
 
@@ -2091,38 +2092,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_type) {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_list_to_valarray")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_map_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &output_type,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
-        Ok(Some(finish_array_result(cx, result, flags, &value, source_invariant)))
+        emit_map_kind(cx, source, body, param, element_type, Flavor::List)
     }
 }
 
@@ -2147,35 +2117,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilter {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let predicate_is_bool =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-                == Some(PrimType::Bool);
-        if !predicate_is_bool {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_list_to_valarray")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let (ptr, flags) = scaffold::emit_filter_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
-        Ok(Some(finish_array_result(cx, result, flags, &value, source_invariant)))
+        emit_filter_kind(cx, source, body, param, element_type, Flavor::List)
     }
 }
 
@@ -2201,43 +2143,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilterMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        let Some(output_element) =
-            kernel_abi::nullable_inner(cx.registry(), &output_type)
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_element) {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_list_to_valarray")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_filter_map_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &output_element,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
-        Ok(Some(finish_array_result(cx, result, flags, &value, source_invariant)))
+        emit_filter_map_kind(cx, source, body, param, element_type, Flavor::List)
     }
 }
 
@@ -2267,52 +2173,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFlatMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        use kernel_abi::AbiKind;
-
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        // The callback returns a List (a 2-word opaque Variant after
-        // the recursive-leaf freeze); the extend helper walks it —
-        // including the interpreted "non-list value pushes as a
-        // single element" fallback.
-        let output_is_list =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::abi_kind(cx.registry(), typ))
-                .is_some_and(|k| matches!(k, AbiKind::Variant));
-        if !output_is_list {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_list_to_valarray")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let body_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_flat_map_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            scaffold::FlatMapExtend::List,
-            &emit::slot_state_sites(body),
-            |cx| {
-                let value = body.emit_clif(cx)?;
-                let (disc, payload) = emit::ensure_owned_value_src(
-                    cx,
-                    body_source,
-                    value.disc,
-                    value.payload,
-                )?;
-                Ok(CompiledExpr::new(disc, payload))
-            },
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_list")?;
-        Ok(Some(finish_array_result(cx, result, flags, &value, source_invariant)))
+        emit_flat_map_kind(cx, source, body, param, element_type, Flavor::List)
     }
 }
 
@@ -2341,38 +2202,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFind {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let predicate_is_bool =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-                == Some(PrimType::Bool);
-        if !predicate_is_bool {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_list_to_valarray")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let ((disc, payload), mut flags) = scaffold::emit_find_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        if source_invariant {
-            flags.set_src_invariant();
-        }
-        let result = CompiledExpr::new(disc, payload);
-        Ok(Some(flags.apply(cx, result, &[value.disc])))
+        emit_find_kind(cx, source, body, param, element_type, Flavor::List)
     }
 }
 
@@ -2401,45 +2231,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFindMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        use kernel_abi::AbiKind;
-
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let output_is_nullable = matches!(
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::abi_kind(cx.registry(), typ)),
-            Some(AbiKind::Nullable)
-        );
-        if !output_is_nullable {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_list_to_valarray")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let body_source = emit::node_composite_source(body);
-        let ((disc, payload), mut flags) = scaffold::emit_find_map_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| {
-                let value = body.emit_clif(cx)?;
-                emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
-            },
-        )?;
-        if source_invariant {
-            flags.set_src_invariant();
-        }
-        let result = CompiledExpr::new(disc, payload);
-        Ok(Some(flags.apply(cx, result, &[value.disc])))
+        emit_find_map_kind(cx, source, body, param, element_type, Flavor::List)
     }
 }
 
@@ -2459,7 +2251,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ListFold {
         acc_type: &Type,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        emit_collection_fold(
+        emit_fold_kind(
             cx,
             source,
             init,
@@ -2468,7 +2260,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for ListFold {
             element,
             acc_type,
             element_type,
-            "graphix_list_to_valarray",
+            Flavor::List,
         )
     }
 }
@@ -2487,6 +2279,8 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapMap {
         Some(Value::Map(CMap::from_iter(values.drain(..))))
     }
 
+    // The callback returns a (k, v) pair tuple; the loop collects
+    // pair arrays and the exit boundary rebuilds the CMap.
     fn emit_clif(
         cx: &mut BodyCx,
         source: &Node<R, E>,
@@ -2494,40 +2288,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        // The callback returns a (k, v) pair tuple; the loop collects
-        // pair arrays and the exit boundary rebuilds the CMap.
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_type) {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_cmap_to_pairs")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_map_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &output_type,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")?;
-        Ok(Some(finish_array_result(cx, result, flags, &value, source_invariant)))
+        emit_map_kind(cx, source, body, param, element_type, Flavor::CMap)
     }
 }
 
@@ -2553,35 +2314,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilter {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let predicate_is_bool =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-                .as_ref()
-                .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-                == Some(PrimType::Bool);
-        if !predicate_is_bool {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_cmap_to_pairs")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let (ptr, flags) = scaffold::emit_filter_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")?;
-        Ok(Some(finish_array_result(cx, result, flags, &value, source_invariant)))
+        emit_filter_kind(cx, source, body, param, element_type, Flavor::CMap)
     }
 }
 
@@ -2609,43 +2342,7 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilterMap {
         param: &CallbackParam,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        let Some((element_type, leaves)) =
-            bindable_array_element(cx, element_type, &param.binds)
-        else {
-            return Ok(None);
-        };
-        let Some(output_type) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        else {
-            return Ok(None);
-        };
-        let Some(output_element) =
-            kernel_abi::nullable_inner(cx.registry(), &output_type)
-        else {
-            return Ok(None);
-        };
-        if is_unit_or_null(cx.registry(), &output_element) {
-            return Ok(None);
-        }
-        let (value, src) = emit_flattened_source(cx, source, "graphix_cmap_to_pairs")?;
-        let source_invariant = emit::node_loop_invariant_ref(cx, source);
-        let output_source = emit::node_composite_source(body);
-        let (ptr, flags) = scaffold::emit_filter_map_loop(
-            cx,
-            src,
-            &scaffold::HofElem {
-                name: &param.name,
-                id: param.id,
-                typ: &element_type,
-                leaves: &leaves,
-            },
-            &output_element,
-            output_source,
-            &emit::slot_state_sites(body),
-            |cx| body.emit_clif(cx),
-        )?;
-        let result = convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")?;
-        Ok(Some(finish_array_result(cx, result, flags, &value, source_invariant)))
+        emit_filter_map_kind(cx, source, body, param, element_type, Flavor::CMap)
     }
 }
 
@@ -2665,7 +2362,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for MapFold {
         acc_type: &Type,
         element_type: &Type,
     ) -> Result<Option<CompiledExpr>> {
-        emit_collection_fold(
+        emit_fold_kind(
             cx,
             source,
             init,
@@ -2674,7 +2371,7 @@ impl<R: Rt, E: UserEvent> FoldFn<R, E> for MapFold {
             element,
             acc_type,
             element_type,
-            "graphix_cmap_to_pairs",
+            Flavor::CMap,
         )
     }
 }
