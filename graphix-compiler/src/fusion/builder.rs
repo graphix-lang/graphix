@@ -115,8 +115,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         let res = res.map(|v| crate::TagValue::tagged(v, self.inner.out_tag()));
         // STALE/TAINTED are intra-frame currency; at frame depth 0
         // quiet or bottomed = no production (the CallSite gate's twin
-        // — see node/callsite.rs).
-        if ctx.frame_depth == 0 { res.filter(|tv| tv.tag().is_fired()) } else { res }
+        // — see node/callsite.rs, including the init-view exemption:
+        // an arm-wake's forced init evaluates on the value channel and
+        // the select's emit provides the fire).
+        if ctx.frame_depth == 0 && !event.init {
+            res.filter(|tv| tv.tag().is_fired())
+        } else {
+            res
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

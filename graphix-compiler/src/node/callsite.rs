@@ -1596,8 +1596,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // escape reads as an EVENT to any async consumer (`group`
         // counted a quiet fold's value-channel refresh, jul10h 000007).
         // The kernel twin is the return seam's `is_not_fresh` gate.
-        let res =
-            if ctx.frame_depth == 0 { res.filter(|tv| tv.tag().is_fired()) } else { res };
+        // EXEMPT init views: a select arm wake binds the scrutinee
+        // STALE (honest tags per the 2026-07-18 ruling) and relies on
+        // the value channel to fill the arm's caches before the
+        // becoming-selected fire at the select's emit — filtering here
+        // starved a capture-only collection callback and the woken arm
+        // never fired (jul18d divergence). The jul10h class runs on
+        // QUIET cycles (init=false), so it stays filtered.
+        let res = if ctx.frame_depth == 0 && !event.init {
+            res.filter(|tv| tv.tag().is_fired())
+        } else {
+            res
+        };
         if std::env::var_os("GXDBG_CS").is_some() {
             // Result-tag companion to the pre-dispatch CS line above —
             // localized the tail-loop tag derivation and the fd0 stale

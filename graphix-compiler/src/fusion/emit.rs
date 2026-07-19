@@ -5986,6 +5986,77 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     }
 }
 
+/// Widen a call result emitted per the CALLEE's return shape into the
+/// owned `(disc, payload)` Value the callsite NODE's type promises its
+/// consumers. Inference may widen a call expression's type to a union
+/// the callee's return type is one member of (`f(g())` where `g`
+/// returns `Array<i64>` and `f`'s param is `[null, Array<i64>]`);
+/// every consumer classifies the node by `node.typ()` (value-shape),
+/// so an emission left in the callee's own shape hands out a raw
+/// ValArray box pointer as a Value payload (jul18d fuzz crash_000000:
+/// the runtime later dereferenced box header words as a ThinArc).
+/// Ownership: the produced result is owned (call results and loop
+/// finalizes always are), and the wrap helpers CONSUME it — the
+/// resulting Value is owned, matching how value-shaped consumers
+/// (arg drops, scope drops, return clones) already treat callsites.
+/// Flags (TAINT/STALE) fold from the produced disc onto the fresh one.
+pub(crate) fn widen_result_to_value(
+    cx: &mut BodyCx,
+    produced: &Type,
+    cv: CompiledExpr,
+) -> Result<CompiledExpr> {
+    match kernel_abi::abi_kind(cx.registry(), produced) {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
+            Ok(cv)
+        }
+        Some(AbiKind::Scalar(p)) => {
+            // The scalar's disc IS its value disc — only the payload
+            // widens to the 8-byte Value word.
+            let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
+            Ok(CompiledExpr::new(cv.disc, payload))
+        }
+        Some(AbiKind::String) => {
+            let helper = cx.helper("graphix_value_new_string")?;
+            let call = cx.b.ins().call(helper, &[cv.payload]);
+            let r = cx.b.inst_results(call);
+            let (rd, rp) = (r[0], r[1]);
+            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, rp))
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let helper = cx.helper("graphix_value_new_from_array")?;
+            let call = cx.b.ins().call(helper, &[cv.payload]);
+            let r = cx.b.inst_results(call);
+            let (rd, rp) = (r[0], r[1]);
+            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, rp))
+        }
+        other => Err(anyhow!(
+            "emit_clif: call result shape {other:?} cannot widen to a \
+             value-typed node — subtree node-walks"
+        )),
+    }
+}
+
+/// True iff a callsite whose node type is `node_typ` needs
+/// [`widen_result_to_value`] applied to a result produced per the
+/// callee's `ret` shape: the node promises a 2-word Value while the
+/// callee ABI delivers its own narrower encoding. `Null` is exempt —
+/// a Null (disc, payload) already IS a valid Value pairing.
+pub(crate) fn call_result_needs_value_widening(
+    reg: &AbstractRegistry,
+    node_typ: &Type,
+    ret: &Type,
+) -> bool {
+    matches!(
+        kernel_abi::abi_kind(reg, node_typ),
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
+    ) && !matches!(
+        kernel_abi::abi_kind(reg, ret),
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
+    )
+}
+
 /// Compile one producer-op field and emit the matching
 /// `graphix_value_buf_push_*` call into `buf` — the Node twin of
 /// `scaffold::push_field` (same helper choice per shape, same
@@ -9270,8 +9341,15 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // exempt on both sides (rebind-and-jump here, the in-place loop
     // there).
     let ret = &info.kernel.return_type;
+    // The callsite NODE's type may promise a 2-word Value where the
+    // callee ABI returns its own narrower shape (see
+    // `widen_result_to_value`) — the call path widens its result, and
+    // the trip placeholder is emitted per the NODE type so both merge
+    // edges carry the Value pairing.
+    let node_typ = cs.typ();
+    let widen = call_result_needs_value_widening(reg, node_typ, ret);
     let ret_pay_ty = match kernel_abi::abi_kind(reg, ret) {
-        Some(AbiKind::Scalar(p)) => prim_to_clif(p),
+        Some(AbiKind::Scalar(p)) if !widen => prim_to_clif(p),
         _ => types::I64,
     };
     let call_bl = cx.b.create_block();
@@ -9289,7 +9367,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx.b.switch_to_block(trip_bl);
     cx.b.seal_block(trip_bl);
     {
-        let ph = emit_elem_placeholder(cx, ret)?;
+        let ph = emit_elem_placeholder(cx, if widen { node_typ } else { ret })?;
         cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
     }
     cx.b.switch_to_block(call_bl);
@@ -9496,6 +9574,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             ));
         }
     };
+    let result = if widen { widen_result_to_value(cx, ret, result)? } else { result };
     // Owned-arg drops belong to the CALL path (the trip path never
     // marshalled), then meet the trip placeholder at the merge.
     emit_call_arg_drops(cx.b, cx.ctx, &drops)?;

@@ -696,10 +696,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         callsite: &CallSite<R, E>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
-        match self.body.view() {
-            NodeView::MapQ(map) => map.emit_clif_call(callsite, cx),
-            NodeView::FoldQ(fold) => fold.emit_clif_call(callsite, cx),
-            _ => Ok(None),
+        let res = match self.body.view() {
+            NodeView::MapQ(map) => map.emit_clif_call(callsite, cx)?,
+            NodeView::FoldQ(fold) => fold.emit_clif_call(callsite, cx)?,
+            _ => None,
+        };
+        // The inline loop emits per the collection lambda's OWN return
+        // shape; a callsite node whose type inference widened to a
+        // union must hand its consumers a genuine Value pair (jul18d
+        // crash — see `widen_result_to_value`).
+        match res {
+            Some(cv)
+                if crate::fusion::emit::call_result_needs_value_widening(
+                    cx.registry(),
+                    callsite.typ(),
+                    &self.typ.rtype,
+                ) =>
+            {
+                Ok(Some(crate::fusion::emit::widen_result_to_value(
+                    cx,
+                    &self.typ.rtype,
+                    cv,
+                )?))
+            }
+            res => Ok(res),
         }
     }
 

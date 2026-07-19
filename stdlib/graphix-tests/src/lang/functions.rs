@@ -1474,3 +1474,41 @@ run!(call_arg_value_slot_narrow, CALL_ARG_VALUE_SLOT_NARROW, |v: Result<&Value>|
         _ => false,
     }
 });
+
+// The RESULT twin of `call_arg_value_slot_narrow` (jul18d fuzz
+// crash_000000, findings/value-shape-seam-jul2026/04+05): inference
+// widens a CALLSITE arg node's type to the param union, so the arg
+// normalization sees "already value-shaped" — but the callee ABI
+// (cross-kernel return / inline collection loop) delivers a raw
+// array box pointer. `widen_result_to_value` now wraps call results
+// whose node type promises a Value.
+const CALL_RESULT_VALUE_WIDEN_XKERNEL: &str = r#"
+{
+    let g = || [1];
+    let f = |v: [null, Array<i64>]| v;
+    f(g())
+}
+"#;
+
+run!(call_result_value_widen_xkernel, CALL_RESULT_VALUE_WIDEN_XKERNEL, |v: Result<
+    &Value,
+>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1)]),
+        _ => false,
+    }
+});
+
+const CALL_RESULT_VALUE_WIDEN_HOF: &str = r#"
+{
+    let f = |v: [null, Array<i64>]| v;
+    f(array::map([1, 2], |x| x + 1))
+}
+"#;
+
+run!(call_result_value_widen_hof, CALL_RESULT_VALUE_WIDEN_HOF, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(3)]),
+        _ => false,
+    }
+});

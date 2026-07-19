@@ -1129,3 +1129,38 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// A guard flip wakes the catch-all arm whose fold callback reads ONLY
+// the captured scrutinee bind (no slot param). The wake binds v3
+// STALE (honest tags) and the becoming-selected fire emits the arm's
+// cached value — which the CallSite's frame-depth-0 STALE filter
+// starved by eating the capture-only slot production (interp emitted
+// 42 forever; the kernel correctly fired 1). The fd0 filter now
+// exempts init views (jul18d ryouko divergence; pinned in
+// arm-wake-body-fire-jul2026/03).
+const ARM_WAKE_CAPTURE_ONLY_CALLBACK: &str = r#"
+{
+  let k = true;
+  k <- false;
+  let r = select 1 {
+    _ if k => 42,
+    v3 => array::fold([1], -100, |v4, v5| v3)
+  };
+  array::group(r, |n, _| n == 2)
+}
+"#;
+
+run!(
+    arm_wake_capture_only_callback,
+    ARM_WAKE_CAPTURE_ONLY_CALLBACK,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => {
+                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                    == vec![42, 1]
+            }
+            _ => false,
+        }
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);

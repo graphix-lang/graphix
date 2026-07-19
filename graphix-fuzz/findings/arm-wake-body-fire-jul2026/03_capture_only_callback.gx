@@ -1,0 +1,20 @@
+// bisect: node-walk (interp) bug — the JIT was right (jul18d ryouko
+// generate divergence_000000, minimized). A guard flip deselects the
+// first arm and the catch-all arm BECOMES selected; its body is a
+// collection HOF whose callback reads ONLY a captured bind (the
+// scrutinee bind v3 — no slot param). Pre-fix interp emitted only
+// [0:42]; jit emitted [0:42 1:1]. Post-fix both emit [0:42 1:1].
+// root_cause: the arm wake binds the scrutinee STALE (honest tags,
+// Eric's 2026-07-18 tail_jump_fired_plumbing ruling) and the
+// becoming-selected FIRE comes from the select's emit reading the
+// arm's CACHED value — so the wake's forced-init evaluation runs on
+// the value channel. But the CallSite's frame-depth-0 STALE filter
+// (jul10h 000007, quiet-refresh escapes) ate the capture-only slot
+// callback's pure-STALE production: the slot never filled, the
+// fold returned None, the arm cached nothing, and the emit had
+// nothing to fire. Any body that also touches a slot param merges a
+// FIRED delivery and survived — only capture-only callbacks starved.
+// Fixed by exempting init views from the fd0 filter (callsite.rs +
+// the FusedKernel twin in fusion/builder.rs): the jul10h class runs
+// on QUIET cycles (init=false) and stays filtered.
+{let k = true; k <- false; select i64:1 {_ if k => i64:42, v3 => array::fold([i64:1], i64:-100, |v4, v5| v3)}}
