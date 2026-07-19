@@ -177,6 +177,14 @@ start() {
         echo "workers-per-lane must be positive" >&2
         exit 2
     }
+    # A seed passed in the workers position launches billions of
+    # children and OOM-kills the box (it happened — twice, 2026-07-19).
+    (( workers <= $(nproc) * 8 )) || {
+        echo "workers-per-lane $workers exceeds $(nproc)*8 — arguments are" \
+             "<campaign> [workers-per-lane] [base-seed]; did you pass the" \
+             "seed as workers?" >&2
+        exit 2
+    }
     [[ $seed =~ ^[0-9]+$ ]] || {
         echo "base-seed must be an unsigned integer" >&2
         exit 2
