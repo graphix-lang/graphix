@@ -111,16 +111,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let Self { selected, arg, arms, typ: _, spec: _, tail_position } = self;
         let mut pat_up = false;
         let arg_prod = arg.update(ctx, event);
-        // Destructuring-consumer force (the kernel's is_tainted gate at
-        // dispatch): a tainted scrutinee production can't be matched —
-        // the whole select produces the taint placeholder.
-        if arg.tag.is_tainted() {
-            return if arg_prod.is_some() {
-                Some(TagValue::tainted(Value::Null))
-            } else {
-                None
-            };
-        }
+        let tainted = arg.tag.is_tainted();
         let arg_up = arg_prod.is_some();
         let arg_fired = arg_prod.is_some_and(|t| t.is_fired());
         // Arm binds carry the SCRUTINEE's production tag (the kernel's
@@ -138,16 +129,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
             }};
         }
+        // The pattern/guard tick runs even for a tainted scrutinee
+        // (binds skipped — a placeholder can't be bound): guards are
+        // live nodes that must see every cycle, ESPECIALLY init — a
+        // tainted init delivery that skipped this loop left const
+        // guards unfired forever, so when the first real value
+        // arrived no guarded arm could match and selection fell
+        // through to the first unguarded arm (jul19b survivor,
+        // select-guard-taint-jul2026).
         for (pat, _) in arms.iter_mut() {
-            if arg_up && pat.guard.is_some() {
+            let bind_guard = arg_up && !tainted && pat.guard.is_some();
+            if bind_guard {
                 if let Some(arg) = arg.cached.as_ref() {
                     pat.bind_event(ctx, event, arg, bind_tag);
                 }
             }
             pat_up |= pat.update(ctx, event);
-            if arg_up && pat.guard.is_some() {
+            if bind_guard {
                 pat.unbind_event(event);
             }
+        }
+        // Destructuring-consumer force (the kernel's is_tainted gate at
+        // dispatch): a tainted scrutinee production can't be matched —
+        // the whole select produces the taint placeholder.
+        if tainted {
+            return if arg_up {
+                Some(TagValue::tainted(Value::Null))
+            } else {
+                None
+            };
         }
         if std::env::var_os("GRAPHIX_DBG_SELECT").is_some() {
             eprintln!(

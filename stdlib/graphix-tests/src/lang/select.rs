@@ -1164,3 +1164,26 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+const SELECT_GUARD_AFTER_TAINTED_INIT: &str = r#"
+{
+  let rec f = |n: i64| -> i64 select n {
+    m if m <= i64:0 => (m / m),
+    m => f(m - i64:1)
+  };
+  let v = f(i64:1);
+  let r = &v;
+  *r <- i64:1;
+  select v {
+    x if true => i64:200,
+    x => x
+  }
+}
+"#;
+
+run!(
+    select_guard_after_tainted_init,
+    SELECT_GUARD_AFTER_TAINTED_INIT,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(200)));
+    graphix_package_core::testing::FuseExpect::Jit
+);

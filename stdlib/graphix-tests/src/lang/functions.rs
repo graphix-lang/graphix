@@ -1587,3 +1587,18 @@ run!(xkernel_string_widen, XKERNEL_STRING_WIDEN, |v: Result<&Value>| {
         _ => false,
     }
 });
+
+const EXCESS_POSITIONAL_REJECTED: &str = r#"
+{
+  type T = {bar: i64, foo: i64};
+  let f = |#foo: i64 = i64:42, #bar: i64 = i64:42| -> T { bar: i64:0, foo: i64:0 };
+  f(i64:5)
+}
+"#;
+
+run!(
+    excess_positional_rejected,
+    EXCESS_POSITIONAL_REJECTED,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
