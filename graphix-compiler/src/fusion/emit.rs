@@ -49,7 +49,7 @@ use crate::{
     expr::{Expr, ExprId, ExprKind},
     fusion::{
         self, CalleeBody, LambdaCallInfo,
-        emit_helpers::all_symbols,
+        emit_helpers::{AbiTy, HelperSpec, all_helpers},
         intern,
         kernel_abi::{
             self, AbiKind, AbiParamKind, AbiReturn, AbstractRegistry, KernelSig, PrimType,
@@ -151,10 +151,11 @@ impl JitCtx {
                 .map_err(|e| anyhow!("jit arena reservation failed: {e}"))?,
         ));
         // Make the emit_helpers entry points resolvable from JIT'd
-        // code. Each one is `#[no_mangle] extern "C"`, registered
-        // here under the same symbol name we use in `declare_function`.
-        for (name, ptr) in all_symbols() {
-            builder.symbol(name, ptr);
+        // code — registered BY POINTER under the registry's symbol
+        // name (the same name `declare_function` uses); nothing
+        // resolves helpers through the process symbol table.
+        for h in all_helpers() {
+            builder.symbol(h.name, h.ptr);
         }
         let mut module = JITModule::new(builder);
         let helper_ids = HelperFuncIds::new(&mut module)?;
@@ -1954,505 +1955,66 @@ struct HelperFuncIds {
 impl HelperFuncIds {
     fn new(module: &mut JITModule) -> Result<Self> {
         let mut ids = BTreeMap::new();
-        // Each helper's signature. The naming convention encodes the
-        // return type — we match on that to pick the right CLIF sig.
-        for (name, _ptr) in all_symbols() {
-            let sig = helper_signature(module, name)?;
+        for h in all_helpers() {
+            let sig = helper_signature(module, &h);
             let fid = module
-                .declare_function(name, Linkage::Import, &sig)
-                .with_context(|| format!("declare_function for helper `{name}`"))?;
-            ids.insert(name, fid);
+                .declare_function(h.name, Linkage::Import, &sig)
+                .with_context(|| format!("declare_function for helper `{}`", h.name))?;
+            ids.insert(h.name, fid);
         }
         Ok(Self { ids })
     }
 }
 
-fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
-    let mut sig = Signature::new(module.isa().default_call_conv());
-    // The C ABI requires an integer argument narrower than the register
-    // width (i8/i16) to be zero-/sign-extended by the CALLER; the
-    // `extern "C"` helper is compiled to read the full register under that
-    // contract. Cranelift only emits the extension when the AbiParam
-    // records it, so a bool/int the kernel COMPUTES (e.g. a comparison,
-    // whose x86 `setcc` leaves the upper register bits dirty) reaches the
-    // helper unextended and is misread — a `false` comparison pushed into a
-    // composite comes back `true`. Match the Rust param's signedness:
-    // bool/unsigned → uext, signed → sext. (i32/u32 need no extension — a
-    // 32-bit register write clears the upper bits.)
-    let uext = |ty| AbiParam::new(ty).uext();
-    let sext = |ty| AbiParam::new(ty).sext();
-    // CR claude for eric: this is the third hand-synchronized
-    // per-helper registry (definition in emit_helpers.rs, all_symbols'
-    // name→ptr table, this name→sig table), joined only by string
-    // names — and a wrong signature here is silent UB, not an error.
-    // Propose one declarative macro deriving symbol + CLIF sig from
-    // the helper's Rust parameter types (~600 lines deleted across the
-    // two files, drift class gone). See
-    // design/code_review_2026_07_19.md A1.
-    match name {
-        // Read helpers: (ptr: i64, idx: i64) -> <prim>
-        "graphix_valarray_get_i64" | "graphix_struct_get_i64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        "graphix_valarray_get_f64" | "graphix_struct_get_f64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::F64));
-        }
-        "graphix_valarray_get_i32"
-        | "graphix_valarray_get_u32"
-        | "graphix_struct_get_i32"
-        | "graphix_struct_get_u32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I32));
-        }
-        "graphix_valarray_get_f32" | "graphix_struct_get_f32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::F32));
-        }
-        "graphix_valarray_get_bool"
-        | "graphix_struct_get_bool"
-        | "graphix_valarray_get_i8"
-        | "graphix_struct_get_i8"
-        | "graphix_valarray_get_u8"
-        | "graphix_struct_get_u8" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_valarray_get_i16"
-        | "graphix_struct_get_i16"
-        | "graphix_valarray_get_u16"
-        | "graphix_struct_get_u16" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I16));
-        }
-        "graphix_valarray_get_u64" | "graphix_struct_get_u64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // Non-primitive element reads: (ptr, idx) -> single i64 word
-        // (owned/borrowed ValArray bits for composite elems, or an `ArcStr` thin
-        // pointer for string elems).
-        "graphix_valarray_get_array"
-        | "graphix_valarray_get_array_borrowed"
-        | "graphix_valarray_get_arcstr"
-        | "graphix_struct_get_array"
-        | "graphix_struct_get_array_borrowed"
-        | "graphix_struct_get_arcstr" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // Value-shape element reads: (ptr, idx) -> Value (two words).
-        // `graphix_valarray_index` is the bounds-checked `array[i]`
-        // (signed idx, elem-or-error); the `_get_value` pair are the
-        // unchecked struct-field / tuple-element value-shape reads.
-        "graphix_valarray_index"
-        | "graphix_valarray_get_value"
-        | "graphix_struct_get_value" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
-            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
-        }
-        "graphix_valarray_len" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // Per-slot state table:
-        // (word: *mut u64, len, valid, own_levels, leaf) -> *mut u64.
-        "graphix_slot_state_table" => {
-            for _ in 0..5 {
-                sig.params.push(AbiParam::new(types::I64));
-            }
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // Per-slot call-site blocks:
-        // (word: *mut u64, slots, valid, leaf: *const SiteLeaf) -> *mut u64.
-        "graphix_slot_state_blocks" => {
-            for _ in 0..4 {
-                sig.params.push(AbiParam::new(types::I64));
-            }
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // Producer-op builder.
-        "graphix_value_buf_new" => {
-            // (cap: usize) -> *mut LPooled<Vec<Value>>
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        "graphix_value_buf_push_i64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        "graphix_value_buf_push_f64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::F64));
-        }
-        "graphix_value_buf_push_i32" | "graphix_value_buf_push_u32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I32));
-        }
-        "graphix_value_buf_push_f32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::F32));
-        }
-        "graphix_value_buf_push_bool" | "graphix_value_buf_push_u8" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(uext(types::I8));
-        }
-        "graphix_value_buf_push_i8" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(sext(types::I8));
-        }
-        "graphix_value_buf_push_u16" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(uext(types::I16));
-        }
-        "graphix_value_buf_push_i16" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(sext(types::I16));
-        }
-        "graphix_value_buf_push_u64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // Push helpers split by argument shape:
-        //   _push_array   : (buf, inner: ValArray bits) — one-word arg
-        //   _push_arcstr  : (buf, ptr: *const ArcStr) — pointer arg
-        //   _push_value   : (buf, v: Value)            — Value by value
-        "graphix_value_buf_push_array"
-        // (buf, inner: ValArray bits) — flattens inner's elements into
-        // buf and drops inner; same two-pointer shape as push_array.
-        | "graphix_value_buf_extend_from_array"
-        | "graphix_value_buf_push_arcstr"
-        // ArcStr is `repr(transparent)` over a thin pointer — passes
-        // as a single I64 register, same shape as the others above.
-        | "graphix_value_buf_push_string" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // Value-by-value push helpers: buf ptr + two-word Value (disc,
-        // payload). The Value is consumed (owned-mode push) or
-        // refcount-bumped + forgotten (_borrowed mode); both share
-        // the same CLIF signature.
-        "graphix_value_buf_push_value"
-        | "graphix_value_buf_push_value_borrowed" => {
-            sig.params.push(AbiParam::new(types::I64)); // buf
-            sig.params.push(AbiParam::new(types::I64)); // v.disc
-            sig.params.push(AbiParam::new(types::I64)); // v.payload
-        }
-        "graphix_valarray_finalize" => {
-            // consumes buf, returns owned ValArray bits
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        "graphix_valarray_clone" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        "graphix_valarray_drop" => {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // Value-by-value lifecycle helpers — every Value arg is two
-        // `I64` registers (disc, payload), every Value return is two
-        // `I64` registers (RAX, RDX on SysV AMD64).
-        "graphix_value_drop" => {
-            sig.params.push(AbiParam::new(types::I64)); // v.disc
-            sig.params.push(AbiParam::new(types::I64)); // v.payload
-        }
-        "graphix_value_clone" => {
-            sig.params.push(AbiParam::new(types::I64)); // v.disc
-            sig.params.push(AbiParam::new(types::I64)); // v.payload
-            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
-            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
-        }
-        // Clone a `*const Value` static (value-shape Const):
-        // one pointer arg, a Value (two words) returned.
-        "graphix_value_clone_from_static" => {
-            sig.params.push(AbiParam::new(types::I64)); // *const Value
-            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
-            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
-        }
-        // Unwrap a `Value::Array` into owned ValArray bits — the
-        // CHECKED value→composite narrowing (consuming /
-        // borrowed-read variants).
-        "graphix_value_into_array" | "graphix_value_into_array_borrowed"
-        // List/Map HOF entry boundary: flatten a List (cons chain) /
-        // Map (CMap) Value into owned ValArray bits for the loop
-        // scaffolds — same two-words-in / bits-out shape.
-        | "graphix_list_to_valarray"
-        | "graphix_cmap_to_pairs" => {
-            sig.params.push(AbiParam::new(types::I64)); // v.disc
-            sig.params.push(AbiParam::new(types::I64)); // v.payload
-            sig.returns.push(AbiParam::new(types::I64)); // ValArray bits
-        }
-        // List/Map HOF exit boundary: consume finalize'd ValArray
-        // bits, rebuild the collection Value (cons chain / CMap).
-        "graphix_valarray_into_list" | "graphix_valarray_into_cmap" => {
-            sig.params.push(AbiParam::new(types::I64)); // ValArray bits
-            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
-            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
-        }
-        // List flat_map extend: buf ptr + an owned list Value (two
-        // words) in, nothing out.
-        "graphix_value_buf_extend_from_list" => {
-            sig.params.push(AbiParam::new(types::I64)); // buf
-            sig.params.push(AbiParam::new(types::I64)); // v.disc
-            sig.params.push(AbiParam::new(types::I64)); // v.payload
-        }
-        // Value arithmetic (datetime/duration `ValueArith`): two Value
-        // args (four words) in, one Value (two words) out.
-        "graphix_value_add"
-        | "graphix_value_sub"
-        | "graphix_value_mul"
-        | "graphix_value_div"
-        | "graphix_value_rem"
-        // Checked arithmetic (`+?` family): same four-words-in /
-        // Value-out shape; the result is the success Value or the
-        // `ArithError` error value.
-        | "graphix_value_checked_add"
-        | "graphix_value_checked_sub"
-        | "graphix_value_checked_mul"
-        | "graphix_value_checked_div"
-        | "graphix_value_checked_rem"
-        // Map access (`MapRef`): map Value + key Value (four words) in,
-        // a Value (Nullable<V>, two words) out — same shape.
-        | "graphix_map_ref" => {
-            sig.params.push(AbiParam::new(types::I64)); // l.disc
-            sig.params.push(AbiParam::new(types::I64)); // l.payload
-            sig.params.push(AbiParam::new(types::I64)); // r.disc
-            sig.params.push(AbiParam::new(types::I64)); // r.payload
-            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
-            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
-        }
-        // Value equality (`ValueEq`): two Value args (four words) in,
-        // a bool (I8) out.
-        "graphix_value_eq" => {
-            sig.params.push(AbiParam::new(types::I64)); // l.disc
-            sig.params.push(AbiParam::new(types::I64)); // l.payload
-            sig.params.push(AbiParam::new(types::I64)); // r.disc
-            sig.params.push(AbiParam::new(types::I64)); // r.payload
-            sig.returns.push(AbiParam::new(types::I8)); // bool
-        }
-        // `bytes[i]` (`BytesIndex`): a Value (two words) + i64 index in,
-        // a Value (Nullable<u8>, two words) out.
-        "graphix_bytes_index" => {
-            sig.params.push(AbiParam::new(types::I64)); // bytes.disc
-            sig.params.push(AbiParam::new(types::I64)); // bytes.payload
-            sig.params.push(AbiParam::new(types::I64)); // index
-            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
-            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
-        }
-        // `a[i..j]` (`ArraySlice`): source Value (two words) + i64 start
-        // + i64 end + i64 flags in, a Value (Nullable<source>) out.
-        "graphix_array_slice" => {
-            sig.params.push(AbiParam::new(types::I64)); // src.disc
-            sig.params.push(AbiParam::new(types::I64)); // src.payload
-            sig.params.push(AbiParam::new(types::I64)); // start
-            sig.params.push(AbiParam::new(types::I64)); // end
-            sig.params.push(AbiParam::new(types::I64)); // flags
-            sig.returns.push(AbiParam::new(types::I64)); // ret.disc
-            sig.returns.push(AbiParam::new(types::I64)); // ret.payload
-        }
-        // Variant consumer ops: Value arg by value + extra arg.
-        "graphix_variant_tag_eq" => {
-            sig.params.push(AbiParam::new(types::I64)); // v.disc
-            sig.params.push(AbiParam::new(types::I64)); // v.payload
-            sig.params.push(AbiParam::new(types::I64)); // expected ArcStr ptr
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_variant_payload_i64" | "graphix_variant_payload_u64" => {
-            sig.params.push(AbiParam::new(types::I64)); // v.disc
-            sig.params.push(AbiParam::new(types::I64)); // v.payload
-            sig.params.push(AbiParam::new(types::I64)); // idx
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        "graphix_variant_payload_f64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::F64));
-        }
-        "graphix_variant_payload_i32"
-        | "graphix_variant_payload_u32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I32));
-        }
-        "graphix_variant_payload_f32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::F32));
-        }
-        "graphix_variant_payload_bool"
-        | "graphix_variant_payload_i8"
-        | "graphix_variant_payload_u8" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_variant_payload_i16" | "graphix_variant_payload_u16" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I16));
-        }
-        // DynCall dispatch (unified Value ABI):
-        //   (fn_index: u32, args: *mut LPooled<Vec<Value>>)
-        //     -> (ret.disc: u64, ret.payload: u64)
-        // Always a genuine Value pair; the call site adapts per its
-        // static type.
-        "graphix_dyncall" => {
-            sig.params.push(AbiParam::new(types::I32));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        "graphix_set_var" => {
-            // (bind_id, disc, payload) → void
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        "graphix_dyncall_pending_take" => {
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_dyncall_pending_take_clear" => {
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_dyncall_set_pending" => {
-            // no args, no return — just flips the thread-local flag
-        }
-        "graphix_interrupted" => {
-            // no args; returns i8 (1 = abort the loop, 0 = continue)
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_depth_push" => {
-            // no args; returns i8 (1 = dispatch may proceed, 0 = at
-            // the call-depth limit — skip the call, abort to bottom)
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_depth_enter" => {
-            // no args; returns i8 (1 = the HOF loop may run, 0 = at
-            // the call-depth limit — skip the loop, taint its result)
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        "graphix_depth_pop" => {
-            // no args, no return
-        }
-        "graphix_value_buf_push_array_borrowed" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        "graphix_value_buf_drop" => {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // `is_null(v: Value) -> u8` retained for completeness, though
-        // the JIT inlines the disc compare (`icmp_imm Equal disc,
-        // NULL_DISC`) rather than calling this.
-        "graphix_value_is_null" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I8));
-        }
-        // ─── String helpers ──────────────────────────────────────
-        // ArcStr is repr(transparent) over a thin pointer — wire
-        // shape is a single i64.
-        // (ptr: i64) -> ArcStr
-        "graphix_arcstr_clone_from_static" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // (s: ArcStr) -> ArcStr — same ABI shape as
-        // `clone_from_static`, but semantically different: takes the
-        // ArcStr by value (consumes the bits via `mem::forget`) and
-        // returns a fresh refcount-bumped clone. Used by `Local`
-        // reads of String slots.
-        "graphix_arcstr_clone" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // (s: ArcStr) -> ()
-        "graphix_arcstr_drop" => {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // () -> one word (*mut String / ArcStr bits / ValArray bits)
-        "graphix_string_buf_new" | "graphix_arcstr_empty" | "graphix_valarray_empty" => {
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // (buf: i64) -> ()
-        "graphix_string_buf_drop" => {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // (buf: i64) -> ArcStr
-        "graphix_string_buf_finalize" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // (buf: i64, s: ArcStr) -> ()
-        "graphix_string_buf_push_arcstr" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // (buf: i64, v: i64) -> ()
-        "graphix_string_buf_push_i64" | "graphix_string_buf_push_u64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // (buf: i64, v: i32) -> ()
-        "graphix_string_buf_push_i32" | "graphix_string_buf_push_u32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I32));
-        }
-        // (buf: i64, v: i16) -> ()
-        "graphix_string_buf_push_u16" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(uext(types::I16));
-        }
-        "graphix_string_buf_push_i16" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(sext(types::I16));
-        }
-        // (buf: i64, v: i8) -> ()
-        "graphix_string_buf_push_u8" | "graphix_string_buf_push_bool" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(uext(types::I8));
-        }
-        "graphix_string_buf_push_i8" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(sext(types::I8));
-        }
-        // (buf: i64, v: f64) -> ()
-        "graphix_string_buf_push_f64" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::F64));
-        }
-        // (buf: i64, v: f32) -> ()
-        "graphix_string_buf_push_f32" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::F32));
-        }
-        // () -> () — debug-build JIT invocation counter bump.
-        // Registered only when `cfg(debug_assertions)` is set; the
-        // codegen call site is gated the same way.
-        #[cfg(debug_assertions)]
-        "graphix_record_jit_invocation" => {}
-        other => {
-            return Err(anyhow!("unknown JIT helper symbol `{other}`"))
+/// Translate one [`AbiTy`] slot of a helper's registered wire
+/// signature to a cranelift `AbiParam`. The u/s extension flags apply
+/// to PARAMETERS only — the C ABI requires the CALLER to extend
+/// integer arguments narrower than the register (an x86 `setcc`
+/// leaves the upper bits dirty; a `false` comparison pushed into a
+/// composite once arrived as `true`), while returns are read at
+/// their narrow type. The extension choice itself lives with the
+/// helper's Rust parameter TYPE (`emit_helpers::HelperArg`), not
+/// here.
+fn helper_abi_param(t: AbiTy, is_param: bool) -> AbiParam {
+    match t {
+        AbiTy::I64 => AbiParam::new(types::I64),
+        AbiTy::I32 => AbiParam::new(types::I32),
+        AbiTy::F64 => AbiParam::new(types::F64),
+        AbiTy::F32 => AbiParam::new(types::F32),
+        AbiTy::I16u => {
+            let p = AbiParam::new(types::I16);
+            if is_param { p.uext() } else { p }
+        }
+        AbiTy::I16s => {
+            let p = AbiParam::new(types::I16);
+            if is_param { p.sext() } else { p }
+        }
+        AbiTy::I8u => {
+            let p = AbiParam::new(types::I8);
+            if is_param { p.uext() } else { p }
+        }
+        AbiTy::I8s => {
+            let p = AbiParam::new(types::I8);
+            if is_param { p.sext() } else { p }
         }
     }
-    Ok(sig)
+}
+
+/// Build a helper's cranelift `Signature` from its registered
+/// [`HelperSpec`] — the wire shape derived from the helper's Rust
+/// types by `emit_helpers::jit_helpers!`, so definition and
+/// signature cannot disagree.
+fn helper_signature(module: &JITModule, spec: &HelperSpec) -> Signature {
+    let mut sig = Signature::new(module.isa().default_call_conv());
+    for slots in spec.params {
+        for t in *slots {
+            sig.params.push(helper_abi_param(*t, true));
+        }
+    }
+    for t in spec.ret {
+        sig.returns.push(helper_abi_param(*t, false));
+    }
+    sig
 }
 
 /// Declare each runtime helper FuncId as a FuncRef in the current
