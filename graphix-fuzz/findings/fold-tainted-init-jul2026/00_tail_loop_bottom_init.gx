@@ -1,0 +1,19 @@
+// jul19b generate class (5+2 findings across ryouko/katana, all one
+// shape: interp quiet at epoch 0, jit fires once). A tail-looped
+// callee whose base case bottoms (`1 % 0`) produces a TAINTED
+// production at init (in-frame bottoms are tainted; the fd0 filter's
+// init-view exemption lets it escape), which poisons the init bind —
+// so the fold's INIT arrives tainted rather than absent. FoldQ then
+// force-tainted the WHOLE fold, silencing it, where the kernel's
+// FoldAcc carries init taint on the acc alone and a callback that
+// never consumes the acc recovers (emit_fold_loop's documented rule).
+// The depth-0 variant (f(0), no loop) agreed all along — the bottom
+// produced None, not a tainted production. Fixed by making FoldQ's
+// tainted-init arm a poisoned slot-0 acc delivery (Bind's tainted-arm
+// twin); a consuming callback still taints its slot and the
+// any-slot-tainted check bottoms the fold.
+{
+  let rec v1 = |v3: i64| -> i64 select v3 {v4 if v4 <= i64:0 => (i64:1 % v4), v4 => v1(v4 - i64:1)};
+  let v5 = v1(i64:1);
+  array::fold([i64:1], v5, |v13, v16| v16)
+}

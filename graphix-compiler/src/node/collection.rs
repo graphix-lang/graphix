@@ -1183,10 +1183,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         let mut forced_taint = false;
         let mut source_tag = None;
         if let Some(tag) = self.base.source.update(ctx, event) {
-            // A tainted source or init is a placeholder, and an
-            // unselectable source value is bottom — nothing to deliver,
-            // but the slot walk below must still run so slot-internal
-            // state sees this cycle's events.
+            // A tainted SOURCE is a placeholder with no elements to
+            // deliver (a genuine destructuring consumer — forced), and
+            // an unselectable source value is bottom; the slot walk
+            // below must still run so slot-internal state sees this
+            // cycle's events. (A tainted INIT is different — a
+            // poisoned delivery, see below.)
             if tag.is_tainted() {
                 forced_taint = true;
             } else if let Some(source) = self
@@ -1216,11 +1218,25 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
 
         let mut init_tag = None;
         if let Some(tag) = self.base.init.update(ctx, event) {
+            init_tag = Some(tag);
             if tag.is_tainted() {
-                forced_taint = true;
+                // A tainted INIT is a poisoned DELIVERY to slot 0's
+                // acc, not a whole-fold abort: the kernel's FoldAcc
+                // carries init taint on the acc alone, so a callback
+                // that never consumes the acc recovers — a consuming
+                // callback taints its slot and the any-slot-tainted
+                // check below bottoms the fold, exactly the kernel's
+                // sticky flags fold. Force-tainting here silenced the
+                // whole fold where the kernel recovered (jul19b
+                // generate class: a tail-looped callee's bottom
+                // escapes as a tainted production at init and poisons
+                // the init bind). The placeholder stays out of the
+                // cross-cycle store, like Bind's tainted arm.
+                if let Some(slot) = self.slots.first() {
+                    event.variables.insert(slot.acc_id, TagValue::tainted(Value::Null));
+                }
             } else {
                 self.init = self.base.init.cached.clone();
-                init_tag = Some(tag);
                 if let (Some(slot), Some(value)) = (self.slots.first(), self.init.clone())
                 {
                     ctx.rt.cached_mut().insert(slot.acc_id, value.clone());

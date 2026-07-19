@@ -893,6 +893,45 @@ run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, |v: Result<&Value>| match
     Ok(Value::Bool(false))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
+// A tainted fold INIT is a poisoned acc delivery, not a whole-fold
+// abort: a callback that never consumes the acc recovers (the
+// kernel's FoldAcc carries init taint on the acc alone). The interp's
+// force-taint silenced the fold where the kernel emitted — jul19b
+// generate class: the tail-looped callee's base-case bottom escapes
+// as a tainted production at init and poisons the init bind. The
+// depth-0 call (no tail jump → bottom is None, init absent) agreed
+// all along; the jump is what mints the tainted production.
+const FOLD_TAINTED_INIT_RECOVERS: &str = r#"
+{
+  let rec f = |n: i64| -> i64 select n { m if m <= i64:0 => i64:1 % m, m => f(m - i64:1) };
+  let v = f(i64:1);
+  array::fold([i64:5, i64:7], v, |a, x| x)
+}
+"#;
+
+run!(fold_tainted_init_recovers, FOLD_TAINTED_INIT_RECOVERS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+});
+
+// The consuming twin: a callback that READS the acc must not recover —
+// the poisoned delivery taints slot 0 and the fold bottoms in both
+// modes (the kernel's sticky flags fold). The independent const tail
+// is the observable.
+const FOLD_TAINTED_INIT_CONSUMED_BOTTOMS: &str = r#"
+{
+  let rec f = |n: i64| -> i64 select n { m if m <= i64:0 => i64:1 % m, m => f(m - i64:1) };
+  let v = f(i64:1);
+  let r = array::fold([i64:5, i64:7], v, |a, x| a + x);
+  false
+}
+"#;
+
+run!(
+    fold_tainted_init_consumed_bottoms,
+    FOLD_TAINTED_INIT_CONSUMED_BOTTOMS,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)))
+);
+
 // A capture read only by a sleeping select arm must not re-fire the
 // retained collection slot.
 const HOF_SLEEPING_ARM_CAPTURE_QUIET: &str = r#"
