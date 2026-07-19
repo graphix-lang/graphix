@@ -404,14 +404,17 @@ ordinary M6 fixpoint.
   correct (global `node-walk-is-canonical` memory). A fusion bug can *lose
   fusion* (a perf regression) but can never produce a *wrong answer* —
   correctness is structural.
-- **Fusion → cranelift JIT** (`fusion/`, emitter in `fusion/emit.rs`) identifies
+- **Fusion → cranelift JIT** (`fusion/`, emitter in `fusion/emit/` — split
+  per area: `jit`/`lower`/`abi`/`body`/`nodes`/`flow`/`select`/`call`/
+  `scalar` + `scaffold`, façade re-exports in `emit/mod.rs`) identifies
   sync (pure) subtrees and compiles them to native kernels. **Success → splice
   the kernel + delete the originals; failure → don't splice, the originals
   node-walk.** There is no third evaluator.
 
 **The pipeline is `Expr → node graph → CLIF`.** The node graph IS the IR: each
 node's `Update::emit_clif` emits its own CLIF (`Apply::emit_clif` for builtins;
-`MapFn`/`FoldFn::emit_clif` + the `fusion::scaffold` loop scaffolds for HOFs).
+`MapFn`/`FoldFn::emit_clif` + the `fusion::emit::scaffold` loop scaffolds for
+HOFs).
 Fusion recursion is `Update::fuse` (driven from `compile()`, gated once on
 `ctx.fusion.enabled`); `fusion::try_fuse` is the mechanics-only library. **Kernel
 builds are pure signature derivation** — `sig_from_inputs` is the single sig

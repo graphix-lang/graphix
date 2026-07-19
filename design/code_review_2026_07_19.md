@@ -31,6 +31,10 @@ is proposed here for adjudication.
 ## A. Headline proposals (each needs a ruling)
 
 ### A1. One declarative registry for the JIT helpers
+**DONE (7ebbeca6):** `jit_helpers!` in emit_helpers.rs is the single
+source; CLIF signatures derive from the Rust types; the legacy table
+was verified byte-identical for all 124 helpers, then deleted.
+
 The ~90 runtime helpers are registered in THREE hand-synchronized
 places joined only by string names: the definition
 (`fusion/emit_helpers.rs`), the name→pointer table
@@ -51,6 +55,10 @@ via `JITBuilder::symbol`, never resolved by name — so the macro can
 drop them uniformly.
 
 ### A2. Split `fusion/emit.rs`
+**DONE (cadda57d):** emit/ split per area (jit/lower/abi/body/nodes/
+flow/select/call/scalar + scaffold); external paths stable via mod.rs
+re-exports; CLIF verified instruction-identical across the split.
+
 At 10.2k lines it is 18% of the compiler in one file. Its own section
 markers already delineate coherent modules: the JIT module/wrapper
 pipeline (~94–2500), the disc/taint algebra + `JitEnv`/`LowerCtx`
