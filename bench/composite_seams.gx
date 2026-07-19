@@ -1,0 +1,18 @@
+// Composite-currency seams, hot: tuple ELEMENTS through a map loop
+// (per-element producer + field reads) and a composite-arg
+// CROSS-KERNEL call per iteration (entry clone + arg drop each call —
+// the seams the unified-Value ABI changeover targets; box allocs
+// pre-changeover, refcount bumps post).
+let n = 100000;
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let pick = |p: (i64, i64), k: i64| select k % 2 { 0 => p.0, _ => p.1 };
+let result = array::fold(
+    array::map(array::init(n, |i| (i + seed, i * 2)), |p| pick(p, p.0)),
+    0,
+    |a, x| a + x
+);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("composite_seams n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

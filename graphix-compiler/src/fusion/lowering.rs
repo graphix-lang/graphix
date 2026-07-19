@@ -1388,21 +1388,14 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         &ec.fusion.abstract_registry,
         &resolve_abstract(&ec.fusion.abstract_registry, &typ.rtype, &ec.env),
     )?;
-    // Cross-kernel calls support scalar + composite (array/tuple/
-    // struct) + value-shape (variant/nullable) args, captures, and
-    // returns. Args and captures are already restricted to those
-    // kinds by `type_to_region_input_kind` above (String / Unit /
-    // bare-Null bail there). The return is the one remaining shape to
-    // gate: String / Unit / Null returns aren't marshalled through
-    // the cross-kernel call boundary, so refuse those — the call
+    // Unified Value ABI: every return crosses as the genuine two-word
+    // Value pair, so String returns marshal like everything else.
+    // Unit / bare-Null returns still refuse (a unit-typed call has no
+    // value to return; bare Null should have widened) — the call
     // stays on the node-walk (via `GXLambda`).
     if matches!(
         kernel_abi::abi_kind(&ec.fusion.abstract_registry, &return_typ),
-        Some(
-            kernel_abi::AbiKind::String
-                | kernel_abi::AbiKind::Unit
-                | kernel_abi::AbiKind::Null
-        )
+        Some(kernel_abi::AbiKind::Unit | kernel_abi::AbiKind::Null)
     ) {
         return None;
     }

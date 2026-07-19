@@ -96,9 +96,47 @@ const _: () = {
 // layout checks above are what its transmutes rely on.
 pub use crate::tval::TagValue;
 
+// ─── The ValArray bits currency ──────────────────────────────────
+//
+// A composite (array/tuple/struct) travels through the JIT as ONE
+// machine word: the `ValArray` bits — `#[repr(transparent)]` over a
+// thin Arc, byte-identical to `Value::Array`'s payload word (the
+// unified Value ABI, design/unified_value_abi.md). There is no box.
+// Signatures use `u64` for the word (the `graphix_arcstr_drop`
+// pattern): `ValArray` has a NonNull niche, so a typed parameter
+// holding the 0 pending sentinel would be UB at the boundary —
+// helpers assert non-zero and transmute internally. Ownership is a
+// call-site convention exactly as the old box was: owned bits drop
+// exactly once (`graphix_valarray_drop`) or transfer into a
+// consuming helper; borrowed bits are the same word un-bumped and
+// must not be dropped.
+
+/// Borrow ValArray bits for the duration of a call. Zero is always a
+/// codegen bug (the pending sentinel leaked into a read).
 #[inline]
-unsafe fn arr<'a>(p: *const ValArray) -> &'a ValArray {
-    unsafe { &*p }
+fn va_ref(bits: &u64) -> &ValArray {
+    assert!(*bits != 0, "graphix: zero ValArray bits — JIT codegen bug");
+    unsafe { &*(bits as *const u64 as *const ValArray) }
+}
+
+/// Take ownership of ValArray bits.
+#[inline]
+fn va_owned(bits: u64) -> ValArray {
+    assert!(bits != 0, "graphix: zero ValArray bits — JIT codegen bug");
+    unsafe { std::mem::transmute::<u64, ValArray>(bits) }
+}
+
+/// Release a ValArray as owned bits.
+#[inline]
+fn va_bits(a: ValArray) -> u64 {
+    unsafe { std::mem::transmute::<ValArray, u64>(a) }
+}
+
+/// The bits of a BORROWED `&ValArray` — same word, no refcount bump.
+/// The caller must not drop them.
+#[inline]
+fn va_borrowed_bits(a: &ValArray) -> u64 {
+    unsafe { *(a as *const ValArray as *const u64) }
 }
 
 // ─── Producer-op builder ─────────────────────────────────────────
@@ -210,49 +248,43 @@ pub unsafe extern "C" fn graphix_value_buf_push_u64(
     unsafe { (*buf).push(Value::U64(v)) }
 }
 
-/// Push a `Value::Array(inner)` slot, taking ownership of `inner`.
-/// Used by StructNew (each field is a `[name, value]` inner array)
-/// and by VariantNew with payload.
+/// Push a `Value::Array(inner)` slot, taking ownership of `inner`
+/// (owned ValArray bits). Used by StructNew (each field is a
+/// `[name, value]` inner array) and by VariantNew with payload.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_value_buf_push_array(
     buf: *mut LPooled<Vec<Value>>,
-    inner: *mut ValArray,
+    inner: u64,
 ) {
-    unsafe {
-        let owned = *Box::from_raw(inner);
-        (*buf).push(Value::Array(owned));
-    }
+    unsafe { (*buf).push(Value::Array(va_owned(inner))) }
 }
 
-/// Flatten an owned `*mut ValArray` into `buf`: clone each element into
-/// the buf, then drop the array box. Used by the flat_map loop's
+/// Flatten an owned ValArray (bits) into `buf`: clone each element
+/// into the buf, then drop the array. Used by the flat_map loop's
 /// JIT codegen — the body produces an owned array per element whose
 /// contents are concatenated into the output. (`ValArray` is an
 /// immutable `Arc<[Value]>`, so elements are cloned, not moved.)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_value_buf_extend_from_array(
     buf: *mut LPooled<Vec<Value>>,
-    inner: *mut ValArray,
+    inner: u64,
 ) {
     unsafe {
-        let owned = *Box::from_raw(inner);
+        let owned = va_owned(inner);
         (*buf).extend(owned.iter().cloned());
     }
 }
 
-/// Borrow-mode array push: refcount-bumps the caller's
-/// `*const ValArray` and pushes `Value::Array(clone)`. Used for
-/// DynCall composite args where the caller still owns its local
-/// and the dispatcher needs a separately-tracked clone.
+/// Borrow-mode array push: refcount-bumps the caller's borrowed bits
+/// and pushes `Value::Array(clone)`. Used for DynCall composite args
+/// where the caller still owns its local and the dispatcher needs a
+/// separately-tracked clone.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn graphix_value_buf_push_array_borrowed(
     buf: *mut LPooled<Vec<Value>>,
-    src: *const ValArray,
+    src: u64,
 ) {
-    unsafe {
-        let cloned: ValArray = (*src).clone();
-        (*buf).push(Value::Array(cloned));
-    }
+    unsafe { (*buf).push(Value::Array(va_ref(&src).clone())) }
 }
 
 /// Borrow-mode value push: the caller passes their `Value` bits by
@@ -342,23 +374,6 @@ pub extern "C" fn graphix_dyncall_pending_take_clear() -> u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn graphix_dyncall_set_pending() {
     DYNCALL_PENDING.with(|c| c.set(true))
-}
-
-/// Record the not-fresh (`TAINT`/`STALE`) disc bits of a cross-kernel
-/// callee's result. Called by the callee's return path immediately
-/// before `return`; the caller takes the bits right after the call.
-/// See [`CALLEE_RESULT_FLAGS`].
-#[unsafe(no_mangle)]
-pub extern "C" fn graphix_callee_flags_set(bits: u64) {
-    CALLEE_RESULT_FLAGS.with(|c| c.set(bits))
-}
-
-/// Take (read and clear) the callee-result flag bits. Called by the
-/// caller immediately after every cross-kernel call returns, keeping
-/// the cell clean call-to-call. See [`CALLEE_RESULT_FLAGS`].
-#[unsafe(no_mangle)]
-pub extern "C" fn graphix_callee_flags_take() -> u64 {
-    CALLEE_RESULT_FLAGS.with(|c| c.replace(0))
 }
 
 /// Read the active runtime's interrupt/abort control (set in
@@ -489,39 +504,32 @@ pub unsafe extern "C" fn graphix_value_buf_push_string(
     unsafe { (*buf).push(Value::String(s)) }
 }
 
-/// Finalize the buffer into an owned `ValArray`. The returned
-/// pointer is `Box::into_raw(Box::new(arr))` — caller must
-/// `Box::from_raw` to reclaim or `graphix_valarray_drop` to free.
-/// Consumes the buf (drops the `LPooled<Vec<Value>>` so its
+/// Finalize the buffer into an owned `ValArray`, returned as its
+/// bits. Consumes the buf (drops the `LPooled<Vec<Value>>` so its
 /// allocation returns to the pool).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_finalize(
-    buf: *mut LPooled<Vec<Value>>,
-) -> *mut ValArray {
+pub unsafe extern "C" fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
     unsafe {
         let mut owned = *Box::from_raw(buf);
-        let arr = ValArray::from_iter_exact(owned.drain(..));
-        Box::into_raw(Box::new(arr))
+        va_bits(ValArray::from_iter_exact(owned.drain(..)))
     }
 }
 
-/// Reference-count bump of an existing ValArray. Returns an owned
-/// pointer (Box::into_raw of a fresh `Box<ValArray>`). Used at
-/// kernel entry to convert borrowed composite params into owned
-/// locals — keeps ownership uniform inside the JIT'd body.
+/// Reference-count bump of borrowed ValArray bits → owned bits. Used
+/// at kernel entry and by `ensure_owned_composite_src` to convert a
+/// borrowed composite read into an owned local — one relaxed atomic
+/// increment, no allocation.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_clone(arr: *const ValArray) -> *mut ValArray {
-    unsafe { Box::into_raw(Box::new((*arr).clone())) }
+pub extern "C" fn graphix_valarray_clone(bits: u64) -> u64 {
+    va_bits(va_ref(&bits).clone())
 }
 
-/// Drop an owned ValArray pointer. Use when a local goes out of
-/// scope or is overwritten by a tail-call rebind. Null is always a
-/// codegen bug (a pending sentinel leaked into a drop) — panic
-/// loudly instead of UB.
+/// Drop owned ValArray bits. Use when a local goes out of scope or is
+/// overwritten by a tail-call rebind. Zero is always a codegen bug (a
+/// pending sentinel leaked into a drop) — panic loudly instead of UB.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_drop(arr: *mut ValArray) {
-    assert!(!arr.is_null(), "graphix_valarray_drop: null ValArray — JIT codegen bug");
-    unsafe { drop(Box::from_raw(arr)) }
+pub extern "C" fn graphix_valarray_drop(bits: u64) {
+    drop(va_owned(bits))
 }
 
 // ─── Value-as-aggregate helpers ────────────────────────────────────
@@ -542,54 +550,35 @@ pub unsafe extern "C" fn graphix_valarray_drop(arr: *mut ValArray) {
 // repeatedly without worrying about ownership: every call site is
 // either an explicit drop, or implicitly borrowed.
 
-/// Wrap an owned ValArray into a `Value::Array` for variant
-/// construction (with-payload variants — the outer value is
-/// `Value::Array([tag, ...])`). Caller relinquishes the ValArray
-/// pointer; helper transfers it into the returned Value.
+/// Unwrap an owned `Value::Array` into owned ValArray bits — the
+/// CHECKED value→composite narrowing. Under the unified Value ABI the
+/// bits ARE `Value::Array`'s payload word, but the check must stay: a
+/// tainted `Value::Null` placeholder is reachable on `?`-unwrap paths
+/// and reinterpreting its zero payload as array bits would be UB at
+/// the first touch. A non-Array here is a CODEGEN bug (the emit's
+/// taint/shape gates failed) — abort defined rather than UB;
+/// extern "C" makes the panic a nounwind abort.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_new_from_array(arr: *mut ValArray) -> TagValue {
-    TagValue::clean(Value::Array(unsafe { *Box::from_raw(arr) }))
-}
-
-/// Build a `Value::String(tag)` for nullary variant construction.
-/// `tag` is a pointer to an interned `ArcStr` (compile-time known).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_new_string_from_arcstr(
-    tag: *const arcstr::ArcStr,
-) -> TagValue {
-    TagValue::clean(Value::String(unsafe { (*tag).clone() }))
-}
-
-/// Unwrap an owned `Value::Array` into the composite ABI's owned
-/// `*mut ValArray`. The payload word INSIDE a Value is the ValArray
-/// bits themselves, not a box — handing it directly to a composite
-/// consumer is a type confusion (the consumer's drop would
-/// `Box::from_raw` the Arc's data pointer). Consumes the Value;
-/// ownership of the inner ValArray transfers into the box.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_into_array(v: TagValue) -> *mut ValArray {
+pub extern "C" fn graphix_value_into_array(v: TagValue) -> u64 {
     match v.value() {
-        Value::Array(a) => Box::into_raw(Box::new(a)),
-        // A non-Array here is a CODEGEN bug (the emit's taint/shape gates
-        // failed) — abort defined rather than UB; extern "C" makes the
-        // panic a nounwind abort.
+        Value::Array(a) => va_bits(a),
         v => panic!("graphix_value_into_array: expected Value::Array, got {v:?}"),
     }
 }
 
 /// Borrowed-read variant of [`graphix_value_into_array`]: clones the
-/// inner ValArray (refcount bump) and forgets the input so the
-/// caller's bits stay valid.
+/// inner ValArray (refcount bump — owned bits out) and forgets the
+/// input so the caller's bits stay valid.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_value_into_array_borrowed(v: TagValue) -> *mut ValArray {
-    let ptr = v.with_value(|v| match v {
-        Value::Array(a) => Box::into_raw(Box::new(a.clone())),
+pub extern "C" fn graphix_value_into_array_borrowed(v: TagValue) -> u64 {
+    let bits = v.with_value(|v| match v {
+        Value::Array(a) => va_bits(a.clone()),
         v => {
             panic!("graphix_value_into_array_borrowed: expected Value::Array, got {v:?}")
         }
     });
     std::mem::forget(v); // borrowed read — the caller keeps owning it
-    ptr
+    bits
 }
 
 /// Consume a Value and decrement the inner refcount (for
@@ -807,14 +796,6 @@ pub extern "C" fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
     dup
 }
 
-/// Build a `Value::String` from an owned ArcStr — boundary
-/// marshaling for kernel-return-type `Type::String`. Consumes the
-/// ArcStr (transfers ownership into the Value).
-#[unsafe(no_mangle)]
-pub extern "C" fn graphix_value_new_string(s: arcstr::ArcStr) -> TagValue {
-    TagValue::clean(Value::String(s))
-}
-
 /// Start a fresh string-buffer for interpolation/concat. Returns a heap-
 /// owned `*mut String`; caller eventually pairs with
 /// `graphix_string_buf_finalize` (success) or `graphix_string_buf_drop`
@@ -828,11 +809,12 @@ pub extern "C" fn graphix_arcstr_empty() -> u64 {
 }
 
 /// The empty-`ValArray` placeholder for a tainted composite position —
-/// a fresh owned box (the consumer chain drops it through the normal
-/// scope machinery). Allocates, but only on the (rare) tainted path.
+/// an owned refcount clone of the static empty (the consumer chain
+/// drops it through the normal scope machinery; the static never
+/// reaches zero). No allocation.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_valarray_empty_boxed() -> *mut ValArray {
-    Box::into_raw(Box::new(ValArray::from([])))
+pub extern "C" fn graphix_valarray_empty() -> u64 {
+    va_bits(EMPTY_ARR.clone())
 }
 
 // ─── List / Map collection HOF boundary ───────────────────────────
@@ -857,11 +839,11 @@ pub extern "C" fn graphix_valarray_empty_boxed() -> *mut ValArray {
 /// SlotFlags, so the result taints and its payload is unobservable,
 /// matching the interpreted forced-taint semantics.
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_list_to_valarray(tv: TagValue) -> *mut ValArray {
+pub extern "C" fn graphix_list_to_valarray(tv: TagValue) -> u64 {
     let v = tv.value(); // consume; masks the tag bits
     let arr =
         crate::node::collection::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
-    Box::into_raw(Box::new(arr))
+    va_bits(arr)
 }
 
 /// The exit boundary for list-returning HOF loops: consume the
@@ -869,8 +851,8 @@ pub extern "C" fn graphix_list_to_valarray(tv: TagValue) -> *mut ValArray {
 /// `list::from_iter` — the same constructor the interpreted finishes
 /// use.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_into_list(arr: *mut ValArray) -> TagValue {
-    let arr = unsafe { *Box::from_raw(arr) };
+pub extern "C" fn graphix_valarray_into_list(bits: u64) -> TagValue {
+    let arr = va_owned(bits);
     TagValue::clean(crate::node::collection::list::from_iter(arr.iter().cloned()))
 }
 
@@ -880,7 +862,7 @@ pub unsafe extern "C" fn graphix_valarray_into_list(arr: *mut ValArray) -> TagVa
 /// value; non-map input (the tainted placeholder) → empty array, see
 /// [`graphix_list_to_valarray`].
 #[unsafe(no_mangle)]
-pub extern "C" fn graphix_cmap_to_pairs(tv: TagValue) -> *mut ValArray {
+pub extern "C" fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
     let v = tv.value(); // consume; masks the tag bits
     let arr = match &v {
         Value::Map(m) => ValArray::from_iter(
@@ -888,7 +870,7 @@ pub extern "C" fn graphix_cmap_to_pairs(tv: TagValue) -> *mut ValArray {
         ),
         _ => ValArray::from([]),
     };
-    Box::into_raw(Box::new(arr))
+    va_bits(arr)
 }
 
 /// The exit boundary for map-returning HOF loops: consume a
@@ -898,8 +880,8 @@ pub extern "C" fn graphix_cmap_to_pairs(tv: TagValue) -> *mut ValArray {
 /// malformed element is unreachable through the typechecker —
 /// contribute nothing and log rather than abort.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_into_cmap(arr: *mut ValArray) -> TagValue {
-    let arr = unsafe { *Box::from_raw(arr) };
+pub extern "C" fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
+    let arr = va_owned(bits);
     let m = netidx_value::Map::from_iter(arr.iter().filter_map(|v| {
         let pair = crate::node::collection::split_pair(v);
         if pair.is_none() {
@@ -1107,17 +1089,14 @@ variant_payload_impl! {
 
 use std::cell::Cell;
 
-/// Two-word return shape for `graphix_dyncall` / `dispatch_typed`.
-/// Matches the cranelift sig `(I64, I64)` and the SysV ABI's RAX/RDX
-/// return regs. For `ret_kind=2` (Value-shape return) both words
-/// are meaningful: `word0 = Value disc`, `word1 = Value payload`.
-/// For `ret_kind=0` (scalar) the value lives in `word0` and `word1`
-/// is `0`; for `ret_kind=1` (composite ValArray pointer) `word0`
-/// holds the owned `*mut ValArray` and `word1 = 0`; for `ret_kind=3`
-/// (Unit) both are `0`. The JIT's call site reads `inst_results[0]`
-/// for the single-word cases and both for the Value-shape case;
-/// the second slot stays `0` on pending too, so a stale value can't
-/// leak through.
+/// Two-word return shape for `graphix_dyncall` / `dispatch_typed` —
+/// the unified Value ABI: `word0 = Value disc`, `word1 = the genuine
+/// Value payload word` for EVERY return type (a scalar's widened
+/// bits, a composite's ValArray bits, a string's ArcStr bits, a
+/// value-shape's payload; Unit returns the Null disc). Matches the
+/// cranelift sig `(I64, I64)` and the SysV ABI's RAX/RDX return
+/// regs. The call site adapts per its static type (narrow a scalar,
+/// adopt owned bits, discard Unit). On pending both words are `0`.
 #[repr(C)]
 pub struct DynCallRet {
     pub word0: u64,
@@ -1130,14 +1109,14 @@ pub struct DynCallRet {
 #[repr(C)]
 pub struct DynDispatchHandle {
     /// Function pointer to a monomorphized `dispatch_typed::<R, E>`.
-    /// Takes `(state, fn_index, args, ret_kind)` and returns a
-    /// [`DynCallRet`] encoded per `ret_kind`. Returns `(0, 0)` and
-    /// sets `DYNCALL_PENDING` if the inner Apply returned None.
+    /// Takes `(state, fn_index, args)` and returns the result as a
+    /// [`DynCallRet`] Value pair (unified Value ABI). Returns
+    /// `(0, 0)` and sets `DYNCALL_PENDING` if the inner Apply
+    /// returned None.
     pub dispatch: unsafe extern "C" fn(
         state: *mut u8,
         fn_index: u32,
         args: *mut LPooled<Vec<Value>>,
-        ret_kind: u8,
     ) -> DynCallRet,
     /// Function pointer to a monomorphized `set_var_typed::<R, E>`. A
     /// fused `connect` (or a handler-ful `?`'s error delivery) writes a
@@ -1171,17 +1150,6 @@ thread_local! {
     /// call site): the kernel's result is discarded and `update`
     /// itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
-
-    /// Not-fresh (`TAINT`/`STALE`) disc bits of a cross-kernel CALLEE's
-    /// result. The scalar/composite return ABI carries no disc word, so
-    /// the callee's return path records the bits here and the caller
-    /// takes (reads + clears) them immediately after the call, OR-ing
-    /// them into its synthesized result disc. A bottomed or unfired
-    /// callee RESULT thus rides back as data — bottoming the caller only
-    /// if its taken output path consumes it (#219) — while genuine
-    /// aborts (depth trip, interrupt, an async pend) keep the
-    /// [`DYNCALL_PENDING`] whole-region path.
-    pub static CALLEE_RESULT_FLAGS: Cell<u64> = const { Cell::new(0) };
 
     /// Raw pointer to the active runtime's [`crate::Control`], set per
     /// cycle by `do_cycle` on the thread running the node loop. Read by
@@ -1307,17 +1275,8 @@ pub fn reset_fuse_bails() {
 
 /// The single registered DynCall entry point. Indirects through
 /// the thread-local handle to the monomorphized dispatcher and
-/// returns a two-word [`DynCallRet`].
-///
-/// `ret_kind`:
-/// - `0`: scalar (`Prim`) — `word0` holds the result's bits.
-/// - `1`: composite ValArray (`Array` / `Tuple` / `Struct`) —
-///   `word0` holds an owned `*mut ValArray` (from `Box::into_raw`).
-/// - `2`: Value-shape (`Variant` / `Nullable`) — `word0` holds
-///   the Value's discriminant, `word1` the payload word.
-/// - `3`: Unit — both words are `0`, caller discards.
-///
-/// `word1` is `0` for every kind except `2`.
+/// returns the result as a two-word [`DynCallRet`] Value pair
+/// (unified Value ABI — the call site adapts per its static type).
 ///
 /// On pending (inner Apply returned `None`): returns `(0, 0)`,
 /// sets `DYNCALL_PENDING`. JIT-emitted code calls
@@ -1327,7 +1286,6 @@ pub fn reset_fuse_bails() {
 pub unsafe extern "C" fn graphix_dyncall(
     fn_index: u32,
     args: *mut LPooled<Vec<Value>>,
-    ret_kind: u8,
 ) -> DynCallRet {
     let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
     if handle.is_null() {
@@ -1339,7 +1297,7 @@ pub unsafe extern "C" fn graphix_dyncall(
     }
     unsafe {
         let h = &*handle;
-        (h.dispatch)(h.state, fn_index, args, ret_kind)
+        (h.dispatch)(h.state, fn_index, args)
     }
 }
 
@@ -1415,8 +1373,8 @@ fn read_slot_bool(v: &Value) -> u8 {
 macro_rules! valarray_get_scalar {
     ($($name:ident, $reader:ident, $ty:ty;)+) => {
         $(#[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(p: *const ValArray, idx: usize) -> $ty {
-            unsafe { arr(p) }.get(idx).map($reader).unwrap_or_default()
+        pub extern "C" fn $name(bits: u64, idx: usize) -> $ty {
+            va_ref(&bits).get(idx).map($reader).unwrap_or_default()
         })+
     };
 }
@@ -1436,8 +1394,8 @@ valarray_get_scalar! {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_len(p: *const ValArray) -> usize {
-    unsafe { arr(p).len() }
+pub extern "C" fn graphix_valarray_len(bits: u64) -> usize {
+    va_ref(&bits).len()
 }
 
 /// Free a slot-state chain: `word` is (0 or) a `Box<Vec<u64>>` raw
@@ -1566,8 +1524,8 @@ fn struct_field(p: &ValArray, sorted_idx: usize) -> Option<&Value> {
 macro_rules! struct_get_scalar {
     ($($name:ident, $reader:ident, $ty:ty;)+) => {
         $(#[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(p: *const ValArray, sorted_idx: usize) -> $ty {
-            struct_field(unsafe { arr(p) }, sorted_idx).map($reader).unwrap_or_default()
+        pub extern "C" fn $name(bits: u64, sorted_idx: usize) -> $ty {
+            struct_field(va_ref(&bits), sorted_idx).map($reader).unwrap_or_default()
         })+
     };
 }
@@ -1605,11 +1563,8 @@ struct_get_scalar! {
 /// success or the error Value otherwise, as a two-register `Value`.
 /// `idx` is a signed `i64` (negatives index from the end).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_index(
-    p: *const ValArray,
-    idx: i64,
-) -> TagValue {
-    TagValue::clean(array_index(unsafe { arr(p) }, idx))
+pub extern "C" fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
+    TagValue::clean(array_index(va_ref(&bits), idx))
 }
 
 /// Total slot-as-array reads (see the module's totality contract):
@@ -1628,86 +1583,64 @@ fn slot_arcstr(v: Option<&Value>) -> arcstr::ArcStr {
     }
 }
 
-/// `arr[idx]` as an owned `*mut ValArray` (Array/Tuple/Struct elem).
+/// `arr[idx]` as OWNED ValArray bits (Array/Tuple/Struct elem —
+/// refcount clone of the slot).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_array(
-    p: *const ValArray,
-    idx: usize,
-) -> *mut ValArray {
-    Box::into_raw(Box::new(slot_array(unsafe { arr(p) }.get(idx)).clone()))
+pub extern "C" fn graphix_valarray_get_array(bits: u64, idx: usize) -> u64 {
+    va_bits(slot_array(va_ref(&bits).get(idx)).clone())
 }
 
-/// `arr[idx]` as a BORROWED `*const ValArray` — an interior pointer
-/// into the parent's element slot (or the static empty placeholder).
-/// Valid for exactly as long as the parent array is alive and
-/// unmutated; used by select's nested structural patterns, whose
-/// scrutinee is a borrowed env slot pinned across the whole arm chain
-/// (values are immutable, so the interior pointer is stable). NEVER
-/// pass this to a consuming/dropping helper.
+/// `arr[idx]` as BORROWED ValArray bits — the slot's own handle word
+/// (or the static empty placeholder), no refcount bump. Valid for
+/// exactly as long as the parent array is alive; used by select's
+/// nested structural patterns, whose scrutinee is a borrowed env slot
+/// pinned across the whole arm chain (values are immutable, so the
+/// slot word is stable). NEVER pass this to a consuming/dropping
+/// helper.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_array_borrowed(
-    p: *const ValArray,
-    idx: usize,
-) -> *const ValArray {
-    slot_array(unsafe { arr(p) }.get(idx)) as *const ValArray
+pub extern "C" fn graphix_valarray_get_array_borrowed(bits: u64, idx: usize) -> u64 {
+    va_borrowed_bits(slot_array(va_ref(&bits).get(idx)))
 }
 
 /// Struct field read (`arr[sorted_idx]` is a `[name, value]` kv-pair;
-/// slot 1) as a BORROWED `*const ValArray` interior pointer — same
-/// lifetime contract as [`graphix_valarray_get_array_borrowed`].
+/// slot 1) as BORROWED ValArray bits — same lifetime contract as
+/// [`graphix_valarray_get_array_borrowed`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_array_borrowed(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> *const ValArray {
-    slot_array(struct_field(unsafe { arr(p) }, sorted_idx)) as *const ValArray
+pub extern "C" fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64 {
+    va_borrowed_bits(slot_array(struct_field(va_ref(&bits), sorted_idx)))
 }
 
 /// `arr[idx]` as an owned `ArcStr` (String elem).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_arcstr(
-    p: *const ValArray,
-    idx: usize,
-) -> arcstr::ArcStr {
-    slot_arcstr(unsafe { arr(p) }.get(idx))
+pub extern "C" fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> arcstr::ArcStr {
+    slot_arcstr(va_ref(&bits).get(idx))
 }
 
 /// `arr[idx]` as an owned `Value` (value-shape elem). Clones the slot.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_valarray_get_value(
-    p: *const ValArray,
-    idx: usize,
-) -> TagValue {
-    TagValue::clean(unsafe { arr(p) }.get(idx).cloned().unwrap_or(Value::Null))
+pub extern "C" fn graphix_valarray_get_value(bits: u64, idx: usize) -> TagValue {
+    TagValue::clean(va_ref(&bits).get(idx).cloned().unwrap_or(Value::Null))
 }
 
 /// Struct field read (two-level: `arr[sorted_idx]` is a `[name,
-/// value]` kv-pair; read slot 1) producing an owned `*mut ValArray`.
+/// value]` kv-pair; read slot 1) producing OWNED ValArray bits.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_array(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> *mut ValArray {
-    Box::into_raw(Box::new(
-        slot_array(struct_field(unsafe { arr(p) }, sorted_idx)).clone(),
-    ))
+pub extern "C" fn graphix_struct_get_array(bits: u64, sorted_idx: usize) -> u64 {
+    va_bits(slot_array(struct_field(va_ref(&bits), sorted_idx)).clone())
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_arcstr(
-    p: *const ValArray,
+pub extern "C" fn graphix_struct_get_arcstr(
+    bits: u64,
     sorted_idx: usize,
 ) -> arcstr::ArcStr {
-    slot_arcstr(struct_field(unsafe { arr(p) }, sorted_idx))
+    slot_arcstr(struct_field(va_ref(&bits), sorted_idx))
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn graphix_struct_get_value(
-    p: *const ValArray,
-    sorted_idx: usize,
-) -> TagValue {
+pub extern "C" fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
     TagValue::clean(
-        struct_field(unsafe { arr(p) }, sorted_idx).cloned().unwrap_or(Value::Null),
+        struct_field(va_ref(&bits), sorted_idx).cloned().unwrap_or(Value::Null),
     )
 }
 
@@ -1765,15 +1698,10 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ("graphix_valarray_finalize", graphix_valarray_finalize as *const u8),
         ("graphix_valarray_clone", graphix_valarray_clone as *const u8),
         ("graphix_valarray_drop", graphix_valarray_drop as *const u8),
-        ("graphix_value_new_from_array", graphix_value_new_from_array as *const u8),
         ("graphix_value_into_array", graphix_value_into_array as *const u8),
         (
             "graphix_value_into_array_borrowed",
             graphix_value_into_array_borrowed as *const u8,
-        ),
-        (
-            "graphix_value_new_string_from_arcstr",
-            graphix_value_new_string_from_arcstr as *const u8,
         ),
         ("graphix_value_drop", graphix_value_drop as *const u8),
         ("graphix_value_clone", graphix_value_clone as *const u8),
@@ -1830,8 +1758,6 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
             graphix_dyncall_pending_take_clear as *const u8,
         ),
         ("graphix_dyncall_set_pending", graphix_dyncall_set_pending as *const u8),
-        ("graphix_callee_flags_set", graphix_callee_flags_set as *const u8),
-        ("graphix_callee_flags_take", graphix_callee_flags_take as *const u8),
         ("graphix_interrupted", graphix_interrupted as *const u8),
         ("graphix_depth_push", graphix_depth_push as *const u8),
         ("graphix_depth_enter", graphix_depth_enter as *const u8),
@@ -1857,9 +1783,8 @@ pub fn all_symbols() -> Vec<(&'static str, *const u8)> {
         ),
         ("graphix_arcstr_clone", graphix_arcstr_clone as *const u8),
         ("graphix_arcstr_drop", graphix_arcstr_drop as *const u8),
-        ("graphix_value_new_string", graphix_value_new_string as *const u8),
         ("graphix_arcstr_empty", graphix_arcstr_empty as *const u8),
-        ("graphix_valarray_empty_boxed", graphix_valarray_empty_boxed as *const u8),
+        ("graphix_valarray_empty", graphix_valarray_empty as *const u8),
         ("graphix_list_to_valarray", graphix_list_to_valarray as *const u8),
         ("graphix_valarray_into_list", graphix_valarray_into_list as *const u8),
         ("graphix_cmap_to_pairs", graphix_cmap_to_pairs as *const u8),

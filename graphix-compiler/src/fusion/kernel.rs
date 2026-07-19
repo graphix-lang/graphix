@@ -23,20 +23,15 @@ use crate::{
     Apply, BindId, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
     expr::{Expr, ExprId},
     fusion::{
-        emit::{
-            STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
-            unpack_u64_to_value,
-        },
+        emit::{STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
         emit_helpers::{
-            CALLEE_RESULT_FLAGS, DYN_DISPATCH_HANDLE, DYNCALL_PENDING, DynCallRet,
-            DynDispatchHandle, TagValue,
+            DYN_DISPATCH_HANDLE, DYNCALL_PENDING, DynCallRet, DynDispatchHandle, TagValue,
         },
         kernel_abi::{self, BuiltinSlot, FnSource, KernelSig},
     },
     node::{bind::Ref, compiler::compile, lambda::LambdaDef},
     typ::FnType,
 };
-use log::error;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::sync::Arc;
@@ -522,7 +517,6 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     state_ptr: *mut u8,
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
-    ret_kind: u8,
 ) -> DynCallRet {
     use DynCallRet;
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
@@ -538,98 +532,22 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     let slot = &mut slots[fn_index as usize];
     let lambda_v = &fn_arg_values[fn_index as usize];
     match slot.dispatch(lambda_v, ctx, event, &args_vec) {
-        Some(v) => match ret_kind {
-            0 => {
-                // Scalar return: pack the Value's bits into word0;
-                // word1 unused.
-                DynCallRet { word0: dyncall_scalar_return_bits(&v), word1: 0 }
-            }
-            1 => {
-                // Composite ValArray return: extract the inner
-                // array, box, transfer ownership. word1 unused.
-                match v {
-                    Value::Array(arr) => DynCallRet {
-                        word0: Box::into_raw(Box::new(arr)) as u64,
-                        word1: 0,
-                    },
-                    // An ABI-shape mismatch is a COMPILER bug (the
-                    // resolved type promised an array), but this is an
-                    // `extern "C"` frame: a panic cannot unwind through
-                    // the JIT code and ABORTS THE PROCESS ("failed to
-                    // initiate panic" — soak jul07b, `max([..MAX..])`
-                    // under the mistyped variadic sig). Log loudly and
-                    // take the pend path instead: the call site
-                    // converts it to a #219 tainted placeholder and the
-                    // bottom stays local.
-                    other => {
-                        error!(
-                            "DynCall return ABI: ret_kind=1 (ValArray) but \
-                             got {other:?} — compiler bug, result bottoms"
-                        );
-                        DYNCALL_PENDING.with(|c| c.set(true));
-                        DynCallRet { word0: 0, word1: 0 }
-                    }
-                }
-            }
-            2 => {
-                // Variant / Nullable return: hand back the Value's
-                // two `repr(u64)` words directly — no Box. The JIT
-                // reads both registers and treats the result as the
-                // (disc, payload) pair of a Value it now owns.
-                //
-                // SAFETY: Value is `#[repr(u64)]`, 16 bytes /
-                // 8-byte aligned — layout pinned by
-                // `emit_helpers`. `ManuallyDrop` prevents the
-                // local `v`'s Drop from running while we transmute
-                // its bits out; ownership transfers to the caller.
-                let v = std::mem::ManuallyDrop::new(v);
-                let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*v) };
-                DynCallRet { word0: words[0], word1: words[1] }
-            }
-            3 => {
-                // Unit return: caller discards. Both words zero.
-                DynCallRet { word0: 0, word1: 0 }
-            }
-            4 => {
-                // String return: extract ArcStr from Value::String,
-                // transfer ownership through word0 as raw bits.
-                // ArcStr is `repr(transparent)` over `NonNull<ThinInner>`
-                // so the raw u64 is a valid ArcStr bit pattern; the
-                // caller's String SSA reads it directly without a
-                // boundary decode (the kernel-return path at
-                // `Kernel::update`'s String arm uses the same
-                // transmute pattern).
-                match v {
-                    Value::String(s) => {
-                        let s = std::mem::ManuallyDrop::new(s);
-                        let bits: u64 = unsafe {
-                            std::mem::transmute_copy::<arcstr::ArcStr, u64>(&*s)
-                        };
-                        DynCallRet { word0: bits, word1: 0 }
-                    }
-                    // See the ret_kind=1 arm: never panic across the
-                    // JIT boundary — log + pend.
-                    other => {
-                        error!(
-                            "DynCall return ABI: ret_kind=4 (String) but \
-                             got {other:?} — compiler bug, result bottoms"
-                        );
-                        DYNCALL_PENDING.with(|c| c.set(true));
-                        DynCallRet { word0: 0, word1: 0 }
-                    }
-                }
-            }
-            _ => {
-                // See the ret_kind=1 arm: never panic across the JIT
-                // boundary — log + pend.
-                error!(
-                    "DynCall return ABI: bad ret_kind {ret_kind} — compiler \
-                     bug, result bottoms"
-                );
-                DYNCALL_PENDING.with(|c| c.set(true));
-                DynCallRet { word0: 0, word1: 0 }
-            }
-        },
+        Some(v) => {
+            // Unified Value ABI: hand back the Value's two `repr(u64)`
+            // words for EVERY return type — the call site adapts per
+            // its static shape (narrow a scalar payload, adopt owned
+            // ValArray/ArcStr bits, keep a value-shape pair, discard
+            // Unit).
+            //
+            // SAFETY: Value is `#[repr(u64)]`, 16 bytes / 8-byte
+            // aligned — layout pinned by `emit_helpers`.
+            // `ManuallyDrop` prevents the local `v`'s Drop from
+            // running while we transmute its bits out; ownership
+            // transfers to the caller.
+            let v = std::mem::ManuallyDrop::new(v);
+            let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*v) };
+            DynCallRet { word0: words[0], word1: words[1] }
+        }
         None => {
             // "No value this cycle" — the JIT'd call site
             // take-and-clears this immediately and converts it to a
@@ -676,17 +594,6 @@ pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let ctx = unsafe { &mut *state.ctx };
     ctx.rt.set_var(BindId::from_inner(bind_id), value);
-}
-
-/// Pack a scalar [`Value`]'s bits into a u64 for the DynCall ABI's
-/// scalar return path, deriving the `PrimType` from the value's own
-/// variant. Same encoding as [`pack_value_to_u64`].
-fn dyncall_scalar_return_bits(v: &Value) -> u64 {
-    let prim = kernel_abi::scalar_prim_of_value(v).unwrap_or_else(|| {
-        panic!("DynCall scalar return: callee produced non-scalar {v:?}")
-    });
-    // Infallible: the prim was derived from `v`'s own variant.
-    pack_value_to_u64(v, prim).expect("prim derived from the value itself")
 }
 
 /// Wraps a [`KernelSig`] as an [`Apply<R, E>`] so the runtime can call
@@ -1456,9 +1363,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             slots.push(disc);
             slots.push(payload);
         }
+        // Composite boundary: `ValArray` is `repr(transparent)` over a
+        // thin Arc — the handle's BITS are `Value::Array`'s payload
+        // word (unified Value ABI). Borrowed: the staged smallvec keeps
+        // the ValArray alive; the kernel refcount-bumps on entry.
         for (disc, a) in array_args.iter().chain(&tuple_args).chain(&struct_args) {
             slots.push(*disc);
-            slots.push(a as *const ValArray as u64);
+            slots.push(unsafe { *(a as *const ValArray as *const u64) });
         }
         // String boundary: the `ArcStr` is `repr(transparent)` over
         // `NonNull<ThinInner>`, so the pointer word IS the value. The
@@ -1510,12 +1421,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let prev_handle = DYN_DISPATCH_HANDLE.with(|c| c.replace(&handle as *const _));
         // Always reset the pending flag before the call so
         // we can distinguish "this kernel pended" from
-        // "some earlier kernel left the flag set." Same defensive
-        // hygiene for the callee-result flag bits (they are take-after-
-        // every-call clean in well-formed codegen, but a pend path can
-        // skip a take).
+        // "some earlier kernel left the flag set."
         DYNCALL_PENDING.with(|c| c.set(false));
-        CALLEE_RESULT_FLAGS.with(|c| c.set(0));
         unsafe {
             f(slots.as_ptr(), out.as_mut_ptr());
         }
@@ -1545,64 +1452,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             }
             return None;
         }
-        // Decode the wrapper's *out slot(s) according to the
-        // kernel's declared return type into the boundary
-        // `Option<Value>`:
+        // Decode the wrapper's *out pair — the unified Value ABI:
+        // every kernel returns the genuine (disc, payload) words of a
+        // Value it owns (a scalar's payload widened per
+        // `pack_value_to_u64`'s rules, a composite's ValArray bits, a
+        // string's ArcStr bits, a value-shape's payload). Route
+        // through `TagValue` (the sole raw-words -> Value gateway) so
+        // TAINT/STALE bits the kernel leaked are MASKED, not
+        // materialized as a corrupt `Value` (the UB class).
         //
-        // - Prim: out[0] bits → Value (unpack_u64_to_value).
-        // - Array/Tuple/Struct: out[0] holds a `*mut ValArray`
-        //   we own; reclaim via Box::from_raw.
-        // - Variant/Nullable/value-shape: out[0] = Value disc,
-        //   out[1] = payload. Transmute the two u64s back into a
-        //   Value (`#[repr(u64)]`, 16 bytes / 8-byte aligned —
-        //   layout pinned by `emit_helpers`).
-        use kernel_abi::AbiKind;
-        let v = match kernel_abi::abi_kind(
-            &ctx.fusion.abstract_registry,
-            &self.kernel.return_type,
-        ) {
-            Some(AbiKind::Scalar(p)) => unpack_u64_to_value(out[0], p),
-            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                let ptr = out[0] as *mut ValArray;
-                let owned = unsafe { *Box::from_raw(ptr) };
-                Value::Array(owned)
-            }
-            // Unit-returning kernel: the JIT writes 0 into
-            // *out; nothing to decode. The caller discards via
-            // a discarded statement so the value is never inspected —
-            // a Bool placeholder is type-correct and cheap.
-            Some(AbiKind::Unit) => Value::Bool(false),
-            // String-returning kernel: `out[0]` is the ArcStr's
-            // thin pointer (transferred ownership). ArcStr is
-            // `repr(transparent)` over `NonNull<ThinInner>`, so
-            // the raw u64 is a valid `ArcStr` bit pattern.
-            Some(AbiKind::String) => {
-                let raw = out[0];
-                // SAFETY: the JIT'd kernel produced this via
-                // `graphix_arcstr_clone_from_static` or
-                // `graphix_string_buf_finalize`, both returning
-                // owned ArcStr values.
-                let s: arcstr::ArcStr =
-                    unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(raw) };
-                Value::String(s)
-            }
-            // Variant / Nullable / value-shape (datetime / duration /
-            // bytes / map / error): out[0] = disc, out[1] = payload.
-            // Route through `TagValue` (the sole raw-words → Value
-            // gateway) so a tainted disc the kernel leaked is MASKED, not
-            // materialized as a corrupt `Value` (the UB class).
-            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                // SAFETY: the kernel's return path wrote a real Value's
-                // words into the out slot (the pending path returned
-                // before the decode).
-                unsafe { TagValue::from_raw(out[0], out[1]) }.value()
-            }
-            Some(AbiKind::Null) | None => unreachable!(
-                "JIT decode for a non-fusable / bare-Null kernel \
-                 return — JIT should have bailed out before \
-                 producing such a kernel"
-            ),
-        };
+        // SAFETY: the kernel's return path wrote a real Value's words
+        // into the out slot (the pending path returned before the
+        // decode).
+        let v = unsafe { TagValue::from_raw(out[0], out[1]) }.value();
         // Fill the RESULT slot (the value channel — see `last_result`).
         self.last_result = Some(v.clone());
         self.last_out = crate::Tag::FIRED;
@@ -1678,6 +1540,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fusion::emit::unpack_u64_to_value;
     use kernel_abi::PrimType;
 
     #[test]

@@ -1512,3 +1512,39 @@ run!(call_result_value_widen_hof, CALL_RESULT_VALUE_WIDEN_HOF, |v: Result<&Value
         _ => false,
     }
 });
+
+// Unified Value ABI coverage: String args and returns marshal
+// cross-kernel (the old asymmetry gate is gone — a string's ArcStr
+// bits ARE `Value::String`'s payload word, and every return is the
+// genuine two-word pair).
+const XKERNEL_STRING_ARG_RET: &str = r#"
+{
+    let f = |s: string| "[s]!";
+    f("hello")
+}
+"#;
+
+run!(xkernel_string_arg_ret, XKERNEL_STRING_ARG_RET, |v: Result<&Value>| {
+    match v {
+        Ok(Value::String(s)) => s.as_str() == "hello!",
+        _ => false,
+    }
+});
+
+// A string-returning callee feeding a union-typed param: the callee's
+// (STRING|flags, bits) pair IS the Value the union slot needs — no
+// reconciliation layer involved.
+const XKERNEL_STRING_WIDEN: &str = r#"
+{
+    let g = || "abc";
+    let f = |v: [null, string]| v;
+    f(g())
+}
+"#;
+
+run!(xkernel_string_widen, XKERNEL_STRING_WIDEN, |v: Result<&Value>| {
+    match v {
+        Ok(Value::String(s)) => s.as_str() == "abc",
+        _ => false,
+    }
+});

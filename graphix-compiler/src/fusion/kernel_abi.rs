@@ -1404,15 +1404,14 @@ pub struct AbiParamDesc<'a> {
     pub bind_id: Option<BindId>,
 }
 
-/// The wire shape of a kernel's return value.
+/// The wire shape of a kernel's return value — the unified Value ABI:
+/// every kernel returns the two-word genuine `(disc, payload)` Value
+/// pair (a scalar's payload widened per `pack_value_to_u64`'s rules,
+/// a composite's ValArray bits, a string's ArcStr bits, a value
+/// shape's payload word).
 #[derive(Debug, Clone, Copy)]
 pub enum AbiReturn {
-    /// One return value. `prim` is set for scalar returns (so the
-    /// signature picks the narrow CLIF type) and `None` for
-    /// pointer/string/unit returns (one machine word).
-    One { prim: Option<PrimType> },
-    /// Two return values (disc, payload) — variant/nullable `Value`.
-    Two,
+    Pair,
 }
 
 /// A kernel's identity: the address of its shared [`KernelSig`]
@@ -1645,14 +1644,8 @@ impl KernelSig {
     /// error with context.
     pub fn abi_return(&self, reg: &AbstractRegistry) -> Option<AbiReturn> {
         match abi_kind(reg, &self.return_type)? {
-            AbiKind::Scalar(p) => Some(AbiReturn::One { prim: Some(p) }),
-            AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::Unit
-            | AbiKind::String => Some(AbiReturn::One { prim: None }),
-            AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Some(AbiReturn::Two),
             AbiKind::Null => None,
+            _ => Some(AbiReturn::Pair),
         }
     }
 }

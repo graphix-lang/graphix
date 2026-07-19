@@ -75,7 +75,7 @@ pub struct HofElem<'a> {
 pub enum LeafShape {
     /// A register scalar — by-value copy, nothing to drop.
     Scalar(PrimType),
-    /// Array/tuple/struct — an owned `*mut ValArray` clone.
+    /// Array/tuple/struct — owned ValArray bits (a refcount clone).
     Composite,
     /// An owned `ArcStr` clone.
     String,
@@ -101,7 +101,7 @@ pub(crate) enum BoundElem {
         var: Variable,
         prim: PrimType,
     },
-    /// An owned `*mut ValArray`.
+    /// Owned ValArray bits.
     Composite {
         var: Variable,
     },
@@ -120,7 +120,7 @@ pub(crate) enum BoundElem {
 /// a scalar element reads via `graphix_valarray_get_<prim>` into a
 /// scalar local; an array/tuple/struct element reads via
 /// `graphix_valarray_get_array` into a composite local (an OWNED
-/// `*mut ValArray` the iteration must consume or drop). Any other
+/// owned ValArray bits the iteration must consume or drop). Any other
 /// shape errs — lowering never produces string / value-shape loop
 /// elements (the #150 gap), and an explicit refusal turns would-be
 /// type confusion on unreachable input into a clean de-fuse.
@@ -1266,7 +1266,7 @@ pub fn elem_leaves(
 pub enum FoldAcc<'a> {
     /// A register scalar in a prim-typed Variable. Owns nothing.
     Scalar(PrimType),
-    /// An OWNED `*mut ValArray` (array / tuple / struct) in an I64
+    /// OWNED ValArray bits (array / tuple / struct) in an I64
     /// Variable. The loop owns the current acc: each iteration the
     /// body's result is made independently owned (`ensure_owned` per
     /// `body_src` — a borrowed Ref result clones) and the old acc is
@@ -1579,18 +1579,17 @@ where
             (disc, payload)
         }
         BoundElem::Composite { var } => {
-            let wrap = cx.helper("graphix_value_new_from_array")?;
+            // Unified Value ABI: the owned ValArray bits ARE the
+            // Value's payload word — mint the disc, transfer ownership
+            // into the pair.
             let value = cx.b.use_var(*var);
-            let call = cx.b.ins().call(wrap, &[value]);
-            let result = cx.b.inst_results(call);
-            (result[0], result[1])
+            let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            (disc, value)
         }
         BoundElem::String { var } => {
-            let wrap = cx.helper("graphix_value_new_string")?;
             let value = cx.b.use_var(*var);
-            let call = cx.b.ins().call(wrap, &[value]);
-            let result = cx.b.inst_results(call);
-            (result[0], result[1])
+            let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            (disc, value)
         }
         BoundElem::Value { disc, payload } => {
             (cx.b.use_var(*disc), cx.b.use_var(*payload))

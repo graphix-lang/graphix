@@ -206,22 +206,17 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
     }
 }
 
-/// Push the kernel's return `AbiParam`s onto `sig` (one value for
-/// scalar/composite/string/unit returns, two for variant/nullable).
-/// Errors on the invalid bare-`Null` return shape.
+/// Push the kernel's return `AbiParam`s onto `sig` — the unified
+/// Value ABI: every kernel returns two `I64` words, the genuine
+/// `(disc, payload)` Value pair. Errors on the invalid bare-`Null`
+/// return shape.
 fn push_abi_returns(
     sig: &mut Signature,
     kernel: &KernelSig,
     registry: &AbstractRegistry,
 ) -> Result<()> {
     match kernel.abi_return(registry) {
-        Some(AbiReturn::One { prim: Some(p) }) => {
-            sig.returns.push(AbiParam::new(prim_to_clif(p)))
-        }
-        Some(AbiReturn::One { prim: None }) => {
-            sig.returns.push(AbiParam::new(types::I64))
-        }
-        Some(AbiReturn::Two) => {
+        Some(AbiReturn::Pair) => {
             sig.returns.push(AbiParam::new(types::I64)); // disc
             sig.returns.push(AbiParam::new(types::I64)); // payload
         }
@@ -254,9 +249,10 @@ fn maybe_dump_clif(func: &cranelift_codegen::ir::Function, label: &str) {
 /// kernel's specific signature.
 ///
 /// The `wrapper` field is `extern "C" fn(args: *const u64, out: *mut u64)`:
-/// - `args` is a pointer to a slice of u64 slots, one per kernel
-///   parameter, holding the raw bits of each primitive.
-/// - `out` is a pointer to a single u64 slot for the return value.
+/// - `args` is a pointer to a slice of u64 slots — the context words
+///   then a (disc, payload) pair per kernel parameter.
+/// - `out` is a pointer to two u64 slots receiving the result's
+///   genuine (disc, payload) Value pair (unified Value ABI).
 ///
 /// The wrapper itself is JIT-compiled cranelift code that loads each
 /// arg from the slot at the correct CLIF type, calls the typed
@@ -1178,26 +1174,17 @@ fn define_wrapper_body(
         }
 
         let call = b.ins().call(typed_ref, &typed_args);
-        // Two-word return shape comes from the same single source as
-        // the signature (`abi_return`). `None` (bare Null) can't reach
-        // here — the kernel's signature build would have errored first.
-        let returns_two_words =
-            matches!(kernel.abi_return(registry), Some(AbiReturn::Two));
-        let (r0, r1_opt) = {
+        // Unified Value ABI: every kernel returns the two-word
+        // `(disc, payload)` Value pair — store both slots. (`registry`
+        // stays a parameter for the signature build's abi_return
+        // error path.)
+        let _ = registry;
+        let (r0, r1) = {
             let results = b.inst_results(call);
-            (results[0], if returns_two_words { Some(results[1]) } else { None })
+            (results[0], results[1])
         };
-
-        // Store result into *out. Scalar/composite kernels write one
-        // slot (out[0]); Value-shaped returns write two slots (out[0]
-        // = disc, out[1] = payload). Width matches the kernel's
-        // return type — the upper bytes of a scalar slot stay
-        // whatever they were (the caller knows the return type and
-        // reads the right width).
         b.ins().store(MemFlags::trusted(), r0, out_ptr, 0);
-        if let Some(r1) = r1_opt {
-            b.ins().store(MemFlags::trusted(), r1, out_ptr, 8);
-        }
+        b.ins().store(MemFlags::trusted(), r1, out_ptr, 8);
         b.ins().return_(&[]);
 
         b.seal_all_blocks();
@@ -1512,43 +1499,14 @@ fn compile_into_function(
     let pending_exit_block = *lower.pending_exit.borrow();
     if let Some(pe) = pending_exit_block {
         b.switch_to_block(pe);
-        match kernel_abi::abi_kind(lower.registry, &kernel.return_type) {
-            Some(AbiKind::Scalar(p)) => {
-                let s = zero_const(b, p);
-                b.ins().return_(&[s]);
-            }
-            // Composite returns: the kernel's typed signature returns
-            // a single `I64` pointer. The pending sentinel is null.
-            // Unit returns the I64 ABI slot too (the caller discards).
-            // String returns travel as a single `i64` (ArcStr's thin
-            // pointer); the sentinel is `0` (null pointer) — the caller
-            // checks the pending flag before decoding.
-            Some(
-                AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct
-                | AbiKind::Unit
-                | AbiKind::String,
-            ) => {
-                let s = b.ins().iconst(types::I64, 0);
-                b.ins().return_(&[s]);
-            }
-            // Value-shape returns: two `I64`s (disc, payload). The
-            // pending sentinel is `(0, 0)` — the caller's pending
-            // check fires from `DYNCALL_PENDING` before decoding,
-            // so the bits are never observed.
-            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                let s0 = b.ins().iconst(types::I64, 0);
-                let s1 = b.ins().iconst(types::I64, 0);
-                b.ins().return_(&[s0, s1]);
-            }
-            // Bare Null / non-fusable returns aren't a real shape —
-            // fusion widens to Nullable<T> before producing.
-            Some(AbiKind::Null) | None => unreachable!(
-                "kernel returns bare Null / non-fusable but reached JIT \
-                 pending-exit emission — should have widened earlier"
-            ),
-        }
+        // Unified Value ABI: the pending sentinel is the `(0, 0)` pair
+        // for every return shape (disc 0 is never a real one-hot
+        // discriminant). The caller's pending check fires from
+        // `DYNCALL_PENDING` before decoding, so the bits are never
+        // observed.
+        let s0 = b.ins().iconst(types::I64, 0);
+        let s1 = b.ins().iconst(types::I64, 0);
+        b.ins().return_(&[s0, s1]);
     }
 
     // After body compilation, every block has been sealed except
@@ -1897,7 +1855,7 @@ pub(crate) struct LowerCtx<'a> {
     /// popped by `scaffold::drop_owned_src` right after the loop's
     /// normal-path drop, so a pending exit INSIDE the loop body frees
     /// the input via [`emit_pending_cleanup`] (`graphix_valarray_drop`
-    /// — these are finished `*mut ValArray`s, NOT bufs, hence a
+    /// — these are finished owned ValArray bits, NOT bufs, hence a
     /// separate stack from `dyncall_buf_stack`). Variables here are
     /// always defined on the paths that can pend (the registering
     /// loop dominates its body) — unlike a JitEnv binding, an entry
@@ -2111,7 +2069,7 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64));
         }
         // Non-primitive element reads: (ptr, idx) -> single i64 word
-        // (a `*mut ValArray` for composite elems, or an `ArcStr` thin
+        // (owned/borrowed ValArray bits for composite elems, or an `ArcStr` thin
         // pointer for string elems).
         "graphix_valarray_get_array"
         | "graphix_valarray_get_array_borrowed"
@@ -2198,11 +2156,11 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
         }
         // Push helpers split by argument shape:
-        //   _push_array   : (buf, inner: *mut ValArray) — pointer arg
+        //   _push_array   : (buf, inner: ValArray bits) — one-word arg
         //   _push_arcstr  : (buf, ptr: *const ArcStr) — pointer arg
         //   _push_value   : (buf, v: Value)            — Value by value
         "graphix_value_buf_push_array"
-        // (buf, inner: *mut ValArray) — flattens inner's elements into
+        // (buf, inner: ValArray bits) — flattens inner's elements into
         // buf and drops inner; same two-pointer shape as push_array.
         | "graphix_value_buf_extend_from_array"
         | "graphix_value_buf_push_arcstr"
@@ -2223,7 +2181,7 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64)); // v.payload
         }
         "graphix_valarray_finalize" => {
-            // consumes buf, returns *mut ValArray
+            // consumes buf, returns owned ValArray bits
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
@@ -2247,31 +2205,30 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.returns.push(AbiParam::new(types::I64)); // ret.disc
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
-        "graphix_value_new_from_array"
-        | "graphix_value_new_string_from_arcstr"
         // Clone a `*const Value` static (value-shape Const):
         // one pointer arg, a Value (two words) returned.
-        | "graphix_value_clone_from_static" => {
-            sig.params.push(AbiParam::new(types::I64)); // *mut ValArray / *const ArcStr / *const Value
+        "graphix_value_clone_from_static" => {
+            sig.params.push(AbiParam::new(types::I64)); // *const Value
             sig.returns.push(AbiParam::new(types::I64)); // ret.disc
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
-        // Unwrap a `Value::Array` into the composite ABI's owned
-        // `*mut ValArray` (consuming / borrowed-read variants).
+        // Unwrap a `Value::Array` into owned ValArray bits — the
+        // CHECKED value→composite narrowing (consuming /
+        // borrowed-read variants).
         "graphix_value_into_array" | "graphix_value_into_array_borrowed"
         // List/Map HOF entry boundary: flatten a List (cons chain) /
-        // Map (CMap) Value into an owned ValArray for the loop
-        // scaffolds — same two-words-in / ptr-out shape.
+        // Map (CMap) Value into owned ValArray bits for the loop
+        // scaffolds — same two-words-in / bits-out shape.
         | "graphix_list_to_valarray"
         | "graphix_cmap_to_pairs" => {
             sig.params.push(AbiParam::new(types::I64)); // v.disc
             sig.params.push(AbiParam::new(types::I64)); // v.payload
-            sig.returns.push(AbiParam::new(types::I64)); // *mut ValArray
+            sig.returns.push(AbiParam::new(types::I64)); // ValArray bits
         }
-        // List/Map HOF exit boundary: consume a finalize'd ValArray,
-        // rebuild the collection Value (cons chain / CMap).
+        // List/Map HOF exit boundary: consume finalize'd ValArray
+        // bits, rebuild the collection Value (cons chain / CMap).
         "graphix_valarray_into_list" | "graphix_valarray_into_cmap" => {
-            sig.params.push(AbiParam::new(types::I64)); // *mut ValArray
+            sig.params.push(AbiParam::new(types::I64)); // ValArray bits
             sig.returns.push(AbiParam::new(types::I64)); // ret.disc
             sig.returns.push(AbiParam::new(types::I64)); // ret.payload
         }
@@ -2382,17 +2339,14 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I16));
         }
-        // DynCall dispatch:
-        //   (fn_index: u32, args: *mut LPooled<Vec<Value>>, ret_kind: u8)
-        //     -> ret.disc: u64
-        //     -> ret.payload: u64
-        // ret_kind=2 (Value-shaped return) populates BOTH return regs;
-        // for scalar (ret_kind=0) the high reg is undefined and the
-        // caller ignores it. For ret_kind=3 (Unit) both are 0.
+        // DynCall dispatch (unified Value ABI):
+        //   (fn_index: u32, args: *mut LPooled<Vec<Value>>)
+        //     -> (ret.disc: u64, ret.payload: u64)
+        // Always a genuine Value pair; the call site adapts per its
+        // static type.
         "graphix_dyncall" => {
             sig.params.push(AbiParam::new(types::I32));
             sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(uext(types::I8)); // ret_kind: u8
             sig.returns.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
@@ -2410,14 +2364,6 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         }
         "graphix_dyncall_set_pending" => {
             // no args, no return — just flips the thread-local flag
-        }
-        "graphix_callee_flags_set" => {
-            // (bits: u64) — record a callee result's not-fresh disc bits
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        "graphix_callee_flags_take" => {
-            // () -> u64 — read + clear the callee-result flag bits
-            sig.returns.push(AbiParam::new(types::I64));
         }
         "graphix_interrupted" => {
             // no args; returns i8 (1 = abort the loop, 0 = continue)
@@ -2472,16 +2418,8 @@ fn helper_signature(module: &JITModule, name: &str) -> Result<Signature> {
         "graphix_arcstr_drop" => {
             sig.params.push(AbiParam::new(types::I64));
         }
-        // (s: ArcStr) -> Value (two-register)
-        "graphix_value_new_string" => {
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        // () -> *mut String
-        "graphix_string_buf_new"
-        | "graphix_arcstr_empty"
-        | "graphix_valarray_empty_boxed" => {
+        // () -> one word (*mut String / ArcStr bits / ValArray bits)
+        "graphix_string_buf_new" | "graphix_arcstr_empty" | "graphix_valarray_empty" => {
             sig.returns.push(AbiParam::new(types::I64));
         }
         // (buf: i64) -> ()
@@ -2943,7 +2881,7 @@ enum LocalKind {
     /// `payload` is the scalar value at its natural CLIF type; nothing
     /// to drop.
     Scalar(PrimType),
-    /// `payload` is an owned `*mut ValArray` (array / tuple / struct);
+    /// `payload` is owned ValArray bits (array / tuple / struct);
     /// dropped via `graphix_valarray_drop`. Reads are BORROWED (the env
     /// keeps owning); consumers clone when they need ownership.
     Composite,
@@ -3115,7 +3053,7 @@ pub fn emit_forced<R: Rt, E: UserEvent>(
     Ok(cv.payload)
 }
 
-/// Wrap an owned `*mut ValArray` pointer as a composite [`CompiledExpr`]
+/// Wrap owned ValArray bits as a composite [`CompiledExpr`]
 /// (const `ARRAY` disc). The result of an HOF that produces an array.
 pub fn array_result(cx: &mut BodyCx, ptr: ClifValue) -> CompiledExpr {
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
@@ -4379,36 +4317,11 @@ fn pending_exit_block(cx: &mut BodyCx) -> Block {
 /// builder is positioned in the fresh (fired-with-value) block. Folds
 /// to no branch for a fresh const disc. A cross-kernel CALLEE body
 /// never forces: its result's not-fresh bits ride back to the caller
-/// as data ([`emit_flag_not_fresh`], or in-band for two-word returns).
-
-/// Callee-mode return-path companion to [`emit_force`]: instead of
-/// bottoming the kernel on a not-fresh RESULT, record its `TAINT`/
-/// `STALE` disc bits in [`CALLEE_RESULT_FLAGS`] — the scalar/composite
-/// return ABI has no disc word — and return the value as-is (a tainted
-/// value is already the helper-safe placeholder; a stale value is the
-/// real cached value). The caller takes the bits right after the call
-/// and ORs them into its synthesized result disc, so a bottomed or
-/// unfired callee result rides back as DATA (#219): the caller bottoms
-/// only if its taken output path consumes it — matching the node-walk,
-/// where a callsite arg that never fires silences only the consumers
-/// that read it. Genuine aborts (depth trip, interrupt, async pend)
-/// keep the pending path. Folds to nothing for a fresh const disc.
-fn emit_flag_not_fresh(cx: &mut BodyCx, disc: ClifValue) -> Result<()> {
-    let bits = cx.b.ins().band_imm(disc, TAINT | STALE);
-    let set = cx.helper("graphix_callee_flags_set")?;
-    let do_set = cx.b.create_block();
-    let cont = cx.b.create_block();
-    let nz = cx.b.ins().icmp_imm(IntCC::NotEqual, bits, 0);
-    cx.b.ins().brif(nz, do_set, &[], cont, &[]);
-    cx.b.switch_to_block(do_set);
-    cx.b.seal_block(do_set);
-    cx.b.ins().call(set, &[bits]);
-    cx.b.ins().jump(cont, &[]);
-    cx.b.switch_to_block(cont);
-    cx.b.seal_block(cont);
-    Ok(())
-}
-
+/// IN-BAND in the returned disc (unified Value ABI) — a bottomed or
+/// unfired callee result rides back as DATA (#219), bottoming the
+/// caller only if its taken output path consumes it, matching the
+/// node-walk. Genuine aborts (depth trip, interrupt, async pend) keep
+/// the pending path.
 fn emit_force(
     cx: &mut BodyCx,
     disc: ClifValue,
@@ -4453,16 +4366,15 @@ fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
 /// (Variant/Nullable/Value — the in-band 2-word `(disc, payload)`
 /// pair) the body node's own shape may differ: a callback declared
 /// `fn(x: 'a) -> ['b, null]` whose body is a tuple literal emits the
-/// COMPOSITE convention (`payload = *mut ValArray`, a box pointer),
+/// COMPOSITE convention (`payload` = raw ValArray bits, no Value disc),
 /// and returning that pair raw hands `TagValue::from_raw` a box
 /// pointer as the in-band `ValArray` word — the runtime decode then
 /// dereferences garbage (soak jul05 items 5/10/13, SIGSEGV/SIGABRT).
 /// Route through `emit_owned_value_operand_node` — the same widening
 /// select arms and value operands use — which converts each body
-/// shape to a genuine owned Value pair (composites via
-/// `graphix_value_new_from_array`, strings via
-/// `graphix_value_new_string`, scalars by inline packing, value-shape
-/// pass-through).
+/// shape to a genuine owned Value pair (unified Value ABI: composite
+/// and string pairs are already genuine, scalars widen by inline
+/// packing, value-shape passes through).
 fn emit_return_from_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     return_type: &Type,
@@ -4553,6 +4465,13 @@ fn emit_kernel_return(
             cv.disc = cx.b.ins().bor(cleaned, folded);
         }
     }
+    // Unified Value ABI: every kernel returns the two-word genuine
+    // Value pair; TAINT/STALE ride the disc in-band (the old
+    // CALLEE_RESULT_FLAGS side channel is gone). The disc is REBASED
+    // on the static return shape's Value discriminant before the
+    // return — the runtime's single `TagValue::from_raw` decode
+    // materializes a `Value` from these exact bits, so the disc must
+    // be a valid one-hot discriminant + tag bits by construction.
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
@@ -4567,26 +4486,24 @@ fn emit_kernel_return(
                     Ok(())
                 })?;
             }
-            // Callee mode: the two-word return carries the disc in-band,
-            // so TAINT/STALE ride back as data — no force, no flags.
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().return_(&[disc, payload]);
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let v = ensure_owned_composite_src(cx, src, cv.payload)?;
+            let bits = ensure_owned_composite_src(cx, src, cv.payload)?;
             if cx.ctx.gate_stale_at_return {
                 // #219: a tainted composite output bottoms — drop the
                 // owned array on the tainted path (folds when untainted).
                 emit_force(cx, cv.disc, |cx| {
                     let d = cx.helper("graphix_valarray_drop")?;
-                    cx.b.ins().call(d, &[v]);
+                    cx.b.ins().call(d, &[bits]);
                     Ok(())
                 })?;
-            } else {
-                emit_flag_not_fresh(cx, cv.disc)?;
             }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().return_(&[v]);
+            let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
+            cx.b.ins().return_(&[disc, bits]);
         }
         Some(AbiKind::String) => {
             // String results are owned at production (reads clone);
@@ -4597,24 +4514,27 @@ fn emit_kernel_return(
                     cx.b.ins().call(d, &[cv.payload]);
                     Ok(())
                 })?;
-            } else {
-                emit_flag_not_fresh(cx, cv.disc)?;
             }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().return_(&[cv.payload]);
+            let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
+            cx.b.ins().return_(&[disc, cv.payload]);
         }
-        Some(AbiKind::Scalar(_)) => {
+        Some(AbiKind::Scalar(p)) => {
             if cx.ctx.gate_stale_at_return {
                 // FORCE — a not-fresh scalar (bottom OR didn't fire this
                 // cycle) bottoms; else return. A scalar owns nothing, so
                 // the drop is a no-op. Folds to an unconditional return
                 // when the disc is a fresh const.
                 emit_force(cx, cv.disc, |_| Ok(()))?;
-            } else {
-                emit_flag_not_fresh(cx, cv.disc)?;
             }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
-            cx.b.ins().return_(&[cv.payload]);
+            // Widen the payload to the Value-encoded word (sign/zero
+            // extension, float bitcast — `pack_value_to_u64`'s rules).
+            let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
+            let base = scalar_disc(cx.b, p);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
+            cx.b.ins().return_(&[disc, payload]);
         }
         other => {
             return Err(anyhow!(
@@ -5949,34 +5869,30 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
             Ok(CompiledExpr::new(cv.disc, payload))
         }
         Some(AbiKind::String) => {
-            // Const/Ref/Concat reads all produce an owned ArcStr;
-            // `graphix_value_new_string` consumes it into a Value. The
-            // helper mints a flag-free disc — fold the source's
-            // TAINT/STALE back on, else a placeholder input's garbage
+            // Const/Ref/Concat reads all produce an owned ArcStr, and
+            // its bits ARE `Value::String`'s payload word (unified
+            // Value ABI) — mint the disc inline. Fold the source's
+            // TAINT/STALE on, else a placeholder input's garbage
             // ("" at init) computes an untainted result that escapes the
             // output gate.
             let cv = node.emit_clif(cx)?;
-            let helper = cx.helper("graphix_value_new_string")?;
-            let call = cx.b.ins().call(helper, &[cv.payload]);
-            let r = cx.b.inst_results(call);
-            let (rd, rp) = (r[0], r[1]);
-            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
-            Ok(CompiledExpr::new(disc, rp))
+            let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, cv.payload))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            // Same flag fold as the String arm: without it, slicing the
+            // Owned ValArray bits ARE `Value::Array`'s payload word
+            // (unified Value ABI) — mint the disc inline. Same flag
+            // fold as the String arm: without it, slicing the
             // EMPTY placeholder of a not-yet-fired array input emitted a
             // real ArrayIndexError value on the init cycle (soak finding
             // divergence_000004, 2026-07-03).
             let cv = node.emit_clif(cx)?;
-            let ptr =
+            let bits =
                 ensure_owned_composite_src(cx, node_composite_source(node), cv.payload)?;
-            let helper = cx.helper("graphix_value_new_from_array")?;
-            let call = cx.b.ins().call(helper, &[ptr]);
-            let r = cx.b.inst_results(call);
-            let (rd, rp) = (r[0], r[1]);
-            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
-            Ok(CompiledExpr::new(disc, rp))
+            let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            let disc = propagate_flags(cx.b, base, &[cv.disc]);
+            Ok(CompiledExpr::new(disc, bits))
         }
         // A Null node's raw (disc, payload) IS a valid Value pairing
         // (`Value::Null` never reads its payload word, and dropping it
@@ -6015,21 +5931,12 @@ pub(crate) fn widen_result_to_value(
             let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
             Ok(CompiledExpr::new(cv.disc, payload))
         }
-        Some(AbiKind::String) => {
-            let helper = cx.helper("graphix_value_new_string")?;
-            let call = cx.b.ins().call(helper, &[cv.payload]);
-            let r = cx.b.inst_results(call);
-            let (rd, rp) = (r[0], r[1]);
-            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
-            Ok(CompiledExpr::new(disc, rp))
-        }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let helper = cx.helper("graphix_value_new_from_array")?;
-            let call = cx.b.ins().call(helper, &[cv.payload]);
-            let r = cx.b.inst_results(call);
-            let (rd, rp) = (r[0], r[1]);
-            let disc = propagate_flags(cx.b, rd, &[cv.disc]);
-            Ok(CompiledExpr::new(disc, rp))
+        Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            // Unified Value ABI: a composite/string result's pair is
+            // ALREADY a genuine Value — the disc carries
+            // ARRAY/STRING|flags and the payload word is the
+            // ValArray/ArcStr bits. Identity.
+            Ok(cv)
         }
         other => Err(anyhow!(
             "emit_clif: call result shape {other:?} cannot widen to a \
@@ -6297,11 +6204,11 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
 }
 
 /// Variant constructor. Nullary →
-/// `Value::String(tag)` via `graphix_value_new_string_from_arcstr`
+/// `Value::String(tag)` — a cloned interned tag with the STRING disc
 /// (clones the interned tag — the borrowed interned pointer makes the
 /// clone mandatory). With payloads → `Value::Array([tag, p0, ...])` built
-/// via the buf helpers and unwrapped into a two-register Value by
-/// `graphix_value_new_from_array`. The tag is interned lazily via
+/// via the buf helpers; the finalize'd ValArray bits are the Value's
+/// payload word (unified Value ABI). The tag is interned lazily via
 /// [`BodyCx::interned_str`].
 pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
@@ -6310,21 +6217,20 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let tag_ptr = cx.interned_str(tag);
     if payloads.is_empty() {
-        let new_str = cx.helper("graphix_value_new_string_from_arcstr")?;
-        let call = cx.b.ins().call(new_str, &[tag_ptr]);
-        let (r0, r1) = {
-            let r = cx.b.inst_results(call);
-            (r[0], r[1])
-        };
+        // A nullary variant is `Value::String(tag)`: clone the interned
+        // tag (owned ArcStr bits = the payload word, unified Value ABI).
+        let clone_static = cx.helper("graphix_arcstr_clone_from_static")?;
+        let call = cx.b.ins().call(clone_static, &[tag_ptr]);
+        let bits = cx.b.inst_results(call)[0];
+        let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
         // A nullary variant `` `Tag `` is a constant — fires once at init.
         let init = cx.init_flag();
-        let disc = const_stale_gate(cx.b, init, r0);
-        Ok(CompiledExpr::new(disc, r1))
+        let disc = const_stale_gate(cx.b, init, base);
+        Ok(CompiledExpr::new(disc, bits))
     } else {
         let buf_new = cx.helper("graphix_value_buf_new")?;
         let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
         let finalize = cx.helper("graphix_valarray_finalize")?;
-        let wrap_array = cx.helper("graphix_value_new_from_array")?;
         let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
         let call = cx.b.ins().call(buf_new, &[cap]);
         let buf = cx.b.inst_results(call)[0];
@@ -6334,19 +6240,17 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
             payload_discs.push(emit_push_field_node(cx, buf, &p.node)?);
         }
         let call = cx.b.ins().call(finalize, &[buf]);
-        let arr = cx.b.inst_results(call)[0];
-        let call = cx.b.ins().call(wrap_array, &[arr]);
-        let (r0, r1) = {
-            let r = cx.b.inst_results(call);
-            (r[0], r[1])
-        };
-        // A `Tag(a, b)` variant fires iff any payload fired.
-        let disc = propagate_flags(cx.b, r0, &payload_discs);
-        Ok(CompiledExpr::new(disc, r1))
+        let bits = cx.b.inst_results(call)[0];
+        // The finalize'd ValArray bits ARE `Value::Array`'s payload
+        // word (unified Value ABI) — mint the disc inline. A
+        // `Tag(a, b)` variant fires iff any payload fired.
+        let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+        let disc = propagate_flags(cx.b, base, &payload_discs);
+        Ok(CompiledExpr::new(disc, bits))
     }
 }
 
-/// Compile an accessor's composite source to a `*const ValArray`,
+/// Compile an accessor's composite source to borrowed ValArray bits,
 /// returning the pointer plus its ownership classification. Shared by
 /// the tuple/struct/array element-read relays; the caller drops an
 /// Owned pointer after the read (the element helpers clone the slot
@@ -6427,7 +6331,7 @@ fn emit_elem_placeholder(cx: &mut BodyCx, elem: &Type) -> Result<CompiledExpr> {
             Ok(CompiledExpr::new(disc, s))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let helper = cx.helper("graphix_valarray_empty_boxed")?;
+            let helper = cx.helper("graphix_valarray_empty")?;
             let call = cx.b.ins().call(helper, &[]);
             let a = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
@@ -6725,9 +6629,8 @@ fn emit_qop_deliver(
     // base offset into the combined `dyn_slots` table.
     let region_idx = info.fn_index + cx.fn_index_offset();
     let fn_idx = cx.b.ins().iconst(types::I32, region_idx as i64);
-    // ret_kind=3 (Unit): QopDeliverApply returns Value::Null; discarded.
-    let ret_kind = cx.b.ins().iconst(types::I8, 3);
-    cx.b.ins().call(dyncall, &[fn_idx, buf, ret_kind]);
+    // QopDeliverApply returns Value::Null; the pair is discarded.
+    cx.b.ins().call(dyncall, &[fn_idx, buf]);
     // `QopDeliverApply::update` structurally returns `Some(Null)` (the
     // marshalled arg is always present), but every dyncall site clears
     // the pending flag so it can only ever mean "genuine abort".
@@ -6927,7 +6830,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let ph_helper = if is_string {
                 cx.helper("graphix_arcstr_empty")?
             } else {
-                cx.helper("graphix_valarray_empty_boxed")?
+                cx.helper("graphix_valarray_empty")?
             };
             let call = cx.b.ins().call(ph_helper, &[]);
             let ph = cx.b.inst_results(call)[0];
@@ -6943,7 +6846,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // inside a Value ARE the string ABI's one-word
             // representation. Composite: the payload word is the
             // ValArray BITS, but the composite ABI is a boxed
-            // `*mut ValArray` — re-box via `graphix_value_into_array`
+            // ValArray bits — unwrap via `graphix_value_into_array`
             // (consumes) / `_borrowed` (clones inner) (#199).
             let v = match kernel_abi::abi_kind(cx.registry(), &success_typ) {
                 Some(AbiKind::String) => {
@@ -7158,36 +7061,19 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         }
     }
     let dyncall = cx.helper("graphix_dyncall")?;
-    let ret_kind: i64 = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
-        Some(AbiKind::Scalar(_)) => 0,
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => 1,
-        // Variant / Nullable / value-shape all come back as a
-        // boxed `*mut Value` (dispatch_typed wraps the
-        // dispatcher's returned `Value` in `Box::into_raw`
-        // regardless of the outer enum tag), so they share the
-        // ret_kind=2 path.
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => 2,
-        // Unit return: dispatcher returns 0 (the slot is
-        // discarded by the caller). ret_kind=3 tells
-        // dispatch_typed not to box anything.
-        Some(AbiKind::Unit) => 3,
-        // String return: dispatcher extracts the ArcStr from
-        // `Value::String`, transmutes to raw u64 bits, returns
-        // in word0. Caller's SSA reads the bits directly as
-        // an owned `arcstr::ArcStr` (`repr(transparent)`).
-        Some(AbiKind::String) => 4,
-        Some(AbiKind::Null) | None => {
-            return Err(anyhow!(
-                "DynCall with bare Null / non-fusable return — \
-                 should have widened to Nullable<T> at construction"
-            ));
-        }
-    };
+    if matches!(
+        kernel_abi::abi_kind(cx.registry(), &info.return_type),
+        Some(AbiKind::Null) | None
+    ) {
+        return Err(anyhow!(
+            "DynCall with bare Null / non-fusable return — \
+             should have widened to Nullable<T> at construction"
+        ));
+    }
     // Region-wide slot index: local fn_index + this body's base offset
     // into the combined `dyn_slots` table.
     let region_idx = info.fn_index + cx.fn_index_offset();
     let fn_idx_val = cx.b.ins().iconst(types::I32, region_idx as i64);
-    let ret_kind_val = cx.b.ins().iconst(types::I8, ret_kind);
     // Interior-bottom v2: a tainted arg means the callee must NOT run —
     // the node-walk's builtin never fires without its inputs, and a
     // Sync EFFECT (println) must not observe placeholder garbage (the
@@ -7225,11 +7111,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx.b.ins().jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
     cx.b.switch_to_block(call_bl);
     cx.b.seal_block(call_bl);
-    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, ret_kind_val]);
-    // `graphix_dyncall` has two `I64` returns (disc, payload) so that
-    // ret_kind=2 (Value-shape) can deliver both words. For
-    // scalar/composite/unit/string return kinds the first return
-    // holds the value (or pointer / 0); the second is undefined.
+    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf]);
+    // Unified Value ABI: `graphix_dyncall` returns the result's
+    // genuine (disc, payload) Value pair for every return type; the
+    // decode below adapts per the static shape.
     let (raw0, raw1) = {
         let r = cx.b.inst_results(call);
         (r[0], r[1])
@@ -7250,22 +7135,23 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // this path — the old post-call arg-taint aborts are gone).
     match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => {
-            // Scalar return: the 0 sentinel on pending is a harmless
-            // payload for downstream scalar arithmetic — no branch,
-            // just fold the pend bit into TAINT.
-            let value = cast_u64_to_prim(cx.b, raw0, p);
+            // Scalar return: the payload word carries the Value-encoded
+            // scalar bits — narrow to the prim. The 0 sentinel on
+            // pending is a harmless payload for downstream scalar
+            // arithmetic — no branch, just fold the pend bit into TAINT.
+            let value = cast_u64_to_prim(cx.b, raw1, p);
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &arg_taint_discs);
             let disc = taint_if(cx.b, disc, pend);
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(value)]);
         }
         Some(AbiKind::Unit) => {
-            // Unit return: dispatcher returned (0, _). The result is
-            // discarded by the statement position; the pend bit still
-            // rides so a bound unit local reads as bottom.
+            // Unit return: dispatcher returned the Null pair. The
+            // result is discarded by the statement position; the pend
+            // bit still rides so a bound unit local reads as bottom.
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
             let disc = taint_if(cx.b, disc, pend);
-            cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(raw0)]);
+            cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(raw1)]);
         }
         Some(
             AbiKind::String
@@ -7277,35 +7163,76 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             | AbiKind::Value,
         ) => {
             // Pointer-carrying / two-word returns: the pending
-            // sentinel (null / `(0, 0)`) is NOT inert — every String
-            // position assumes a valid owned ArcStr (#214), a null
-            // `*mut ValArray` can't be deref'd, and a zero Value disc
-            // is not a real tag. Branch: on pend, produce the same
-            // tainted shape-safe placeholder the tainted-ARG skip
-            // path produces and continue to the merge.
+            // sentinel `(0, 0)` is NOT inert — every String position
+            // assumes a valid owned ArcStr (#214), zero ValArray bits
+            // can't be touched, and a zero Value disc is not a real
+            // tag. Branch: on pend, produce the same tainted
+            // shape-safe placeholder the tainted-ARG skip path
+            // produces and continue to the merge. For String/composite
+            // returns the returned DISC is additionally checked
+            // against the expected shape — a dispatcher that returned
+            // the wrong Value shape is a compiler bug (the old
+            // ret_kind protocol logged + pended in the dispatcher);
+            // adopting its payload as ArcStr/ValArray bits would be
+            // UB, so a mismatch takes the placeholder path too.
             let pend_bl = cx.b.create_block();
             let ok_bl = cx.b.create_block();
-            cx.b.ins().brif(pend, pend_bl, &[], ok_bl, &[]);
+            let ret_abi = kernel_abi::abi_kind(cx.registry(), &info.return_type);
+            let expected_disc: Option<i64> = match ret_abi {
+                Some(AbiKind::String) => Some(value_disc::STRING),
+                Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                    Some(value_disc::ARRAY)
+                }
+                _ => None,
+            };
+            match expected_disc {
+                Some(exp) => {
+                    let clean0 = clean_disc(cx.b, raw0);
+                    let mismatch = cx.b.ins().icmp_imm(IntCC::NotEqual, clean0, exp);
+                    let bad = cx.b.ins().bor(pend, mismatch);
+                    cx.b.ins().brif(bad, pend_bl, &[], ok_bl, &[]);
+                }
+                None => {
+                    cx.b.ins().brif(pend, pend_bl, &[], ok_bl, &[]);
+                }
+            }
             cx.b.switch_to_block(pend_bl);
             cx.b.seal_block(pend_bl);
+            // A shape-mismatched (non-pend) result still OWNS the
+            // returned Value — drop it before the placeholder so the
+            // compiler-bug path leaks nothing. On the pend path the
+            // pair is the inert (0, 0) sentinel, which
+            // `graphix_value_drop` rejects — guard on a nonzero disc.
+            {
+                let nz = cx.b.ins().icmp_imm(IntCC::NotEqual, raw0, 0);
+                let drop_bl = cx.b.create_block();
+                let cont_bl = cx.b.create_block();
+                cx.b.ins().brif(nz, drop_bl, &[], cont_bl, &[]);
+                cx.b.switch_to_block(drop_bl);
+                cx.b.seal_block(drop_bl);
+                let val_drop = cx.helper("graphix_value_drop")?;
+                cx.b.ins().call(val_drop, &[raw0, raw1]);
+                cx.b.ins().jump(cont_bl, &[]);
+                cx.b.switch_to_block(cont_bl);
+                cx.b.seal_block(cont_bl);
+            }
             let ph = emit_elem_placeholder(cx, &info.return_type)?;
             let ph_disc = propagate_flags(cx.b, ph.disc, &arg_taint_discs);
             cx.b.ins()
                 .jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(ok_bl);
             cx.b.seal_block(ok_bl);
-            let (disc, pay) = match kernel_abi::abi_kind(cx.registry(), &info.return_type)
-            {
+            let (disc, pay) = match ret_abi {
                 Some(AbiKind::String) => {
-                    // `raw0` is the ArcStr's raw thin-pointer bits
-                    // (transferred ownership).
+                    // `raw1` is the ArcStr's bits (ownership
+                    // transferred from the dispatcher).
                     let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
-                    (propagate_flags(cx.b, base, &arg_taint_discs), raw0)
+                    (propagate_flags(cx.b, base, &arg_taint_discs), raw1)
                 }
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                    // `raw0` is an owned `*mut ValArray`.
+                    // `raw1` is owned ValArray bits.
                     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-                    (propagate_flags(cx.b, base, &arg_taint_discs), raw0)
+                    (propagate_flags(cx.b, base, &arg_taint_discs), raw1)
                 }
                 _ => {
                     // Value-shape: both register-words. `raw0` is a
@@ -7375,7 +7302,7 @@ enum SelectScrut {
         disc: ClifValue,
         payload: ClifValue,
     },
-    /// A BORROWED array/tuple/struct scrutinee: the `*const ValArray`
+    /// A BORROWED array/tuple/struct scrutinee: the ValArray bits
     /// stays live across the whole arm chain with no drop (the env slot
     /// owns it — the owned-producer case de-fuses in
     /// [`classify_select_scrutinee`]). Structural patterns
@@ -8959,6 +8886,7 @@ pub enum CompositeSource {
 /// clone; without this drop the original leaks.
 enum CallArgDrop {
     Composite(ClifValue),
+    String(ClifValue),
     Value { disc: ClifValue, payload: ClifValue },
 }
 
@@ -9261,11 +9189,14 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     for cap in &info.captures {
         slots.push(LambdaCallSlot::Cap(cap));
     }
-    // Shape gate — scalar / composite / variant / nullable only. The
-    // slot TYPES come from the callee's signature (see above), so a
-    // Bottom-typed arg NODE slips through them (Bottom unifies with any
-    // signature type) — gate on the node itself, the caller-side twin
-    // of the DynCall shape-agreement check ([`node_is_bottom`]).
+    // Shape gate. Under the unified Value ABI every data shape
+    // marshals (String and bare-Value args included — the old
+    // asymmetry gate is gone); only Unit / bare-Null / unfrozen
+    // shapes refuse. The slot TYPES come from the callee's signature
+    // (see above), so a Bottom-typed arg NODE slips through them
+    // (Bottom unifies with any signature type) — gate on the node
+    // itself, the caller-side twin of the DynCall shape-agreement
+    // check ([`node_is_bottom`]).
     for s in &slots {
         if let LambdaCallSlot::Arg(n, _) = s {
             if node_is_bottom(n) {
@@ -9281,8 +9212,10 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                 | AbiKind::Array
                 | AbiKind::Tuple
                 | AbiKind::Struct
+                | AbiKind::String
                 | AbiKind::Variant
-                | AbiKind::Nullable,
+                | AbiKind::Nullable
+                | AbiKind::Value,
             ) => {}
             _ => {
                 return Err(anyhow!(
@@ -9408,10 +9341,10 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // caller's storage (see `emit_site_block`).
     let site_block = emit_site_block(cx, info)?;
     clif_args.push(site_block);
-    // Marshal in canonical `abi_params` order — scalars, then composites
-    // (array/tuple/struct), then value-shape (variant/nullable) — two
-    // words (disc, payload) each. An Owned composite/value Arg is dropped
-    // after the call (the callee refcount-bumps on entry).
+    // Marshal in canonical `abi_params` order — scalars, arrays,
+    // tuples, structs, strings, variants, nullables, values — two
+    // words (disc, payload) each. An Owned composite/string/value Arg
+    // is dropped after the call (the callee refcount-bumps on entry).
     let order = slots
         .iter()
         .filter(|s| {
@@ -9420,50 +9353,69 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Array)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Tuple)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Struct)))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::String)))
         .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Variant)))
-        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)));
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Nullable)))
+        .chain(slots.iter().filter(|s| is_kind(s, AbiKind::Value)));
     for s in order {
-        // A value-shaped slot (typed from the SIGNATURE) may receive an
-        // arg node whose OWN shape is a narrower union member — a bare
-        // Array arg for a `[Array, null]` param raw-emits a composite
-        // box pointer, which is NOT a Value payload (jul17a probe p2,
-        // the fold crash_000002's twin seam). Normalize such args
-        // through `emit_owned_value_operand_node`; a node already
-        // value-shaped keeps the raw borrowed/owned protocol.
-        let normalized = match s {
+        // Under the unified Value ABI a composite/string arg's pair IS
+        // a genuine Value, so a value-shaped slot (typed from the
+        // SIGNATURE) fed a narrower union member needs no wrapping —
+        // the jul17a normalization survives only for SCALAR args,
+        // whose payload word must WIDEN to the Value encoding
+        // (sign/zero extension, float bitcast).
+        let scalar_widen = match s {
             LambdaCallSlot::Arg(n, _)
                 if matches!(
                     kernel_abi::abi_kind(reg, s.typ()),
-                    Some(AbiKind::Variant | AbiKind::Nullable)
-                ) && !matches!(
-                    kernel_abi::abi_kind(reg, n.typ()),
                     Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
                 ) =>
             {
-                true
+                match kernel_abi::abi_kind(reg, n.typ()) {
+                    Some(AbiKind::Scalar(p)) => Some(p),
+                    _ => None,
+                }
             }
-            _ => false,
+            _ => None,
         };
-        let cv = if normalized {
-            let LambdaCallSlot::Arg(n, _) = s else { unreachable!() };
-            emit_owned_value_operand_node(cx, n)?
-        } else {
-            emit_slot(cx, s)?
+        let cv = {
+            let cv = emit_slot(cx, s)?;
+            match scalar_widen {
+                Some(p) => {
+                    let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
+                    CompiledExpr::new(cv.disc, payload)
+                }
+                None => cv,
+            }
         };
         if let LambdaCallSlot::Arg(n, _) = s {
-            if normalized || node_composite_source(n) == CompositeSource::Owned {
-                match kernel_abi::abi_kind(reg, s.typ()) {
-                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                        drops.push(CallArgDrop::Composite(cv.payload));
-                    }
-                    Some(AbiKind::Variant | AbiKind::Nullable) => {
-                        drops.push(CallArgDrop::Value {
-                            disc: cv.disc,
-                            payload: cv.payload,
-                        });
-                    }
-                    _ => {}
+            match kernel_abi::abi_kind(reg, s.typ()) {
+                // String ARG emissions are ALWAYS owned (String local
+                // reads clone at the read; producers are owned) — drop
+                // unconditionally. Cap string reads stay borrowed
+                // views of the env slot and are never dropped.
+                Some(AbiKind::String) => {
+                    drops.push(CallArgDrop::String(cv.payload));
                 }
+                _ if node_composite_source(n) == CompositeSource::Owned => {
+                    match kernel_abi::abi_kind(reg, s.typ()) {
+                        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                            drops.push(CallArgDrop::Composite(cv.payload));
+                        }
+                        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                            // Scalar-widened args own nothing — the drop
+                            // is only for genuinely refcounted pairs.
+                            if scalar_widen.is_none() {
+                                drops.push(CallArgDrop::Value {
+                                    disc: cv.disc,
+                                    payload: cv.payload,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         }
         clif_args.push(cv.disc);
@@ -9487,32 +9439,16 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         let pop = cx.helper("graphix_depth_pop")?;
         cx.b.ins().call(pop, &[]);
     }
-    // The callee RETURN ABI is one word for scalar/composite, two for
-    // value-shape. A one-word return has no disc, so the callee's
-    // return path records its result's not-fresh (TAINT/STALE) bits in
-    // the CALLEE_RESULT_FLAGS cell (`emit_flag_not_fresh`); take them
-    // here — after EVERY call, keeping the cell clean call-to-call —
-    // and OR them into the synthesized disc. A bottomed or unfired
-    // callee result thus rides into this kernel as a tainted/stale
-    // VALUE (#219) instead of aborting the whole region: it bottoms
-    // only the consumers that read it, like the node-walk. Value-shape
-    // returns carry the disc in-band (the callee never sets flags), so
-    // the OR is a no-op there.
-    let flags = {
-        let take = cx.helper("graphix_callee_flags_take")?;
-        let call = cx.b.ins().call(take, &[]);
-        cx.b.inst_results(call)[0]
-    };
     // A callee that genuinely ABORTED (interrupt, depth trip) left
-    // `DYNCALL_PENDING` set and returned the pending sentinel — a null
-    // pointer / zero pair, NOT a real value. Propagate the abort at
-    // the call site: drop the owned call args, drop this kernel's
-    // owned set, and jump to `pending_exit` with the flag still set
-    // (peek, not clear) so `Kernel::update` discards. Without this the
-    // sentinel would flow into downstream derefs and drops. Value-
-    // level bottoms never take this path — a callee's pended DynCall
+    // `DYNCALL_PENDING` set and returned the pending sentinel — the
+    // zero pair, NOT a real value. Propagate the abort at the call
+    // site: drop the owned call args, drop this kernel's owned set,
+    // and jump to `pending_exit` with the flag still set (peek, not
+    // clear) so `Kernel::update` discards. Without this the sentinel
+    // would flow into downstream derefs and drops. Value-level
+    // bottoms never take this path — a callee's pended DynCall
     // converts to a #219 tainted result at its own site and rides
-    // back through `CALLEE_RESULT_FLAGS` / the in-band disc.
+    // back IN-BAND in the returned disc.
     {
         let peek = cx.helper("graphix_dyncall_pending_take")?;
         let call = cx.b.ins().call(peek, &[]);
@@ -9529,44 +9465,35 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(cont_bl);
         cx.b.seal_block(cont_bl);
     }
-    let one_result = |cx: &mut BodyCx| -> Result<ClifValue> {
+    // Unified Value ABI: every callee returns the genuine two-word
+    // `(disc, payload)` Value pair, TAINT/STALE in-band in the disc.
+    // A value-typed consumer (`widen`) keeps the pair verbatim; a
+    // scalar-typed one narrows the payload to the prim's CLIF type
+    // for interior register use.
+    let (r0, r1) = {
         let results = cx.b.inst_results(inst);
-        if results.len() != 1 {
+        if results.len() != 2 {
             return Err(anyhow!(
-                "lambda call `{fn_name}`: callee returned {} values, expected 1",
+                "lambda call `{fn_name}`: callee returned {} values, expected 2",
                 results.len()
             ));
         }
-        Ok(results[0])
+        (results[0], results[1])
     };
     let result = match kernel_abi::abi_kind(reg, ret) {
-        Some(AbiKind::Scalar(p)) => {
-            let r0 = one_result(cx)?;
-            let base = scalar_disc(cx.b, p);
-            let disc = cx.b.ins().bor(base, flags);
-            CompiledExpr::new(disc, r0)
+        Some(AbiKind::Scalar(p)) if !widen => {
+            CompiledExpr::new(r0, cast_u64_to_prim(cx.b, r1, p))
         }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let r0 = one_result(cx)?;
-            let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-            let disc = cx.b.ins().bor(base, flags);
-            CompiledExpr::new(disc, r0)
-        }
-        Some(AbiKind::Variant | AbiKind::Nullable) => {
-            let (r0, r1) = {
-                let results = cx.b.inst_results(inst);
-                if results.len() != 2 {
-                    return Err(anyhow!(
-                        "lambda call `{fn_name}`: value-shape callee returned \
-                         {} values, expected 2",
-                        results.len()
-                    ));
-                }
-                (results[0], results[1])
-            };
-            let disc = cx.b.ins().bor(r0, flags);
-            CompiledExpr::new(disc, r1)
-        }
+        Some(
+            AbiKind::Scalar(_)
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::String
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value,
+        ) => CompiledExpr::new(r0, r1),
         other => {
             return Err(anyhow!(
                 "lambda call `{fn_name}`: return shape {other:?} not \
@@ -9574,7 +9501,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    let result = if widen { widen_result_to_value(cx, ret, result)? } else { result };
     // Owned-arg drops belong to the CALL path (the trip path never
     // marshalled), then meet the trip placeholder at the merge.
     emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
@@ -9606,10 +9532,17 @@ fn emit_call_arg_drops(
         .helper_refs
         .get("graphix_value_drop")
         .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+    let str_drop = ctx
+        .helper_refs
+        .get("graphix_arcstr_drop")
+        .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
     for d in drops {
         match d {
-            CallArgDrop::Composite(ptr) => {
-                b.ins().call(arr_drop, &[*ptr]);
+            CallArgDrop::Composite(bits) => {
+                b.ins().call(arr_drop, &[*bits]);
+            }
+            CallArgDrop::String(bits) => {
+                b.ins().call(str_drop, &[*bits]);
             }
             CallArgDrop::Value { disc, payload } => {
                 b.ins().call(val_drop, &[*disc, *payload]);
@@ -9773,7 +9706,7 @@ fn struct_get_helper(p: PrimType) -> Result<&'static str> {
 
 /// Map an element [`Type`] to its element-read helper symbol —
 /// primitive (`get_<prim>`), String (`get_arcstr`), composite
-/// (`get_array`, a `*mut ValArray`), or value-shape (`get_value`, a
+/// (`get_array`, owned ValArray bits), or value-shape (`get_value`, a
 /// two-word `Value`). `struct_access` picks the `struct_get_*` (two-
 /// level kv-pair read) family over the flat `valarray_get_*` family.
 fn element_read_helper(
