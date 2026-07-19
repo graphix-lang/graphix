@@ -1820,6 +1820,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if n_positional_provided < n_positional_required {
                     bail!("missing required argument")
                 }
+                // Excess positionals with no vargs to absorb them. The
+                // total-count guard above can't catch this when the
+                // callee has labeled params: defaults inflate its
+                // budget, and an unmatched positional would otherwise
+                // skip the arg-typecheck loop entirely (its own
+                // compile errors never surface) and fail or be
+                // silently dropped at bind time.
+                if n_positional_provided > n_positional_required
+                    && ftype.vargs.is_none()
+                {
+                    bail!(
+                        "too many positional arguments, expected {n_positional_required}, received {n_positional_provided}"
+                    )
+                }
                 ftype
             }
         };

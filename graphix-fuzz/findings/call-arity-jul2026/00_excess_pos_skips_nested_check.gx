@@ -1,0 +1,18 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: RuntimeErr("trace_wait_idle: runtime did not respond")
+// jit:    Trace([0:[["bar", i64:0], ["foo", i64:0]]])
+// Found by jul19c-era triage of the jul19b survivors (ryouko fuzz
+// lane, seed 1830M).
+// root_cause: CallSite::typecheck0 accepted EXCESS positional args
+// when the callee has labeled params — the total-count guard compares
+// against ftype.args.len() INCLUDING labeled slots, and no check ran
+// after the positional-required count. The unmatched positional also
+// skipped the arg-typecheck loop entirely (only Named keys are
+// visited for labeled params), so the nested g() — itself missing
+// its required positional baz — was never typechecked. At runtime
+// the node-walk's bind for g failed and panicked the runtime via the
+// callsite .expect; the JIT called f's defaults and produced a value.
+// fix: excess-positionals-without-vargs is a compile error at
+// typecheck0 ("too many positional arguments"); both modes now
+// CompileErr-agree.
+{type T = {bar: i64, foo: i64}; let f = |#foo: i64 = i64:42, #bar: i64 = i64:42| -> T { bar: i64:0, foo: i64:0 }; type U = {baz: i64, f: T}; let g = |#f: T = f(), baz: i64| -> U { baz, f }; |b| i64:2; f(g())}

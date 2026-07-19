@@ -1,0 +1,7 @@
+// bisect: acceptance probe (both modes must CompileErr)
+// Pre-fix: compiled AND ran in both modes, the excess positional
+// SILENTLY DROPPED at bind time — f(i64:5) evaluated to f's defaults
+// {bar: 0, foo: 0} as if the arg were never written. The minimal
+// witness of the same typecheck0 hole as 00 (no nested call needed).
+// fix: "too many positional arguments, expected 0, received 1".
+{type T = {bar: i64, foo: i64}; let f = |#foo: i64 = i64:42, #bar: i64 = i64:42| -> T { bar: i64:0, foo: i64:0 }; f(i64:5)}
