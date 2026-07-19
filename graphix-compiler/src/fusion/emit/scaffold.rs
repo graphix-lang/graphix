@@ -16,7 +16,34 @@
 //! (instruction order, block-creation order, variable-declaration
 //! order).
 
-use super::*;
+use crate::{
+    expr::ExprId,
+    fusion::kernel_abi::{self, AbiKind, PrimType},
+    typ::Type,
+};
+use anyhow::{Result, anyhow};
+use arcstr::ArcStr;
+use cranelift_codegen::ir::{
+    Block, BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
+};
+use cranelift_frontend::{FunctionBuilder, Variable};
+
+use super::{
+    abi::{
+        CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local,
+        bind_scalar_var_with_disc, clean_disc, prim_to_value_disc, scalar_disc,
+        value_disc,
+    },
+    body::{
+        BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
+    },
+    call::CompositeSource,
+    lower::{LowerCtx, SelWord},
+    scalar::{
+        prim_to_clif, scalar_to_payload_i64, valarray_get_helper, value_buf_push_helper,
+        widen_to_i64,
+    },
+};
 
 /// The input array for a HOF loop. `owned` ⇒ the scaffold emits a
 /// `graphix_valarray_drop(ptr)` after the loop completes — at the
