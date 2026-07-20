@@ -148,9 +148,16 @@ everything and interacts with mutable TVar cells).
 
 ## Invariants for future type walks
 
+- A new walk goes through the shared child walkers (A4, 2026-07-19):
+  `Type::try_for_each_child`/`for_each_child` for queries,
+  `Type::cow_children` for rebuilds — write only the walk's
+  interesting arms (TVar, and any arm whose traversal policy differs,
+  e.g. skipping `Ref` params) and route the rest through the walker.
+  `FnType::try_for_each_type`/`for_each_type` +
+  `for_each_sig_constraint` are the signature-side equivalents.
 - A new rebuild walk over `Type` returns `Option<Type>` (None =
-  unchanged) and uses `cow_slice`/`cow_walk` — never unconditional
-  reconstruction.
+  unchanged) and uses `cow_children`/`cow_slice`/`cow_walk` — never
+  unconditional reconstruction.
 - A new query walk uses a PERMANENT visited set covering composite
   addresses, not only cells, and never a per-path insert/remove guard
   unless the semantics genuinely depend on the path (cycle detection).

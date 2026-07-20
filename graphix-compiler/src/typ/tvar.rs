@@ -714,6 +714,8 @@ impl Type {
             // answers FALSE. The consumers are the closedness tests
             // (`constrain_known`, `unbind_open_tvars`), where this
             // makes an inferred `Alias<'open>` binding read as closed.
+            // Flipping this to walk params was invisible to the full
+            // suite + regress (2026-07-20) — no witness either way.
             Type::Ref(_) => false,
             t => t
                 .try_for_each_child(&mut |c| {

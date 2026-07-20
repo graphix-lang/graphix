@@ -259,7 +259,11 @@ would name them once.
    skip and document it as "Refs are opaque until expansion". I lean
    (a) for the closedness tests; `would_cycle_seen`'s skip looks
    genuinely deliberate (the guarded cell-graph walks never expand a
-   name, so a Ref-mediated cycle can't hang them).
+   name, so a Ref-mediated cycle can't hang them). EVIDENCE
+   (2026-07-20): flipping `has_unbound` to walk Ref params was
+   invisible to compiler+graphix-tests (2015/0) and regress (210/0) —
+   no live witness for either policy; the flip is behavior-neutral on
+   every current test surface, so (a) is cheap if ruled correct.
 
 ## D. What was NOT deeply reviewed
 
