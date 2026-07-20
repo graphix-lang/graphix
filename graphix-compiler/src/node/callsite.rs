@@ -271,15 +271,11 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// Pre-bound at compile time by [`CallSite::try_static_resolve`]:
     /// `fnode` provably resolves to one `LambdaDef`, so the per-cycle
     /// identity check + lazy bind is skipped (`fnode.update()` still runs
-    /// for side effects, value discarded). `def` is the held LambdaDef the
-    /// read-through accessors recover typed; `first_update` primes the
-    /// body's external refs exactly once.
-    Static {
-        def: Value,
-        apply: Box<dyn Apply<R, E>>,
-        resolved_ftype: FnType,
-        first_update: bool,
-    },
+    /// for side effects, value discarded). No held def `Value` — the
+    /// `ExecCtx`'s `lambda_defs` map owns every def for the ctx's
+    /// lifetime; `first_update` primes the body's external refs
+    /// exactly once.
+    Static { apply: Box<dyn Apply<R, E>>, resolved_ftype: FnType, first_update: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -1077,7 +1073,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         def: &LambdaDef<R, E>,
-        fv: Value,
     ) -> Result<()> {
         if matches!(self.callee, Callee::Static { .. }) || self.static_target.is_some() {
             // Idempotent.
@@ -1115,7 +1110,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn)
             && !def.intrinsic_effect.lock().is_sync();
         self.callee = Callee::Static {
-            def: fv,
             apply,
             resolved_ftype: instance_ftype.clone(),
             first_update: true,
@@ -1212,7 +1206,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
             return Ok(());
         };
-        if let Err(e) = self.resolve_static(ctx, def, fv.clone()) {
+        if let Err(e) = self.resolve_static(ctx, def) {
             if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() {
                 if std::env::var_os("GXDBG_RESOLVE").is_some() {
                     eprintln!("RESOLVE-DISCARD {}: {e:#}", self.spec);

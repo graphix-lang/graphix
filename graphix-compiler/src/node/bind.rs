@@ -24,11 +24,6 @@ pub struct Bind<R: Rt, E: UserEvent> {
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
     pub(crate) node: Node<R, E>,
-    /// Module scope at the binding's declaration point. Recorded so
-    /// post-compile analysis tools (e.g. fusion's NodeView walk) can
-    /// determine whether the binding is publishable at module level
-    /// or block-scoped.
-    pub(crate) scope: Scope,
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
@@ -46,21 +41,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             }
         });
         if count == 1 { id } else { None }
-    }
-
-    /// Build a `Bind` node from an already-compiled RHS node and an
-    /// already-compiled destructuring pattern. AOT codegen has
-    /// already resolved the type and generated BindIds for the
-    /// pattern's names.
-    #[allow(dead_code)]
-    pub fn new(
-        pattern: StructPatternNode,
-        node: Node<R, E>,
-        typ: Type,
-        spec: Expr,
-        scope: Scope,
-    ) -> Node<R, E> {
-        Box::new(Self { spec, typ, pattern, node, scope })
     }
 
     pub(crate) fn compile(
@@ -176,7 +156,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 }
             }
         }
-        Ok(Box::new(Self { spec, typ, pattern, node, scope: scope.clone() }))
+        Ok(Box::new(Self { spec, typ, pattern, node }))
     }
 
     /// The LambdaDef `Value` this binding holds, when its value node is

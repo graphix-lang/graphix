@@ -215,7 +215,12 @@ All landed with A6 except where noted.
 
 ## C. Questions / inconsistencies needing a ruling
 
-1. **`scalar_to_payload_i64` vs `pack_value_to_u64`** (`emit.rs`):
+1. **RULED + FIXED (Eric, 2026-07-20):** `scalar_to_payload_i64` now
+   `sextend`s I8/I16/I32, matching `pack_value_to_u64` and the ABI
+   doc's "the payload word IS the Value encoding" invariant (all
+   payload widening flows through that one function; the other
+   uextends in emit/ are boolean flag widenings).
+   `scalar_to_payload_i64` vs `pack_value_to_u64` (`emit.rs`):
    the design doc says scalar payloads widen "per pack_value_to_u64's
    rules (signed ints sign-extend)", but the CLIF twin `uextend`s ALL
    narrow ints, signed included. Harmless today (every consumer
@@ -226,11 +231,12 @@ All landed with A6 except where noted.
    `design/unified_value_abi.md` to say upper payload bits are
    unspecified-but-unread. I lean toward the former: the invariant is
    the ABI's whole point.
-2. **Dead-code warnings** (pre-existing, 4): `node/bind.rs:31
-   Bind.scope`, `node/callsite.rs:278 Callee::Static.def` (if it's a
-   deliberate keep-alive of the LambdaDef Value it deserves a comment
-   or `_def`; if not it's droppable), `node/lambda.rs:1017
-   Lambda.top_id/flags`, `node/op.rs:583 Op::base_op`.
+2. **FIXED (2026-07-20):** all four deleted — `Bind.scope` (and the
+   dead AOT-relic `Bind::new` that was its only other holder),
+   `Callee::Static.def` (NOT a keep-alive: `ctx.lambda_defs` owns
+   every def `Value` for the ctx's lifetime, never evicted —
+   `resolve_static` no longer takes the value), `Lambda.top_id`/
+   `flags`, `Op::base_op`. graphix-compiler builds warning-free.
 3. **`Kernel::sleep` reachability**: `FusedKernel::sleep` deliberately
    does not delegate to `Kernel::sleep` (comment added this commit);
    as far as I can tell nothing else calls it, making `Kernel::sleep`'s

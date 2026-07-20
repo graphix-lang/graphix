@@ -579,19 +579,6 @@ enum Op {
     CheckedMod,
 }
 
-impl Op {
-    fn base_op(self) -> Op {
-        match self {
-            Op::CheckedAdd => Op::Add,
-            Op::CheckedSub => Op::Sub,
-            Op::CheckedMul => Op::Mul,
-            Op::CheckedDiv => Op::Div,
-            Op::CheckedMod => Op::Mod,
-            other => other,
-        }
-    }
-}
-
 impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {

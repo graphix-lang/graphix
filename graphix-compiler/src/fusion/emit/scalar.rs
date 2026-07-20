@@ -202,9 +202,17 @@ pub(super) fn scalar_to_payload_i64(
 ) -> ClifValue {
     match p {
         PrimType::I64 | PrimType::U64 => v,
-        PrimType::I32 | PrimType::U32 => b.ins().uextend(types::I64, v),
-        PrimType::I16 | PrimType::U16 => b.ins().uextend(types::I64, v),
-        PrimType::I8 | PrimType::U8 | PrimType::Bool => b.ins().uextend(types::I64, v),
+        // Signed narrow ints SIGN-extend — the payload word must be
+        // the genuine Value encoding (`pack_value_to_u64`'s rules:
+        // `*x as i64 as u64`), per design/unified_value_abi.md's "the
+        // payload word IS the Value encoding" invariant (C1 ruling,
+        // 2026-07-20; previously uextend — harmless to consumers,
+        // which truncate, but a raw-word compare or memo key would
+        // have diverged from a runtime-packed twin).
+        PrimType::I8 | PrimType::I16 | PrimType::I32 => b.ins().sextend(types::I64, v),
+        PrimType::U8 | PrimType::U16 | PrimType::U32 | PrimType::Bool => {
+            b.ins().uextend(types::I64, v)
+        }
         PrimType::F32 => {
             let bits = b.ins().bitcast(
                 types::I32,

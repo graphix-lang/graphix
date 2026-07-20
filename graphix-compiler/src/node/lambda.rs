@@ -1015,10 +1015,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
 #[derive(Debug)]
 pub struct Lambda {
-    top_id: ExprId,
     spec: Expr,
     def: Value,
-    flags: BitFlags<CFlag>,
     typ: Type,
 }
 
@@ -1054,7 +1052,7 @@ impl Lambda {
         spec: Expr,
         scope: &Scope,
         l: &expr::LambdaExpr,
-        top_id: ExprId,
+        _top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let mut s: LPooled<Vec<&ArcStr>> = LPooled::take();
         for a in l.args.iter() {
@@ -1310,7 +1308,7 @@ impl Lambda {
             recursion: Mutex::new(RecursionKind::NotRecursive),
         });
         ctx.lambda_defs.insert(id, def.clone());
-        Ok(Box::new(Self { spec, def, typ: Type::Fn(typ), top_id, flags }))
+        Ok(Box::new(Self { spec, def, typ: Type::Fn(typ) }))
     }
 }
 
