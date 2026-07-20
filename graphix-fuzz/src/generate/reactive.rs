@@ -32,6 +32,7 @@ pub struct ReactiveStats {
     pub cross_cycle: usize,
     pub runaway: bool,
     pub dyn_reload: bool,
+    pub slept_arms: usize,
 }
 
 /// Generate one reactive WRAPPER (schedule header + body) with the
@@ -93,13 +94,14 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
             ctx.push(name, ty);
             continue;
         }
-        match rng.below(10) {
+        match rng.below(12) {
             0 | 1 => counter(&mut ctx, rng, &mut stmts, &mut stats),
             2..=4 => {
                 accumulator(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live)
             }
             5..=7 => cross_cycle(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
             8 => sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut live),
+            9 | 10 => slept_arm(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
             _ => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
         }
     }
@@ -324,6 +326,62 @@ fn sample_chain(
     ctx.push(t, I64);
 }
 
+/// A TOGGLING node-walked select — the sleep/wake coverage the
+/// vocabulary lacked entirely (nothing exercised de-selected-arm
+/// sleep + re-selection). The scrutinee is an injected input's
+/// parity, so epochs flip which arm is live; the `once(...)` arm is
+/// ASYNC, which keeps the whole select (and everything under its
+/// arms) on the node-walk — TODAY nothing fused can sit under a
+/// sleepable arm (fusion's descent never enters arms; verified
+/// 2026-07-20, the C3 reachability sweep), so this exercises the
+/// interp sleep/wake semantics against fusion-mode's block-level
+/// kernels feeding the arms. It is ALSO the ready-made witness
+/// generator for the day arm-region fusion lands: the live arm's
+/// builtin variant carries a per-epoch BOTTOMING arg
+/// (`i64:100 / (in % i64:3)` — injected 0/3/12/100 bottom it), the
+/// post-wake partial-args shape the dyn-slot sleep gap needs.
+fn slept_arm(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    inputs: &[(String, GenType)],
+    stmts: &mut Vec<String>,
+    st: &mut ReactiveStats,
+) {
+    let Some((input, _)) = inputs.iter().find(|(_, t)| *t == I64) else {
+        return;
+    };
+    st.slept_arms += 1;
+    // The live arm: a locally-defined lambda call (arm-interior call
+    // site — an interpreted instance today), a sync builtin over a
+    // bottoming arg, or a mix through the enriched vocabulary.
+    let live_arm = match rng.below(3) {
+        0 => {
+            let h = ctx.fresh();
+            let x = ctx.fresh();
+            let body = exprs::gen_typed(ctx, rng, &I64, 1);
+            stmts.push(format!(
+                "let {h} = |{x}: i64| -> i64 {{ let y = {x} * i64:2; y + ({body}) }}"
+            ));
+            format!("{h}({input})")
+        }
+        1 => format!(
+            "array::len(array::window(#n: i64:{}, [{input}], i64:100 / ({input} % i64:3)))",
+            1 + rng.below(3)
+        ),
+        _ => {
+            let v = exprs::gen_typed(ctx, rng, &I64, 2);
+            format!("({v}) + {input}")
+        }
+    };
+    let s = ctx.fresh();
+    stmts.push(format!(
+        "let {s} = select ({input} % i64:2) {{ i64:0 => {live_arm}, _ => once({input}) }}"
+    ));
+    // NOT pushed into `live`: the select fires only on its live-arm
+    // epochs (parity-gated), so it can't satisfy fire-per-injection.
+    ctx.push(s, I64);
+}
+
 /// A HOT-RELOADING dynamic module: the source is selected from an
 /// array of raw-string variants by an INJECTED index, so each epoch
 /// can swap the module's implementation and downstream values must
@@ -359,7 +417,23 @@ fn dyn_reload(
             inner.push(p.clone(), I64);
             let body = exprs::gen_typed(&inner, rng, &I64, 1);
             inner.truncate(m);
-            format!("r'let f = |{p}: i64| -> i64 {body}'")
+            if chance(rng, 0.5) {
+                // Internal (non-exported) block-level computation:
+                // fuses into module-body kernels carrying a DynCall
+                // slot (`array::len`), so every reload swap DELETES a
+                // kernel with live slot applies — the C3 delete-path
+                // coverage (reload leaks were invisible while module
+                // bodies held nothing but a lambda def).
+                let k = 1 + rng.below(5) as i64;
+                format!(
+                    "r'let f = |{p}: i64| -> i64 {body}; \
+                     let q = f(i64:{k}) * i64:5; \
+                     let z = array::len([q, q + i64:1, f(i64:{k} + i64:2)]); \
+                     let w = q + z'"
+                )
+            } else {
+                format!("r'let f = |{p}: i64| -> i64 {body}'")
+            }
         })
         .collect();
     let srcs_name = ctx.fresh();
@@ -428,7 +502,7 @@ mod test {
     fn shape_presence() {
         let cfg = GenCfg::default();
         let mut rng = Rng::new(3);
-        let (mut acc, mut cc, mut ctr, mut run) = (0, 0, 0, 0);
+        let (mut acc, mut cc, mut ctr, mut run, mut slept) = (0, 0, 0, 0, 0);
         const N: usize = 300;
         for _ in 0..N {
             let (_, st) = gen_reactive_stats(&cfg, &mut rng);
@@ -436,11 +510,13 @@ mod test {
             cc += (st.cross_cycle > 0) as usize;
             ctr += (st.counters > 0) as usize;
             run += st.runaway as usize;
+            slept += (st.slept_arms > 0) as usize;
         }
         assert!(acc * 100 / N >= 25, "accumulators in only {acc}/{N}");
         assert!(cc * 100 / N >= 30, "cross-cycle in only {cc}/{N}");
         assert!(ctr * 100 / N >= 10, "counters in only {ctr}/{N}");
         assert!(run * 100 / N >= 1, "runaways in only {run}/{N}");
         assert!(run * 100 / N <= 15, "runaways in {run}/{N} — too hot");
+        assert!(slept * 100 / N >= 15, "slept-arm selects in only {slept}/{N}");
     }
 }
