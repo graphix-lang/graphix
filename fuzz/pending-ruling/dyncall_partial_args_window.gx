@@ -1,0 +1,25 @@
+// jul19f ryouko fuzz divergence_000001 (pre-existing: reproduces back
+// through jul19c, NOT a taint-gate or review-arc regression).
+//
+//   interp: window fires the empty window []   jit: silence
+//
+// The whole call fuses (array::window is EFFECT=Sync — CachedArgs<
+// WindowEv>), the val arg (1/0) taints in-kernel, and the DynCall's
+// interior-bottom-v2 gate is ALL-OR-NOTHING: any tainted arg skips
+// the callee and produces a tainted placeholder. The node-walk's
+// seam is PER-SLOT: a bottomed arg is SILENCE (the CachedVals slot
+// stays None) and eval still runs when another arg fired — eval
+// DECIDES whether it can produce over the partial set. WindowEv's
+// eval is total over a missing val when #n:0 (the window needs zero
+// elements), so the interp legitimately emits [].
+//
+// NEEDS RULING: (a) per-slot absence at the DynCall seam — marshal
+// the per-arg taint bits through and deliver tainted slots as
+// ABSENT, dispatch when any untainted arg fired, let eval decide
+// (exact interp parity; the 2026-07-19 ruling's own words — "taint
+// the slot, never run eval over poison" — describe this, and the
+// whole-call skip over-approximates it); or (b) rule the interp's
+// []-on-bottomed-val the bug and require eval to refuse (changes
+// canonical window semantics for the degenerate n=0 case).
+// Claude leans (a).
+array::window(#n: i64:0, [i64:1], i64:1 / i64:0)
