@@ -423,8 +423,14 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         match self.cached.update_full(ctx, from, event) {
             None => None,
             Some(_) if self.cached.any_tainted() => {
-                // conservative DynCall taint: never run eval over a
-                // poisoned slot; produce the tainted placeholder
+                // DEFENSE-IN-DEPTH: unreachable when the seams hold —
+                // the CallSite gates every builtin's tainted arg
+                // productions to silence and the fused DynCall
+                // delivers taint-masked slots as absence (Eric's
+                // rulings 2026-07-19/20), so no poisoned delivery can
+                // reach these slots. If a new channel leaks one, emit
+                // the tainted placeholder (loud downstream) rather
+                // than replaying stale state.
                 self.last_out = Tag::TAINT;
                 Some(Value::Null)
             }

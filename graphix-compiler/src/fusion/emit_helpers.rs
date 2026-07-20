@@ -668,7 +668,21 @@ safe fn graphix_depth_pop() {
 /// sets `DYNCALL_PENDING`. JIT-emitted code calls
 /// `graphix_dyncall_pending_take` after the dyncall to decide
 /// whether to branch to its `pre_pending_<n>` cleanup block.
-unsafe fn graphix_dyncall(fn_index: u32, args: *mut LPooled<Vec<Value>>) -> DynCallRet {
+///
+/// `taint_mask`: bit `i` set = arg slot `i` is TAINTED (bottom — the
+/// arg produced no value this cycle). The dispatcher delivers those
+/// slots as ABSENCE (no `event.variables` write), so the builtin's
+/// cached slot keeps its previous state and eval DECIDES what a
+/// missing arg means — exactly the node-walk seam (Eric's ruling
+/// 2026-07-20, dyncall-partial-args-jul2026). The buf still carries a
+/// placeholder Value at that position (arity is fixed); it drops with
+/// the buf. Lambda-callee dispatch sites pass 0 (formals poison via
+/// their own protocol, unchanged).
+unsafe fn graphix_dyncall(
+    fn_index: u32,
+    args: *mut LPooled<Vec<Value>>,
+    taint_mask: u64,
+) -> DynCallRet {
     let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
     if handle.is_null() {
         panic!(
@@ -679,7 +693,7 @@ unsafe fn graphix_dyncall(fn_index: u32, args: *mut LPooled<Vec<Value>>) -> DynC
     }
     unsafe {
         let h = &*handle;
-        (h.dispatch)(h.state, fn_index, args)
+        (h.dispatch)(h.state, fn_index, args, taint_mask)
     }
 }
 
@@ -1674,14 +1688,16 @@ pub struct DynCallRet {
 #[repr(C)]
 pub struct DynDispatchHandle {
     /// Function pointer to a monomorphized `dispatch_typed::<R, E>`.
-    /// Takes `(state, fn_index, args)` and returns the result as a
-    /// [`DynCallRet`] Value pair (unified Value ABI). Returns
-    /// `(0, 0)` and sets `DYNCALL_PENDING` if the inner Apply
-    /// returned None.
+    /// Takes `(state, fn_index, args, taint_mask)` and returns the
+    /// result as a [`DynCallRet`] Value pair (unified Value ABI).
+    /// Returns `(0, 0)` and sets `DYNCALL_PENDING` if the inner Apply
+    /// returned None. `taint_mask` bit `i` set = deliver arg slot `i`
+    /// as ABSENCE (see `graphix_dyncall`).
     pub dispatch: unsafe extern "C" fn(
         state: *mut u8,
         fn_index: u32,
         args: *mut LPooled<Vec<Value>>,
+        taint_mask: u64,
     ) -> DynCallRet,
     /// Function pointer to a monomorphized `set_var_typed::<R, E>`. A
     /// fused `connect` (or a handler-ful `?`'s error delivery) writes a

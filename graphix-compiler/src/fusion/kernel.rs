@@ -364,6 +364,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut crate::Event<E>,
         args: &[Value],
+        taint_mask: u64,
     ) -> Option<Value> {
         debug_assert_eq!(args.len(), self.bind_ids.len(), "DynCall arity");
         // Pre-bound (FnSource::Builtin) slots: the target was fixed
@@ -409,10 +410,19 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // Side-channel: stash each arg Value at its BindId so the
         // arg_refs `Ref` nodes read it inside `apply.update`. FIRED:
         // the kernel already decided this call happens — the delivery
-        // is the call's argument event.
+        // is the call's argument event. A TAINT-masked slot (the arg
+        // bottomed this cycle) delivers ABSENCE instead — no write, so
+        // the callee's cached slot keeps its previous state and eval
+        // decides what a missing arg means, exactly the node-walk seam
+        // where a bottomed arg is silence (Eric's ruling 2026-07-20,
+        // dyncall-partial-args-jul2026; the buf's placeholder Value at
+        // that position drops with the buf).
         let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
         for (i, v) in args.iter().enumerate() {
+            if taint_mask & (1u64 << i) != 0 {
+                continue;
+            }
             let id = self.bind_ids[i];
             event.variables.insert(id, crate::TagValue::fired(v.clone()));
             set.push(id);
@@ -516,6 +526,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     state_ptr: *mut u8,
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
+    taint_mask: u64,
 ) -> DynCallRet {
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
@@ -529,7 +540,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     let args_vec = unsafe { *Box::from_raw(args) };
     let slot = &mut slots[fn_index as usize];
     let lambda_v = &fn_arg_values[fn_index as usize];
-    match slot.dispatch(lambda_v, ctx, event, &args_vec) {
+    match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask) {
         Some(v) => {
             // Unified Value ABI: hand back the Value's two `repr(u64)`
             // words for EVERY return type — the call site adapts per

@@ -762,7 +762,10 @@ fn emit_qop_deliver(
     let region_idx = info.fn_index + cx.fn_index_offset();
     let fn_idx = cx.b.ins().iconst(types::I32, region_idx as i64);
     // QopDeliverApply returns Value::Null; the pair is discarded.
-    cx.b.ins().call(dyncall, &[fn_idx, buf]);
+    // Taint mask 0: the single error arg was gated on `deliverable`
+    // (real, untainted) before this emits.
+    let mask0 = cx.b.ins().iconst(types::I64, 0);
+    cx.b.ins().call(dyncall, &[fn_idx, buf, mask0]);
     // `QopDeliverApply::update` structurally returns `Some(Null)` (the
     // marshalled arg is always present), but every dyncall site clears
     // the pending flag so it can only ever mean "genuine abort".

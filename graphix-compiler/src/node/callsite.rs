@@ -439,16 +439,17 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// trio (the `Static` tag carries `first_update`; the old invalid
     /// `statically_resolved && function == None` state is unrepresentable).
     pub(crate) callee: Callee<R, E>,
-    /// The callee is an ASYNC builtin: tainted arg productions are
-    /// gated to silence before delivery — taint == bottom == no input
-    /// to a builtin (Eric's ruling 2026-07-19). Builtin authors never
-    /// see the taint channel; an async builtin's fused arg region
-    /// already delivers silence (the kernel output boundary forces a
-    /// tainted result to None), so the gate is what makes the
-    /// node-walked arg agree. Sync builtins keep the poisoned
-    /// delivery (their `CachedArgs` wrapper mirrors the fused DynCall
-    /// protocol: taint the slot, never run eval); lambda callees keep
-    /// it (formals poison). Set at every callee-binding site.
+    /// The callee is a BUILTIN: tainted arg productions are gated to
+    /// silence before delivery — taint == bottom == no input to a
+    /// builtin (Eric's rulings 2026-07-19/20). Builtin authors never
+    /// see the taint channel: a bottomed arg is ABSENCE, the builtin's
+    /// cached slot keeps its previous state, and eval decides what a
+    /// missing arg means. The kernel twins agree by construction — a
+    /// fused arg region's tainted result forces to None at the output
+    /// boundary, and a fused DynCall delivers taint-masked slots as
+    /// absence (dyncall-partial-args-jul2026). Lambda callees keep
+    /// the poisoned delivery (formals poison). Set at every
+    /// callee-binding site.
     pub(super) gate_tainted_args: bool,
     pub(crate) static_target: Option<StaticCallTarget>,
     pub(crate) recursive_edge: AtomicBool,
@@ -950,8 +951,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             });
         })?;
-        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn)
-            && !f.intrinsic_effect.lock().is_sync();
+        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::DynamicBound { def: fv, apply, transient: false };
         // The publish loop ran before this bind resolved the callee —
         // retract any poisoned deliveries the gate would have silenced.
@@ -1107,8 +1107,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ftype: instance_ftype.clone(),
             });
         }
-        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn)
-            && !def.intrinsic_effect.lock().is_sync();
+        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::Static {
             apply,
             resolved_ftype: instance_ftype.clone(),
@@ -1324,11 +1323,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     let (v, tag) = tv.into_parts();
                     if tag.is_tainted() {
                         // taint == bottom == no input to a builtin
-                        // (see `gate_tainted_args`): an async
-                        // builtin's arg seam converts the poisoned
-                        // production to silence, exactly as the
-                        // kernel output boundary does when the arg
-                        // subtree fuses.
+                        // (see `gate_tainted_args`): a builtin's arg
+                        // seam converts the poisoned production to
+                        // silence — the slot rides its previous
+                        // state and eval decides, exactly as the
+                        // fused DynCall's taint-masked delivery.
                         if self.gate_tainted_args {
                             continue;
                         }

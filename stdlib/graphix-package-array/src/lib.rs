@@ -130,46 +130,34 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const NAME: &str = "array_window";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut present = true;
+        // window requires ALL its args before producing anything
+        // (Eric's ruling 2026-07-20, dyncall-partial-args-jul2026):
+        // the old per-branch presence tracking let the degenerate
+        // `#n: 0` case emit `[]` with the val slot still absent (the
+        // window needed zero elements from it).
         match &from.0[..] {
-            [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..] => {
+            [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..]
+                if tl.iter().all(|v| v.is_some()) =>
+            {
                 let window = *window as usize;
                 let total = a.len() + tl.len();
+                let tl_vals = tl.iter().map(|v| v.clone().unwrap());
                 if total <= window {
                     self.0.extend(a.iter().cloned());
-                    for v in tl {
-                        match v {
-                            Some(v) => self.0.push(v.clone()),
-                            None => present = false,
-                        }
-                    }
+                    self.0.extend(tl_vals);
                 } else if a.len() >= (total - window) {
                     self.0.extend(a[(total - window)..].iter().cloned());
-                    for v in tl {
-                        match v {
-                            Some(v) => self.0.push(v.clone()),
-                            None => present = false,
-                        }
-                    }
+                    self.0.extend(tl_vals);
                 } else {
-                    for v in &tl[tl.len() - window..] {
-                        match v {
-                            Some(v) => self.0.push(v.clone()),
-                            None => present = false,
-                        }
-                    }
+                    self.0.extend(tl_vals.skip(tl.len() - window));
                 }
+                let a = ValArray::from_iter_exact(self.0.drain(..));
+                Some(Value::Array(a))
             }
-            [] | [_] | [_, None, ..] | [None, _, ..] | [Some(_), Some(_), ..] => {
-                present = false
+            _ => {
+                self.0.clear();
+                None
             }
-        }
-        if present {
-            let a = ValArray::from_iter_exact(self.0.drain(..));
-            Some(Value::Array(a))
-        } else {
-            self.0.clear();
-            None
         }
     }
 }

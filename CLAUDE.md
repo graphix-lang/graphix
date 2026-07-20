@@ -498,17 +498,23 @@ enforces it):**
   old `array::init` runaway-length whole-kernel abort is gone: an over-limit
   count taints and clamps to zero length in `emit_init_loop`, matching the
   node-walk's log-and-no-fire. `design/representable_bottom.md`.
-- **Taint never reaches builtins** (Eric's ruling 2026-07-19: taint ==
-  bottom == no input to a builtin — authors must never see the taint
-  channel). An ASYNC builtin's arg seam converts poisoned productions
-  to SILENCE (once/take/skip don't count poison), gated centrally in
-  `CallSite`'s arg publish loop (`gate_tainted_args`, set at both
-  callee-binding sites) — symmetric with the kernel output boundary,
-  which already forces a fused arg region's tainted result to None.
-  SYNC builtins keep the poisoned delivery upstream of eval: the
-  `CachedArgs` wrapper mirrors the fused DynCall protocol (taint the
-  slot, never run eval over poison). Lambda callees keep it too
-  (formals poison). Pinned by `builtin-taint-gate-jul2026`.
+- **Taint never reaches builtins** (Eric's rulings 2026-07-19/20:
+  taint == bottom == no input to a builtin — authors must never see
+  the taint channel). EVERY builtin's arg seam converts a poisoned
+  production to ABSENCE: the `CallSite` publish loop gates it to
+  silence (`gate_tainted_args`, set at both callee-binding sites —
+  once/take/skip don't count poison), and a fused DynCall passes a
+  per-arg taint MASK through `graphix_dyncall` so masked slots
+  deliver nothing (the whole-call any-tainted skip was wrong — the
+  cached slot RIDES its previous state and EVAL decides what a
+  missing arg means; a masked arg folds as neutral STALE into the
+  result disc; >64 args de-fuse). Symmetric with the kernel output
+  boundary, which forces a fused arg region's tainted result to None.
+  Lambda callees keep poisoned formals. `CachedArgs`' any_tainted arm
+  is an unreachable-by-construction backstop. Pinned by
+  `builtin-taint-gate-jul2026` + `dyncall-partial-args-jul2026` (the
+  latter also fixed `array::window` to require ALL its args — its
+  eval produced `[]` at `#n: 0` with the val slot absent).
 - An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield to
   the scheduler) — accepted/correct; the reactive node-walk's per-cycle
   "continue" is the artifact.

@@ -20,9 +20,9 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, ValueVar, clean_disc, emit_scalar_taint_cache,
-        emit_untainted_i64, is_tainted, propagate_flags, scalar_disc, taint_if,
-        value_disc,
+        CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, clean_disc,
+        emit_scalar_taint_cache, emit_untainted_i64, is_tainted, propagate_flags,
+        scalar_disc, taint_if, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     lower::{LowerCtx, SelWord},
@@ -145,22 +145,46 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // into the combined `dyn_slots` table.
     let region_idx = info.fn_index + cx.fn_index_offset();
     let fn_idx_val = cx.b.ins().iconst(types::I32, region_idx as i64);
-    // Interior-bottom v2: a tainted arg means the callee must NOT run —
-    // the node-walk's builtin never fires without its inputs, and a
-    // Sync EFFECT (println) must not observe placeholder garbage (the
-    // old post-call abort ran the callee FIRST, then bottomed the whole
-    // kernel — over-broad for live chains AND effect-leaking). Gate the
-    // call: any tainted arg skips it, drops the marshalled buf, and
-    // produces a tainted placeholder result. Each `is_tainted` folds to
-    // const-false for proven-untainted args, so the gate vanishes on
+    // Interior-bottom v3 (Eric's ruling 2026-07-20,
+    // dyncall-partial-args-jul2026): a tainted arg is delivered as
+    // ABSENCE, not a reason to skip the call — the node-walk's seam is
+    // per-slot (a bottomed arg is silence; the builtin's cached slot
+    // keeps its previous state) and EVAL decides what a missing arg
+    // means (window(#n:0, t, bottomed) legitimately produced [] before
+    // the stdlib fix; the interior-bottom-v2 whole-call skip silenced
+    // it). Build the per-arg taint MASK the dispatcher gates slot
+    // delivery on. Effects stay safe: an all-absent delivery reaches
+    // eval only through the builtin's own production rule (CachedArgs
+    // runs eval only when a production arrived), so placeholder
+    // garbage is never observed. Each `is_tainted` folds to
+    // const-false for proven-untainted args, so the mask is const-0 on
     // the hot path.
-    let mut any_tainted = cx.b.ins().iconst(types::I8, 0);
-    for d in &arg_taint_discs {
-        let t = is_tainted(cx.b, *d);
-        any_tainted = cx.b.ins().bor(any_tainted, t);
+    if arg_taint_discs.len() > 64 {
+        return Err(anyhow!(
+            "emit_clif: DynCall with more than 64 args — the taint \
+             mask is one word"
+        ));
     }
-    let call_bl = cx.b.create_block();
-    let skip_bl = cx.b.create_block();
+    let mut taint_mask = cx.b.ins().iconst(types::I64, 0);
+    for (i, d) in arg_taint_discs.iter().enumerate() {
+        let t = is_tainted(cx.b, *d);
+        let t64 = cx.b.ins().uextend(types::I64, t);
+        let bit = cx.b.ins().ishl_imm(t64, i as i64);
+        taint_mask = cx.b.ins().bor(taint_mask, bit);
+    }
+    // The result-disc fold must treat a masked (absent) arg as
+    // NEUTRAL — it did not fire (STALE) and its bottom must NOT taint
+    // a result eval computed over the remaining slots (the interp's
+    // gated delivery contributes nothing). Neutralize each tainted
+    // disc to a bare STALE for the folds below.
+    let neutral_discs: Vec<ClifValue> = arg_taint_discs
+        .iter()
+        .map(|d| {
+            let t = is_tainted(cx.b, *d);
+            let stale = cx.b.ins().iconst(types::I64, STALE);
+            cx.b.ins().select(t, stale, *d)
+        })
+        .collect();
     let dmerge = cx.b.create_block();
     let pay_ty = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => prim_to_clif(p),
@@ -168,21 +192,9 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     };
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
-    // The buf's in-flight cover ends here: the call path CONSUMES it,
-    // the skip path drops it explicitly.
+    // The buf's in-flight cover ends here: the dispatcher consumes it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    cx.b.ins().brif(any_tainted, skip_bl, &[], call_bl, &[]);
-    cx.b.switch_to_block(skip_bl);
-    cx.b.seal_block(skip_bl);
-    let buf_drop = cx.helper("graphix_value_buf_drop")?;
-    cx.b.ins().call(buf_drop, &[buf]);
-    let ph = emit_elem_placeholder(cx, &info.return_type)?;
-    // Fires iff any arg fired; TAINT is already set on the placeholder.
-    let ph_disc = propagate_flags(cx.b, ph.disc, &arg_taint_discs);
-    cx.b.ins().jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
-    cx.b.switch_to_block(call_bl);
-    cx.b.seal_block(call_bl);
-    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf]);
+    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, taint_mask]);
     // Unified Value ABI: `graphix_dyncall` returns the result's
     // genuine (disc, payload) Value pair for every return type; the
     // decode below adapts per the static shape.
@@ -202,8 +214,9 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let c = cx.b.ins().call(take, &[]);
         cx.b.inst_results(c)[0]
     };
-    // Call-path results per return shape (args are proven untainted on
-    // this path — the old post-call arg-taint aborts are gone).
+    // Results per return shape. Tainted args were delivered as
+    // ABSENCE via the mask (their discs fold as neutral STALE), so a
+    // result computed over the remaining slots keeps its honest tag.
     match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => {
             // Scalar return: the payload word carries the Value-encoded
@@ -212,7 +225,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // arithmetic — no branch, just fold the pend bit into TAINT.
             let value = cast_u64_to_prim(cx.b, raw1, p);
             let base = scalar_disc(cx.b, p);
-            let disc = propagate_flags(cx.b, base, &arg_taint_discs);
+            let disc = propagate_flags(cx.b, base, &neutral_discs);
             let disc = taint_if(cx.b, disc, pend);
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(value)]);
         }
@@ -237,9 +250,8 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // sentinel `(0, 0)` is NOT inert — every String position
             // assumes a valid owned ArcStr (#214), zero ValArray bits
             // can't be touched, and a zero Value disc is not a real
-            // tag. Branch: on pend, produce the same tainted
-            // shape-safe placeholder the tainted-ARG skip path
-            // produces and continue to the merge. For String/composite
+            // tag. Branch: on pend, produce a tainted shape-safe
+            // placeholder and continue to the merge. For String/composite
             // returns the returned DISC is additionally checked
             // against the expected shape — a dispatcher that returned
             // the wrong Value shape is a compiler bug (the old
@@ -288,7 +300,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                 cx.b.seal_block(cont_bl);
             }
             let ph = emit_elem_placeholder(cx, &info.return_type)?;
-            let ph_disc = propagate_flags(cx.b, ph.disc, &arg_taint_discs);
+            let ph_disc = propagate_flags(cx.b, ph.disc, &neutral_discs);
             cx.b.ins()
                 .jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(ok_bl);
@@ -298,12 +310,12 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                     // `raw1` is the ArcStr's bits (ownership
                     // transferred from the dispatcher).
                     let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
-                    (propagate_flags(cx.b, base, &arg_taint_discs), raw1)
+                    (propagate_flags(cx.b, base, &neutral_discs), raw1)
                 }
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                     // `raw1` is owned ValArray bits.
                     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-                    (propagate_flags(cx.b, base, &arg_taint_discs), raw1)
+                    (propagate_flags(cx.b, base, &neutral_discs), raw1)
                 }
                 _ => {
                     // Value-shape: both register-words. `raw0` is a
@@ -315,7 +327,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                     // connect of one SELF-WOKE its own kernel forever
                     // (soak jul05 items 1/4/25 — the ExtraFire/Timeout
                     // family).
-                    (propagate_flags(cx.b, raw0, &arg_taint_discs), raw1)
+                    (propagate_flags(cx.b, raw0, &neutral_discs), raw1)
                 }
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
