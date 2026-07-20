@@ -671,44 +671,7 @@ fn privatize_d(
                 None => cow_params.map(|params| Type::Abstract { id: *id, params }),
             }
         }
-        Type::Fn(ft) => ft
-            .cow_walk(|t| privatize_d(reg, t, env, scope, seen))
-            .map(|ft| Type::Fn(Arc::new(ft))),
-        Type::Tuple(ts) => Type::cow_slice(ts, |t| privatize_d(reg, t, env, scope, seen))
-            .map(Type::Tuple),
-        Type::Variant(tag, ts) => {
-            Type::cow_slice(ts, |t| privatize_d(reg, t, env, scope, seen))
-                .map(|ts| Type::Variant(tag.clone(), ts))
-        }
-        Type::Array(t) => {
-            privatize_d(reg, t, env, scope, seen).map(|t| Type::Array(Arc::new(t)))
-        }
-        Type::Error(t) => {
-            privatize_d(reg, t, env, scope, seen).map(|t| Type::Error(Arc::new(t)))
-        }
-        Type::ByRef(t) => {
-            privatize_d(reg, t, env, scope, seen).map(|t| Type::ByRef(Arc::new(t)))
-        }
-        Type::Map { key, value } => {
-            match (
-                privatize_d(reg, key, env, scope, seen),
-                privatize_d(reg, value, env, scope, seen),
-            ) {
-                (None, None) => None,
-                (k, v) => Some(Type::Map {
-                    key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                    value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                }),
-            }
-        }
-        Type::Set(ts) => {
-            Type::cow_slice(ts, |t| privatize_d(reg, t, env, scope, seen)).map(Type::Set)
-        }
-        Type::Struct(fs) => Type::cow_slice(fs, |(n, t)| {
-            privatize_d(reg, t, env, scope, seen).map(|t| (n.clone(), t))
-        })
-        .map(Type::Struct),
-        Type::Bottom | Type::Any | Type::Primitive(_) => None,
+        t => t.cow_children(&mut |c| privatize_d(reg, c, env, scope, seen)),
     }
 }
 
@@ -810,33 +773,9 @@ impl std::fmt::Debug for MemoEntry {
     }
 }
 
-/// No unbound-TVar anywhere beneath — the type's identity is stable
-/// under `PartialEq`, so it can key a cache. A BOUND cell's binding can
-/// also drift between calls, so any TVar disqualifies.
-fn tvar_free(t: &Type) -> bool {
-    match t {
-        Type::Bottom | Type::Any | Type::Primitive(_) => true,
-        Type::TVar(_) => false,
-        Type::Ref(tr) => tr.params.iter().all(tvar_free),
-        Type::Abstract { params, .. } => params.iter().all(tvar_free),
-        Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
-            ts.iter().all(tvar_free)
-        }
-        Type::Struct(fs) => fs.iter().all(|(_, t)| tvar_free(t)),
-        Type::Array(t) | Type::Error(t) | Type::ByRef(t) => tvar_free(t),
-        Type::Map { key, value } => tvar_free(key) && tvar_free(value),
-        Type::Fn(ft) => {
-            ft.args.iter().all(|a| tvar_free(&a.typ))
-                && ft.vargs.as_ref().is_none_or(tvar_free)
-                && tvar_free(&ft.rtype)
-                && tvar_free(&ft.throws)
-        }
-    }
-}
-
 fn key_closed(key: &kernel_abi::ExpandKey) -> bool {
     match key {
-        kernel_abi::ExpandKey::Ref(tr) => tr.params.iter().all(tvar_free),
+        kernel_abi::ExpandKey::Ref(tr) => tr.params.iter().all(|t| t.tvar_free()),
         kernel_abi::ExpandKey::Abstract(_) => false,
     }
 }
@@ -1057,7 +996,6 @@ fn resolve_abstract_node<'a>(
     cx: &ResolveCx,
 ) -> Option<Type> {
     use kernel_abi::{ExpandKey, Seen};
-    use triomphe::Arc;
     match typ {
         // Deref bound TVars and resolve through them — an INFERRED
         // binding type (e.g. a region input's `let` binding, #218) is
@@ -1143,44 +1081,7 @@ fn resolve_abstract_node<'a>(
                 None => None,
             }
         }
-        Type::Fn(ft) => ft
-            .cow_walk(|t| resolve_abstract_d(reg, t, env, scope, seen, cx))
-            .map(|ft| Type::Fn(Arc::new(ft))),
-        Type::Tuple(ts) => {
-            Type::cow_slice(ts, |t| resolve_abstract_d(reg, t, env, scope, seen, cx))
-                .map(Type::Tuple)
-        }
-        Type::Variant(tag, ts) => {
-            Type::cow_slice(ts, |t| resolve_abstract_d(reg, t, env, scope, seen, cx))
-                .map(|ts| Type::Variant(tag.clone(), ts))
-        }
-        Type::Array(t) => resolve_abstract_d(reg, t, env, scope, seen, cx)
-            .map(|t| Type::Array(Arc::new(t))),
-        Type::Error(t) => resolve_abstract_d(reg, t, env, scope, seen, cx)
-            .map(|t| Type::Error(Arc::new(t))),
-        Type::ByRef(t) => resolve_abstract_d(reg, t, env, scope, seen, cx)
-            .map(|t| Type::ByRef(Arc::new(t))),
-        Type::Map { key, value } => {
-            match (
-                resolve_abstract_d(reg, key, env, scope, seen, cx),
-                resolve_abstract_d(reg, value, env, scope, seen, cx),
-            ) {
-                (None, None) => None,
-                (k, v) => Some(Type::Map {
-                    key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                    value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                }),
-            }
-        }
-        Type::Set(ts) => {
-            Type::cow_slice(ts, |t| resolve_abstract_d(reg, t, env, scope, seen, cx))
-                .map(Type::Set)
-        }
-        Type::Struct(fs) => Type::cow_slice(fs, |(n, t)| {
-            resolve_abstract_d(reg, t, env, scope, seen, cx).map(|t| (n.clone(), t))
-        })
-        .map(Type::Struct),
-        Type::Bottom | Type::Any | Type::Primitive(_) => None,
+        t => t.cow_children(&mut |c| resolve_abstract_d(reg, c, env, scope, seen, cx)),
     }
 }
 

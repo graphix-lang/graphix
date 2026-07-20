@@ -20,6 +20,7 @@ use std::{
     cmp::{Eq, Ordering, PartialEq},
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
+    ops::ControlFlow,
     sync::{Arc as SArc, Weak},
 };
 use triomphe::Arc;
@@ -561,7 +562,16 @@ impl FnType {
         })
     }
 
-    pub fn unbind_tvars(&self) {
+    /// Read-only walk over the signature's component types, in
+    /// signature order: args, vargs, rtype, throws. Sig-cell
+    /// CONSTRAINTS are not visited — walks that need them use
+    /// [`Self::for_each_sig_constraint`]. This is the single component
+    /// enumeration behind both the FnType query walks and
+    /// [`Type::try_for_each_child`]'s `Fn` arm.
+    pub(crate) fn try_for_each_type<B>(
+        &self,
+        f: &mut impl FnMut(&Type) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
         let FnType {
             args,
             vargs,
@@ -572,35 +582,48 @@ impl FnType {
             lambda_ids: _,
         } = self;
         for arg in args.iter() {
-            arg.typ.unbind_tvars()
+            f(&arg.typ)?;
         }
         if let Some(t) = vargs {
-            t.unbind_tvars()
+            f(t)?;
         }
-        rtype.unbind_tvars();
-        throws.unbind_tvars();
+        f(rtype)?;
+        f(throws)
+    }
+
+    /// [`Self::try_for_each_type`] without early exit.
+    pub(crate) fn for_each_type(&self, f: &mut impl FnMut(&Type)) {
+        let _ = self.try_for_each_type::<()>(&mut |t| {
+            f(t);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Visit each signature cell's constraint conjuncts — the walk
+    /// `alias_tvars`/`unfreeze_tvars`/`collect_tvars` need beyond the
+    /// component types (constraint TYPES live in the cells since phase
+    /// C). Guarded per `FnType` address: a conjunct Fn reaching back
+    /// here would recurse forever (see `constraint_view`).
+    fn for_each_sig_constraint(&self, f: &mut impl FnMut(&Type)) {
+        let key = self as *const Self as usize;
+        if Self::walking(|w| w.insert(key)) {
+            for tv in self.sig_tvars().values() {
+                for tc in tv.cell_constraints() {
+                    f(&tc);
+                }
+            }
+            Self::walking(|w| w.remove(&key));
+        }
+    }
+
+    pub fn unbind_tvars(&self) {
+        self.for_each_type(&mut |t| t.unbind_tvars())
     }
 
     /// [`Type::unbind_open_tvars`] over the signature — closed
     /// def-body facts stay bound.
     pub fn unbind_open_tvars(&self) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        for arg in args.iter() {
-            arg.typ.unbind_open_tvars()
-        }
-        if let Some(t) = vargs {
-            t.unbind_open_tvars()
-        }
-        rtype.unbind_open_tvars();
-        throws.unbind_open_tvars();
+        self.for_each_type(&mut |t| t.unbind_open_tvars())
     }
 
     /// Record the def gate's inferred facts. `closed_only` is the
@@ -749,40 +772,25 @@ impl FnType {
     }
 
     pub fn has_unbound(&self) -> bool {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        args.iter().any(|a| a.typ.has_unbound())
-            || vargs.as_ref().map(|t| t.has_unbound()).unwrap_or(false)
-            || rtype.has_unbound()
-            || throws.has_unbound()
+        self.try_for_each_type(&mut |t| {
+            if t.has_unbound() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .is_break()
     }
 
     pub fn bind_as(&self, t: &Type) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        for a in args.iter() {
-            a.typ.bind_as(t)
-        }
-        if let Some(va) = vargs.as_ref() {
-            va.bind_as(t)
-        }
-        rtype.bind_as(t);
-        throws.bind_as(t);
+        self.for_each_type(&mut |x| x.bind_as(t))
     }
+
+    // The three walks below visit the sig-cell constraints BETWEEN
+    // rtype and throws — the pre-walker component order, preserved
+    // exactly: for `alias_tvars` the first-seen occurrence of a name
+    // becomes the surviving cell, so component order is observable.
+    // Hence the explicit sequence instead of `for_each_type`.
 
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         let FnType {
@@ -801,19 +809,7 @@ impl FnType {
             vargs.alias_tvars(known)
         }
         rtype.alias_tvars(known);
-        // Constraint TYPES live in the signature cells' conjunctions;
-        // alias their interior tvars one level (the retired list's
-        // `tc.alias_tvars` walk). Guarded: a conjunct Fn reaching back
-        // here would recurse forever (see `constraint_view`).
-        let key = self as *const Self as usize;
-        if Self::walking(|w| w.insert(key)) {
-            for tv in self.sig_tvars().values() {
-                for tc in tv.cell_constraints() {
-                    tc.alias_tvars(known);
-                }
-            }
-            Self::walking(|w| w.remove(&key));
-        }
+        self.for_each_sig_constraint(&mut |tc| tc.alias_tvars(known));
         throws.alias_tvars(known);
     }
 
@@ -834,15 +830,7 @@ impl FnType {
             vargs.unfreeze_tvars()
         }
         rtype.unfreeze_tvars();
-        let key = self as *const Self as usize;
-        if Self::walking(|w| w.insert(key)) {
-            for tv in self.sig_tvars().values() {
-                for tc in tv.cell_constraints() {
-                    tc.unfreeze_tvars();
-                }
-            }
-            Self::walking(|w| w.remove(&key));
-        }
+        self.for_each_sig_constraint(&mut |tc| tc.unfreeze_tvars());
         throws.unfreeze_tvars();
     }
 
@@ -863,15 +851,7 @@ impl FnType {
             vargs.collect_tvars(known)
         }
         rtype.collect_tvars(known);
-        let key = self as *const Self as usize;
-        if Self::walking(|w| w.insert(key)) {
-            for tv in self.sig_tvars().values() {
-                for tc in tv.cell_constraints() {
-                    tc.collect_tvars(known);
-                }
-            }
-            Self::walking(|w| w.remove(&key));
-        }
+        self.for_each_sig_constraint(&mut |tc| tc.collect_tvars(known));
         throws.collect_tvars(known);
     }
 

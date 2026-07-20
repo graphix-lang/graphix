@@ -1,6 +1,6 @@
 use crate::{
     expr::ModPath,
-    typ::{FnType, PRINT_FLAGS, PrintFlag, Type, TypeRef},
+    typ::{FnType, PRINT_FLAGS, PrintFlag, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -12,7 +12,7 @@ use std::{
     collections::hash_map::Entry,
     fmt::{self, Debug},
     hash::Hash,
-    ops::Deref,
+    ops::{ControlFlow, Deref},
 };
 use triomphe::Arc;
 
@@ -64,9 +64,16 @@ fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> 
         return false;
     }
     match t {
-        Type::Primitive(_) | Type::Any | Type::Bottom | Type::Ref(TypeRef { .. }) => {
-            false
-        }
+        // Ref PARAMS are skipped (preserved from the pre-walker code;
+        // the Ref-arm policy survey is review A4/C8): the reachability
+        // this check guards against is what the cell-graph walks
+        // (normalize / Display / reset) traverse, and those never
+        // expand a name. Fn signatures go through the default walker —
+        // constraint TYPES live in the signature cells' conjunctions
+        // (phase C), and the `TVar` arm walks each reachable cell's
+        // conjuncts, so the component walk covers everything the
+        // retired list walk reached.
+        Type::Ref(_) => false,
         Type::TVar(t) => {
             Arc::as_ptr(&t.read().typ).addr() == addr || {
                 let cell = t.read().typ.clone();
@@ -82,41 +89,15 @@ fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> 
                     || cell.constraints.iter().any(|c| would_cycle_seen(addr, c, seen))
             }
         }
-        Type::Abstract { id: _, params } => {
-            params.iter().any(|t| would_cycle_seen(addr, t, seen))
-        }
-        Type::Error(t) => would_cycle_seen(addr, t, seen),
-        Type::Array(a) => would_cycle_seen(addr, &**a, seen),
-        Type::Map { key, value } => {
-            would_cycle_seen(addr, &**key, seen) || would_cycle_seen(addr, &**value, seen)
-        }
-        Type::ByRef(t) => would_cycle_seen(addr, t, seen),
-        Type::Tuple(ts) => ts.iter().any(|t| would_cycle_seen(addr, t, seen)),
-        Type::Variant(_, ts) => ts.iter().any(|t| would_cycle_seen(addr, t, seen)),
-        Type::Struct(ts) => ts.iter().any(|(_, t)| would_cycle_seen(addr, t, seen)),
-        Type::Set(s) => s.iter().any(|t| would_cycle_seen(addr, t, seen)),
-        Type::Fn(f) => {
-            let FnType {
-                args,
-                vargs,
-                rtype,
-                throws,
-                explicit_throws: _,
-                quantifiers: _,
-                lambda_ids: _,
-            } = &**f;
-            // Constraint TYPES live in the signature cells'
-            // conjunctions (phase C); the `TVar` arm above walks each
-            // reachable cell's conjuncts, so the signature-component
-            // walks cover everything the retired list walk reached.
-            args.iter().any(|t| would_cycle_seen(addr, &t.typ, seen))
-                || match vargs {
-                    None => false,
-                    Some(t) => would_cycle_seen(addr, t, seen),
+        t => t
+            .try_for_each_child(&mut |c| {
+                if would_cycle_seen(addr, c, seen) {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
                 }
-                || would_cycle_seen(addr, rtype, seen)
-                || would_cycle_seen(addr, &throws, seen)
-        }
+            })
+            .is_break(),
     }
 }
 
@@ -652,92 +633,28 @@ impl TVar {
     }
 }
 
-// CR claude for eric: the eight structural walks below (plus
-// privatize_d / resolve_abstract_node / tvar_free in lowering.rs) each
-// hand-roll the exhaustive Type match, and they silently DISAGREE on
-// the Ref arm (alias/collect/unfreeze walk Ref.params;
-// unbind/unbind_open/has_unbound skip them — has_unbound on a Ref
-// with unbound params answers false). Propose shared
-// for_each_child/cow_children walkers so each walk is just its
-// interesting arms and the Ref-arm policy is an explicit override.
-// See design/code_review_2026_07_19.md A4.
+// The structural walks below are each written as their INTERESTING
+// arms (TVar, plus any arm whose traversal policy differs from plain
+// recursion — chiefly whether `Ref` params are walked), with all other
+// structure routed through the shared child walkers
+// (`Type::try_for_each_child` / `Type::cow_children`), so the
+// exhaustive Type match lives in one place per walk kind. Every
+// divergence from the default is an explicit override; the skips are
+// preserved verbatim from the pre-walker code (the policy survey is
+// review A4/C8, design/code_review_2026_07_19.md).
 impl Type {
     pub fn unfreeze_tvars(&self) {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref(TypeRef { params, .. }) => {
-                for t in params.iter() {
-                    t.unfreeze_tvars();
-                }
-            }
-            Type::Error(t) => t.unfreeze_tvars(),
-            Type::Array(t) => t.unfreeze_tvars(),
-            Type::Map { key, value } => {
-                key.unfreeze_tvars();
-                value.unfreeze_tvars();
-            }
-            Type::ByRef(t) => t.unfreeze_tvars(),
-            Type::Tuple(ts) => {
-                for t in ts.iter() {
-                    t.unfreeze_tvars()
-                }
-            }
-            Type::Struct(ts) => {
-                for (_, t) in ts.iter() {
-                    t.unfreeze_tvars()
-                }
-            }
-            Type::Variant(_, ts) => {
-                for t in ts.iter() {
-                    t.unfreeze_tvars()
-                }
-            }
             Type::TVar(tv) => tv.write().frozen = false,
+            // FnType adds the guarded sig-cell constraint walk.
             Type::Fn(ft) => ft.unfreeze_tvars(),
-            Type::Set(s) => {
-                for typ in s.iter() {
-                    typ.unfreeze_tvars()
-                }
-            }
-            Type::Abstract { id: _, params } => {
-                for typ in params.iter() {
-                    typ.unfreeze_tvars()
-                }
-            }
+            t => t.for_each_child(&mut |c| c.unfreeze_tvars()),
         }
     }
 
     /// alias type variables with the same name to each other
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref(TypeRef { params, .. }) => {
-                for t in params.iter() {
-                    t.alias_tvars(known);
-                }
-            }
-            Type::Error(t) => t.alias_tvars(known),
-            Type::Array(t) => t.alias_tvars(known),
-            Type::Map { key, value } => {
-                key.alias_tvars(known);
-                value.alias_tvars(known);
-            }
-            Type::ByRef(t) => t.alias_tvars(known),
-            Type::Tuple(ts) => {
-                for t in ts.iter() {
-                    t.alias_tvars(known)
-                }
-            }
-            Type::Struct(ts) => {
-                for (_, t) in ts.iter() {
-                    t.alias_tvars(known)
-                }
-            }
-            Type::Variant(_, ts) => {
-                for t in ts.iter() {
-                    t.alias_tvars(known)
-                }
-            }
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
                 Entry::Occupied(e) => {
                     let v = e.get();
@@ -746,96 +663,27 @@ impl Type {
                 }
                 Entry::Vacant(e) => {
                     e.insert(tv.clone());
-                    ()
                 }
             },
+            // FnType adds the guarded sig-cell constraint walk.
             Type::Fn(ft) => ft.alias_tvars(known),
-            Type::Set(s) => {
-                for typ in s.iter() {
-                    typ.alias_tvars(known)
-                }
-            }
-            Type::Abstract { id: _, params } => {
-                for typ in params.iter() {
-                    typ.alias_tvars(known)
-                }
-            }
+            t => t.for_each_child(&mut |c| c.alias_tvars(known)),
         }
     }
 
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref(TypeRef { params, .. }) => {
-                for t in params.iter() {
-                    t.collect_tvars(known);
-                }
+            Type::TVar(tv) => {
+                known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
-            Type::Error(t) => t.collect_tvars(known),
-            Type::Array(t) => t.collect_tvars(known),
-            Type::Map { key, value } => {
-                key.collect_tvars(known);
-                value.collect_tvars(known);
-            }
-            Type::ByRef(t) => t.collect_tvars(known),
-            Type::Tuple(ts) => {
-                for t in ts.iter() {
-                    t.collect_tvars(known)
-                }
-            }
-            Type::Struct(ts) => {
-                for (_, t) in ts.iter() {
-                    t.collect_tvars(known)
-                }
-            }
-            Type::Variant(_, ts) => {
-                for t in ts.iter() {
-                    t.collect_tvars(known)
-                }
-            }
-            Type::TVar(tv) => match known.entry(tv.name.clone()) {
-                Entry::Occupied(_) => (),
-                Entry::Vacant(e) => {
-                    e.insert(tv.clone());
-                    ()
-                }
-            },
+            // FnType adds the guarded sig-cell constraint walk.
             Type::Fn(ft) => ft.collect_tvars(known),
-            Type::Set(s) => {
-                for typ in s.iter() {
-                    typ.collect_tvars(known)
-                }
-            }
-            Type::Abstract { id: _, params } => {
-                for typ in params.iter() {
-                    typ.collect_tvars(known)
-                }
-            }
+            t => t.for_each_child(&mut |c| c.collect_tvars(known)),
         }
     }
 
     pub fn check_tvars_declared(&self, declared: &AHashSet<ArcStr>) -> Result<()> {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => Ok(()),
-            Type::Ref(TypeRef { params, .. }) => {
-                params.iter().try_for_each(|t| t.check_tvars_declared(declared))
-            }
-            Type::Error(t) => t.check_tvars_declared(declared),
-            Type::Array(t) => t.check_tvars_declared(declared),
-            Type::Map { key, value } => {
-                key.check_tvars_declared(declared)?;
-                value.check_tvars_declared(declared)
-            }
-            Type::ByRef(t) => t.check_tvars_declared(declared),
-            Type::Tuple(ts) => {
-                ts.iter().try_for_each(|t| t.check_tvars_declared(declared))
-            }
-            Type::Struct(ts) => {
-                ts.iter().try_for_each(|(_, t)| t.check_tvars_declared(declared))
-            }
-            Type::Variant(_, ts) => {
-                ts.iter().try_for_each(|t| t.check_tvars_declared(declared))
-            }
             Type::TVar(tv) => {
                 if !declared.contains(&tv.name) {
                     bail!("undeclared type variable '{}'", tv.name)
@@ -843,59 +691,45 @@ impl Type {
                     Ok(())
                 }
             }
-            Type::Set(s) => s.iter().try_for_each(|t| t.check_tvars_declared(declared)),
-            Type::Abstract { id: _, params } => {
-                params.iter().try_for_each(|t| t.check_tvars_declared(declared))
-            }
+            // Nested fn types quantify their own tvars — not checked
+            // against the enclosing declaration set.
             Type::Fn(_) => Ok(()),
+            t => match t.try_for_each_child(&mut |c| match c
+                .check_tvars_declared(declared)
+            {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(e) => ControlFlow::Break(e),
+            }) {
+                ControlFlow::Continue(()) => Ok(()),
+                ControlFlow::Break(e) => Err(e),
+            },
         }
     }
 
     pub fn has_unbound(&self) -> bool {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => false,
-            Type::Ref(TypeRef { .. }) => false,
-            Type::Error(e) => e.has_unbound(),
-            Type::Array(t0) => t0.has_unbound(),
-            Type::Map { key, value } => key.has_unbound() || value.has_unbound(),
-            Type::ByRef(t0) => t0.has_unbound(),
-            Type::Tuple(ts) => ts.iter().any(|t| t.has_unbound()),
-            Type::Struct(ts) => ts.iter().any(|(_, t)| t.has_unbound()),
-            Type::Variant(_, ts) => ts.iter().any(|t| t.has_unbound()),
             Type::TVar(tv) => tv.read().typ.read().typ.is_none(),
-            Type::Set(s) => s.iter().any(|t| t.has_unbound()),
-            Type::Abstract { id: _, params } => params.iter().any(|t| t.has_unbound()),
-            Type::Fn(ft) => ft.has_unbound(),
+            // Ref PARAMS are skipped (preserved from the pre-walker
+            // code; review A4/C8): a `Ref` with an unbound param
+            // answers FALSE. The consumers are the closedness tests
+            // (`constrain_known`, `unbind_open_tvars`), where this
+            // makes an inferred `Alias<'open>` binding read as closed.
+            Type::Ref(_) => false,
+            t => t
+                .try_for_each_child(&mut |c| {
+                    if c.has_unbound() {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                })
+                .is_break(),
         }
     }
 
     /// bind all unbound type variables to the specified type
     pub fn bind_as(&self, t: &Self) {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => (),
-            Type::Ref(TypeRef { .. }) => (),
-            Type::Error(t0) => t0.bind_as(t),
-            Type::Array(t0) => t0.bind_as(t),
-            Type::Map { key, value } => {
-                key.bind_as(t);
-                value.bind_as(t);
-            }
-            Type::ByRef(t0) => t0.bind_as(t),
-            Type::Tuple(ts) => {
-                for elt in ts.iter() {
-                    elt.bind_as(t)
-                }
-            }
-            Type::Struct(ts) => {
-                for (_, elt) in ts.iter() {
-                    elt.bind_as(t)
-                }
-            }
-            Type::Variant(_, ts) => {
-                for elt in ts.iter() {
-                    elt.bind_as(t)
-                }
-            }
             Type::TVar(tv) => {
                 let tv = tv.read();
                 let mut tv = tv.typ.write();
@@ -910,17 +744,9 @@ impl Type {
                     tv.typ = Some(t.clone());
                 }
             }
-            Type::Set(s) => {
-                for elt in s.iter() {
-                    elt.bind_as(t)
-                }
-            }
-            Type::Fn(ft) => ft.bind_as(t),
-            Type::Abstract { id: _, params } => {
-                for typ in params.iter() {
-                    typ.bind_as(t)
-                }
-            }
+            // Ref PARAMS are skipped (preserved; review A4/C8).
+            Type::Ref(_) => (),
+            s => s.for_each_child(&mut |c| c.bind_as(t)),
         }
     }
 
@@ -947,39 +773,6 @@ impl Type {
         known: &mut AHashMap<usize, TVar>,
     ) -> Option<Type> {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => None,
-            // with_params SHARES the resolution cell — load-bearing:
-            // expand_ref's commit copies come through here and must
-            // keep their seeded resolutions.
-            Type::Ref(tr) => Type::cow_slice(&tr.params, |t| t.reset_tvars_int(known))
-                .map(|params| Type::Ref(tr.with_params(params))),
-            Type::Error(t0) => {
-                t0.reset_tvars_int(known).map(|t| Type::Error(Arc::new(t)))
-            }
-            Type::Array(t0) => {
-                t0.reset_tvars_int(known).map(|t| Type::Array(Arc::new(t)))
-            }
-            Type::Map { key, value } => {
-                match (key.reset_tvars_int(known), value.reset_tvars_int(known)) {
-                    (None, None) => None,
-                    (k, v) => Some(Type::Map {
-                        key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                        value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                    }),
-                }
-            }
-            Type::ByRef(t0) => {
-                t0.reset_tvars_int(known).map(|t| Type::ByRef(Arc::new(t)))
-            }
-            Type::Tuple(ts) => {
-                Type::cow_slice(ts, |t| t.reset_tvars_int(known)).map(Type::Tuple)
-            }
-            Type::Struct(ts) => Type::cow_slice(ts, |(n, t)| {
-                t.reset_tvars_int(known).map(|t| (n.clone(), t))
-            })
-            .map(Type::Struct),
-            Type::Variant(tag, ts) => Type::cow_slice(ts, |t| t.reset_tvars_int(known))
-                .map(|ts| Type::Variant(tag.clone(), ts)),
             Type::TVar(tv) => Some({
                 // The fresh cell CARRIES the source's constraint
                 // conjunction — instantiation freshens the binding
@@ -1024,16 +817,11 @@ impl Type {
                 }
                 Type::TVar(fresh)
             }),
-            Type::Set(s) => {
-                Type::cow_slice(s, |t| t.reset_tvars_int(known)).map(Type::Set)
-            }
-            Type::Fn(fntyp) => {
-                fntyp.reset_tvars_int(known).map(|ft| Type::Fn(Arc::new(ft)))
-            }
-            Type::Abstract { id, params } => {
-                Type::cow_slice(params, |t| t.reset_tvars_int(known))
-                    .map(|params| Type::Abstract { id: *id, params })
-            }
+            // `cow_children`'s Ref arm rebuilds through `with_params`
+            // (SHARES the resolution cell) — load-bearing: expand_ref's
+            // commit copies come through here and must keep their
+            // seeded resolutions.
+            t => t.cow_children(&mut |c| c.reset_tvars_int(known)),
         }
     }
 
@@ -1064,85 +852,20 @@ impl Type {
                     Type::TVar(fresh.clone())
                 }
             }),
-            Type::Bottom | Type::Any | Type::Primitive(_) => None,
-            Type::Ref(tr) => {
-                Type::cow_slice(&tr.params, |t| t.replace_tvars_int(known, renamed))
-                    .map(|params| Type::Ref(tr.with_params(params)))
-            }
-            Type::Error(t0) => {
-                t0.replace_tvars_int(known, renamed).map(|t| Type::Error(Arc::new(t)))
-            }
-            Type::Array(t0) => {
-                t0.replace_tvars_int(known, renamed).map(|t| Type::Array(Arc::new(t)))
-            }
-            Type::Map { key, value } => {
-                match (
-                    key.replace_tvars_int(known, renamed),
-                    value.replace_tvars_int(known, renamed),
-                ) {
-                    (None, None) => None,
-                    (k, v) => Some(Type::Map {
-                        key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                        value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                    }),
-                }
-            }
-            Type::ByRef(t0) => {
-                t0.replace_tvars_int(known, renamed).map(|t| Type::ByRef(Arc::new(t)))
-            }
-            Type::Tuple(ts) => {
-                Type::cow_slice(ts, |t| t.replace_tvars_int(known, renamed))
-                    .map(Type::Tuple)
-            }
-            Type::Struct(ts) => Type::cow_slice(ts, |(n, t)| {
-                t.replace_tvars_int(known, renamed).map(|t| (n.clone(), t))
-            })
-            .map(Type::Struct),
-            Type::Variant(tag, ts) => {
-                Type::cow_slice(ts, |t| t.replace_tvars_int(known, renamed))
-                    .map(|ts| Type::Variant(tag.clone(), ts))
-            }
-            Type::Set(s) => {
-                Type::cow_slice(s, |t| t.replace_tvars_int(known, renamed)).map(Type::Set)
-            }
-            Type::Fn(fntyp) => {
-                fntyp.replace_tvars_int(known, renamed).map(|ft| Type::Fn(Arc::new(ft)))
-            }
-            Type::Abstract { id, params } => {
-                Type::cow_slice(params, |t| t.replace_tvars_int(known, renamed))
-                    .map(|params| Type::Abstract { id: *id, params })
-            }
+            t => t.cow_children(&mut |c| c.replace_tvars_int(known, renamed)),
         }
     }
 
     /// Unbind any bound tvars, but do not unalias them.
     pub(crate) fn unbind_tvars(&self) {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Ref(TypeRef { .. }) => {
-                ()
-            }
-            Type::Error(t0) => t0.unbind_tvars(),
-            Type::Array(t0) => t0.unbind_tvars(),
-            Type::Map { key, value } => {
-                key.unbind_tvars();
-                value.unbind_tvars();
-            }
-            Type::ByRef(t0) => t0.unbind_tvars(),
-            Type::Tuple(ts)
-            | Type::Variant(_, ts)
-            | Type::Set(ts)
-            | Type::Abstract { id: _, params: ts } => {
-                for t in ts.iter() {
-                    t.unbind_tvars()
-                }
-            }
-            Type::Struct(ts) => {
-                for (_, t) in ts.iter() {
-                    t.unbind_tvars()
-                }
-            }
             Type::TVar(tv) => tv.unbind(),
-            Type::Fn(fntyp) => fntyp.unbind_tvars(),
+            // Ref PARAMS are skipped (preserved; review A4/C8) —
+            // structural sig-level Ref params are concrete or
+            // DECLARED (rigid-gated, so never bound during the def
+            // check), leaving nothing to unbind in practice.
+            Type::Ref(_) => (),
+            t => t.for_each_child(&mut |c| c.unbind_tvars()),
         }
     }
 
@@ -1160,29 +883,6 @@ impl Type {
     /// may revise.
     pub(crate) fn unbind_open_tvars(&self) {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Ref(TypeRef { .. }) => {
-                ()
-            }
-            Type::Error(t0) => t0.unbind_open_tvars(),
-            Type::Array(t0) => t0.unbind_open_tvars(),
-            Type::Map { key, value } => {
-                key.unbind_open_tvars();
-                value.unbind_open_tvars();
-            }
-            Type::ByRef(t0) => t0.unbind_open_tvars(),
-            Type::Tuple(ts)
-            | Type::Variant(_, ts)
-            | Type::Set(ts)
-            | Type::Abstract { id: _, params: ts } => {
-                for t in ts.iter() {
-                    t.unbind_open_tvars()
-                }
-            }
-            Type::Struct(ts) => {
-                for (_, t) in ts.iter() {
-                    t.unbind_open_tvars()
-                }
-            }
             Type::TVar(tv) => {
                 // Bottom/Any are VACUOUS facts (`constrain_known`
                 // skips them too): an inferred `throws := ⊥` means
@@ -1197,7 +897,10 @@ impl Type {
                     tv.unbind()
                 }
             }
-            Type::Fn(fntyp) => fntyp.unbind_open_tvars(),
+            // Ref PARAMS are skipped (preserved; review A4/C8) — same
+            // rationale as `unbind_tvars`.
+            Type::Ref(_) => (),
+            t => t.for_each_child(&mut |c| c.unbind_open_tvars()),
         }
     }
 }

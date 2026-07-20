@@ -18,7 +18,7 @@ use std::{
     cmp::{Eq, PartialEq},
     fmt::Debug,
     iter,
-    ops::{Deref, DerefMut},
+    ops::{ControlFlow, Deref, DerefMut},
 };
 use triomphe::Arc;
 
@@ -688,6 +688,110 @@ impl std::fmt::Display for UnresolvableRef {
 impl std::error::Error for UnresolvableRef {}
 
 impl Type {
+    /// Read-only walk over this type's IMMEDIATE structural children:
+    /// `Ref`/`Abstract` params, collection element types, struct field
+    /// types, and (via [`FnType::try_for_each_type`]) fn signature
+    /// components. `TVar` is a LEAF — cell contents (binding,
+    /// constraints) are per-walk policy, never walked here. This is
+    /// the single exhaustive child enumeration for query walks: a
+    /// recursive walk matches its interesting arms (TVar, and any arm
+    /// whose traversal policy differs — e.g. skipping `Ref` params)
+    /// and routes everything else through this. See also
+    /// [`Self::cow_children`] for rebuild walks, and the "Invariants
+    /// for future type walks" section of
+    /// `design/type_operation_scaling.md`.
+    pub(crate) fn try_for_each_child<B>(
+        &self,
+        f: &mut impl FnMut(&Type) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) | Type::TVar(_) => {
+                ControlFlow::Continue(())
+            }
+            Type::Ref(tr) => {
+                for t in tr.params.iter() {
+                    f(t)?;
+                }
+                ControlFlow::Continue(())
+            }
+            Type::Abstract { id: _, params } => {
+                for t in params.iter() {
+                    f(t)?;
+                }
+                ControlFlow::Continue(())
+            }
+            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
+                for t in ts.iter() {
+                    f(t)?;
+                }
+                ControlFlow::Continue(())
+            }
+            Type::Struct(fs) => {
+                for (_, t) in fs.iter() {
+                    f(t)?;
+                }
+                ControlFlow::Continue(())
+            }
+            Type::Error(t) | Type::Array(t) | Type::ByRef(t) => f(t),
+            Type::Map { key, value } => {
+                f(key)?;
+                f(value)
+            }
+            Type::Fn(ft) => ft.try_for_each_type(f),
+        }
+    }
+
+    /// [`Self::try_for_each_child`] without early exit.
+    pub(crate) fn for_each_child(&self, f: &mut impl FnMut(&Type)) {
+        let _ = self.try_for_each_child::<()>(&mut |t| {
+            f(t);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Rebuild this type's IMMEDIATE structural children through `f`
+    /// (`None` from `f` = child unchanged); `None` = nothing changed,
+    /// keep the original (shared) — the COW discipline every rebuild
+    /// walk must follow (`design/type_operation_scaling.md`). Leaves
+    /// (including `TVar` — cell handling is per-walk) return `None`.
+    /// `Ref` params rebuild through [`TypeRef::with_params`], SHARING
+    /// the resolution cell: a params-only rewrite does not change what
+    /// the name means (load-bearing for `reset_tvars` — expand_ref's
+    /// commit copies must keep their seeded resolutions). A walk that
+    /// re-scopes or rebinds refs overrides the `Ref` arm.
+    pub(crate) fn cow_children(
+        &self,
+        f: &mut impl FnMut(&Type) -> Option<Type>,
+    ) -> Option<Type> {
+        match self {
+            Type::Bottom | Type::Any | Type::Primitive(_) | Type::TVar(_) => None,
+            Type::Ref(tr) => Type::cow_slice(&tr.params, |t| f(t))
+                .map(|params| Type::Ref(tr.with_params(params))),
+            Type::Abstract { id, params } => Type::cow_slice(params, |t| f(t))
+                .map(|params| Type::Abstract { id: *id, params }),
+            Type::Error(t) => f(t).map(|t| Type::Error(Arc::new(t))),
+            Type::Array(t) => f(t).map(|t| Type::Array(Arc::new(t))),
+            Type::ByRef(t) => f(t).map(|t| Type::ByRef(Arc::new(t))),
+            Type::Map { key, value } => match (f(key), f(value)) {
+                (None, None) => None,
+                (k, v) => Some(Type::Map {
+                    key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
+                    value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
+                }),
+            },
+            Type::Tuple(ts) => Type::cow_slice(ts, |t| f(t)).map(Type::Tuple),
+            Type::Variant(tag, ts) => {
+                Type::cow_slice(ts, |t| f(t)).map(|ts| Type::Variant(tag.clone(), ts))
+            }
+            Type::Set(ts) => Type::cow_slice(ts, |t| f(t)).map(Type::Set),
+            Type::Struct(fs) => {
+                Type::cow_slice(fs, |(n, t)| f(t).map(|t| (n.clone(), t)))
+                    .map(Type::Struct)
+            }
+            Type::Fn(ft) => ft.cow_walk(|t| f(t)).map(|ft| Type::Fn(Arc::new(ft))),
+        }
+    }
+
     pub fn empty_tvar() -> Self {
         Type::TVar(TVar::default())
     }
@@ -721,38 +825,23 @@ impl Type {
         }
     }
 
-    /// A `Type::Ref` whose `(scope, name)` can't be resolved in the
-    /// ambient env. STRUCTURED (not just a message) because callers may
-    /// need to distinguish a transient name-resolution boundary from a
-    /// semantic type mismatch.
-    /// True iff the type mentions a `Type::Abstract` anywhere,
-    /// looking through bound tvar cells AND `Type::Ref` aliases (an
-    /// alias to an abstract type is the boundary in its unexpanded
-    /// form — `contains` expands refs internally, so the mismatch it
-    /// reports can involve an abstract the surface type only names).
-    /// Cycle-safe on both cells and ref chains. Cold path — only
-    /// consulted while CONSTRUCTING a `check_contains` failure.
     /// No TVar anywhere beneath (not following Refs — a ref's own
     /// expansion embeds params, so param tvar-freedom is what callers
-    /// gate on). Cheap short-circuiting walk.
+    /// gate on; the walker's Ref arm yields exactly the params). A
+    /// tvar-free type's identity is stable under `PartialEq`, so it
+    /// can key a cache. Cheap short-circuiting walk.
     pub(crate) fn tvar_free(&self) -> bool {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => true,
             Type::TVar(_) => false,
-            Type::Ref(tr) => tr.params.iter().all(|t| t.tvar_free()),
-            Type::Abstract { params, .. } => params.iter().all(|t| t.tvar_free()),
-            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
-                ts.iter().all(|t| t.tvar_free())
-            }
-            Type::Struct(fs) => fs.iter().all(|(_, t)| t.tvar_free()),
-            Type::Array(t) | Type::Error(t) | Type::ByRef(t) => t.tvar_free(),
-            Type::Map { key, value } => key.tvar_free() && value.tvar_free(),
-            Type::Fn(ft) => {
-                ft.args.iter().all(|a| a.typ.tvar_free())
-                    && ft.vargs.as_ref().is_none_or(|t| t.tvar_free())
-                    && ft.rtype.tvar_free()
-                    && ft.throws.tvar_free()
-            }
+            t => t
+                .try_for_each_child(&mut |c| {
+                    if c.tvar_free() {
+                        ControlFlow::Continue(())
+                    } else {
+                        ControlFlow::Break(())
+                    }
+                })
+                .is_continue(),
         }
     }
 
@@ -949,41 +1038,12 @@ impl Type {
                     p.record_ide_refs(env, fallback_scope);
                 }
             }
-            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
-                for t in ts.iter() {
-                    t.record_ide_refs(env, fallback_scope);
-                }
-            }
-            Type::Array(t) | Type::Error(t) | Type::ByRef(t) => {
-                t.record_ide_refs(env, fallback_scope)
-            }
-            Type::Map { key, value } => {
-                key.record_ide_refs(env, fallback_scope);
-                value.record_ide_refs(env, fallback_scope);
-            }
-            Type::Struct(fields) => {
-                for (_, t) in fields.iter() {
-                    t.record_ide_refs(env, fallback_scope);
-                }
-            }
-            Type::Fn(ft) => {
-                for arg in ft.args.iter() {
-                    arg.typ.record_ide_refs(env, fallback_scope);
-                }
-                ft.rtype.record_ide_refs(env, fallback_scope);
-                ft.throws.record_ide_refs(env, fallback_scope);
-            }
-            Type::Abstract { params, .. } => {
-                for p in params.iter() {
-                    p.record_ide_refs(env, fallback_scope);
-                }
-            }
             Type::TVar(tv) => {
                 if let Some(t) = tv.read().typ.read().typ.as_ref() {
                     t.record_ide_refs(env, fallback_scope);
                 }
             }
-            Type::Bottom | Type::Any | Type::Primitive(_) => (),
+            t => t.for_each_child(&mut |c| c.record_ide_refs(env, fallback_scope)),
         }
     }
 
@@ -1111,50 +1171,27 @@ impl Type {
     }
 
     pub fn scope_refs(&self, scope: &ModPath) -> Type {
+        self.scope_refs_int(scope).unwrap_or_else(|| self.clone())
+    }
+
+    /// `None` = no `Ref` or `TVar` anywhere beneath — the caller keeps
+    /// the original (shared); cell-free ref-free structure has nothing
+    /// to re-scope or re-mint.
+    fn scope_refs_int(&self, scope: &ModPath) -> Option<Type> {
         match self {
-            Type::Bottom => Type::Bottom,
-            Type::Any => Type::Any,
-            Type::Primitive(s) => Type::Primitive(*s),
-            Type::Abstract { id, params } => Type::Abstract {
-                id: *id,
-                params: Arc::from_iter(params.iter().map(|t| t.scope_refs(scope))),
-            },
-            Type::Error(t0) => Type::Error(Arc::new(t0.scope_refs(scope))),
-            Type::Array(t0) => Type::Array(Arc::new(t0.scope_refs(scope))),
-            Type::Map { key, value } => {
-                let key = Arc::new(key.scope_refs(scope));
-                let value = Arc::new(value.scope_refs(scope));
-                Type::Map { key, value }
-            }
-            Type::ByRef(t) => Type::ByRef(Arc::new(t.scope_refs(scope))),
-            Type::Tuple(ts) => {
-                let i = ts.iter().map(|t| t.scope_refs(scope));
-                Type::Tuple(Arc::from_iter(i))
-            }
-            Type::Variant(tag, ts) => {
-                let i = ts.iter().map(|t| t.scope_refs(scope));
-                Type::Variant(tag.clone(), Arc::from_iter(i))
-            }
-            Type::Struct(ts) => {
-                let i = ts.iter().map(|(n, t)| (n.clone(), t.scope_refs(scope)));
-                Type::Struct(Arc::from_iter(i))
-            }
-            Type::TVar(tv) => match tv.read().typ.read().typ.as_ref() {
+            Type::TVar(tv) => Some(match tv.read().typ.read().typ.as_ref() {
                 None => Type::TVar(TVar::empty_named(tv.name.clone())),
                 Some(typ) => {
                     let typ = typ.scope_refs(scope);
                     Type::TVar(TVar::named(tv.name.clone(), typ))
                 }
-            },
+            }),
             Type::Ref(tr) => {
                 let params =
                     Arc::from_iter(tr.params.iter().map(|t| t.scope_refs(scope)));
-                Type::Ref(tr.with_scope(scope.clone(), params))
+                Some(Type::Ref(tr.with_scope(scope.clone(), params)))
             }
-            Type::Set(ts) => {
-                Type::Set(Arc::from_iter(ts.iter().map(|t| t.scope_refs(scope))))
-            }
-            Type::Fn(f) => Type::Fn(Arc::new(f.scope_refs(scope))),
+            t => t.cow_children(&mut |c| c.scope_refs_int(scope)),
         }
     }
 
@@ -1176,34 +1213,19 @@ impl Type {
     /// throwaway TVar (→ true) and the walk continue, without changing
     /// what the stored predicate means anywhere else.
     pub fn any_as_tvar(&self) -> Type {
+        self.any_as_tvar_int().unwrap_or_else(|| self.clone())
+    }
+
+    /// `None` = no `Any` beneath — keep the original (shared). `Ref`
+    /// params, `Abstract` params, and `Fn` signatures are LEAVES here
+    /// (preserved from the pre-walker code): the unification view
+    /// exists for the select arm walk's structural pairs, which never
+    /// descend those.
+    fn any_as_tvar_int(&self) -> Option<Type> {
         match self {
-            Type::Any => Type::empty_tvar(),
-            Type::Bottom
-            | Type::Primitive(_)
-            | Type::TVar(_)
-            | Type::Ref(_)
-            | Type::Fn(_)
-            | Type::Abstract { .. } => self.clone(),
-            Type::Error(t) => Type::Error(Arc::new(t.any_as_tvar())),
-            Type::Array(t) => Type::Array(Arc::new(t.any_as_tvar())),
-            Type::ByRef(t) => Type::ByRef(Arc::new(t.any_as_tvar())),
-            Type::Map { key, value } => Type::Map {
-                key: Arc::new(key.any_as_tvar()),
-                value: Arc::new(value.any_as_tvar()),
-            },
-            Type::Tuple(ts) => {
-                Type::Tuple(Arc::from_iter(ts.iter().map(|t| t.any_as_tvar())))
-            }
-            Type::Variant(tag, ts) => Type::Variant(
-                tag.clone(),
-                Arc::from_iter(ts.iter().map(|t| t.any_as_tvar())),
-            ),
-            Type::Struct(ts) => Type::Struct(Arc::from_iter(
-                ts.iter().map(|(n, t)| (n.clone(), t.any_as_tvar())),
-            )),
-            Type::Set(ts) => {
-                Type::Set(Arc::from_iter(ts.iter().map(|t| t.any_as_tvar())))
-            }
+            Type::Any => Some(Type::empty_tvar()),
+            Type::Ref(_) | Type::Fn(_) | Type::Abstract { .. } => None,
+            t => t.cow_children(&mut |c| c.any_as_tvar_int()),
         }
     }
 }

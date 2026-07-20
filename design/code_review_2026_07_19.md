@@ -92,6 +92,19 @@ the gates. Also: `Slot::new`/`FoldSlot::new` duplicate the
 prototype/live `if`.
 
 ### A4. Shared `Type` child-walkers (`typ/`)
+**DONE:** `Type::try_for_each_child`/`for_each_child` (query) and
+`Type::cow_children` (rebuild) in typ/mod.rs are the single child
+enumerations; `FnType::try_for_each_type`/`for_each_type` +
+`for_each_sig_constraint` (the 3×-copied guarded constraint walk) on
+the FnType side. Converted: the eight tvar.rs walks,
+`would_cycle_seen`'s recursion arms, mod.rs `tvar_free` /
+`scope_refs` (now COW) / `any_as_tvar` (now COW) / `record_ide_refs`
+(picking up its missing `vargs` coverage), and lowering.rs
+`privatize_d` / `resolve_abstract_node` boring arms; lowering.rs's
+duplicate `tvar_free` deleted in favor of `Type::tvar_free`. Every
+Ref-arm skip is now an explicit override, behavior preserved verbatim
+— the POLICY question is C8 below.
+
 `typ/tvar.rs` alone hand-rolls eight exhaustive structural walks
 (`unfreeze_tvars`, `alias_tvars`, `collect_tvars`,
 `check_tvars_declared`, `has_unbound`, `bind_as`, `unbind_tvars`,
@@ -225,6 +238,28 @@ would name them once.
    `ahash::AHashMap`, …) for names used many times per file, against
    the project's use-statement convention. Cosmetic; a file-at-a-time
    sweep when touching each file anyway.
+8. **The Ref-params skip in `has_unbound`/`bind_as`/`unbind_tvars`/
+   `unbind_open_tvars`/`would_cycle_seen`** (surfaced by A4; behavior
+   preserved verbatim behind explicit overrides). Analysis: for the
+   unbind/bind gate walks the skip is de-facto harmless — a
+   signature-STRUCTURAL `Alias<'a>` param is either concrete or a
+   DECLARED tvar, and declared cells are rigid-gated during the def
+   check, so there is nothing to unbind. The suspicious consumers are
+   the two CLOSEDNESS tests: `constrain_known(closed_only)` and
+   `unbind_open_tvars` both decide "is this inferred binding a closed
+   fact?" via `has_unbound`, and a binding of the shape
+   `Alias<'b-unbound>` (a Ref, e.g. `List<'b>`, unified into an
+   anonymous cell from a declared rtype) reads as CLOSED — a partial
+   mid-solve fact gets recorded / kept where the unbind-open rule
+   says it must re-open (the first-writer-wins family those rules
+   exist to prevent). No live witness; the structural twins
+   (`Array<'b>` etc.) are walked correctly, so only NAMED aliases are
+   exposed. Options: (a) make `has_unbound` walk Ref params (one-line
+   now), accepting that closedness then reflects params; (b) keep the
+   skip and document it as "Refs are opaque until expansion". I lean
+   (a) for the closedness tests; `would_cycle_seen`'s skip looks
+   genuinely deliberate (the guarded cell-graph walks never expand a
+   name, so a Ref-mediated cycle can't hang them).
 
 ## D. What was NOT deeply reviewed
 
