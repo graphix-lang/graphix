@@ -102,6 +102,11 @@ impl<'a> TVal<'a> {
         f: &mut fmt::Formatter<'_>,
         hist: &mut AHashSet<(usize, usize)>,
     ) -> fmt::Result {
+        if std::env::var_os("GRAPHIX_DBG_TVAL").is_some() {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                eprintln!("TVAL typ={} v={}", self.typ, NakedPrefix(self.v));
+            });
+        }
         if !self.typ.is_a_with(&self.env, IsAFlags::MatchAbstract.into(), &self.v) {
             return format_with_flags(PrintFlag::DerefTVars, || {
                 eprintln!(
@@ -205,10 +210,31 @@ impl<'a> TVal<'a> {
             }
             (Type::Variant(_, _), Value::String(s)) => write!(f, "`{s}"),
             (Type::Variant(_, _), v) => fmt_naked(f, v),
-            (Type::Set(ts), v) => match ts.iter().find(|t| t.is_a(&self.env, v)) {
-                None => fmt_naked(f, v),
-                Some(t) => Self { typ: t, env: self.env, v }.fmt_int(f, hist),
-            },
+            // Member selection prefers the first INFORMATIVE match: a
+            // type-blind member — an unbound tvar, `Any`, or `⊥` (a
+            // `never()` arm's cell terminal-settles to ⊥ and rides the
+            // select union) — matches ANY value (`is_a` answers true),
+            // so a naive first-match walk picked it over a concrete
+            // sibling and printed the whole subtree naked. Worse, HOW
+            // such a cell settles is MODE-dependent (fusion's binding
+            // checks bind cells the plain typecheck leaves open/⊥), so
+            // a union carrying a never-arm cell rendered its tuple
+            // elements `(...)` under jit and `[...]` under interp
+            // (jul19f divergence_000000, pinned
+            // tval-union-blind-print-jul2026). The type-blind-member
+            // fallback keeps the old behavior when nothing informative
+            // matches.
+            (Type::Set(ts), v) => {
+                let informative = ts.iter().find(|t| {
+                    t.with_deref(|dt| {
+                        !matches!(dt, None | Some(Type::Bottom | Type::Any))
+                    }) && t.is_a(&self.env, v)
+                });
+                match informative.or_else(|| ts.iter().find(|t| t.is_a(&self.env, v))) {
+                    None => fmt_naked(f, v),
+                    Some(t) => Self { typ: t, env: self.env, v }.fmt_int(f, hist),
+                }
+            }
         }
     }
 }

@@ -1,0 +1,10 @@
+// TVal union-member selection picked a TYPE-BLIND member (jul19f
+// divergence_000000, hand-minimized): a select union carries the
+// never() arm's cell, which terminal-settles to BOTTOM — and ⊥ (like
+// Any and an unbound tvar) answers is_a=true for ANY value, so the
+// naive first-match walk printed the whole subtree naked (tuples as
+// arrays). HOW that cell settles is MODE-dependent (fusion's binding
+// checks bind cells the plain typecheck leaves ⊥/open), so interp
+// rendered [..] where jit rendered (..). Fix: TVal's Set arm prefers
+// the first INFORMATIVE member (deref not None/Bottom/Any).
+{let a = [i64:0, ("foo", f64:42.)]; let out = select a {[x, tl..] => tl, _ => never()}; "[array::group(out, |i, x| true)]"}

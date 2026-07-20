@@ -313,6 +313,11 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
   "does this call dispatch and to what".
+- `GRAPHIX_DBG_TVAL=1` — print every `TVal` render step (deref'd type
+  + naked value) as the typed printer walks. The tool for "why did
+  this value print in this form" — found the union-member selection
+  picking the never() arm's ⊥-settled cell over the concrete member
+  (jul19f divergence_000000, the interp-vs-jit tuple-render split).
 - `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
   spec, BindId, unstable/b2l/cached hit), the index writes
   (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export

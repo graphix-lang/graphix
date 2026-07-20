@@ -987,3 +987,32 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+const TVAL_UNION_BLIND_PRINT: &str = r#"
+{
+  let a = [i64:0, ("foo", f64:42.)];
+  let out = select a {
+    [x, tl..] => tl,
+    _ => never()
+  };
+  "[array::group(out, |i, x| true)]"
+}
+"#;
+
+// TVal's union-member selection must prefer INFORMATIVE members: the
+// never() arm's cell terminal-settles to ⊥, which (like Any and an
+// unbound tvar) is_a-matches ANY value, so first-match printed the
+// tuple element type-blind (as an array) — and mode-dependently, since
+// fusion's binding checks settle the cell differently (jul19f
+// divergence_000000, pinned tval-union-blind-print-jul2026).
+run!(
+    tval_union_blind_print,
+    TVAL_UNION_BLIND_PRINT,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::String(s)) => &**s == r#"[[("foo", 42)]]"#,
+            _ => false,
+        }
+    };
+    graphix_package_core::testing::FuseExpect::None
+);
