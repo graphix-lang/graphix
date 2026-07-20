@@ -58,7 +58,7 @@ where
                 structure_pattern().map(|p| Either::Left(p)),
             ))),
             csep(),
-            token(']'),
+            attempt(sptoken(']')),
         ),
     )
     .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {

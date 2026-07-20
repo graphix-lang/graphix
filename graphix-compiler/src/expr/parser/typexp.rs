@@ -140,7 +140,7 @@ where
                 ))
             }),
             csep(),
-            token(')'),
+            attempt(sptoken(')')),
         ),
     ))
 }
@@ -334,7 +334,11 @@ parser! {
         spaces().with(choice((
             token('&').with(typ()).map(|t| Type::ByRef(Arc::new(t))),
             token('_').map(|_| Type::Bottom),
-            between(token('['), sptoken(']'), sep_by_tok(typ(), csep(), token(']')))
+            between(
+                token('['),
+                sptoken(']'),
+                sep_by_tok(typ(), csep(), attempt(sptoken(']'))),
+            )
                 .map(|mut ts: LPooled<Vec<Type>>| Type::flatten_set(ts.drain(..))),
             tupletyp(),
             structtyp(),

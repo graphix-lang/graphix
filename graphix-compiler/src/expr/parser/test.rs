@@ -149,6 +149,34 @@ fn attr_with_args_captured() {
 }
 
 #[test]
+fn whitespace_in_empty_delimiters() {
+    // The empty-list terminator look-ahead skips whitespace, so each loose
+    // form must parse identically to its tight twin. The printer never emits
+    // the loose forms, so the pretty round-trip can't cover this.
+    for (loose, tight) in [
+        ("any( )", "any()"),
+        ("any(\n)", "any()"),
+        ("[ ]", "[]"),
+        ("[\n  ]", "[]"),
+        ("{ \n }", "{}"),
+        ("| | 42", "|| 42"),
+    ] {
+        assert_eq!(parse_one(tight).unwrap(), parse_one(loose).unwrap(), "{loose}");
+    }
+    let e = parse_one("#[foo( )]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("attribute lost");
+    assert!(dec.attrs[0].args.is_empty());
+    assert_eq!(
+        parse_typexpr("fn( ) -> i64").unwrap(),
+        parse_typexpr("fn() -> i64").unwrap()
+    );
+    assert_eq!(
+        parse_structure_pattern("[ ]").unwrap(),
+        parse_structure_pattern("[]").unwrap()
+    );
+}
+
+#[test]
 fn attr_round_trips() {
     // print -> parse preserves attributes verbatim (args included).
     let e = parse_one("#[native]\n#[foo(1, 2)]\n42").unwrap();

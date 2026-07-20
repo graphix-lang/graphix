@@ -174,7 +174,7 @@ where
         spaces().with(optional(between(
             token('('),
             sptoken(')'),
-            sep_by_tok(expr(), csep(), token(')')),
+            sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
         ))),
     )
         .skip(sptoken(']'))
@@ -406,7 +406,7 @@ where
         attempt(string("any").skip(not_prefix())).with(between(
             token('('),
             sptoken(')'),
-            sep_by_tok(expr(), csep(), token(')')),
+            sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
         )),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
@@ -618,7 +618,11 @@ where
         between(
             token('{'),
             sptoken('}'),
-            sep_by_tok((expr(), spstring("=>").with(expr())), csep(), token('}')),
+            sep_by_tok(
+                (expr(), spstring("=>").with(expr())),
+                csep(),
+                attempt(sptoken('}')),
+            ),
         ),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<(Expr, Expr)>>)| {

@@ -95,7 +95,7 @@ where
             spaces().with(optional(token('=').with(expr()))),
         ),
         csep(),
-        token('|'),
+        attempt(sptoken('|')),
     )
     .then(
         |mut v: LPooled<
