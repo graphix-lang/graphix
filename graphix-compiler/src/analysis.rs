@@ -533,73 +533,53 @@ fn mark_recursion<R: Rt, E: UserEvent>(
     }
 }
 
-/// Walk the body's tail positions (mirroring `body_has_self_tail_call`)
-/// and mark each tail-position self-call. Returns whether at least one
-/// site was marked.
+/// Walk the body's tail positions ([`fusion::for_each_tail_leaf`] —
+/// the shared definition, review A5) and mark each tail-position
+/// self-call. Returns whether at least one site was marked.
 fn mark_tail_sites<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     instance: LambdaInstanceId,
     callee: LambdaId,
 ) -> bool {
-    match node.view() {
-        NodeView::Block(b) => {
-            b.children.last().is_some_and(|c| mark_tail_sites(c, instance, callee))
-        }
-        NodeView::ExplicitParens(ep) => mark_tail_sites(&ep.n, instance, callee),
-        NodeView::Select(s) => {
-            let mut any = false;
-            for (_, body) in s.arms.iter() {
-                any |= mark_tail_sites(&body.node, instance, callee);
+    fusion::for_each_tail_leaf(
+        node,
+        &mut |n| match n.view() {
+            NodeView::CallSite(cs) => {
+                if cs.static_target().map(|target| target.instance) != Some(instance) {
+                    return false;
+                }
+                let Some(order) = positional_arg_order(cs) else {
+                    return false;
+                };
+                cs.is_self_tail_call.store(true, Ordering::Relaxed);
+                *cs.tail_arg_order.lock() = Some(order);
+                *cs.callee_lambda_id.lock() = Some(callee);
+                true
             }
-            if any {
-                // This select is on the TAIL SPINE — its emits ride
-                // the arm's organic tag inside evaluation frames (the
-                // interp twin of the kernel's `emit_body_tail`
-                // no-scrutinee-fold rule; see `Select::tail_position`).
-                s.tail_position.store(true, Ordering::Relaxed);
-            }
-            any
-        }
-        NodeView::CallSite(cs) => {
-            if cs.static_target().map(|target| target.instance) != Some(instance) {
-                return false;
-            }
-            let Some(order) = positional_arg_order(cs) else {
-                return false;
-            };
-            cs.is_self_tail_call.store(true, Ordering::Relaxed);
-            *cs.tail_arg_order.lock() = Some(order);
-            *cs.callee_lambda_id.lock() = Some(callee);
-            true
-        }
-        _ => false,
-    }
+            _ => false,
+        },
+        // A select with a marked arm is on the TAIL SPINE — its emits
+        // ride the arm's organic tag inside evaluation frames (the
+        // interp twin of the kernel's `emit_body_tail`
+        // no-scrutinee-fold rule; see `Select::tail_position`).
+        &mut |s| s.tail_position.store(true, Ordering::Relaxed),
+    )
 }
 
-// CR claude for eric: this walk, mark_tail_sites above,
-// lowering.rs::body_has_self_tail_call, and emit_body_tail's dispatch
-// all encode "what is a tail position" independently, and the JIT's
-// set must match the analysis's or a TailCall emits without its loop.
-// Propose one shared tail-position walker so the agreement is
-// structural. See design/code_review_2026_07_19.md A5.
 fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     instance: LambdaInstanceId,
 ) -> bool {
-    match node.view() {
-        NodeView::Block(b) => b
-            .children
-            .last()
-            .is_some_and(|child| body_has_self_tail_call(child, instance)),
-        NodeView::ExplicitParens(ep) => body_has_self_tail_call(&ep.n, instance),
-        NodeView::Select(s) => {
-            s.arms.iter().any(|(_, body)| body_has_self_tail_call(&body.node, instance))
-        }
-        NodeView::CallSite(site) => {
-            site.static_target().map(|target| target.instance) == Some(instance)
-        }
-        _ => false,
-    }
+    fusion::for_each_tail_leaf(
+        node,
+        &mut |n| match n.view() {
+            NodeView::CallSite(site) => {
+                site.static_target().map(|target| target.instance) == Some(instance)
+            }
+            _ => false,
+        },
+        &mut |_| (),
+    )
 }
 
 /// The call's positional argument `BindId`s in order — the tail-loop's

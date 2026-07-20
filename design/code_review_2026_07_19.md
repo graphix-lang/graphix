@@ -127,6 +127,16 @@ cell-constraint walk is copy-pasted three times
 (`alias_tvars`/`unfreeze_tvars`/`collect_tvars`).
 
 ### A5. One definition of "tail position"
+**DONE:** `fusion::TailPosition` + `tail_position()` (the
+classification: Block/Parens/Select formers vs Leaf) and
+`fusion::for_each_tail_leaf` (the query/marking walk with a
+Select-spine hook) are the single definition, next to
+`for_each_node`. `analysis::mark_tail_sites`, both
+`body_has_self_tail_call` twins, and `emit_body_tail`'s dispatch all
+go through them — a new tail-position former is a compile error at
+every site that must agree. The stale `emit_body_into`/`emit_do`/
+`emit_tail` doc references (deleted machinery) were cleaned with it.
+
 Four places encode the same tail-position walk (root, Block last
 child, ExplicitParens, Select arms): `analysis.rs::mark_tail_sites`,
 `analysis.rs::body_has_self_tail_call`,

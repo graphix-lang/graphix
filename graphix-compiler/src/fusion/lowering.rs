@@ -1443,12 +1443,12 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
 
 /// Pure tail-position pre-scan: does this body contain a self tail
 /// call (a `CallSite` in tail position whose fnode `Ref` carries
-/// `self_bind`)? Mirrors `emit_body_into` / `emit_do` / `emit_tail`'s
-/// tail positions exactly: the root, a Block's LAST child, Select arm
-/// bodies, and ExplicitParens. Decides `has_tail_loop` BEFORE
-/// emission: `emit_tail` only lowers a `TailCall` when `self_info` is
+/// `self_bind`)? Tail positions are [`fusion::for_each_tail_leaf`]'s
+/// — the shared definition `emit_body_tail` also dispatches on
+/// (review A5). Decides `has_tail_loop` BEFORE emission:
+/// `emit_body_tail` only lowers a tail call when `self_call` is
 /// `Some`, and the caller only passes `Some` when this returned true,
-/// so a kernel can't emit a `TailCall` without its loop head. (The
+/// so a kernel can't emit a tail call without its loop head. (The
 /// converse over-approximation is harmless: a detected-but-rejected
 /// tail call — e.g. an arg type mismatch at emit time — leaves a
 /// vestigial loop head the body jumps into once.)
@@ -1456,20 +1456,16 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     self_bind: BindId,
 ) -> bool {
-    use NodeView;
-    match node.view() {
-        NodeView::Block(b) => {
-            b.children.last().is_some_and(|c| body_has_self_tail_call(c, self_bind))
-        }
-        NodeView::ExplicitParens(ep) => body_has_self_tail_call(&ep.n, self_bind),
-        NodeView::Select(s) => {
-            s.arms.iter().any(|(_, body)| body_has_self_tail_call(&body.node, self_bind))
-        }
-        NodeView::CallSite(cs) => {
-            matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind)
-        }
-        _ => false,
-    }
+    fusion::for_each_tail_leaf(
+        node,
+        &mut |n| match n.view() {
+            NodeView::CallSite(cs) => {
+                matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind)
+            }
+            _ => false,
+        },
+        &mut |_| (),
+    )
 }
 
 /// A recursive lambda's self-call is a second value source for its

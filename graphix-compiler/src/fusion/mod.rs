@@ -40,6 +40,7 @@ use crate::{
         kernel_abi::{KernelSig, freeze_for_abi_normalized},
         lowering::{RegionInputKind, resolve_abstract},
     },
+    node,
     node::genn,
     typ::{FnType, Type},
 };
@@ -418,6 +419,66 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
         .filter(|&(t, count)| count == 1 && const_lets.contains(&t))
         .map(|(t, _)| t)
         .collect()
+}
+
+/// The single definition of "tail position" (review A5). A body ROOT
+/// is a tail position; tailness propagates inward through exactly
+/// three structural FORMERS — a `Block`'s LAST child, an
+/// `ExplicitParens`' inner node, and every `Select` arm body — and
+/// stops at everything else (a `Leaf`, where a tail action happens:
+/// return, or a self tail-call's rebind-and-jump). Consumers that
+/// must AGREE on this set all dispatch through here: the analysis
+/// walks (`analysis::mark_tail_sites`, both `body_has_self_tail_call`
+/// twins, via [`for_each_tail_leaf`]) and the kernel emitter
+/// (`emit::flow::emit_body_tail`) — the JIT's tail set must match the
+/// analysis's or a `TailCall` emits without its loop. Adding a former
+/// here is a compile error at every one of those sites.
+pub(crate) enum TailPosition<'a, R: Rt, E: UserEvent> {
+    Block(&'a node::Block<R, E>),
+    Parens(&'a node::ExplicitParens<R, E>),
+    Select(&'a node::select::Select<R, E>),
+    Leaf(&'a Node<R, E>),
+}
+
+pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+) -> TailPosition<'a, R, E> {
+    match node.view() {
+        NodeView::Block(b) => TailPosition::Block(b),
+        NodeView::ExplicitParens(ep) => TailPosition::Parens(ep),
+        NodeView::Select(s) => TailPosition::Select(s),
+        _ => TailPosition::Leaf(node),
+    }
+}
+
+/// Walk `node`'s tail positions per [`TailPosition`], calling `f` on
+/// each tail-position LEAF; returns whether `f` returned true for at
+/// least one. Every Select arm is visited (no short-circuit — `f` may
+/// mark), and `on_select` fires for each `Select` on the tail spine
+/// whose arms contained a true leaf (`mark_tail_sites`' hook for the
+/// interp-side `tail_position` flag; pass a no-op for pure queries).
+pub(crate) fn for_each_tail_leaf<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    f: &mut impl FnMut(&Node<R, E>) -> bool,
+    on_select: &mut impl FnMut(&node::select::Select<R, E>),
+) -> bool {
+    match tail_position(node) {
+        TailPosition::Block(b) => {
+            b.children.last().is_some_and(|c| for_each_tail_leaf(c, f, on_select))
+        }
+        TailPosition::Parens(ep) => for_each_tail_leaf(&ep.n, f, on_select),
+        TailPosition::Select(s) => {
+            let mut any = false;
+            for (_, body) in s.arms.iter() {
+                any |= for_each_tail_leaf(&body.node, f, on_select);
+            }
+            if any {
+                on_select(s);
+            }
+            any
+        }
+        TailPosition::Leaf(n) => f(n),
+    }
 }
 
 /// Visit `node` and every reachable descendant (pre-order: `f` sees a

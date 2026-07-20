@@ -225,7 +225,7 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
             let bind_id = bind.single_bind_id();
             emit_let_node(cx, name, bind_id, &bind.node)?;
         }
-        // Compile-time-only declarations — skip (mirrors emit_do).
+        // Compile-time-only declarations — nothing to emit.
         NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
         // Expression statement — evaluate, discard the result. A
         // discarded may-bottom scalar is fine — the bottom is never
@@ -246,11 +246,12 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Tail-position body emission for a self-recursive kernel — the Node
-/// twin of lowering's `emit_body_into`/`emit_tail`. Tail positions are
-/// the body root, a Block's LAST child, Select arm bodies, and
-/// ExplicitParens; a self-call in one becomes the rebind-and-jump loop
-/// (`emit_tail_rebind_jump`), every other expression returns directly
+/// Tail-position body emission for a self-recursive kernel. Tail
+/// positions are [`fusion::TailPosition`]'s — the shared definition
+/// the analysis pre-scans walk (review A5), so the emitter's tail set
+/// can't drift from the set `body_has_self_tail_call` promised. A
+/// self-call leaf becomes the rebind-and-jump loop
+/// (`emit_self_tail_call`), every other leaf returns directly
 /// (`emit_kernel_return`, which drops ALL owned locals at any depth —
 /// nested-scope returns can't leak). Every path through this function
 /// leaves the current block TERMINATED.
@@ -259,19 +260,9 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ret: &Type,
 ) -> Result<()> {
-    use NodeView;
-    // Self tail-call — checked BEFORE value emission, mirroring
-    // lowering's `emit_tail` → `try_emit_tail_call` order. Matching is
-    // by the self BindId (names shadow, ids don't — #206).
-    if let Some((sb, _)) = cx.ctx.self_call {
-        if let NodeView::CallSite(cs) = node.view() {
-            if matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == *sb) {
-                return emit_self_tail_call(cx, cs);
-            }
-        }
-    }
-    match node.view() {
-        NodeView::Block(blk) => {
+    use fusion::TailPosition;
+    match fusion::tail_position(node) {
+        TailPosition::Block(blk) => {
             let mark = cx.env.mark();
             let (last, init) = blk
                 .children
@@ -288,9 +279,20 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
             cx.env.truncate(mark);
             Ok(())
         }
-        NodeView::ExplicitParens(ep) => emit_body_tail(cx, &ep.n, ret),
-        NodeView::Select(s) => emit_select_node_tail(cx, s, ret),
-        _ => emit_return_from_node(cx, ret, node),
+        TailPosition::Parens(ep) => emit_body_tail(cx, &ep.n, ret),
+        TailPosition::Select(s) => emit_select_node_tail(cx, s, ret),
+        TailPosition::Leaf(n) => {
+            // Self tail-call — checked BEFORE value emission. Matching
+            // is by the self BindId (names shadow, ids don't — #206).
+            if let Some((sb, _)) = cx.ctx.self_call {
+                if let NodeView::CallSite(cs) = n.view() {
+                    if matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == *sb) {
+                        return emit_self_tail_call(cx, cs);
+                    }
+                }
+            }
+            emit_return_from_node(cx, ret, n)
+        }
     }
 }
 
