@@ -709,14 +709,11 @@ impl Type {
     pub fn has_unbound(&self) -> bool {
         match self {
             Type::TVar(tv) => tv.read().typ.read().typ.is_none(),
-            // Ref PARAMS are skipped (preserved from the pre-walker
-            // code; review A4/C8): a `Ref` with an unbound param
-            // answers FALSE. The consumers are the closedness tests
-            // (`constrain_known`, `unbind_open_tvars`), where this
-            // makes an inferred `Alias<'open>` binding read as closed.
-            // Flipping this to walk params was invisible to the full
-            // suite + regress (2026-07-20) — no witness either way.
-            Type::Ref(_) => false,
+            // Ref PARAMS are walked (Eric's C8 ruling, 2026-07-20 —
+            // the pre-walker code skipped them): an inferred
+            // `Alias<'b-unbound>` binding is an OPEN fact, so the
+            // closedness tests (`constrain_known`,
+            // `unbind_open_tvars`) must not record/keep it.
             t => t
                 .try_for_each_child(&mut |c| {
                     if c.has_unbound() {

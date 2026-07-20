@@ -240,7 +240,12 @@ would name them once.
    sweep when touching each file anyway.
 8. **The Ref-params skip in `has_unbound`/`bind_as`/`unbind_tvars`/
    `unbind_open_tvars`/`would_cycle_seen`** (surfaced by A4; behavior
-   preserved verbatim behind explicit overrides). Analysis: for the
+   preserved verbatim behind explicit overrides).
+   **RULED (Eric, 2026-07-20): `has_unbound` now walks Ref params**
+   (option (a) below) — an inferred `Alias<'open>` binding is an open
+   fact for the closedness tests. The remaining skips
+   (`bind_as`/`unbind_tvars`/`unbind_open_tvars` — de-facto harmless;
+   `would_cycle_seen` — deliberate) stay. Analysis: for the
    unbind/bind gate walks the skip is de-facto harmless — a
    signature-STRUCTURAL `Alias<'a>` param is either concrete or a
    DECLARED tvar, and declared cells are rigid-gated during the def
