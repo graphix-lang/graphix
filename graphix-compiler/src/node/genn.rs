@@ -132,6 +132,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         flags: BitFlags::empty(),
         fnode,
         callee: Callee::DynamicUnbound,
+        gate_tainted_args: false,
         static_target: None,
         recursive_edge: AtomicBool::new(false),
         top_id,

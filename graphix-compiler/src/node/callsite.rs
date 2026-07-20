@@ -443,6 +443,17 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// trio (the `Static` tag carries `first_update`; the old invalid
     /// `statically_resolved && function == None` state is unrepresentable).
     pub(crate) callee: Callee<R, E>,
+    /// The callee is an ASYNC builtin: tainted arg productions are
+    /// gated to silence before delivery — taint == bottom == no input
+    /// to a builtin (Eric's ruling 2026-07-19). Builtin authors never
+    /// see the taint channel; an async builtin's fused arg region
+    /// already delivers silence (the kernel output boundary forces a
+    /// tainted result to None), so the gate is what makes the
+    /// node-walked arg agree. Sync builtins keep the poisoned
+    /// delivery (their `CachedArgs` wrapper mirrors the fused DynCall
+    /// protocol: taint the slot, never run eval); lambda callees keep
+    /// it (formals poison). Set at every callee-binding site.
+    pub(super) gate_tainted_args: bool,
     pub(crate) static_target: Option<StaticCallTarget>,
     pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
@@ -595,6 +606,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             args,
             arg_refs: Vec::new(),
             callee: Callee::DynamicUnbound,
+            gate_tainted_args: false,
             static_target: None,
             recursive_edge: AtomicBool::new(false),
             flags,
@@ -939,7 +951,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             });
         })?;
+        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn)
+            && !f.intrinsic_effect.lock().is_sync();
         self.callee = Callee::DynamicBound { def: fv, apply, transient: false };
+        // The publish loop ran before this bind resolved the callee —
+        // retract any poisoned deliveries the gate would have silenced.
+        if self.gate_tainted_args {
+            for arg in self.args.values() {
+                if event.variables.get(&arg.id).is_some_and(|tv| tv.is_tainted()) {
+                    event.variables.remove(&arg.id);
+                }
+            }
+        }
         // The lazy-bound body was compiled fresh AFTER the program-wide
         // typecheck1 + `analysis::analyze` passes, so its nested call
         // sites are unresolved and nothing in the subtree carries
@@ -1086,6 +1109,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ftype: instance_ftype.clone(),
             });
         }
+        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn)
+            && !def.intrinsic_effect.lock().is_sync();
         self.callee = Callee::Static {
             def: fv,
             apply,
@@ -1311,12 +1336,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             if let Some(ref mut node) = arg.node {
                 if let Some(tv) = node.update(ctx, event) {
                     let (v, tag) = tv.into_parts();
-                    arg_fired |= tag.triggers();
                     if tag.is_tainted() {
+                        // taint == bottom == no input to a builtin
+                        // (see `gate_tainted_args`): an async
+                        // builtin's arg seam converts the poisoned
+                        // production to silence, exactly as the
+                        // kernel output boundary does when the arg
+                        // subtree fuses.
+                        if self.gate_tainted_args {
+                            continue;
+                        }
+                        arg_fired |= tag.triggers();
                         // poison the formal delivery; keep the
                         // placeholder out of the cross-cycle store
                         event.variables.insert(arg.id, TagValue::tainted(Value::Null));
                     } else {
+                        arg_fired |= tag.triggers();
                         ctx.rt.cached_mut().insert(arg.id, v.clone());
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }

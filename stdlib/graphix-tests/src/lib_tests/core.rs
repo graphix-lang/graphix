@@ -952,3 +952,38 @@ run!(now, NOW, |v: Result<&Value>| match v {
     Ok(Value::DateTime(_)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
+
+const ONCE_TAINTED_NOT_COUNTED: &str = r#"
+{
+  let v = i64:0;
+  let x = once({
+    let rec f = |n: i64| -> i64 select n {
+      m if m <= i64:0 => (m / m),
+      m => f(m - i64:1)
+    };
+    let v = f(i64:1);
+    let r = &v;
+    *r <- i64:1;
+    select v {
+      x if true => i64:200,
+      x => x
+    }
+  } * i64:2);
+  [v, x]
+}
+"#;
+
+run!(
+    once_tainted_not_counted,
+    ONCE_TAINTED_NOT_COUNTED,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => {
+                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                    == vec![0, 400]
+            }
+            _ => false,
+        }
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);
