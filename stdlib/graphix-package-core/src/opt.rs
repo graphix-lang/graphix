@@ -234,9 +234,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
-            (Some(Value::Null), Some(e)) => {
-                Some(Value::Error(e.clone().into()))
-            }
+            (Some(Value::Null), Some(e)) => Some(Value::Error(e.clone().into())),
             (Some(v), _) => Some(v.clone()),
             _ => None,
         }
