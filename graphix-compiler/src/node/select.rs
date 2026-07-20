@@ -153,11 +153,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // dispatch): a tainted scrutinee production can't be matched —
         // the whole select produces the taint placeholder.
         if tainted {
-            return if arg_up {
-                Some(TagValue::tainted(Value::Null))
-            } else {
-                None
-            };
+            return if arg_up { Some(TagValue::tainted(Value::Null)) } else { None };
         }
         if std::env::var_os("GRAPHIX_DBG_SELECT").is_some() {
             eprintln!(

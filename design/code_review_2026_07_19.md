@@ -148,6 +148,16 @@ maintained by hand. A shared `for_each_tail_position(node, f)` (or a
 tail-position predicate) makes the agreement structural.
 
 ### A6. `LowerCtx` / `BodyEmitter` shape (`fusion/emit.rs`)
+**DONE:** `StateChannel` (ptr/enabled/next/replay/anchors — one
+struct, two instances `state`/`site` on `LowerCtx`) + `TailCtx`
+(loop_head/param_mark/call_slots/scrut_stale/sel_path); the
+`BodyEmitter` trait is down to its one real method (`emit`, still
+dyn — the R/E type erasure is load-bearing) with the nine data
+getters now a plain `BodySpec` struct riding alongside in
+`BodySource`; `define_kernel_body`'s 7-tuple is the named
+`DefinedBody`. Verified instruction-identical CLIF against the
+pre-change binary.
+
 `LowerCtx` has ~35 fields; the per-instance state channel and the
 per-call-site channel are structural twins
 (ptr/enabled/next/replay/anchors) begging to be two instances of one
@@ -163,49 +173,45 @@ would name them once.
 
 ## B. Smaller simplifications (worth doing, low risk)
 
-- `fusion/kernel.rs` staged arg-packer (~1158–1297): the first map
-  returns `(disc, staged Value, scalar_payload, is_scalar)`, a second
-  map folds the scalar payload into a `Value::U64` carrier, and the
-  push loop re-matches the param kind with an `unreachable!` for the
-  carrier. Staging `(disc: u64, payload: u64, keepalive: Value)` in
-  one pass is equivalent (payload words are stable across the Value's
-  move into the smallvec) and deletes the sentinel-carrier dance.
-- `fusion/kernel.rs::dispatch_typed` (~528): drained the pooled
-  `LPooled<Vec<Value>>` args into a fresh `Vec` per DynCall —
-  allocating on the hot dispatch path AND forfeiting the pool return
-  (FIXED in this commit: the pooled vec is now used directly).
-  Remaining: `Kernel::update`'s `param_opts` is `vec![None; n]` per
-  cycle where its siblings are smallvecs.
-- `fusion/emit.rs` repetition: the per-kind drop match appears 4×
-  (`emit_scope_drops`, `drop_owned_composites`, the tail-rebind
-  non-slot drops, the select merge scrut drop) — one
-  `emit_drop_local(kind, vv)`; `emit_bottom_abort` and
-  `emit_interrupt_check` both inline the lazy pending-exit-block
-  creation that `pending_exit_block()` already provides; the 4-instr
-  STALE re-fold appears 3× in `emit_kernel_return`; `emit_qop_node`'s
-  three shape arms repeat the bad-path/deliver/placeholder block
-  nearly verbatim.
-- `node/callsite.rs::resolve_static` inlines the body of its own
-  `refresh_static_ftype` helper twice (~1110–1116, 1128–1134).
-- `fusion/mod.rs::for_each_node`: if the 18 binary-op `NodeView` arms
-  share a view type, collapse to or-patterns.
-- `node/mod.rs::StringInterpolate::update` uses a raw
-  `thread_local! RefCell<String>` buffer — the project's own guidance
-  says `LPooled<String>`.
-- `node/lambda.rs::Lambda::compile`: the closure-capture clones are
-  underscore-named (`_scope`, `_env`, `_typ`, `_argspec`, `_spec`)
-  despite being USED — inverting the convention and suppressing the
-  compiler's unused-warning (which is how the genuinely-dead
-  `_original_scope` survived; removed in this commit). Rename to
-  `scope_for_init` etc., or capture one small struct.
-- `typ/fntyp.rs`: `Display` and `PrettyDisplay` disagree on
-  throws-suppression — `Display` suppresses `Type::Bottom`
-  unconditionally while `PrettyDisplay` honors `explicit_throws`. One
-  of them is wrong; they should share the suppression predicate.
+All landed with A6 except where noted.
+
+- **DONE** `fusion/kernel.rs` staged arg-packer: now stages
+  `(disc: u64, payload: u64, keepalive: Value)` in one pass — the
+  two-stage `Value::U64` sentinel-carrier dance and the push loop's
+  re-match + `unreachable!` are gone (payload words are stable across
+  the Value's move into the smallvec).
+- **DONE** `Kernel::update`'s `param_opts` is a smallvec like its
+  siblings. (`dispatch_typed`'s pooled-vec fix landed with the review
+  commit.)
+- **DONE** emit repetition: `emit_drop_local(b, ctx, kind, vv)` is
+  the single per-kind drop dispatch (`drop_owned_composites`,
+  `emit_scope_drops`, tail-rebind residual drops; the select merge's
+  scrut drop deliberately keeps its own match — a String scrutinee
+  there is a classify bug it must error on); `emit_bottom_abort` /
+  `emit_interrupt_check` now call `pending_exit_block()` (made
+  raw-style); the STALE re-fold is `fold_stale` (2 sites survived the
+  A2 split, not 3); `emit_qop_node`'s deliver-or-drop block is
+  `emit_qop_error_disposal` (shared by the composite/string and
+  value arms; the scalar arm keeps its simpler two-block form —
+  factoring it would change the CLIF).
+- **DONE** `resolve_static` calls `refresh_static_ftype` (now
+  returning the ftype) instead of inlining it twice.
+- **N/A** `for_each_node`'s 18 binary-op arms do NOT share a view
+  type (each op is its own macro-generated struct), so or-patterns
+  can't collapse them; a shared-payload NodeView variant would be a
+  bigger restructuring than the 18 lines justify.
+- **DONE** `StringInterpolate::update` uses `LPooled<String>`.
+- **DONE** `Lambda::compile`'s captures renamed `def_scope`/`def_env`/
+  `def_typ`/`def_argspec`/`def_spec`.
+- **DONE** `FnType::suppress_throws` is the shared predicate;
+  `Display` now honors `explicit_throws` like `PrettyDisplay` (its
+  own `explicit_throws_always_shown` test documented exactly that
+  intent — the unconditional-suppression cases are unreachable from
+  parsed source, so round-trip is unaffected).
 - `fusion/scaffold.rs`: fine as-is — the seven loop emitters share a
   visible skeleton, but the file's instruction-stability contract
   justifies the explicitness. Optional `LoopFrame` prologue/epilogue
-  helper only if it provably preserves emission order.
+  helper only if it provably preserves emission order. (Left as-is.)
 
 ## C. Questions / inconsistencies needing a ruling
 

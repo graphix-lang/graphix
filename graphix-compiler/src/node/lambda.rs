@@ -1104,9 +1104,9 @@ impl Lambda {
             .collect::<Result<LPooled<Vec<_>>>>()?;
         let original_scope = scope.clone();
         let scope = scope.append(&format_compact!("fn{}", id.0));
-        let _scope = scope.clone();
+        let def_scope = scope.clone();
         let env = ctx.env.clone();
-        let _env = ctx.env.clone();
+        let def_env = ctx.env.clone();
         if let Either::Right(builtin) = &l.body {
             if CollectionIntrinsic::from_name(builtin).is_none()
                 && ctx.builtins.get(builtin.as_str()).is_none()
@@ -1180,14 +1180,14 @@ impl Lambda {
             }
         }
         typ.lambda_ids.set_id(id);
-        let _typ = typ.clone();
-        let _argspec = argspec.clone();
-        let _spec = spec.clone();
+        let def_typ = typ.clone();
+        let def_argspec = argspec.clone();
+        let def_spec = spec.clone();
         let body = l.body.clone();
         let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, mode, tid| {
             // restore the lexical environment to the state it was in
             // when the closure was created
-            ctx.with_restored(_env.clone(), |ctx| match body.clone() {
+            ctx.with_restored(def_env.clone(), |ctx| match body.clone() {
                 Either::Left(body) => {
                     // Always GXLambda for now. The new fusion pipeline
                     // (`fuse`) will splice a
@@ -1199,7 +1199,7 @@ impl Lambda {
                     // splice. No InitFn cache lookup needed.
                     let scope = Scope {
                         dynamic: scope.dynamic.clone(),
-                        lexical: _scope.lexical.clone(),
+                        lexical: def_scope.lexical.clone(),
                     };
                     // Static user instances use the full definition-shaped
                     // signature after it has been refined by the call site in
@@ -1212,7 +1212,7 @@ impl Lambda {
                             flags,
                             id,
                             typ,
-                            _argspec.clone(),
+                            def_argspec.clone(),
                             args,
                             &scope,
                             tid,
@@ -1224,8 +1224,8 @@ impl Lambda {
                             build(ctx, Arc::new(instance.clone()))
                         }
                         BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
-                            .or_else(|_| build(ctx, _typ.clone())),
-                        BindMode::Definition => build(ctx, _typ.clone()),
+                            .or_else(|_| build(ctx, def_typ.clone())),
+                        BindMode::Definition => build(ctx, def_typ.clone()),
                     }
                     .map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
                 }
@@ -1233,18 +1233,18 @@ impl Lambda {
                     if let Some(intrinsic) = CollectionIntrinsic::from_name(&builtin) {
                         let scope = Scope {
                             dynamic: scope.dynamic.clone(),
-                            lexical: _scope.lexical.clone(),
+                            lexical: def_scope.lexical.clone(),
                         };
                         let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
                             GXLambda::new_collection(
                                 ctx,
                                 id,
                                 typ,
-                                _argspec.clone(),
+                                def_argspec.clone(),
                                 args,
                                 &scope,
                                 tid,
-                                _spec.clone(),
+                                def_spec.clone(),
                                 intrinsic,
                             )
                         };
@@ -1253,8 +1253,8 @@ impl Lambda {
                                 build(ctx, Arc::new(instance.clone()))
                             }
                             BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
-                                .or_else(|_| build(ctx, _typ.clone())),
-                            BindMode::Definition => build(ctx, _typ.clone()),
+                                .or_else(|_| build(ctx, def_typ.clone())),
+                            BindMode::Definition => build(ctx, def_typ.clone()),
                         };
                         result.map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
                     } else {
@@ -1263,16 +1263,16 @@ impl Lambda {
                             Some(init) => {
                                 let typ = match mode.resolved() {
                                     Some(r) => Arc::new(r.clone()),
-                                    None => _typ.clone(),
+                                    None => def_typ.clone(),
                                 };
                                 let resolved = mode.resolved();
-                                init(ctx, &_typ, resolved, &_scope, args, tid).map(
+                                init(ctx, &def_typ, resolved, &def_scope, args, tid).map(
                                     |apply| {
                                         let f: Box<dyn Apply<R, E>> =
                                             Box::new(BuiltInLambda {
                                                 typ,
                                                 apply,
-                                                scope: _scope.lexical.clone(),
+                                                scope: def_scope.lexical.clone(),
                                             });
                                         f
                                     },

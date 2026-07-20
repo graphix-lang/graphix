@@ -736,7 +736,11 @@ unsafe fn graphix_set_var(bind_id: u64, disc: u64, payload: u64) {
 /// `duration:1.s / i64:0`). The checked `+?` family keeps its
 /// catchable ArithError. Consumes both operands (netidx's operators
 /// take them by value).
-fn value_arith_op(l: TagValue, r: TagValue, f: impl FnOnce(Value, Value) -> Value) -> TagValue {
+fn value_arith_op(
+    l: TagValue,
+    r: TagValue,
+    f: impl FnOnce(Value, Value) -> Value,
+) -> TagValue {
     match f(l.value(), r.value()) {
         Value::Error(_) => TagValue::tainted(Value::Null),
         v => TagValue::clean(v),

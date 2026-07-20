@@ -27,7 +27,7 @@ use super::{
         emit_tail_rebind_jump, ensure_owned_composite_src, ensure_owned_value_src,
         node_composite_source,
     },
-    call::CompositeSource,
+    call::{CompositeSource, emit_drop_local},
     lower::SelWord,
     nodes::emit_elem_placeholder,
     scalar::cast_u64_to_prim,
@@ -336,10 +336,10 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // scrutinee's control-dependence firing gets applied. band keeps
     // a cleared (fired) bit cleared across loop iterations.
     {
-        let cur = cx.b.use_var(cx.ctx.tail_scrut_stale);
+        let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
         let ss = cx.b.ins().band_imm(scrut.disc(), STALE);
         let n = cx.b.ins().band(cur, ss);
-        cx.b.def_var(cx.ctx.tail_scrut_stale, n);
+        cx.b.def_var(cx.ctx.tail.scrut_stale, n);
     }
     // GUARDED tail selects need SELECTION MEMORY (jul17c capture-
     // dispatch pin): a guard reading a non-entry input (a capture) can
@@ -419,11 +419,11 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
             // never returns, leaving the word untouched by loop
             // mechanics.
             if let Some(w) = sel_word {
-                cx.ctx.tail_sel_path.borrow_mut().push((w, idx));
+                cx.ctx.tail.sel_path.borrow_mut().push((w, idx));
             }
             emit_body_tail(cx, &body.node, ret)?;
             if sel_word.is_some() {
-                cx.ctx.tail_sel_path.borrow_mut().pop();
+                cx.ctx.tail.sel_path.borrow_mut().pop();
             }
             // The arm terminated; pop its binds for the next arm's
             // compile-time scope. (Arm binds are scalars — no drops.)
@@ -710,30 +710,12 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
 /// mirror of `compile_block_scalar`'s scope-exit drop block. Scalars
 /// need no drop.
 fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
-    let arr_drop = cx.helper("graphix_valarray_drop")?;
-    let val_drop = cx.helper("graphix_value_drop")?;
-    let str_drop = cx.helper("graphix_arcstr_drop")?;
     // Snapshot the (kind, vv) of every local above the mark so the
     // `cx.env` borrow ends before we drive `cx.b`.
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
         cx.env.locals[mark..].iter().map(|l| (l.kind, l.vv)).collect();
     for (kind, vv) in drops {
-        match kind {
-            LocalKind::Scalar(_) => {}
-            LocalKind::Composite => {
-                let ptr = cx.b.use_var(vv.payload);
-                cx.b.ins().call(arr_drop, &[ptr]);
-            }
-            LocalKind::String => {
-                let ptr = cx.b.use_var(vv.payload);
-                cx.b.ins().call(str_drop, &[ptr]);
-            }
-            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
-                let disc = cx.b.use_var(vv.disc);
-                let payload = cx.b.use_var(vv.payload);
-                cx.b.ins().call(val_drop, &[disc, payload]);
-            }
-        }
+        emit_drop_local(cx.b, cx.ctx, kind, vv)?;
     }
     Ok(())
 }
@@ -817,6 +799,50 @@ fn type_may_error(t: &Type) -> bool {
         Type::Set(members) => members.iter().any(type_may_error),
         _ => false,
     }
+}
+
+/// The `?`/`$` bad path's deliver-or-drop (shared verbatim by the
+/// composite/string and value-shape arms; the scalar arm keeps its
+/// simpler no-drop two-block form). With a catch handler, branch on
+/// `deliverable` (a REAL, untainted error): the deliver CONSUMES an
+/// owned error (or clones a borrowed one), so it REPLACES the drop —
+/// delivering and dropping an owned error would double-free. A
+/// phantom (tainted) error must not deliver but an owned one still
+/// drops. Handler-less: drop the owned error; a Borrowed inner is
+/// owned by its env slot, which `emit_pending_cleanup` drops —
+/// dropping here too would double-free. `clean`/`payload` are the
+/// error Value's words.
+fn emit_qop_error_disposal(
+    cx: &mut BodyCx,
+    handler_site: Option<ExprId>,
+    cv: &CompiledExpr,
+    deliverable: cranelift_codegen::ir::Value,
+    clean: cranelift_codegen::ir::Value,
+    payload: cranelift_codegen::ir::Value,
+    inner_owned: bool,
+) -> Result<()> {
+    let value_drop = cx.helper("graphix_value_drop")?;
+    if let Some(site) = handler_site {
+        let deliver_block = cx.b.create_block();
+        let no_deliver = cx.b.create_block();
+        let merged = cx.b.create_block();
+        cx.b.ins().brif(deliverable, deliver_block, &[], no_deliver, &[]);
+        cx.b.switch_to_block(deliver_block);
+        cx.b.seal_block(deliver_block);
+        emit_qop_deliver(cx, site, cv, inner_owned)?;
+        cx.b.ins().jump(merged, &[]);
+        cx.b.switch_to_block(no_deliver);
+        cx.b.seal_block(no_deliver);
+        if inner_owned {
+            cx.b.ins().call(value_drop, &[clean, payload]);
+        }
+        cx.b.ins().jump(merged, &[]);
+        cx.b.switch_to_block(merged);
+        cx.b.seal_block(merged);
+    } else if inner_owned {
+        cx.b.ins().call(value_drop, &[clean, payload]);
+    }
+    Ok(())
 }
 
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
@@ -926,7 +952,6 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             );
             let base_disc =
                 if is_string { value_disc::STRING } else { value_disc::ARRAY };
-            let value_drop = cx.helper("graphix_value_drop")?;
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
             let pre_pending = cx.b.create_block();
             let continue_block = cx.b.create_block();
@@ -953,26 +978,15 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // Handler-less: drop the owned value (a Borrowed Local is
             // owned by its env slot, which `emit_pending_cleanup` drops —
             // dropping here too would double-free).
-            if let Some(site) = handler_site {
-                let deliver_block = cx.b.create_block();
-                let no_deliver = cx.b.create_block();
-                let merged = cx.b.create_block();
-                cx.b.ins().brif(deliverable, deliver_block, &[], no_deliver, &[]);
-                cx.b.switch_to_block(deliver_block);
-                cx.b.seal_block(deliver_block);
-                emit_qop_deliver(cx, site, &cv, inner_owned)?;
-                cx.b.ins().jump(merged, &[]);
-                cx.b.switch_to_block(no_deliver);
-                cx.b.seal_block(no_deliver);
-                if inner_owned {
-                    cx.b.ins().call(value_drop, &[clean, payload]);
-                }
-                cx.b.ins().jump(merged, &[]);
-                cx.b.switch_to_block(merged);
-                cx.b.seal_block(merged);
-            } else if inner_owned {
-                cx.b.ins().call(value_drop, &[clean, payload]);
-            }
+            emit_qop_error_disposal(
+                cx,
+                handler_site,
+                &cv,
+                deliverable,
+                clean,
+                payload,
+                inner_owned,
+            )?;
             // Tainted shape-safe placeholder; the inner's STALE carries
             // (the qop fires iff its inner fired) and TAINT marks
             // no-value — downstream consumers run harmlessly on the
@@ -1034,7 +1048,6 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // `(disc, payload)`, passed through to the consumer which takes
         // ownership).
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let value_drop = cx.helper("graphix_value_drop")?;
             let src = node_composite_source(inner);
             let inner_owned = src == CompositeSource::Owned;
             let pre_pending = cx.b.create_block();
@@ -1055,26 +1068,15 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // inner is owned by its env slot, which
             // `emit_pending_cleanup` -> `drop_owned_composites` already
             // drops; dropping it here too would double-free.
-            if let Some(site) = handler_site {
-                let deliver_block = cx.b.create_block();
-                let no_deliver = cx.b.create_block();
-                let merged = cx.b.create_block();
-                cx.b.ins().brif(deliverable, deliver_block, &[], no_deliver, &[]);
-                cx.b.switch_to_block(deliver_block);
-                cx.b.seal_block(deliver_block);
-                emit_qop_deliver(cx, site, &cv, inner_owned)?;
-                cx.b.ins().jump(merged, &[]);
-                cx.b.switch_to_block(no_deliver);
-                cx.b.seal_block(no_deliver);
-                if inner_owned {
-                    cx.b.ins().call(value_drop, &[clean, payload]);
-                }
-                cx.b.ins().jump(merged, &[]);
-                cx.b.switch_to_block(merged);
-                cx.b.seal_block(merged);
-            } else if inner_owned {
-                cx.b.ins().call(value_drop, &[clean, payload]);
-            }
+            emit_qop_error_disposal(
+                cx,
+                handler_site,
+                &cv,
+                deliverable,
+                clean,
+                payload,
+                inner_owned,
+            )?;
             // Tainted Value::Null placeholder (helper-safe by
             // construction); the inner's STALE carries.
             let tainted_base = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);

@@ -28,7 +28,9 @@ use super::{
         CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
         is_not_fresh, propagate_flags, scalar_disc, value_disc,
     },
-    call::{CompositeSource, drop_owned_composites, emit_pending_cleanup},
+    call::{
+        CompositeSource, drop_owned_composites, emit_drop_local, emit_pending_cleanup,
+    },
     flow::emit_body_tail,
     lower::{LowerCtx, SelWord, SiteLayout, SlotTableFrame},
     nodes::emit_owned_value_operand_node,
@@ -66,7 +68,7 @@ pub(super) fn emit_tail_rebind_jump(
     sources: &[CompositeSource],
     taints: &[ClifValue],
 ) -> Result<()> {
-    let head = ctx.loop_head.ok_or_else(|| {
+    let head = ctx.tail.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
     // A TAINTED new value keeps the slot's loop-carried previous value
@@ -78,8 +80,8 @@ pub(super) fn emit_tail_rebind_jump(
     // Back-compat: hand-built test kernels leave `tail_call_slots`
     // empty and assume all params are scalar in declaration order.
     // Drive the rebind positionally in that case.
-    if ctx.tail_call_slots.is_none() {
-        debug_assert_eq!(new_vals.len(), ctx.param_mark);
+    if ctx.tail.call_slots.is_none() {
+        debug_assert_eq!(new_vals.len(), ctx.tail.param_mark);
         for (i, v) in new_vals.iter().enumerate() {
             let vv = env.locals[i].vv;
             let old_p = b.use_var(vv.payload);
@@ -89,11 +91,11 @@ pub(super) fn emit_tail_rebind_jump(
             b.def_var(vv.payload, p);
             b.def_var(vv.disc, d);
         }
-        env.truncate(ctx.param_mark);
+        env.truncate(ctx.tail.param_mark);
         b.ins().jump(head, &[]);
         return Ok(());
     }
-    let slots = ctx.tail_call_slots.unwrap();
+    let slots = ctx.tail.call_slots.unwrap();
     // Slots cover EVERY kernel value param (they double as the
     // runtime arg layout — `arg_layout`, kernel.rs); a tail call
     // rebinds only the leading FORMALS.
@@ -190,57 +192,30 @@ pub(super) fn emit_tail_rebind_jump(
         }
     }
     // Drop any owned composite/variant/nullable/string locals
-    // introduced between `ctx.param_mark` and now that ISN'T in
+    // introduced between `ctx.tail.param_mark` and now that ISN'T in
     // `tail_call_slots` (slot rebinds drop the old slot value above;
     // non-slot lets above the tail-call would leak per iteration
     // otherwise). Block / select-arm locals were already dropped at
     // runtime by their scope-exit code (block emission, terminating
     // statements), so iterating the env's tail catches only the
     // non-Block top-level lets that didn't get a rebind slot.
-    let arr_drop = ctx
-        .helper_refs
-        .get("graphix_valarray_drop")
-        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-    let val_drop = ctx
-        .helper_refs
-        .get("graphix_value_drop")
-        .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-    let str_drop = ctx
-        .helper_refs
-        .get("graphix_arcstr_drop")
-        .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
     // Composite slot rebinds already drop their old value (above);
     // skip any entry whose name matches a rebind slot. Drop every other
     // owned non-slot local above the param mark, by kind.
     let slot_names: std::collections::HashSet<&str> =
         slots.iter().map(|s| s.name.as_str()).collect();
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> = env.locals
-        [ctx.param_mark..]
+        [ctx.tail.param_mark..]
         .iter()
         .filter(|l| !slot_names.contains(l.name.as_str()))
         .map(|l| (l.kind, l.vv))
         .collect();
     for (kind, vv) in drops {
-        match kind {
-            LocalKind::Scalar(_) => {}
-            LocalKind::Composite => {
-                let ptr = b.use_var(vv.payload);
-                b.ins().call(arr_drop, &[ptr]);
-            }
-            LocalKind::String => {
-                let ptr = b.use_var(vv.payload);
-                b.ins().call(str_drop, &[ptr]);
-            }
-            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
-                let disc = b.use_var(vv.disc);
-                let payload = b.use_var(vv.payload);
-                b.ins().call(val_drop, &[disc, payload]);
-            }
-        }
+        emit_drop_local(b, ctx, kind, vv)?;
     }
     // Compile-time env-Vec hygiene: pop everything above the param
     // mark so the next iteration starts with a clean lexical state.
-    env.truncate(ctx.param_mark);
+    env.truncate(ctx.tail.param_mark);
     b.ins().jump(head, &[]);
     Ok(())
 }
@@ -263,17 +238,7 @@ pub(super) fn emit_bottom_abort(
         .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
     let pre_pending = b.create_block();
     let continue_block = b.create_block();
-    let pending_exit = {
-        let mut slot = ctx.pending_exit.borrow_mut();
-        match *slot {
-            Some(blk) => blk,
-            None => {
-                let blk = b.create_block();
-                *slot = Some(blk);
-                blk
-            }
-        }
-    };
+    let pending_exit = pending_exit_block(b, ctx);
     b.ins().brif(valid, continue_block, &[], pre_pending, &[]);
     b.switch_to_block(pre_pending);
     b.seal_block(pre_pending);
@@ -316,17 +281,7 @@ pub(super) fn emit_interrupt_check(
     let intr = b.inst_results(call)[0];
     let pre_pending = b.create_block();
     let continue_block = b.create_block();
-    let pending_exit = {
-        let mut slot = ctx.pending_exit.borrow_mut();
-        match *slot {
-            Some(blk) => blk,
-            None => {
-                let blk = b.create_block();
-                *slot = Some(blk);
-                blk
-            }
-        }
-    };
+    let pending_exit = pending_exit_block(b, ctx);
     // nonzero (interrupted) ⇒ abort; zero ⇒ continue the loop body.
     b.ins().brif(intr, pre_pending, &[], continue_block, &[]);
     b.switch_to_block(pre_pending);
@@ -360,7 +315,9 @@ pub(super) fn emit_interrupt_check(
 /// sole implementor is [`NodeBodyEmitter`], which walks the
 /// region-root `Node` via `emit_clif` recursion. Erasing the `R`/`E`
 /// of the Node lets the (monomorphic) JIT-compile pipeline thread a
-/// generic `&Node<R, E>` through without itself becoming generic.
+/// generic `&Node<R, E>` through without itself becoming generic. The
+/// per-body data facts ride alongside as a plain [`BodySpec`] (they
+/// were nine trivial getter methods here — review A6).
 pub(super) trait BodyEmitter {
     fn emit(
         &self,
@@ -368,151 +325,83 @@ pub(super) trait BodyEmitter {
         env: &mut JitEnv,
         ctx: &LowerCtx,
     ) -> Result<()>;
+}
 
+/// The data facts a kernel build needs about one body, alongside its
+/// [`BodyEmitter`] emission hook. Plain data — the kernel-build
+/// pipeline reads fields; `compile_into_function` copies them onto
+/// the [`LowerCtx`] (whose same-named fields carry the load-bearing
+/// docs where they're consumed).
+#[derive(Clone, Copy)]
+pub(super) struct BodySpec<'a> {
     /// Discovered sync-builtin Apply sites for the region being
     /// emitted (`CallSite::emit_clif` lowers a registered site to a
     /// DynCall via [`BodyCx::builtin_site`]). `None` for callee
     /// bodies (their inner sites are #203-unresolved).
-    fn builtin_apply_sites(
-        &self,
-    ) -> Option<&nohash::IntMap<ExprId, BuiltinCallSiteInfo>> {
-        None
-    }
-
+    pub(super) builtin_apply_sites:
+        Option<&'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>>,
     /// Discovered statically-resolved lambda call sites for the region
     /// being emitted (`CallSite::emit_clif` lowers a registered site to
     /// a CLIF `call` via [`BodyCx::lambda_site`]). `None` for callee
     /// bodies (a callee's only cross-kernel reference is itself).
-    fn lambda_call_sites(&self) -> Option<&nohash::IntMap<ExprId, LambdaCallInfo>> {
-        None
-    }
-
+    pub(super) lambda_call_sites: Option<&'a nohash::IntMap<ExprId, LambdaCallInfo>>,
     /// `Some` when the kernel being emitted is a self-recursive lambda
     /// body: the binding its self-references carry + the kernel's own
     /// call descriptor. Drives tail-position rebind-and-jump
     /// (`emit_body_tail`), value-position self-calls
     /// (`CallSite::emit_clif` → the kernel's own FuncRef), and the
     /// self-FuncRef import in `define_kernel_body`.
-    fn self_call(&self) -> Option<&(BindId, LambdaCallInfo)> {
-        None
-    }
-
+    pub(super) self_call: Option<&'a (BindId, LambdaCallInfo)>,
     /// The environment snapshot for TYPE RESOLUTION ONLY (#218): node
     /// `typ` cells can carry `Type::Ref`s to abstract type names whose
     /// concrete rep needs `env.lookup_ref` + the abstract registry
     /// (`resolve_abstract`) before `abi_kind`/freeze can classify
-    /// them. Defaults to `None`; [`NodeBodyEmitter`] supplies it. NOT
-    /// for binding lookups; those stay in the analysis phase, per the
-    /// BodyCx design.
-    fn type_env(&self) -> Option<&Env> {
-        None
-    }
-
+    /// them. NOT for binding lookups; those stay in the analysis
+    /// phase, per the BodyCx design.
+    pub(super) type_env: Option<&'a Env>,
     /// The compiling context's abstract-type registry — the fusion
     /// classifiers (`abi_kind`/freeze/`resolve_abstract`) consult it to
-    /// peek through abstract types to their wire shape. Threaded from the
-    /// `ExecCtx` into [`LowerCtx`] so emit-time type classification has
-    /// the same view as the analysis phase.
-    fn registry(&self) -> &AbstractRegistry;
-
+    /// peek through abstract types to their wire shape.
+    pub(super) registry: &'a AbstractRegistry,
     /// Base offset added to every DynCall `fn_index` this body bakes, so
     /// the body indexes its slots in the REGION-WIDE combined `dyn_slots`
     /// table (parent slots first, then each callee's). `0` for the parent
-    /// (its slots lead the table) and for a callee with no DynCalls;
-    /// nonzero only for a callee body whose `fn_params` sit at an offset.
+    /// (its slots lead the table) and for a callee with no DynCalls.
     /// Doubles as the `base` half of the `(ptr, base)` JIT cache key —
-    /// see `compile_kernel_with_callees_inner`. Default `0`.
-    fn fn_index_offset(&self) -> u32 {
-        0
-    }
-
+    /// see `compile_kernel_with_callees_inner`.
+    pub(super) fn_index_offset: u32,
     /// Whether this body's kernel return FORCES on not-fresh
-    /// (TAINT | STALE). `true` for a PUBLISHED body — the region root /
-    /// an inline collection callback whose result flows through the wrapper
-    /// to `Kernel::update`: a not-fresh result must yield `None`,
-    /// matching the node-walk's "publish only on Some". `false` for a
-    /// cross-kernel CALLEE body, which never forces: its result's
-    /// not-fresh bits ride back to the caller as DATA, in-band in the
-    /// returned disc (the unified Value ABI) — so a bottomed or
-    /// unfired callee result bottoms only the caller's consumers that
-    /// read it (#219), like a node-walk callsite that produced no
-    /// value. Default `true`.
-    fn gate_stale_at_return(&self) -> bool {
-        true
-    }
-
+    /// (TAINT | STALE). `true` for a PUBLISHED body, `false` for a
+    /// cross-kernel CALLEE body — full rationale on
+    /// `LowerCtx::gate_stale_at_return`'s consumers.
+    pub(super) gate_stale_at_return: bool,
     /// The region's LIFTED connect-target bind ids — let-bound scalar
     /// counters/accumulators routed in as kernel inputs (feeders).
-    /// `emit_let_node` reads this to emit the seed-select for a lifted
-    /// binding instead of a plain let; `emit_connect_node` reads it to
-    /// allow the variable write. Empty for callees and for any region
-    /// with no lifts. Default: a shared empty set.
-    fn lifted(&self) -> &ahash::AHashSet<BindId> {
-        static EMPTY: std::sync::LazyLock<ahash::AHashSet<BindId>> =
-            std::sync::LazyLock::new(ahash::AHashSet::default);
-        &EMPTY
-    }
+    /// Empty for callees and for any region with no lifts.
+    pub(super) lifted: &'a ahash::AHashSet<BindId>,
+    /// Whether this body may claim per-instance state words — `true`
+    /// only for the region parent's root body. See
+    /// [`StateChannel::enabled`].
+    pub(super) allow_state: bool,
+    /// Whether this body may claim REPLAY state words — `true` only
+    /// for REGION parents. See `LowerCtx::replay_enabled`.
+    pub(super) allow_replay_state: bool,
+}
 
-    /// Whether this body may claim per-instance state words (see
-    /// [`BodyCx::claim_state_word`]). `true` only for the region
-    /// parent's root body: a CALLEE is reached from arbitrarily many
-    /// call sites, and one static word offset can't hold per-call-site
-    /// memory — its stateful constructs keep the stateless
-    /// approximation. Default `false`.
-    fn allow_state(&self) -> bool {
-        false
-    }
-
-    /// Whether this body may claim REPLAY state words (see
-    /// [`BodyCx::claim_state_word_replay`]). `true` only for a REGION
-    /// parent: replay words are zeroed by `Kernel::reset_replay`, which
-    /// evaluation frames reach through the `FusedKernel` NODE — but a
-    /// LAMBDA kernel is also entered by native cross-kernel calls that
-    /// bypass the node layer entirely, so a replay word claimed there
-    /// can never honor its per-iteration reset contract (jul10h 000009:
-    /// element 1's success bridged element 2's div0 across the caller's
-    /// native map loop). Such bodies keep the stateless approximation.
-    /// Default `false`.
-    fn allow_replay_state(&self) -> bool {
-        false
-    }
+/// One body to build: the data spec + the type-erased emission hook.
+pub(super) struct BodySource<'a> {
+    pub(super) spec: BodySpec<'a>,
+    pub(super) hook: &'a dyn BodyEmitter,
 }
 
 /// The body emitter — walks the region-root `Node` via `emit_clif`
 /// recursion and emits the kernel return. `return_type` comes from
 /// the `KernelSig` so the boundary marshalling agrees with the kernel
-/// signature / wrapper / runtime arg-pack.
+/// signature / wrapper / runtime arg-pack. Everything else the build
+/// needs rides in the accompanying [`BodySpec`].
 pub(super) struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
     pub(super) root: &'a Node<R, E>,
     pub(super) return_type: &'a Type,
-    pub(super) apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
-    pub(super) lambda_sites: &'a nohash::IntMap<ExprId, LambdaCallInfo>,
-    /// `Some` for a self-recursive callee body — see
-    /// [`BodyEmitter::self_call`].
-    pub(super) self_call: Option<&'a (BindId, LambdaCallInfo)>,
-    /// Type-resolution env snapshot — see [`BodyEmitter::type_env`].
-    pub(super) type_env: &'a Env,
-    /// The compiling `ExecCtx`'s abstract-type registry — see
-    /// [`BodyEmitter::registry`].
-    pub(super) registry: &'a AbstractRegistry,
-    /// DynCall `fn_index` base — see [`BodyEmitter::fn_index_offset`].
-    /// `0` for region parents and per-slot callbacks; a callee's
-    /// combined-table offset for cross-kernel callee bodies.
-    pub(super) fn_index_offset: u32,
-    /// STALE-gate the return — see [`BodyEmitter::gate_stale_at_return`].
-    /// `true` for the published parent body, `false` for callee bodies.
-    pub(super) gate_stale: bool,
-    /// Lifted connect-target bind ids — see [`BodyEmitter::lifted`].
-    pub(super) lifted: &'a ahash::AHashSet<BindId>,
-    /// May this body claim per-instance state words — see
-    /// [`BodyEmitter::allow_state`]. `true` for the region parent's
-    /// root body, `false` for callee bodies.
-    pub(super) allow_state: bool,
-    /// May this body claim REPLAY state words — see
-    /// [`BodyEmitter::allow_replay_state`]. `true` for region parents
-    /// only; `false` for lambda kernels (cross-kernel entry bypasses
-    /// the node-level `reset_replay`) and callee bodies.
-    pub(super) allow_replay: bool,
 }
 
 impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
@@ -523,7 +412,7 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
         ctx: &LowerCtx,
     ) -> Result<()> {
         let mut cx = BodyCx { b: &mut *b, env: &mut *env, ctx };
-        match self.self_call {
+        match ctx.self_call {
             // Recursive body: tail-position walk — self tail-calls
             // become the rebind-and-jump loop, every other path
             // returns directly. (Non-recursive bodies keep the
@@ -532,48 +421,6 @@ impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
             Some(_) => emit_body_tail(&mut cx, self.root, self.return_type),
             None => emit_return_from_node(&mut cx, self.return_type, self.root),
         }
-    }
-
-    fn builtin_apply_sites(
-        &self,
-    ) -> Option<&nohash::IntMap<ExprId, BuiltinCallSiteInfo>> {
-        Some(self.apply_sites)
-    }
-
-    fn lambda_call_sites(&self) -> Option<&nohash::IntMap<ExprId, LambdaCallInfo>> {
-        Some(self.lambda_sites)
-    }
-
-    fn self_call(&self) -> Option<&(BindId, LambdaCallInfo)> {
-        self.self_call
-    }
-
-    fn type_env(&self) -> Option<&Env> {
-        Some(self.type_env)
-    }
-
-    fn registry(&self) -> &AbstractRegistry {
-        self.registry
-    }
-
-    fn fn_index_offset(&self) -> u32 {
-        self.fn_index_offset
-    }
-
-    fn gate_stale_at_return(&self) -> bool {
-        self.gate_stale
-    }
-
-    fn lifted(&self) -> &ahash::AHashSet<BindId> {
-        self.lifted
-    }
-
-    fn allow_state(&self) -> bool {
-        self.allow_state
-    }
-
-    fn allow_replay_state(&self) -> bool {
-        self.allow_replay
     }
 }
 
@@ -626,7 +473,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// [`claim_state_word`](Self::claim_state_word); 0 when the kernel
     /// claimed nothing (no claimed offset exists to read through it).
     pub fn state_ptr(&self) -> ClifValue {
-        self.ctx.state_ptr
+        self.ctx.state.ptr
     }
 
     /// Claim one `u64` of per-kernel-INSTANCE cross-invocation memory,
@@ -647,11 +494,11 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     pub fn claim_state_word(&self) -> Option<i32> {
-        if !self.ctx.state_enabled || self.ctx.loop_depth.get() > 0 {
+        if !self.ctx.state.enabled || self.ctx.loop_depth.get() > 0 {
             return None;
         }
-        let idx = self.ctx.state_next.get();
-        self.ctx.state_next.set(idx + 1);
+        let idx = self.ctx.state.next.get();
+        self.ctx.state.next.set(idx + 1);
         Some((idx * 8) as i32)
     }
 
@@ -669,7 +516,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             return None;
         }
         let off = self.claim_state_word()?;
-        self.ctx.replay_words.borrow_mut().push((off / 8) as u32);
+        self.ctx.state.replay.borrow_mut().push((off / 8) as u32);
         Some(off)
     }
 
@@ -683,11 +530,11 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// [`open_slot_tables`](Self::open_slot_tables)). Callee bodies
     /// still refuse (one word can't hold per-call-site memory).
     pub fn claim_state_word_loop_invariant(&self) -> Option<i32> {
-        if !self.ctx.state_enabled {
+        if !self.ctx.state.enabled {
             return None;
         }
-        let idx = self.ctx.state_next.get();
-        self.ctx.state_next.set(idx + 1);
+        let idx = self.ctx.state.next.get();
+        self.ctx.state.next.set(idx + 1);
         Some((idx * 8) as i32)
     }
 
@@ -758,7 +605,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             };
             let entry = match anchor {
                 Some(off) => {
-                    self.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+                    self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                         rel: (off / 8) as u32,
                         own_levels: n_dirs as u32,
                         leaf: None,
@@ -922,7 +769,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             (f.idx_var, f.len, f.src_disc, enclosing)
         };
         let off = self.claim_state_word_loop_invariant()?;
-        self.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+        self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
             rel: (off / 8) as u32,
             own_levels: enclosing.len() as u32,
             leaf: None,
@@ -946,11 +793,11 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// transient activation), so every consumer null-guards
     /// ([`SelWord::Guarded`]).
     pub(crate) fn claim_site_word(&self) -> Option<i32> {
-        if !self.ctx.site_enabled {
+        if !self.ctx.site.enabled {
             return None;
         }
-        let idx = self.ctx.site_next.get();
-        self.ctx.site_next.set(idx + 1);
+        let idx = self.ctx.site.next.get();
+        self.ctx.site.next.set(idx + 1);
         Some((idx * 8) as i32)
     }
 
@@ -968,7 +815,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         // reset can't sever iteration i−1's success from iteration i's
         // bottom the way the interp's per-frame `reset_replay` does —
         // the jul10h rule applied across the loop this body IS.
-        if self.ctx.loop_depth.get() > 0 || self.ctx.loop_head.is_some() {
+        if self.ctx.loop_depth.get() > 0 || self.ctx.tail.loop_head.is_some() {
             return None;
         }
         let hdr = match self.ctx.site_replay_hdr.get() {
@@ -980,7 +827,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             }
         };
         let off = self.claim_site_word()?;
-        self.ctx.site_replay.borrow_mut().push((off / 8) as u32);
+        self.ctx.site.replay.borrow_mut().push((off / 8) as u32);
         Some((off, hdr))
     }
 
@@ -994,7 +841,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         leaf: Option<std::sync::Arc<kernel_abi::SiteLeaf>>,
     ) -> Option<i32> {
         let off = self.claim_site_word()?;
-        self.ctx.site_anchors.borrow_mut().push(kernel_abi::SiteAnchor {
+        self.ctx.site.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
             rel: (off / 8) as u32,
             own_levels,
             leaf,
@@ -1006,7 +853,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// The per-call-site block base (`I64`, possibly 0 — see
     /// [`claim_site_word`](Self::claim_site_word)).
     pub(crate) fn site_ptr(&self) -> ClifValue {
-        self.ctx.site_ptr
+        self.ctx.site.ptr
     }
 
     /// Set the collection-HOF callsite being inline-emitted (see
@@ -1242,12 +1089,12 @@ pub fn ensure_owned_value_src(
 /// where every forced-bottom path jumps after dropping the owned set.
 /// Its body (sentinel + `return`) is emitted at the end of
 /// `compile_into_function`.
-pub(super) fn pending_exit_block(cx: &mut BodyCx) -> Block {
-    let mut slot = cx.ctx.pending_exit.borrow_mut();
+pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Block {
+    let mut slot = ctx.pending_exit.borrow_mut();
     match *slot {
         Some(blk) => blk,
         None => {
-            let blk = cx.b.create_block();
+            let blk = b.create_block();
             *slot = Some(blk);
             blk
         }
@@ -1280,7 +1127,7 @@ fn emit_force(
     let pending_set = cx.helper("graphix_dyncall_set_pending")?;
     let pre = cx.b.create_block();
     let ret = cx.b.create_block();
-    let exit = pending_exit_block(cx);
+    let exit = pending_exit_block(cx.b, cx.ctx);
     cx.b.ins().brif(not_fresh, pre, &[], ret, &[]);
     cx.b.switch_to_block(pre);
     cx.b.seal_block(pre);
@@ -1299,7 +1146,7 @@ fn emit_force(
 /// block.
 pub(super) fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
     let pending_set = cx.helper("graphix_dyncall_set_pending")?;
-    let exit = pending_exit_block(cx);
+    let exit = pending_exit_block(cx.b, cx.ctx);
     cx.b.ins().call(pending_set, &[]);
     emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
     cx.b.ins().jump(exit, &[]);
@@ -1338,6 +1185,16 @@ pub(super) fn emit_return_from_node<R: Rt, E: UserEvent>(
     }
 }
 
+/// AND `mask`'s STALE bit into `disc`'s — the firing fold (STALE
+/// survives only when BOTH sides are stale); every other bit is
+/// unchanged.
+fn fold_stale(b: &mut FunctionBuilder, disc: ClifValue, mask: ClifValue) -> ClifValue {
+    let vs = b.ins().band_imm(disc, STALE);
+    let folded = b.ins().band(vs, mask);
+    let cleaned = b.ins().band_imm(disc, !STALE);
+    b.ins().bor(cleaned, folded)
+}
+
 pub(super) fn emit_kernel_return(
     cx: &mut BodyCx,
     return_type: &Type,
@@ -1350,11 +1207,8 @@ pub(super) fn emit_kernel_return(
     // did. With no tail select the accumulator is the STALE-set
     // identity and this folds to the value's own bit.
     {
-        let acc = cx.b.use_var(cx.ctx.tail_scrut_stale);
-        let vs = cx.b.ins().band_imm(cv.disc, STALE);
-        let folded = cx.b.ins().band(vs, acc);
-        let cleaned = cx.b.ins().band_imm(cv.disc, !STALE);
-        cv.disc = cx.b.ins().bor(cleaned, folded);
+        let acc = cx.b.use_var(cx.ctx.tail.scrut_stale);
+        cv.disc = fold_stale(cx.b, cv.disc, acc);
     }
     // Becoming-selected firing for the enclosing GUARDED tail selects
     // (`LowerCtx::tail_sel_path`): this return IS the invocation's
@@ -1365,7 +1219,7 @@ pub(super) fn emit_kernel_return(
     // `selected` before the arm body too).
     {
         let path: smallvec::SmallVec<[(SelWord, usize); 4]> =
-            cx.ctx.tail_sel_path.borrow().iter().copied().collect();
+            cx.ctx.tail.sel_path.borrow().iter().copied().collect();
         for (word, idx) in path {
             let record = |cx: &mut BodyCx, addr: ClifValue| -> ClifValue {
                 let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
@@ -1404,10 +1258,7 @@ pub(super) fn emit_kernel_return(
                     cx.b.block_params(merge)[0]
                 }
             };
-            let vs = cx.b.ins().band_imm(cv.disc, STALE);
-            let folded = cx.b.ins().band(vs, mask);
-            let cleaned = cx.b.ins().band_imm(cv.disc, !STALE);
-            cv.disc = cx.b.ins().bor(cleaned, folded);
+            cv.disc = fold_stale(cx.b, cv.disc, mask);
         }
     }
     // Unified Value ABI: every kernel returns the two-word genuine

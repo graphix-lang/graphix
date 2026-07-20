@@ -30,7 +30,7 @@ use netidx_value::Value;
 use std::collections::BTreeMap;
 
 use super::{
-    body::{BodyEmitter, NodeBodyEmitter},
+    body::{BodySource, BodySpec, NodeBodyEmitter},
     lower::{
         HelperFuncIds, KernelStrings, KernelValues, SiteLayout, compile_into_function,
         declare_helpers,
@@ -448,16 +448,15 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     // Callee bodies never lift (lifts are region-level let-bound
     // counters); only the parent emitter carries the lifted set.
     let no_lift: ahash::AHashSet<BindId> = ahash::AHashSet::default();
-    let parent = NodeBodyEmitter {
-        root,
-        return_type: &kernel.return_type,
-        apply_sites,
-        lambda_sites,
+    let parent = NodeBodyEmitter { root, return_type: &kernel.return_type };
+    let parent_spec = BodySpec {
+        builtin_apply_sites: Some(apply_sites),
+        lambda_call_sites: Some(lambda_sites),
         // None for region parents (a region can't self-call); the
         // collection callback path's "parent" IS a lambda kernel and passes
         // its own self info here.
         self_call: parent_self_call,
-        type_env,
+        type_env: Some(type_env),
         registry,
         // Parent slots lead the combined `dyn_slots` table.
         fn_index_offset: 0,
@@ -469,10 +468,10 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         // a value on EVERY dispatch (it's a function call, not a reactive
         // sample), so its return must gate TAINT-only, else a stale-
         // constant base-case arm wrong-bottoms on a non-init dispatch.
-        gate_stale: parent_self_call.is_none(),
+        gate_stale_at_return: parent_self_call.is_none(),
         lifted,
         allow_state: true,
-        allow_replay: parent_allow_replay,
+        allow_replay_state: parent_allow_replay,
     };
     // Assemble the region-wide DynCall slot table: parent `fn_params`
     // first (base 0), then each callee's `fn_params`, in callee
@@ -487,7 +486,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     // already at base 0) — skip it, matching the phase-1 declare loop.
     let parent_ptr = kernel_abi::kernel_key(kernel);
     let mut combined: Vec<kernel_abi::FnParam> = kernel.fn_params.to_vec();
-    let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>)> = callees
+    let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>, BodySpec)> = callees
         .iter()
         .filter_map(|(key, k)| {
             let key = *key;
@@ -500,29 +499,30 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
             combined.extend(k.fn_params.iter().cloned());
             Some((
                 key,
-                NodeBodyEmitter {
-                    root: cb.body,
-                    return_type: &k.return_type,
-                    apply_sites: &cb.apply_sites,
-                    lambda_sites: &cb.sites,
+                NodeBodyEmitter { root: cb.body, return_type: &k.return_type },
+                BodySpec {
+                    builtin_apply_sites: Some(&cb.apply_sites),
+                    lambda_call_sites: Some(&cb.sites),
                     self_call: cb.self_call.as_ref(),
-                    type_env,
+                    type_env: Some(type_env),
                     registry,
                     fn_index_offset: base,
                     // A callee body's result is CONSUMED via a cross-kernel
                     // call (its disc lost in the scalar return ABI), so it
                     // gates TAINT only — gating STALE would wrong-bottom.
-                    gate_stale: false,
+                    gate_stale_at_return: false,
                     lifted: &no_lift,
                     allow_state: false,
-                    allow_replay: false,
+                    allow_replay_state: false,
                 },
             ))
         })
         .collect();
-    let mut emitters: BTreeMap<usize, &dyn BodyEmitter> =
-        callee_emitters.iter().map(|(key, em)| (*key, em as &dyn BodyEmitter)).collect();
-    emitters.insert(parent_ptr, &parent);
+    let mut emitters: BTreeMap<usize, BodySource> = callee_emitters
+        .iter()
+        .map(|(key, em, spec)| (*key, BodySource { spec: *spec, hook: em }))
+        .collect();
+    emitters.insert(parent_ptr, BodySource { spec: parent_spec, hook: &parent });
     let mut wrapped =
         compile_kernel_with_callees_impl(jit, kernel, callees, &emitters, registry)?;
     // Override the parent-only default with the combined table; the
@@ -535,7 +535,7 @@ fn compile_kernel_with_callees_impl(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
     callees: &[(usize, std::sync::Arc<KernelSig>)],
-    emitters: &BTreeMap<usize, &dyn BodyEmitter>,
+    emitters: &BTreeMap<usize, BodySource>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     let mut to_define: Vec<(std::sync::Arc<KernelSig>, u32, u32)> = Vec::new();
@@ -625,7 +625,7 @@ fn compile_kernel_with_callees_inner(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
     callees: &[(usize, std::sync::Arc<KernelSig>)],
-    emitters: &BTreeMap<usize, &dyn BodyEmitter>,
+    emitters: &BTreeMap<usize, BodySource>,
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
     defined: &mut Vec<(usize, u32, u32)>,
     registry: &AbstractRegistry,
@@ -658,14 +658,14 @@ fn compile_kernel_with_callees_inner(
             if *ptr == parent_ptr {
                 continue;
             }
-            layout.push((*ptr, emitters.get(ptr).map_or(0, |e| e.fn_index_offset())));
+            layout.push((*ptr, emitters.get(ptr).map_or(0, |e| e.spec.fn_index_offset)));
         }
         jit.intern_layout(layout)
     };
     let layout_of = |k: &std::sync::Arc<KernelSig>| -> u32 {
         let self_ptr = kernel_abi::kernel_key(k);
         let ext_sites = emitters.get(&self_ptr).is_some_and(|e| {
-            e.lambda_call_sites().is_some_and(|m| {
+            e.spec.lambda_call_sites.is_some_and(|m| {
                 m.values().any(|info| kernel_abi::kernel_key(&info.kernel) != self_ptr)
             })
         });
@@ -684,7 +684,7 @@ fn compile_kernel_with_callees_inner(
         if *ptr == parent_ptr {
             continue;
         }
-        let base = emitters.get(ptr).map_or(0, |e| e.fn_index_offset());
+        let base = emitters.get(ptr).map_or(0, |e| e.spec.fn_index_offset);
         let layout = layout_of(k);
         let entry = ensure_declared(jit, k, base, layout, to_define, registry)?;
         funcids.push((*ptr, entry));
@@ -720,7 +720,7 @@ fn compile_kernel_with_callees_inner(
         // The emitter is keyed by pointer identity (it's the same body
         // regardless of base); the `fn_index_offset` it carries (== base)
         // is what `compile_into_function` bakes into the DynCalls.
-        let body: &dyn BodyEmitter = *emitters.get(&ptr).ok_or_else(|| {
+        let body: &BodySource = emitters.get(&ptr).ok_or_else(|| {
             anyhow!(
                 "no body emitter recorded for kernel `{}` — \
                      discovery must record every callee body",
@@ -735,17 +735,16 @@ fn compile_kernel_with_callees_inner(
             .iter()
             .filter_map(|((p, _, _), e)| e.site_layout.as_ref().map(|l| (*p, l.clone())))
             .collect();
-        let (strings, values, state_words, replay_words, slot_table_words, site, leaves) =
-            define_kernel_body(&mut jit.ctx, k, &funcids, body, &callee_layouts)?;
+        let db = define_kernel_body(&mut jit.ctx, k, &funcids, body, &callee_layouts)?;
         defined.push((ptr, *base, *layout));
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base, *layout)) {
-            cached._strings = strings;
-            cached._values = values;
-            cached.state_words = state_words;
-            cached.replay_state_words = replay_words;
-            cached.slot_table_words = slot_table_words;
-            cached.site_layout = Some(site);
-            cached._site_leaves = leaves;
+            cached._strings = db.strings;
+            cached._values = db.values;
+            cached.state_words = db.state_words;
+            cached.replay_state_words = db.replay_words;
+            cached.slot_table_words = db.slot_table_words;
+            cached.site_layout = Some(db.site_layout);
+            cached._site_leaves = db.site_leaves;
         }
     }
     // Phase 3 — compile the uniform wrapper for the parent and
@@ -835,6 +834,18 @@ fn ensure_declared(
     Ok((fid, sig))
 }
 
+/// What defining one kernel body produced — stored onto the kernel's
+/// `by_kernel` cache entry (the fields mirror the entry's).
+struct DefinedBody {
+    strings: KernelStrings,
+    values: KernelValues,
+    state_words: usize,
+    replay_words: Vec<u32>,
+    slot_table_words: Vec<kernel_abi::SiteAnchor>,
+    site_layout: SiteLayout,
+    site_leaves: Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
+}
+
 /// Phase-2 helper: compile `kernel`'s body and call `define_function`
 /// on its pre-declared `FuncId`. `funcids` must contain entries for
 /// the kernel itself and every callee its body's discovered lambda
@@ -843,17 +854,9 @@ fn define_kernel_body(
     jit: &mut JitCtx,
     kernel: &std::sync::Arc<KernelSig>,
     funcids: &[(usize, (FuncId, Signature))],
-    body_emitter: &dyn BodyEmitter,
+    body_emitter: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
-) -> Result<(
-    KernelStrings,
-    KernelValues,
-    usize,
-    Vec<u32>,
-    Vec<kernel_abi::SiteAnchor>,
-    SiteLayout,
-    Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
-)> {
+) -> Result<DefinedBody> {
     let self_ptr = kernel_abi::kernel_key(kernel);
     let (func_id, sig) =
         funcids.iter().find(|(p, _)| *p == self_ptr).map(|(_, e)| e.clone()).ok_or_else(
@@ -900,7 +903,8 @@ fn define_kernel_body(
         // self-recursive body imports its own FuncRef via `self_call`.
         let needed: ahash::AHashSet<usize> = {
             let mut s: ahash::AHashSet<usize> = body_emitter
-                .lambda_call_sites()
+                .spec
+                .lambda_call_sites
                 .map(|m| {
                     m.values()
                         .map(|info| kernel_abi::kernel_key(&info.kernel))
@@ -908,7 +912,7 @@ fn define_kernel_body(
                         .collect()
                 })
                 .unwrap_or_default();
-            if let Some((_, info)) = body_emitter.self_call() {
+            if let Some((_, info)) = body_emitter.spec.self_call {
                 s.insert(kernel_abi::kernel_key(&info.kernel));
             }
             s
@@ -981,7 +985,7 @@ fn define_kernel_body(
         .context("define_function (shared body)")?;
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
-    Ok((
+    Ok(DefinedBody {
         strings,
         values,
         state_words,
@@ -989,7 +993,7 @@ fn define_kernel_body(
         slot_table_words,
         site_layout,
         site_leaves,
-    ))
+    })
 }
 
 /// Define the (args*, out*) wrapper that adapts the typed kernel to a

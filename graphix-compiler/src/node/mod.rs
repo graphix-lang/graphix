@@ -17,7 +17,8 @@ use arcstr::{ArcStr, literal};
 use compiler::compile;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
-use std::{cell::RefCell, sync::LazyLock};
+use poolshark::local::LPooled;
+use std::sync::LazyLock;
 use triomphe::Arc;
 
 pub(crate) mod array;
@@ -761,9 +762,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         event: &mut Event<E>,
     ) -> Option<TagValue> {
         use std::fmt::Write;
-        thread_local! {
-            static BUF: RefCell<String> = RefCell::new(String::new());
-        }
         let mut produced = false;
         let mut fired = false;
         let mut determined = true;
@@ -779,17 +777,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
                 return Some(TagValue::tainted(Value::Null));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
-            BUF.with_borrow_mut(|buf| {
-                buf.clear();
-                for (typ, c) in self.typs.iter().zip(self.args.iter()) {
-                    match c.cached.as_ref().unwrap() {
-                        Value::String(s) => write!(buf, "{s}"),
-                        v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
-                    }
-                    .unwrap()
+            let mut buf: LPooled<String> = LPooled::take();
+            for (typ, c) in self.typs.iter().zip(self.args.iter()) {
+                match c.cached.as_ref().unwrap() {
+                    Value::String(s) => write!(buf, "{s}"),
+                    v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
                 }
-                Some(TagValue::tagged(Value::String(buf.as_str().into()), tag))
-            })
+                .unwrap()
+            }
+            Some(TagValue::tagged(Value::String(buf.as_str().into()), tag))
         } else {
             None
         }

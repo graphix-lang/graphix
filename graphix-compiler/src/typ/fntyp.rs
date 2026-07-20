@@ -1179,6 +1179,33 @@ impl FnType {
     }
 }
 
+impl FnType {
+    /// Should the `throws` clause be SUPPRESSED when printing? True
+    /// only for the IMPLICIT no-throw shapes — an inferred `Bottom`
+    /// ("the body observed nothing"), a TVar bound to `Bottom`, or an
+    /// unbound auto-allocated (`'_N`) inference cell — and NEVER when
+    /// the user wrote an explicit `throws` clause (`explicit_throws`
+    /// tracks intent; see the `explicit_throws_always_shown` and
+    /// `unbound_auto_throws_is_hidden` tests). The single predicate
+    /// both `Display` and `PrettyDisplay` consult — they used to
+    /// disagree (Display suppressed `Bottom` unconditionally).
+    fn suppress_throws(&self) -> bool {
+        !self.explicit_throws
+            && match &self.throws {
+                Type::Bottom => true,
+                Type::TVar(tv) => {
+                    let bound = tv.read().typ.read().typ.clone();
+                    match bound {
+                        Some(Type::Bottom) => true,
+                        None => tv.name.starts_with('_'),
+                        Some(_) => false,
+                    }
+                }
+                _ => false,
+            }
+    }
+}
+
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let constraints = self.constraint_view();
@@ -1221,15 +1248,10 @@ impl fmt::Display for FnType {
             },
             t => write!(f, ") -> {t}")?,
         }
-        match &self.throws {
-            Type::Bottom => Ok(()),
-            Type::TVar(tv) if tv.read().typ.read().typ == Some(Type::Bottom) => Ok(()),
-            Type::TVar(tv)
-                if tv.name.starts_with('_') && tv.read().typ.read().typ.is_none() =>
-            {
-                Ok(())
-            }
-            t => write!(f, " throws {t}"),
+        if self.suppress_throws() {
+            Ok(())
+        } else {
+            write!(f, " throws {}", &self.throws)
         }
     }
 }
@@ -1302,26 +1324,12 @@ impl PrettyDisplay for FnType {
                 t.fmt_pretty(buf)?;
             }
         }
-        match &self.throws {
-            Type::Bottom if !self.explicit_throws => Ok(()),
-            Type::TVar(tv)
-                if tv.read().typ.read().typ == Some(Type::Bottom)
-                    && !self.explicit_throws =>
-            {
-                Ok(())
-            }
-            Type::TVar(tv)
-                if tv.name.starts_with('_')
-                    && tv.read().typ.read().typ.is_none()
-                    && !self.explicit_throws =>
-            {
-                Ok(())
-            }
-            t => {
-                buf.kill_newline();
-                write!(buf, " throws ")?;
-                t.fmt_pretty(buf)
-            }
+        if self.suppress_throws() {
+            Ok(())
+        } else {
+            buf.kill_newline();
+            write!(buf, " throws ")?;
+            self.throws.fmt_pretty(buf)
         }
     }
 }

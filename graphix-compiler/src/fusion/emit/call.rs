@@ -440,7 +440,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
             }
             let base_idx = (first / 8) as u32;
             for a in layout.anchors.iter() {
-                cx.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+                cx.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                     rel: base_idx + a.rel,
                     own_levels: a.own_levels,
                     leaf: a.leaf.clone(),
@@ -459,7 +459,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                 && let Some(h) = layout.replay_hdr
             {
                 for o in layout.replay.iter() {
-                    cx.ctx.replay_words.borrow_mut().push(base_idx + o);
+                    cx.ctx.state.replay.borrow_mut().push(base_idx + o);
                 }
                 let one = cx.b.ins().iconst(types::I64, 1);
                 cx.b.ins().store(
@@ -477,7 +477,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
             }
             let base_idx = (first / 8) as u32;
             for a in layout.anchors.iter() {
-                cx.ctx.site_anchors.borrow_mut().push(kernel_abi::SiteAnchor {
+                cx.ctx.site.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                     rel: base_idx + a.rel,
                     own_levels: a.own_levels,
                     leaf: a.leaf.clone(),
@@ -519,7 +519,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
     };
     let anchor = match cx.claim_state_word_loop_invariant() {
         Some(off) => {
-            cx.ctx.slot_table_words.borrow_mut().push(kernel_abi::SiteAnchor {
+            cx.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                 rel: (off / 8) as u32,
                 own_levels: n_dirs as u32,
                 leaf: leaf_rt.clone(),
@@ -917,7 +917,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(abort_bl);
         cx.b.seal_block(abort_bl);
         emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
-        let exit = pending_exit_block(cx);
+        let exit = pending_exit_block(cx.b, cx.ctx);
         emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
         cx.b.ins().jump(exit, &[]);
         cx.b.switch_to_block(cont_bl);
@@ -1023,18 +1023,6 @@ pub(super) fn drop_owned_composites(
     env: &mut JitEnv,
     ctx: &LowerCtx,
 ) -> Result<()> {
-    let arr_drop = ctx
-        .helper_refs
-        .get("graphix_valarray_drop")
-        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-    let val_drop = ctx
-        .helper_refs
-        .get("graphix_value_drop")
-        .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-    let str_drop = ctx
-        .helper_refs
-        .get("graphix_arcstr_drop")
-        .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
     // Every owned local is dropped by `kind`. Composite params/locals
     // are refcount-cloned on kernel entry; Variant/Nullable/Value locals
     // come from entry clones / `VariantNew` / composite-return DynCall;
@@ -1042,21 +1030,42 @@ pub(super) fn drop_owned_composites(
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
         env.locals.iter().map(|l| (l.kind, l.vv)).collect();
     for (kind, vv) in drops {
-        match kind {
-            LocalKind::Scalar(_) => {}
-            LocalKind::Composite => {
-                let ptr = b.use_var(vv.payload);
-                b.ins().call(arr_drop, &[ptr]);
-            }
-            LocalKind::String => {
-                let ptr = b.use_var(vv.payload);
-                b.ins().call(str_drop, &[ptr]);
-            }
-            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
-                let disc = b.use_var(vv.disc);
-                let payload = b.use_var(vv.payload);
-                b.ins().call(val_drop, &[disc, payload]);
-            }
+        emit_drop_local(b, ctx, kind, vv)?;
+    }
+    Ok(())
+}
+
+/// Emit the runtime drop for ONE owned local of `kind` held in `vv` —
+/// the single per-kind drop dispatch (scalars own nothing). Shared by
+/// every bulk-drop site: `drop_owned_composites`, block scope exits
+/// (`emit_scope_drops`), and the tail-rebind residual drops. (The
+/// select merge's scrutinee drop keeps its own match — a String
+/// scrutinee there is a classify bug it must error on, not drop.)
+pub(super) fn emit_drop_local(
+    b: &mut FunctionBuilder,
+    ctx: &LowerCtx,
+    kind: LocalKind,
+    vv: ValueVar,
+) -> Result<()> {
+    let helper =
+        |name: &str| ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing {name}"));
+    match kind {
+        LocalKind::Scalar(_) => {}
+        LocalKind::Composite => {
+            let f = helper("graphix_valarray_drop")?;
+            let ptr = b.use_var(vv.payload);
+            b.ins().call(f, &[ptr]);
+        }
+        LocalKind::String => {
+            let f = helper("graphix_arcstr_drop")?;
+            let ptr = b.use_var(vv.payload);
+            b.ins().call(f, &[ptr]);
+        }
+        LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+            let f = helper("graphix_value_drop")?;
+            let disc = b.use_var(vv.disc);
+            let payload = b.use_var(vv.payload);
+            b.ins().call(f, &[disc, payload]);
         }
     }
     Ok(())

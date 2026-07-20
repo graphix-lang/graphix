@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
-    body::{BodyEmitter, emit_interrupt_check},
+    body::{BodySource, emit_interrupt_check},
 };
 
 // ─── Function shape ──────────────────────────────────────────────
@@ -40,10 +40,11 @@ pub(super) fn compile_into_function(
     helper_refs: &HelperRefs,
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
-    body_emitter: &dyn BodyEmitter,
+    body: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
     lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
 ) -> Result<(usize, Vec<u32>, Vec<kernel_abi::SiteAnchor>, SiteLayout)> {
+    let spec = &body.spec;
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
@@ -171,46 +172,52 @@ pub(super) fn compile_into_function(
         None
     };
 
-    let tail_call_slots =
+    let call_slots =
         if kernel.params.is_empty() { None } else { Some(kernel.params.as_slice()) };
     let lower = LowerCtx {
-        loop_head,
-        param_mark,
+        tail: TailCtx {
+            loop_head,
+            param_mark,
+            call_slots,
+            scrut_stale: tail_scrut_stale,
+            sel_path: std::cell::RefCell::new(Vec::new()),
+        },
         init_flag,
         callee_refs,
         helper_refs,
-        tail_call_slots,
-        tail_scrut_stale,
-        tail_sel_path: std::cell::RefCell::new(Vec::new()),
         init_override: std::cell::Cell::new(None),
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
-        site_replay: std::cell::RefCell::new(Vec::new()),
         site_replay_hdr: std::cell::Cell::new(None),
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
-        builtin_apply_sites: body_emitter.builtin_apply_sites(),
-        lambda_call_sites: body_emitter.lambda_call_sites(),
-        self_call: body_emitter.self_call(),
-        type_env: body_emitter.type_env(),
-        registry: body_emitter.registry(),
-        fn_index_offset: body_emitter.fn_index_offset(),
-        gate_stale_at_return: body_emitter.gate_stale_at_return(),
-        lifted: body_emitter.lifted(),
+        builtin_apply_sites: spec.builtin_apply_sites,
+        lambda_call_sites: spec.lambda_call_sites,
+        self_call: spec.self_call,
+        type_env: spec.type_env,
+        registry: spec.registry,
+        fn_index_offset: spec.fn_index_offset,
+        gate_stale_at_return: spec.gate_stale_at_return,
+        lifted: spec.lifted,
         lifted_ord: &kernel.lifted,
-        state_ptr,
-        state_enabled: body_emitter.allow_state(),
-        replay_enabled: body_emitter.allow_replay_state(),
-        state_next: std::cell::Cell::new(kernel.lifted.len()),
-        replay_words: std::cell::RefCell::new(Vec::new()),
-        slot_table_words: std::cell::RefCell::new(Vec::new()),
+        state: StateChannel {
+            ptr: state_ptr,
+            enabled: spec.allow_state,
+            next: std::cell::Cell::new(kernel.lifted.len()),
+            replay: std::cell::RefCell::new(Vec::new()),
+            anchors: std::cell::RefCell::new(Vec::new()),
+        },
+        replay_enabled: spec.allow_replay_state,
+        site: StateChannel {
+            ptr: site_ptr,
+            enabled: !spec.allow_state,
+            next: std::cell::Cell::new(0),
+            replay: std::cell::RefCell::new(Vec::new()),
+            anchors: std::cell::RefCell::new(Vec::new()),
+        },
         slot_tables: std::cell::RefCell::new(Vec::new()),
-        site_ptr,
-        site_enabled: !body_emitter.allow_state(),
-        site_next: std::cell::Cell::new(0),
-        site_anchors: std::cell::RefCell::new(Vec::new()),
         callee_layouts,
         lazy_site_leaves,
         loop_depth: std::cell::Cell::new(0),
@@ -224,7 +231,7 @@ pub(super) fn compile_into_function(
     }
     // Body codegen: the `NodeBodyEmitter` walks the region-root Node
     // via `emit_clif` recursion.
-    body_emitter.emit(b, &mut env, &lower)?;
+    body.hook.emit(b, &mut env, &lower)?;
 
     if let Some(head) = loop_head {
         b.seal_block(head);
@@ -259,15 +266,15 @@ pub(super) fn compile_into_function(
     // pending_exit). FunctionBuilder requires all blocks be sealed
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
-    let replay_words = lower.replay_words.borrow().clone();
-    let slot_table_words = lower.slot_table_words.borrow().clone();
+    let replay_words = lower.state.replay.borrow().clone();
+    let slot_table_words = lower.state.anchors.borrow().clone();
     let site_layout = SiteLayout {
-        words: lower.site_next.get() as u32,
-        anchors: lower.site_anchors.borrow().clone().into(),
-        replay: lower.site_replay.borrow().clone().into(),
+        words: lower.site.next.get() as u32,
+        anchors: lower.site.anchors.borrow().clone().into(),
+        replay: lower.site.replay.borrow().clone().into(),
         replay_hdr: lower.site_replay_hdr.get().map(|h| (h / 8) as u32),
     };
-    Ok((lower.state_next.get(), replay_words, slot_table_words, site_layout))
+    Ok((lower.state.next.get(), replay_words, slot_table_words, site_layout))
 }
 
 /// Per-kernel storage of the ArcStrs the JIT'd code references via
@@ -394,80 +401,121 @@ pub(crate) struct SlotTableFrame {
     pub(super) tables: Vec<(ExprId, ClifValue, bool)>,
 }
 
-// CR claude for eric: ~35 fields; the per-instance state channel and
-// the per-call-site channel are structural twins (ptr/enabled/next/
-// replay/anchors) that want to be two instances of one sub-struct,
-// with the tail machinery a third. Also proposing splitting emit.rs
-// along its existing section markers (10.2k lines = 18% of the
-// compiler in one file). See design/code_review_2026_07_19.md A2/A6.
-pub(crate) struct LowerCtx<'a> {
-    /// `Some(block)` when the kernel has a tail loop; TailCall jumps
-    /// here. `None` for non-tail-recursive kernels.
+/// One state-word CHANNEL: a base pointer, a claim counter, and the
+/// claim registries. Two instances live on [`LowerCtx`] — the
+/// per-INSTANCE channel (`state`, wire slot 1: a region parent's own
+/// state buffer) and the per-CALL-SITE channel (`site`, wire slot 2: a
+/// callee body's caller-supplied block). The channels are structural
+/// twins; which one a construct claims from is decided by
+/// [`BodyCx`]'s claim helpers, and only ever one of the two is
+/// `enabled` for a given body.
+pub(super) struct StateChannel {
+    /// The buffer base pointer (`I64`), loaded from the channel's wire
+    /// slot; possibly 0 (a body with no claims — and for `site`, region
+    /// parents and recursive back-edges), so consumers null-guard where
+    /// the pointer can legitimately be absent ([`SelWord::Guarded`]).
+    pub(super) ptr: ClifValue,
+    /// Whether THIS body may claim words from this channel. `state`:
+    /// true only for the region parent's root body — a callee is
+    /// reached from arbitrarily many call sites whose claims would
+    /// alias one buffer offset. `site`: exactly the complement (callee
+    /// bodies only). See `BodySpec::allow_state`.
+    pub(super) enabled: bool,
+    /// Next unclaimed word index. `state`: the final count becomes
+    /// [`WrappedKernel::state_words`] (the runtime buffer size), and it
+    /// STARTS at `lifted_ord.len()` — the first words are reserved for
+    /// the per-instance lifted-target `BindId`s ([`KernelSig::lifted`]).
+    /// `site`: starts at 0; count + anchors become the kernel's
+    /// [`SiteLayout`], read by every caller.
+    pub(super) next: std::cell::Cell<usize>,
+    /// Word indices of claims that are REPLAY memory (cross-invocation
+    /// caches whose interp twins `reset_replay` clears — the
+    /// interior-bottom taint cache), as opposed to semantic/config
+    /// state (lifted ids, first-call-ever flags, select memory).
+    /// `state`: `Kernel::reset_replay` zeroes exactly these, so a value
+    /// cached on one evaluation-frame iteration cannot bridge a bottom
+    /// on the next ([`emit_scalar_taint_cache`]). `site`: relative
+    /// indices recorded on the [`SiteLayout`] so a caller that can
+    /// honor the reset contract registers them for zeroing
+    /// ([`BodyCx::claim_site_word_replay`]).
+    pub(super) replay: std::cell::RefCell<Vec<u32>>,
+    /// Words that ANCHOR per-slot state-table chains — a
+    /// `Box<Vec<u64>>` raw pointer managed by the
+    /// `graphix_slot_state_table` helper, with `own_levels` directory
+    /// levels below it (one per enclosing loop), freed recursively by
+    /// the chain's OWNER (`state`: the runtime `Kernel`'s `Drop`;
+    /// `site`: the block's owner). See [`BodyCx::open_slot_tables`].
+    pub(super) anchors: std::cell::RefCell<Vec<kernel_abi::SiteAnchor>>,
+}
+
+/// The tail-loop machinery for a self-recursive kernel body — `None`s
+/// and empties for everything else. See `emit_body_tail` /
+/// `emit_self_tail_call`.
+pub(super) struct TailCtx<'a> {
+    /// `Some(block)` when the kernel has a tail loop; a tail-call
+    /// rebind jumps here. `None` for non-tail-recursive kernels.
     pub(super) loop_head: Option<Block>,
     /// Env snapshot taken right after all params are bound. A
     /// tail-call rebind truncates `env` back to this so per-iteration
     /// block / select-arm locals (scalar, composite, and variant)
     /// don't leak across iterations.
     pub(super) param_mark: usize,
+    /// Per-source-position tail-call slot map (from
+    /// `KernelSig::tail_call_slots`). Drives which Variable each
+    /// tail-call arg rebinds into — scalar slots hit `env.locals`,
+    /// composite slots hit `env.composites`. `None` for kernels
+    /// without a tail loop (or that hand-built fixtures leave
+    /// empty).
+    pub(super) call_slots: Option<&'a [kernel_abi::KernelParam]>,
+    /// Control-dependence firing accumulator: the AND over every
+    /// TAIL-position select scrutinee's STALE bit on the executed path
+    /// (`emit_select_node_tail` folds each in; STALE-set = no tail
+    /// select fired). `emit_kernel_return` ANDs it into the returned
+    /// disc's STALE so a result whose value chain is all-stale still
+    /// fires when the arm-selecting scrutinee fired — the tail-arm
+    /// mirror of the value-position select's merge-point fold.
+    pub(super) scrut_stale: Variable,
+    /// The enclosing GUARDED tail selects' (selection word, taken arm
+    /// index) on the CURRENT arm-emission path. `emit_select_node_tail`
+    /// pushes one entry per guarded select around each arm's body
+    /// emission; `emit_kernel_return` — reached only on TERMINATING
+    /// paths — compares each word against the taken index and folds a
+    /// selection CHANGE into the returned disc (becoming-selected
+    /// fires, Eric's ruled select semantics), then records the index.
+    /// Jump arms never reach a return, so intra-invocation loop
+    /// mechanics (the dispatch arm oscillating per iteration) never
+    /// touch the word — the compare is final-selection vs the previous
+    /// invocation's final selection, which is exactly the node-walk's
+    /// cross-cycle `selected` memory as seen from its depth-0 retained
+    /// -arm pass (jul17c capture-dispatch pin: a guard reading a
+    /// CAPTURE flips selection while the entry stays quiet — the old
+    /// entry-derived seam tag could never fire it).
+    pub(super) sel_path: std::cell::RefCell<Vec<(SelWord, usize)>>,
+}
+
+pub(crate) struct LowerCtx<'a> {
+    /// The tail-loop machinery (loop head, param mark, rebind slots,
+    /// firing accumulators) — see [`TailCtx`].
+    pub(super) tail: TailCtx<'a>,
     /// The `event.init` flag (`I64`, 1 on the kernel's init cycle),
     /// loaded from wire slot 0. Read by [`emit_const_node`] (via
     /// [`BodyCx::init_flag`]) so a constant carries [`STALE`] on every
     /// non-init cycle — it fires only at init, like the node-walk.
     pub(super) init_flag: ClifValue,
-    /// The per-instance state-buffer pointer (`I64`), loaded from wire
-    /// slot 1 (0 when the kernel claimed no words). See
-    /// [`BodyCx::claim_state_word`].
-    pub(super) state_ptr: ClifValue,
-    /// Whether THIS function's body may claim state words — true only
-    /// for the region parent's root body (`BodyEmitter::allow_state`).
-    /// A callee is reached from arbitrarily many call sites whose
-    /// claims would alias one buffer offset, so callees never claim
-    /// (their stateful constructs keep the stateless approximation).
-    pub(super) state_enabled: bool,
+    /// The per-INSTANCE state channel (wire slot 1) — see
+    /// [`StateChannel`].
+    pub(super) state: StateChannel,
     /// Whether THIS function's body may claim REPLAY state words —
-    /// true only for REGION parents (`BodyEmitter::allow_replay_state`).
+    /// true only for REGION parents (`BodySpec::allow_replay_state`).
     /// A lambda kernel is also entered by native cross-kernel calls
     /// that bypass the node-level `reset_replay`, so a replay word
     /// claimed there could never honor its per-iteration reset
     /// contract (jul10h 000009: a caller's native map loop bridged
     /// element 1's success into element 2's div0).
     pub(super) replay_enabled: bool,
-    /// Next unclaimed state word index. The final count becomes
-    /// [`WrappedKernel::state_words`] — the runtime buffer size.
-    /// STARTS at `lifted_ord.len()`: the first words are reserved for
-    /// the per-instance lifted-target `BindId`s (see
-    /// [`KernelSig::lifted`]).
-    pub(super) state_next: std::cell::Cell<usize>,
-    /// Word indices of claims that are REPLAY memory (cross-invocation
-    /// caches whose interp twins `reset_replay` clears — the
-    /// interior-bottom taint cache), as opposed to semantic/config
-    /// state (lifted ids, first-call-ever flags, select memory).
-    /// `Kernel::reset_replay` zeroes exactly these, so a value cached
-    /// on one evaluation-frame iteration cannot bridge a bottom on the
-    /// next (see [`emit_scalar_taint_cache`]).
-    pub(super) replay_words: std::cell::RefCell<Vec<u32>>,
-    /// `(word index, own_levels)` of claims that ANCHOR per-slot
-    /// state-table chains — a `Box<Vec<u64>>` raw pointer managed by
-    /// the `graphix_slot_state_table` helper, with `own_levels`
-    /// directory levels below it (one per enclosing loop), freed
-    /// recursively by the runtime `Kernel`'s `Drop` (see
-    /// [`BodyCx::open_slot_tables`]).
-    pub(super) slot_table_words: std::cell::RefCell<Vec<kernel_abi::SiteAnchor>>,
-    /// The per-call-site state block base (`I64`, wire slot 2) — a
-    /// CALLEE body's instance memory, supplied by each caller.
-    /// Possibly 0 (region parents, recursive back-edges): every
-    /// consumer null-guards ([`SelWord::Guarded`]).
-    pub(super) site_ptr: ClifValue,
-    /// Whether THIS body may claim site-block words — true only for
-    /// CALLEE bodies (a region parent's root body uses the instance
-    /// channel; `!BodyEmitter::allow_state`).
-    pub(super) site_enabled: bool,
-    /// Next unclaimed site-block word. Count + anchors become the
-    /// kernel's [`SiteLayout`], read by every caller.
-    pub(super) site_next: std::cell::Cell<usize>,
-    /// Site-block words that anchor slot-table chains
-    /// (`(rel word idx, own_levels)`) — freed by the block's OWNER.
-    pub(super) site_anchors: std::cell::RefCell<Vec<kernel_abi::SiteAnchor>>,
+    /// The per-CALL-SITE state channel (wire slot 2) — a CALLEE body's
+    /// instance memory, supplied by each caller. See [`StateChannel`].
+    pub(super) site: StateChannel,
     /// Already-DEFINED callee site layouts (kernel key →
     /// [`SiteLayout`]) for the call sites this body emits; a missing
     /// entry is a recursive back-edge (the call passes 0).
@@ -511,36 +559,6 @@ pub(crate) struct LowerCtx<'a> {
     /// are by helper name (e.g. `"graphix_valarray_get_i64"`).
     pub(super) helper_refs: &'a HelperRefs,
     /// Per-source-position tail-call slot map (from
-    /// `KernelSig::tail_call_slots`). Drives which Variable each
-    /// tail-call arg rebinds into — scalar slots hit `env.locals`,
-    /// composite slots hit `env.composites`. `None` for kernels
-    /// without a tail loop (or that hand-built fixtures leave
-    /// empty).
-    pub(super) tail_call_slots: Option<&'a [kernel_abi::KernelParam]>,
-    /// Control-dependence firing accumulator: the AND over every
-    /// TAIL-position select scrutinee's STALE bit on the executed path
-    /// (`emit_select_node_tail` folds each in; STALE-set = no tail
-    /// select fired). `emit_kernel_return` ANDs it into the returned
-    /// disc's STALE so a result whose value chain is all-stale still
-    /// fires when the arm-selecting scrutinee fired — the tail-arm
-    /// mirror of the value-position select's merge-point fold.
-    pub(super) tail_scrut_stale: Variable,
-    /// The enclosing GUARDED tail selects' (selection word, taken arm
-    /// index) on the CURRENT arm-emission path. `emit_select_node_tail`
-    /// pushes one entry per guarded select around each arm's body
-    /// emission; `emit_kernel_return` — reached only on TERMINATING
-    /// paths — compares each word against the taken index and folds a
-    /// selection CHANGE into the returned disc (becoming-selected
-    /// fires, Eric's ruled select semantics), then records the index.
-    /// Jump arms never reach a return, so intra-invocation loop
-    /// mechanics (the dispatch arm oscillating per iteration) never
-    /// touch the word — the compare is final-selection vs the previous
-    /// invocation's final selection, which is exactly the node-walk's
-    /// cross-cycle `selected` memory as seen from its depth-0 retained
-    /// -arm pass (jul17c capture-dispatch pin: a guard reading a
-    /// CAPTURE flips selection while the entry stays quiet — the old
-    /// entry-derived seam tag could never fire it).
-    pub(super) tail_sel_path: std::cell::RefCell<Vec<(SelWord, usize)>>,
     /// Effective-init override for select ARM bodies. The node-walk
     /// updates a newly-taken arm with `event.init = true`
     /// (node/select.rs — an arm WAKE is an init view: seeds re-fire,
@@ -582,13 +600,6 @@ pub(crate) struct LowerCtx<'a> {
     /// up its per-enclosing-slot prev-length word in the enclosing
     /// frame's chain ([`slot_state_sites`] keyed it by this id).
     pub(super) collection_site: std::cell::Cell<Option<ExprId>>,
-    /// REPLAY-KIND site words claimed by this (callee) body — rel word
-    /// indices into its per-call-site block, recorded on the
-    /// [`SiteLayout`] so a caller that can honor the reset contract
-    /// registers them for zeroing ([`emit_site_block`]'s region root
-    /// path → the parent's `replay_words`). See
-    /// [`BodyCx::claim_site_word_replay`].
-    pub(super) site_replay: std::cell::RefCell<Vec<u32>>,
     /// The block's replay HONOR header word (rel word index), claimed
     /// lazily with the first replay-kind site claim. The cache sites
     /// set their `ok` flag FROM this word, so history only accumulates

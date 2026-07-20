@@ -1062,7 +1062,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // path consumes it).
         let k = &self.kernel;
         let n_params = k.params.len();
-        let mut param_opts: Vec<Option<Value>> = vec![None; n_params];
+        let mut param_opts: smallvec::SmallVec<[Option<Value>; 16]> =
+            smallvec::smallvec![None; n_params];
         // Per-param-slot "fired this cycle", indexed like `param_opts`.
         // A present-but-not-fired param packs its disc with STALE (it
         // carries a cached value that did NOT update this cycle), so the
@@ -1137,14 +1138,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             let p = v as *const Value as *const u64;
             unsafe { (*p, *p.add(1)) }
         };
-        // STAGE one Value per param, in params (= ABI) order: the
-        // present value validated against the declared shape, or the
-        // kind's tainted placeholder. The staged Values stay alive in
-        // this smallvec across the wrapper call (the kernel
-        // refcount-bumps what it keeps at entry); the wire words are
-        // exactly `bits(&staged)` — with a scalar exception below.
+        // STAGE `(disc, payload word, keepalive Value)` per param, in
+        // params (= ABI) order, in ONE pass: the present value
+        // validated against the declared shape, or the kind's tainted
+        // placeholder. The payload word is read while the staged Value
+        // is on this stack and stays VALID across its move into the
+        // smallvec (it's the Arc/inline payload word, unaffected by
+        // the move); the keepalive Value holds the refcount across the
+        // wrapper call (the kernel refcount-bumps what it keeps at
+        // entry). Scalars keep nothing alive — their payload comes
+        // from `pack_value_to_u64` (exact sign/zero extension: a
+        // narrow Value's upper payload bytes are padding, so `bits`
+        // alone would read uninitialized memory).
         use kernel_abi::ParamKind;
-        let staged: smallvec::SmallVec<[(u64, Value); 16]> = k
+        let staged: smallvec::SmallVec<[(u64, u64, Value); 16]> = k
             .params
             .iter()
             .enumerate()
@@ -1160,28 +1167,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                     );
                 };
                 match (&p.kind, param_opts[i].as_ref()) {
-                    // Scalars pack via `pack_value_to_u64` (exact
-                    // sign/zero extension — a narrow Value's upper
-                    // payload bytes are padding, so `bits` alone would
-                    // read uninitialized memory). The staged Value is
-                    // the ORIGINAL (kept for uniformity; scalars own
-                    // nothing).
                     (ParamKind::Scalar(prim), Some(v)) => {
                         match pack_value_to_u64(v, *prim) {
                             Some(payload) => {
                                 let disc = prim_to_value_disc(*prim) as u64 | flag;
-                                return (disc, Value::Null, payload, true);
+                                (disc, payload, Value::Null)
                             }
                             None => {
                                 mismatch(v);
                                 let disc = prim_to_value_disc(*prim) as u64 | taint;
-                                return (disc, Value::Null, 0, true);
+                                (disc, 0, Value::Null)
                             }
                         }
                     }
                     (ParamKind::Scalar(prim), None) => {
                         let disc = prim_to_value_disc(*prim) as u64 | taint;
-                        return (disc, Value::Null, 0, true);
+                        (disc, 0, Value::Null)
                     }
                     (
                         ParamKind::Array { .. }
@@ -1199,13 +1200,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                         };
                         match staged {
                             Some(v) => {
-                                let disc = bits(&v).0 | flag;
-                                (disc, v, 0, false)
+                                let (disc, payload) = bits(&v);
+                                (disc | flag, payload, v)
                             }
                             None => {
                                 let v = Value::Array(ValArray::from([]));
-                                let disc = bits(&v).0 | taint;
-                                (disc, v, 0, false)
+                                let (disc, payload) = bits(&v);
+                                (disc | taint, payload, v)
                             }
                         }
                     }
@@ -1220,13 +1221,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                         };
                         match staged {
                             Some(v) => {
-                                let disc = bits(&v).0 | flag;
-                                (disc, v, 0, false)
+                                let (disc, payload) = bits(&v);
+                                (disc | flag, payload, v)
                             }
                             None => {
                                 let v = Value::String(arcstr::ArcStr::new());
-                                let disc = bits(&v).0 | taint;
-                                (disc, v, 0, false)
+                                let (disc, payload) = bits(&v);
+                                (disc | taint, payload, v)
                             }
                         }
                     }
@@ -1242,23 +1243,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                         v,
                     ) => match v {
                         Some(v) => {
-                            let disc = bits(v).0 | flag;
-                            (disc, v.clone(), 0, false)
+                            let v = v.clone();
+                            let (disc, payload) = bits(&v);
+                            (disc | flag, payload, v)
                         }
                         None => {
                             let v = Value::Null;
-                            let disc = bits(&v).0 | taint;
-                            (disc, v, 0, false)
+                            let (disc, payload) = bits(&v);
+                            (disc | taint, payload, v)
                         }
                     },
                 }
-            })
-            .map(|(disc, staged, scalar_payload, is_scalar)| {
-                // Second stage folds the two shapes into (disc,
-                // payload-source): scalars carry their packed word,
-                // everything else reads the staged Value's payload word
-                // at push time (below, while `staged` is alive).
-                (disc, if is_scalar { Value::U64(scalar_payload) } else { staged })
             })
             .collect();
         // Pack the wire slots: context words then (disc, payload) per
@@ -1274,15 +1269,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // Slot 2: the per-call-site state block — a CALLEE-only channel
         // (`CTX_WIRE_SLOTS`); a region parent has none.
         slots.push(0);
-        for (i, (disc, staged)) in staged.iter().enumerate() {
+        for (disc, payload, _keepalive) in staged.iter() {
             slots.push(*disc);
-            match &k.params[i].kind {
-                ParamKind::Scalar(_) => match staged {
-                    Value::U64(payload) => slots.push(*payload),
-                    _ => unreachable!("scalar param staged non-U64 payload carrier"),
-                },
-                _ => slots.push(bits(staged).1),
-            }
+            slots.push(*payload);
         }
         // Drift guard: the packed slot count must equal the kernel's
         // declared ABI footprint.

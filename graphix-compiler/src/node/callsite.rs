@@ -843,16 +843,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee.apply().map(|apply| apply.typ().resolve_tvars())
     }
 
-    fn refresh_static_ftype(&mut self) {
-        let Some(ftype) = self.instance_ftype() else {
-            return;
-        };
+    /// Re-read the bound instance's resolved ftype and store it on
+    /// both static channels (`static_target` + `Callee::Static`);
+    /// returns it for callers that need the value. `None` = no bound
+    /// apply (nothing refreshed).
+    fn refresh_static_ftype(&mut self) -> Option<FnType> {
+        let ftype = self.instance_ftype()?;
         if let Some(target) = &mut self.static_target {
             target.ftype = ftype.clone();
         }
         if let Callee::Static { resolved_ftype, .. } = &mut self.callee {
-            *resolved_ftype = ftype;
+            *resolved_ftype = ftype.clone();
         }
+        Some(ftype)
     }
 
     fn setup_static_bind(
@@ -1132,13 +1135,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 .typecheck0(ctx, arg_refs)
         }
         .with_context(|| format!("in the instance of {} at this call site", self.spec));
-        let resolved_ftype = self.instance_ftype().unwrap();
-        if let Some(target) = &mut self.static_target {
-            target.ftype = resolved_ftype.clone();
-        }
-        if let Callee::Static { resolved_ftype: stored, .. } = &mut self.callee {
-            *stored = resolved_ftype.clone();
-        }
+        let resolved_ftype =
+            self.refresh_static_ftype().expect("static callee must have an apply");
         let res = typecheck0.and_then(|()| self.typecheck_static_defaults(ctx)).and_then(
             |()| {
                 self.callee
@@ -1150,13 +1148,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     })
             },
         );
-        let final_ftype = self.instance_ftype().unwrap();
-        if let Some(target) = &mut self.static_target {
-            target.ftype = final_ftype.clone();
-        }
-        if let Callee::Static { resolved_ftype: stored, .. } = &mut self.callee {
-            *stored = final_ftype;
-        }
+        self.refresh_static_ftype().expect("static callee must have an apply");
         if let Some(previous) = previous {
             match previous {
                 Some(active) => {
@@ -1862,8 +1854,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // skip the arg-typecheck loop entirely (its own
                 // compile errors never surface) and fail or be
                 // silently dropped at bind time.
-                if n_positional_provided > n_positional_required
-                    && ftype.vargs.is_none()
+                if n_positional_provided > n_positional_required && ftype.vargs.is_none()
                 {
                     bail!(
                         "too many positional arguments, expected {n_positional_required}, received {n_positional_provided}"
