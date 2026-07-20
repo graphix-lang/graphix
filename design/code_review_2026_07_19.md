@@ -237,10 +237,27 @@ All landed with A6 except where noted.
    every def `Value` for the ctx's lifetime, never evicted —
    `resolve_static` no longer takes the value), `Lambda.top_id`/
    `flags`, `Op::base_op`. graphix-compiler builds warning-free.
-3. **`Kernel::sleep` reachability**: `FusedKernel::sleep` deliberately
-   does not delegate to `Kernel::sleep` (comment added this commit);
-   as far as I can tell nothing else calls it, making `Kernel::sleep`'s
-   input-slot clearing dead. Confirm and delete, or name its caller.
+3. **RESOLVED (2026-07-20), and the question was sharper than the
+   review knew** (Eric asked: what about DynCall sites in a kernel?).
+   The reachability sweep (GXDBG_KERNEL_SLEEP probes, suite-wide +
+   witnesses + the dyn-module corridor) established: fusion's descent
+   never enters a sleep-initiating position and sleep initiates only
+   at select arms, so `FusedKernel::sleep` AND `Kernel::sleep` were
+   both unreachable — and neither touched the dyn slots' bound
+   applies, whose interp twins (`CachedArgs::sleep` clears
+   combineLatest slots; `GXLambda::sleep` sleeps the body) DO act on
+   sleep. Worse, `Kernel` never overrode the no-op `Apply::delete`
+   default, so slot applies never got `delete(ctx)` — a LIVE
+   wake-interest leak via dynamic-module reloads (every swap deletes
+   module kernels). Fixed: `DynCallSlot::{sleep, delete}` (apply +
+   arg_refs, `fired` reset so a wake is an init view — the
+   `CallSite` twins), `Kernel` implements `Apply::delete` and its
+   `sleep` now KEEPS the arg slots (the arm-wake replay memory the
+   old body wrongly cleared), clears replay words, and sleeps the
+   slots; `FusedKernel::sleep` delegates. The sleep half is coherent-
+   but-dormant until arm-region fusion lands; the probes stay as its
+   verification instrument, and the generator's slept-arm template
+   (30949359) is its witness generator.
 4. **Outstanding review comments**: `expr/print.rs:117` has an open
    `CR codex for eric` (the pretty-fit check compares total bytes
    written, not line width — mid-line/indented starts can exceed the

@@ -126,10 +126,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // Deliberately does NOT sleep `self.inner`: the kernel's input
-        // slots are kept for the arm-wake cached replay (a re-selected
-        // arm's kernel must fire from its retained inputs). Contrast
-        // `reset_replay` below, which clears them.
+        if std::env::var_os("GXDBG_KERNEL_SLEEP").is_some() {
+            eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
+        }
+        // Delegates: `Kernel::sleep` KEEPS the input slots (the
+        // arm-wake cached replay — a re-selected arm's kernel must
+        // fire from its retained inputs), clears the replay words
+        // (node-walk `Cached` twins), and sleeps the dyn slots' bound
+        // applies (the `CallSite::sleep` twin). Contrast
+        // `reset_replay` below, which clears the input slots.
+        self.inner.sleep(ctx);
         for feeder in self.feeders.iter_mut() {
             feeder.sleep(ctx);
         }

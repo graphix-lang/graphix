@@ -358,6 +358,38 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// clean up the BindIds, and return whatever Value the Apply
     /// produced this cycle (or `None` for synchronous-only-v1
     /// "no value yet").
+    /// Sleep the slot's bound apply — the arm-sleep twin of
+    /// `CallSite::sleep` (which sleeps its callee apply and arg_refs):
+    /// a builtin's `CachedArgs` clears its combineLatest slots, an
+    /// interpreted callback instance sleeps its whole body. `fired`
+    /// resets so the next dispatch runs under a forced init view — an
+    /// arm WAKE is an init view, the same fresh-callee contract
+    /// `dispatch` encodes.
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some((_, apply)) = &mut self.current {
+            apply.sleep(ctx);
+        }
+        for n in &mut self.arg_refs {
+            n.sleep(ctx);
+        }
+        self.fired = false;
+    }
+
+    /// Semantic teardown for the slot's bound apply — the
+    /// region-death twin of `CallSite::delete`. `Drop` alone frees
+    /// memory but never runs `delete(ctx)`: an interpreted callback
+    /// instance's wake-interest refs (and any published binds) leaked
+    /// on every kernel death — LIVE via dynamic-module reloads, which
+    /// delete module kernels each swap (C3, 2026-07-20).
+    pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some((_, mut apply)) = self.current.take() {
+            apply.delete(ctx);
+        }
+        for n in &mut self.arg_refs {
+            n.delete(ctx);
+        }
+    }
+
     pub fn dispatch(
         &mut self,
         lambda_value: &Value,
@@ -1372,16 +1404,46 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         self.last_out
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        for slot in self.args.iter_mut() {
-            *slot = None;
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Semantic teardown for the dyn slots' bound applies. The
+        // Apply-trait default no-op left interpreted callback
+        // instances' wake-interest refs leaking on every kernel death
+        // — reached constantly via dynamic-module reloads (each swap
+        // deletes the old module graph, kernels included) and any
+        // region deletion (C3, 2026-07-20). Memory was never leaked
+        // (`Drop` runs); the SEMANTIC cleanup was.
+        for slot in self.dyn_slots.iter_mut() {
+            slot.delete(ctx);
         }
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if std::env::var_os("GXDBG_KERNEL_SLEEP").is_some() {
+            eprintln!("KERNEL-APPLY-SLEEP {}", self.kernel.fn_name);
+        }
+        // The per-arg last-value slots are KEPT — they are the
+        // arm-wake cached-replay memory (a re-selected arm's kernel
+        // must fire from its retained inputs; `FusedKernel::sleep`
+        // delegates here on exactly that contract). Contrast
+        // `reset_replay`, which clears them.
+        //
         // Sleep restarts the arm: the interior-bottom taint caches are
         // node-walk `Cached` twins, which sleep clears.
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
         }
         self.free_reset_chains();
+        // The dyn slots' bound applies sleep like any node-walked
+        // callee's would (`CallSite::sleep` sleeps its apply). NOTE:
+        // no fused artifact can currently sit under a sleep-initiating
+        // position (fusion's descent never enters select arms — the C3
+        // reachability sweep, 2026-07-20), so this whole path is
+        // exercised only by the GXDBG_KERNEL_SLEEP probes today; it
+        // exists so the sleep algebra is coherent the day arm-region
+        // fusion lands.
+        for slot in self.dyn_slots.iter_mut() {
+            slot.sleep(ctx);
+        }
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
