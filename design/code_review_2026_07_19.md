@@ -258,11 +258,18 @@ All landed with A6 except where noted.
    but-dormant until arm-region fusion lands; the probes stay as its
    verification instrument, and the generator's slept-arm template
    (30949359) is its witness generator.
-4. **Outstanding review comments**: `expr/print.rs:117` has an open
-   `CR codex for eric` (the pretty-fit check compares total bytes
-   written, not line width — mid-line/indented starts can exceed the
-   column limit); `tval.rs:132` has a resolved `XCR estokes` awaiting
-   your delete/re-open pass.
+4. **Outstanding review comments**: RESOLVED (print.rs half,
+   2026-07-20). Eric rejected the codex CR as framed — each nested
+   `fmt_pretty` re-measures from its own `start`, and the pretty
+   impls break before recursing, so the span check effectively resets
+   at every structural line break. The kernel of truth (the check
+   ignored the line's starting column — the few mid-line recursions
+   like `select `/`if ` could overrun by their prefix) is fixed: the
+   fit check now adds the current column and drops the trailing
+   newline from the span. Printer policy per Eric: perfection isn't
+   possible (irreducible tokens beat any limit) — fix layouts
+   case-by-case when they obviously look bad. `tval.rs:132` still has
+   a resolved `XCR estokes` awaiting his delete/re-open pass.
 5. **Runtime `.expect` on bind failure** (`callsite.rs` ~1467, ~1501):
    `bind()` failures panic the runtime. Presumably unreachable after
    typecheck, but a dynamically-dispatched wrong-arity lambda value

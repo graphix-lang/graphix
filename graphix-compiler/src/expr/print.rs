@@ -21,6 +21,9 @@ fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
     sep: &str,
     f: F,
 ) -> fmt::Result {
+    if exprs.is_empty() {
+        return writeln!(buf, "{open}{close}");
+    }
     writeln!(buf, "{}", open)?;
     buf.with_indent::<fmt::Result, _>(2, |buf| {
         for i in 0..exprs.len() {
@@ -113,11 +116,13 @@ pub trait PrettyDisplay: fmt::Display {
     fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
         use fmt::Write;
         let start = buf.len();
+        let col = start - buf.buf.rfind('\n').map_or(0, |i| i + 1);
         writeln!(buf, "{}", self)?;
-        // CR codex for eric: This compares total bytes written, not line width. If we're mid-line
-        // or have indentation, we can exceed the intended column limit while still passing this
-        // check. The old printer tracked line start/indent; consider restoring per-line width.
-        if buf.len() - start <= buf.limit {
+        // The fit check is best-effort: col accounts for the line's existing
+        // prefix, embedded newlines overcount, and a long token can exceed
+        // any limit. Printer policy: perfection isn't possible — fix layouts
+        // case-by-case when they obviously look bad.
+        if col + buf.len() - start - 1 <= buf.limit {
             return Ok(());
         } else {
             buf.buf.truncate(start);
