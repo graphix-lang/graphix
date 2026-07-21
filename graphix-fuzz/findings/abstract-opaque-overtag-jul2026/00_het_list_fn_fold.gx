@@ -1,0 +1,13 @@
+// bisect: typecheck unsoundness (soak-jul13b cluster A, 8 findings —
+// one root). The genuine mismatch (the find predicate narrowed the
+// element to i64; the heterogeneous list argument then failed
+// `i64 does not contain [null, Fn, i64]`) was classified
+// AbstractOpaque because the failing types MENTION the abstract List
+// somewhere in the tree, and try_static_resolve's RESOLVE-DISCARD
+// silently dropped the call site back to dynamic — the program
+// compiled, the node-walk bottomed at runtime (arith error), and the
+// fused fold emitted the Value's payload word as a scalar i64
+// (pointer garbage). contains_mismatch now classifies from the
+// walk's abstract-PAIR-false flag (RefHist::abstract_false), so this
+// is a compile error in both modes.
+{let a = array::init(i64:3, |i| {let l = list::from_array([null, list::cons, i64:3]); list::find(l, |x| x > i64:10)}); array::fold(a, i64:0, |acc, x| acc + x)}

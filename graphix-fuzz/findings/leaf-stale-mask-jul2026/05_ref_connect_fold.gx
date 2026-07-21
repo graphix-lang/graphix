@@ -1,0 +1,5 @@
+// bisect: fusion/JIT firing bug (soak-jul13b generate_divergence_000002
+// — the leaf-stale-mask class, see 00_minimal_connect_refire.gx).
+// Ref-connect flavor: `*v2 <- ...` re-entry duplicated the
+// destructure-fold's emission. interp [0:2]; jit [0:2 1:2].
+{let v0: i64 = i64:0; f64:0.; let v2 = &v0; *v2 <- i64:0; array::fold([(false, false, i64:7), (false, false, i64:2)], (-(v0)), |v1, (v3, v4, v5)| v5)}

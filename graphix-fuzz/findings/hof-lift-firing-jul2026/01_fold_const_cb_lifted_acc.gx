@@ -1,0 +1,23 @@
+// schedule-v1: cap=64 events=512; in0=i64:1
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:i64:42 1:i64:100]; [1:i64:100])
+// jit:    Trace([0:i64:42]; []) — result NEVER fires after cycle 0
+// Found by the jul04 combined soak, reactive campaign (seed 70403),
+// corpus-reactive/divergence_000000 (probes p46-p55).
+// root_cause: a fused array::fold over a connect-LIFTED accumulator
+// whose callback consumes NEITHER param (|a, b| i64:100) has its
+// result disc synthesized from the const body alone — fires once at
+// init, permanently STALE after, even though the fold's value still
+// depends on the array through the length/emptiness test. Matrix:
+// consuming callback (|a,b| a+b) agrees; array::map with a const
+// callback over the SAME lifted array agrees; non-lifted source
+// agrees; and a LIVE init (fold(v1, in0, ...)) does NOT unwedge it —
+// so the array and init firing channels are both dropped when the
+// callback body is closed. The enclosing kernel can still fire (p46:
+// len(v1) tracked while the fold held 42), so downstream reads see a
+// stale-forever fold value.
+// NOTE: schedule line is FIRST because Schedule::parse reads only
+// line 1 (file-based check works today). The regress gate exercises
+// this pin only once the build.rs strip_header fix lands (today it
+// strips the schedule with the header — soak_triage item 10).
+{let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v3: i64 = array::fold(v1, i64:42, |a, b| i64:100); v3}

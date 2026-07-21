@@ -2,10 +2,15 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use graphix_compiler::{deref_typ, errf, typ::Type, ExecCtx, PrintFlag, Rt, TypecheckPhase, UserEvent};
-use graphix_package_core::{is_struct, CachedArgs, CachedVals, EvalCached};
+use graphix_compiler::{
+    ExecCtx, PrintFlag, Rt, UserEvent, deref_typ,
+    effects::EffectKind,
+    errf,
+    typ::{FnType, Type},
+};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, is_struct};
 use graphix_package_json::value_to_json;
 use handlebars::Handlebars;
 use netidx::publisher::Typ;
@@ -77,38 +82,41 @@ impl Default for HbsRenderEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "hbs_render";
-    const NEEDS_CALLSITE: bool = true;
 
-    fn typecheck(
+    fn typecheck0(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [graphix_compiler::Node<R, E>],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [graphix_compiler::Node<R, E>],
-        phase: TypecheckPhase<'_>,
+        resolved: &FnType,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                if let Some(partials_arg) = resolved.args.get(1) {
-                    deref_typ!("struct, map, or null", ctx, &partials_arg.typ,
-                        Some(Type::Struct(_)) => Ok(()),
-                        Some(Type::Map { .. }) => Ok(()),
-                        Some(t @ Type::Primitive(_)) => {
-                            if is_null_type(t) { Ok(()) }
-                            else { bail!("hbs::render #partials must be a struct, map, or null") }
-                        },
-                        None => Ok(()) // unresolved = using default
-                    )?;
-                }
-                if let Some(data_arg) = resolved.args.get(3) {
-                    deref_typ!("struct or map", ctx, &data_arg.typ,
-                        Some(Type::Struct(_)) => Ok(()),
-                        Some(Type::Map { .. }) => Ok(())
-                    )?;
-                }
-                Ok(())
-            }
+        if let Some(partials_arg) = resolved.args.get(1) {
+            deref_typ!("struct, map, or null", ctx, &partials_arg.typ,
+                Some(Type::Struct(_)) => Ok(()),
+                Some(Type::Map { .. }) => Ok(()),
+                Some(t @ Type::Primitive(_)) => {
+                    if is_null_type(t) { Ok(()) }
+                    else { bail!("hbs::render #partials must be a struct, map, or null") }
+                },
+                None => Ok(()) // unresolved = using default
+            )?;
         }
+        if let Some(data_arg) = resolved.args.get(3) {
+            deref_typ!("struct or map", ctx, &data_arg.typ,
+                Some(Type::Struct(_)) => Ok(()),
+                Some(Type::Map { .. }) => Ok(())
+            )?;
+        }
+        Ok(())
     }
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {

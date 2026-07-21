@@ -1,0 +1,3 @@
+// Same seam, no slice: a plain index init (`a[0]` — maybe-error
+// union) makes the acc value-shaped; the bare-Array body confuses.
+array::fold([[i64:1], [i64:2]], {let a = [[i64:5, i64:6]]; a[i64:0]}, |acc, v| v)

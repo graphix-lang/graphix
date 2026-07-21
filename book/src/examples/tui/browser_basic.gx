@@ -6,5 +6,6 @@ let selected_path: string = never();
 browser(
     #size: {width: 40, height: 10},
     #selected_path: &selected_path,
-    "/"  // Start browsing from root
+    // Start browsing from root
+    "/"
 )

@@ -1,18 +1,18 @@
 use super::{
-    csep, doc_comment, expr, modpath, sep_by1_tok, spaces, spfname, spmodpath, spstring,
-    sptoken, typ, typedef,
+    csep, doc_comment, expr, leading_comments, modpath, sep_by1_tok, spaces, spfname,
+    spmodpath, spstring, sptoken, typ, typedef,
 };
 use crate::expr::{
-    parser::{semisep, spaces1},
     BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
+    parser::{semisep, spaces1},
 };
 use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, optional,
     parser::char::{space, string},
     position,
-    stream::{position::SourcePosition, Range},
-    token, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token,
 };
 use triomphe::Arc;
 
@@ -20,7 +20,12 @@ parser! {
     pub(super) fn sig_item[I]()(I) -> SigItem
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        (position(), doc_comment().skip(spaces())).then(|(pos, doc)| {
+        // Tolerate (skip) plain `//` comment lines above an interface
+        // declaration — `///` doc comments are captured by `doc_comment`,
+        // and `.gxi` files use `//` for internal notes (e.g. XCRs). Their
+        // retention isn't a goal; this restores the pre-change behavior
+        // for the interface parser without affecting the `.gx` rule.
+        (position(), leading_comments().with(doc_comment()).skip(spaces())).then(|(pos, doc)| {
             let ori = Some(crate::expr::get_origin());
             choice((
                 typedef().map({

@@ -1,0 +1,8 @@
+// bisect: fusion/JIT firing bug (soak-jul13b divergence_000009 — the
+// leaf-stale-mask class, see 00_minimal_connect_refire.gx).
+// Callback-body flavor: the map's body is a CONSTANT block whose
+// nested destructure-find_map re-fired on each input epoch, so the
+// map re-emitted per epoch while the interp (body-driven firing over
+// a constant body) fired once.
+// schedule-v1: cap=64 events=512; in0=i64:0
+array::map([in0], |x: i64| {let a = [(i64:1, i64:10), (i64:2, i64:20), (i64:3, i64:30)]; array::find_map(a, |(k, v)| select k == i64:2 {true => v, false => null})})

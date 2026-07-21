@@ -1,15 +1,17 @@
 use crate::{
+    Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
+    TagValue, Update, UserEvent,
     compiler::compile,
     deref_typ,
     env::Env,
     expr::{self, Expr, ExprId, ModPath},
     format_with_flags,
+    fusion::emit::{BodyCx, CompiledExpr, emit_qop_node},
     typ::{Type, TypeRef},
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    wrap,
 };
-use anyhow::{anyhow, bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, anyhow, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
@@ -21,14 +23,14 @@ pub(super) static ECHAIN: LazyLock<ModPath> =
     LazyLock::new(|| ModPath::from(["ErrChain"]));
 
 fn typ_echain(param: Type) -> Type {
-    Type::Ref (TypeRef {
-        scope: ModPath::root(),
-        name: ECHAIN.clone(),
-        params: Arc::from_iter([param]),
-     ..Default::default()})
+    Type::Ref(TypeRef::synthetic(
+        ModPath::root(),
+        ECHAIN.clone(),
+        Arc::from_iter([param]),
+    ))
 }
 
-pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
+pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     static ERRCHAIN: LazyLock<Type> = LazyLock::new(|| typ_echain(Type::empty_tvar()));
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
@@ -53,12 +55,53 @@ pub(super) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     }
 }
 
+/// The error-delivery side of a handler-ful `?` as an `Apply`, so a fused
+/// kernel can perform it through the DynCall machinery (see
+/// [`crate::fusion::kernel_abi::FnSource::QopDeliver`]). `update` receives
+/// the operator's value in `from[0]`; on an `Error` it replicates
+/// `Qop::update`'s handler path EXACTLY — `wrap_error` with this `?`'s
+/// position/origin, then write the catch handler's variable (vacant →
+/// insert into `event.variables`, occupied → `set_var`). Returns
+/// `Value::Null` (a completed side effect); the kernel's error branch
+/// separately aborts the cycle to bottom, matching `Qop::update`'s `None`.
 #[derive(Debug)]
-pub(crate) struct TryCatch<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    nodes: LPooled<Vec<Node<R, E>>>,
-    handler: Node<R, E>,
+pub(crate) struct QopDeliverApply {
+    pub(crate) handler_id: BindId,
+    pub(crate) spec: Expr,
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Value> {
+        let v = from.get_mut(0)?.update(ctx, event)?.value();
+        if let Value::Error(e) = v {
+            let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
+            let v = Value::Error(e.into());
+            match event.variables.entry(self.handler_id) {
+                Entry::Vacant(slot) => {
+                    slot.insert(TagValue::fired(v));
+                }
+                Entry::Occupied(_) => ctx.rt.set_var(self.handler_id, v),
+            }
+        }
+        Some(Value::Null)
+    }
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+}
+
+#[derive(Debug)]
+pub struct TryCatch<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub nodes: LPooled<Vec<Node<R, E>>>,
+    pub handler: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> TryCatch<R, E> {
@@ -79,13 +122,19 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
             Type::TVar(tv) => {
                 let mut tv = tv.write();
                 tv.frozen = true;
-                *tv.typ.write() = Some(Type::Bottom)
+                tv.typ.write().typ = Some(Type::Bottom)
             }
             _ => unreachable!(),
         }
         let id = ctx
             .env
-            .bind_variable(&catch_scope.lexical, &tc.bind, typ, spec.pos, spec.ori.clone())
+            .bind_variable(
+                &catch_scope.lexical,
+                &tc.bind,
+                typ,
+                spec.pos,
+                spec.ori.clone(),
+            )
             .id;
         let handler = compile(ctx, flags, (*tc.handler).clone(), &catch_scope, top_id)?;
         ctx.env.catch.insert_cow(inner_scope.dynamic.clone(), id);
@@ -101,7 +150,11 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         let res = self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
         let _ = self.handler.update(ctx, event);
         res
@@ -121,11 +174,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
         self.handler.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         for n in self.nodes.iter_mut() {
-            wrap!(n, n.typecheck(ctx))?
+            n.reset_replay(ctx)
         }
-        wrap!(self.handler, self.handler.typecheck(ctx))
+        self.handler.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.nodes.iter_mut() {
+            wrap!(n, n.typecheck0(ctx))?
+        }
+        wrap!(self.handler, self.handler.typecheck0(ctx))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.nodes.iter_mut() {
+            wrap!(n, n.typecheck1(ctx))?
+        }
+        wrap!(self.handler, self.handler.typecheck1(ctx))?;
+        Ok(())
     }
 
     fn spec(&self) -> &Expr {
@@ -142,14 +210,34 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
         }
         self.handler.refs(refs);
     }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::TryCatch(self)
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // The TryCatch itself is a fusion boundary (no `emit_clif`): the
+        // catch handler reads the error variable a handler-ful `?` writes,
+        // and that read is necessarily a separate kernel (next cycle). But
+        // its CHILDREN fuse — each try-body statement and the catch handler
+        // fuse their own maximal subtrees. Without this recursion the whole
+        // try body node-walks, so wrapping a hot loop in `try`/`catch`
+        // would kill its fusion (the `?` inside fuses via the QopDeliver
+        // site once the body is reached).
+        for n in self.nodes.iter_mut() {
+            crate::fusion::fuse(n, ctx)?;
+        }
+        crate::fusion::fuse(&mut self.handler, ctx)?;
+        Ok(None)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Qop<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    id: Option<BindId>,
-    n: Node<R, E>,
+pub struct Qop<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub id: Option<BindId>,
+    pub n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
@@ -187,22 +275,36 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        match self.n.update(ctx, event) {
-            None => None,
-            Some(Value::Error(e)) => match self.id {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        let tv = self.n.update(ctx, event)?;
+        if tv.is_tainted() {
+            // a taint placeholder is not an error VALUE — pass it on
+            return Some(tv);
+        }
+        let (v, tag) = tv.into_parts();
+        match v {
+            Value::Error(e) => match self.id {
                 Some(id) => {
                     let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
-                    let v = Value::Error(Arc::new(e));
+                    let v = Value::Error(e.into());
                     match event.variables.entry(id) {
-                        Entry::Vacant(e) => {
-                            e.insert(v);
+                        Entry::Vacant(slot) => {
+                            slot.insert(TagValue::fired(v));
                         }
-                        Entry::Occupied(_) => ctx.set_var(id, v),
+                        Entry::Occupied(_) => ctx.rt.set_var(id, v),
                     }
                     None
                 }
                 None => {
+                    if ctx.frame_depth > 0 {
+                        // in-frame swallowed error: the taint channel,
+                        // silent (the log is a reactive debugging aid)
+                        return Some(TagValue::tainted(Value::Null));
+                    }
                     log::error!(
                         "unhandled error in {} at {} {e}",
                         self.spec.ori,
@@ -215,7 +317,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     None
                 }
             },
-            Some(v) => Some(v),
+            v => Some(TagValue::tagged(v, tag)),
         }
     }
 
@@ -239,7 +341,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         fn fix_echain_typ<R: Rt, E: UserEvent>(
             ctx: &ExecCtx<R, E>,
             etyp: &Type,
@@ -280,7 +386,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 }
             )
         }
-        wrap!(self.n, self.n.typecheck(ctx))?;
+        wrap!(self.n, self.n.typecheck0(ctx))?;
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -297,24 +403,46 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             match &bind.typ {
                 Type::TVar(tv) => {
                     let tv = tv.read();
-                    let mut typ = tv.typ.write();
-                    match &mut *typ {
-                        None => *typ = Some(etyp.clone()),
-                        Some(t) => *typ = Some(t.union(&ctx.env, &etyp)?),
-                    }
+                    let mut cell = tv.typ.write();
+                    cell.typ = match &cell.typ {
+                        None => Some(etyp.clone()),
+                        Some(t) => Some(t.union(&ctx.env, &etyp)?),
+                    };
                 }
                 _ => unreachable!(),
             }
         }
         Ok(())
     }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Qop(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        // A handler-ful `?` (`id: Some` — caught by an enclosing `try`)
+        // delivers its error by WRITING the handler's variable. The fused
+        // kernel now performs that write in-kernel via the discovered
+        // `QopDeliver` site (scalar success type only — non-scalar
+        // handler-ful `?` de-fuses inside `emit_qop_node`). The catch
+        // handler that READS the variable is always a separate kernel
+        // (next cycle), so there's no read-after-write hazard. A
+        // handler-LESS `?` (`id: None`) passes `None` — its error path is
+        // the bottom the kernel produces with no delivery.
+        emit_qop_node(cx, &self.n, &self.typ, self.id.map(|_| self.spec.id))
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct OrNever<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    n: Node<R, E>,
+pub struct OrNever<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> OrNever<R, E> {
@@ -333,14 +461,26 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        match self.n.update(ctx, event) {
-            None => None,
-            Some(Value::Error(e)) => {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        let tv = self.n.update(ctx, event)?;
+        if tv.is_tainted() {
+            return Some(tv);
+        }
+        let (v, tag) = tv.into_parts();
+        match v {
+            Value::Error(e) => {
+                if ctx.frame_depth > 0 {
+                    // in-frame swallowed error: silent taint
+                    return Some(TagValue::tainted(Value::Null));
+                }
                 log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos);
                 None
             }
-            Some(v) => Some(v),
+            v => Some(TagValue::tagged(v, tag)),
         }
     }
 
@@ -364,8 +504,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck(ctx))?;
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck0(ctx))?;
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -376,5 +520,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         let rtyp = self.n.typ().diff(&ctx.env, &err)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::OrNever(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        // `$` never has a catch handler (log + drop on error) — no delivery.
+        emit_qop_node(cx, &self.n, &self.typ, None)
     }
 }

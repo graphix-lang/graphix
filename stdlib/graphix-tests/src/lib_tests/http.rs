@@ -6,6 +6,9 @@ fn cert_dir() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/")
 }
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "hello [req.method]",
@@ -23,8 +26,11 @@ run!(http_round_trip, r#"{
     resp.body
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
     let key = sys::fs::read_all_bin("{cd}/server.key")$;
@@ -47,4 +53,4 @@ run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
     resp.body
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

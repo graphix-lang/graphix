@@ -1,0 +1,32 @@
+// bisect: interp over-fire (soak-jul13b generate_divergence_000001,
+// the original finding — see 00_capture_wake_const_body.gx for the
+// minimal form and the mechanism). interp [0:1 1:1]; jit [0:1].
+{let v0 = [cast<i64>((v32:0 % v32:1000))$, i64:-100]; let v1: (i64, bool) = ((i64:7 - select (i64:7 /? i64:42) {error as _ => i64:42, i64 as n => n}), (z32:0 != (z32:-1 + z32:-1))); let v2 = |v2: bool, v0: f64| -> bool v2; let v1 = 'a: Number|v3: 'a| -> 'a (((v3 + v3) + v3) * v3); let v4: u8 = v1((u8:255 / u8:1)); let v5: i8 = v1((-(i8:1))); let v8 = |v6: bool| -> f64 {let v7 = ((u8:255 - u8:100) < v4); (cast<f64>(i32:2147483647)$ %? v1(f64:2.5))$}; let v9 = m0::mk(v1(i64:-1)); let v7: [f64, null] = f64:-1.; let v10 = mod d0 dynamic { sandbox whitelist [ core ]; sig { val g0: fn(a0: f64) -> i64; val g1: fn(a0: string) -> z32 }; source "let g0 = |v10: f64| -> i64 i64:2;\nlet g1 = |v11: string| -> z32 z32:-1000" }; let v11 = select v10 {error as _ => v1(z32:1), null as _ => d0::g1(m0::f0(&true))}; let rec v8 = |v12: i64| -> i64 select v12 {v13 if v13 <= i64:0 => m0::un(v9), v13 => v8(v13 - i64:1)}; let v14 = v8(i64:1); let v7 = {"b" => (f64:0.1, f64:2.5), "a" => (f64:2.5, f64:3.14)}; let v16 = |v15: v32| -> u8 ((v4 - u8:2) - (v4 / v4)); let v17: [f64, null] = f64:0.1; let v18 = {"b" => ((try ((v4 %? v4))? catch(e) => u8:100) * v4), "k1" => (u8:100 + u8:255)}; let v19 = (u8:0, (i64:100, [u8:0, u8:2, u8:1]), {"k2" => { a: true }, "k0" => { a: false }}); let v20 = m3::mk(cast<i64>(z64:-1)$); let v2 = &m3::k3; *v2 <- f64:0.1; let rec v21 = |v22: i64| -> i64 select v22 {v23 if v23 <= i64:0 => m3::f1(m3::k3, f64:3.14), v23 => (v23 + v21(v23 - i64:1))}; let v24 = v21(i64:5); let v25 = m4::mk(v0[i64:1]$); let v26 = (m4::mk(i64:2), (i64:7 / i64:1)); let v14 = [({"b" => "xyz", "k2" => "graphix", "k0" => "a"}, (true, f64:0.1, false), "graphix"), ({"a" => "hello"}, (false, f64:-1., false), "a")]; let v1 = |v27: i64| -> z64 {let v2 = v16(v32:0); (-((-(z64:-1))))}; select select (m4::un(m4::mk(i64:7)) %? (v24 + i64:100)) {error as _ => m2::f0(u16:0), i64 as n => n} {v28 if (!false) => i64:1, i64:2 if true => m2::k2, i64:1 => m2::f0((u16:2 / u16:65535)), _ => i64:42}}
+// file-v1: m0.gx
+let f0 = |v9: &bool| "";
+type T = (i64, i64);
+let mk = |x: i64| -> T (x, x + i64:1);
+let un = |t: T| -> i64 t.0;
+// file-v1: m1.gx
+let k1: i64 = (i64:-1 + i64:2);
+let h1 = |v10: f64| -> f64 (f64:0.1 * f64:-1.0);
+let f0 = |v11: &z64, v12: [`B(bool, {b: string, c: u8, y: string}), `Some]| i8:-128;
+// file-v1: m2.gx
+let k2: i64 = (m1::k1 * m1::k1);
+let h2 = |v10: u8| -> u8 (u8:100 % u8:0);
+let f0 = |v11: u16| (m0::un(m0::mk(m1::k1)) + (i64:2));
+// file-v1: m3.gx
+let k3: f64 = f64:1.0;
+let h3 = |v20: i64| -> i64 (m0::un(m0::mk(i64:7)) %? v20)$;
+let f0 = |v21: bool, v22: (i64, i64, [f64, null])| v21;
+let f1 = |v23: f64, v24: f64| -> i64 i64:42;
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;
+// file-v1: m4.gx
+let f0 = |v25: u8| -> m0::T m0::mk(m2::k2);
+let f1 = |v26: {b: (v64, bool, string)}| -> bool false;
+let f2 = |v27: Map<string, Array<i64>>| -> string "graphix";
+type T = (i64, i64);
+let mk = |x: i64| -> T (x, x + i64:1);
+let un = |t: T| -> i64 t.0;

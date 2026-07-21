@@ -44,7 +44,7 @@ let copysign = |x: f64, y: f64| -> f64 'core_math_copysign;
 // Comparison / clamp
 let min = |x: f64, y: f64| -> f64 'core_math_min;
 let max = |x: f64, y: f64| -> f64 'core_math_max;
-let clamp = |x: f64, lo: f64, hi: f64| -> f64 'core_math_clamp;
+let clamp = |x: f64, lo: f64, hi: f64| -> [f64, Error<`ClampError(string)>] 'core_math_clamp;
 
 // Predicates
 let is_nan = |x: f64| -> bool 'core_math_is_nan;

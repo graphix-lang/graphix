@@ -4,8 +4,8 @@
 )]
 use arcstr::ArcStr;
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope,
-    UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;
@@ -212,8 +212,12 @@ struct Parse {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
+    // NOT Sync: fires once per instance (the `fired` latch) — not
+    // replayable, so a fused HOF loop's shared DynCall slot instance
+    // would pend after the first element (the sys::dirs class, soak
+    // jul07b). Async de-fuses it.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "args_parse";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -234,7 +238,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        let spec = from[0].update(ctx, event)?;
+        let spec = from[0].update(ctx, event)?.value();
         if self.fired {
             return None;
         }
@@ -271,6 +275,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.fired = false;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The fired latch is once-per-instance semantics (the same
+        // class as `once`'s flag), not replay memory.
     }
 }
 

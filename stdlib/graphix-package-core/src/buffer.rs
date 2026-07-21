@@ -1,7 +1,8 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
-use graphix_compiler::{errf, BindId, ExecCtx, Rt, UserEvent};
+use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
 use netidx_value::{PBytes, ValArray, Value};
+use nohash::IntMap;
 
 use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached};
 
@@ -9,8 +10,9 @@ use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached};
 pub(crate) struct BytesToStringEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bytes_to_string";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -27,8 +29,9 @@ pub(crate) type BytesToString = CachedArgs<BytesToStringEv>;
 pub(crate) struct BytesToStringLossyEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bytes_to_string_lossy";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -43,8 +46,9 @@ pub(crate) type BytesToStringLossy = CachedArgs<BytesToStringLossyEv>;
 pub(crate) struct BytesFromStringEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromStringEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bytes_from_string";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let s = from.get::<ArcStr>(0)?;
@@ -66,8 +70,9 @@ impl Default for BytesConcatEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesConcatEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bytes_concat";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         self.buf.clear();
@@ -96,8 +101,9 @@ pub(crate) type BytesConcat = CachedArgs<BytesConcatEv>;
 pub(crate) struct BytesToArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToArrayEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bytes_to_array";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -121,8 +127,9 @@ impl Default for BytesFromArrayEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromArrayEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bytes_from_array";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let arr = match from.0.first()?.as_ref()? {
@@ -147,8 +154,9 @@ pub(crate) type BytesFromArray = CachedArgs<BytesFromArrayEv>;
 pub(crate) struct BytesLenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bytes_len";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
@@ -198,7 +206,25 @@ fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
             "F64" => buf.put_f64(*a.get_as_unchecked::<f64>()),
             "F64LE" => buf.put_f64_le(*a.get_as_unchecked::<f64>()),
             "Bytes" => buf.put_slice(a.get_as_unchecked::<PBytes>()),
-            "Pad" => buf.put_bytes(0, *a.get_as_unchecked::<u64>() as usize),
+            "Pad" => {
+                // A runaway pad (`Pad(u64:MAX)` — the fuzzer's crash
+                // corpus) must not reach `put_bytes`: the reserve
+                // panics on capacity overflow, ABORTING the process
+                // (panic-in-panic through the FFI-ish call path), and
+                // anything short of that OOM-bombs. `encode` returns
+                // bare `bytes` (no error union), so an absurd pad
+                // logs and bottoms like other hot-path failures.
+                const MAX_PAD: u64 = 64 * 1024 * 1024;
+                let n = *a.get_as_unchecked::<u64>();
+                if n > MAX_PAD {
+                    log::error!(
+                        "buffer::encode: Pad({n}) exceeds the {MAX_PAD} \
+                         byte limit — producing no value"
+                    );
+                    return None;
+                }
+                buf.put_bytes(0, n as usize)
+            }
             "Varint" => {
                 netidx_core::pack::encode_varint(*a.get_as_unchecked::<u64>(), buf);
             }
@@ -224,8 +250,8 @@ impl Default for EncodeEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_buffer_encode";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let arr = match from.0.first()?.as_ref()? {
@@ -261,21 +287,29 @@ fn resolve_ref(byref_chain: &ByRefChain, ref_id: BindId) -> Result<BindId, Value
 }
 
 /// Resolve a ref BindId through the byref chain, returning the target
-/// variable's current u64 value from `ctx.cached`. Returns `Err` with a
-/// decode error if the ref isn't in the byref chain, `Ok(None)` if the
-/// value hasn't arrived yet (bottom).
+/// variable's current u64 value — from this decode pass's own
+/// `written` record first (a length var an earlier field in the SAME
+/// pass wrote; `rt.cached` only advances at delivery), else from
+/// `rt.cached` (written in a previous cycle and since delivered).
+/// Returns `Err` with a decode error if the ref isn't in the byref
+/// chain, `Ok(None)` if the value hasn't arrived yet (bottom).
 fn resolve_u64<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
+    written: &IntMap<BindId, Value>,
     byref_chain: &ByRefChain,
     ref_id: BindId,
 ) -> Result<Option<u64>, Value> {
     let target = resolve_ref(byref_chain, ref_id)?;
-    Ok(ctx.cached.get(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() }))
+    Ok(written
+        .get(&target)
+        .or_else(|| ctx.rt.cached().get(&target))
+        .map(|v| *unsafe { v.get_as_unchecked::<u64>() }))
 }
 
 macro_rules! decode_fixed {
     ($ctx:expr, $buf:expr, $pos:expr, $args:expr,
-     $byref_chain:expr, $sz:expr, $ty:ty, $from_bytes:ident, $variant:ident) => {{
+     $byref_chain:expr, $written:expr, $sz:expr, $ty:ty, $from_bytes:ident,
+     $variant:ident) => {{
         if $buf.len() - $pos < $sz {
             return Some(decode_err("not enough bytes"));
         }
@@ -288,7 +322,8 @@ macro_rules! decode_fixed {
             Ok(t) => t,
             Err(e) => return Some(e),
         };
-        $ctx.set_var(target, Value::$variant(val));
+        $written.insert(target, Value::$variant(val));
+        $ctx.rt.set_var(target, Value::$variant(val));
         $pos += $sz;
     }};
 }
@@ -297,8 +332,8 @@ macro_rules! decode_fixed {
 pub(crate) struct DecodeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_buffer_decode";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let buf = from.get::<Bytes>(0)?;
@@ -307,6 +342,14 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
             _ => return None,
         };
         let byref_chain = ctx.env.byref_chain.clone();
+        // Within ONE decode pass, later fields read length vars that
+        // earlier fields in the SAME pass wrote (`UTF8` after `U32`).
+        // `rt.cached` now advances at DELIVERY (next cycle), so the
+        // pass keeps its own record of what it wrote; `resolve_u64`
+        // consults it before falling back to cached (a value written
+        // in a previous cycle and since delivered).
+        let mut written: poolshark::local::LPooled<IntMap<BindId, Value>> =
+            poolshark::local::LPooled::take();
         let mut pos = 0usize;
 
         for elem in spec.iter() {
@@ -318,6 +361,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     1,
                     i8,
                     from_le_bytes,
@@ -329,6 +373,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     1,
                     u8,
                     from_le_bytes,
@@ -340,6 +385,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     2,
                     i16,
                     from_be_bytes,
@@ -351,6 +397,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     2,
                     i16,
                     from_le_bytes,
@@ -362,6 +409,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     2,
                     u16,
                     from_be_bytes,
@@ -373,6 +421,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     2,
                     u16,
                     from_le_bytes,
@@ -384,6 +433,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     4,
                     i32,
                     from_be_bytes,
@@ -395,6 +445,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     4,
                     i32,
                     from_le_bytes,
@@ -406,6 +457,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     4,
                     u32,
                     from_be_bytes,
@@ -417,6 +469,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     4,
                     u32,
                     from_le_bytes,
@@ -428,6 +481,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     8,
                     i64,
                     from_be_bytes,
@@ -439,6 +493,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     8,
                     i64,
                     from_le_bytes,
@@ -450,6 +505,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     8,
                     u64,
                     from_be_bytes,
@@ -461,6 +517,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     8,
                     u64,
                     from_le_bytes,
@@ -472,6 +529,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     4,
                     f32,
                     from_be_bytes,
@@ -483,6 +541,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     4,
                     f32,
                     from_le_bytes,
@@ -494,6 +553,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     8,
                     f64,
                     from_be_bytes,
@@ -505,6 +565,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                     pos,
                     args,
                     byref_chain,
+                    written,
                     8,
                     f64,
                     from_le_bytes,
@@ -512,7 +573,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                 ),
                 "Bytes" => {
                     let len_ref_id = get_bind_id(&args[0]);
-                    let n = match resolve_u64(ctx, &byref_chain, len_ref_id) {
+                    let n = match resolve_u64(ctx, &written, &byref_chain, len_ref_id) {
                         Ok(Some(n)) => n as usize,
                         Ok(None) => return None,
                         Err(e) => return Some(e),
@@ -525,15 +586,14 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                         Ok(t) => t,
                         Err(e) => return Some(e),
                     };
-                    ctx.set_var(
-                        target,
-                        Value::Bytes(PBytes::new(buf.slice(pos..pos + n))),
-                    );
+                    let v = Value::Bytes(PBytes::new(buf.slice(pos..pos + n)));
+                    written.insert(target, v.clone());
+                    ctx.rt.set_var(target, v);
                     pos += n;
                 }
                 "UTF8" => {
                     let len_ref_id = get_bind_id(&args[0]);
-                    let n = match resolve_u64(ctx, &byref_chain, len_ref_id) {
+                    let n = match resolve_u64(ctx, &written, &byref_chain, len_ref_id) {
                         Ok(Some(n)) => n as usize,
                         Ok(None) => return None,
                         Err(e) => return Some(e),
@@ -552,12 +612,14 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                         Ok(t) => t,
                         Err(e) => return Some(e),
                     };
-                    ctx.set_var(target, Value::String(ArcStr::from(s)));
+                    let v = Value::String(ArcStr::from(s));
+                    written.insert(target, v.clone());
+                    ctx.rt.set_var(target, v);
                     pos += n;
                 }
                 "Skip" => {
                     let len_ref_id = get_bind_id(&args[0]);
-                    let n = match resolve_u64(ctx, &byref_chain, len_ref_id) {
+                    let n = match resolve_u64(ctx, &written, &byref_chain, len_ref_id) {
                         Ok(Some(n)) => n as usize,
                         Ok(None) => return None,
                         Err(e) => return Some(e),
@@ -579,7 +641,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                         Ok(t) => t,
                         Err(e) => return Some(e),
                     };
-                    ctx.set_var(target, Value::U64(val));
+                    written.insert(target, Value::U64(val));
+                    ctx.rt.set_var(target, Value::U64(val));
                 }
                 "Zigzag" => {
                     let mut cursor = &buf[pos..];
@@ -593,7 +656,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                         Ok(t) => t,
                         Err(e) => return Some(e),
                     };
-                    ctx.set_var(target, Value::I64(netidx_core::pack::i64_uzz(raw)));
+                    written.insert(target, Value::I64(netidx_core::pack::i64_uzz(raw)));
+                    ctx.rt.set_var(target, Value::I64(netidx_core::pack::i64_uzz(raw)));
                 }
                 _ => return None,
             }

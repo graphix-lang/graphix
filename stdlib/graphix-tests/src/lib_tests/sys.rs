@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, testing, ProgramArgs};
+use graphix_package_core::{ProgramArgs, run, testing};
 use netidx::publisher::Value;
 
 const ARGS_EMPTY: &str = r#"
@@ -10,7 +10,9 @@ const ARGS_EMPTY: &str = r#"
 run!(args_empty, ARGS_EMPTY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a.is_empty(),
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
+// ^ None: sys::args is once-latched → Async → de-fused (the sys::dirs
+// class, soak jul07b).
 
 #[tokio::test(flavor = "current_thread")]
 async fn args_injected() -> Result<()> {
@@ -46,9 +48,12 @@ const STDOUT_WRITE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdout_write, STDOUT_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // stderr: write and flush succeed
 const STDERR_WRITE: &str = r#"
@@ -60,9 +65,12 @@ const STDERR_WRITE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stderr_write, STDERR_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // stdin: can be created (we can't feed data in a test, but verify it's a valid stream)
 const STDIN_CREATE: &str = r#"
@@ -72,9 +80,12 @@ const STDIN_CREATE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // writing to stdin returns an error
 const STDIN_WRITE_ERR: &str = r#"
@@ -86,4 +97,4 @@ const STDIN_WRITE_ERR: &str = r#"
 
 run!(stdin_write_err, STDIN_WRITE_ERR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
-});
+}; graphix_package_core::testing::FuseExpect::None);

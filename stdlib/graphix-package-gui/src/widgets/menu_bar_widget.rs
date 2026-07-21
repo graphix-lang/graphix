@@ -1,12 +1,10 @@
 use iced_core::{
-    alignment, keyboard, layout, mouse, overlay, renderer, touch, widget, Clipboard,
-    Element, Event, Layout, Length, Padding, Point, Rectangle, Shell, Size, Vector,
-    Widget,
+    Clipboard, Element, Event, Layout, Length, Padding, Point, Rectangle, Shell, Size,
+    Vector, Widget, alignment, keyboard, layout, mouse, overlay, renderer, touch, widget,
 };
 
 use super::{Message, Renderer};
-use crate::theme::GraphixTheme;
-use crate::types::ShortcutV;
+use crate::{theme::GraphixTheme, types::ShortcutV};
 use graphix_rt::CallableId;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 

@@ -1,2 +1,3 @@
 let args = || -> Array<string> 'sys_args;
 let join_path = |path: string, @args: [string, Array<string>]| -> string 'sys_join_path;
+let exit = |code: i64| -> 'a 'sys_exit;

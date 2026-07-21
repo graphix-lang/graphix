@@ -1,11 +1,11 @@
 use crate::{
+    PrintFlag,
     env::Env,
     format_with_flags,
     typ::{AbstractId, AndAc, RefHist, Type, TypeRef},
-    PrintFlag,
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use nohash::IntMap;
@@ -20,16 +20,20 @@ impl Type {
     ) -> Result<bool> {
         let fl = BitFlags::empty();
         match (self, t) {
-            (
-                Self::Ref(TypeRef { scope: s0, name: n0, params: p0, .. }),
-                Self::Ref(TypeRef { scope: s1, name: n1, params: p1, .. }),
-            ) if s0 == s1 && n0 == n1 => Ok(p0.len() == p1.len()
-                && p0
-                    .iter()
-                    .zip(p1.iter())
-                    .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
-                    .collect::<Result<AndAc>>()?
-                    .0),
+            (Self::Ref(tr0), Self::Ref(tr1))
+                if tr0.scope == tr1.scope
+                    && tr0.name == tr1.name
+                    && tr0.cells_agree(tr1) =>
+            {
+                Ok(tr0.params.len() == tr1.params.len()
+                    && tr0
+                        .params
+                        .iter()
+                        .zip(tr1.params.iter())
+                        .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
+                        .collect::<Result<AndAc>>()?
+                        .0)
+            }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
                 let t0_id = hist.ref_id(t0, env);
@@ -105,11 +109,11 @@ impl Type {
                 }
                 Ok(false)
             }
-            (Type::TVar(t0), t1) => match &*t0.read().typ.read() {
+            (Type::TVar(t0), t1) => match &t0.read().typ.read().typ {
                 Some(t0) => t0.could_match_int(env, hist, t1),
                 None => Ok(true),
             },
-            (t0, Type::TVar(t1)) => match &*t1.read().typ.read() {
+            (t0, Type::TVar(t1)) => match &t1.read().typ.read().typ {
                 Some(t1) => t0.could_match_int(env, hist, t1),
                 None => Ok(true),
             },
@@ -206,7 +210,7 @@ impl Type {
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
                 f0.sig_matches_int(env, f1, tvar_map, hist, adts)?;
-                f0.merge_lambda_ids(f1);
+                f0.lambda_ids.link(&f1.lambda_ids);
                 Ok(())
             }
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
@@ -267,10 +271,27 @@ impl Type {
             },
             (Self::TVar(sig_tv), Self::TVar(impl_tv)) if sig_tv != impl_tv => {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!("signature type variable {sig_tv} does not match implementation {impl_tv}")
+                    bail!(
+                        "signature type variable {sig_tv} does not match implementation {impl_tv}"
+                    )
                 })
             }
             (sig_type, Self::TVar(impl_tv)) => {
+                // A BOUND impl tvar is a solved inference fact — the
+                // signature's concrete choice must match it
+                // structurally. Without this, an impl inferred
+                // fn(f64) -> f64 slipped under a `val: fn(i64) -> i64`
+                // sig because its formals are cells: this arm recorded
+                // the instantiation and returned Ok, and the mismatch
+                // was previously caught only by the retired mixed-arith
+                // UNION rtype hitting the catch-all — accidentally
+                // (dynamic_module1, homogeneous-arith fallout
+                // 2026-07-12). Clone the binding out before recursing
+                // (lock discipline).
+                let bound = impl_tv.read().typ.read().typ.clone();
+                if let Some(b) = bound {
+                    return sig_type.sig_matches_int(env, &b, tvar_map, hist, adts);
+                }
                 let impl_tv_addr = impl_tv.inner_addr();
                 match tvar_map.get(&impl_tv_addr) {
                     Some(prev_sig_type) => {
@@ -298,11 +319,15 @@ impl Type {
             }
             (Self::TVar(sig_tv), impl_type) => {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!("signature has type variable '{sig_tv} where implementation has {impl_type}")
+                    bail!(
+                        "signature has type variable '{sig_tv} where implementation has {impl_type}"
+                    )
                 })
             }
             (sig_type, impl_type) => format_with_flags(PrintFlag::DerefTVars, || {
-                bail!("type mismatch: signature has {sig_type}, implementation has {impl_type}")
+                bail!(
+                    "type mismatch: signature has {sig_type}, implementation has {impl_type}"
+                )
             }),
         }
     }

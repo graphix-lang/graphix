@@ -1,0 +1,15 @@
+// bisect: jit-mode runtime panic (jul16e flood, 69 findings —
+// "declared type of variable doesn't match type of value",
+// cranelift-frontend def_var). The 000000 fix's guarded site-tier
+// merge block declared its PAYLOAD param types::I64, but scalar
+// payloads ride at the prim's native CLIF type (F64/F32/I8/...), so
+// any float-typed interior-bottom cache site in a callee whose result
+// fed a let-bound local panicked the compile, killing the runtime
+// ("runtime did not respond"). The u8-only pins missed it. Fixed:
+// the param is prim_to_clif(prim).
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// jit:    CompileErr("runtime did not respond")
+// mutant: { let v0 = select i64:1 { _ if (i8:-100 == i8:-1) => cast<i64>((z64:1 % z64:-1000000))$, v0 if false => cast<i64>(i16:0)$, v0 => array::fold([{"k2" => u8:2, "b" => u8:2}, {"b" => u8:100}], i64:100, |v0, v1| i64:-100) }; let v1 = |v2: i64| select v2 { i64:0 => cast<f64>(i32:-2147483648)$, _ => error(f64:3.14) }; let v3 = v1(i64:1)$; let v6 = |v4: bool, v0: f64, v5: f64| -> u8 { let v0 = ((u8:100 +? u8:255)$ - u8:2); ((u8:2 / u8:1) + (v0 + u8:255)) }; let v7: u8 = ((u8:2 + (u8:2 - u8:0)) * v6(true, (-(v3)), (v3 % f64:-1.0))); select v7 { u8:1 if (u8:0 >= u8:0) => {"a" => (u8:255 + u8:0), "k2" => v7, "b" => v7}, v7 => {"a" => (u8:0 * v7), "k1" => (v7 / v7), "k2" => v6(false, v3, v3)} } }\n// file-v1: m0.gxi\n/// generated\nval f0: fn(a0: [`B(f64), `C(string, [i64, null]), `Nil(f64)]) -> f64;\n/// generated\nval f1: fn(a0: u8) -> f64;\nval f2: fn(a0: f64, a1: string) -> [`C(i64), `Nil(u8, {n: string, x: u64}), `Some(i64)];\n// file-v1: m0.gx\nlet f0 = |v8: [`B(f64), `C(string, [i64, null]), `Nil(f64)]| -> f64 (f64:2.5 - f64:3.14);\nlet f1 = |v9: u8| -> f64 f64:3.14;\nlet f2 = |v10: f64, v11: string| -> [`C(i64), `Nil(u8, {n: string, x: u64}), `Some(i64)] `C(i64:7);
+// minimized:
+{i64:0; let v1 = |v2: i64| select v2 {i64:0 => cast<f64>(i32:-2147483648)$, _ => error(f64:3.14)}; let v3 = v1(i64:1)$; let v6 = |v4: bool, v0: f64, v5: f64| -> u8 {let v0 = ((u8:100 +? u8:255)$ - u8:2); ((u8:2 / u8:1) + (v0 + u8:255))}; let v7: u8 = ((u8:2 + (u8:2 - u8:0)) * v6(true, (-(v3)), (v3 % f64:-1.))); select v7 {u8:1 if (u8:0 >= u8:0) => {"a" => (u8:255 + u8:0), "k2" => v7, "b" => v7}, v7 => {"a" => (u8:0 * v7), "k1" => (v7 / v7), "k2" => v6(false, v3, v3)}}}

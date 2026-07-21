@@ -1,0 +1,17 @@
+// FIXED 2026-07-18 (Eric ruled kernel-right same day): the interp
+// re-emitted a provably-unchanged output when a variable changed that
+// the output's value doesn't depend on — v2 returns its FIRST arg and
+// ignores the second, so the connect-written v3 feeds only the
+// ignored parameter, yet the interp emitted a second `0` where the
+// jit stayed quiet. TWO unconditional-FIRED seams manufactured the
+// freshness: (1) the tail-call stash carried bare Values, forcing the
+// jump rebind to mint FIRED for every formal (PendingTailCall now
+// carries Option<TagValue> — the arg expression's honest production
+// tag, read from event.variables at the stash; tainted → ride,
+// quiet → stale); (2) the select's bind_event stamped every arm bind
+// FIRED (it now carries the scrutinee's production tag — the kernel's
+// arm-bind disc carry; a guard-flip wake with a quiet scrutinee binds
+// the value channel). With both honest, freshness rides the dataflow
+// on both backends and the becoming-selected/selection rules alone
+// decide firing.
+{let v2 = |v0: i64, v1: i64| -> i64 v0; let v3 = i64:0; let rec v5 = |v6: i64| -> i64 select v6 {v7 if v7 <= i64:0 => v2(v7, v3), v7 => v5(v7 - i64:1)}; let v8 = v5(i64:2); v3 <- i64:2; v8}

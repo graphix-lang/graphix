@@ -1,0 +1,17 @@
+// bisect: fusion/JIT bug — soak jul07c fuzz/divergence_000002. `hold`
+// was EffectKind::Sync, so it fused via the generic DynCall path —
+// whose dispatch protocol re-delivers EVERY arg as a fresh update on
+// every dispatch. Hold is UPDATE-HISTORY-SENSITIVE (`current` is
+// take()n on emission and re-arms only when `v` actually updates), so
+// the fused hold re-latched `v` each clock tick and re-emitted the
+// same value once per trigger: interp [1:42], jit [1:42 2:42 3:42
+// 4:42]. The single-fire-clock run! fixtures never saw it — the
+// re-latch needs a clock that fires MORE times than `v` updates.
+// FIXED: hold is EffectKind::Async (the F2 update-history flip that
+// already covered uniq/once/take/skip — hold was missed because its
+// comment rationalized a bespoke kernel-local-state emit nobody
+// wrote). Same family as hof-once-latch-jul2026 (that one under-fired
+// via fresh-instance state; this one over-fires via re-delivered args).
+// mutant: {let clock = filter(list::iter(list::from_array([i64:1, i64:2, i64:3, i64:4])), |x| x < i64:4); let value = i64:42; hold(#clock, value)}
+// minimized:
+{let clock = list::iter(list::from_array([i64:0, i64:2, i64:3, i64:4])); let value = i64:42; hold(#clock, value)}

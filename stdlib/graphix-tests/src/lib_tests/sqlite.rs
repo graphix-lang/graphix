@@ -2,15 +2,21 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_open_memory, r#"{
     let db = sqlite::open(":memory:")?;
     sqlite::close(db)?;
     true
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // typed struct query: exec_batch creates schema, query reads back as structs
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_typed_query, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -22,9 +28,12 @@ run!(sqlite_typed_query, r#"{
     (rows[0]$).name == "alice" && (rows[1]$).name == "bob" && (rows[0]$).id == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // raw map query: same data, but annotated as Map
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_raw_map_query, r#"{
     type SqlVal = [i64, f64, string, bytes, null];
     let db = sqlite::open(":memory:")$;
@@ -41,9 +50,12 @@ run!(sqlite_raw_map_query, r#"{
     cast<string>(n0)? == "alice" && cast<string>(n1)? == "bob"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // exec with params, verify via typed query
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_exec_params, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "CREATE TABLE t(id INTEGER PRIMARY KEY, val REAL)")$;
@@ -52,9 +64,12 @@ run!(sqlite_exec_params, r#"{
     (rows[0]$).id == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // transaction commit
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_transaction, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -68,9 +83,12 @@ run!(sqlite_transaction, r#"{
     array::len(rows) == 2
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // rollback
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_rollback, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -84,9 +102,12 @@ run!(sqlite_rollback, r#"{
     array::len(rows) == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // nullable fields: [i64, null] for a column that may be NULL
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_nullable_field, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -102,9 +123,12 @@ run!(sqlite_nullable_field, r#"{
     a && b
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // empty result: typed query on empty table returns empty array
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_empty_result, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "CREATE TABLE t(x INTEGER)")$;
@@ -112,4 +136,4 @@ run!(sqlite_empty_result, r#"{
     array::len(rows) == 0
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

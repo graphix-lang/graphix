@@ -1,0 +1,15 @@
+// bisect: typing acceptance bug (both modes now compile-reject).
+// Pre-fix: interp emitted f64:6 (runtime promotion through the map
+// instance) while the JIT was silent (i64 acc slot met runtime f64) —
+// the most prolific soak class of jul12h/i (mixed CONCRETE numerics
+// through any in-language HOF instance).
+// root_cause: mixed arith's static result was the UNION [i64, f64]
+// while the runtime always promoted — a standing static lie. Fixed at
+// the root by Eric's homogeneous ruling (2026-07-12): arithmetic is
+// fn('a: Number, 'a) -> 'a, concrete literals are inference anchors,
+// datetime/duration arith is explicit sys::time functions, and the
+// promotion machinery (numeric_absorbers, promo_eligible, absorber
+// obligations) is DELETED. The acc unification now rejects i64 + f64
+// in the instance exactly as it does in the direct form.
+// found: soak-jul12h fuzz divergence_000000 (2026-07-12).
+array::fold(array::map([i64:1, i64:2], |x| x * f64:2.), i64:0, |res, v| res + v)

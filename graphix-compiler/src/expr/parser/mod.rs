@@ -1,32 +1,34 @@
 use crate::{
     expr::{
-        set_origin, BindExpr, Doc, Expr, ExprKind, ModPath, Origin, ParserContext,
+        Attr, BindExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin, ParserContext,
         Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr, TryCatchExpr,
+        set_origin,
     },
     typ::{FnType, Type},
 };
 use ahash::AHashSet;
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use combine::{
-    attempt, between, choice, eof, look_ahead, many, none_of, not_followed_by, optional,
+    EasyParser, ParseError, Parser, RangeStream, attempt, between, choice, eof,
+    look_ahead, many, none_of, not_followed_by, optional,
     parser::{
         char::{space, string},
         combinator::recognize,
         range::{take_while, take_while1},
     },
-    position, sep_by1, skip_many,
+    position, sep_by1,
     stream::{
-        position::{self, SourcePosition},
         Range,
+        position::{self, SourcePosition},
     },
-    token, unexpected_any, value, EasyParser, ParseError, Parser, RangeStream,
+    token, unexpected_any, value,
 };
 use compact_str::CompactString;
 use escaping::Escape;
 use netidx::{path::Path, publisher::Value};
 use netidx_value::parser::{
-    escaped_string, int, not_prefix, sep_by1_tok, sep_by_tok, value as parse_value,
-    VAL_ESC, VAL_MUST_ESC,
+    VAL_ESC, VAL_MUST_ESC, escaped_string, not_prefix, sep_by_tok, sep_by1_tok,
+    value as parse_value,
 };
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
@@ -42,10 +44,10 @@ mod typexp;
 use typexp::{fntype, typ, typedef};
 
 mod lambdaexp;
-use lambdaexp::{apply, lambda};
+use lambdaexp::{apply_args, lambda};
 
 mod arrayexp;
-use arrayexp::{array, arrayref};
+use arrayexp::{array, array_index_suffix};
 
 pub(crate) mod arithexp;
 use arithexp::arith;
@@ -108,17 +110,114 @@ where
         })
 }
 
+// Whitespace ONLY — `//` comments are no longer skipped here. They are
+// captured exclusively by `leading_comments()` at the `expr()` entry, so a
+// comment anywhere else (interior, trailing, dangling) is a parse error:
+// a comment is legal only on its own line directly above an expression,
+// which makes "every comment is preserved in the AST" structural.
 fn spaces<I>() -> impl Parser<I, Output = ()>
 where
     I: RangeStream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    combine::parser::char::spaces().with(skip_many(
-        attempt(string("//").with(not_followed_by(token('/'))))
-            .with(skip_many(none_of(['\n'])))
-            .with(combine::parser::char::spaces()),
-    ))
+    combine::parser::char::spaces()
+}
+
+// Parse one own-line `//` comment line: its text (everything after `//` up to
+// the newline) is kept verbatim so it round-trips. `///` is left untouched
+// (handled by `doc_comment` in interface files; a syntax error in `.gx`).
+// Trailing whitespace and blank lines after the line are skipped.
+fn comment_line<I>() -> impl Parser<I, Output = ArcStr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(
+        string("//")
+            .with(not_followed_by(token('/')))
+            .with(many::<String, _, _>(none_of(['\n']))),
+    )
+    .skip(combine::parser::char::spaces())
+    .map(|s: String| ArcStr::from(s.as_str()))
+}
+
+// Capture the run of own-line `//` comment lines directly above an expression.
+// The `.gxi` `sig_item` path uses this to tolerate `//` notes above a
+// declaration; `.gx` expressions capture comments AND attributes via
+// `leading_decorations`.
+fn leading_comments<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    combine::parser::char::spaces().with(many(comment_line()))
+}
+
+// Parse a single `#[name]` or `#[name(arg, ...)]` attribute. The args are
+// full expressions (so `#[foo(1 + 2, "x")]` is legal). Like `leading_comments`,
+// an attribute is only ever consumed by `leading_decorations` at the `expr()`
+// entry, so it is legal exactly where a comment is — on its own line directly
+// above an expression. The leading `attempt(string("#["))` makes the branch
+// backtrack cleanly when there is no attribute, so it never collides with a
+// labeled call arg `#name` (which is `#` immediately followed by an ident).
+fn attribute<I>() -> impl Parser<I, Output = Attr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        attempt(string("#[")).with(spaces().with(fname())),
+        spaces().with(optional(between(
+            token('('),
+            sptoken(')'),
+            sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
+        ))),
+    )
+        .skip(sptoken(']'))
+        .map(|(name, args): (ArcStr, Option<LPooled<Vec<Expr>>>)| {
+            let mut args = args.unwrap_or_else(LPooled::take);
+            Attr { name, args: Arc::from_iter(args.drain(..)) }
+        })
+}
+
+// Capture the run of own-line `//` comments and `#[..]` attributes directly
+// above an expression, returning them as two flat lists (comments, attrs).
+// They may interleave in the source; the relative order between a comment and
+// an attribute is not retained (each printer emits comments then attrs in a
+// fixed order), which is fine because `Decorations` is invisible to `Expr`
+// equality. This replaces `leading_comments` at the `expr()` entry;
+// `leading_comments` itself is kept for the `.gxi` `sig_item` path.
+fn leading_decorations<I>()
+-> impl Parser<I, Output = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    enum Dec {
+        Comment(ArcStr),
+        Attr(Attr),
+    }
+    combine::parser::char::spaces()
+        .with(many::<LPooled<Vec<Dec>>, _, _>(choice((
+            comment_line().map(Dec::Comment),
+            attribute().skip(combine::parser::char::spaces()).map(Dec::Attr),
+        ))))
+        .map(|mut items: LPooled<Vec<Dec>>| {
+            let mut comments: LPooled<Vec<ArcStr>> = LPooled::take();
+            let mut attrs: LPooled<Vec<Attr>> = LPooled::take();
+            for d in items.drain(..) {
+                match d {
+                    Dec::Comment(c) => comments.push(c),
+                    Dec::Attr(a) => attrs.push(a),
+                }
+            }
+            (comments, attrs)
+        })
 }
 
 fn spaces1<I>() -> impl Parser<I, Output = ()>
@@ -296,43 +395,6 @@ where
     ))
 }
 
-fn structref<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), ref_pexp().skip(sptoken('.')), spfname()).map(|(pos, source, field)| {
-        ExprKind::StructRef { source: Arc::new(source), field }.to_expr(pos)
-    })
-}
-
-fn tupleref<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), ref_pexp().skip(sptoken('.')), int::<_, usize>()).map(
-        |(pos, source, field)| {
-            ExprKind::TupleRef { source: Arc::new(source), field }.to_expr(pos)
-        },
-    )
-}
-
-fn mapref<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), ref_pexp(), between(sptoken('{'), sptoken('}'), expr())).map(
-        |(pos, source, key)| {
-            ExprKind::MapRef { source: Arc::new(source), key: Arc::new(key) }.to_expr(pos)
-        },
-    )
-}
-
 fn any<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -344,7 +406,7 @@ where
         attempt(string("any").skip(not_prefix())).with(between(
             token('('),
             sptoken(')'),
-            sep_by_tok(expr(), csep(), token(')')),
+            sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
         )),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
@@ -506,29 +568,6 @@ where
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
 }
 
-fn tuple<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), token(')'))),
-    )
-        .then(|(pos, mut exprs): (_, LPooled<Vec<Expr>>)| {
-            if exprs.len() < 2 {
-                unexpected_any("tuples must have at least 2 elements").left()
-            } else {
-                value(
-                    ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }
-                        .to_expr(pos),
-                )
-                .right()
-            }
-        })
-}
-
 fn structure<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -579,7 +618,11 @@ where
         between(
             token('{'),
             sptoken('}'),
-            sep_by_tok((expr(), spstring("=>").with(expr())), csep(), token('}')),
+            sep_by_tok(
+                (expr(), spstring("=>").with(expr())),
+                csep(),
+                attempt(sptoken('}')),
+            ),
         ),
     )
         .map(|(pos, mut args): (_, LPooled<Vec<(Expr, Expr)>>)| {
@@ -719,23 +762,41 @@ parser! {
     fn expr[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        spaces().with(choice((
-            module(),
-            use_module(),
-            try_catch(),
-            typedef(),
-            letbind(),
-            attempt(lambda()),
-            attempt(connect()),
-            attempt(arith()),
-            byref(),
-            qop(deref()),
-            qop((position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
-                ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
-            })),
-            attempt(literal()),
-            qop(reference())
-        )))
+        (
+            leading_decorations(),
+            choice((
+                module(),
+                use_module(),
+                try_catch(),
+                typedef(),
+                letbind(),
+                attempt(lambda()),
+                attempt(connect()),
+                attempt(arith()),
+                byref(),
+                qop(deref()),
+                qop((position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
+                    ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
+                })),
+                attempt(literal()),
+                qop(reference()),
+            )),
+        )
+            .map(
+                |((comments, attrs), mut e): (
+                    (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>),
+                    Expr,
+                )| {
+                    if !comments.is_empty() || !attrs.is_empty() {
+                        e.dec = Some(Box::new(Decorations {
+                            comments: comments.iter().cloned().collect(),
+                            attrs: attrs.iter().cloned().collect(),
+                            trailing: Arc::from_iter(std::iter::empty::<ArcStr>()),
+                        }));
+                    }
+                    e
+                },
+            )
     }
 }
 
@@ -795,7 +856,7 @@ pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
 
 #[cfg(test)]
 pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
-    mapref()
+    arithexp::arith_term()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(&*s))

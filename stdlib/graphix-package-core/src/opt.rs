@@ -1,10 +1,10 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TypecheckPhase,
-    UserEvent,
 };
 use netidx_value::{ValArray, Value};
 
@@ -16,8 +16,9 @@ use crate::{CachedArgs, CachedVals, EvalCached};
 pub(crate) struct IsSomeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsSomeEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_is_some";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -34,8 +35,9 @@ pub(crate) type IsSome = CachedArgs<IsSomeEv>;
 pub(crate) struct IsNoneEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsNoneEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_is_none";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -52,8 +54,9 @@ pub(crate) type IsNone = CachedArgs<IsNoneEv>;
 pub(crate) struct ContainsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_contains";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -72,8 +75,9 @@ pub(crate) type Contains = CachedArgs<ContainsEv>;
 pub(crate) struct OrNeverEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrNeverEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_or_never";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -89,8 +93,9 @@ pub(crate) type OrNever = CachedArgs<OrNeverEv>;
 pub(crate) struct OrDefaultEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrDefaultEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_or_default";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -109,8 +114,9 @@ pub(crate) type OrDefault = CachedArgs<OrDefaultEv>;
 pub(crate) struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_or";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -127,8 +133,9 @@ pub(crate) type Or = CachedArgs<OrEv>;
 pub(crate) struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_and";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -145,8 +152,9 @@ pub(crate) type And = CachedArgs<AndEv>;
 pub(crate) struct XorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_xor";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let (a, b) = match (&from.0[0], &from.0[1]) {
@@ -173,8 +181,9 @@ pub(crate) type Xor = CachedArgs<XorEv>;
 pub(crate) struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_zip";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -193,8 +202,9 @@ pub(crate) type Zip = CachedArgs<ZipEv>;
 pub(crate) struct UnzipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_unzip";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -218,14 +228,13 @@ pub(crate) type Unzip = CachedArgs<UnzipEv>;
 pub(crate) struct OkOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_opt_ok_or";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
-            (Some(Value::Null), Some(e)) => {
-                Some(Value::Error(triomphe::Arc::new(e.clone())))
-            }
+            (Some(Value::Null), Some(e)) => Some(Value::Error(e.clone().into())),
             (Some(v), _) => Some(v.clone()),
             _ => None,
         }
@@ -286,15 +295,15 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) {
-        if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
     }
 
     fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value) {
-        ctx.cached.insert(self.x, v.clone());
-        event.variables.insert(self.x, v);
+        ctx.rt.cached_mut().insert(self.x, v.clone());
+        event.variables.insert(self.x, TagValue::fired(v));
     }
 
     /// Standard fire-and-forget tick used by map/flat_map/is_some_and/
@@ -312,7 +321,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         on_null: Value,
     ) -> Option<Value> {
         self.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
+        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
             Some(Value::Null) => Some(on_null),
             Some(v) => {
                 self.feed_x(ctx, event, v);
@@ -320,7 +329,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
             }
             None => None,
         };
-        let inner_out = self.inner.update(ctx, event);
+        let inner_out = self.inner.update(ctx, event).map(|tv| tv.value());
         direct.or(inner_out)
     }
 
@@ -328,9 +337,17 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.inner.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The published callback/element values are per-invocation
+        // replay memory (same ids `delete` removes).
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.inner.reset_replay(ctx);
+    }
+
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.inner.delete(ctx);
     }
@@ -339,8 +356,8 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.inner.refs(refs);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.inner.typecheck(ctx)
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.inner.typecheck0(ctx)
     }
 }
 
@@ -352,8 +369,8 @@ pub(crate) struct OptMap<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_opt_map";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -381,13 +398,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Null)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -401,6 +417,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
+    }
 }
 
 // ── flat_map ───────────────────────────────────────────────────────
@@ -411,8 +431,8 @@ pub(crate) struct OptFlatMap<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_opt_flat_map";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -440,13 +460,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Null)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -459,6 +478,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
     }
 }
 
@@ -476,8 +499,8 @@ pub(crate) struct OptFilter<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_opt_filter";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -503,7 +526,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event) {
+        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
             Some(Value::Null) => {
                 self.pending = None;
                 Some(Value::Null)
@@ -515,20 +538,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
             }
             None => None,
         };
-        let inner_out = self.s.inner.update(ctx, event).map(|b| match b {
+        let inner_out = self.s.inner.update(ctx, event).map(|b| match b.value() {
             Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
             _ => Value::Null,
         });
         direct.or(inner_out)
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -543,6 +565,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         self.pending = None;
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.pending = None;
+        self.s.reset_replay(ctx);
+    }
 }
 
 // ── is_some_and ────────────────────────────────────────────────────
@@ -553,8 +580,8 @@ pub(crate) struct OptIsSomeAnd<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_opt_is_some_and";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -582,13 +609,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Bool(false))
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -602,6 +628,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
+    }
 }
 
 // ── is_none_or ─────────────────────────────────────────────────────
@@ -612,8 +642,8 @@ pub(crate) struct OptIsNoneOr<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_opt_is_none_or";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -641,13 +671,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
         self.s.tick_unary(ctx, from, event, Value::Bool(true))
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -660,6 +689,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
     }
 }
 
@@ -706,18 +739,18 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> (bool, bool) {
-        if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
         let a_updated = if let Some(a) = from[0].update(ctx, event) {
-            self.last_a = Some(a);
+            self.last_a = Some(a.value());
             true
         } else {
             false
         };
         let f_updated = if let Some(v) = self.inner.update(ctx, event) {
-            self.last_f = Some(v);
+            self.last_f = Some(v.value());
             true
         } else {
             false
@@ -731,8 +764,15 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         self.inner.sleep(ctx);
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.last_a = None;
+        self.last_f = None;
+        ctx.rt.cached_mut().remove(&self.fid);
+        self.inner.reset_replay(ctx);
+    }
+
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.fid);
         self.inner.delete(ctx);
     }
 
@@ -740,8 +780,8 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         self.inner.refs(refs);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.inner.typecheck(ctx)
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.inner.typecheck0(ctx)
     }
 }
 
@@ -751,8 +791,8 @@ pub(crate) struct OptOrElse<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_opt_or_else";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -796,13 +836,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -816,6 +855,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
     }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
+    }
 }
 
 #[derive(Debug)]
@@ -824,8 +867,8 @@ pub(crate) struct OptOkOrElse<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_opt_ok_or_else";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -851,7 +894,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
-        let wrap_err = |e: Value| Value::Error(triomphe::Arc::new(e));
+        let wrap_err = |e: Value| Value::Error(e.into());
         if a_up {
             match &self.s.last_a {
                 // a null without cached f stays silent until f produces.
@@ -866,13 +909,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.s.typecheck(ctx)
+        self.s.typecheck0(ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -885,5 +927,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.s.reset_replay(ctx);
     }
 }

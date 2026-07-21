@@ -1,6 +1,6 @@
-use super::{compile, EmptyW, TuiW, TuiWidget};
-use anyhow::{bail, Context, Result};
-use arcstr::{literal, ArcStr};
+use super::{EmptyW, TuiW, TuiWidget, compile};
+use anyhow::{Context, Result, bail};
+use arcstr::{ArcStr, literal};
 use async_trait::async_trait;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MediaKeyCode,
@@ -10,8 +10,8 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use log::debug;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use ratatui::{layout::Rect, Frame};
-use smallvec::{smallvec, SmallVec};
+use ratatui::{Frame, layout::Rect};
+use smallvec::{SmallVec, smallvec};
 use std::collections::VecDeque;
 use tokio::try_join;
 

@@ -1,8 +1,8 @@
 use super::{
-    into_borrowed_line, layout::ConstraintV, AlignmentV, LineV, MarkerV, StyleV, TuiW,
-    TuiWidget,
+    AlignmentV, LineV, MarkerV, StyleV, TuiW, TuiWidget, into_borrowed_line,
+    layout::ConstraintV,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
@@ -12,9 +12,9 @@ use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use log::debug;
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
+    Frame,
     layout::{Constraint, Rect},
     widgets::{Axis, Chart, Dataset, GraphType, LegendPosition},
-    Frame,
 };
 use smallvec::SmallVec;
 use tokio::try_join;
@@ -187,8 +187,14 @@ pub(super) struct ChartW<X: GXExt> {
 
 impl<X: GXExt> ChartW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, datasets), (_, hidden_legend_constraints), (_, legend_position), (_, style), (_, x_axis), (_, y_axis)] =
-            v.cast_to::<[(ArcStr, u64); 6]>()?;
+        let [
+            (_, datasets),
+            (_, hidden_legend_constraints),
+            (_, legend_position),
+            (_, style),
+            (_, x_axis),
+            (_, y_axis),
+        ] = v.cast_to::<[(ArcStr, u64); 6]>()?;
         let (
             datasets_ref,
             hidden_legend_constraints,

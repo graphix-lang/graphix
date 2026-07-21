@@ -1,18 +1,20 @@
 use super::{
+    Constant, NOP, Nop,
     bind::Ref,
-    callsite::{Arg, ArgKey, CallSite},
-    Constant, Nop, NOP,
+    callsite::{Arg, ArgKey, CallSite, Callee},
 };
 use crate::{
-    expr::{ExprId, ModPath, Origin},
-    typ::{FnType, Type},
     BindId, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::{ApplyExpr, ExprId, ExprKind, ModPath, Origin},
+    typ::{FnType, Type},
 };
 use ahash::AHashMap;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
 use netidx::publisher::{Typ, Value};
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
+use std::sync::atomic::AtomicBool;
 use triomphe::Arc;
 
 /// generate a no op with the specific type
@@ -73,29 +75,70 @@ pub fn apply<R: Rt, E: UserEvent>(
 ) -> Node<R, E> {
     let ftype = typ.reset_tvars();
     ftype.alias_tvars(&mut LPooled::take());
+    apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
+}
+
+pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
+    fnode: Node<R, E>,
+    scope: Scope,
+    args: Vec<Node<R, E>>,
+    typ: &FnType,
+    top_id: ExprId,
+) -> Node<R, E> {
+    apply_inner(fnode, scope, args, typ, None, Type::empty_tvar(), top_id)
+}
+
+fn apply_inner<R: Rt, E: UserEvent>(
+    fnode: Node<R, E>,
+    scope: Scope,
+    args: Vec<Node<R, E>>,
+    typ: &FnType,
+    ftype: Option<FnType>,
+    rtype: Type,
+    top_id: ExprId,
+) -> Node<R, E> {
+    let spec = ExprKind::Apply(ApplyExpr {
+        args: Arc::from_iter(
+            args.iter()
+                .zip(typ.args.iter())
+                .map(|(node, farg)| (farg.label().cloned(), node.spec().clone())),
+        ),
+        function: Arc::new(fnode.spec().clone()),
+    })
+    .to_expr_nopos();
+    let mut positional = 0;
     let args: AHashMap<ArgKey, Arg<R, E>> = args
         .into_iter()
         .zip(typ.args.iter())
-        .enumerate()
-        .map(|(i, (node, farg))| {
+        .map(|(node, farg)| {
             let key = match farg.label() {
                 Some(name) => ArgKey::Named(name.clone()),
-                None => ArgKey::Positional(i),
+                None => {
+                    let key = ArgKey::Positional(positional);
+                    positional += 1;
+                    key
+                }
             };
-            (key, Arg { id: BindId::new(), node: Some(node), is_default: false })
+            (key, Arg::new(BindId::new(), Some(node), false))
         })
         .collect();
     Box::new(CallSite {
-        spec: NOP.clone(),
-        rtype: ftype.rtype.clone(),
-        ftype: Some(ftype),
-        resolved_ftype: None,
+        spec: Arc::new(spec),
+        rtype,
+        ftype,
         args,
         arg_refs: Vec::new(),
         scope,
         flags: BitFlags::empty(),
         fnode,
-        function: None,
+        callee: Callee::DynamicUnbound,
+        gate_tainted_args: false,
+        static_target: None,
+        recursive_edge: AtomicBool::new(false),
         top_id,
+        // Synthetic call sites are never recursion sites.
+        is_self_tail_call: AtomicBool::new(false),
+        tail_arg_order: Mutex::new(None),
+        callee_lambda_id: Mutex::new(None),
     })
 }

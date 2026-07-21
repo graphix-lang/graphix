@@ -1,0 +1,6 @@
+// bisect: fusion/JIT firing bug (soak-jul13b divergence_000017 — the
+// leaf-stale-mask class, see 00_minimal_connect_refire.gx).
+// Tail-position flavor: a CONSTANT find_map with a |(k, v)| callback
+// re-emitted when an unrelated connect re-entered the kernel.
+// interp [0:20]; jit [0:20 1:20].
+{let a = [i64:0, i64:0, i64:0]; let s = i64:0; s <- array::fold(a, i64:0, |acc, e| acc + e); {let a = [(i64:1, i64:10), (i64:2, i64:20), (i64:3, i64:30)]; array::find_map(a, |(k, v)| select k == i64:2 {true => v, false => null})}}

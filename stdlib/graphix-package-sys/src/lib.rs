@@ -5,14 +5,14 @@
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope,
-    UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
 };
 use graphix_rt::GXRt;
-use netidx_value::{abstract_type::AbstractWrapper, Abstract, ValArray, Value};
+use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
 use poolshark::local::LPooled;
 use std::{
     cell::RefCell,
@@ -88,9 +88,12 @@ impl AsyncRead for StreamKind {
             StreamKind::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Tls(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Stdin(s) => Pin::new(s).poll_read(cx, buf),
-            StreamKind::Stdout(_) | StreamKind::Stderr(_) => Poll::Ready(Err(
-                std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot read from stdout/stderr"),
-            )),
+            StreamKind::Stdout(_) | StreamKind::Stderr(_) => {
+                Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "cannot read from stdout/stderr",
+                )))
+            }
         }
     }
 }
@@ -107,9 +110,10 @@ impl AsyncWrite for StreamKind {
             StreamKind::Tls(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Stdout(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Stderr(s) => Pin::new(s).poll_write(cx, buf),
-            StreamKind::Stdin(_) => Poll::Ready(Err(
-                std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot write to stdin"),
-            )),
+            StreamKind::Stdin(_) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "cannot write to stdin",
+            ))),
         }
     }
 
@@ -275,9 +279,9 @@ pub(crate) struct TempDirArgs {
 pub(crate) struct GxTempDirEv;
 
 impl EvalCachedAsync for GxTempDirEv {
-    const NAME: &str = "sys_tempdir";
-    const NEEDS_CALLSITE: bool = false;
     type Args = TempDirArgs;
+
+    const NAME: &str = "sys_tempdir";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         if cached.0.iter().any(|v| v.is_none()) {
@@ -332,9 +336,11 @@ pub(crate) type GxTempDir = CachedArgsAsync<GxTempDirEv>;
 #[derive(Debug, Default)]
 pub(crate) struct TempDirPathEv;
 
+// sys::tempdir_path returns a path string from a TempDir handle. Pure
+// transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "sys_tempdir_path";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let v = from.0.first()?.as_ref()?;
@@ -366,8 +372,8 @@ pub(crate) fn convert_path(path: &Path) -> ArcStr {
 pub(crate) struct JoinPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "sys_join_path";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -409,8 +415,13 @@ pub(crate) struct Args {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
+    // Fires once on init with the cmd-line args — same-cycle output,
+    // but NOT replayable (the `fired` latch), so it must not be Sync:
+    // a fused HOF loop's shared DynCall slot instance would pend after
+    // the first element (the sys::dirs class, soak jul07b). Async
+    // de-fuses it.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_args";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -447,11 +458,62 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.fired = false;
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+}
+
+// ── Exit ──────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub(crate) struct Exit;
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
+    // exit consumes its arg and terminates the process; no future-cycle
+    // output. Sync.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "sys_exit";
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Value> {
+        if let Some(Value::I64(code)) =
+            from.get_mut(0).and_then(|n| n.update(ctx, event)).map(|tv| tv.value())
+        {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            std::process::exit(code as i32);
+        }
+        None
+    }
+
+    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 graphix_derive::defpackage! {
     builtins => [
         Args,
+        Exit,
         GxTempDir,
         TempDirPath,
         JoinPath,
@@ -501,6 +563,11 @@ graphix_derive::defpackage! {
         time::AfterIdle,
         time::Timer,
         time::Now,
+        time::TimeAdd,
+        time::TimeSub,
+        time::TimeAddDur,
+        time::TimeSubDur,
+        time::TimeScale,
         dirs_mod::HomeDir,
         dirs_mod::CacheDir,
         dirs_mod::ConfigDir,

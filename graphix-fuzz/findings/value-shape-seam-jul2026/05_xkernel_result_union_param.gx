@@ -1,0 +1,8 @@
+// jul18d crash_000000's cross-kernel twin: same result seam through
+// `emit_lambda_call_node` instead of the collection hook — g's
+// kernel returns a raw array box per its own return ABI, the g()
+// callsite node's type widened to f's param union, and the raw box
+// pointer rode into f as a Value payload. Covered by the same
+// `widen_result_to_value` fix (this shape pins the lambda-call path;
+// 04 pins the collection-inline path).
+{let g = || [i64:1]; let f = |v: [null, Array<i64>]| v; f(g())}

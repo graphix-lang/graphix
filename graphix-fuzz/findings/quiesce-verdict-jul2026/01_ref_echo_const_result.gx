@@ -1,0 +1,13 @@
+// bisect: oracle-soundness flap (soak jul05 items 3/20/24,
+// divergence_000002/19/23). A synchronous ref-echo runaway
+// (`*x <- *x + 1` per cycle, forever) beside a const result. The
+// verdict used to be a COIN FLIP per run per mode: the driver's
+// wall-clock deadline arm interrupted the runtime and reported the
+// post-interrupt result as normal when the 750ms grace completed —
+// but interrupt() is a one-shot flag cleared at cycle end, so it
+// landed only sometimes. FIXED by wait_bounded!: a wall-clock breach
+// on a verdict-carrying trace_wait_idle step IS Timeout, always.
+// This pin asserts the deterministic Timeout==Timeout agreement (and
+// costs one wall-clock timeout per mode in regress — the price of
+// pinning a runaway).
+{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); "_test"}

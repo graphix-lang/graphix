@@ -17,8 +17,7 @@ use lsp_types::{
     InitializeParams, OneOf, PositionEncodingKind, PublishDiagnosticsParams,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 /// Run the LSP server, communicating over stdin/stdout. Blocks until
 /// the client requests shutdown.
@@ -48,7 +47,9 @@ fn select_position_encoding(init: &InitializeParams) -> Option<PositionEncodingK
     offered.iter().find(|e| **e == PositionEncodingKind::UTF32).cloned()
 }
 
-fn server_capabilities(position_encoding: Option<PositionEncodingKind>) -> ServerCapabilities {
+fn server_capabilities(
+    position_encoding: Option<PositionEncodingKind>,
+) -> ServerCapabilities {
     use lsp_types::{SaveOptions, TextDocumentSyncOptions};
     ServerCapabilities {
         position_encoding,
@@ -88,10 +89,7 @@ where
     let encoding = select_position_encoding(&init_params);
     info!(
         "negotiated position encoding: {}",
-        encoding
-            .as_ref()
-            .map(|e| e.as_str())
-            .unwrap_or("utf-16 (default)"),
+        encoding.as_ref().map(|e| e.as_str()).unwrap_or("utf-16 (default)"),
     );
     connection.initialize_finish(
         req_id,
@@ -111,7 +109,8 @@ where
         .and_then(|c| c.completion_item.as_ref())
         .and_then(|ci| ci.snippet_support)
         .unwrap_or(false);
-    let position_encoding = crate::position::PositionEncoding::from_kind(encoding.as_ref());
+    let position_encoding =
+        crate::position::PositionEncoding::from_kind(encoding.as_ref());
     let mut state = ServerState::new(backend, snippet_support, position_encoding);
     let initial = state.set_workspace_roots(workspace_roots);
     for (uri, diags) in initial {
@@ -167,8 +166,7 @@ fn handle_request(
             Response::new_ok(req_id, handlers::workspace_symbol::handle(state, params))
         }
         "textDocument/references" => {
-            let params: lsp_types::ReferenceParams =
-                serde_json::from_value(req.params)?;
+            let params: lsp_types::ReferenceParams = serde_json::from_value(req.params)?;
             Response::new_ok(req_id, handlers::references::handle(state, params))
         }
         _ => {
@@ -214,8 +212,12 @@ fn handle_notification(
             let uri = params.text_document.uri.clone();
             let version = params.text_document.version;
             if let Some(change) = params.content_changes.into_iter().next() {
-                let updates =
-                    handlers::diagnostics::did_change(state, uri.clone(), change.text, version);
+                let updates = handlers::diagnostics::did_change(
+                    state,
+                    uri.clone(),
+                    change.text,
+                    version,
+                );
                 for (target_uri, diags) in updates {
                     let v = if target_uri == uri {
                         Some(version)
@@ -231,8 +233,7 @@ fn handle_notification(
             handlers::diagnostics::did_close(state, params.text_document.uri);
         }
         "textDocument/didSave" => {
-            let _params: DidSaveTextDocumentParams =
-                serde_json::from_value(not.params)?;
+            let _params: DidSaveTextDocumentParams = serde_json::from_value(not.params)?;
             // A save means disk now reflects the user's intent —
             // recompile every project so cross-file errors and
             // references update.

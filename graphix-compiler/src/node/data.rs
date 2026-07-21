@@ -1,12 +1,17 @@
-use super::{compiler::compile, Cached};
+use super::{Cached, compiler::compile};
 use crate::{
-    deref_typ,
+    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
+    Update, UserEvent, deref_typ,
     expr::{Expr, ExprId, ExprKind, StructWithExpr},
+    fusion::emit::{
+        BodyCx, CompiledExpr, emit_struct_new_node, emit_struct_ref_node,
+        emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
+        emit_variant_new_node,
+    },
     typ::Type,
-    update_args, wrap, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    wrap,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::{ValArray, Value};
@@ -15,11 +20,11 @@ use std::iter;
 use triomphe::Arc;
 
 #[derive(Debug)]
-pub(crate) struct Struct<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    names: Box<[ArcStr]>,
-    n: Box<[Cached<R, E>]>,
+pub struct Struct<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub names: Box<[ArcStr]>,
+    pub n: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Struct<R, E> {
@@ -44,18 +49,50 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if self.n.is_empty() && event.init {
-            return Some(Value::Array(ValArray::from([])));
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        if self.n.is_empty() {
+            // Empty producer = a constant: FIRED at init, the STALE
+            // value channel inside frames (the Constant frame rule —
+            // a per-site instance's `let res = []` seed died after
+            // frame resets and its For bottomed on the missing init,
+            // firing-jul2026/03).
+            // Frame depth first — frames force init (see Constant).
+            if ctx.frame_depth > 0 {
+                return Some(if ctx.frame_init {
+                    TagValue::fired(Value::Array(ValArray::from([])))
+                } else {
+                    TagValue::stale(Value::Array(ValArray::from([])))
+                });
+            } else if event.init {
+                return Some(TagValue::fired(Value::Array(ValArray::from([]))));
+            }
+            return None;
         }
-        let (updated, determined) = update_args!(self.n, ctx, event);
-        if updated && determined {
+        let mut produced = false;
+        let mut fired = false;
+        let mut determined = true;
+        for c in self.n.iter_mut() {
+            if let Some(t) = c.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
+            determined &= c.cached.is_some();
+        }
+        if produced && determined {
+            if self.n.iter().any(|c| c.tag.is_tainted()) {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.names.iter().zip(self.n.iter()).map(|(name, n)| {
                 let name = Value::String(name.clone());
                 let v = n.cached.clone().unwrap();
                 Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
             });
-            Some(Value::Array(ValArray::from_iter_exact(iter)))
+            Some(TagValue::tagged(Value::Array(ValArray::from_iter_exact(iter)), tag))
         } else {
             None
         }
@@ -77,13 +114,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         match &self.typ {
             Type::Struct(typs) => {
@@ -102,22 +143,40 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         }
         Ok(())
     }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n.node, n.node.typecheck1(ctx))?
+        }
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Struct(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_struct_new_node(cx, &self.names, &self.n)
+    }
 }
 
 #[derive(Debug)]
-struct Replace<R: Rt, E: UserEvent> {
-    index: Option<usize>,
-    name: Value,
-    n: Cached<R, E>,
+pub struct Replace<R: Rt, E: UserEvent> {
+    pub(crate) index: Option<usize>,
+    pub name: Value,
+    pub n: Cached<R, E>,
 }
 
 #[derive(Debug)]
-pub(crate) struct StructWith<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    source: Node<R, E>,
+pub struct StructWith<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub source: Node<R, E>,
     current: Option<ValArray>,
-    replace: Box<[Replace<R, E>]>,
+    /// The tag of the resident `current` source value — the same
+    /// contract as [`Cached::tag`]: only the TAINT bit matters at rest.
+    current_tag: Tag,
+    pub replace: Box<[Replace<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> StructWith<R, E> {
@@ -142,29 +201,53 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let typ = source.typ().clone();
-        Ok(Box::new(Self { spec, typ, source, current: None, replace }))
+        Ok(Box::new(Self {
+            spec,
+            typ,
+            source,
+            current: None,
+            current_tag: Tag::FIRED,
+            replace,
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        let mut updated = self
-            .source
-            .update(ctx, event)
-            .map(|v| match v {
-                Value::Array(a) => {
-                    self.current = Some(a);
-                    true
-                }
-                _ => false,
-            })
-            .unwrap_or(false);
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        let mut produced = false;
+        let mut fired = false;
+        if let Some(tv) = self.source.update(ctx, event) {
+            let (v, tag) = tv.into_parts();
+            if tag.is_tainted() {
+                self.current_tag = tag;
+                produced = true;
+            } else if let Value::Array(a) = v {
+                self.current = Some(a);
+                self.current_tag = tag;
+                produced = true;
+                fired |= tag.is_fired();
+            }
+        }
         let mut determined = self.current.is_some();
         for r in self.replace.iter_mut() {
-            updated |= r.n.update(ctx, event);
+            if let Some(t) = r.n.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
             determined &= r.n.cached.is_some();
         }
-        if updated && determined {
+        if produced
+            && (self.current_tag.is_tainted()
+                || self.replace.iter().any(|r| r.n.tag.is_tainted()))
+        {
+            return Some(TagValue::tainted(Value::Null));
+        }
+        if produced && determined {
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let mut si = 0;
             let iter =
                 self.current.as_ref().unwrap().iter().enumerate().map(|(i, v)| match v {
@@ -194,7 +277,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                     }
                     _ => v.clone(),
                 });
-            Some(Value::Array(ValArray::from_iter_exact(iter)))
+            Some(TagValue::tagged(Value::Array(ValArray::from_iter_exact(iter)), tag))
         } else {
             None
         }
@@ -214,8 +297,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.current = None;
+        self.current_tag = Tag::FIRED;
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.current = None;
+        self.current_tag = Tag::FIRED;
+        self.source.reset_replay(ctx);
+        self.replace.iter_mut().for_each(|r| r.n.reset_replay(ctx))
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -223,30 +315,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter().for_each(|r| r.n.node.refs(refs))
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck0(ctx))?;
         let fields = match &self.spec.kind {
             ExprKind::StructWith(StructWithExpr { source: _, replace }) => {
                 replace.iter().map(|(n, _)| n.clone()).collect::<SmallVec<[ArcStr; 8]>>()
             }
             _ => bail!("BUG: miscompiled structwith"),
         };
-        wrap!(
-            self,
-            self.source.typ().with_deref(|typ| match typ {
+        // clone the deref'd type out BEFORE recursing — the typecheck0 and
+        // unification calls below take TVar write locks, and with_deref
+        // holds read guards on the source type's whole deref chain for the
+        // closure's duration (a same-thread deadlock, not just a race)
+        let styp = self.source.typ().with_deref(|typ| typ.cloned());
+        let check = || -> Result<()> {
+            match styp {
                 Some(Type::Struct(flds)) => {
                     for (rep, n) in self.replace.iter_mut().zip(fields.iter()) {
                         let r = flds.iter().enumerate().find_map(|(i, (field, typ))| {
-                            if field == n {
-                                Some((i, typ))
-                            } else {
-                                None
-                            }
+                            if field == n { Some((i, typ)) } else { None }
                         });
                         match r {
                             None => bail!("struct has no field named {n}"),
                             Some((i, typ)) => {
-                                wrap!(rep.n.node, rep.n.node.typecheck(ctx))?;
+                                wrap!(rep.n.node, rep.n.node.typecheck0(ctx))?;
                                 wrap!(
                                     rep.n.node,
                                     typ.check_contains(&ctx.env, &rep.n.node.typ())
@@ -259,19 +351,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                 }
                 None => bail!("type must be known, annotations needed"),
                 _ => bail!("expected a struct"),
-            })
-        )?;
+            }
+        };
+        wrap!(self, check())?;
         wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        for rep in self.replace.iter_mut() {
+            wrap!(rep.n.node, rep.n.node.typecheck1(ctx))?
+        }
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::StructWith(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_struct_with_node(cx, &self.source, &self.replace)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct StructRef<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    source: Node<R, E>,
-    field: Option<usize>,
-    field_name: ArcStr,
+pub struct StructRef<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub source: Node<R, E>,
+    pub field: Option<usize>,
+    pub field_name: ArcStr,
 }
 
 impl<R: Rt, E: UserEvent> StructRef<R, E> {
@@ -290,11 +399,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
                 flds.iter()
                     .enumerate()
                     .find_map(|(i, (n, t))| {
-                        if field_name == n {
-                            Some((t.clone(), Some(i)))
-                        } else {
-                            None
-                        }
+                        if field_name == n { Some((t.clone(), Some(i))) } else { None }
                     })
                     .unwrap_or_else(|| (Type::empty_tvar(), None))
             }
@@ -306,33 +411,47 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         match self.source.update(ctx, event) {
-            Some(Value::Array(a)) => match self.field {
-                Some(i) => a.get(i).and_then(|v| match v {
-                    Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
-                    _ => None,
-                }),
-                None => {
-                    let res = a.iter().enumerate().find_map(|(i, kv)| match kv {
-                        Value::Array(kv) => match &kv[..] {
-                            [Value::String(f), v] if f == &self.field_name => {
-                                Some((i, v.clone()))
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    });
-                    match res {
-                        Some((i, v)) => {
-                            self.field = Some(i);
-                            Some(v)
-                        }
-                        None => None,
-                    }
+            Some(tv) => {
+                if tv.is_tainted() {
+                    return Some(TagValue::tainted(Value::Null));
                 }
-            },
-            Some(_) | None => None,
+                let (v, tag) = tv.into_parts();
+                let res = match v {
+                    Value::Array(a) => match self.field {
+                        Some(i) => a.get(i).and_then(|v| match v {
+                            Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
+                            _ => None,
+                        }),
+                        None => {
+                            let res = a.iter().enumerate().find_map(|(i, kv)| match kv {
+                                Value::Array(kv) => match &kv[..] {
+                                    [Value::String(f), v] if f == &self.field_name => {
+                                        Some((i, v.clone()))
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            });
+                            match res {
+                                Some((i, v)) => {
+                                    self.field = Some(i);
+                                    Some(v)
+                                }
+                                None => None,
+                            }
+                        }
+                    },
+                    _ => None,
+                };
+                res.map(|v| TagValue::tagged(v, tag))
+            }
+            None => None,
         }
     }
 
@@ -348,6 +467,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.source.sleep(ctx)
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.source.reset_replay(ctx)
+    }
+
     fn typ(&self) -> &Type {
         &self.typ
     }
@@ -356,8 +479,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         &self.spec
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("struct", ctx, self.source.typ(),
             Some(Type::Struct(flds)) => {
                 let typ = flds.iter().enumerate().find_map(|(i, (n, t))| {
@@ -376,13 +499,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.field = Some(idx);
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))
     }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::StructRef(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        // `field` is the position in the struct type's canonical
+        // (sorted) layout, resolved by typecheck; unresolved → the
+        // subtree node-walks.
+        let sorted_idx = self
+            .field
+            .ok_or_else(|| anyhow::anyhow!("emit_clif: struct field index unresolved"))?;
+        emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Tuple<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    n: Box<[Cached<R, E>]>,
+pub struct Tuple<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Tuple<R, E> {
@@ -404,14 +546,46 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if self.n.is_empty() && event.init {
-            return Some(Value::Array(ValArray::from([])));
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        if self.n.is_empty() {
+            // Empty producer = a constant: FIRED at init, the STALE
+            // value channel inside frames (the Constant frame rule —
+            // a per-site instance's `let res = []` seed died after
+            // frame resets and its For bottomed on the missing init,
+            // firing-jul2026/03).
+            // Frame depth first — frames force init (see Constant).
+            if ctx.frame_depth > 0 {
+                return Some(if ctx.frame_init {
+                    TagValue::fired(Value::Array(ValArray::from([])))
+                } else {
+                    TagValue::stale(Value::Array(ValArray::from([])))
+                });
+            } else if event.init {
+                return Some(TagValue::fired(Value::Array(ValArray::from([]))));
+            }
+            return None;
         }
-        let (updated, determined) = update_args!(self.n, ctx, event);
-        if updated && determined {
+        let mut produced = false;
+        let mut fired = false;
+        let mut determined = true;
+        for c in self.n.iter_mut() {
+            if let Some(t) = c.update(ctx, event) {
+                produced = true;
+                fired |= t.is_fired();
+            }
+            determined &= c.cached.is_some();
+        }
+        if produced && determined {
+            if self.n.iter().any(|c| c.tag.is_tainted()) {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.n.iter().map(|n| n.cached.clone().unwrap());
-            Some(Value::Array(ValArray::from_iter_exact(iter)))
+            Some(TagValue::tagged(Value::Array(ValArray::from_iter_exact(iter)), tag))
         } else {
             None
         }
@@ -433,13 +607,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         match &self.typ {
             Type::Tuple(typs) => {
@@ -454,14 +632,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         }
         Ok(())
     }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n.node, n.node.typecheck1(ctx))?
+        }
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Tuple(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_tuple_new_node(cx, &self.n)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct Variant<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    tag: ArcStr,
-    n: Box<[Cached<R, E>]>,
+pub struct Variant<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub tag: ArcStr,
+    pub n: Box<[Cached<R, E>]>,
 }
 
 impl<R: Rt, E: UserEvent> Variant<R, E> {
@@ -486,19 +679,36 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
         if self.n.len() == 0 {
             if event.init {
-                Some(Value::String(self.tag.clone()))
+                Some(TagValue::fired(Value::String(self.tag.clone())))
             } else {
                 None
             }
         } else {
-            let (updated, determined) = update_args!(self.n, ctx, event);
-            if updated && determined {
+            let mut produced = false;
+            let mut fired = false;
+            let mut determined = true;
+            for c in self.n.iter_mut() {
+                if let Some(t) = c.update(ctx, event) {
+                    produced = true;
+                    fired |= t.is_fired();
+                }
+                determined &= c.cached.is_some();
+            }
+            if produced && determined {
+                if self.n.iter().any(|c| c.tag.is_tainted()) {
+                    return Some(TagValue::tainted(Value::Null));
+                }
+                let tag = if fired { Tag::FIRED } else { Tag::STALE };
                 let a = iter::once(Value::String(self.tag.clone()))
                     .chain(self.n.iter().map(|n| n.cached.clone().unwrap()));
-                Some(Value::Array(ValArray::from_iter(a)))
+                Some(TagValue::tagged(Value::Array(ValArray::from_iter(a)), tag))
             } else {
                 None
             }
@@ -521,13 +731,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
-            wrap!(n.node, n.node.typecheck(ctx))?
+            wrap!(n.node, n.node.typecheck0(ctx))?
         }
         match &self.typ {
             Type::Variant(ttag, typs) => {
@@ -545,14 +759,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         }
         Ok(())
     }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n.node, n.node.typecheck1(ctx))?
+        }
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Variant(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_variant_new_node(cx, &self.tag, &self.n)
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct TupleRef<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    source: Node<R, E>,
-    field: usize,
+pub struct TupleRef<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub source: Node<R, E>,
+    pub field: usize,
 }
 
 impl<R: Rt, E: UserEvent> TupleRef<R, E> {
@@ -579,11 +808,22 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        self.source.update(ctx, event).and_then(|v| match v {
-            Value::Array(a) => a.get(self.field).map(|v| v.clone()),
-            Value::Error(v) => Some((*v).clone()),
-            _ => None,
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        self.source.update(ctx, event).and_then(|tv| {
+            if tv.is_tainted() {
+                return Some(TagValue::tainted(Value::Null));
+            }
+            let (v, tag) = tv.into_parts();
+            let res = match v {
+                Value::Array(a) => a.get(self.field).map(|v| v.clone()),
+                Value::Error(v) => Some((*v).clone()),
+                _ => None,
+            };
+            res.map(|v| TagValue::tagged(v, tag))
         })
     }
 
@@ -607,10 +847,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.source.sleep(ctx);
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck(ctx))?;
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.source.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("tuple", ctx, self.source.typ(),
-            Some(Type::Tuple(flds)) => Ok(flds[self.field].clone()),
+            Some(Type::Tuple(flds)) => flds
+                .get(self.field)
+                .map(|t| t.clone())
+                .ok_or_else(|| anyhow!("in tuple, no such field {}", self.field)),
             Some(Type::Error(t)) => {
                 if self.field != 0 {
                     bail!("no such field {}", self.field);
@@ -620,5 +867,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         );
         let etyp = wrap!(self, etyp)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::TupleRef(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
     }
 }

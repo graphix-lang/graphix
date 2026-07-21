@@ -1,4 +1,4 @@
-use super::{compile_children, GuiW, GuiWidget, IcedElement};
+use super::{GuiW, GuiWidget, IcedElement, compile_children};
 use crate::types::{GridColumnsV, GridSizingV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -79,7 +79,6 @@ impl<X: GXExt> GuiWidget<X> for GridW<X> {
         }
         Ok(changed)
     }
-
 
     fn view(&self) -> IcedElement<'_> {
         let mut g = widget::Grid::new();

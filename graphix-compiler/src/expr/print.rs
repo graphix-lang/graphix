@@ -1,15 +1,15 @@
 use super::Sig;
 use crate::{
     expr::{
-        parser, ApplyExpr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr,
-        ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
-        TypeDefExpr,
+        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModuleKind,
+        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefExpr,
+        parser,
     },
     typ::Type,
 };
 use compact_str::format_compact;
 use netidx::{path::Path, utils::Either};
-use netidx_value::{parser::VAL_ESC, Value};
+use netidx_value::{Value, parser::VAL_ESC};
 use poolshark::local::LPooled;
 use std::fmt::{self, Formatter, Write};
 
@@ -21,6 +21,9 @@ fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
     sep: &str,
     f: F,
 ) -> fmt::Result {
+    if exprs.is_empty() {
+        return writeln!(buf, "{open}{close}");
+    }
     writeln!(buf, "{}", open)?;
     buf.with_indent::<fmt::Result, _>(2, |buf| {
         for i in 0..exprs.len() {
@@ -113,11 +116,13 @@ pub trait PrettyDisplay: fmt::Display {
     fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
         use fmt::Write;
         let start = buf.len();
+        let col = start - buf.buf.rfind('\n').map_or(0, |i| i + 1);
         writeln!(buf, "{}", self)?;
-        // CR codex for eric: This compares total bytes written, not line width. If we're mid-line
-        // or have indentation, we can exceed the intended column limit while still passing this
-        // check. The old printer tracked line start/indent; consider restoring per-line width.
-        if buf.len() - start <= buf.limit {
+        // The fit check is best-effort: col accounts for the line's existing
+        // prefix, embedded newlines overcount, and a long token can exceed
+        // any limit. Printer policy: perfection isn't possible — fix layouts
+        // case-by-case when they obviously look bad.
+        if col + buf.len() - start - 1 <= buf.limit {
             return Ok(());
         } else {
             buf.buf.truncate(start);
@@ -145,6 +150,23 @@ impl fmt::Display for Doc {
             }
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Attr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if self.args.is_empty() {
+            write!(f, "#[{}]", self.name)
+        } else {
+            write!(f, "#[{}(", self.name)?;
+            for (i, a) in self.args.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{a}")?;
+            }
+            write!(f, ")]")
+        }
     }
 }
 
@@ -337,8 +359,8 @@ impl fmt::Display for BindExpr {
         let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
         match typ {
-            None => write!(f, "let{} {pattern} = {value}", rec),
-            Some(typ) => write!(f, "let{} {pattern}: {typ} = {value}", rec),
+            None => write!(f, "let{rec} {pattern} = {value}"),
+            Some(typ) => write!(f, "let{rec} {pattern}: {typ} = {value}"),
         }
     }
 }
@@ -348,8 +370,8 @@ impl PrettyDisplay for BindExpr {
         let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
         match typ {
-            None => writeln!(buf, "let{} {pattern} = ", rec)?,
-            Some(typ) => writeln!(buf, "let{} {pattern}: {typ} = ", rec)?,
+            None => writeln!(buf, "let{rec} {pattern} = ")?,
+            Some(typ) => writeln!(buf, "let{rec} {pattern}: {typ} = ")?,
         }
         buf.with_indent(2, |buf| value.fmt_pretty(buf))
     }
@@ -463,12 +485,33 @@ impl PrettyDisplay for StructExpr {
     }
 }
 
+/// Whether `e` can be printed as the bare source/function of a postfix
+/// operator (`.field`, `.N`, `[i]`, `{k}`, `(args)`) without enclosing parens.
+/// True exactly for the identifier and postfix-chain nodes: the parser folds
+/// postfix left, so `a.b.c` round-trips to `StructRef(StructRef(a,b),c)`. Any
+/// other source (binary op, constant, literal, qop, …) must be parenthesized —
+/// e.g. `(a+b).c` would otherwise mis-associate and `(42).0` would lex as a
+/// float.
+pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
+    matches!(
+        &e.kind,
+        ExprKind::Ref { .. }
+            | ExprKind::StructRef { .. }
+            | ExprKind::TupleRef { .. }
+            | ExprKind::ArrayRef { .. }
+            | ExprKind::ArraySlice { .. }
+            | ExprKind::MapRef { .. }
+            | ExprKind::Apply(_)
+    )
+}
+
 impl fmt::Display for ApplyExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let Self { args, function } = self;
-        match &function.kind {
-            ExprKind::Ref { name: _ } => write!(f, "{function}")?,
-            function => write!(f, "({function})")?,
+        if prints_as_bare_postfix(function) {
+            write!(f, "{function}")?
+        } else {
+            write!(f, "({function})")?
         }
         write!(f, "(")?;
         for i in 0..args.len() {
@@ -495,14 +538,13 @@ impl fmt::Display for ApplyExpr {
 impl PrettyDisplay for ApplyExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let Self { args, function } = self;
-        match &function.kind {
-            ExprKind::Ref { .. } => function.fmt_pretty(buf)?,
-            e => {
-                write!(buf, "(")?;
-                e.fmt_pretty(buf)?;
-                buf.kill_newline();
-                write!(buf, ")")?;
-            }
+        if prints_as_bare_postfix(function) {
+            function.fmt_pretty(buf)?
+        } else {
+            write!(buf, "(")?;
+            function.fmt_pretty(buf)?;
+            buf.kill_newline();
+            write!(buf, ")")?;
         }
         buf.kill_newline();
         writeln!(buf, "(")?;
@@ -871,6 +913,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "*")?;
                 buf.with_indent(2, |buf| e.fmt_pretty(buf))
             }
+            ExprKind::Neg(e) => {
+                write!(buf, "-")?;
+                e.fmt_pretty(buf)
+            }
             ExprKind::Select(se) => se.fmt_pretty(buf),
         }
     }
@@ -913,18 +959,20 @@ impl fmt::Display for ExprKind {
             ExprKind::Ref { name } => {
                 write!(f, "{name}")
             }
-            ExprKind::StructRef { source, field } => match &source.kind {
-                ExprKind::Ref { .. } => {
+            ExprKind::StructRef { source, field } => {
+                if prints_as_bare_postfix(source) {
                     write!(f, "{source}.{field}")
+                } else {
+                    write!(f, "({source}).{field}")
                 }
-                source => write!(f, "({source}).{field}"),
-            },
-            ExprKind::TupleRef { source, field } => match &source.kind {
-                ExprKind::Ref { .. } => {
+            }
+            ExprKind::TupleRef { source, field } => {
+                if prints_as_bare_postfix(source) {
                     write!(f, "{source}.{field}")
+                } else {
+                    write!(f, "({source}).{field}")
                 }
-                source => write!(f, "({source}).{field}"),
-            },
+            }
             ExprKind::Module {
                 value:
                     ModuleKind::Resolved { from_interface: true, .. }
@@ -957,10 +1005,13 @@ impl fmt::Display for ExprKind {
                 }
                 write!(f, "}}")
             }
-            ExprKind::MapRef { source, key } => match &source.kind {
-                ExprKind::Ref { name } => write!(f, "{name}{{{key}}}"),
-                _ => write!(f, "({source}){{{key}}}"),
-            },
+            ExprKind::MapRef { source, key } => {
+                if prints_as_bare_postfix(source) {
+                    write!(f, "{source}{{{key}}}")
+                } else {
+                    write!(f, "({source}){{{key}}}")
+                }
+            }
             ExprKind::Any { args } => {
                 write!(f, "any")?;
                 print_exprs(f, args, "(", ")", ", ")
@@ -999,12 +1050,13 @@ impl fmt::Display for ExprKind {
                 }
                 write!(f, "\"")
             }
-            ExprKind::ArrayRef { source, i } => match &source.kind {
-                ExprKind::Ref { .. } => {
+            ExprKind::ArrayRef { source, i } => {
+                if prints_as_bare_postfix(source) {
                     write!(f, "{}[{}]", source, i)
+                } else {
+                    write!(f, "({})[{}]", &source, &i)
                 }
-                _ => write!(f, "({})[{}]", &source, &i),
-            },
+            }
             ExprKind::ArraySlice { source, start, end } => {
                 let s = match start.as_ref() {
                     None => "",
@@ -1014,11 +1066,10 @@ impl fmt::Display for ExprKind {
                     None => "",
                     Some(e) => &format_compact!("{e}"),
                 };
-                match &source.kind {
-                    ExprKind::Ref { .. } => {
-                        write!(f, "{}[{}..{}]", source, s, e)
-                    }
-                    _ => write!(f, "({})[{}..{}]", source, s, e),
+                if prints_as_bare_postfix(source) {
+                    write!(f, "{}[{}..{}]", source, s, e)
+                } else {
+                    write!(f, "({})[{}..{}]", source, s, e)
                 }
             }
             ExprKind::Apply(ap) => write!(f, "{ap}"),
@@ -1044,6 +1095,7 @@ impl fmt::Display for ExprKind {
             ExprKind::Sample { lhs, rhs } => write!(f, "{lhs} ~ {rhs}"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
             ExprKind::Deref(e) => write!(f, "*{e}"),
+            ExprKind::Neg(e) => write!(f, "-{e}"),
             ExprKind::Not { expr } => write!(f, "!{expr}"),
         }
     }

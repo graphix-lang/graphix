@@ -3,18 +3,20 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use ahash::AHashMap;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
+    CFlag, ExecCtx, FusionStats, PrintFlag,
     env::Env,
     expr::{CouldNotResolve, ExprId, ModuleResolver, Source},
     format_with_flags,
     typ::TVal,
-    CFlag, ExecCtx, PrintFlag,
 };
-use graphix_package::MainThreadHandle;
+use graphix_package::{
+    Cdc, CustomResult, IndexSet, MainThreadHandle, Package, root_module_source,
+};
 use graphix_package_core::ProgramArgs;
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
 use input::InputReader;
@@ -22,20 +24,58 @@ use netidx::{
     publisher::{Publisher, Value},
     subscriber::Subscriber,
 };
-use poolshark::global::GPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
 use std::{marker::PhantomData, process::exit, time::Duration};
 use tokio::{select, sync::mpsc};
 
 mod completion;
-mod deps;
 mod input;
 pub mod lsp_backend;
+
+/// The shell's built-in package set: the stdlib packages this binary was
+/// compiled with — and any external packages the package manager added to the
+/// shell's `Cargo.toml` — auto-discovered by `graphix_package::packages!()`.
+/// This is the default for `ShellBuilder::packages`; embedders append their own
+/// with `ShellBuilder::add_packages`.
+pub fn stdlib_packages<X: GXExt>() -> Vec<Box<dyn Package<X>>> {
+    graphix_package::packages!()
+}
+
+/// Print the script's fusion profile: the delta between the stats
+/// snapshot taken after the stdlib root loaded (`base`) and after the
+/// script compiled (`after`), so stdlib compilation noise is excluded.
+/// `failed` is a blocker profile, not a gap count — the
+/// attempt-then-recurse protocol logs structural misses (Module/Bind
+/// wrappers) even when everything beneath them fused.
+fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
+    let attempted = after.attempted - base.attempted;
+    let fused = after.fused - base.fused;
+    let failed = &after.failed[base.failed.len()..];
+    eprintln!(
+        "fusion: {fused} of {attempted} attempted regions fused, {} blocked",
+        failed.len()
+    );
+    let mut by_reason: LPooled<AHashMap<&str, usize>> = LPooled::take();
+    for failure in failed {
+        // reasons embed the region's spec text, which can span many
+        // lines — the first line identifies the blocker and keeps the
+        // grouping tight
+        let reason = failure.reason.lines().next().unwrap_or("").trim_end();
+        *by_reason.entry(reason).or_insert(0) += 1;
+    }
+    let mut sorted: LPooled<Vec<(&str, usize)>> =
+        by_reason.iter().map(|(r, n)| (*r, *n)).collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    for (reason, n) in sorted.iter() {
+        eprintln!("  {n}x {reason}");
+    }
+}
 
 enum Output<X: GXExt> {
     None,
     EmptyScript,
-    Custom(deps::Cdc<X>),
+    Custom(Cdc<X>),
     Text(CompExp<X>),
 }
 
@@ -45,15 +85,22 @@ impl<X: GXExt> Output<X> {
         env: &Env,
         e: CompExp<X>,
         run_on_main: &MainThreadHandle,
+        packages: &[Box<dyn Package<X>>],
     ) -> Self {
-        match deps::maybe_init_custom(gx, env, e, run_on_main).await {
-            Err(e) => {
-                eprintln!("error initializing custom display: {e:?}");
-                Self::None
+        // Offer the value to each package in turn; the first to claim it
+        // (returning `Custom`) wins, otherwise it falls through to text.
+        let mut e = e;
+        for pkg in packages {
+            match pkg.maybe_init_custom(gx, env, e, run_on_main).await {
+                Err(err) => {
+                    eprintln!("error initializing custom display: {err:?}");
+                    return Self::None;
+                }
+                Ok(CustomResult::Custom(cdc)) => return Self::Custom(cdc),
+                Ok(CustomResult::NotCustom(ret)) => e = ret,
             }
-            Ok(deps::CustomResult::Custom(cdc)) => Self::Custom(cdc),
-            Ok(deps::CustomResult::NotCustom(e)) => Self::Text(e),
         }
+        Self::Text(e)
     }
 
     async fn clear(&mut self) {
@@ -135,11 +182,40 @@ pub struct Shell<X: GXExt> {
     /// (default_flags | enable_flags) - disable_flags
     #[builder(default)]
     disable_flags: BitFlags<CFlag>,
+    /// after compiling a script, print its fusion profile (regions
+    /// attempted/fused and the per-region blocker reasons) to stderr.
+    /// The stdlib baseline is subtracted, so the profile covers the
+    /// script alone.
+    #[builder(default = "false")]
+    fusion_stats: bool,
     /// program arguments to pass to the graphix script
     #[builder(default)]
     program_args: Vec<ArcStr>,
+    /// The packages registered into the shell, in registration order. Each
+    /// package is asked, at init, to register its builtins/modules, to supply a
+    /// `main_program`, and (per displayed value) whether it has a custom
+    /// display. Defaults to the built-in `stdlib_packages()`; replace with
+    /// `packages` or extend with `add_packages`.
+    #[builder(setter(custom), default = "stdlib_packages::<X>()")]
+    packages: Vec<Box<dyn Package<X>>>,
     #[builder(setter(skip), default)]
     _phantom: PhantomData<X>,
+}
+
+impl<X: GXExt> ShellBuilder<X> {
+    /// Replace the shell's package set entirely.
+    pub fn packages(mut self, packages: Vec<Box<dyn Package<X>>>) -> Self {
+        self.packages = Some(packages);
+        self
+    }
+
+    /// Append packages onto the default stdlib set — e.g.
+    /// `graphix_shell::packages!()` for an embedder's own `graphix-package-*`
+    /// dependencies.
+    pub fn add_packages(mut self, packages: Vec<Box<dyn Package<X>>>) -> Self {
+        self.packages.get_or_insert_with(stdlib_packages::<X>).extend(packages);
+        self
+    }
 }
 
 impl<X: GXExt> Shell<X> {
@@ -162,9 +238,13 @@ impl<X: GXExt> Shell<X> {
             ctx.libstate.set(ProgramArgs(args));
         }
         let mut vfs_modules = AHashMap::default();
-        let result = deps::register::<X>(&mut ctx, &mut vfs_modules)
-            .context("register package modules")?;
-        if let Some(main) = result.main_program {
+        let mut root_mods = IndexSet::new();
+        for pkg in &self.packages {
+            pkg.register(&mut ctx, &mut vfs_modules, &mut root_mods)
+                .context("register package modules")?;
+        }
+        let root = root_module_source(&root_mods);
+        if let Some(main) = self.packages.iter().find_map(|p| p.main_program()) {
             if matches!(self.mode, Mode::Repl) {
                 self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
             }
@@ -188,7 +268,7 @@ impl<X: GXExt> Shell<X> {
             gx = gx.resolve_timeout(s);
         }
         let handle = gx
-            .root(result.root)
+            .root(root)
             .resolvers(mods)
             .build()
             .context("building rt config")?
@@ -208,20 +288,23 @@ impl<X: GXExt> Shell<X> {
     ) -> Result<Env> {
         let env;
         match &self.mode {
-            Mode::Check(source) => {
-                let initial_scope = match source {
-                    Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
-                    _ => None,
-                };
-                gx.check(source.clone(), initial_scope).await?;
+            Mode::Check(_) => {
+                self.check_with(gx).await?;
                 exit(0)
             }
             Mode::Script(source) => {
+                let baseline =
+                    if self.fusion_stats { Some(gx.fusion_stats().await?) } else { None };
                 let r = gx.load(source.clone()).await?;
+                if let Some(baseline) = baseline {
+                    print_fusion_stats(&baseline, &gx.fusion_stats().await?);
+                }
                 exprs.extend(r.exprs);
                 env = gx.get_env().await?;
                 if let Some(e) = exprs.pop() {
-                    *output = Output::from_expr(&gx, &env, e, run_on_main).await;
+                    *output =
+                        Output::from_expr(&gx, &env, e, run_on_main, &self.packages)
+                            .await;
                 }
                 *newenv = None
             }
@@ -247,6 +330,32 @@ impl<X: GXExt> Shell<X> {
             }
         }
         Ok(env)
+    }
+
+    async fn check_with(&self, gx: &GXHandle<X>) -> Result<()> {
+        let Mode::Check(source) = &self.mode else {
+            bail!("check requires Mode::Check")
+        };
+        let initial_scope = match source {
+            Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
+            _ => None,
+        };
+        let baseline =
+            if self.fusion_stats { Some(gx.fusion_stats().await?) } else { None };
+        gx.check(source.clone(), initial_scope).await?;
+        if let Some(baseline) = baseline {
+            print_fusion_stats(&baseline, &gx.fusion_stats().await?);
+        }
+        Ok(())
+    }
+
+    /// Compile and typecheck the `Mode::Check` source, returning the
+    /// result instead of exiting the process — the embeddable/test
+    /// entry ([`Self::run`] exits after checking, as the CLI expects).
+    pub async fn check(mut self) -> Result<()> {
+        let (tx, _from_gx) = mpsc::channel(100);
+        let gx = self.init(tx).await?;
+        self.check_with(&gx).await
     }
 
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
@@ -277,6 +386,13 @@ impl<X: GXExt> Shell<X> {
                                 GXEvent::Env(e) => {
                                     env = e;
                                     newenv = Some(env.clone());
+                                }
+                                // A bottom the user must hear about (a
+                                // call-depth-limit trip): nothing
+                                // arrives on the value channel, so
+                                // report it directly.
+                                GXEvent::Diagnostic(_, d) => {
+                                    eprintln!("runtime: {d}")
                                 }
                             }
                         }
@@ -309,6 +425,7 @@ impl<X: GXExt> Shell<X> {
                                         output.clear().await;
                                         output = Output::from_expr(
                                             &gx, &env, e, &run_on_main,
+                                            &self.packages,
                                         ).await;
                                     } else {
                                         output.clear().await;

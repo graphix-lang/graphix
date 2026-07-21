@@ -1,5 +1,5 @@
-use super::{compile, validate, EmptyW, SizeV, StyleV, TRef, TuiW, TuiWidget};
-use anyhow::{bail, Context, Result};
+use super::{EmptyW, SizeV, StyleV, TRef, TuiW, TuiWidget, compile, validate};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
@@ -7,9 +7,9 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
-    Frame,
 };
 use tokio::try_join;
 
@@ -56,8 +56,23 @@ pub(super) struct ScrollbarW<X: GXExt> {
 
 impl<X: GXExt> ScrollbarW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, begin_style), (_, begin_symbol), (_, child), (_, content_length), (_, end_style), (_, end_symbol), (_, orientation), (_, position), (_, size), (_, style), (_, thumb_style), (_, thumb_symbol), (_, track_style), (_, track_symbol), (_, viewport_length)] =
-            v.cast_to::<[(ArcStr, u64); 15]>().context("scrollbar flds")?;
+        let [
+            (_, begin_style),
+            (_, begin_symbol),
+            (_, child),
+            (_, content_length),
+            (_, end_style),
+            (_, end_symbol),
+            (_, orientation),
+            (_, position),
+            (_, size),
+            (_, style),
+            (_, thumb_style),
+            (_, thumb_symbol),
+            (_, track_style),
+            (_, track_symbol),
+            (_, viewport_length),
+        ] = v.cast_to::<[(ArcStr, u64); 15]>().context("scrollbar flds")?;
         let (
             begin_style,
             begin_symbol,
@@ -254,7 +269,8 @@ impl<X: GXExt> TuiWidget for ScrollbarW<X> {
             bar = bar.end_symbol(s.as_ref().map(|s| s.as_str()));
         }
         if let Some(Some(p)) = position.t {
-            let p = validate::clamp_usize("scrollbar", "position", last_warned_position, p);
+            let p =
+                validate::clamp_usize("scrollbar", "position", last_warned_position, p);
             *state = state.position(p);
         }
         if let Some(Some(s)) = style.t {

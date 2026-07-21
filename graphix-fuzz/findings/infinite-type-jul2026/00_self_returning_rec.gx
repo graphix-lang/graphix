@@ -1,0 +1,14 @@
+// jul18c fleet (ryouko div 000000 + katana div 000000, same minimized
+// shape). `let rec f = |n, acc| f` RETURNS ITSELF, so f's return type
+// is f's own type — an infinite type with no finite annotation-free
+// form. The occurs check refused to bind the callsite's result cell
+// (binding it to a Fn containing itself would make the cell cyclic),
+// the refusal was SILENT, and the terminal settle defaulted the open
+// cell to ⊥. ⊥ is vacuous in unions, so the array's element type
+// flattened [i64, ⊥] -> i64 and the kernel compared the Fn element's
+// payload bits as a scalar (interp's total order: Fn > i64 -> true;
+// jit: false). Eric ruled reject-at-def: an occurs-refused cell that
+// reaches the terminal settle still open and unconstrained is a
+// compile error ("cannot infer a finite type"), not a silent ⊥. Both
+// modes must agree: CompileErr.
+{let a = [i64:0, i64:0, {let rec f = |n, acc| f; f(i64:0, buffer::to_string)}, i64:4, i64:0]; array::map(a, |x| x > i64:3)}

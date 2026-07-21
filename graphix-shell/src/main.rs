@@ -1,22 +1,22 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use clap::{Parser, Subcommand};
 use enumflags2::BitFlags;
 use flexi_logger::{FileSpec, Logger};
 use graphix_compiler::{
-    expr::{ModuleResolver, Source},
     CFlag,
+    expr::{ModuleResolver, Source},
 };
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use log::info;
 use netidx::{
+    InternalOnly,
     config::Config,
     path::Path,
     publisher::{BindCfg, DesiredAuth, Publisher, PublisherBuilder},
     subscriber::{Subscriber, SubscriberBuilder},
-    InternalOnly,
 };
 use std::{path::PathBuf, str::FromStr, sync::OnceLock, time::Duration};
 
@@ -99,10 +99,20 @@ enum PackageAction {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
-    /// Update graphix to the latest version
-    Update,
-    /// Build a standalone graphix binary from the package in the current directory
-    BuildStandalone,
+    /// Update graphix and its packages to their latest versions
+    Update {
+        /// Apply all available changes without prompting (for scripts/CI)
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+    /// Build a standalone graphix binary from the package in the
+    /// current directory. Pass `--source-override` to reuse a
+    /// pre-extracted graphix-shell source tree (e.g. the workspace)
+    /// instead of downloading it from crates.io — useful in dev.
+    BuildStandalone {
+        #[arg(long = "source-override")]
+        source_override: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -165,6 +175,19 @@ struct Params {
     /// do not attempt to run the init module
     #[arg(short = 'i', long)]
     no_init: bool,
+    /// disable JIT fusion — run the canonical node-walk interpreter
+    /// only. The fused JIT and the node-walk always agree on values
+    /// (the differential test/fuzz oracle enforces it); this is for
+    /// benchmarking the two evaluators and for debugging a suspected
+    /// fusion issue.
+    #[arg(long = "no-fusion")]
+    no_fusion: bool,
+    /// after compiling the script, print its fusion profile to stderr:
+    /// how many regions attempted/fused and the per-region blocker
+    /// reasons (the stdlib baseline is subtracted). Only meaningful
+    /// when running a file with fusion enabled.
+    #[arg(long = "fusion-stats")]
+    fusion_stats: bool,
     /// do not execute the program, just veryify that it compiles and
     /// type checks.
     #[arg(long = "check")]
@@ -271,14 +294,14 @@ async fn handle_package(action: PackageAction) -> Result<()> {
             };
             graphix_package::create_package(&dir, &full_name).await
         }
-        PackageAction::Update => {
+        PackageAction::Update { yes } => {
             let pm = GraphixPM::new().await?;
-            pm.update().await
+            pm.update(yes).await
         }
-        PackageAction::BuildStandalone => {
+        PackageAction::BuildStandalone { source_override } => {
             let pm = GraphixPM::new().await?;
             let cwd = std::env::current_dir().context("getting current directory")?;
-            pm.build_standalone(&cwd, None).await
+            pm.build_standalone(&cwd, source_override.as_deref()).await
         }
     }
 }
@@ -320,6 +343,7 @@ fn tokio_main(
             p.program_args.iter().map(|s| ArcStr::from(s.as_str())).collect();
         shell = shell.program_args(program_args);
         shell = shell.no_init(p.no_init);
+        shell = shell.fusion_stats(p.fusion_stats);
         if let Some(t) = p.publish_timeout {
             shell = shell.publish_timeout(Duration::from_secs(t));
         }
@@ -359,7 +383,10 @@ fn tokio_main(
             let mode = if p.check { Mode::Check(source) } else { Mode::Script(source) };
             shell = shell.mode(mode);
         }
-        let (enable, disable) = RawFlag::as_flags(&p.warn);
+        let (mut enable, disable) = RawFlag::as_flags(&p.warn);
+        if p.no_fusion {
+            enable.insert(CFlag::FusionDisabled);
+        }
         shell
             .publisher(publisher)
             .subscriber(subscriber)

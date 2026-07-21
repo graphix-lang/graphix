@@ -1,5 +1,7 @@
-use crate::encoding::{decode_key, decode_value, encode_key};
-use crate::tree::{get_tree_inner, TreeInner};
+use crate::{
+    encoding::{decode_key, decode_value, encode_key},
+    tree::{TreeInner, get_tree_inner},
+};
 use arcstr::ArcStr;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
@@ -39,9 +41,9 @@ graphix_package_core::impl_abstract_arc!(CursorValue, static CURSOR_WRAPPER = [
 pub(crate) struct DbCursorNewEv;
 
 impl EvalCachedAsync for DbCursorNewEv {
-    const NAME: &str = "db_cursor_new";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Option<Value>, Arc<TreeInner>);
+
+    const NAME: &str = "db_cursor_new";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let prefix_val = match cached.0.get(0)?.as_ref()? {
@@ -86,9 +88,9 @@ pub(crate) type DbCursorNew = CachedArgsAsync<DbCursorNewEv>;
 pub(crate) struct DbCursorReadEv;
 
 impl EvalCachedAsync for DbCursorReadEv {
-    const NAME: &str = "db_cursor_read";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<CursorInner>;
+
+    const NAME: &str = "db_cursor_read";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.0.get(1)?.as_ref()?;
@@ -132,9 +134,9 @@ pub(crate) type DbCursorRead = CachedArgsAsync<DbCursorReadEv>;
 pub(crate) struct DbCursorReadManyEv;
 
 impl EvalCachedAsync for DbCursorReadManyEv {
-    const NAME: &str = "db_cursor_read_many";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<CursorInner>, i64);
+
+    const NAME: &str = "db_cursor_read_many";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let n = match cached.0.get(1)?.as_ref()? {
@@ -166,7 +168,7 @@ impl EvalCachedAsync for DbCursorReadManyEv {
                                     results.push(Value::Array(ValArray::from([k, v])));
                                 }
                                 _ => {
-                                    return Err(errf!("DbErr", "failed to decode entry"))
+                                    return Err(errf!("DbErr", "failed to decode entry"));
                                 }
                             }
                         }
@@ -216,9 +218,9 @@ pub(crate) struct RangeArgs {
 pub(crate) struct DbCursorRangeEv;
 
 impl EvalCachedAsync for DbCursorRangeEv {
-    const NAME: &str = "db_cursor_range";
-    const NEEDS_CALLSITE: bool = false;
     type Args = RangeArgs;
+
+    const NAME: &str = "db_cursor_range";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tree = get_tree_inner(cached, 2)?;

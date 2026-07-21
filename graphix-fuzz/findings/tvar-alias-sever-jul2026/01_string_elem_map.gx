@@ -1,0 +1,6 @@
+// Scalar twin of 00 (not Fn-specific): with a string acc the severed
+// alias chain gave elem `[i64, ⊥]` → i64 and the kernel compared the
+// String element's pointer bits as i64 (false) where the total order
+// says string > i64 (true). Honest elem `[i64, string]` refuses the
+// scalar loop; both modes agree via the interpreted HOF.
+{let a = [i64:0, {let rec f = |n, acc| select n {i64:0 => acc, _ => f(n - i64:1, acc)}; f(i64:3, "hi")}, i64:4]; array::map(a, |x| x > i64:3)}

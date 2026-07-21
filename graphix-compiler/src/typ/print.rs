@@ -1,7 +1,7 @@
 use crate::{
+    PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
     typ::{Type, TypeRef},
-    PrintFlag, PRINT_FLAGS,
 };
 use netidx::publisher::Typ;
 use std::fmt::{self, Write};
@@ -13,7 +13,7 @@ impl fmt::Display for Type {
             Self::Abstract { id, params: _ } => write!(f, "<abstract#{}>", id.0),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
-            Self::Ref (TypeRef { scope: _, name, params , ..}) => {
+            Self::Ref(TypeRef { scope: _, name, params, .. }) => {
                 write!(f, "{name}")?;
                 if !params.is_empty() {
                     write!(f, "<")?;
@@ -133,7 +133,7 @@ impl PrettyDisplay for Type {
             Self::Abstract { .. } => writeln!(buf, "{self}"),
             Self::Bottom => writeln!(buf, "_"),
             Self::Any => writeln!(buf, "Any"),
-            Self::Ref (TypeRef { scope: _, name, params , ..}) => {
+            Self::Ref(TypeRef { scope: _, name, params, .. }) => {
                 if params.is_empty() {
                     writeln!(buf, "{name}")
                 } else {

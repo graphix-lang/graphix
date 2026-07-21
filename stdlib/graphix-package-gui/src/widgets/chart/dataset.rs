@@ -1,5 +1,5 @@
 use super::types::*;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use log::error;
@@ -296,7 +296,7 @@ pub fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
                 if let Some(d) = data.t.as_ref() {
                     match d {
                         XYData::DateTime(v) if !v.is_empty() => {
-                            return ChartMode::TimeSeries
+                            return ChartMode::TimeSeries;
                         }
                         XYData::Numeric(v) if !v.is_empty() => return ChartMode::Numeric,
                         _ => {}
@@ -315,7 +315,7 @@ pub fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
                             return ChartMode::TimeSeries;
                         }
                         OHLCData::Numeric(v) if !v.is_empty() => {
-                            return ChartMode::Numeric
+                            return ChartMode::Numeric;
                         }
                         _ => {}
                     }

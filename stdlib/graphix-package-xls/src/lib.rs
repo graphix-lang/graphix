@@ -4,14 +4,13 @@
 )]
 use arcstr::ArcStr;
 use bytes::Bytes;
-use calamine::{open_workbook_auto_from_rs, Data, Reader};
+use calamine::{Data, Reader, open_workbook_auto_from_rs};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use graphix_package_sys::{get_stream, StreamKind};
+use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
-use std::io::Cursor;
-use std::sync::Arc;
+use std::{io::Cursor, sync::Arc};
 use tokio::{io::AsyncReadExt, sync::Mutex};
 use triomphe::Arc as TArc;
 
@@ -85,9 +84,9 @@ enum ReadInput {
 struct XlsSheetsEv;
 
 impl EvalCachedAsync for XlsSheetsEv {
-    const NAME: &str = "xls_sheets";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ReadInput;
+
+    const NAME: &str = "xls_sheets";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let v = cached.0.first()?.as_ref()?;
@@ -130,9 +129,9 @@ type XlsSheets = CachedArgsAsync<XlsSheetsEv>;
 struct XlsReadEv;
 
 impl EvalCachedAsync for XlsReadEv {
-    const NAME: &str = "xls_read";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (ReadInput, ArcStr);
+
+    const NAME: &str = "xls_read";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let v = cached.0.first()?.as_ref()?;

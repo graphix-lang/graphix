@@ -2,8 +2,7 @@ use anyhow::Result;
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;
 use std::collections::HashMap;
-use tokio::fs;
-use tokio::time::Duration;
+use tokio::{fs, time::Duration};
 
 /// Helper to convert metadata array to a hashmap for easier testing
 fn metadata_to_map(v: &Value) -> Option<HashMap<String, Value>> {

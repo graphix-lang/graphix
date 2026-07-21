@@ -5,8 +5,10 @@ mod plotters_backend;
 pub mod ranges;
 pub mod types;
 
-use crate::types::LengthV;
-use crate::widgets::{GuiW, GuiWidget, IcedElement};
+use crate::{
+    types::LengthV,
+    widgets::{GuiW, GuiWidget, IcedElement},
+};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
@@ -51,8 +53,26 @@ pub(crate) struct ChartW<X: GXExt> {
 
 impl<X: GXExt> ChartW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, background), (_, datasets), (_, height), (_, legend_position), (_, legend_style), (_, margin), (_, mesh), (_, projection), (_, title), (_, title_color), (_, title_size), (_, width), (_, x_label), (_, x_range), (_, y_label), (_, y_range), (_, z_label), (_, z_range)] =
-            source.cast_to::<[(ArcStr, u64); 18]>().context("chart flds")?;
+        let [
+            (_, background),
+            (_, datasets),
+            (_, height),
+            (_, legend_position),
+            (_, legend_style),
+            (_, margin),
+            (_, mesh),
+            (_, projection),
+            (_, title),
+            (_, title_color),
+            (_, title_size),
+            (_, width),
+            (_, x_label),
+            (_, x_range),
+            (_, y_label),
+            (_, y_range),
+            (_, z_label),
+            (_, z_range),
+        ] = source.cast_to::<[(ArcStr, u64); 18]>().context("chart flds")?;
         let (
             background_ref,
             datasets_ref,

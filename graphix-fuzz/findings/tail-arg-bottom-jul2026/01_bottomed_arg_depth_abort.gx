@@ -1,0 +1,10 @@
+// bisect: interp silent vs jit fires 0 (jul16a fuzz class B). d095b283
+// gave the KERNEL the keep-previous-formal tail rebind, but the
+// interp's tail-call stash still required every arg channel cached —
+// a bottomed jump arg (`acc + 1/0`) fell through to genuine
+// depth-charged recursion, so the interp agreed with the kernel below
+// the 256 depth limit (n=200 both fire 0) and silently depth-aborted
+// above it. Fixed by stashing Option<Value> per formal: a None arg
+// rides the formal's previous value in the frame loop — Eric's ruling
+// applied on both backends (2026-07-16).
+{let f = |x: i64| -> i64 {let rec lp = |n: i64, acc| -> i64 select n {i64:0 => i64:0, _ => lp(n - i64:1, acc + i64:1 / i64:0)}; lp(i64:500, i64:0) + x}; f(i64:0)}

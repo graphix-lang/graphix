@@ -5,16 +5,11 @@
 use cargo_toml::Manifest;
 use proc_macro2::TokenStream;
 use quote::quote;
-use std::{
-    env,
-    path::{Component, Path, PathBuf},
-    sync::LazyLock,
-};
+use std::{env, path::PathBuf, sync::LazyLock};
 use syn::{
-    parse_macro_input,
+    Ident, Pat, Result, Token, parse_macro_input,
     punctuated::{Pair, Punctuated},
     token::{self, Comma},
-    Ident, Pat, Result, Token,
 };
 static PROJECT_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir").into()
@@ -185,91 +180,95 @@ fn package_deps() -> Vec<String> {
     result
 }
 
-/// Generate the TEST_REGISTER array from Cargo.toml deps.
-fn test_harness() -> TokenStream {
-    let deps = package_deps();
-    let register_fns: Vec<TokenStream> = deps.iter().map(|name| {
-        if *name == *PACKAGE_NAME {
-            quote! {
-                <crate::P as ::graphix_package::Package<::graphix_rt::NoExt>>::register
-            }
-        } else {
-            let crate_ident = syn::Ident::new(
-                &format!("graphix_package_{}", name.replace('-', "_")),
-                proc_macro2::Span::call_site(),
-            );
-            quote! {
-                <#crate_ident::P as ::graphix_package::Package<::graphix_rt::NoExt>>::register
+/// Read the calling crate's `[dependencies]` for `graphix-package-*` entries,
+/// returning `(short_name, optional)` in document order with `core` moved
+/// first. Used by the `packages!()`/`package_refs!()` macros (which run in
+/// graphix-shell / graphix-tests / embedder crates, not graphix-package crates,
+/// so they must NOT call `check_invariants`).
+fn graphix_deps_ordered() -> Vec<(String, bool)> {
+    let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
+        .expect("failed to read Cargo.toml");
+    let doc: toml_edit::DocumentMut =
+        content.parse().expect("failed to parse Cargo.toml");
+    let mut out: Vec<(String, bool)> = Vec::new();
+    if let Some(deps) = doc.get("dependencies").and_then(|v| v.as_table()) {
+        for (key, val) in deps.iter() {
+            if let Some(short) = key.strip_prefix("graphix-package-") {
+                let optional =
+                    val.get("optional").and_then(|o| o.as_bool()).unwrap_or(false);
+                out.push((short.to_string(), optional));
             }
         }
-    }).collect();
-    let register_fn_ty = if *PACKAGE_NAME == "core" {
-        quote! { crate::testing::RegisterFn }
-    } else {
-        quote! { ::graphix_package_core::testing::RegisterFn }
-    };
+    }
+    if let Some(pos) = out.iter().position(|(n, _)| n == "core") {
+        let core = out.remove(pos);
+        out.insert(0, core);
+    }
+    out
+}
+
+fn package_crate_ident(short: &str) -> syn::Ident {
+    syn::Ident::new(
+        &format!("graphix_package_{}", short.replace('-', "_")),
+        proc_macro2::Span::call_site(),
+    )
+}
+
+/// Generate the per-crate TEST_REGISTER (a const slice of `&dyn Package<NoExt>`
+/// instances) from Cargo.toml deps + the crate itself.
+fn test_harness() -> TokenStream {
+    let deps = package_deps();
+    let refs: Vec<TokenStream> = deps
+        .iter()
+        .map(|name| {
+            if *name == *PACKAGE_NAME {
+                quote! { &crate::P }
+            } else {
+                let crate_ident = package_crate_ident(name);
+                quote! { &#crate_ident::P }
+            }
+        })
+        .collect();
     quote! {
-        /// Register functions for all package dependencies (for testing).
+        /// Package instances for all dependencies + this crate (for testing).
         #[cfg(test)]
-        pub(crate) const TEST_REGISTER: &[#register_fn_ty] = &[
-            #(#register_fns),*
+        pub(crate) const TEST_REGISTER:
+            &[&dyn ::graphix_package::Package<::graphix_rt::NoExt>] = &[
+            #(#refs),*
         ];
     }
 }
 
 // walk the graphix files in src/graphix and build the vfs for this package
 fn graphix_files() -> Vec<TokenStream> {
-    let mut res = vec![];
-    for entry in walkdir::WalkDir::new(&*GRAPHIX_SRC) {
-        let entry = entry.expect("could not read");
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let ext = entry.path().extension().and_then(|e| e.to_str());
-        if ext != Some("gx") && ext != Some("gxi") {
-            continue;
-        }
-        let path = match entry.path().strip_prefix(&*GRAPHIX_SRC) {
-            Ok(p) if p == Path::new("main.gx") => continue,
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let mut vfs_path = format!("/{}", PACKAGE_NAME.clone());
-        for c in path.components() {
-            match c {
-                Component::CurDir
-                | Component::ParentDir
-                | Component::RootDir
-                | Component::Prefix(_) => panic!("invalid path component {c:?}"),
-                Component::Normal(p) => match p.to_str() {
-                    None => panic!("invalid path component {c:?}"),
-                    Some(s) => {
-                        vfs_path.push('/');
-                        vfs_path.push_str(s)
-                    }
-                },
-            };
-        }
-        let mut compiler_path = PathBuf::new();
-        compiler_path.push("graphix");
-        compiler_path.push(path);
-        let compiler_path = compiler_path.to_string_lossy().into_owned();
-        res.push(quote! {
-            let path = ::netidx_core::path::Path::from(#vfs_path);
-            if modules.contains_key(&path) {
-                ::anyhow::bail!("duplicate graphix module {path}")
+    // The package's `build.rs` (via `graphix-ast-pack`) parses + packs every
+    // `src/graphix/*` file into `OUT_DIR/graphix_ast.pack`, a self-contained
+    // index of `(vfs_path, source, packed_ast)`. We embed that blob and decode
+    // it into the modules map at `register` time, so module resolution decodes
+    // a pre-parsed AST instead of re-parsing the source (the startup win). The
+    // per-module AST stays packed in `VfsEntry.packed` and is decoded lazily
+    // when the module is actually resolved.
+    vec![quote! {
+        {
+            const GRAPHIX_AST_BLOB: &[u8] =
+                include_bytes!(concat!(env!("OUT_DIR"), "/graphix_ast.pack"));
+            for (path, entry) in
+                ::graphix_compiler::expr::serialize::unpack_index(GRAPHIX_AST_BLOB)?
+            {
+                if modules.contains_key(&path) {
+                    ::anyhow::bail!("duplicate graphix module {path}")
+                }
+                modules.insert(path, entry);
             }
-            modules.insert(path, ::arcstr::literal!(include_str!(#compiler_path)))
-        })
-    }
-    res
+        }
+    }]
 }
 
 fn main_program_impl() -> TokenStream {
     let main_gx = GRAPHIX_SRC.join("main.gx");
     if main_gx.exists() {
         quote! {
-            fn main_program() -> Option<&'static str> {
+            fn main_program(&self) -> Option<&'static str> {
                 if cfg!(feature = "standalone") {
                     Some(include_str!("graphix/main.gx"))
                 } else {
@@ -279,7 +278,7 @@ fn main_program_impl() -> TokenStream {
         }
     } else {
         quote! {
-            fn main_program() -> Option<&'static str> { None }
+            fn main_program(&self) -> Option<&'static str> { None }
         }
     }
 }
@@ -378,12 +377,14 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .iter()
         .filter(|name| **name != *PACKAGE_NAME)
         .map(|name| {
-            let crate_ident = syn::Ident::new(
-                &format!("graphix_package_{}", name.replace('-', "_")),
-                proc_macro2::Span::call_site(),
-            );
+            let crate_ident = package_crate_ident(name);
             quote! {
-                <#crate_ident::P as ::graphix_package::Package<X>>::register(ctx, modules, root_mods)?;
+                ::graphix_package::Package::<X>::register(
+                    &#crate_ident::P,
+                    ctx,
+                    modules,
+                    root_mods,
+                )?;
             }
         })
         .collect();
@@ -391,10 +392,39 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     quote! {
         pub struct P;
 
+        impl P {
+            // The author's `is_custom`/`init_custom` bodies, kept with their
+            // exact original signatures so they compile unchanged; the trait's
+            // `maybe_init_custom` orchestrates them.
+            #[allow(unused)]
+            fn __is_custom<X: ::graphix_rt::GXExt>(
+                gx: &::graphix_rt::GXHandle<X>,
+                env: &::graphix_compiler::env::Env,
+                e: &::graphix_rt::CompExp<X>,
+            ) -> bool {
+                #is_custom
+            }
+
+            #[allow(unused)]
+            async fn __init_custom<X: ::graphix_rt::GXExt>(
+                gx: &::graphix_rt::GXHandle<X>,
+                env: &::graphix_compiler::env::Env,
+                stop: ::tokio::sync::oneshot::Sender<()>,
+                e: ::graphix_rt::CompExp<X>,
+                run_on_main: ::graphix_package::MainThreadHandle,
+            ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
+                #init_custom
+            }
+        }
+
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
+                &self,
                 ctx: &mut ::graphix_compiler::ExecCtx<::graphix_rt::GXRt<X>, X::UserEvent>,
-                modules: &mut ::ahash::AHashMap<::netidx_core::path::Path, ::arcstr::ArcStr>,
+                modules: &mut ::ahash::AHashMap<
+                    ::netidx_core::path::Path,
+                    ::graphix_compiler::expr::VfsEntry,
+                >,
                 root_mods: &mut ::graphix_package::IndexSet<::arcstr::ArcStr>,
             ) -> ::anyhow::Result<()> {
                 if root_mods.contains(#package_name) {
@@ -407,30 +437,100 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 Ok(())
             }
 
-            #[allow(unused)]
-            fn is_custom(
-                gx: &::graphix_rt::GXHandle<X>,
-                env: &::graphix_compiler::env::Env,
-                e: &::graphix_rt::CompExp<X>,
-            ) -> bool {
-                #is_custom
-            }
-
-            #[allow(unused)]
-            async fn init_custom(
-                gx: &::graphix_rt::GXHandle<X>,
-                env: &::graphix_compiler::env::Env,
-                stop: ::tokio::sync::oneshot::Sender<()>,
+            fn maybe_init_custom<'a>(
+                &'a self,
+                gx: &'a ::graphix_rt::GXHandle<X>,
+                env: &'a ::graphix_compiler::env::Env,
                 e: ::graphix_rt::CompExp<X>,
-                run_on_main: ::graphix_package::MainThreadHandle,
-            ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
-                #init_custom
+                run_on_main: &'a ::graphix_package::MainThreadHandle,
+            ) -> ::std::pin::Pin<
+                Box<
+                    dyn ::std::future::Future<
+                        Output = ::anyhow::Result<::graphix_package::CustomResult<X>>,
+                    > + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    if !P::__is_custom::<X>(gx, env, &e) {
+                        return Ok(::graphix_package::CustomResult::NotCustom(e));
+                    }
+                    let (tx, rx) = ::tokio::sync::oneshot::channel();
+                    let custom =
+                        P::__init_custom::<X>(gx, env, tx, e, run_on_main.clone())
+                            .await?;
+                    Ok(::graphix_package::CustomResult::Custom(
+                        ::graphix_package::Cdc { stop: rx, custom },
+                    ))
+                })
             }
 
             #main_program
         }
 
         #test_harness
+    }
+    .into()
+}
+
+/// Build `Vec<Box<dyn Package<_>>>` from the calling crate's `graphix-package-*`
+/// dependencies (core first). Optional deps are `#[cfg(feature = "<short>")]`-
+/// gated (feature name == short name); non-optional deps are unconditional. Use
+/// in a typed position (e.g. `stdlib_packages::<X>()` or `.add_packages(...)`)
+/// so `_` resolves to the desired `X`.
+#[proc_macro]
+pub fn packages(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let pushes: Vec<TokenStream> = graphix_deps_ordered()
+        .iter()
+        .map(|(short, optional)| {
+            let crate_ident = package_crate_ident(short);
+            let push = quote! {
+                v.push(
+                    ::std::boxed::Box::new(#crate_ident::P)
+                        as ::std::boxed::Box<dyn ::graphix_package::Package<_>>,
+                );
+            };
+            if *optional {
+                quote! { #[cfg(feature = #short)] #push }
+            } else {
+                push
+            }
+        })
+        .collect();
+    quote! {
+        {
+            // Track Cargo.toml so editing deps re-expands this macro.
+            const _: &[u8] =
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+            let mut v: ::std::vec::Vec<
+                ::std::boxed::Box<dyn ::graphix_package::Package<_>>,
+            > = ::std::vec::Vec::new();
+            #(#pushes)*
+            v
+        }
+    }
+    .into()
+}
+
+/// Build a `const`-compatible `&[&dyn Package<NoExt>]` from the calling crate's
+/// `graphix-package-*` dependencies (core first). For crates whose graphix deps
+/// are all NON-optional (the test crates) — optional deps can't be `#[cfg]`-
+/// gated as array elements. Use as `const X: &[&dyn Package<NoExt>] =
+/// graphix_package::package_refs!();`.
+#[proc_macro]
+pub fn package_refs(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let refs: Vec<TokenStream> = graphix_deps_ordered()
+        .iter()
+        .map(|(short, _optional)| {
+            let crate_ident = package_crate_ident(short);
+            quote! { &#crate_ident::P }
+        })
+        .collect();
+    quote! {
+        {
+            const _: &[u8] =
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+            &[ #(#refs),* ]
+        }
     }
     .into()
 }

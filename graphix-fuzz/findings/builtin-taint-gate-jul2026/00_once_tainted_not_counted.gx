@@ -1,0 +1,22 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:[i64:0, null]]) — once laundered the tainted
+//         placeholder into a real null and ARMED its one-shot
+// jit:    Trace([]) — once armed on the poison too; the fused array
+//         literal gated the tainted element, then starved forever
+// Found by jul19d (ryouko fuzz lane, seed 1850M) mutating the
+// select-guard-taint pin ~2h after it was committed.
+// root_cause + RULING (Eric, 2026-07-19): taint == bottom == no
+// input to a builtin. The async self-driving builtins (once/take/
+// skip) received tainted arg productions and stripped the tag with
+// .value() — poison counted as the event and leaked as a clean
+// value. Builtin authors must never see the taint channel; an async
+// builtin's fused arg region already delivers silence (the kernel
+// output boundary forces tainted results to None), so the node-walk
+// must present the same view. Fixed centrally: CallSite's arg
+// publish loop gates tainted productions to silence when the callee
+// is an ASYNC builtin (gate_tainted_args, set at both callee-binding
+// sites). Sync builtins keep the poisoned delivery (CachedArgs
+// mirrors the fused DynCall taint-the-slot protocol); lambda callees
+// keep it (formals poison). Both modes now emit [0, 400]: the
+// one-shot arms on the first CLEAN value.
+{let v = i64:0; let x = once({let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => (m / m), m => f(m - i64:1)}; let v = f(i64:1); let r = &v; *r <- i64:1; select v {x if true => i64:200, x => x}} * i64:2); [v, x]}

@@ -1,0 +1,9 @@
+// bisect: JIT codegen bug (same class as 01, borrowed-inner variant)
+// interp/jit: both return [i64:2, i64:3] post-fix.
+// root_cause: same representation confusion as 01, via the BORROWED
+// path — the qop inner is a Local read of a Nullable local, so the
+// pre-fix arm called graphix_valarray_clone(payload), dereferencing the
+// in-Value ValArray bits as a `*const ValArray`. Post-fix this routes
+// through graphix_value_into_array_borrowed (clones the inner, forgets
+// the input; the env slot's scope-exit drop balances).
+{ let a = [i64:1, i64:2, i64:3]; let x = a[1..]; x$ }

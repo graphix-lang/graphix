@@ -5,10 +5,10 @@
 //! and the netidx-browser design mode.
 
 mod diagnostics;
-mod server;
-mod state;
 pub mod handlers;
 pub mod position;
+mod server;
+mod state;
 pub mod uri;
 pub mod workspace;
 

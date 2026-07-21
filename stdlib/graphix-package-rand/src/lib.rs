@@ -4,13 +4,14 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
-use rand::{rng, seq::SliceRandom, RngExt};
-use smallvec::{smallvec, SmallVec};
+use rand::{RngExt, rng, seq::SliceRandom};
+use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug)]
 struct Rand {
@@ -18,8 +19,8 @@ struct Rand {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "rand";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -68,14 +69,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The cached args are replay memory; the rng is thread-local,
+        // not node state.
+        self.args.clear()
+    }
 }
 
 #[derive(Debug)]
 struct Pick;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "rand_pick";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -96,7 +103,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|a| match a {
+        from[0].update(ctx, event).and_then(|a| match a.value() {
             Value::Array(a) if a.len() > 0 => {
                 Some(a[rng().random_range(0..a.len())].clone())
             }
@@ -105,14 +112,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
 struct Shuffle(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "rand_shuffle";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -133,7 +142,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|a| match a {
+        from[0].update(ctx, event).and_then(|a| match a.value() {
             Value::Array(a) => {
                 self.0.extend(a.iter().cloned());
                 self.0.shuffle(&mut rng());
@@ -144,6 +153,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.0.clear()
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Scratch buffer only — drained every update, nothing replays.
         self.0.clear()
     }
 }

@@ -1,12 +1,12 @@
 use crate::{
+    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, TagValue, UserEvent,
     env::Env,
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
-    node::{compiler, Cached},
+    node::{Cached, compiler},
     typ::{Type, TypeRef},
-    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, UserEvent,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
@@ -101,7 +101,9 @@ impl StructPatternNode {
                         });
                         let multi = $multi
                             .iter()
-                            .map(|n| Self::compile_int(ctx, et, n, scope, pos, ori.clone()))
+                            .map(|n| {
+                                Self::compile_int(ctx, et, n, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         (all, single, multi)
                     }
@@ -112,7 +114,7 @@ impl StructPatternNode {
             }};
         }
         let type_predicate = match type_predicate {
-            Type::Ref (TypeRef { .. }) => type_predicate.lookup_ref(&ctx.env)?,
+            Type::Ref(TypeRef { .. }) => type_predicate.lookup_ref(&ctx.env)?,
             t => t.clone(),
         };
         let type_predicate = &type_predicate;
@@ -164,7 +166,9 @@ impl StructPatternNode {
                         });
                         let binds = binds
                             .iter()
-                            .map(|b| Self::compile_int(ctx, et, b, scope, pos, ori.clone()))
+                            .map(|b| {
+                                Self::compile_int(ctx, et, b, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         Self::Slice { tuple: false, all, binds }
                     }
@@ -199,7 +203,9 @@ impl StructPatternNode {
                         let binds = elts
                             .iter()
                             .zip(binds.iter())
-                            .map(|(t, b)| Self::compile_int(ctx, t, b, scope, pos, ori.clone()))
+                            .map(|(t, b)| {
+                                Self::compile_int(ctx, t, b, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         Self::Slice { tuple: true, all, binds }
                     }
@@ -240,7 +246,9 @@ impl StructPatternNode {
                         let binds = elts
                             .iter()
                             .zip(binds.iter())
-                            .map(|(t, b)| Self::compile_int(ctx, t, b, scope, pos, ori.clone()))
+                            .map(|(t, b)| {
+                                Self::compile_int(ctx, t, b, scope, pos, ori.clone())
+                            })
                             .collect::<Result<Box<[Self]>>>()?;
                         Self::Variant { tag: tag.clone(), all, binds }
                     }
@@ -330,6 +338,44 @@ impl StructPatternNode {
             }
         };
         Ok(t)
+    }
+
+    /// For a tuple destructure pattern `(a, b, …)` with only simple
+    /// `Bind`/`Ignore` leaves and no whole-binding, return each `Bind`
+    /// leaf's `(BindId, tuple position)` (skipping `Ignore`). `None` for
+    /// any other pattern shape. Used by HOF fusion to lower a `|(k, v)|`
+    /// callback's arg destructure to per-leaf `TupleGet` bindings —
+    /// `node::pattern` is `pub(crate)`, so callers outside the compiler
+    /// (e.g. `MapQ`'s `emit_clif`) reach the leaves through this accessor
+    /// rather than matching the enum.
+    pub fn tuple_leaves(&self) -> Option<Vec<(BindId, usize)>> {
+        match self {
+            Self::Slice { tuple: true, all: None, binds } => {
+                let mut out = Vec::with_capacity(binds.len());
+                for (i, b) in binds.iter().enumerate() {
+                    match b {
+                        Self::Bind(id) => out.push((*id, i)),
+                        Self::Ignore => {}
+                        _ => return None,
+                    }
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    /// For a single-name binding pattern (`x` in `|x| body`), the bound
+    /// `BindId`; `None` for destructures / ignores / literals. The
+    /// body's `Ref`s to the arg carry this id — HOF emission passes it
+    /// through so the direct JIT path's BindId-first resolution finds
+    /// the loop-element slot exactly (see [`Self::tuple_leaves`] for
+    /// why this is an accessor rather than a public enum match).
+    pub fn single_bind_id(&self) -> Option<BindId> {
+        match self {
+            Self::Bind(id) => Some(*id),
+            _ => None,
+        }
     }
 
     pub fn ids<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
@@ -430,14 +476,19 @@ impl StructPatternNode {
             },
             Self::SliceSuffix { all, head, suffix } => match v {
                 Value::Array(a) if a.len() >= suffix.len() => {
+                    // The suffix patterns match the LAST `suffix.len()`
+                    // elements (`is_match` skips `len - N`), so the binds
+                    // must read from the same offset — and `head` is
+                    // everything BEFORE the suffix.
+                    let split = a.len() - suffix.len();
                     if let Some(id) = all {
                         f(*id, v.clone())
                     }
                     if let Some(id) = head {
-                        let ss = a.subslice(..suffix.len()).unwrap();
+                        let ss = a.subslice(..split).unwrap();
                         f(*id, Value::Array(ss))
                     }
-                    let tail = a.subslice(suffix.len()..).unwrap();
+                    let tail = a.subslice(split..).unwrap();
                     for (j, n) in suffix.iter().enumerate() {
                         n.bind(&tail[j], f)
                     }
@@ -584,16 +635,45 @@ impl StructPatternNode {
         }
     }
 
+    /// True when the pattern matches ANY value of the scrutinee's type
+    /// — a bind-all / destructure of binds whose inferred type
+    /// predicate is a fresh TVar (or a composite of them) carrying no
+    /// information. This is `Select`'s wildcard test. NOT the same as
+    /// `!is_refutable()`: a variant pattern with an all-bind payload is
+    /// structure-irrefutable GIVEN its tag matched (`is_refutable`'s
+    /// contract — a `let` over a single-variant type depends on it),
+    /// but its inferred type predicate carries the TAG test, so as a
+    /// select arm it must join the coverage unions, not bypass them.
+    /// Classifying `` `A ``/`` `B `` arms as wildcards skipped
+    /// exhaustiveness entirely (a select missing a tag compiled) and
+    /// left an OPEN scrutinee cell (a knotted rec self-call's rtype)
+    /// to be greedily bound by the first arm's narrowing walk.
+    pub fn matches_anything(&self) -> bool {
+        match &self {
+            Self::Bind(_) | Self::Ignore => true,
+            Self::Literal(_) | Self::Variant { .. } => false,
+            Self::Slice { tuple: true, all: _, binds } => {
+                binds.iter().all(|p| p.matches_anything())
+            }
+            Self::Struct { all: _, binds } => {
+                binds.iter().all(|(_, _, p)| p.matches_anything())
+            }
+            Self::Slice { tuple: false, .. }
+            | Self::SlicePrefix { .. }
+            | Self::SliceSuffix { .. } => false,
+        }
+    }
+
     pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
         match self {
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => {
-                ctx.cached.remove(&id);
+                ctx.rt.cached_mut().remove(&id);
                 ctx.env.unbind_variable(*id);
             }
             Self::Struct { all, binds } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for (_, _, n) in binds {
@@ -603,7 +683,7 @@ impl StructPatternNode {
             Self::Slice { tuple: _, all, binds }
             | Self::Variant { tag: _, all, binds } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in binds {
@@ -612,11 +692,11 @@ impl StructPatternNode {
             }
             Self::SlicePrefix { all, prefix, tail } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 if let Some(id) = tail {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in prefix {
@@ -625,11 +705,11 @@ impl StructPatternNode {
             }
             Self::SliceSuffix { all, head, suffix } => {
                 if let Some(id) = all {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 if let Some(id) = head {
-                    ctx.cached.remove(id);
+                    ctx.rt.cached_mut().remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in suffix {
@@ -641,11 +721,11 @@ impl StructPatternNode {
 }
 
 #[derive(Debug)]
-pub(crate) struct PatternNode<R: Rt, E: UserEvent> {
-    pub(super) explicit_type_predicate: bool,
-    pub(super) type_predicate: Type,
-    pub(super) structure_predicate: StructPatternNode,
-    pub(super) guard: Option<Cached<R, E>>,
+pub struct PatternNode<R: Rt, E: UserEvent> {
+    pub explicit_type_predicate: bool,
+    pub type_predicate: Type,
+    pub structure_predicate: StructPatternNode,
+    pub guard: Option<Cached<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
@@ -680,7 +760,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Tuple(_)
             | Type::Variant(_, _)
             | Type::Struct(_)
-            | Type::Ref (TypeRef { .. }) => (),
+            | Type::Ref(TypeRef { .. }) => (),
         }
         let structure_predicate = StructPatternNode::compile(
             ctx,
@@ -704,15 +784,24 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         })
     }
 
+    /// Deliver the scrutinee's destructured leaves to this arm's
+    /// binds, carrying the SCRUTINEE's production tag (Eric's ruling
+    /// 2026-07-18, tail_jump_fired_plumbing): the kernel's arm-bind
+    /// leaves carry the scrutinee's disc, so a value-channel refresh
+    /// (stale scrutinee — a framed re-derivation from a quiet entry)
+    /// binds STALE leaves instead of minting FIRED ones. The
+    /// becoming-selected FIRE comes from the selection-change rule at
+    /// the select's emit, never from poisoning the binds.
     pub(super) fn bind_event(
         &self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
         v: &Value,
+        tag: crate::Tag,
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
-            ctx.cached.insert(id, v.clone());
-            event.variables.insert(id, v);
+            event.variables.insert(id, TagValue::tagged(v.clone(), tag));
+            ctx.rt.cached_mut().insert(id, v);
         })
     }
 
@@ -729,7 +818,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) -> bool {
         match &mut self.guard {
             None => false,
-            Some(g) => g.update(ctx, event),
+            Some(g) => g.update(ctx, event).is_some(),
         }
     }
 

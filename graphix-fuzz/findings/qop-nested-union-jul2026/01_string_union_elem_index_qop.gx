@@ -1,0 +1,22 @@
+// bisect: REAL CRASH (SIGABRT) — graphix_arcstr_drop(NULL), soak
+// jul05 item 15 (corpus-fuzz/crash_000014; the fs program reduced to
+// this timer shape). t[0]'s inner type nests as
+// [[string, Error<E>], Error<ArrayIndexError>]; the `$` node's STATIC
+// type strips EVERY error member of the flattened union (string —
+// matching the node-walk, which drops ANY error value), but the qop
+// emit arm-selected on the inner's ONE-LAYER option success
+// ([string, Error<E>] — value-shape) and minted the value-shape
+// (Null, 0) placeholder on the error path. The String-conventioned
+// kernel return then force-dropped payload 0 on the not-fired init
+// cycle — graphix_arcstr_drop(NULL) abort. FIXED: emit_qop_node
+// arm-selects on the node's own frozen static type. Both modes now
+// agree (the interp is canonical: index error at init logs + drops,
+// "hello" flows after the timer).
+{
+  let s: [string, Error<`E(string)>] = {
+    let tm = sys::time::timer(duration:0.05s, false);
+    tm ~ "hello"
+  };
+  let t = [s];
+  t[i64:0]$
+}

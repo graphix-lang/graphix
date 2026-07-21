@@ -1,19 +1,19 @@
 use ahash::AHashMap;
 use anyhow::Result;
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use enumflags2::BitFlags;
 use extended_notify::{
     ArcPath, Event as NEvent, EventBatch, EventHandler, EventKind, Id, Interest, Watcher,
     WatcherConfigBuilder,
 };
-use futures::{channel::mpsc, SinkExt, TryFutureExt};
+use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, CustomBuiltinType, Event,
-    ExecCtx, Node, Rt, Scope, UserEvent, CBATCH_POOL,
+    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
+    Scope, UserEvent, effects::EffectKind, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx_value::{
-    abstract_type::AbstractWrapper, Abstract, FromValue, ValArray, Value,
+    Abstract, FromValue, ValArray, Value, abstract_type::AbstractWrapper,
 };
 use nohash::IntSet;
 use parking_lot::Mutex;
@@ -253,8 +253,8 @@ pub(crate) struct CreateWatcher {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_watch_create";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -277,21 +277,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
     ) -> Option<Value> {
         let poll_interval = from[0]
             .update(ctx, event)
-            .and_then(|v| v.cast_to::<Option<Duration>>().ok().flatten());
+            .and_then(|v| v.value().cast_to::<Option<Duration>>().ok().flatten());
         let batch_size = from[1]
             .update(ctx, event)
-            .and_then(|v| v.cast_to::<Option<i64>>().ok().flatten());
+            .and_then(|v| v.value().cast_to::<Option<i64>>().ok().flatten());
         let trigger = from[2].update(ctx, event);
         match poll_interval {
             Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
-                return Some(errf!("WatchError", "poll_interval must be >= 100ms"))
+                return Some(errf!("WatchError", "poll_interval must be >= 100ms"));
             }
             Some(poll_interval) => self.poll_interval = Some(poll_interval),
             None => (),
         }
         match batch_size {
             Some(batch_size) if batch_size < 0 => {
-                return Some(errf!("WatchError", "batch_size must be >= 0"))
+                return Some(errf!("WatchError", "batch_size must be >= 0"));
             }
             Some(batch_size) => self.batch_size = Some(batch_size),
             None => (),
@@ -325,6 +325,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 // ── WatchApply ───────────────────────────────────────────────────
@@ -337,8 +339,8 @@ pub(crate) struct WatchApply {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_watch_watch";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -360,8 +362,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         event: &mut Event<E>,
     ) -> Option<Value> {
         let mut up = false;
-        if let Some(Ok(mut int)) =
-            from[0].update(ctx, event).map(|v| v.cast_to::<LPooled<Vec<WInterest>>>())
+        if let Some(Ok(mut int)) = from[0]
+            .update(ctx, event)
+            .map(|v| v.value().cast_to::<LPooled<Vec<WInterest>>>())
         {
             let int = int.drain(..).fold(BitFlags::empty(), |mut acc, fl| {
                 acc.insert(fl.0);
@@ -372,9 +375,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         }
         if let Some(watcher_val) = from[1].update(ctx, event) {
             up = true;
-            self.watcher_val = Some(watcher_val);
+            self.watcher_val = Some(watcher_val.value());
         }
-        if let Some(Ok(path)) = from[2].update(ctx, event).map(|v| v.cast_to::<ArcStr>())
+        if let Some(Ok(path)) =
+            from[2].update(ctx, event).map(|v| v.value().cast_to::<ArcStr>())
         {
             up = true;
             self.path = Some(path);
@@ -405,6 +409,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.interest = None;
+        self.path = None;
+        self.watcher_val = None;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.interest = None;
         self.path = None;
         self.watcher_val = None;
@@ -483,8 +493,8 @@ pub(crate) struct WatchPath {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_watch_path";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -532,6 +542,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         self.cached.clear();
     }
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.cached.clear()
+    }
+
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in &self.bind_ids {
             ctx.rt.unref_var(*bid, self.top_id);
@@ -549,8 +563,8 @@ pub(crate) struct WatchEvents {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_watch_events";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -596,6 +610,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
             ctx.rt.unref_var(bid, self.top_id);
         }
         self.cached.clear();
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.cached.clear()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

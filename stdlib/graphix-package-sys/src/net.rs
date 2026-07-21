@@ -1,15 +1,16 @@
-use anyhow::{anyhow, bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, anyhow, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    deref_typ, err, errf,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
+    TagValue, UserEvent, deref_typ,
+    effects::EffectKind,
+    err, errf,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
-    TypecheckPhase, UserEvent,
 };
-use graphix_package_core::{arity1, arity2, extract_cast_type, CachedVals};
+use graphix_package_core::{CachedVals, arity1, arity2, extract_cast_type};
 use netidx::{
     path::Path,
     publisher::{Typ, Val},
@@ -18,7 +19,7 @@ use netidx::{
 use netidx_core::utils::Either;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use netidx_value::ValArray;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::collections::VecDeque;
 use triomphe::Arc as TArc;
 
@@ -47,8 +48,8 @@ pub(crate) struct Write {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_net_write";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -101,7 +102,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                         self.dv = Either::Right(vec![]);
                     }
                     let e = errf!(literal!("WriteError"), "invalid path {path:?}");
-                    return Some(Value::Error(TArc::new(e)));
+                    return Some(Value::Error(e.into()));
                 }
                 Some(path) => {
                     let dv = ctx.rt.subscribe(
@@ -144,6 +145,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
             Either::Right(_) => (),
         }
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 impl Write {
@@ -164,8 +169,8 @@ pub(crate) struct Subscribe {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_net_subscribe";
-    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -222,7 +227,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             }
             (Some(Value::String(_)), true) => (),
             (Some(v), true) => {
-                return Some(errf!(ERR_TAG, "invalid path {v}, expected string"))
+                return Some(errf!(ERR_TAG, "invalid path {v}, expected string"));
             }
         }
         self.cur.as_ref().and_then(|(_, dv)| {
@@ -236,22 +241,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         })
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("sys::net::subscribe requires a concrete return type")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("sys::net::subscribe requires a concrete return type")
         }
+        Ok(())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -266,6 +274,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             ctx.rt.unsubscribe(path, dv, self.top_id);
         }
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 #[derive(Debug)]
@@ -277,8 +289,8 @@ pub(crate) struct RpcCall {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_net_call";
-    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -341,38 +353,41 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             ((None, _), (_, _)) | ((_, None), (_, _)) | ((_, _), (false, false)) => (),
         }
         event.variables.get(&self.id).map(|v| match &self.cast_typ {
-            Some(typ) => typ.cast_value(&ctx.env, v.clone()),
-            None => v.clone(),
+            Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
+            None => v.value_cloned(),
         })
     }
 
-    fn typecheck(
+    fn typecheck0(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
+        resolved: &FnType,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("sys::net::call requires a concrete return type")
-                }
-                // validate args type: must be a struct or null
-                if let Some(args_arg) = resolved.args.get(1) {
-                    deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
-                        Some(Type::Struct(_)) => Ok(()),
-                        Some(Type::Any) => Ok(()),
-                        Some(t @ Type::Primitive(_)) => {
-                            if is_null_type(t) { Ok(()) }
-                            else { bail!("sys::net::call args must be a struct or null") }
-                        }
-                    )?;
-                }
-                Ok(())
-            }
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("sys::net::call requires a concrete return type")
         }
+        // validate args type: must be a struct or null
+        if let Some(args_arg) = resolved.args.get(1) {
+            deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
+                Some(Type::Struct(_)) => Ok(()),
+                Some(Type::Any) => Ok(()),
+                Some(t @ Type::Primitive(_)) => {
+                    if is_null_type(t) { Ok(()) }
+                    else { bail!("sys::net::call args must be a struct or null") }
+                }
+            )?;
+        }
+        Ok(())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -383,6 +398,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         ctx.rt.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
+        self.args.clear()
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
 }
@@ -398,8 +417,8 @@ macro_rules! list {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+            const EFFECT: EffectKind = EffectKind::Async;
             const NAME: &str = $builtin;
-            const NEEDS_CALLSITE: bool = false;
 
             fn init<'a, 'b, 'c, 'd>(
                 ctx: &'a mut ExecCtx<R, E>,
@@ -447,10 +466,12 @@ macro_rules! list {
                     }
                     _ => (),
                 }
-                event.variables.get(&self.id).and_then(|v| match v {
-                    Value::Null => None,
-                    Value::Error(e) => Some(errf!(literal!("ListError"), "{e}")),
-                    v => Some(v.clone()),
+                event.variables.get(&self.id).and_then(|v| {
+                    v.with_value(|v| match v {
+                        Value::Null => None,
+                        Value::Error(e) => Some(errf!(literal!("ListError"), "{e}")),
+                        v => Some(v.clone()),
+                    })
                 })
             }
 
@@ -466,6 +487,10 @@ macro_rules! list {
                 ctx.rt.ref_var(self.id, self.top_id);
                 self.current = None;
                 self.args.clear();
+            }
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                self.args.clear()
             }
         }
     };
@@ -490,11 +515,7 @@ fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
     resolved.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
             let t = &cb_ft.args[0].typ;
-            if format!("{t}").contains('\'') {
-                None
-            } else {
-                Some(t.clone())
-            }
+            if format!("{t}").contains('\'') { None } else { Some(t.clone()) }
         }
         _ => None,
     })
@@ -512,8 +533,8 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_net_publish";
-    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -571,7 +592,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     Err(e) => {
                         let msg: ArcStr = format_compact!("{e:?}").as_str().into();
                         let e: Value = (literal!("PublishError"), msg).into();
-                        return Some(Value::Error(TArc::new(e)));
+                        return Some(Value::Error(e.into()));
                     }
                     Ok(id) => {
                         self.current = Some((path, id));
@@ -583,8 +604,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.args.update_diff(&mut up, ctx, from, event);
         if up[0] {
             if let Some(v) = self.args.0[0].clone() {
-                ctx.cached.insert(self.pid, v.clone());
-                event.variables.insert(self.pid, v);
+                ctx.rt.cached_mut().insert(self.pid, v.clone());
+                event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
         match (&up[1..], &self.args.0[1..]) {
@@ -609,35 +630,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
                     None => req.value.clone(),
                 };
-                ctx.cached.insert(self.x, v.clone());
-                event.variables.insert(self.x, v);
+                ctx.rt.cached_mut().insert(self.x, v.clone());
+                event.variables.insert(self.x, TagValue::fired(v));
                 reply = req.send_result;
             }
         }
         if let Some(v) = self.on_write.update(ctx, event) {
             if let Some(reply) = reply {
-                reply.send(v)
+                reply.send(v.value())
             }
         }
         None
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => {
-                self.on_write.typecheck(ctx)?;
-                Ok(())
-            }
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_publish_cast_type(Some(resolved));
-                Ok(())
-            }
-        }
+        self.on_write.typecheck0(ctx)?;
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_publish_cast_type(Some(resolved));
+        Ok(())
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {
@@ -648,8 +670,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         if let Some((_, val)) = self.current.take() {
             ctx.rt.unpublish(val, self.top_id);
         }
-        ctx.cached.remove(&self.pid);
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.on_write.delete(ctx);
     }
@@ -660,6 +682,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         }
         self.args.clear();
         self.on_write.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.on_write.reset_replay(ctx);
     }
 }
 
@@ -790,8 +819,8 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "sys_net_publish_rpc";
-    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -856,8 +885,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.args.update_diff(&mut changed, ctx, from, event);
         if changed[3] {
             if let Some(v) = self.args.0[3].clone() {
-                ctx.cached.insert(self.pid, v.clone());
-                event.variables.insert(self.pid, v);
+                ctx.rt.cached_mut().insert(self.pid, v.clone());
+                event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
         if changed[0] || changed[1] || changed[2] {
@@ -905,7 +934,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 {
                     let e: ArcStr = format_compact!("{e:?}").as_str().into();
                     let e: Value = (literal!("PublishRpcError"), e).into();
-                    return Some(Value::Error(TArc::new(e)));
+                    return Some(Value::Error(e.into()));
                 }
                 self.current = Some(path);
             }
@@ -923,8 +952,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     Some(typ) => typ.cast_value(&ctx.env, Value::Array(args)),
                     None => Value::Array(args),
                 };
-                ctx.cached.insert(self.x, args.clone());
-                event.variables.insert(self.x, args);
+                ctx.rt.cached_mut().insert(self.x, args.clone());
+                event.variables.insert(self.x, TagValue::fired(args));
             }};
         }
         if let Some(c) = event.rpc_calls.remove(&self.id) {
@@ -941,7 +970,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 Some(v) => {
                     self.ready = true;
                     if let Some(mut call) = self.queue.pop_front() {
-                        call.reply.send(v);
+                        call.reply.send(v.value());
                     }
                     match self.queue.front() {
                         Some(c) => set!(c),
@@ -952,22 +981,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => {
-                self.f.typecheck(ctx)?;
-                Ok(())
-            }
-            TypecheckPhase::CallSite(resolved) => {
-                self.validate_spec(ctx, resolved)?;
-                Ok(())
-            }
-        }
+        self.f.typecheck0(ctx)?;
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.validate_spec(ctx, resolved)?;
+        Ok(())
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {
@@ -979,9 +1009,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         if let Some(path) = self.current.take() {
             ctx.rt.unpublish_rpc(path);
         }
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
-        ctx.cached.remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.pid);
         self.f.delete(ctx);
     }
 
@@ -997,5 +1027,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.argbuf.clear();
         self.ready = true;
         self.f.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.f.reset_replay(ctx);
     }
 }

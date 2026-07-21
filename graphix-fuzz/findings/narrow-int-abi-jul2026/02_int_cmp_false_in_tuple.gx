@@ -1,0 +1,8 @@
+// bisect: companion to 01 — same narrow-int-arg root, INTEGER comparison
+// in a TUPLE (the value_buf_push_bool path via a tuple producer). `a` is
+// bound so the `==` is a runtime `icmp` (not const-folded): interp
+// (false, 7), jit was (true, 7). Confirms the bug is not float-specific —
+// any computed bool pushed into a composite. Pins the fix across the
+// tuple producer.
+let a = i64:0;
+(a == i64:-1, i64:7)

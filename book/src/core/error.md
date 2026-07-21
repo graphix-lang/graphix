@@ -144,3 +144,9 @@ might_fail(1, 2, 3)$
 
 The `$` operator logs errors rather than silently discarding them, making it
 easier to debug issues while still allowing execution to continue.
+
+One caveat: the log message is produced by the interpreter. When the
+expression is compiled by the JIT (fusion is on by default), the error is
+dropped without a diagnostic — the resulting value is the same, but nothing
+is logged. If you're debugging a swallowed error, run with `--no-fusion` to
+see the logged diagnostics.

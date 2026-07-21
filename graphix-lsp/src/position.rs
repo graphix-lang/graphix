@@ -62,9 +62,7 @@ pub fn position_to_char_col(
         return 0;
     }
     match encoding {
-        PositionEncoding::Utf32 => {
-            line_text.chars().take(target as usize).count()
-        }
+        PositionEncoding::Utf32 => line_text.chars().take(target as usize).count(),
         PositionEncoding::Utf16 => {
             let mut units = 0u32;
             let mut chars = 0usize;
@@ -158,11 +156,9 @@ mod tests {
     #[test]
     fn ascii_all_encodings_equivalent() {
         let line = "let x = 1";
-        for enc in [
-            PositionEncoding::Utf8,
-            PositionEncoding::Utf16,
-            PositionEncoding::Utf32,
-        ] {
+        for enc in
+            [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32]
+        {
             for col in 0..=line.len() {
                 assert_eq!(
                     position_to_char_col(line, at(0, col as u32), enc),
@@ -197,18 +193,9 @@ mod tests {
         assert_eq!(position_to_char_col(line, at(0, 2), PositionEncoding::Utf32), 2);
 
         // Reverse direction.
-        assert_eq!(
-            char_col_to_position(line, 0, 2, PositionEncoding::Utf16),
-            at(0, 3)
-        );
-        assert_eq!(
-            char_col_to_position(line, 0, 2, PositionEncoding::Utf8),
-            at(0, 5)
-        );
-        assert_eq!(
-            char_col_to_position(line, 0, 2, PositionEncoding::Utf32),
-            at(0, 2)
-        );
+        assert_eq!(char_col_to_position(line, 0, 2, PositionEncoding::Utf16), at(0, 3));
+        assert_eq!(char_col_to_position(line, 0, 2, PositionEncoding::Utf8), at(0, 5));
+        assert_eq!(char_col_to_position(line, 0, 2, PositionEncoding::Utf32), at(0, 2));
     }
 
     #[test]

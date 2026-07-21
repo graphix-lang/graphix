@@ -1,0 +1,33 @@
+// bisect: DirectJit compile-time PANIC — cranelift FunctionBuilder
+// "declared type of variable var3 doesn't match type of value v13"
+// (cranelift-frontend frontend.rs:509); the unwind kills the tokio
+// worker ("runtime did not respond") and skips the by_kernel eviction
+// loop. interp: 11 (via the shell; `graphix-fuzz check` reports the
+// interp side as Timeout on this program — the jit-side panic appears
+// to poison the check process, so check still flags DIVERGENCE, just
+// with a misleading interp verdict; re-check after the fix).
+// Found by the 2026-07 release-readiness review (fusion-core dim).
+// root_cause: TWO layers. (a) The same name-keyed callee resolution
+// as 01. (b) Deeper: the kernel cache keyed on (LambdaId,
+// g.typ().resolve_tvars()) — but a lambda INSTANCE's FnType shares
+// TVar cells with the lambda def, and the FIRST site's unification
+// wins those cells, so the f64 site's g.typ() reported fn(x: i64) ->
+// i64 and cache-HIT the i64 kernel; the emitted call's CLIF types
+// then mismatched and the FunctionBuilder panicked.
+// FIXED (2026-07-02): resolution re-keyed on kernel identity (see 01),
+// and build_lambda_kernel now keys the cache on the CALL SITE's
+// resolved FnType and REFUSES to build when the instance's own
+// args/return disagree with the site (the shared-cell corruption) —
+// that site node-walks. Here the i64 site fuses, the f64 site
+// node-walks, values correct. Fixture:
+// graphix-tests lang/functions.rs two_monomorphizations_one_region.
+// SHAPE MATTERS: the lambda binding must sit OUTSIDE the attempted
+// region — with `let f` inside the block, the function-valued let
+// blocks the whole-region attempt, recursion splits the two call sites
+// into separate single-mono regions, and everything agrees.
+let f = 'a: Number |x: 'a| -> 'a x + x;
+{
+  let a = f(i64:3);
+  let b = f(2.5);
+  cast<f64>(a)$ + b
+}

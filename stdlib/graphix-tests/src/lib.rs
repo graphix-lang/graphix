@@ -3,26 +3,11 @@
 // breaking the circular dev-dependency that previously existed in
 // graphix-package-core.
 
+// Auto-discovered from this crate's [dependencies] (the `graphix-package-*`
+// list IS the curation — it deliberately omits bench/gui/tui).
 #[cfg(test)]
-pub(crate) const TEST_REGISTER: &[graphix_package_core::testing::RegisterFn] = &[
-    <graphix_package_core::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_array::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_map::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_str::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_sys::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_http::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_json::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_toml::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_re::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_rand::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_db::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_xls::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_pack::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_args::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_list::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_sqlite::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-    <graphix_package_hbs::P as graphix_package::Package<graphix_rt::NoExt>>::register,
-];
+pub(crate) const TEST_REGISTER: &[&dyn graphix_package::Package<graphix_rt::NoExt>] =
+    graphix_package::package_refs!();
 
 #[cfg(test)]
 pub(crate) async fn init(

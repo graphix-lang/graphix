@@ -1,0 +1,21 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([1:i64:1])   — fell through to the unguarded arm
+// jit:    Trace([1:i64:200]) — correct: first-match on the guarded arm
+// Found by jul19c-era triage of the jul19b survivors (katana generate
+// lane, seed 1832M); hand-minimized from a 5-module mutant.
+// root_cause: Select::update's tainted-scrutinee force returned BEFORE
+// the arm pattern/guard tick. A tail-looped callee whose base case
+// bottoms delivers Some(TAINTED) at init (in-frame bottoms are
+// tainted), so the early return skipped the one cycle where const
+// guards fire — arm 1's guard `true` stayed unfired forever, and when
+// the connect delivered the first real value the guarded arm could
+// not match; selection fell through to the bare-pattern arm. The
+// kernel's is_tainted gate forces the output without suppressing
+// guard state, so the JIT selected arm 1. Every guard shape diverged
+// (const, let-bound ref, scrutinee-bind comparison); the unguarded
+// variant agreed. Essential ingredients: the bottom must arrive as a
+// TAINTED production (direct 0/0 is silence — agrees) with at least
+// one tail-loop reentry (depth 0 agrees).
+// fix: run the pattern/guard tick first (binds skipped — a
+// placeholder can't be bound), then apply the taint force.
+{let rec v6 = |v7: i64| -> i64 select v7 {v8 if v8 <= i64:0 => (v8 / v8), v8 => v6(v8 - i64:1)}; let v10 = v6(i64:1); let v2 = &v10; *v2 <- i64:1; select v10 {v16 if true => i64:200, v31 => v31}}

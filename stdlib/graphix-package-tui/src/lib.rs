@@ -2,31 +2,32 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{anyhow, bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, anyhow, bail};
+use arcstr::{ArcStr, literal};
 use async_trait::async_trait;
 use barchart::BarChartW;
 use block::BlockW;
 use calendar::CalendarW;
 use chart::ChartW;
 use crossterm::{
+    ExecutableCommand,
     event::{
         DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
         Event, EventStream, KeyCode, KeyModifiers,
     },
-    terminal, ExecutableCommand,
+    terminal,
 };
-use futures::{channel::mpsc, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, channel::mpsc};
 use gauge::GaugeW;
 use graphix_compiler::{
+    BindId,
     env::Env,
     expr::{ExprId, ModPath},
     typ::{Type, TypeRef},
-    BindId,
 };
 use graphix_package::CustomDisplay;
 use graphix_rt::{CompExp, GXExt, GXHandle, TRef};
-use input_handler::{event_to_value, InputHandlerW};
+use input_handler::{InputHandlerW, event_to_value};
 use layout::LayoutW;
 use line_gauge::LineGaugeW;
 use list::ListW;
@@ -34,18 +35,17 @@ use log::error;
 use netidx::publisher::{FromValue, Value};
 use paragraph::ParagraphW;
 use ratatui::{
+    Frame,
     layout::{Alignment, Direction, Flex, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
     widgets::TitlePosition,
-    Frame,
 };
 use scrollbar::ScrollbarW;
 use smallvec::SmallVec;
 use sparkline::SparklineW;
-use std::sync::LazyLock;
-use std::{borrow::Cow, future::Future, marker::PhantomData, pin::Pin};
+use std::{borrow::Cow, future::Future, marker::PhantomData, pin::Pin, sync::LazyLock};
 use text::TextW;
 use tokio::{select, sync::oneshot, task};
 use triomphe::Arc;
@@ -152,8 +152,13 @@ struct StyleV(Style);
 
 impl FromValue for StyleV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, add_modifier), (_, bg), (_, fg), (_, sub_modifier), (_, underline_color)] =
-            v.cast_to::<[(ArcStr, Value); 5]>()?;
+        let [
+            (_, add_modifier),
+            (_, bg),
+            (_, fg),
+            (_, sub_modifier),
+            (_, underline_color),
+        ] = v.cast_to::<[(ArcStr, Value); 5]>()?;
         let add_modifier = add_modifier.cast_to::<ModifierV>()?.0;
         let bg = bg.cast_to::<Option<ColorV>>()?.map(|c| c.0);
         let fg = fg.cast_to::<Option<ColorV>>()?.map(|c| c.0);
@@ -562,11 +567,13 @@ async fn run<X: GXExt>(
     Ok(())
 }
 
-static TUITYP: LazyLock<Type> = LazyLock::new(|| Type::Ref (TypeRef {
-    scope: ModPath::root(),
-    name: ModPath::from(["tui", "Tui"]),
-    params: Arc::from_iter([]),
- ..Default::default()}));
+static TUITYP: LazyLock<Type> = LazyLock::new(|| {
+    Type::Ref(TypeRef::synthetic(
+        ModPath::root(),
+        ModPath::from(["tui", "Tui"]),
+        Arc::from_iter([]),
+    ))
+});
 
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Tui<X> {

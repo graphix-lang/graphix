@@ -1,0 +1,16 @@
+// bisect: fusion/JIT FIRING bug — soak jul07c fuzz/divergence_000000.
+// The recursion sits exactly at the limit (f(255) = 256 dispatches)
+// and the BASE ARM contains HOFs: the node-walk charges one depth
+// unit per HOF callback dispatch (`GXLambda::update`), so the first
+// `array::init` callback trips at 257 → bottom — while the fused
+// kernel inlined the loops and charged NOTHING → completed (42540).
+// FIXED: every scaffold loop enters ONE depth unit around the whole
+// loop (`emit_depth_unit`/`graphix_depth_enter` — sequential element
+// dispatches all sit at the same level, so one enter/pop pair
+// reproduces the node-walk's per-element trip point at zero
+// per-element cost; a trip zeroes the loop bound and taints the
+// result). Both modes now trip → both silent. The under-limit sibling
+// (05) pins the other direction: exactly ONE unit, not two.
+// mutant: {let rec f = |n: i64| -> i64 select n {i64:0 => {use array; let xs = array::init(i64:100, |idx: i64| idx); array::fold(xs, i64:0, |acc, x| acc + x * i64:2)}, _ => n + f(n - i64:1)}; f(i64:255)}
+// minimized:
+{let rec f = |n: i64| -> i64 select n {i64:0 => {f64:0.; let xs = array::init(i64:100, |idx: i64| idx); array::fold(xs, i64:0, |acc, x| acc + x * i64:2)}, _ => n + f(n - i64:1)}; f(i64:255)}

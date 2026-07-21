@@ -1,4 +1,6 @@
 use super::{
+    Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
+    TypeDef, Use,
     array::{Array, ArrayRef, ArraySlice},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
@@ -6,26 +8,24 @@ use super::{
     error::{Qop, TryCatch},
     lambda::Lambda,
     module::Module,
-    op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Not, Or, Sub},
+    op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
     select::Select,
-    Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
-    TypeDef, Use,
 };
 use crate::{
+    CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
     expr::{
         self, ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
         StructWithExpr,
     },
     node::{
+        ExplicitParens, Nop,
         error::OrNever,
         map::{Map, MapRef},
         op::{CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub},
-        ExplicitParens, Nop,
     },
     typ::Type,
-    CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 
@@ -37,11 +37,22 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     if ctx.env.lsp_mode {
-        ctx.scope_map.push(crate::ScopeMapEntry {
+        ctx.env.push_scope_map_entry(crate::ide::ScopeMapEntry {
             pos: spec.pos,
             ori: spec.ori.clone(),
             scope: scope.clone(),
         });
+    }
+    // Reject unknown attributes. Every Expr re-enters `compile` exactly once
+    // (per-kind `compile`s recurse through here), so this single check covers
+    // the whole tree. The per-attribute semantic check (e.g. `#[native]`) runs
+    // post-fusion; this only validates that the attribute name is registered.
+    if let Some(dec) = &spec.dec {
+        for attr in dec.attrs.iter() {
+            if ctx.lookup_attribute(&attr.name).is_none() {
+                crate::bailat!(spec, "unknown attribute #[{}]", attr.name);
+            }
+        }
     }
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
@@ -93,7 +104,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
                     }
                     _ => None,
                 };
-                ctx.module_references.push(crate::ModuleRefSite {
+                ctx.env.push_module_reference(crate::ide::ModuleRefSite {
                     pos: spec.pos,
                     ori: spec.ori.clone(),
                     name: crate::expr::ModPath::from([name.as_str()]),
@@ -168,6 +179,7 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         }
         ExprKind::ByRef(e) => ByRef::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
+        ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Ref { name } => Ref::compile(ctx, spec.clone(), scope, top_id, name),
         ExprKind::TupleRef { source, field } => {
             TupleRef::compile(ctx, flags, spec.clone(), scope, top_id, source, field)

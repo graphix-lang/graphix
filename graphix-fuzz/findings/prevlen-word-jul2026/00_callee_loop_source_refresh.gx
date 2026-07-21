@@ -1,0 +1,10 @@
+// bisect: fusion/JIT over-fire (jul16a fuzz classes A+C, 8 findings).
+// SlotFlags::apply's prev-length resize-detection word is a
+// per-instance state claim, refused in CALLEE bodies — the fallback
+// conservative source-OR-slot rule re-fired the callee's loop on every
+// same-length source refresh with a quiet body, where the interp's
+// per-slot MapQ rule is quiet. The select machinery was incidental:
+// this pin has NO select — a bare const body over a firing captured
+// source suffices. Fixed by claiming a per-call-site word (the site
+// block channel, null-guarded to the conservative rule on back-edges).
+{let x = array::iter([i64:0, i64:0, i64:0, i64:4]); let m = x / i64:3; let f = |n| array::map([x], |i| i64:1); let a = f(i64:0); let c = count(a); select count(x) {i64:4 => c, _ => never()}}

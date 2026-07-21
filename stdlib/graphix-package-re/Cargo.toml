@@ -39,3 +39,6 @@ env_logger = { workspace = true }
 tokio = { workspace = true }
 arcstr = { workspace = true }
 poolshark = { workspace = true }
+
+[build-dependencies]
+graphix-ast-pack = { path = "../../graphix-ast-pack" }

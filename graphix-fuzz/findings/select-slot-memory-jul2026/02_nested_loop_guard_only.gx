@@ -1,0 +1,10 @@
+// bisect: fusion/JIT over-fire (the NESTED-loop shape of divergence
+// 000009, constructed 2026-07-15 during Eric's review of the depth-1
+// fix — "all the fuzzer has to do is create a nested loop with a
+// select in it"). Same guard-only unchanged-selection schedule as 00;
+// the select sits two loops deep, so its node-walk state is one word
+// per (outer slot, inner slot). The kernel anchors a per-site chain
+// of owning tables mirroring the loop nesting (a directory entry owns
+// the next level's table — `graphix_slot_state_table` own_levels).
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:3; in0=i64:2; in0=i64:4
+array::map([i64:7], |x: i64| array::map([i64:8, i64:9], |y: i64| select i64:0 {i64:0 if in0 % i64:2 == i64:0 => i64:1, _ => i64:2}))

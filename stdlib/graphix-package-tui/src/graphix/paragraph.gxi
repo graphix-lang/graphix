@@ -1,9 +1,11 @@
+/// `scroll.y` is in lines and `scroll.x` is in chars; `trim` drops
+/// leading whitespace when wrapping.
 type Paragraph = {
   alignment: &[Alignment, null],
   lines: &[Array<Line>, string],
-  scroll: &{ x: i64, y: i64 }, // y is in lines, x is in chars
+  scroll: &{ x: i64, y: i64 },
   style: &Style,
-  trim: &bool // trim leading whitespace when wrapping
+  trim: &bool
 };
 
 val paragraph: fn(

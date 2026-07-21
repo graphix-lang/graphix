@@ -21,10 +21,9 @@ use anyhow::Result;
 
 #[tokio::test]
 async fn text_compiles_and_renders() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        "use tui;\nuse tui::text;\nlet result = text(&\"hello\")",
-    )
-    .await?;
+    let mut h =
+        TuiTestHarness::new("use tui;\nuse tui::text;\nlet result = text(&\"hello\")")
+            .await?;
     let lines = h.render_lines()?;
     assert!(
         lines[0].starts_with("hello"),
@@ -216,10 +215,9 @@ async fn line_gauge_out_of_range_does_not_panic() -> Result<()> {
 
 #[tokio::test]
 async fn gauge_in_range_renders() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        "use tui;\nuse tui::gauge;\nlet result = gauge(&0.5)",
-    )
-    .await?;
+    let mut h =
+        TuiTestHarness::new("use tui;\nuse tui::gauge;\nlet result = gauge(&0.5)")
+            .await?;
     h.render()?;
     Ok(())
 }
@@ -229,10 +227,9 @@ async fn gauge_out_of_range_does_not_panic() -> Result<()> {
     // Without the clamp_ratio fix this would panic inside ratatui's
     // Gauge::ratio assert. The harness exists in part to keep this
     // regression test alive.
-    let mut h = TuiTestHarness::new(
-        "use tui;\nuse tui::gauge;\nlet result = gauge(&5.0)",
-    )
-    .await?;
+    let mut h =
+        TuiTestHarness::new("use tui;\nuse tui::gauge;\nlet result = gauge(&5.0)")
+            .await?;
     h.render()?;
     Ok(())
 }

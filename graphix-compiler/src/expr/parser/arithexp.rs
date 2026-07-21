@@ -1,18 +1,22 @@
 use crate::expr::{
+    ApplyExpr, Expr, ExprKind,
     parser::{
-        any, apply, array, arrayref, cast, do_block, interpolated, literal, map, mapref,
-        qop, raw_string, reference, select, spaces, sptoken, structref, structure,
-        structwith, tuple, tupleref, variant,
+        any, apply_args, array, array_index_suffix, cast, csep, do_block, expr,
+        interpolated, literal, map, raw_string, reference, select, spaces, spfname,
+        sptoken, structure, structwith, variant,
     },
-    Expr, ExprKind,
 };
+use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, many,
+    ParseError, Parser, RangeStream, attempt, between, choice, many, not_followed_by,
+    optional,
     parser::char::string,
     position,
-    stream::{position::SourcePosition, Range},
-    token, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token,
 };
+use netidx::utils::Either;
+use netidx_value::parser::{int, sep_by1_tok};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -36,42 +40,195 @@ where
         .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
 }
 
+// Unary minus. Tried AFTER `literal()` in the `arith_term` choice so a
+// signed numeric literal (`-2.5`, `-2`) is consumed as a `Constant`; only
+// a non-literal operand (`-x`, `-(a + b)`, `-f(x)`) becomes a `Neg` node.
+fn neg_arith<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), token('-').with(arith_term()))
+        .map(|(pos, expr)| ExprKind::Neg(Arc::new(expr)).to_expr(pos))
+}
+
+/// A postfix operator applied to a primary in `arith_term`'s postfix loop.
+enum Post {
+    Field(ArcStr),                                     // `.name`  -> StructRef
+    Index(usize),                                      // `.0`     -> TupleRef
+    Array(Either<(Option<Expr>, Option<Expr>), Expr>), // `[i]`/`[a..b]`
+    Key(Expr),                                         // `{k}`    -> MapRef
+    Call(Vec<(Option<ArcStr>, Expr)>),                 // `(args)` -> Apply
+}
+
+enum QopSuffix {
+    Qop,
+    OrNever,
+}
+
+// One postfix operator. Each alternative is `attempt`-wrapped so a partial
+// parse (e.g. the `{` of a map-key access that turns out to be a block)
+// backtracks and the postfix loop ends cleanly rather than hard-failing.
+fn postfix_op<I>() -> impl Parser<I, Output = Post>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        attempt(sptoken('.').with(choice((
+            attempt(int::<_, usize>()).map(Post::Index),
+            spfname().map(Post::Field),
+        )))),
+        attempt(array_index_suffix()).map(Post::Array),
+        attempt(between(sptoken('{'), sptoken('}'), expr())).map(Post::Key),
+        attempt(apply_args()).map(Post::Call),
+    ))
+}
+
+// The optional trailing `?`/`$` error operator. Mirrors the tail of the old
+// `qop` combinator; applied once to the whole postfix expression.
+fn qop_suffix<I>() -> impl Parser<I, Output = QopSuffix>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(spaces().with(choice((
+        token('?').map(|_| QopSuffix::Qop),
+        token('$').map(|_| QopSuffix::OrNever),
+    ))))
+}
+
+fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
+    let source = Arc::new(src);
+    match op {
+        Post::Field(field) => ExprKind::StructRef { source, field }.to_expr(pos),
+        Post::Index(field) => ExprKind::TupleRef { source, field }.to_expr(pos),
+        Post::Array(Either::Right(i)) => {
+            ExprKind::ArrayRef { source, i: Arc::new(i) }.to_expr(pos)
+        }
+        Post::Array(Either::Left((start, end))) => ExprKind::ArraySlice {
+            source,
+            start: start.map(Arc::new),
+            end: end.map(Arc::new),
+        }
+        .to_expr(pos),
+        Post::Key(key) => ExprKind::MapRef { source, key: Arc::new(key) }.to_expr(pos),
+        Post::Call(args) => {
+            ExprKind::Apply(ApplyExpr { function: source, args: Arc::from(args) })
+                .to_expr(pos)
+        }
+    }
+}
+
+// `( e )` or `( a, b, .. )`. Yields the bare inner expr plus a marker:
+// `Some(())` for a single parenthesized expr — it becomes `ExplicitParens` if
+// no postfix follows, else its parens are stripped and it is used directly as
+// the postfix source (matching the old `ref_pexp`/`apply_pexp` `between`).
+// `None` marks a tuple (>= 2 elements).
+fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<()>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        between(token('('), sptoken(')'), sep_by1_tok(expr(), csep(), token(')'))),
+    )
+        .map(|(pos, mut exprs): (_, LPooled<Vec<Expr>>)| {
+            if exprs.len() == 1 {
+                (exprs.drain(..).next().unwrap(), Some(()))
+            } else {
+                (
+                    ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }
+                        .to_expr(pos),
+                    None,
+                )
+            }
+        })
+}
+
+// A primary expression — everything that can begin a postfix expression. The
+// prefix-operator forms (`!`, `&`, `*`, unary `-`) recurse into `arith_term`,
+// so they bind looser than the postfix operators. `paren_group` carries the
+// "is a single `( e )`" marker; every other primary is `None`.
+fn primary<I>() -> impl Parser<I, Output = (Expr, Option<()>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        (position(), token('!').with(arith_term()))
+            .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
+        raw_string().map(|e| (e, None)),
+        array().map(|e| (e, None)),
+        byref_arith().map(|e| (e, None)),
+        deref_arith().map(|e| (e, None)),
+        select().map(|e| (e, None)),
+        variant().map(|e| (e, None)),
+        cast().map(|e| (e, None)),
+        any().map(|e| (e, None)),
+        interpolated().map(|e| (e, None)),
+        (position(), token('!').with(arith()))
+            .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
+        attempt(map()).map(|e| (e, None)),
+        attempt(structure()).map(|e| (e, None)),
+        attempt(structwith()).map(|e| (e, None)),
+        do_block().map(|e| (e, None)),
+        paren_group(),
+        attempt(literal()).map(|e| (e, None)),
+        neg_arith().map(|e| (e, None)),
+        reference().map(|e| (e, None)),
+    ))
+}
+
 parser! {
     pub(crate) fn arith_term[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         spaces()
-            .with(choice((
-                (position(), token('!').with(arith_term()))
-                    .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
-                raw_string(),
-                array(),
-                byref_arith(),
-                qop(deref_arith()),
-                qop(select()),
-                variant(),
-                qop(cast()),
-                qop(any()),
-                interpolated(),
-                (position(), token('!').with(arith()))
-                    .map(|(pos, expr)| ExprKind::Not { expr: Arc::new(expr) }.to_expr(pos)),
-                attempt(tuple()),
-                attempt(map()),
-                attempt(structure()),
-                attempt(structwith()),
-                qop(do_block()),
-                attempt(qop(mapref())),
-                attempt(qop(arrayref())),
-                attempt(qop(tupleref())),
-                attempt(qop(structref())),
-                attempt(qop(apply())),
-                qop((position(), between(token('('), sptoken(')'), spaces().with(arith()))).map(|(pos, e)| {
-                    ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
-                })),
-                attempt(literal()),
-                qop(reference()),
-            )))
-            .skip(spaces())
+            .with(
+                (
+                    position(),
+                    primary(),
+                    many::<LPooled<Vec<Post>>, _, _>(postfix_op()),
+                    optional(qop_suffix()),
+                )
+                    .map(|(pos, (base, paren), mut ops, qop)| {
+                        let folded = if ops.is_empty() {
+                            match paren {
+                                Some(()) => {
+                                    ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos)
+                                }
+                                None => base,
+                            }
+                        } else {
+                            ops.drain(..).fold(base, |acc, op| apply_post(pos, acc, op))
+                        };
+                        match qop {
+                            None => folded,
+                            Some(QopSuffix::Qop) => {
+                                ExprKind::Qop(Arc::new(folded)).to_expr(pos)
+                            }
+                            Some(QopSuffix::OrNever) => {
+                                ExprKind::OrNever(Arc::new(folded)).to_expr(pos)
+                            }
+                        }
+                    }),
+            )
+        // NOTE: arith_term must NOT skip trailing spaces — the tight
+        // brace rule (`m{"k"}` is a map access, `m {"k"}` is not)
+        // depends on the whitespace between a postfix source and `{`
+        // surviving to the postfix loop. The old trailing
+        // `.skip(spaces())` laundered it for PREFIX forms: `*r {i8:0}`
+        // recursed into arith_term for `r`, whose trailing skip ate
+        // the space, and the OUTER postfix loop then saw `{i8:0}`
+        // flush and built a MapRef (found by the extended round-trip
+        // proptest).
     }
 }
 
@@ -166,7 +323,10 @@ parser! {
                     attempt(string("&&")),
                     attempt(string("||")),
                     string(">"),
-                    string("<"),
+                    // `<` must not swallow the `<-` of a connect: with unary
+                    // minus, `a <- b` would otherwise read as `a < (-b)`.
+                    // `a < -b` (space before `-`) still parses as less-than.
+                    attempt(string("<").skip(not_followed_by(token('-')))),
                     attempt(string("+?")),
                     attempt(string("+")),
                     attempt(string("-?")),

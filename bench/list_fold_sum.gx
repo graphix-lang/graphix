@@ -1,0 +1,15 @@
+// Integer reduction over a LIST: fold (+) over a 100k-element list.
+// The list HOFs lower through the flatten boundary (cons chain →
+// ValArray → native loop → result), so this measures the same native
+// loop as fold_sum.gx plus the per-update flatten/rebuild cost.
+//
+// Self-timed like fold_sum.gx: the accumulator seeds from t0 so the
+// compute is ordered between the clock reads and can't const-fold.
+let n = 100000;
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = list::fold(list::init(n, |i| i), seed, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("list_fold_sum n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

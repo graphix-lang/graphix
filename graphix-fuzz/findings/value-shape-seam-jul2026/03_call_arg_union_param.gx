@@ -1,0 +1,5 @@
+// The lambda-call ARG twin of the fold seam: a bare-Array arg node
+// under a value-shaped (`[Array<i64>, null]`) signature slot
+// raw-emitted its box pointer as a Value payload. Found by probing
+// sibling seams of crash_000002.
+{let f = |v: [Array<i64>, null]| v; f([i64:1, i64:2])}

@@ -1,5 +1,5 @@
 use crate::types::ColorV;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use chrono::{DateTime, Utc};
 use netidx::publisher::{FromValue, Value};
@@ -392,8 +392,13 @@ pub struct PieStyleV {
 impl FromValue for PieStyleV {
     fn from_value(v: Value) -> Result<Self> {
         // Fields sorted alphabetically: colors, donut, label_offset, show_percentages, start_angle
-        let [(_, colors), (_, donut), (_, label_offset), (_, show_percentages), (_, start_angle)] =
-            v.cast_to::<[(ArcStr, Value); 5]>()?;
+        let [
+            (_, colors),
+            (_, donut),
+            (_, label_offset),
+            (_, show_percentages),
+            (_, start_angle),
+        ] = v.cast_to::<[(ArcStr, Value); 5]>()?;
         Ok(Self {
             colors: if colors == Value::Null {
                 None
@@ -480,8 +485,18 @@ pub struct MeshStyleV {
 
 impl FromValue for MeshStyleV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, axis_color), (_, grid_color), (_, label_color), (_, label_size), (_, show_x_grid), (_, show_y_grid), (_, x_label_area_size), (_, x_labels), (_, y_label_area_size), (_, y_labels)] =
-            v.cast_to::<[(ArcStr, Value); 10]>()?;
+        let [
+            (_, axis_color),
+            (_, grid_color),
+            (_, label_color),
+            (_, label_size),
+            (_, show_x_grid),
+            (_, show_y_grid),
+            (_, x_label_area_size),
+            (_, x_labels),
+            (_, y_label_area_size),
+            (_, y_labels),
+        ] = v.cast_to::<[(ArcStr, Value); 10]>()?;
         Ok(Self {
             show_x_grid: if show_x_grid == Value::Null {
                 None

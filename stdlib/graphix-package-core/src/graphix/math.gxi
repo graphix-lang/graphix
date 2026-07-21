@@ -105,8 +105,10 @@ val min: fn(x: f64, y: f64) -> f64;
 /// For n-ary polymorphic behaviour over `Number`, use the top-level `max` from core.
 val max: fn(x: f64, y: f64) -> f64;
 
-/// Clamp `x` to the closed interval `[lo, hi]`.
-val clamp: fn(x: f64, lo: f64, hi: f64) -> f64;
+/// Clamp `x` to the closed interval `[lo, hi]`. Returns a catchable
+/// `` `ClampError `` when the range is invalid (`lo > hi`, or a NaN bound)
+/// — handle it with `?`/`$`/`select`.
+val clamp: fn(x: f64, lo: f64, hi: f64) -> [f64, Error<`ClampError(string)>];
 
 /// True if `x` is NaN.
 val is_nan: fn(x: f64) -> bool;

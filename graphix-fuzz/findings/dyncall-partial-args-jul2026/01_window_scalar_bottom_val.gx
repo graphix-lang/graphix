@@ -1,0 +1,10 @@
+// jul19f divergence_000001, hand-minimized (scalar bottom val). TWO
+// bugs (Eric's ruling 2026-07-20): (1) the fused DynCall's
+// interior-bottom-v2 gate skipped the WHOLE call on any tainted arg,
+// where the node-walk seam is per-slot — a bottomed arg is ABSENCE,
+// the cached slot rides, and eval decides; fixed with the taint MASK
+// through graphix_dyncall (masked slots deliver nothing) + the
+// callsite gate widened to ALL builtins (interp parity). (2)
+// array::window's eval produced [] at #n:0 with the val slot absent —
+// window now requires ALL its args before producing anything.
+array::window(#n: i64:0, [i64:1], i64:1 / i64:0)

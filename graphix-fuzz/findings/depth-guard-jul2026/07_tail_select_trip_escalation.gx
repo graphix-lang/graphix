@@ -1,0 +1,22 @@
+// bisect: depth-trip blast radius through a callee's TAIL SELECT. An
+// unconditionally-recursive callee (`f(0)` in its own scrutinee) depth-
+// trips; the trip site itself bottoms LOCALLY (06), but the tainted
+// scrutinee then reached the callee body's tail select, whose
+// emit_select_node_tail FORCED it with emit_bottom_abort — sound for a
+// region parent (one output; abort == result-doesn't-fire) but in a
+// callee the caller escalated the pending sentinel to a WHOLE-KERNEL
+// abort: interp Trace([0:42]) (f(256) bottoms locally, fold's init
+// taint rides the acc, the acc-ignoring callback recovers) vs jit
+// Trace([]).
+// Found by soak-jul08c fuzz campaign (divergence_000001, 2026-07-07).
+// root_cause: tail-position select treated a tainted scrutinee as a
+//   kernel-level bottom; in a callee "the kernel result" is just this
+//   call's return value.
+// fix: the tainted-scrutinee path now RETURNS the tainted placeholder
+//   early (emit_kernel_return) — in a callee it rides
+//   CALLEE_RESULT_FLAGS as a value-level bottom (only the call's
+//   consumers bottom); in a gated parent the return force bottoms the
+//   kernel, the same observable as the abort it replaced.
+// mutant: {let rec f = |n: i64| -> i64 select f(n - i64:1) {i64:0 => i64:0, _ => n + f(n - i64:1)}; array::fold([i64:41], f(i64:256), |acc, x| x + i64:1)}
+// minimized:
+{let rec f = |n: i64| -> i64 select f(i64:0) {i64:0 => i64:0, _ => n + f(n - i64:1)}; array::fold([i64:41], f(i64:256), |acc, x| x + i64:1)}

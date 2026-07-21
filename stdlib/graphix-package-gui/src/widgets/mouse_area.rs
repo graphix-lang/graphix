@@ -1,4 +1,4 @@
-use super::{compile, GuiW, GuiWidget, IcedElement, Message};
+use super::{GuiW, GuiWidget, IcedElement, Message, compile};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
@@ -29,8 +29,14 @@ pub(crate) struct MouseAreaW<X: GXExt> {
 
 impl<X: GXExt> MouseAreaW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, child), (_, on_enter), (_, on_exit), (_, on_move), (_, on_press), (_, on_release)] =
-            source.cast_to::<[(ArcStr, u64); 6]>().context("mouse_area flds")?;
+        let [
+            (_, child),
+            (_, on_enter),
+            (_, on_exit),
+            (_, on_move),
+            (_, on_press),
+            (_, on_release),
+        ] = source.cast_to::<[(ArcStr, u64); 6]>().context("mouse_area flds")?;
         let (child_ref, on_enter, on_exit, on_move, on_press, on_release) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(on_enter),

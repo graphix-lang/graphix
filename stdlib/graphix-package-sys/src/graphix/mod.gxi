@@ -11,3 +11,10 @@ val args: fn() -> Array<string>;
 
 /// join parts to path using the OS specific path separator
 val join_path: fn(path: string, @args: [string, Array<string>]) -> string;
+
+/// flush stdout/stderr and terminate the process with the given exit
+/// code. The return type is fully polymorphic because the call never
+/// actually returns; it fires when its argument produces a value, so
+/// you can use it as the trailing expression of a program to make it
+/// exit deterministically on completion.
+val exit: fn(code: i64) -> 'a;

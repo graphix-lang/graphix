@@ -1,0 +1,25 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:u8:100])
+// jit:    Trace([0:f64:-1.]) — the INNER fold slot's element value
+// Found by the jul04 combined soak, generate campaign (seed 70402),
+// corpus-generate/divergence_000000 — first generator hit on the
+// audit-bug-3 family (rebind/shadowing vocabulary doing its job).
+// root_cause: the default Update::clone_rebind (recompile-from-spec,
+// used for env-managing nodes — here the TryCatch in the outer fold's
+// callback) resolves refs BY NAME, and its capture-alias pre-pass
+// SKIPS the alias when lookup_bind already finds the name. Per-slot
+// HOF clones re-mint their binds by name at the HOF's own scope
+// (remint_bind_id -> bind_variable(&scope.lexical, name)), so the
+// inner fold's slot clone registers a fresh f64 `v6` (element param)
+// at the shared block scope, shadowing `let v6: u8` for every later
+// lookup. The outer fold's slot clone recompiles its TryCatch there,
+// sees "v6 is visible", skips the capture alias, and the try body
+// reads the inner slot's element binding. Load-bearing pieces: inner
+// fold needs a string acc (scalar-acc folds batch-loop-inline — no
+// per-slot clone, no env registration) and the outer callback needs
+// try/catch (the structural clone spine remaps by BindId; only the
+// recompile default resolves by name). The lib.rs clone_rebind doc
+// called this hazard "acceptable because env-managing nodes are rare
+// inside per-slot templates" — this program is the counterexample.
+// minimized:
+{let x = array::fold([f64:-1.], "hello", |v7, v6| v7); let v6: u8 = u8:100; array::fold([u8:1], u8:255, |a, b| (try ((v6 /? u8:1))? catch(e) => u8:0))}

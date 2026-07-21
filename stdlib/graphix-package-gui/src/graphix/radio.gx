@@ -1,6 +1,6 @@
 let radio = |
   #label: &string,
-  #selected: &'a = &null,
+  #selected: &['a, null] = &null,
   #on_select: fn(v: 'a) -> Any = |_| null,
   #width: &Length = &`Shrink,
   #size: &[f64, null] = &null,

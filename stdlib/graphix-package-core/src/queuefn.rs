@@ -1,13 +1,13 @@
-use anyhow::{bail, Result};
-use arcstr::ArcStr;
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
-use graphix_compiler::SourcePosition;
 use graphix_compiler::{
+    Apply, BindId, BindMode, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt,
+    Scope, SourcePosition, TagValue, UserEvent,
+    effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, UserEvent,
 };
 use netidx::subscriber::Value;
 use parking_lot::Mutex;
@@ -78,7 +78,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         for (i, n) in from.iter_mut().enumerate() {
             if let Some(v) = n.update(ctx, event) {
                 if let Some(bid) = self.arg_bids.get(i) {
-                    delta.push((*bid, v));
+                    delta.push((*bid, v.value()));
                 }
             }
         }
@@ -89,8 +89,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     s.pop_count -= 1;
                     drop(s);
                     for (bid, v) in delta.drain(..) {
-                        ctx.cached.insert(bid, v.clone());
-                        event.variables.insert(bid, v);
+                        ctx.rt.cached_mut().insert(bid, v.clone());
+                        event.variables.insert(bid, TagValue::fired(v));
                     }
                     None
                 } else {
@@ -112,16 +112,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        self.pred.update(ctx, event)
+        self.pred.update(ctx, event).map(|tv| tv.value())
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.pred.typecheck(ctx)
+        self.pred.typecheck0(ctx)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -138,6 +137,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The invocation queue in `state` is semantic (queued calls
+        // must survive anything short of sleep); only the compiled
+        // pred's internal caches are replay memory.
+        self.pred.reset_replay(ctx);
     }
 }
 
@@ -164,8 +170,8 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_queuefn";
-    const NEEDS_CALLSITE: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -225,7 +231,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             move |scope: &Scope,
                   ctx: &mut ExecCtx<R, E>,
                   args: &mut [Node<R, E>],
-                  _resolved: Option<&FnType>,
+                  _mode: BindMode<'_>,
                   tid: ExprId| {
                 build_wrapper_apply(
                     scope,
@@ -241,13 +247,23 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
         let env = ctx.env.clone();
         let def = LambdaDef {
             id,
+            // Synthetic wrapper — no source lambda exists. The src is
+            // only an id-free display/comparison identity (the
+            // differential oracle's fn-value normalization).
+            src: literal!("queuefn"),
             env,
             scope: self.scope.clone(),
             argspec,
             typ: ftyp,
             init,
-            needs_callsite: false,
             check: Mutex::new(None),
+            // queuefn wraps a function in queue-based dispatch — each
+            // call queues the predicate and dispatches across cycles.
+            // The wrapper lambda is intrinsically async.
+            intrinsic_effect: Mutex::new(EffectKind::Async),
+            // A queuefn wrapper is never self-recursive (it dispatches a
+            // foreign predicate), so the analysis pass never marks it.
+            recursion: Mutex::new(RecursionKind::NotRecursive),
         };
         Ok(ctx.wrap_lambda(def))
     }
@@ -283,7 +299,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx, event).map(|tv| tv.value()) {
             let new_ref = match &v {
                 Value::U64(b) => {
                     let outer = BindId::from(*b);
@@ -296,9 +312,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             s.last_written_depth = s.depth();
         }
         let mut new_lambda: Option<Value> = None;
-        if let Some(v) = from[2].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+        if let Some(v) = from[2].update(ctx, event).map(|tv| tv.value()) {
+            // `resolved` is a typecheck-time artifact; a lazily-built
+            // instance (an analysis-pred per-slot clone whose swallowed
+            // typecheck died upstream) never had one. The runtime `f`
+            // VALUE carries its own LambdaDef — the signature queuefn
+            // is wrapping — so derive the wrapper type from it
+            // (fresh-cell snapshot; the def's cells stay untouched).
+            // Without this the first `qf(..)` call received a
+            // `QueueFnErr` VALUE where the static type promises a
+            // function — soak jul09c fuzz 000003 killed the runtime.
+            if self.ftyp.is_none() {
+                if let Some(def) = v.downcast_ref::<LambdaDef<R, E>>() {
+                    self.ftyp = Some(Arc::new(def.typ.reset_tvars()));
+                }
+            }
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
+            event.variables.insert(self.fid, TagValue::fired(v));
             if self.lambda.is_none() {
                 match self.build_lambda(ctx) {
                     Ok(lv) => {
@@ -330,25 +360,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             }
         }
         self.maybe_write_count(ctx);
-        if event.init {
-            self.lambda.clone()
-        } else {
-            new_lambda
-        }
+        if event.init { self.lambda.clone() } else { new_lambda }
     }
 
-    fn typecheck(
+    fn typecheck1(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
+        resolved: &FnType,
     ) -> Result<()> {
-        if let TypecheckPhase::CallSite(resolved) = phase {
-            if let Some(ft) = extract_fn_arg_type(resolved, 2) {
-                self.ftyp = Some(ft);
-            } else {
-                bail!("queuefn: third argument must be a function")
-            }
+        if let Some(ft) = extract_fn_arg_type(resolved, 2) {
+            self.ftyp = Some(ft);
+        } else {
+            bail!("queuefn: third argument must be a function")
         }
         Ok(())
     }
@@ -364,6 +388,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         s.queue.clear();
         s.pop_count = 1;
         s.last_written_depth = 0;
+    }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The queue is semantic buffering (async delivery) — sleep's
+        // clearing is the arm-rewake restart, not a frame reset.
     }
 }
 

@@ -9,7 +9,6 @@ use chrono::prelude::*;
 use enumflags2::BitFlags;
 use netidx::protocol::value::Typ;
 use netidx_value::PBytes;
-use parking_lot::RwLock;
 use parser::RESERVED;
 use poolshark::local::LPooled;
 use prop::option;
@@ -66,7 +65,7 @@ fn value() -> impl Strategy<Value = Value> {
         Just(Value::Null),
     ];
     leaf.prop_recursive(1, 1, 1, |inner| {
-        prop_oneof![inner.clone().prop_map(|v| Value::Error(Arc::new(v))),]
+        prop_oneof![inner.clone().prop_map(|v| Value::Error(v.into())),]
     })
 }
 
@@ -260,7 +259,11 @@ fn typexp() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {
-                    Type::Ref (TypeRef { scope: ModPath::root(), name, params: Arc::from(params) , ..Default::default()})
+                    Type::Ref(TypeRef::synthetic(
+                        ModPath::root(),
+                        name,
+                        Arc::from(params),
+                    ))
                 }
             ),
             (
@@ -283,30 +286,58 @@ fn typexp() -> impl Strategy<Value = Type> {
                     let args =
                         args.into_iter().map(|(label, pos_name, optional, typ)| {
                             let kind = match label {
-                                Some(n) => FnArgKind::Labeled {
-                                    name: n,
-                                    has_default: optional,
-                                },
+                                Some(n) => {
+                                    FnArgKind::Labeled { name: n, has_default: optional }
+                                }
                                 None => FnArgKind::Positional { name: Some(pos_name) },
                             };
                             FnArgType { kind, typ }
                         });
                     let explicit_throws = throws.is_some();
                     let throws = throws.unwrap_or(Type::Bottom);
-                    Type::Fn(Arc::new(FnType {
+                    let ft = FnType {
                         args: Arc::from_iter(args),
                         vargs,
                         rtype,
-                        constraints: Arc::new(RwLock::new(
-                            constraints
-                                .into_iter()
-                                .map(|(a, t)| (TVar::empty_named(a), t))
-                                .collect(),
-                        )),
                         throws,
                         explicit_throws,
+                        quantifiers: Arc::from_iter(
+                            constraints.iter().map(|(a, _)| a.clone()),
+                        ),
                         ..Default::default()
-                    }))
+                    };
+                    // Mirror the parser: quantifier constraints seed
+                    // CELLS after aliasing same-named signature
+                    // leaves onto the quantifier tvars (phase C — the
+                    // cells are the only store). Orphan quantifiers
+                    // (names not reachable from the signature) are
+                    // invisible to `constraint_view` on BOTH sides of
+                    // the round trip, so equality still holds.
+                    {
+                        let mut known: ahash::AHashMap<ArcStr, TVar> =
+                            ahash::AHashMap::default();
+                        let pairs: Vec<(TVar, Type)> = constraints
+                            .into_iter()
+                            .map(|(a, t)| (TVar::empty_named(a), t))
+                            .collect();
+                        for (tv, _) in pairs.iter() {
+                            known.insert(tv.name.clone(), tv.clone());
+                        }
+                        ft.alias_tvars(&mut known);
+                        for (tv, tc) in pairs {
+                            // The parser aliases the constraint TYPE's
+                            // interior too (typexp.rs fntype builder):
+                            // a same-named tvar inside the conjunct IS
+                            // the quantifier (one name, one cell per
+                            // scope). Without this the generator minted
+                            // a distinct interior cell the printed text
+                            // can't express, and reparse aliased it —
+                            // view mismatch (trip3 at 24k cases).
+                            tc.alias_tvars(&mut known);
+                            tv.add_cell_constraint(tc);
+                        }
+                    }
+                    Type::Fn(Arc::new(ft))
                 })
         ]
     })
@@ -701,31 +732,18 @@ macro_rules! byref {
     };
 }
 
+macro_rules! neg {
+    ($inner:expr) => {
+        $inner
+            .prop_map(|e| ExprKind::Neg(Arc::new(e)).to_expr_nopos())
+            .prop_map(add_parens)
+    };
+}
+
 macro_rules! deref {
     ($inner:expr) => {
         $inner
-            .prop_map(|e| match &e.kind {
-                ExprKind::Qop(e) => ExprKind::Deref(Arc::new(
-                    ExprKind::ExplicitParens(Arc::new(
-                        ExprKind::Qop(e.clone()).to_expr_nopos(),
-                    ))
-                    .to_expr_nopos(),
-                ))
-                .to_expr_nopos(),
-                ExprKind::Connect { name, value, deref } => ExprKind::Deref(Arc::new(
-                    ExprKind::ExplicitParens(Arc::new(
-                        ExprKind::Connect {
-                            name: name.clone(),
-                            value: value.clone(),
-                            deref: *deref,
-                        }
-                        .to_expr_nopos(),
-                    ))
-                    .to_expr_nopos(),
-                ))
-                .to_expr_nopos(),
-                _ => ExprKind::Deref(Arc::new(e)).to_expr_nopos(),
-            })
+            .prop_map(|e| ExprKind::Deref(Arc::new(e)).to_expr_nopos())
             .prop_map(add_parens)
     };
 }
@@ -832,26 +850,44 @@ fn binop_precedence(e: &ExprKind) -> Option<u8> {
     Some(precedence(op).0)
 }
 
+/// Prefix-unary operators (`!`, `*`, `&`, `-`) bind tighter than every binary
+/// operator; this is the `parent_prec` they pass to `maybe_paren_lhs`.
+const UNARY_PREC: u8 = 255;
+
+fn paren(child: Expr) -> Expr {
+    ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
+}
+
+/// Some children need parens regardless of left/right position. `Connect`
+/// (`name <- value`) binds looser than every operator, so it always needs them
+/// as an operand. Postfix `Qop` (`e?`) re-binds onto a prefix-unary parent's
+/// result (`*x?` is `(*x)?`, not `*(x?)`), so it needs them under a prefix
+/// unary only — under a binary operator it re-parses correctly without them.
+/// Returns `None` to defer to ordinary binary-operator precedence.
+fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
+    match child {
+        ExprKind::Connect { .. } => Some(true),
+        ExprKind::Qop(_) => Some(parent_prec == UNARY_PREC),
+        _ => None,
+    }
+}
+
 /// Wraps a left child in ExplicitParens if it has lower precedence than the parent.
 fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
-    match binop_precedence(&child.kind) {
-        Some(child_prec) if child_prec < parent_prec => {
-            ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
-        }
-        _ => child,
-    }
+    let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
+        binop_precedence(&child.kind).is_some_and(|p| p < parent_prec)
+    });
+    if needs { paren(child) } else { child }
 }
 
 /// Wraps a right child in ExplicitParens if it has lower or equal precedence than the parent.
 /// Equal precedence needs parens on the right because all operators are left-associative:
 /// `a - b - c` parses as `(a - b) - c`, so `Sub(a, Sub(b, c))` must print as `a - (b - c)`.
 fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
-    match binop_precedence(&child.kind) {
-        Some(child_prec) if child_prec <= parent_prec => {
-            ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
-        }
-        _ => child,
-    }
+    let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
+        binop_precedence(&child.kind).is_some_and(|p| p <= parent_prec)
+    });
+    if needs { paren(child) } else { child }
 }
 
 /// Recursively adds ExplicitParens where needed to make the expression tree
@@ -898,6 +934,17 @@ fn add_parens(e: Expr) -> Expr {
         ExprKind::ByRef(e) => {
             ExprKind::ByRef(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
         }
+        ExprKind::Neg(e) => {
+            let inner = Arc::unwrap_or_clone(e);
+            match &inner.kind {
+                // `-5` re-parses as the literal Constant(-5), not Neg(5), so
+                // a constant operand must be parenthesized to stay a Neg.
+                ExprKind::Constant(_) => ExprKind::Neg(Arc::new(
+                    ExprKind::ExplicitParens(Arc::new(inner)).to_expr_nopos(),
+                )),
+                _ => ExprKind::Neg(Arc::new(maybe_paren_lhs(inner, 255))),
+            }
+        }
         // For non-binop expressions, just return as-is
         other => other,
     };
@@ -924,6 +971,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             variant!(inner.clone().prop_map(add_parens)),
             byref!(inner.clone().prop_map(add_parens)),
             deref!(inner.clone().prop_map(add_parens)),
+            neg!(inner.clone().prop_map(add_parens)),
             binop!(inner.clone().prop_map(add_parens), Eq),
             binop!(inner.clone().prop_map(add_parens), Ne),
             binop!(inner.clone().prop_map(add_parens), Lt),
@@ -1177,8 +1225,16 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
     s0.len() == s1.len()
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
             (
-                SigItem { kind: SigKind::Bind(BindSig { name: n0, typ: t0 }), doc: d0, .. },
-                SigItem { kind: SigKind::Bind(BindSig { name: n1, typ: t1 }), doc: d1, .. },
+                SigItem {
+                    kind: SigKind::Bind(BindSig { name: n0, typ: t0 }),
+                    doc: d0,
+                    ..
+                },
+                SigItem {
+                    kind: SigKind::Bind(BindSig { name: n1, typ: t1 }),
+                    doc: d1,
+                    ..
+                },
             ) => n0 == n1 && check_type(t0, t1) && d0 == d1,
             (
                 SigItem { kind: SigKind::TypeDef(td0), doc: d0, .. },
@@ -1275,19 +1331,19 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => {
             let srs0 = acc_strings(a0.iter());
             let srs1 = acc_strings(a1.iter());
-            dbg!(srs0
-                .iter()
-                .zip(srs1.iter())
-                .fold(true, |r, (s0, s1)| r && check(s0, s1)))
+            dbg!(
+                srs0.iter().zip(srs1.iter()).fold(true, |r, (s0, s1)| r && check(s0, s1))
+            )
         }
         (
             ExprKind::Apply(ApplyExpr { args: srs0, function: f0 }),
             ExprKind::Apply(ApplyExpr { args: srs1, function: f1 }),
         ) if check(f0, f1) && srs0.len() == srs1.len() => {
-            dbg!(srs0
-                .iter()
-                .zip(srs1.iter())
-                .fold(true, |r, ((n0, s0), (n1, s1))| r && n0 == n1 && check(s0, s1)))
+            dbg!(
+                srs0.iter()
+                    .zip(srs1.iter())
+                    .fold(true, |r, ((n0, s0), (n1, s1))| r && n0 == n1 && check(s0, s1))
+            )
         }
         (
             ExprKind::Add { lhs: lhs0, rhs: rhs0 },
@@ -1452,11 +1508,13 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                         _ => false,
                     })
                     && dbg!(check_type_opt(rtype0, rtype1))
-                    && dbg!(constraints0
-                        .iter()
-                        .zip(constraints1.iter())
-                        .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
-                            && check_type(&tc0, &tc1)))
+                    && dbg!(
+                        constraints0
+                            .iter()
+                            .zip(constraints1.iter())
+                            .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
+                                && check_type(&tc0, &tc1))
+                    )
                     && dbg!(check_type_opt(throws0, throws1))
                     && dbg!(check(body0, body1))
             ),
@@ -1485,11 +1543,13 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                         _ => false,
                     })
                     && dbg!(check_type_opt(rtype0, rtype1))
-                    && dbg!(constraints0
-                        .iter()
-                        .zip(constraints1.iter())
-                        .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
-                            && check_type(&tc0, &tc1)))
+                    && dbg!(
+                        constraints0
+                            .iter()
+                            .zip(constraints1.iter())
+                            .all(|((tv0, tc0), (tv1, tc1))| tv0.name == tv1.name
+                                && check_type(&tc0, &tc1))
+                    )
                     && dbg!(check_type_opt(throws0, throws1))
                     && dbg!(b0 == b1)
             ),
@@ -1502,11 +1562,13 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             dbg!(
                 dbg!(check(arg0, arg1))
                     && dbg!(arms0.len() == arms1.len())
-                    && dbg!(arms0
-                        .iter()
-                        .zip(arms1.iter())
-                        .all(|((pat0, b0), (pat1, b1))| check(b0, b1)
-                            && dbg!(check_pattern(pat0, pat1))))
+                    && dbg!(
+                        arms0
+                            .iter()
+                            .zip(arms1.iter())
+                            .all(|((pat0, b0), (pat1, b1))| check(b0, b1)
+                                && dbg!(check_pattern(pat0, pat1)))
+                    )
             )
         }
         (ExprKind::TypeDef(td0), ExprKind::TypeDef(td1)) => check_typedef(td0, td1),
@@ -1519,6 +1581,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         }
         (ExprKind::ByRef(e0), ExprKind::ByRef(e1)) => check(e0, e1),
         (ExprKind::Deref(e0), ExprKind::Deref(e1)) => check(e0, e1),
+        (ExprKind::Neg(e0), ExprKind::Neg(e1)) => check(e0, e1),
         (
             ExprKind::Sample { lhs: l0, rhs: r0 },
             ExprKind::Sample { lhs: l1, rhs: r1 },
@@ -1689,9 +1752,7 @@ mod tree_sitter_compat {
 
     fn assert_ts_parses(source: &str) {
         let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_graphix::LANGUAGE.into())
-            .unwrap();
+        parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
         let tree = parser.parse(source, None).unwrap();
         if let Some(err) = find_tree_error(tree.root_node(), source) {
             panic!(

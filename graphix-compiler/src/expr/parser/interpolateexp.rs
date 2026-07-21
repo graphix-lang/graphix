@@ -1,9 +1,9 @@
-use super::{expr, sptoken, GRAPHIX_ESC, GRAPHIX_MUST_ESC};
-use crate::expr::{get_origin, Expr, ExprId, ExprKind};
+use super::{GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr, sptoken};
+use crate::expr::{Expr, ExprId, ExprKind, get_origin};
 use combine::{
-    attempt, between, choice, many, position,
-    stream::{position::SourcePosition, Range},
-    token, unexpected_any, value, RangeStream,
+    RangeStream, attempt, between, choice, many, position,
+    stream::{Range, position::SourcePosition},
+    token, unexpected_any, value,
 };
 use netidx::publisher::Value;
 use netidx_value::parser::escaped_string;
@@ -27,6 +27,7 @@ parser! {
                         ori: get_origin(),
                         pos,
                         kind: ExprKind::Constant(Value::from(s)),
+                        dec: None,
                     },
                     Intp::Expr(s) => s,
                 }

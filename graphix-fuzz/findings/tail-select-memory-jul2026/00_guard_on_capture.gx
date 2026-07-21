@@ -1,0 +1,16 @@
+// FIXED 2026-07-18: guarded TAIL selects now claim SELECTION MEMORY
+// (a state word at region root, a per-call-site block word in callee
+// bodies) recorded only on TERMINATING returns (`LowerCtx::
+// tail_sel_path` — jump arms never return, so loop mechanics never
+// touch the word). The compare — this invocation's final selection vs
+// the previous invocation's — folds a change into the returned disc
+// (becoming-selected fires, the node-walk's depth-0 retained-arm
+// semantics). Original finding: the tail emitter's "entry-derived
+// seam tags need no memory" premise fails when a GUARD reads a
+// CAPTURE — `m` here flips the inner selection while the entry stays
+// quiet, and the kernel returned STALE forever after init:
+//   interp (ruled): [0:2  1:1  3:2]   (init, then selection changes)
+//   old jit:        [0:2]
+// The feeder rule matches the value emitter: guards reading only
+// pattern binds claim nothing (recursion-hot shapes stay word-free).
+{let x = array::iter([1, 2, 3, 4]); let m = x / 3; let rec f = |n| select n {0 => select 0 { 0 if m == 0 => 1, _ => 2 }, _ => f(n - 1)}; f(3)}

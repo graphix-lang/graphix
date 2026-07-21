@@ -1,0 +1,11 @@
+// bisect: capture-aware HOF firing (Tier 3.1, 2026-06-30). An HOF result
+// must fire iff its SOURCE array OR any feeder its callback captures fired.
+// The first cut inherited ONLY the source array's STALE, which UNDER-fired
+// a capture-bearing HOF: `array::map(a, |e| e + x)` over a constant `a` with
+// a captured feeder `x` would go stale-forever (source is a constant) → the
+// JIT never re-fired when x changed (interp published, jit Timeout).
+// Fixed: inherit_hof_firing AND-reduces the source STALE with every
+// external ref the callback body (and fold's init) reads that resolves to a
+// kernel local. This settling variant (`k <- 5`, fires once then quiesces)
+// both modes AGREE on.
+{ let a = [i64:1, i64:2, i64:3]; let k = i64:0; k <- i64:5; array::map(a, |e| e + k) }

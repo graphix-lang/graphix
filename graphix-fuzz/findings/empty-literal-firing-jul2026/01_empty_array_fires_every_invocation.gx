@@ -1,0 +1,17 @@
+// bisect: fusion/JIT FIRING bug — soak jul07d fuzz/divergence_000000.
+// `emit_tuple_new_node` (shared by array literals) synthesized the
+// composite disc as "fires iff any field fired" — but with ZERO fields
+// (`[]`) nothing folded onto the bare ARRAY disc, so an empty array
+// literal read as FIRED on every kernel invocation, where the
+// node-walk treats it as a constant (init-only fire). Downstream,
+// find([], …)'s SlotFlags rule `fires = … ∨ (src_fired ∧ empty)`
+// re-fired on every invocation, so the enclosing map re-emitted every
+// time ANY region input fired — here `y`, captured only by a DEAD
+// select arm (node-walk sleeps it): interp counted 1 emission, jit 5.
+// FIXED: a zero-field composite literal is a constant — its disc rides
+// `const_stale_gate`, like `emit_const_node`. (Only arrays can be
+// empty: tuples need 2+ elements, structs need fields, map literals
+// ride the gated interned-const path.)
+// mutant: {let y = array::iter([i64:1, i64:2, i64:1, i64:4]); let m = array::map([i64:1], |x| select i64:1 {i64:1 => array::find({let a: Array<i64> = []; a}, |x| true), _ => y}); let c = count(m); select count(y) {i64:4 => c, _ => never()}}
+// minimized:
+{let y = array::iter([null, i64:2, i64:1, i64:4]); let m = array::map([i64:1], |x| select i64:1 {i64:1 => array::find({let a: Array<i64> = []; a}, |x| true), _ => y}); let c = count(m); select count(y) {i64:4 => c, _ => never()}}

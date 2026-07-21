@@ -1,0 +1,12 @@
+// Compute-heavy float reduction: several f64 ops per element over a
+// 100k-element array. Stresses the inner-loop arithmetic the JIT compiles
+// to native code.
+let n = 100000;
+let t0 = sys::time::now(0);
+let seed = cast<f64>(t0)$;
+let xs = array::init(n, |i| cast<f64>(i)$);
+let result = array::fold(xs, seed, |a, x| a + x * x - x / 2.0 + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("fold_floatmath n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

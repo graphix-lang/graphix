@@ -1,24 +1,25 @@
-use crate::encoding::{decode_value, encode_key, encode_value, parse_batch_ops};
-use crate::tree::{
-    check_or_store_meta, extract_key_typ_from_rtype, extract_type_strings_from_rtype,
-    get_db, read_meta, types_are_concrete, DEFAULT_TREE_META, META_TREE,
+use crate::{
+    encoding::{decode_value, encode_key, encode_value, parse_batch_ops},
+    tree::{
+        DEFAULT_TREE_META, META_TREE, check_or_store_meta, extract_key_typ_from_rtype,
+        extract_type_strings_from_rtype, get_db, read_meta, types_are_concrete,
+    },
 };
 use ahash::AHashMap;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    errf, expr::ExprId, typ::FnType, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    ExecCtx, Node, Rt, Scope, UserEvent, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
 use netidx_value::Value;
 use poolshark::global::{GPooled, Pool};
-use std::collections::hash_map::Entry;
-use std::sync::LazyLock;
 use std::{
     cell::{Cell, RefCell},
+    collections::hash_map::Entry,
     fmt,
-    sync::{mpsc, Arc},
+    sync::{Arc, LazyLock, mpsc},
 };
 use tokio::sync::oneshot;
 
@@ -320,19 +321,19 @@ impl BeginTxnCtx {
                     );
                 }
             }
-            None => {
-                match self.pending_meta.entry(tree_name.clone()) {
-                    Entry::Vacant(e) => {
-                        e.insert((key_typ_str, val_typ_str));
-                    }
-                    Entry::Occupied(e) => {
-                        let (k, v) = e.get();
-                        if k != &key_typ_str || v != &val_typ_str {
-                            bail!("conflicting types for tree '{tree_name}' within transaction")
-                        }
+            None => match self.pending_meta.entry(tree_name.clone()) {
+                Entry::Vacant(e) => {
+                    e.insert((key_typ_str, val_typ_str));
+                }
+                Entry::Occupied(e) => {
+                    let (k, v) = e.get();
+                    if k != &key_typ_str || v != &val_typ_str {
+                        bail!(
+                            "conflicting types for tree '{tree_name}' within transaction"
+                        )
                     }
                 }
-            }
+            },
         }
         let tree = match &name {
             None => (*self.db).clone(),
@@ -430,9 +431,9 @@ fn txn_thread(db: sled::Db, cmd_rx: mpsc::Receiver<TxnMsg>) {
 pub(crate) struct DbTxnBeginEv;
 
 impl EvalCachedAsync for DbTxnBeginEv {
-    const NAME: &str = "db_txn_begin";
-    const NEEDS_CALLSITE: bool = false;
     type Args = sled::Db;
+
+    const NAME: &str = "db_txn_begin";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_db(cached, 0)
@@ -471,9 +472,9 @@ pub(crate) struct DbTxnTreeEv {
 }
 
 impl EvalCachedAsync for DbTxnTreeEv {
-    const NAME: &str = "db_txn_tree";
-    const NEEDS_CALLSITE: bool = true;
     type Args = DbTxnTreeArgs;
+
+    const NAME: &str = "db_txn_tree";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -488,25 +489,28 @@ impl EvalCachedAsync for DbTxnTreeEv {
         DbTxnTreeEv { key_typ, key_typ_str, val_typ_str }
     }
 
-    fn typecheck<R: Rt, E: UserEvent>(
+    fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.key_typ = extract_key_typ_from_rtype(Some(resolved));
-                let (k, v) = extract_type_strings_from_rtype(Some(resolved));
-                self.key_typ_str = k;
-                self.val_typ_str = v;
-                if self.key_typ.is_none() {
-                    bail!("db::tree requires concrete key and value types")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.key_typ = extract_key_typ_from_rtype(Some(resolved));
+        let (k, v) = extract_type_strings_from_rtype(Some(resolved));
+        self.key_typ_str = k;
+        self.val_typ_str = v;
+        if self.key_typ.is_none() {
+            bail!("db::tree requires concrete key and value types")
         }
+        Ok(())
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
@@ -555,9 +559,9 @@ pub(crate) type DbTxnTree = CachedArgsAsync<DbTxnTreeEv>;
 pub(crate) struct DbTxnGetEv;
 
 impl EvalCachedAsync for DbTxnGetEv {
-    const NAME: &str = "db_txn_get";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
+
+    const NAME: &str = "db_txn_get";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;
@@ -582,9 +586,9 @@ pub(crate) type DbTxnGet = CachedArgsAsync<DbTxnGetEv>;
 pub(crate) struct DbTxnInsertEv;
 
 impl EvalCachedAsync for DbTxnInsertEv {
-    const NAME: &str = "db_txn_insert";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>, GPooled<Vec<u8>>);
+
+    const NAME: &str = "db_txn_insert";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;
@@ -614,9 +618,9 @@ pub(crate) type DbTxnInsert = CachedArgsAsync<DbTxnInsertEv>;
 pub(crate) struct DbTxnRemoveEv;
 
 impl EvalCachedAsync for DbTxnRemoveEv {
-    const NAME: &str = "db_txn_remove";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
+
+    const NAME: &str = "db_txn_remove";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;
@@ -641,9 +645,9 @@ pub(crate) type DbTxnRemove = CachedArgsAsync<DbTxnRemoveEv>;
 pub(crate) struct DbTxnCommitEv;
 
 impl EvalCachedAsync for DbTxnCommitEv {
-    const NAME: &str = "db_txn_commit";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TxnInner>;
+
+    const NAME: &str = "db_txn_commit";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_txn(cached, 0)
@@ -662,9 +666,9 @@ pub(crate) type DbTxnCommit = CachedArgsAsync<DbTxnCommitEv>;
 pub(crate) struct DbTxnRollbackEv;
 
 impl EvalCachedAsync for DbTxnRollbackEv {
-    const NAME: &str = "db_txn_rollback";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TxnInner>;
+
+    const NAME: &str = "db_txn_rollback";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_txn(cached, 0)
@@ -683,9 +687,9 @@ pub(crate) type DbTxnRollback = CachedArgsAsync<DbTxnRollbackEv>;
 pub(crate) struct DbTxnBatchEv;
 
 impl EvalCachedAsync for DbTxnBatchEv {
-    const NAME: &str = "db_txn_batch";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<TxnTreeInner>, sled::Batch);
+
+    const NAME: &str = "db_txn_batch";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let tt = get_txn_tree(cached, 0)?;

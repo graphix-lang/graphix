@@ -9,12 +9,13 @@
 //! draws (a 100 Hz cell on a 60 Hz display) and we don't want to
 //! allocate one ArcStr per dropped update.
 
-use super::types::{
-    decimate_sparkline, format_value, numeric_key, parse_selection, parse_table_columns,
-    row_basename, value_to_f64, ColumnState, ColumnType, SortDirection, SourceEntry,
-};
 use super::{
-    compile_callable_opt, DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, VALUE_COL_KEY,
+    DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, VALUE_COL_KEY, compile_callable_opt,
+    types::{
+        ColumnState, ColumnType, SortDirection, SourceEntry, decimate_sparkline,
+        format_value, numeric_key, parse_selection, parse_table_columns, row_basename,
+        value_to_f64,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
@@ -36,8 +37,8 @@ use smallvec::SmallVec;
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Weak,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };

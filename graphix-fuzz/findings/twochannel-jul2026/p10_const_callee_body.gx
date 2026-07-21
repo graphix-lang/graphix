@@ -1,0 +1,1 @@
+{f64:0.; let run_one = |s: i64| -> i64 i64:1; array::fold(array::init(i64:1, |i| array::iter([i64:1, i64:2, i64:3, i64:4])), i64:0, |acc, i| acc + run_one(i))}

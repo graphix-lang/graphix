@@ -16,9 +16,12 @@ const WRITE_SEEK_READ: &str = r#"{
   buffer::to_string(sys::io::read(f, n)?)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_seek_read, WRITE_SEEK_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // write_exact + read_exact round-trip
 const WRITE_EXACT_READ_EXACT: &str = r#"{
@@ -33,9 +36,12 @@ const WRITE_EXACT_READ_EXACT: &str = r#"{
   buffer::to_string(sys::io::read_exact(seeked ~ f, u64:1024)?)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_exact_read_exact, WRITE_EXACT_READ_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello world")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // open non-existent with Read mode expects error
 const OPEN_NONEXISTENT: &str = r#"{
@@ -45,7 +51,7 @@ const OPEN_NONEXISTENT: &str = r#"{
 
 run!(test_open_nonexistent, OPEN_NONEXISTENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // fstat after write (flush required — macOS doesn't update metadata until flush)
 const FSTAT_AFTER_WRITE: &str = r#"{
@@ -60,9 +66,12 @@ const FSTAT_AFTER_WRITE: &str = r#"{
   md.len == u64:5
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_fstat_after_write, FSTAT_AFTER_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // truncate
 const TRUNCATE_TEST: &str = r#"{
@@ -79,11 +88,24 @@ const TRUNCATE_TEST: &str = r#"{
   buffer::to_string(sys::io::read_exact(seeked ~ f, u64:1024)?)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_truncate, TRUNCATE_TEST, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
-// CreateNew on existing file expects error
+// CreateNew on existing file expects error.
+//
+// NB: `open(`CreateNew, written? ~ path)` sequences the CreateNew open's
+// *execution* to happen only after the write completes — by sampling its
+// `path` argument with `~`, not by sampling the whole `open(...)`
+// expression. The naive `written? ~ open(`CreateNew, path)` evaluates the
+// CreateNew open eagerly (as soon as `path` is ready), racing the
+// `Create` open above; under load CreateNew can win that race, create the
+// file itself, and return a handle instead of the expected error. See the
+// CLAUDE.md gotcha: "to sequence execution use ~ on the arguments, not on
+// the whole function".
 const CREATE_NEW_EXISTING: &str = r#"{
   use sys::fs;
 
@@ -91,9 +113,12 @@ const CREATE_NEW_EXISTING: &str = r#"{
   let path = sys::join_path(sys::fs::tempdir::path(temp), "existing.txt");
   let f1 = open(`Create, path)?;
   let written = sys::io::write_exact(f1, buffer::from_string("first"));
-  written? ~ open(`CreateNew, path)
+  open(`CreateNew, written? ~ path)
 }"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_create_new_existing, CREATE_NEW_EXISTING, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
-});
+}; graphix_package_core::testing::FuseExpect::None);

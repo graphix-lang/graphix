@@ -1,0 +1,18 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp/jit: interp emits nothing (a is bottom every cycle — the $
+// drops the always-error RHS operand); the pre-fix JIT emitted an
+// ASLR-varying garbage scalar: the error Value's payload word
+// reinterpreted as f64. Post-fix both emit nothing.
+// root_cause: emit_qop_node's no-union passthrough conflated "inner is
+// not a [T, Error<E>] union" (nullable_inner == None) with "inner
+// cannot be an error". A bare Error<i64> inner (`error(i64:1)$`) is
+// not a union but is ALWAYS an error; the passthrough handed the
+// DynCall's error Value straight to the arith consumer as scalar
+// success, leaking its payload word. Fixed by gating the passthrough
+// on type_may_error(frozen inner) — an error-bearing non-union inner
+// de-fuses to the node-walk, which checks Value::Error at runtime
+// regardless of static type (fusion/emit.rs emit_qop_node).
+// found: soak-jul12f fuzz divergence_000000 (2026-07-12); second
+// witness same day in jul12g via the `?` inside array::filter's
+// in-language instance.
+{let g = |b: bool| f64:0.; let a = i64:0 + error(i64:1)$; let bb = g(false); a + bb}

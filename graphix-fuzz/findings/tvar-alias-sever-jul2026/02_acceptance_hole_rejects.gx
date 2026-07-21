@@ -1,0 +1,12 @@
+// PROMOTED 2026-07-18 (Eric confirmed: == is fn('a, 'a) -> bool, so
+// this must not compile). The acceptance hole: the def gate bound
+// 'n := i64 (from `n == i64:3`), the site bound a FRESH copy to
+// (i64, i64), the two facts lived in disconnected cells, and
+// setup_bind swallowed the instance recheck that saw both — the
+// ill-typed program compiled and the modes diverged on it (interp:
+// heterogeneous == -> false; jit: defensive bottom). Closed by the
+// tvar forward-link (b9d004b0): cells stay connected, so both modes
+// now compile-reject with "'n: i64 does not contain (i64, i64)" at
+// the (a, b) arg — the strictness experiment's goal without its
+// cross-module breakage (gui private-type suite green).
+{f64:0.; let g = |a: i64, b: i64, c| (|n, _| n == i64:3)((a, b), c); g(i64:10, i64:20, i64:5)}

@@ -1,0 +1,14 @@
+// bisect: jit-mode runtime panic "can't resolve symbol v2__kir_N"
+// (jul16a generate flood, 2012 findings of one class). 7c29d8dd
+// reversed phase-2 body definition (callees before callers, for
+// SiteLayout availability) but the abandoned-attempt trap-stub loop
+// still assumed forward order (`i >= defined`), so a mid-loop refusal
+// stubbed the DEFINED bodies and left the undefined symbols bare — a
+// defined sibling's call relocation against a never-defined callee
+// poisoned the shared module, and the next successful region's
+// finalize_definitions panicked, killing the runtime ("runtime did
+// not respond"). The shape needs a multi-kernel region where a later-
+// defined body refuses after an earlier-defined sibling baked a call
+// to a not-yet-defined kernel (here: rec v8 calls v2 before v2's
+// turn, and the rec v0's body refuses).
+{let v0 = |v1: i64| -> i64 i64:0; let v2 = |v3: i64| -> i64 (v0(v3) + i64:2); let v0 = |v4: i64| -> i64 (v4 - i64:2); let v5 = v2(cast<i64>(z64:-1)$); let rec v0 = |v6: i64| -> i64 select v6 {v7 if v7 <= i64:0 => cast<i64>(z64:1)$, v7 => v0(v7 - i64:1)}; let v8 = v0(i64:8); let rec v8 = |v9: i64| -> i64 select v9 {v10 if v10 <= i64:0 => v2(v5), v10 => (v10 + v8(v10 - i64:1))}; let v11 = v8(i64:12); v5}

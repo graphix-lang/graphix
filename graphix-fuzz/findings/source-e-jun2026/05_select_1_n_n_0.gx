@@ -1,0 +1,7 @@
+// bisect: GIR/emit bug (interp != fused): integer div/rem-by-zero. Confirmed divergence between the canonical node-walk (Interp: logs arith error, returns bottom -> Timeout) and BOTH fused backends. gir_interp uses wrapping_div/wrapping_rem which panic on zero divisor (Fused: RuntimeErr 'runtime died' via Rust panic 'attempt to divide by zero'); gir_jit emits raw trapping sdiv/udiv/srem/urem (JIT: SIGFPE / process crash, check exits 132). Neither fused path replicates the node-walk's checked-div-by-zero->bottom semantics.
+// interp/jit: Verified reproducible and deterministic. `graphix-fuzz check` exits 132 stably across 3 runs; `graphix-fuzz run` shows Interp=Timeout (node-walk logs an arith error on div-by-zero and returns bottom, so `result` never updates) while Fused panics in Rust ('attempt to divide by zero') -> RuntimeErr(ru
+// root_cause: Integer div/rem by zero: the fused backends fail to replicate the node-walk's checked-integer-division semantics (unchecked `/`,`%` -> log arith error, return bottom). The canonical node-walk catches the arith error at graphix-compiler/src/node/op.rs:423-424 and returns None (bottom). The fusion interpreter's eval_bin at graphix-compiler/src/gir_interp.rs:1984-1985 uses `wrapping_div`/`wrapping_rem`, whose Rust implementations PANIC on a zero divisor (wrapping only handles the INT_MIN/-1 overflow case, not div-by-zero) -> Fused 'runtime died'. The JIT's compile_bin at graphix-compiler/src/gir_
+
+select 1 {
+  n => n / 0
+}

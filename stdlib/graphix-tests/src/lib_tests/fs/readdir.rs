@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use graphix_package_core::run_with_tempdir;
 use netidx::subscriber::Value;
 use std::collections::HashSet;

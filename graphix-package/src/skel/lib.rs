@@ -1,6 +1,7 @@
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    expr::ExprId, typ::FnType,
 };
 use graphix_derive::defpackage;
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
@@ -12,7 +13,10 @@ struct ExampleBuiltin;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const NAME: &str = "{{name}}_example";
-    const NEEDS_CALLSITE: bool = false;
+    // Async is the conservative default — override to `Sync` only if
+    // every output appears on the same cycle as the input that
+    // triggered it. See graphix_compiler::effects::EffectKind.
+    const EFFECT: EffectKind = EffectKind::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -33,13 +37,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|v| match v {
+        from[0].update(ctx, event).map(|tv| match tv.value() {
             Value::Error(_) => Value::Bool(true),
             _ => Value::Bool(false),
         })
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Default)]
@@ -47,7 +53,6 @@ struct ExampleCachedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ExampleCachedEv {
     const NAME: &str = "{{name}}_example_cached";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));

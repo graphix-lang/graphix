@@ -1,0 +1,5 @@
+// bisect: fusion/JIT over-fire (soak-jul14b fuzz divergence_000009,
+// the minimizer's single-event form of 00 — the init-cycle firing
+// off-by-one of the same missing per-slot selection memory).
+// schedule-v1: cap=64 events=512; in0=i64:0
+array::map([i64:0], |x: i64| select i64:0 {i64:0 if in0 % i64:2 == i64:0 => i64:0, _ => i64:2})

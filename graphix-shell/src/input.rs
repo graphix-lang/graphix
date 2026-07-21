@@ -1,10 +1,11 @@
-use super::{completion::BComplete, Env, Output};
-use anyhow::{bail, Error, Result};
-use futures::{channel::mpsc, StreamExt};
+use super::{Env, Output, completion::BComplete};
+use anyhow::{Error, Result, bail};
+use futures::{StreamExt, channel::mpsc};
 use graphix_rt::GXExt;
 use reedline::{
-    default_emacs_keybindings, DefaultPrompt, DefaultPromptSegment, Emacs, IdeMenu,
-    KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    DefaultPrompt, DefaultPromptSegment, Emacs, IdeMenu, KeyCode, KeyModifiers,
+    MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    default_emacs_keybindings,
 };
 use tokio::{sync::oneshot, task};
 

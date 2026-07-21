@@ -169,7 +169,10 @@ pub(crate) fn kv_struct(key: Value, value: Value) -> Value {
     ]))
 }
 
-pub(crate) fn parse_batch_ops(key_typ: Option<Typ>, arr: &ValArray) -> Option<sled::Batch> {
+pub(crate) fn parse_batch_ops(
+    key_typ: Option<Typ>,
+    arr: &ValArray,
+) -> Option<sled::Batch> {
     let mut batch = sled::Batch::default();
     for op in arr.iter() {
         match op {

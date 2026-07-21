@@ -16,17 +16,18 @@ let to_array = |l: List<'a>| -> Array<'a> 'list_to_array;
 let from_array = |a: Array<'a>| -> List<'a> 'list_from_array;
 let concat = |l: List<'a>, @args: List<'a>| -> List<'a> 'list_concat;
 let flatten = |l: List<List<'a>>| -> List<'a> 'list_flatten;
-let map = |l: List<'a>, f: fn(x: 'a) -> 'b throws 'e| -> List<'b> throws 'e 'list_map;
-let filter = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> List<'a> throws 'e 'list_filter;
-let filter_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> List<'b> throws 'e 'list_filter_map;
-let flat_map = |l: List<'a>, f: fn(x: 'a) -> ['b, List<'b>] throws 'e| -> List<'b> throws 'e 'list_flat_map;
-let fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'list_fold;
-let find = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e 'list_find;
-let find_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'list_find_map;
 let sort = |#dir: Direction = `Ascending, #numeric: bool = false, l: List<'a>| -> List<'a> 'list_sort;
 let enumerate = |l: List<'a>| -> List<(i64, 'a)> 'list_enumerate;
 let zip = |l0: List<'a>, l1: List<'b>| -> List<('a, 'b)> 'list_zip;
 let unzip = |l: List<('a, 'b)>| -> (List<'a>, List<'b>) 'list_unzip;
-let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> List<'a> throws 'e 'list_init;
 let iter = |l: List<'a>| -> 'a 'list_iter;
-let iterq = |#clock: Any, l: List<'a>| -> 'a 'list_iterq
+let iterq = |#clock: Any, l: List<'a>| -> 'a 'list_iterq;
+
+let init = |n: i64, f: fn(i: i64) -> 'a throws 'e| -> List<'a> throws 'e 'list_init;
+let map = |l: List<'a>, f: fn(x: 'a) -> 'b throws 'e| -> List<'b> throws 'e 'list_map;
+let filter = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> List<'a> throws 'e 'list_filter;
+let filter_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> List<'b> throws 'e 'list_filter_map;
+let flat_map = |l: List<'a>, f: fn(x: 'a) -> ['b, List<'b>] throws 'e| -> List<'b> throws 'e 'list_flat_map;
+let find = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e 'list_find;
+let find_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'list_find_map;
+let fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'list_fold

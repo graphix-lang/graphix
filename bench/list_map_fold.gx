@@ -1,0 +1,13 @@
+// Composed LIST HOFs: map (*3) then fold (+) over 100k elements —
+// the list twin of map_fold.gx. Both loops fuse into one kernel; the
+// intermediate list is rebuilt at the map's exit boundary and
+// re-flattened at the fold's entry (the honest cost of the
+// cons-chain representation vs the array bench).
+let n = 100000;
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = list::fold(list::map(list::init(n, |i| i), |x| x * 3), seed, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("list_map_fold n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

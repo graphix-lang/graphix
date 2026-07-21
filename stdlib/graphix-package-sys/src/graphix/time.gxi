@@ -10,3 +10,19 @@ val timer: fn(timeout: [duration, Number], repeat: [bool, Number]) -> Result<dat
 
 /// return the current time each time trigger updates
 val now: fn(trigger: Any) -> datetime;
+
+/// Add a duration to a datetime, saturating at the datetime range limits.
+val add: fn(t: datetime, d: duration) -> datetime;
+
+/// Subtract a duration from a datetime, saturating at the datetime range limits.
+val sub: fn(t: datetime, d: duration) -> datetime;
+
+/// Sum two durations. Overflow is a catchable error.
+val add_dur: fn(a: duration, b: duration) -> Result<duration, `DurationError(string)>;
+
+/// Subtract two durations, saturating at zero (durations are unsigned).
+val sub_dur: fn(a: duration, b: duration) -> duration;
+
+/// Scale a duration by a float factor (divide by scaling with 1/x).
+/// A negative, NaN, or overflowing result is a catchable error.
+val scale: fn(d: duration, by: f64) -> Result<duration, `DurationError(string)>

@@ -1,6 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use graphix_package_core::{testing, ProgramArgs};
+use graphix_package_core::{ProgramArgs, testing};
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 

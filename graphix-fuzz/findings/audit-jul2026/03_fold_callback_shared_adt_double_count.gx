@@ -1,0 +1,53 @@
+// bisect: DirectJit wrong value — interp 0.000006326995883331423
+// (= r1 + r2, correct), jit -0.000006237253819364291 (= exactly 2*r1).
+// Found by bench/symbolic.gx during the 2026-07 fusion audit.
+// root_cause: per-slot HOF template cloning resolved cloned `Ref`s by
+// NAME against the single flat clone scope (Ref::clone_rebind →
+// env.lookup_bind). The callback body's local `e` shares its name with
+// `eval_at`/`deriv`'s parameter `e`; clone order re-mints the callee
+// params BETWEEN the two body reads, so the second `eval_at(e, 0.55)`
+// argument aliased to the first call's parameter slot — which held the
+// DERIVATIVE tree — yielding r1 + r1. Sealed by an exact-value
+// prediction: colliding on `x` instead made the fused result exactly
+// eval(e, 0.55) with the local x ignored.
+// (The original header's "width >= 16" and "accumulator steps twice"
+// claims were WRONG — width 2 diverges too; old probes were masked by
+// seeds where eval_at(e, x) = 0 on the 0.1 lattice. A single
+// accumulator step with a wrong callback value, probe-verified.)
+// FIXED (2026-07-02): clone_rebind threads an explicit old→new BindId
+// remap through the whole walk (remint_bind_id records, Ref resolves
+// through the table, captures pass through unmapped; HOF initiators
+// seed {analysis elem/acc/index id → slot id}). Names never resolve.
+// Minimal fixture: graphix-tests lang/functions.rs
+// fold_callback_name_collision (a `rec` callee is load-bearing — it
+// makes the callee embed in the template).
+{
+  type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
+  let rec build = |width: i64, idx: i64, s: i64| -> Expr
+    select width {
+      i64:1 => `Add(`Var, `Num(cast<f64>((s + idx * i64:37) % i64:19 - i64:9)$ / 10.0)),
+      _ => {
+        let half = width / i64:2;
+        `Mul(build(half, idx, s), build(width - half, idx + half, s))
+      }
+    };
+  let rec deriv = |e: Expr| -> Expr
+    select e {
+      `Num(_) => `Num(0.0),
+      `Var => `Num(1.0),
+      `Add(a, b) => `Add(deriv(a), deriv(b)),
+      `Mul(a, b) => `Add(`Mul(deriv(a), b), `Mul(a, deriv(b)))
+    };
+  let rec eval_at = |e: Expr, x: f64| -> f64
+    select e {
+      `Num(c) => c,
+      `Var => x,
+      `Add(a, b) => eval_at(a, x) + eval_at(b, x),
+      `Mul(a, b) => eval_at(a, x) * eval_at(b, x)
+    };
+  let run_one = |s: i64| -> f64 {
+    let e = build(i64:16, i64:0, s);
+    eval_at(deriv(e), 0.55) + eval_at(e, 0.55)
+  };
+  array::fold(array::init(i64:1, |i| i), 0.0, |acc, i| acc + run_one(i64:1234567 + i))
+}

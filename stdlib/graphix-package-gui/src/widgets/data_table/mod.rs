@@ -23,7 +23,7 @@
 use super::{GuiW, GuiWidget, IcedElement, Message, Renderer};
 use ahash::{AHashMap, AHashSet, AHasher};
 use anyhow::{Context, Result};
-use arcstr::{literal, ArcStr};
+use arcstr::{ArcStr, literal};
 use compact_str::CompactString;
 use futures::channel::mpsc;
 use graphix_compiler::expr::ExprId;
@@ -38,7 +38,7 @@ use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
 use std::{
     hash::BuildHasherDefault,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
     time::Instant,
 };
 
@@ -51,18 +51,18 @@ mod types;
 #[cfg(test)]
 mod test_access;
 
-use subscriptions::{spawn_dispatch_task, SharedCells};
-use types::{parse_selection, parse_sort_by, ColumnState, ResizeDrag, SortBy};
+use subscriptions::{SharedCells, spawn_dispatch_task};
+use types::{ColumnState, ResizeDrag, SortBy, parse_selection, parse_sort_by};
 
 #[cfg(test)]
 pub(crate) use types::decimate_sparkline;
 
-/// `IndexMap` with the project-standard fx hasher. Holds every known
+/// `IndexMap` with the project-standard ahash hasher. Holds every known
 /// column, both displayed (raw netidx columns and virtual columns
 /// with a non-null default) and spec-only (configured but not yet
 /// displayed because their `default_value` ref currently resolves to
 /// null and the column has no source in the table data). Netidx
-/// tables can reach millions of columns, so the `fxhash` hasher
+/// tables can reach millions of columns, so the `AHasher` choice
 /// matters and the indexed iteration order doubles as the display
 /// order — the first `displayed_count` entries are the displayed
 /// columns in display order.
@@ -238,8 +238,16 @@ impl<X: GXExt> DataTableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         // Fields alphabetical: on_activate, on_header_click, on_select,
         // on_update, selection, show_row_name, sort_by, table
-        let [(_, on_activate_id), (_, on_header_click_id), (_, on_select_id), (_, on_update_id), (_, selection_id), (_, show_row_name_id), (_, sort_by_id), (_, table_id)] =
-            source.cast_to::<[(ArcStr, u64); 8]>().context("data_table flds")?;
+        let [
+            (_, on_activate_id),
+            (_, on_header_click_id),
+            (_, on_select_id),
+            (_, on_update_id),
+            (_, selection_id),
+            (_, show_row_name_id),
+            (_, sort_by_id),
+            (_, table_id),
+        ] = source.cast_to::<[(ArcStr, u64); 8]>().context("data_table flds")?;
         let (
             on_activate_ref,
             on_header_click_ref,

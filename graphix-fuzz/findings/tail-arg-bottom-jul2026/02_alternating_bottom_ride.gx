@@ -1,0 +1,11 @@
+// bisect: interp [1,6] vs jit [3,8] (found 2026-07-16 validating the
+// 000000 fix; pre-existing — reproduces before that day's kernel
+// work). A tail-jump arg bottoming on ALTERNATE iterations: the frame
+// is rebuilt per jump as seeds ∪ rebinds, and a ridden (None) formal
+// kept the SEED entry — the ENTRY call's value — masking every
+// intermediate rebind, so each recovery recomputed from entry
+// (0+1 = 1, stuck) where the kernel rides the running acc
+// (0,1,1,2,2,3). Fixed by overwriting the frame entry with the
+// last-rebind value from ctx.cached, stale-tagged — the interp twin
+// of the kernel's rebind keeping the old loop-slot payload.
+{let s = i64:0; s <- once(i64:5); let f = |x: i64| -> i64 {let rec lp = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => lp(n - i64:1, acc + i64:1 / (n % i64:2))}; lp(i64:6, x)}; f(s)}

@@ -1,0 +1,14 @@
+// bisect: typing acceptance bug (both modes now compile-reject; the
+// pre-fix interp kept all nulls via the discriminant total order while
+// the JIT ran icmp on an i64-typed slot holding Null payloads).
+// root_cause: contains' TVar×TVar arm returned vacuous Ok(true) for
+// two FROZEN unbound tvars without linking their cells — instantiation
+// copies' quantified vars "unified" without sharing state, so the
+// site's `elem := null` and the predicate's `cmp := i64` facts forked
+// between copies and no check could collide them. Fixed by
+// Act::CellMerge → TVar::alias_cells (cell merge bypassing the frozen
+// NAME-aliasing gate, keeping the occurs checks); the strict
+// arg-boundary instance check then rejects, consistent with the
+// direct form (design/type_copy_discipline.md V1).
+// found: soak-jul12g fuzz divergence_000000 (2026-07-12).
+array::filter(array::init(i64:5, |idx: i64| null), |x| x > i64:99)

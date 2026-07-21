@@ -1,0 +1,13 @@
+// bisect: JIT codegen bug (SIGILL, exit 132 — not a value divergence)
+// interp/jit: Interp Timeout (bottom, correct: div-by-zero scrutinee →
+// the select never fires); classic Jit died with SIGILL pre-fix; both
+// Timeout post-fix (agreement). Task #201.
+// root_cause: compile_ifchain's final-arm miss trap was reachable: a
+// possibly-bottom scalar scrutinee (1/0) leaves every arm cond
+// computed from GARBAGE bits, so all arms can miss and control falls
+// into the trap. The validity-AND poisons the RESULT correctly but
+// can't fix the conds. Fixed by refusing to fuse (Err → node-walk)
+// when the scrutinee is possibly-bottom (Scalar2) and the final arm
+// is conditional. The stmt form was already immune (its scrutinee
+// gate branches to pending_exit before any cond runs).
+{ let x = 0; 1 + (select (1 / x == 1) { true => 1, false => 0 }) }

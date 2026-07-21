@@ -1,0 +1,14 @@
+// bisect: NODE-WALK bug (JIT was correct) — soak jul06c
+// (divergence_000031/000056, B8). A tail-recursive `let rec` nested
+// inside an HOF callback: the per-slot pred is a fresh CallSite that
+// lazy-binds at runtime (`CallSite::bind` → setup_bind, typecheck0
+// only), so the fresh body's inner call sites were never resolved and
+// `analysis::analyze` never marked its tail loop — each tail call
+// dispatched on the Rust stack and tripped the 256 call-depth guard →
+// bottom → the whole program silently produced NOTHING, while the JIT
+// (and a compile-time-resolved node-walk site — plain `lp(500,0)` was
+// fine) tail-looped to the correct value. FIXED: `bind()` mirrors
+// resolve_static's #203 cascade (drive the fresh apply's typecheck1)
+// then runs `analysis::analyze_bound_callee` over the fresh subtree
+// (node/callsite.rs + analysis.rs).
+{let a = array::init(i64:3, |x: i64| -> i64 {let rec lp = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => lp(n - i64:1, acc + n)}; lp(i64:500, i64:0) + x}); array::fold(a, i64:0, |acc, x| acc + x)}

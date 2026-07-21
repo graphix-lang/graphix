@@ -17,6 +17,7 @@ default = []
 krb5_iov = ["netidx/krb5_iov"]
 
 [dependencies]
+log.workspace = true
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }
@@ -34,3 +35,6 @@ poolshark = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+
+[build-dependencies]
+graphix-ast-pack = { path = "../../graphix-ast-pack" }

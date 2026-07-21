@@ -1,15 +1,14 @@
 //! LSP backend that owns a graphix runtime with the stdlib loaded
 //! and exposes a synchronous interface for the LSP server.
 
-use crate::deps;
 use ahash::AHashMap;
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::{
+    CFlag, ExecCtx,
     env::Env,
     expr::{BufferOverrides, ModuleResolver, Source},
-    CFlag, ExecCtx,
 };
 use graphix_lsp::{LspBackend, TypecheckResult};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
@@ -48,8 +47,12 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber))
         .context("creating graphix context")?;
     let mut vfs = AHashMap::default();
-    let res = deps::register::<NoExt>(&mut ctx, &mut vfs)
-        .context("registering stdlib modules")?;
+    let mut root_mods = graphix_package::IndexSet::new();
+    for pkg in crate::stdlib_packages::<NoExt>() {
+        pkg.register(&mut ctx, &mut vfs, &mut root_mods)
+            .context("registering stdlib modules")?;
+    }
+    let root = graphix_package::root_module_source(&root_mods);
     let mut resolvers: Vec<ModuleResolver> = vec![ModuleResolver::VFS(vfs)];
     // Cache the stdlib (+ later, GRAPHIX_MODPATH) layer so per-project
     // checks can prepend it under their own BufferOverride resolver.
@@ -57,6 +60,8 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     for root in roots {
         resolvers.push(ModuleResolver::Files { base: root, overrides: None });
     }
+    // lsp_mode (set below) forces fusion off in compile() — a check-only
+    // runtime never executes, so it must never fuse. No flag needed here.
     let flags = CFlag::WarnUnhandled | CFlag::WarnUnused;
     // We don't consume runtime events in the LSP — drain them on a task
     // so the channel doesn't fill and stall the runtime.
@@ -64,7 +69,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     task::spawn(drain(rx));
     let gx = GXConfig::builder(ctx, tx)
         .flags(BitFlags::from(flags))
-        .root(res.root)
+        .root(root)
         .resolvers(resolvers)
         .lsp_mode(true)
         .build()
@@ -169,12 +174,12 @@ impl LspBackend for ShellLspBackend {
         root: &Path,
         initial_scope: Option<ArcStr>,
     ) -> Result<TypecheckResult> {
-        let CheckResult { env, references, module_references, scope_map, lsp } =
+        let CheckResult { env, ide } =
             self.rt_handle.block_on(self.gx.check_with_resolvers(
                 Source::File(root.to_path_buf()),
                 self.resolvers_for(root),
                 initial_scope,
             ))?;
-        Ok(TypecheckResult { env, references, module_references, scope_map, lsp })
+        Ok(TypecheckResult { env, ide })
     }
 }

@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, F64(0.0))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }] })
+// mutant: { let v0: Map<string, string> = {"a" => ""}; let v0 = str::len(v0{"b"}$); ((f64:0.0 + (f64:3.14 -? f64:3.14)$) * (-((-(f64:1.0))))) }
+// minimized:
+{let v0: Map<string, string> = {"a" => ""}; let v0 = str::len(v0{"b"}$); (f64:0. + (f64:3.14 -? f64:3.14)$) * (-((-(f64:1.))))}

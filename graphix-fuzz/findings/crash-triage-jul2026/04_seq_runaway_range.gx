@@ -1,0 +1,10 @@
+// bisect: EVALUATOR WEDGE (child HANG past every deadline) — soak
+// jul06g crash_000000. `seq(i64::MIN, 4)` ran its 9.2e18-iteration
+// set_var loop synchronously inside one update: uninterruptible (no
+// poll between iterations) and a memory bomb (every iteration queues a
+// value). FIXED per the array::init precedent, same shared cap: a
+// range wider than MAX_ARRAY_INIT_LEN returns the catchable SeqError
+// the signature already declares (rare-stdlib-fn error contract). The
+// subtraction runs in i128 — j - i overflows i64 for exactly the
+// ranges being rejected (graphix-package-core Seq::update).
+array::group(seq(i64:-9223372036854775808, i64:4), |n, _| n == i64:4)

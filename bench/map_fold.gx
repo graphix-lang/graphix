@@ -1,0 +1,11 @@
+// Composed HOFs: map (*3) then fold (+) over 100k elements. The JIT fuses
+// both into a single kernel with two loops and no intermediate array
+// materialized at the language boundary.
+let n = 100000;
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = array::fold(array::map(array::init(n, |i| i), |x| x * 3), seed, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("map_fold n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

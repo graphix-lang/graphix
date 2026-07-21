@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use graphix_compiler::{env::Env, expr::ModPath, typ::Type};
 use log::debug;

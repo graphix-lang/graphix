@@ -1,0 +1,8 @@
+// bisect: fusion/JIT SIGSEGV (soak-jul13b crash_000018).
+// emit_filter_map_loop's push_block dispatched per-inner-shape pushes
+// on the callback's declared success type, feeding a two-word Value's
+// payload to graphix_value_buf_push_array (Box::from_raw on whatever
+// the payload word held — type confusion; the [T, Error] result union
+// could also put an Error where T was assumed). The push_block now
+// always pushes the two-word Value.
+{let a = [i64:1, i64:2, i64:9223372036854775807]; array::filter_map(a, |x| a[i64:1..])}

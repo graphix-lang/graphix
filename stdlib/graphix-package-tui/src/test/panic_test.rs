@@ -22,20 +22,18 @@ use anyhow::Result;
 
 #[tokio::test]
 async fn gauge_ratio_above_one_does_not_panic() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        "use tui;\nuse tui::gauge;\nlet result = gauge(&5.0)",
-    )
-    .await?;
+    let mut h =
+        TuiTestHarness::new("use tui;\nuse tui::gauge;\nlet result = gauge(&5.0)")
+            .await?;
     h.render()?;
     Ok(())
 }
 
 #[tokio::test]
 async fn gauge_ratio_negative_does_not_panic() -> Result<()> {
-    let mut h = TuiTestHarness::new(
-        "use tui;\nuse tui::gauge;\nlet result = gauge(&-0.3)",
-    )
-    .await?;
+    let mut h =
+        TuiTestHarness::new("use tui;\nuse tui::gauge;\nlet result = gauge(&-0.3)")
+            .await?;
     h.render()?;
     Ok(())
 }

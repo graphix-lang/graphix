@@ -1,0 +1,5 @@
+// bisect: companion to 01/02 — same root through the STRING-interpolation
+// path (`graphix_string_buf_push_bool`, also an unextended i8 param). A
+// computed bool interpolated into a string: interp "false", jit was
+// "true". Pins the string_buf push helpers alongside the value_buf ones.
+"[f64:0.1 < f64:0.1]"

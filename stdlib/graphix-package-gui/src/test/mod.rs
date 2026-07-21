@@ -1,8 +1,10 @@
 use ahash::AHashMap;
-use anyhow::{bail, Context, Result};
-use graphix_compiler::expr::{ExprId, ModuleResolver};
-use graphix_compiler::BindId;
-use graphix_package_core::testing::{self, RegisterFn, TestCtx};
+use anyhow::{Context, Result, bail};
+use graphix_compiler::{
+    BindId,
+    expr::{ExprId, ModuleResolver},
+};
+use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use nohash::IntMap;
@@ -19,13 +21,13 @@ mod data_table_test;
 mod interaction_test;
 mod widgets_test;
 
-const TEST_REGISTER: &[RegisterFn] = &[
-    <graphix_package_core::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_array::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_map::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_str::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_sys::P as graphix_package::Package<NoExt>>::register,
-    <crate::P as graphix_package::Package<NoExt>>::register,
+const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
+    &graphix_package_core::P,
+    &graphix_package_array::P,
+    &graphix_package_map::P,
+    &graphix_package_str::P,
+    &graphix_package_sys::P,
+    &crate::P,
 ];
 
 /// Test harness for GUI widget integration tests.
@@ -57,7 +59,7 @@ impl GuiTestHarness {
         let (tx, mut rx) = mpsc::channel(100);
         let tbl = AHashMap::from_iter([(
             netidx_core::path::Path::from("/test.gx"),
-            arcstr::ArcStr::from(code),
+            graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(code)),
         )]);
         let resolver = ModuleResolver::VFS(tbl);
         let ctx = testing::init_with_resolvers(tx, TEST_REGISTER, vec![resolver]).await?;
@@ -364,10 +366,9 @@ fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> 
 
 // ── Headless GPU ────────────────────────────────────────────────────
 
-use iced_core::{clipboard, mouse, Event, Point, Size};
+use iced_core::{Event, Point, Size, clipboard, mouse};
 use iced_runtime::user_interface::{self, UserInterface};
-use iced_wgpu::graphics::Shell;
-use iced_wgpu::wgpu;
+use iced_wgpu::{graphics::Shell, wgpu};
 use tokio::sync::OnceCell;
 
 /// Shared headless wgpu adapter + device. Creating GPU resources is

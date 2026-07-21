@@ -1,0 +1,16 @@
+// bisect: NODE-WALK bug, the SHRINK sibling of 01 — soak jul07f
+// fuzz/divergence_000000 (found within minutes of the 01 fix
+// shipping; the size sequence [0,2,1,4] shrinks 2→1 mid-stream). A
+// resize is itself a firing event (the fused loop re-runs every slot
+// and fires — SlotFlags' resized channel), but after a SHRINK every
+// remaining slot can be quiet (a closed callback whose inputs didn't
+// change), so FoldQ's chain gate (`inits.last()`) was None and the
+// node-walk skipped the emission the JIT produced: group(f, n==4)
+// never completed — interp Trace([]) vs jit [(4, [2,4,2,8])]. FIXED:
+// when the chain gate is empty on a resized cycle, emit the HELD
+// chain tail — a quiet slot's held value IS what the re-run computes
+// (its inputs are unchanged); a bottomed chain has no held tail and
+// stays silent, like the kernel's tainted carry.
+// mutant: {let a = array::init(array::iter([i64:1, i64:2, i64:1, i64:4]), |i| i + i64:1); let f = array::fold(a, i64:0, |acc, x| acc + i64:2); array::group(f, |n, _| n == i64:4)}
+// minimized:
+{let a = array::init(array::iter([i64:0, i64:2, i64:1, i64:4]), |i| i + i64:1); let f = array::fold(a, i64:0, |acc, x| acc + i64:2); array::group(f, |n, _| n == i64:4)}

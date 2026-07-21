@@ -1,0 +1,8 @@
+// bisect: fusion/JIT type confusion (soak-jul12n divergence_000000).
+// array::fold settled a as Array<i64>, but array::init's callback
+// returned [null, i64]. The instance-body recheck found that mismatch
+// and CallSite::setup_bind swallowed it, so fusion read each Null's
+// payload as an i64 (1024 here) and returned 3072. The interpreter
+// produced no event. The closed return-boundary check now rejects the
+// program before either backend can execute the invalid slot type.
+{let a = array::init(i64:3, |i| {let l = list::from_array([i64:0, i64:2, i64:3]); list::find(l, |x| x > i64:10)}); array::fold(a, i64:0, |acc, x| acc + x)}

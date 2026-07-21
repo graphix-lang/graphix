@@ -1,4 +1,9 @@
 let after_idle = |timeout: [duration, Number], v: 'a| -> 'a 'sys_time_after_idle;
 let timer = |timeout: [duration, Number], repeat: [bool, Number]|
     -> Result<datetime, `TimerError(string)> 'sys_time_timer;
-let now = |trigger: Any| -> datetime 'sys_time_now
+let now = |trigger: Any| -> datetime 'sys_time_now;
+let add = |t: datetime, d: duration| -> datetime 'sys_time_add;
+let sub = |t: datetime, d: duration| -> datetime 'sys_time_sub;
+let add_dur = |a: duration, b: duration| -> Result<duration, `DurationError(string)> 'sys_time_add_dur;
+let sub_dur = |a: duration, b: duration| -> duration 'sys_time_sub_dur;
+let scale = |d: duration, by: f64| -> Result<duration, `DurationError(string)> 'sys_time_scale

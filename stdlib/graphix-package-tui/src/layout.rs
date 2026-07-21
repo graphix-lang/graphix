@@ -1,5 +1,5 @@
-use super::{compile, DirectionV, FlexV, SizeV, TuiW, TuiWidget};
-use anyhow::{bail, Context, Result};
+use super::{DirectionV, FlexV, SizeV, TuiW, TuiWidget, compile};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
@@ -8,8 +8,8 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
-    layout::{Constraint, Layout, Rect, Spacing},
     Frame,
+    layout::{Constraint, Layout, Rect, Spacing},
 };
 use smallvec::SmallVec;
 use tokio::try_join;
@@ -83,8 +83,16 @@ pub(super) struct LayoutW<X: GXExt> {
 
 impl<X: GXExt> LayoutW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, children), (_, direction), (_, flex), (_, focused), (_, horizontal_margin), (_, margin), (_, spacing), (_, vertical_margin)] =
-            v.cast_to::<[(ArcStr, u64); 8]>().context("layout fields")?;
+        let [
+            (_, children),
+            (_, direction),
+            (_, flex),
+            (_, focused),
+            (_, horizontal_margin),
+            (_, margin),
+            (_, spacing),
+            (_, vertical_margin),
+        ] = v.cast_to::<[(ArcStr, u64); 8]>().context("layout fields")?;
         let (
             children_ref,
             direction,

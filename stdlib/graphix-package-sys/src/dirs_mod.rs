@@ -1,5 +1,6 @@
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
+    expr::ExprId, typ::FnType,
 };
 use netidx::subscriber::Value;
 
@@ -11,8 +12,17 @@ macro_rules! dirs_builtin {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+            // NOT `Sync`: these fire ONCE per instance (the `fired`
+            // latch below), so they are not REPLAYABLE — a fused HOF
+            // loop dispatches one DynCall slot instance per element,
+            // and every element after the first got `None` → pend →
+            // the whole map tainted to bottom while the node-walk's
+            // per-slot instances each fired (soak jul07b, the
+            // final-values tier's first catch). Async de-fuses them;
+            // the node-walk's once-per-instance firing is the correct
+            // reactive shape (a constant-like init fire).
+            const EFFECT: EffectKind = EffectKind::Async;
             const NAME: &str = $builtin;
-            const NEEDS_CALLSITE: bool = false;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
@@ -49,6 +59,8 @@ macro_rules! dirs_builtin {
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
                 self.fired = false;
             }
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }

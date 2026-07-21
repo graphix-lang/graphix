@@ -1,0 +1,12 @@
+// bisect: fusion/JIT FIRING bug, the FinalValues oracle tier's first
+// catch — soak jul07b fuzz/divergence_000002. A ONCE-LATCHED builtin
+// (`sys::dirs::home_dir` fires once per INSTANCE via a `fired` flag)
+// was classified EFFECT=Sync, so a fused HOF loop dispatched it
+// through ONE shared DynCall slot instance: element 1 fired, every
+// later element got None → pend → the whole map result tainted to
+// bottom, while the node-walk's per-slot fresh instances each fired —
+// interp [home, home], jit nothing. Once-per-instance is NOT
+// replayable, and replayability is the Sync contract. FIXED: the
+// whole once-latch family (sys::dirs::*, sys::args, args::parse) is
+// EffectKind::Async — they de-fuse and node-walk.
+array::map([("x", i64:1), ("y", i64:2)], |(s, n)| sys::dirs::home_dir())

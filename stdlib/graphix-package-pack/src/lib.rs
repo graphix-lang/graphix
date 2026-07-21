@@ -2,22 +2,28 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    ExecCtx, Node, Rt, Scope, UserEvent,
+    effects::EffectKind,
+    errf,
+    typ::{FnType, Type},
 };
 use graphix_package_core::{
-    extract_cast_type, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
-    EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    extract_cast_type,
 };
-use graphix_package_sys::{get_stream, StreamKind};
+use graphix_package_sys::{StreamKind, get_stream};
 use netidx_core::pack::Pack;
 use netidx_value::{PBytes, Value};
 use poolshark::local::LPooled;
 use std::sync::Arc;
-use tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 
 // ── ReadInput ────────────────────────────────────────────────
 
@@ -35,9 +41,9 @@ struct PackReadEv {
 }
 
 impl EvalCachedAsync for PackReadEv {
-    const NAME: &str = "pack_read";
-    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
+
+    const NAME: &str = "pack_read";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -50,22 +56,25 @@ impl EvalCachedAsync for PackReadEv {
         Self { cast_typ: extract_cast_type(resolved) }
     }
 
-    fn typecheck<R: Rt, E: UserEvent>(
+    fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("pack::read requires a concrete return type")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("pack::read requires a concrete return type")
         }
+        Ok(())
     }
 
     fn map_value<R: Rt, E: UserEvent>(
@@ -122,9 +131,11 @@ type PackRead = CachedArgsAsync<PackReadEv>;
 #[derive(Debug, Default)]
 struct PackWriteBytesEv;
 
+// pack::write_bytes is a pure Value→bytes conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "pack_write_bytes";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.first()?.as_ref()?;
@@ -145,9 +156,9 @@ type PackWriteBytes = CachedArgs<PackWriteBytesEv>;
 struct PackWriteStreamEv;
 
 impl EvalCachedAsync for PackWriteStreamEv {
-    const NAME: &str = "pack_write_stream";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Arc<Mutex<Option<StreamKind>>>, Vec<u8>);
+
+    const NAME: &str = "pack_write_stream";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let stream = get_stream(cached, 0)?;

@@ -1,4 +1,4 @@
-use crate::{get_stream_value, StreamKind, StreamValue, STREAM_WRAPPER};
+use crate::{STREAM_WRAPPER, StreamKind, StreamValue, get_stream_value};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::errf;
@@ -13,9 +13,9 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub(crate) struct TlsConnectEv;
 
 impl EvalCachedAsync for TlsConnectEv {
-    const NAME: &str = "sys_tls_connect";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Option<Bytes>, ArcStr, StreamValue);
+
+    const NAME: &str = "sys_tls_connect";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let ca_cert = match cached.0.first()? {
@@ -101,9 +101,9 @@ pub(crate) type TlsConnect = CachedArgsAsync<TlsConnectEv>;
 pub(crate) struct TlsAcceptEv;
 
 impl EvalCachedAsync for TlsAcceptEv {
-    const NAME: &str = "sys_tls_accept";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (Bytes, Bytes, StreamValue);
+
+    const NAME: &str = "sys_tls_accept";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let cert = cached.get::<Bytes>(0)?;

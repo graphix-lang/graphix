@@ -1,0 +1,12 @@
+// schedule-v1: cap=64 events=512; in0=i64:3
+// bisect: fusion/JIT bug (interp != jit)
+// jit (pre-fix): Trace([0:0]; []) — the acc's whole VALUE chain is
+//   stale on non-init invocations (const seed + const capture), and a
+//   TAIL-position select's arms terminate individually, skipping the
+//   value-position merge fold of the scrutinee's firing — so the
+//   fired loop bound (n = in0) never fired the result.
+// Fixed 2026-07-05: LowerCtx::tail_scrut_stale — each tail select
+// ANDs its scrutinee's STALE into a kernel-wide accumulator;
+// emit_kernel_return folds it into the returned disc (control-
+// dependence firing, the tail-arm mirror of the merge-point fold).
+{let cap = i64:10; let rec g = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => g(n - i64:1, acc + cap)}; g(in0, i64:0)}

@@ -1,0 +1,5 @@
+// Companion to 01: the saturation edges of the narrow-cast lowering.
+// Each must clamp at the TARGET width exactly as the node-walk's
+// `Value::cast` (Rust `as`) does: 300.5→u8:255, -300.5→i8:-128,
+// 70000→i16:32767, and i8→f64 widens through i32 before the fcvt.
+(cast<u8>(f64:300.5)$, cast<i8>(f64:-300.5)$, cast<i16>(f64:70000.0)$, cast<f64>(i8:-5)$)

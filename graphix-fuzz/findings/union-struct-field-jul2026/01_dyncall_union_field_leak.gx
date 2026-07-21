@@ -1,0 +1,20 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:"abc"]) — the string field value
+// jit:    Trace([0:i64:<heap ptr>]) — String marshalled as i64, leaked
+// Found by soak-jul05, fuzz campaign seed 70501 (corpus-fuzz/
+// divergence_000017).
+// root_cause (hypothesis, verify at fix): a struct field that is a
+// UNION of two select arms' types — here `y: [i64, string]` (arm 1
+// cast<i64>(u8:2)$ : i64, arm 2 buffer::to_string : string) — should
+// make the struct non-freezable (union field, abi_kind None → de-fuse
+// like #21). It DOES de-fuse when arm 1 is a LITERAL i64 (probe j35
+// AGREES), but a DYNCALL-produced arm (cast$) tips it into fusing:
+// the field ABI resolves to the non-string arm and the taken string
+// arm is marshalled under it → pointer leak on v0.y. Same union-ABI
+// family as #21 (there: lambda param; here: select-produced struct
+// field) crossed with the DynCall-result-type path (items 1/4). fix:
+// the struct-field freeze must reject a union field regardless of how
+// its arms are produced — the DynCall arm's resolved type must not
+// launder the union past the non-freeze gate.
+// minimized:
+{let v0 = select i64:0 {i64:42 => {y: cast<i64>(u8:2)$}, _ => {y: buffer::to_string(buffer::from_string("abc"))}}; v0.y}

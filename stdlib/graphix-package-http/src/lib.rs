@@ -2,25 +2,26 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use compact_str::format_compact;
-use futures::{channel::mpsc, SinkExt};
+use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, LambdaId,
+    Node, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind,
     errf,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
-    Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx, LambdaId, Node, Rt, Scope,
-    UserEvent, CBATCH_POOL,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
 };
 use graphix_rt::GXRt;
 use netidx_value::{
-    abstract_type::AbstractWrapper, Abstract, FromValue, PBytes, ValArray, Value,
+    Abstract, FromValue, PBytes, ValArray, Value, abstract_type::AbstractWrapper,
 };
 use std::{
     any::Any,
@@ -226,9 +227,11 @@ static DEFAULT_CLIENT: LazyLock<Arc<reqwest::Client>> = LazyLock::new(|| {
 #[derive(Debug, Default)]
 pub(crate) struct HttpClientEv;
 
+// http::client constructs a client config — pure value computation.
+// The actual requests go through HttpRequestEv (async). Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "http_client";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
@@ -268,8 +271,8 @@ pub(crate) type HttpClient = CachedArgs<HttpClientEv>;
 pub(crate) struct HttpDefaultClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "http_default_client";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         cached.0.get(0)?.as_ref()?;
@@ -285,8 +288,8 @@ pub(crate) type HttpDefaultClient = CachedArgs<HttpDefaultClientEv>;
 pub(crate) struct HttpServerAddrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "http_server_addr";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let v = cached.0.get(0)?.as_ref()?;
@@ -351,9 +354,9 @@ async fn send_request(
 pub(crate) struct HttpRequestEv;
 
 impl EvalCachedAsync for HttpRequestEv {
-    const NAME: &str = "http_request";
-    const NEEDS_CALLSITE: bool = false;
     type Args = RequestArgs<ArcStr>;
+
+    const NAME: &str = "http_request";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         prepare_request_args(cached)
@@ -393,9 +396,9 @@ pub(crate) type HttpRequest = CachedArgsAsync<HttpRequestEv>;
 pub(crate) struct HttpRequestBinEv;
 
 impl EvalCachedAsync for HttpRequestBinEv {
-    const NAME: &str = "http_request_bin";
-    const NEEDS_CALLSITE: bool = false;
     type Args = RequestArgs<Bytes>;
+
+    const NAME: &str = "http_request_bin";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         prepare_request_args(cached)
@@ -692,7 +695,6 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     const NAME: &str = "http_serve";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -752,8 +754,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         // update handler function reference
         if changed[4] {
             if let Some(v) = self.args.0[4].clone() {
-                ctx.cached.insert(self.pid, v.clone());
-                event.variables.insert(self.pid, v);
+                ctx.rt.cached_mut().insert(self.pid, v.clone());
+                event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
         // start/restart server when addr/cert/key/max_connections changes
@@ -779,7 +781,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                         return Some(errf!(
                             "HTTPError",
                             "both cert and key must be provided for TLS"
-                        ))
+                        ));
                     }
                 };
                 let max_conn = match &self.args.0[3] {
@@ -788,14 +790,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                         return Some(errf!(
                             "HTTPError",
                             "max_connections must be > 0, got {n}"
-                        ))
+                        ));
                     }
                     _ => 768,
                 };
                 let std_listener = match std::net::TcpListener::bind(&**addr) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "bind to {addr} failed: {e}"))
+                        return Some(errf!("HTTPError", "bind to {addr} failed: {e}"));
                     }
                 };
                 let bound_addr = match std_listener.local_addr() {
@@ -808,7 +810,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 let listener = match tokio::net::TcpListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "tokio listener failed: {e}"))
+                        return Some(errf!("HTTPError", "tokio listener failed: {e}"));
                     }
                 };
                 let (tx, rx) = mpsc::channel(100);
@@ -836,8 +838,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if self.ready && !self.queue.is_empty() {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
-                ctx.cached.insert(self.x, req.clone());
-                event.variables.insert(self.x, req.clone());
+                ctx.rt.cached_mut().insert(self.x, req.clone());
+                event.variables.insert(self.x, TagValue::fired(req.clone()));
             }
         }
         // process handler responses
@@ -848,14 +850,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     self.ready = true;
                     if let Some((_, reply)) = self.queue.pop_front() {
                         if let Some(reply) = reply {
-                            let _ = reply.send(v);
+                            let _ = reply.send(v.value());
                         }
                     }
                     match self.queue.front() {
                         Some((req, _)) => {
                             self.ready = false;
-                            ctx.cached.insert(self.x, req.clone());
-                            event.variables.insert(self.x, req.clone());
+                            ctx.rt.cached_mut().insert(self.x, req.clone());
+                            event.variables.insert(self.x, TagValue::fired(req.clone()));
                         }
                         None => break,
                     }
@@ -865,13 +867,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         server_result
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: graphix_compiler::TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.handler.typecheck(ctx)?;
+        self.handler.typecheck0(ctx)?;
         Ok(())
     }
 
@@ -884,9 +885,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
-        ctx.cached.remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.pid);
         self.handler.delete(ctx);
     }
 
@@ -901,6 +902,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         self.queue.clear();
         self.ready = true;
         self.handler.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.handler.reset_replay(ctx);
     }
 }
 

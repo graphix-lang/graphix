@@ -1,0 +1,33 @@
+// #214: pending String DynCall sentinel-zero dropped as owned ArcStr.
+//
+// Found by the F1 mutation soak (seed 777, iter 62) as a whole-process
+// SIGSEGV: `str::concat()` with zero varargs never fires canonically,
+// so the eager fused DynCall pends and returns the sentinel-zero. The
+// String return rode the SCALAR convention (no site-level pre_pending
+// branch), so the zero flowed into owned-ArcStr positions —
+// `emit_return_pending_check`'s String arm called
+// `graphix_arcstr_drop(0)` → `drop_in_place(NULL)` → SIGSEGV. Same
+// class untested but live: a String `let` + scope-exit
+// `drop_owned_strings`. Classic and direct paths shared both seams.
+//
+// FIXED (UB class): String DynCall results now take the same
+// site-level `emit_dyncall_pending_branch` as composite/Value results
+// — the sentinel never flows. All five JIT drop helpers also
+// null-check and panic (abort-with-message at the extern "C"
+// boundary) instead of UB.
+//
+// RESOLVED (the residual dead-pend divergence, #216): the crash was
+// masking a value divergence — a pending DynCall in DEAD position
+// bottomed the whole fused kernel (interp = 0, jit = Timeout), because
+// whole-kernel pending is coarser than the canonical per-node bottom.
+// Decision (Eric, 2026-06-12): a sync variadic builtin called with no
+// positional arguments has no data inputs and can never fire — it's
+// now a COMPILE ERROR (`reject_dead_variadic_call`, callsite.rs),
+// pointing the user at never() for intentional bottom. never() itself
+// was reclassified Async (its honest contract), which both exempts it
+// from the error and stops it fusing into always-pending kernels.
+// This program now fails to compile in every mode — CompileErr ==
+// CompileErr is oracle agreement, so it doubles as the regression
+// guard: if the compile error is ever relaxed, the divergence (or the
+// crash) comes back and regress catches it.
+{ let v = str::concat(); i64:0 }

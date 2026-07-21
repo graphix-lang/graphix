@@ -328,10 +328,9 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code,
-        iced_core::Size::new(400.0, 200.0),
-    ).await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(400.0, 200.0))
+            .await?;
     let _ = h.inner.watch("test::clicked_col").await?;
     h.inner.drain().await?;
     // Populate cached_col_widths.
@@ -388,11 +387,9 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code,
-        iced_core::Size::new(400.0, 200.0),
-    )
-    .await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(400.0, 200.0))
+            .await?;
     h.inner.drain().await?;
     // Populate cached_col_widths so dt_cell_bounds can locate the c1 column.
     let _ = h.view();
@@ -624,7 +621,8 @@ let result = data_table(
     }
     let snap = h.dt_snapshot();
     assert_eq!(
-        snap.row_basenames, vec!["r1", "r2", "r0"],
+        snap.row_basenames,
+        vec!["r1", "r2", "r0"],
         "initial ascending sort: r1(10) < r2(20) < r0(30)"
     );
 
@@ -642,7 +640,8 @@ let result = data_table(
     }
     let snap = h.dt_snapshot();
     assert_eq!(
-        snap.row_basenames, vec!["r2", "r0", "r1"],
+        snap.row_basenames,
+        vec!["r2", "r0", "r1"],
         "after bumping r1's cpu to 100: r2(20) < r0(30) < r1(100)"
     );
     Ok(())
@@ -665,7 +664,9 @@ async fn sort_subscribes_newly_visible_rows() -> Result<()> {
         publishes.push_str(&format!(
             "sys::net::publish(\"/local/dt_sub_resort/r{i}/cpu\", v64:{i});\n"
         ));
-        if i > 0 { rows.push_str(", "); }
+        if i > 0 {
+            rows.push_str(", ");
+        }
         rows.push_str(&format!("\"/local/dt_sub_resort/r{i}\""));
     }
     let code = format!(
@@ -686,7 +687,12 @@ let result = data_table(
         h.before_view();
         let snap = h.dt_snapshot();
         if snap.row_basenames.first().map(|s| s.as_str()) == Some(top.as_str())
-            && !snap.grid.first().and_then(|r| r.first()).map(|s| s.is_empty()).unwrap_or(true)
+            && !snap
+                .grid
+                .first()
+                .and_then(|r| r.first())
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
         {
             break;
         }
@@ -765,8 +771,7 @@ let result = data_table(
     let mut beta_pairs: Vec<(usize, usize)> =
         (0..n_rows).map(|i| (i, beta_of(i))).collect();
     beta_pairs.sort_by_key(|(_, b)| *b);
-    let beta_asc: Vec<String> =
-        beta_pairs.iter().map(|(i, _)| format!("r{i}")).collect();
+    let beta_asc: Vec<String> = beta_pairs.iter().map(|(i, _)| format!("r{i}")).collect();
     let beta_desc: Vec<String> = beta_asc.iter().rev().cloned().collect();
 
     // Drain until the snapshot's row order matches `expected`. Caller
@@ -831,8 +836,10 @@ let result = data_table(
 #[test]
 fn sparkline_decimation() {
     use crate::widgets::data_table::decimate_sparkline;
-    use std::collections::VecDeque;
-    use std::time::{Duration, Instant};
+    use std::{
+        collections::VecDeque,
+        time::{Duration, Instant},
+    };
 
     let base = Instant::now();
     let mut history: VecDeque<(Instant, f64)> = (0..100)
@@ -988,9 +995,9 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code, iced_core::Size::new(500.0, 200.0),
-    ).await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
+            .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -1034,9 +1041,9 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code, iced_core::Size::new(500.0, 300.0),
-    ).await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 300.0))
+            .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -1089,9 +1096,9 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code, iced_core::Size::new(500.0, 200.0),
-    ).await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
+            .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -1109,10 +1116,7 @@ let result = data_table(
     };
     let mut hit_args: Option<ValArray> = None;
     for offset in (10..=70).rev().step_by(2) {
-        let p = iced_core::Point::new(
-            bounds.x + offset as f32,
-            bounds.center().y,
-        );
+        let p = iced_core::Point::new(bounds.x + offset as f32, bounds.center().y);
         let msgs = h.click(p);
         if let Some(args) = only_call(&msgs) {
             hit_args = Some(args);
@@ -1129,7 +1133,8 @@ let result = data_table(
         matches!(v.as_slice(),
             [Value::String(p), Value::F64(x)]
             if p == &arcstr::literal!("r0/c0") && (*x - 6.0).abs() < 1e-9),
-        "rightmost spin button should be + (val 6.0), got args: {:?}", args,
+        "rightmost spin button should be + (val 6.0), got args: {:?}",
+        args,
     );
     assert_eq!(
         h.inner.get_watched("test::log"),
@@ -1156,9 +1161,9 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code, iced_core::Size::new(500.0, 200.0),
-    ).await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
+            .await?;
     let _ = h.inner.watch("test::log").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -1244,7 +1249,9 @@ let result = data_table(
     a_ref.set(Value::String(arcstr::literal!("v1b")))?;
     for _ in 0..5 {
         h.drain().await?;
-        if h.dt_snapshot().grid[0][0] == "v1b" { break; }
+        if h.dt_snapshot().grid[0][0] == "v1b" {
+            break;
+        }
     }
     assert_eq!(h.dt_snapshot().grid[0][0], "v1b");
     Ok(())
@@ -1271,7 +1278,10 @@ let result = data_table(
     let h = dt(code).await?;
     let snap = h.dt_snapshot();
     assert!(!snap.is_value_mode, "should render as Table, not Value");
-    assert_eq!(snap.col_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(), vec!["region"]);
+    assert_eq!(
+        snap.col_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        vec!["region"]
+    );
     Ok(())
 }
 
@@ -1318,11 +1328,8 @@ let result = data_table(
     let mut h = dt(code).await?;
     // Find "sum" column index (table has c0 and sum).
     let snap = h.dt_snapshot();
-    let sum_col = snap
-        .col_names
-        .iter()
-        .position(|n| n == "sum")
-        .expect("sum column present");
+    let sum_col =
+        snap.col_names.iter().position(|n| n == "sum").expect("sum column present");
     let r0 = snap.row_basenames.iter().position(|n| n == "r0").unwrap();
     let r1 = snap.row_basenames.iter().position(|n| n == "r1").unwrap();
     // Initially data is empty so no per-row defaults exist.
@@ -1331,10 +1338,7 @@ let result = data_table(
     let push_id = h.compile_named_callable("test::push").await?;
     h.call_callback(
         push_id,
-        ValArray::from_iter([
-            Value::String(arcstr::literal!("r0")),
-            Value::I64(5),
-        ]),
+        ValArray::from_iter([Value::String(arcstr::literal!("r0")), Value::I64(5)]),
     )
     .await?;
     for _ in 0..5 {
@@ -1348,10 +1352,7 @@ let result = data_table(
     // grid reflect the second update, or does it remain stuck at 5?
     h.call_callback(
         push_id,
-        ValArray::from_iter([
-            Value::String(arcstr::literal!("r0")),
-            Value::I64(9),
-        ]),
+        ValArray::from_iter([Value::String(arcstr::literal!("r0")), Value::I64(9)]),
     )
     .await?;
     for _ in 0..5 {
@@ -1365,10 +1366,7 @@ let result = data_table(
     // r1 should become 3.
     h.call_callback(
         push_id,
-        ValArray::from_iter([
-            Value::String(arcstr::literal!("r1")),
-            Value::I64(3),
-        ]),
+        ValArray::from_iter([Value::String(arcstr::literal!("r1")), Value::I64(3)]),
     )
     .await?;
     for _ in 0..5 {
@@ -1386,10 +1384,7 @@ let result = data_table(
     for v in [10i64, 20, 30, 40] {
         h.gx.call(
             push_id,
-            ValArray::from_iter([
-                Value::String(arcstr::literal!("r0")),
-                Value::I64(v),
-            ]),
+            ValArray::from_iter([Value::String(arcstr::literal!("r0")), Value::I64(v)]),
         )?;
     }
     for _ in 0..10 {
@@ -1530,7 +1525,8 @@ let result = data_table(
         },
         std::time::Duration::from_secs(2),
         "sparkline to receive all three timer-driven values",
-    ).await?;
+    )
+    .await?;
     // Every timer-driven update must be present. The initial
     // BEGIN_WITH_LAST value (0) may or may not be retained depending on
     // whether the subscriber saw it before the first timer fired, but
@@ -1593,21 +1589,13 @@ let result = data_table(
     let dt_w = h.dt();
     let base = Instant::now();
     for i in 0..2000_u64 {
-        dt_w.dt_push_sparkline(
-            "r0", "load",
-            base + Duration::from_micros(i),
-            i as f64,
-        );
+        dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
     }
     let len = dt_w.dt_sparkline_len("r0", "load").unwrap_or(0);
     assert!(len <= 512, "decimation should cap len <= 512, got {len}");
     // Push a smaller burst on top — must still respect the cap.
     for i in 2000..2500_u64 {
-        dt_w.dt_push_sparkline(
-            "r0", "load",
-            base + Duration::from_micros(i),
-            i as f64,
-        );
+        dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
     }
     let len = dt_w.dt_sparkline_len("r0", "load").unwrap_or(0);
     assert!(len <= 512, "after second burst, len <= 512, got {len}");
@@ -1638,14 +1626,9 @@ let result = data_table(
     let base = Instant::now();
     // Push a monotonic ramp, well beyond the cap so decimation runs.
     for i in 0..1024_u64 {
-        dt_w.dt_push_sparkline(
-            "r0", "load",
-            base + Duration::from_micros(i),
-            i as f64,
-        );
+        dt_w.dt_push_sparkline("r0", "load", base + Duration::from_micros(i), i as f64);
     }
-    let vals = dt_w.dt_sparkline_values("r0", "load")
-        .expect("sparkline values present");
+    let vals = dt_w.dt_sparkline_values("r0", "load").expect("sparkline values present");
     let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
     let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     // The minimum should still be very close to 0 and the max close to
@@ -1681,9 +1664,9 @@ let result = data_table(
     #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code, iced_core::Size::new(500.0, 200.0),
-    ).await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
+            .await?;
     let _ = h.watch("test::selected").await?;
     let _ = h.watch("test::activated").await?;
     h.inner.drain().await?;
@@ -1697,20 +1680,26 @@ let result = data_table(
     // ArrowRight advances to column "c1".
     let msgs = h.press_key(iced_core::keyboard::key::Named::ArrowRight);
     h.inner.dispatch_calls(&msgs).await?;
-    assert_eq!(h.get_watched("test::selected"),
-        Some(&Value::String(arcstr::literal!("r0/c1"))));
+    assert_eq!(
+        h.get_watched("test::selected"),
+        Some(&Value::String(arcstr::literal!("r0/c1")))
+    );
 
     // ArrowDown moves to row 1, keeping col "c1".
     let msgs = h.press_key(iced_core::keyboard::key::Named::ArrowDown);
     h.inner.dispatch_calls(&msgs).await?;
-    assert_eq!(h.get_watched("test::selected"),
-        Some(&Value::String(arcstr::literal!("r1/c1"))));
+    assert_eq!(
+        h.get_watched("test::selected"),
+        Some(&Value::String(arcstr::literal!("r1/c1")))
+    );
 
     // Enter fires on_activate with the row path.
     let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
     h.inner.dispatch_calls(&msgs).await?;
-    assert_eq!(h.get_watched("test::activated"),
-        Some(&Value::String(arcstr::literal!("r1"))));
+    assert_eq!(
+        h.get_watched("test::activated"),
+        Some(&Value::String(arcstr::literal!("r1")))
+    );
     Ok(())
 }
 
@@ -1734,11 +1723,15 @@ let result = data_table(
     h.drain().await?;
     h.dt_mut().handle_cell_click(0, "name".into());
     h.drain().await?;
-    assert_eq!(h.get_watched("test::act_log"),
-        Some(&Value::String(arcstr::literal!("r0"))));
-    assert_eq!(h.get_watched("test::sel_log"),
+    assert_eq!(
+        h.get_watched("test::act_log"),
+        Some(&Value::String(arcstr::literal!("r0")))
+    );
+    assert_eq!(
+        h.get_watched("test::sel_log"),
         Some(&Value::String(arcstr::literal!(""))),
-        "on_select must not fire for the name column");
+        "on_select must not fire for the name column"
+    );
     Ok(())
 }
 
@@ -1909,7 +1902,8 @@ let result = data_table(
         },
         std::time::Duration::from_secs(2),
         "sparkline update to land without panicking on invalid history_seconds",
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -1939,9 +1933,9 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = InteractionHarness::with_viewport(
-        code, iced_core::Size::new(500.0, 200.0),
-    ).await?;
+    let mut h =
+        InteractionHarness::with_viewport(code, iced_core::Size::new(500.0, 200.0))
+            .await?;
     let _ = h.inner.watch("test::pressed_val").await?;
     h.inner.drain().await?;
     let _ = h.view();
@@ -2007,13 +2001,11 @@ let result = data_table(
         },
         std::time::Duration::from_secs(2),
         "real column value to arrive",
-    ).await?;
+    )
+    .await?;
     let snap = h.dt_snapshot();
-    let ghost_i = snap
-        .col_names
-        .iter()
-        .position(|n| n == "ghost")
-        .expect("ghost column present");
+    let ghost_i =
+        snap.col_names.iter().position(|n| n == "ghost").expect("ghost column present");
     // The ghost cell must show the DEFAULT, not the publisher value.
     // If the widget were still subscribing virtual_cols, the
     // BEGIN_WITH_LAST sub would deliver "from-publisher" and it would

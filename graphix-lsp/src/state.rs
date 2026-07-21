@@ -1,15 +1,21 @@
-use crate::diagnostics::{error_leaf_message, error_location};
+use crate::{
+    diagnostics::{error_leaf_message, error_location},
+    position::PositionEncoding,
+    workspace::scan,
+};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    env::{Env, Lsp},
-    expr::{BufferOverrides, ModPath, Source},
+    BindId, SourcePosition,
+    env::{Bind, Env},
+    expr::{BufferOverrides, Expr, ModPath, Origin, Source},
+    ide::{
+        Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
+        SigImplLink, TypeRefSite,
+    },
     typ::{FnArgKind, FnType, Type},
-    ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry, SigImplLink,
-    SourcePosition, TypeRefSite, MODULE_REF_SITE_POOL, REFERENCE_SITE_POOL,
-    SCOPE_MAP_ENTRY_POOL,
 };
 use lsp_types::Uri;
-use poolshark::{global::GPooled, local::LPooled};
+use poolshark::local::LPooled;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -26,32 +32,16 @@ pub struct Document {
     /// failed one (so the env doesn't drift away from the user's
     /// current source).
     pub env: Option<Env>,
-    /// Resolved name reference sites observed during the most
-    /// recent successful check, used to answer
-    /// `textDocument/references` and prepareRename.
-    pub references: GPooled<Vec<ReferenceSite>>,
-    /// Module reference sites (`use foo;`, `mod foo;`).
-    pub module_references: GPooled<Vec<ModuleRefSite>>,
-    /// Per-Expr scope map from the latest compile. Used to answer
-    /// cursor → scope queries.
-    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    /// IDE side-channels populated during the most recent check:
-    /// type references (uses of `Foo` in type positions), sig→impl
-    /// bind id pairs, and per-module impl-side env snapshots.
-    pub lsp: Lsp,
+    /// Every IDE side-channel from the most recent successful check:
+    /// resolved name references, module references, the scope map, type
+    /// references, sig→impl bind links, and per-module impl-side env
+    /// snapshots.
+    pub ide: Ide,
 }
 
 impl Document {
     pub fn new(text: String, version: i32) -> Self {
-        Self {
-            version,
-            text,
-            env: None,
-            references: REFERENCE_SITE_POOL.take(),
-            module_references: MODULE_REF_SITE_POOL.take(),
-            scope_map: SCOPE_MAP_ENTRY_POOL.take(),
-            lsp: Lsp::new(),
-        }
+        Self { version, text, env: None, ide: Ide::new() }
     }
 }
 
@@ -59,11 +49,8 @@ impl Document {
 /// but doesn't depend on graphix-rt directly.
 pub struct TypecheckResult {
     pub env: Env,
-    pub references: GPooled<Vec<ReferenceSite>>,
-    pub module_references: GPooled<Vec<ModuleRefSite>>,
-    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    /// IDE side-channels populated during the check.
-    pub lsp: Lsp,
+    /// Every IDE side-channel populated during the check.
+    pub ide: Ide,
 }
 
 /// Backend that owns the graphix runtime / environment and can
@@ -109,10 +96,8 @@ pub trait LspBackend: Send + Sync + 'static {
 /// haven't run the project compile yet (or it failed).
 pub struct ProjectResult {
     pub env: Env,
-    pub references: GPooled<Vec<ReferenceSite>>,
-    pub module_references: GPooled<Vec<ModuleRefSite>>,
-    pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    pub lsp: Lsp,
+    /// Every IDE side-channel from this project's last check.
+    pub ide: Ide,
 }
 
 /// Core language intelligence state.
@@ -155,14 +140,14 @@ pub struct ServerState {
     /// Position encoding negotiated with the client. Drives how we
     /// interpret incoming `Position.character` and how we serialize
     /// outgoing positions.
-    pub position_encoding: crate::position::PositionEncoding,
+    pub position_encoding: PositionEncoding,
 }
 
 impl ServerState {
     pub fn new(
         backend: Arc<dyn LspBackend>,
         snippet_support: bool,
-        position_encoding: crate::position::PositionEncoding,
+        position_encoding: PositionEncoding,
     ) -> Self {
         let env = backend.env();
         Self {
@@ -211,7 +196,7 @@ impl ServerState {
             }
             return out;
         }
-        self.workspace = crate::workspace::scan(&self.workspace_roots);
+        self.workspace = scan(&self.workspace_roots);
         let mut results: Vec<Option<ProjectResult>> =
             Vec::with_capacity(self.workspace.projects.len());
         let mut diags_by_uri: HashMap<Uri, Vec<lsp_types::Diagnostic>> = HashMap::new();
@@ -220,20 +205,8 @@ impl ServerState {
                 .backend
                 .typecheck_project(&project.root, project.package_scope.clone());
             match r {
-                Ok(TypecheckResult {
-                    env,
-                    references,
-                    module_references,
-                    scope_map,
-                    lsp,
-                }) => {
-                    results.push(Some(ProjectResult {
-                        env,
-                        references,
-                        module_references,
-                        scope_map,
-                        lsp,
-                    }));
+                Ok(TypecheckResult { env, ide }) => {
+                    results.push(Some(ProjectResult { env, ide }));
                 }
                 Err(e) => {
                     let (uri, diag) = self.project_error_to_diagnostic(&e, &project.root);
@@ -267,7 +240,7 @@ impl ServerState {
         uri: &Uri,
         position: lsp_types::Position,
     ) -> lsp_types::Position {
-        if matches!(self.position_encoding, crate::position::PositionEncoding::Utf32) {
+        if matches!(self.position_encoding, PositionEncoding::Utf32) {
             return position;
         }
         let Some(doc) = self.documents.get(uri) else {
@@ -399,28 +372,16 @@ impl ServerState {
         };
         let initial_scope = self.package_scope_for(&root);
         match self.backend.typecheck_project(&root, initial_scope) {
-            Ok(TypecheckResult {
-                env,
-                references,
-                module_references,
-                scope_map,
-                lsp,
-            }) => {
+            Ok(TypecheckResult { env, ide }) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = Some(env);
-                    d.references = references;
-                    d.module_references = module_references;
-                    d.scope_map = scope_map;
-                    d.lsp = lsp;
+                    d.ide = ide;
                 }
             }
             Err(e) => {
                 if let Some(d) = self.documents.get_mut(uri) {
                     d.env = None;
-                    d.references = REFERENCE_SITE_POOL.take();
-                    d.module_references = MODULE_REF_SITE_POOL.take();
-                    d.scope_map = SCOPE_MAP_ENTRY_POOL.take();
-                    d.lsp = Lsp::new();
+                    d.ide = Ide::new();
                 }
                 // Attribute the failure to the file the error chain
                 // names, not the active URI. The error may originate in
@@ -472,13 +433,13 @@ impl ServerState {
             }
         };
         if let Some(doc) = self.documents.get(uri) {
-            for e in doc.scope_map.iter() {
+            for e in doc.ide.scope_map.iter() {
                 consider(e);
             }
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for e in r.scope_map.iter() {
+                for e in r.ide.scope_map.iter() {
                     consider(e);
                 }
             }
@@ -627,7 +588,7 @@ impl ServerState {
         // aren't reachable by name from the cursor's scope — lambda
         // parameters, lets inside nested blocks, and the variable
         // tokens inside string interpolations all show up here.
-        for r in doc.references.iter() {
+        for r in doc.ide.references.iter() {
             if position_in_ref(position, r) {
                 if let Some(bind) = bind_for_id(env, r.bind_id) {
                     return Some(bind_hover(&r.name.to_string(), bind));
@@ -636,7 +597,7 @@ impl ServerState {
         }
 
         // Cursor on a binding's declaration (lambda param, let name,
-        // etc.). Declarations don't appear in `doc.references`, so
+        // etc.). Declarations don't appear in `doc.ide.references`, so
         // scan ide_binds for a Bind whose `pos` covers the cursor.
         if let Some(bind) = bind_at_decl(env, uri, position) {
             return Some(bind_hover(bind.name.as_str(), bind));
@@ -705,9 +666,9 @@ impl ServerState {
         // check sees them.
         self.collect_refs_from(
             doc.env.as_ref(),
-            &doc.references,
-            &doc.lsp.sig_links,
-            &doc.lsp.module_internals,
+            &doc.ide.references,
+            &doc.ide.sig_links,
+            &doc.ide.module_internals,
             &scope,
             &name,
             include_declaration,
@@ -720,9 +681,9 @@ impl ServerState {
             if let Some(Some(r)) = self.project_results.get(idx) {
                 self.collect_refs_from(
                     Some(&r.env),
-                    &r.references,
-                    &r.lsp.sig_links,
-                    &r.lsp.module_internals,
+                    &r.ide.references,
+                    &r.ide.sig_links,
+                    &r.ide.module_internals,
                     &scope,
                     &name,
                     include_declaration,
@@ -784,7 +745,7 @@ impl ServerState {
         // should return both sides — walk sig_links and union the
         // matching pair so reference lookups don't depend on which side
         // the user clicked.
-        let mut ids: Vec<graphix_compiler::BindId> = Vec::with_capacity(2);
+        let mut ids: Vec<BindId> = Vec::with_capacity(2);
         ids.push(starter_id);
         for l in sig_links {
             if l.sig_id == starter_id && !ids.contains(&l.impl_id) {
@@ -830,7 +791,7 @@ impl ServerState {
     /// distinguish shadowed identifiers in cross-source lookup.
     fn name_at(&self, uri: &Uri, position: lsp_types::Position) -> Option<ModPath> {
         let doc = self.documents.get(uri)?;
-        for r in doc.references.iter() {
+        for r in doc.ide.references.iter() {
             if position_in_ref(position, r) {
                 return Some(r.name.clone());
             }
@@ -851,7 +812,7 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<ModPath> {
         let doc = self.documents.get(uri)?;
-        for m in doc.module_references.iter() {
+        for m in doc.ide.module_references.iter() {
             if position_in_module_ref(position, m) {
                 return Some(m.canonical.clone());
             }
@@ -873,7 +834,7 @@ impl ServerState {
             }
         };
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for m in doc.module_references.iter() {
+            for m in doc.ide.module_references.iter() {
                 if &m.canonical == canonical {
                     push(m, out);
                 }
@@ -881,7 +842,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for m in r.module_references.iter() {
+                for m in r.ide.module_references.iter() {
                     if &m.canonical == canonical {
                         push(m, out);
                     }
@@ -898,14 +859,14 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<(ModPath, ModPath)> {
         let doc = self.documents.get(uri)?;
-        for t in doc.lsp.type_refs.iter() {
+        for t in doc.ide.type_refs.iter() {
             if position_in_type_ref(position, t) {
                 return Some((t.canonical_scope.clone(), t.name.clone()));
             }
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.lsp.type_refs.iter() {
+                for t in r.ide.type_refs.iter() {
                     if origin_matches_uri(&t.ori, uri)
                         && position_in_type_ref(position, t)
                     {
@@ -930,7 +891,7 @@ impl ServerState {
             }
         };
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for t in doc.lsp.type_refs.iter() {
+            for t in doc.ide.type_refs.iter() {
                 if &t.canonical_scope == canonical_scope && &t.name == name {
                     push(t, out);
                 }
@@ -938,7 +899,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.lsp.type_refs.iter() {
+                for t in r.ide.type_refs.iter() {
                     if &t.canonical_scope == canonical_scope && &t.name == name {
                         push(t, out);
                     }
@@ -960,7 +921,7 @@ impl ServerState {
         let take =
             |t: &TypeRefSite| self.ref_to_location(requesting_uri, &t.def_ori, t.def_pos);
         if let Some(doc) = self.documents.get(requesting_uri) {
-            for t in doc.lsp.type_refs.iter() {
+            for t in doc.ide.type_refs.iter() {
                 if &t.canonical_scope == canonical_scope && &t.name == name {
                     return take(t);
                 }
@@ -968,7 +929,7 @@ impl ServerState {
         }
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.lsp.type_refs.iter() {
+                for t in r.ide.type_refs.iter() {
                     if &t.canonical_scope == canonical_scope && &t.name == name {
                         return take(t);
                     }
@@ -986,7 +947,7 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<lsp_types::Location> {
         let doc = self.documents.get(uri)?;
-        for t in doc.lsp.type_refs.iter() {
+        for t in doc.ide.type_refs.iter() {
             if position_in_type_ref(position, t) {
                 return self.ref_to_location(uri, &t.def_ori, t.def_pos);
             }
@@ -994,7 +955,7 @@ impl ServerState {
         // Also try any project's type_references (cross-file).
         for r in &self.project_results {
             if let Some(r) = r {
-                for t in r.lsp.type_refs.iter() {
+                for t in r.ide.type_refs.iter() {
                     // Match by file ori source equality on the use side
                     // (the use site lives in this URI).
                     if origin_matches_uri(&t.ori, uri)
@@ -1053,13 +1014,9 @@ impl ServerState {
     /// active doc's `sig_links` plus every project's. Sig and impl ids
     /// are minted per compile, so stale lookups across compiles don't
     /// match — but find-references is consulted on the latest check.
-    fn sig_link_impl_for(
-        &self,
-        uri: &Uri,
-        sig_id: graphix_compiler::BindId,
-    ) -> Option<graphix_compiler::BindId> {
+    fn sig_link_impl_for(&self, uri: &Uri, sig_id: BindId) -> Option<BindId> {
         if let Some(doc) = self.documents.get(uri) {
-            for l in doc.lsp.sig_links.iter() {
+            for l in doc.ide.sig_links.iter() {
                 if l.sig_id == sig_id {
                     return Some(l.impl_id);
                 }
@@ -1067,7 +1024,7 @@ impl ServerState {
         }
         for idx in self.projects_containing(uri) {
             if let Some(Some(r)) = self.project_results.get(idx) {
-                for l in r.lsp.sig_links.iter() {
+                for l in r.ide.sig_links.iter() {
                     if l.sig_id == sig_id {
                         return Some(l.impl_id);
                     }
@@ -1082,13 +1039,13 @@ impl ServerState {
     fn module_internals_for<'a>(&'a self, uri: &Uri) -> Vec<&'a ModuleInternalView> {
         let mut out = Vec::new();
         if let Some(doc) = self.documents.get(uri) {
-            for v in doc.lsp.module_internals.iter() {
+            for v in doc.ide.module_internals.iter() {
                 out.push(v);
             }
         }
         for idx in self.projects_containing(uri) {
             if let Some(Some(r)) = self.project_results.get(idx) {
-                for v in r.lsp.module_internals.iter() {
+                for v in r.ide.module_internals.iter() {
                     out.push(v);
                 }
             }
@@ -1100,14 +1057,11 @@ impl ServerState {
         &self,
         uri: &Uri,
         position: lsp_types::Position,
-    ) -> Option<(SourcePosition, graphix_compiler::expr::Origin)> {
+    ) -> Option<(SourcePosition, Origin)> {
         let doc = self.documents.get(uri)?;
-        for r in doc.references.iter() {
+        for r in doc.ide.references.iter() {
             if position_in_ref(position, r) {
-                return Some((
-                    r.def_pos,
-                    graphix_compiler::expr::Origin::clone(&r.def_ori),
-                ));
+                return Some((r.def_pos, Origin::clone(&r.def_ori)));
             }
         }
         None
@@ -1124,8 +1078,11 @@ impl ServerState {
         position: lsp_types::Position,
     ) -> Option<lsp_types::Location> {
         let doc = self.documents.get(uri)?;
-        let target =
-            doc.module_references.iter().find(|m| position_in_module_ref(position, m))?;
+        let target = doc
+            .ide
+            .module_references
+            .iter()
+            .find(|m| position_in_module_ref(position, m))?;
         // Prefer this site's own def_ori if the resolver attached one.
         if let Some(ori) = target.def_ori.as_ref() {
             return self.module_origin_to_location(uri, ori);
@@ -1135,10 +1092,10 @@ impl ServerState {
         // `mod foo;` declaration in the project's main file.
         let canonical = &target.canonical;
         let mut search: LPooled<Vec<&ModuleRefSite>> = LPooled::take();
-        search.extend(doc.module_references.iter());
+        search.extend(doc.ide.module_references.iter());
         for r in &self.project_results {
             if let Some(r) = r {
-                search.extend(r.module_references.iter());
+                search.extend(r.ide.module_references.iter());
             }
         }
         search
@@ -1206,7 +1163,7 @@ impl ServerState {
     /// Symbols for a `.gxi` interface file. Parses the text as a Sig
     /// and emits one entry per `val`/`type`/`mod`/`use` item.
     fn gxi_document_symbols(&self, text: &str) -> Vec<lsp_types::DocumentSymbol> {
-        use graphix_compiler::expr::{parser, Origin, SigKind, Source};
+        use graphix_compiler::expr::{Origin, SigKind, Source, parser};
         let ori = Origin {
             parent: None,
             source: Source::Unspecified,
@@ -1269,7 +1226,7 @@ impl ServerState {
     /// the file's parse, filtered by `query` (case-insensitive
     /// substring).
     pub fn workspace_symbols(&self, query: &str) -> Vec<lsp_types::SymbolInformation> {
-        use graphix_compiler::expr::{parser, Origin, SigKind, Source};
+        use graphix_compiler::expr::{Origin, SigKind, Source, parser};
         let needle = query.to_ascii_lowercase();
         let matches = |name: &str| -> bool {
             needle.is_empty() || name.to_ascii_lowercase().contains(&needle)
@@ -1302,7 +1259,7 @@ impl ServerState {
         };
         let mut out = Vec::new();
         for path in scoped_files {
-            let Some(uri) = crate::uri::path_to_uri(path) else {
+            let Some(uri) = path_to_uri(path) else {
                 continue;
             };
             // Prefer the open-buffer text so unsaved edits are
@@ -1390,33 +1347,32 @@ impl ServerState {
     /// for every binding-shaped item (`let`, `type`, `mod`).
     fn walk_gx_for_workspace_symbols(
         &self,
-        e: &graphix_compiler::expr::Expr,
+        e: &Expr,
         uri: &Uri,
         text: &str,
         matches: &impl Fn(&str) -> bool,
         out: &mut Vec<lsp_types::SymbolInformation>,
     ) {
         use graphix_compiler::expr::{ExprKind, StructurePattern};
-        let mut push = |name: String,
-                        kind: lsp_types::SymbolKind,
-                        pos: graphix_compiler::SourcePosition| {
-            if !matches(&name) {
-                return;
-            }
-            let line = pos.line.saturating_sub(1).max(0) as u32;
-            let char_col = pos.column.saturating_sub(1).max(0) as usize;
-            let p = self.lsp_position_from_char_col(text, line, char_col);
-            let range = lsp_types::Range { start: p, end: p };
-            #[allow(deprecated)]
-            out.push(lsp_types::SymbolInformation {
-                name,
-                kind,
-                tags: None,
-                deprecated: None,
-                location: lsp_types::Location { uri: uri.clone(), range },
-                container_name: None,
-            });
-        };
+        let mut push =
+            |name: String, kind: lsp_types::SymbolKind, pos: SourcePosition| {
+                if !matches(&name) {
+                    return;
+                }
+                let line = pos.line.saturating_sub(1).max(0) as u32;
+                let char_col = pos.column.saturating_sub(1).max(0) as usize;
+                let p = self.lsp_position_from_char_col(text, line, char_col);
+                let range = lsp_types::Range { start: p, end: p };
+                #[allow(deprecated)]
+                out.push(lsp_types::SymbolInformation {
+                    name,
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: lsp_types::Location { uri: uri.clone(), range },
+                    container_name: None,
+                });
+            };
         match &e.kind {
             ExprKind::Bind(b) => {
                 if let StructurePattern::Bind(name) = &b.pattern {
@@ -1613,7 +1569,7 @@ fn position_in_type_ref(pos: lsp_types::Position, t: &TypeRefSite) -> bool {
 /// True if the given Origin's source path matches the requesting URI.
 /// Internal/Unspecified always match (they're the active doc's own
 /// content); Netidx never does.
-fn origin_matches_uri(ori: &graphix_compiler::expr::Origin, uri: &Uri) -> bool {
+fn origin_matches_uri(ori: &Origin, uri: &Uri) -> bool {
     match &ori.source {
         Source::File(p) => match path_to_uri(p) {
             Some(u) => &u == uri,
@@ -1678,7 +1634,7 @@ impl ServerState {
     fn find_uri_for_internal_origin(
         &self,
         requesting_uri: &Uri,
-        ori: &graphix_compiler::expr::Origin,
+        ori: &Origin,
     ) -> Option<Uri> {
         let want = ori.text.as_str();
         if let Some(doc) = self.documents.get(requesting_uri) {
@@ -1711,7 +1667,7 @@ impl ServerState {
     fn module_origin_to_location(
         &self,
         requesting_uri: &Uri,
-        ori: &graphix_compiler::expr::Origin,
+        ori: &Origin,
     ) -> Option<lsp_types::Location> {
         let target_uri = match &ori.source {
             Source::File(p) => path_to_uri(p)?,
@@ -1736,7 +1692,7 @@ impl ServerState {
     fn ref_to_location(
         &self,
         requesting_uri: &Uri,
-        ori: &graphix_compiler::expr::Origin,
+        ori: &Origin,
         pos: SourcePosition,
     ) -> Option<lsp_types::Location> {
         let target_uri = match &ori.source {
@@ -1781,7 +1737,7 @@ fn lookup_matching_via_by_id(
     env: &Env,
     cursor_scope: &ModPath,
     part: &ModPath,
-) -> Vec<(compact_str::CompactString, graphix_compiler::env::Bind)> {
+) -> Vec<(compact_str::CompactString, Bind)> {
     let mut out = Vec::new();
     let mut seen: HashSet<compact_str::CompactString> = HashSet::new();
     for (name, bind_id) in env.lookup_matching(cursor_scope, part) {
@@ -1997,7 +1953,7 @@ fn label_prefix(text: &str, position: lsp_types::Position) -> Option<LabelCtx> {
 
 /// Build the hover popup payload for a binding. Markdown body is a
 /// graphix code fence with `name: type`, then any doc comment.
-fn bind_hover(name: &str, bind: &graphix_compiler::env::Bind) -> lsp_types::Hover {
+fn bind_hover(name: &str, bind: &Bind) -> lsp_types::Hover {
     let mut contents =
         format!("```graphix\n{}: {}\n```", name, format_bind_type(&bind.typ));
     if let Some(d) = &bind.doc {
@@ -2015,14 +1971,14 @@ fn bind_hover(name: &str, bind: &graphix_compiler::env::Bind) -> lsp_types::Hove
 
 /// Find a binding whose declaration position covers the cursor.
 /// Catches hovers on function parameters and let-binding names —
-/// declarations don't appear in `doc.references`, but they're recorded
+/// declarations don't appear in `doc.ide.references`, but they're recorded
 /// in `ide_binds` along with `(pos, ori, name)`. Filtering by the
 /// active URI keeps multi-file workspace checks from cross-talking.
 fn bind_at_decl<'a>(
     env: &'a Env,
     uri: &Uri,
     position: lsp_types::Position,
-) -> Option<&'a graphix_compiler::env::Bind> {
+) -> Option<&'a Bind> {
     for (_, defs) in &env.ide_binds {
         for (_, b) in defs {
             if !origin_matches_uri(&b.ori, uri) {
@@ -2043,10 +1999,7 @@ fn bind_at_decl<'a>(
 /// IDE-only mirror still has the type and doc. ide_binds is keyed by
 /// (scope, name) not by BindId, so we have to scan; n is small enough
 /// at IDE speeds that this is fine.
-fn bind_for_id(
-    env: &Env,
-    id: graphix_compiler::BindId,
-) -> Option<&graphix_compiler::env::Bind> {
+fn bind_for_id(env: &Env, id: BindId) -> Option<&Bind> {
     if let Some(b) = env.by_id.get(&id) {
         return Some(b);
     }
@@ -2157,9 +2110,9 @@ fn modpath_from_typed(s: &str) -> ModPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Origin;
     use ahash::AHashMap;
     use arcstr::literal;
-    use graphix_compiler::expr::Origin;
     use std::str::FromStr;
     use triomphe::Arc;
 
@@ -2244,6 +2197,7 @@ mod tests {
         fn env(&self) -> Env {
             Env::default()
         }
+
         fn typecheck_project(
             &self,
             _root: &std::path::Path,
@@ -2251,6 +2205,7 @@ mod tests {
         ) -> anyhow::Result<TypecheckResult> {
             anyhow::bail!("stub backend can't typecheck")
         }
+
         fn buffer_overrides(&self) -> BufferOverrides {
             self.overrides.clone()
         }
@@ -2273,13 +2228,12 @@ mod tests {
         std::fs::write(&lib_gx, "let widgetize = |n: i64| -> i64 n;\n").unwrap();
 
         let backend: std::sync::Arc<dyn LspBackend> = StubBackend::new();
-        let mut state =
-            ServerState::new(backend, false, crate::position::PositionEncoding::Utf16);
+        let mut state = ServerState::new(backend, false, PositionEncoding::Utf16);
         state.workspace_roots = vec![root.to_path_buf()];
-        state.workspace = crate::workspace::scan(&state.workspace_roots);
+        state.workspace = scan(&state.workspace_roots);
         // Mark `main.gx` as the active doc so the scope picker
         // chooses its project.
-        state.last_active_uri = crate::uri::path_to_uri(&main_gx).map(|u| u);
+        state.last_active_uri = path_to_uri(&main_gx).map(|u| u);
 
         // Empty query returns everything.
         let all = state.workspace_symbols("");

@@ -1,6 +1,6 @@
 use super::{
-    into_borrowed_lines, validate, AlignmentV, LinesV, ScrollV, StyleV, TRef, TuiW,
-    TuiWidget,
+    AlignmentV, LinesV, ScrollV, StyleV, TRef, TuiW, TuiWidget, into_borrowed_lines,
+    validate,
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -10,9 +10,9 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::Value;
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Paragraph, Wrap},
-    Frame,
 };
 use tokio::try_join;
 

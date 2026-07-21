@@ -1,5 +1,5 @@
 use super::{
-    csep, fname, ident, not_prefix, sep_by1_tok, sep_by_tok, spaces, spaces1, spfname,
+    csep, fname, ident, not_prefix, sep_by_tok, sep_by1_tok, spaces, spaces1, spfname,
     spstring, sptoken, typname,
 };
 use crate::{
@@ -9,14 +9,14 @@ use crate::{
 use ahash::AHashSet;
 use arcstr::ArcStr;
 use combine::{
-    attempt, between, choice, look_ahead, not_followed_by, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, look_ahead,
+    not_followed_by, optional,
     parser::char::{alpha_num, string},
     position, sep_by1,
-    stream::{position::SourcePosition, Range},
-    token, unexpected_any, value, ParseError, Parser, RangeStream,
+    stream::{Range, position::SourcePosition},
+    token, unexpected_any, value,
 };
 use netidx::{publisher::Typ, utils::Either};
-use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -77,7 +77,7 @@ where
     .skip(not_prefix())
 }
 
-fn fnconstraints<I>() -> impl Parser<I, Output = Arc<RwLock<LPooled<Vec<(TVar, Type)>>>>>
+fn fnconstraints<I>() -> impl Parser<I, Output = LPooled<Vec<(TVar, Type)>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -93,10 +93,7 @@ where
                 token('>'),
             ),
         )))
-        .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| match cs {
-            Some(cs) => Arc::new(RwLock::new(cs)),
-            None => Arc::new(RwLock::new(LPooled::take())),
-        })
+        .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| cs.unwrap_or_else(LPooled::take))
 }
 
 fn fnlabeled<I>() -> impl Parser<I, Output = FnArgType>
@@ -143,7 +140,7 @@ where
                 ))
             }),
             csep(),
-            token(')'),
+            attempt(sptoken(')')),
         ),
     ))
 }
@@ -192,16 +189,34 @@ where
             }
             let explicit_throws = throws.is_some();
             let throws = throws.unwrap_or(Type::Bottom);
-            value(FnType {
+            let ft = FnType {
                 args,
                 vargs,
                 rtype,
-                constraints,
                 throws,
                 explicit_throws,
+                quantifiers: Arc::from_iter(
+                    constraints.iter().map(|(tv, _)| tv.name.clone()),
+                ),
                 ..Default::default()
-            })
-            .right()
+            };
+            // Quantifier constraints seed CELLS (phase C — the cells
+            // are the only store). Alias the signature's same-named
+            // tvars to the quantifier tvars FIRST so the conjunct
+            // lands in the one cell every occurrence shares; the
+            // constraint types' own tvars go through the same map.
+            {
+                let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+                for (tv, _) in constraints.iter() {
+                    known.insert(tv.name.clone(), tv.clone());
+                }
+                ft.alias_tvars(&mut known);
+                for (tv, tc) in constraints.iter() {
+                    tc.alias_tvars(&mut known);
+                    tv.add_cell_constraint(tc.clone());
+                }
+            }
+            value(ft).right()
         })
 }
 
@@ -301,13 +316,13 @@ where
                 let params = params
                     .map(|mut a| Arc::from_iter(a.drain(..)))
                     .unwrap_or_else(|| Arc::from_iter([]));
-                Type::Ref(TypeRef {
-                    scope: ModPath::root(),
-                    name: n,
+                Type::Ref(TypeRef::new(
+                    ModPath::root(),
+                    n,
                     params,
-                    pos: Some(pos),
-                    ori: Some(crate::expr::get_origin()),
-                })
+                    Some(pos),
+                    Some(crate::expr::get_origin()),
+                ))
             },
         )
 }
@@ -319,7 +334,11 @@ parser! {
         spaces().with(choice((
             token('&').with(typ()).map(|t| Type::ByRef(Arc::new(t))),
             token('_').map(|_| Type::Bottom),
-            between(token('['), sptoken(']'), sep_by_tok(typ(), csep(), token(']')))
+            between(
+                token('['),
+                sptoken(']'),
+                sep_by_tok(typ(), csep(), attempt(sptoken(']'))),
+            )
                 .map(|mut ts: LPooled<Vec<Type>>| Type::flatten_set(ts.drain(..))),
             tupletyp(),
             structtyp(),

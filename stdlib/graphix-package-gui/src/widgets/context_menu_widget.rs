@@ -1,10 +1,12 @@
 use iced_core::{
-    keyboard, layout, mouse, overlay, renderer, touch, widget, Clipboard, Element, Event,
-    Layout, Length, Point, Rectangle, Shell, Size, Vector, Widget,
+    Clipboard, Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Vector,
+    Widget, keyboard, layout, mouse, overlay, renderer, touch, widget,
 };
 
-use super::menu_bar_widget::{MenuGroupDesc, MenuItemDesc, MenuOverlay};
-use super::{Message, Renderer};
+use super::{
+    Message, Renderer,
+    menu_bar_widget::{MenuGroupDesc, MenuItemDesc, MenuOverlay},
+};
 use crate::theme::GraphixTheme;
 
 #[derive(Default)]

@@ -1,4 +1,4 @@
-use super::{into_borrowed_line, HighlightSpacingV, LineV, StyleV, TuiW, TuiWidget};
+use super::{HighlightSpacingV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -7,9 +7,9 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::Value;
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{List, ListState},
-    Frame,
 };
 use tokio::try_join;
 
@@ -27,8 +27,16 @@ pub(super) struct ListW<X: GXExt> {
 
 impl<X: GXExt> ListW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, highlight_spacing), (_, highlight_style), (_, highlight_symbol), (_, items), (_, repeat_highlight_symbol), (_, scroll), (_, selected), (_, style)] =
-            v.cast_to::<[(ArcStr, u64); 8]>().context("list fields")?;
+        let [
+            (_, highlight_spacing),
+            (_, highlight_style),
+            (_, highlight_symbol),
+            (_, items),
+            (_, repeat_highlight_symbol),
+            (_, scroll),
+            (_, selected),
+            (_, style),
+        ] = v.cast_to::<[(ArcStr, u64); 8]>().context("list fields")?;
         let (
             highlight_spacing,
             highlight_style,

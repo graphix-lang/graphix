@@ -1,0 +1,15 @@
+// jul18d ryouko fuzz crash_000000 (SIGSEGV, minimized): the RESULT
+// twin of 03's arg seam. Inference widens the map CALLSITE's node
+// type to f's param union `[null, Array<i64>]`, so the jul17a arg
+// normalization gate ("node already value-shaped — skip wrapping")
+// passes it through raw — but the inline collection loop emits per
+// the collection lambda's OWN return shape (Array), handing f a raw
+// `*mut ValArray` box pointer as a Value payload. The runtime later
+// dereferenced box header words as a ThinArc. Fixed by
+// `widen_result_to_value` at both call-result seams (the GXLambda
+// collection hook + `emit_lambda_call_node`): a callsite whose node
+// type promises a 2-word Value wraps its callee-shaped result into a
+// genuine owned Value (`graphix_value_new_from_array` / new_string /
+// scalar packing), flags folded through; the depth-trip placeholder
+// follows the node type so both merge edges pair. Interp [1, 0] fine.
+{let f = |v: [null, Array<i64>]| v; f(array::map([i64:1, null], |v| select v {i64 as n => n, null as _ => i64:0}))}

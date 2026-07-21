@@ -1,0 +1,8 @@
+// bisect: fusion/JIT firing bug (soak-jul13b reactive_divergence_000000
+// — the leaf-stale-mask class, see 00_minimal_connect_refire.gx).
+// Reactive flavor: the destructure-fold's result re-emitted on every
+// in0 epoch (with the stale cached value) even though its source is
+// constant and its init arg only seeds the acc. All four reactive
+// findings in the soak were this shape.
+// schedule-v1: cap=64 events=512; in0=i64:1
+{let v0: i64 = array::fold([(i64:42, false)], in0, |v0, (v1, v2)| v1); let v1 = { last: i64:0, n: i64:0 }; v1 <- in0 ~ { v1 with last: in0, n: v1.n + i64:1 }; let v2 = v1.n * i64:100 + v1.last; (v2 - v0)}

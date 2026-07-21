@@ -1,8 +1,10 @@
 use super::parser;
 use netidx::path::Path;
+use netidx_derive::Pack;
 use std::{borrow::Borrow, fmt, ops::Deref, result, str::FromStr};
 
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash, Pack)]
+#[pack(unwrapped)]
 pub struct ModPath(pub Path);
 
 impl FromStr for ModPath {

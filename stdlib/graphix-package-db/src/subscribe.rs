@@ -1,12 +1,12 @@
 use anyhow::Result;
-use futures::{channel::mpsc, SinkExt};
+use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BindId, BuiltIn, CustomBuiltinType, Event, ExecCtx,
-    Node, Rt, Scope, UserEvent, CBATCH_POOL,
+    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
+    Scope, UserEvent, effects::EffectKind, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
-use netidx_value::{abstract_type::AbstractWrapper, Abstract, ValArray, Value};
+use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
 use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
@@ -20,8 +20,10 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::encoding::{decode_key, decode_value, encode_key, key_struct, kv_struct};
-use crate::tree::TreeValue;
+use crate::{
+    encoding::{decode_key, decode_value, encode_key, key_struct, kv_struct},
+    tree::TreeValue,
+};
 
 // ── Subscription types ────────────────────────────────────────────
 
@@ -125,8 +127,8 @@ pub(crate) struct DbSubscribe {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "db_subscription_new";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -148,8 +150,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         event: &mut Event<E>,
     ) -> Option<Value> {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
-        let prefix_val = from[0].update(ctx, event);
-        let tree_changed = from[1].update(ctx, event);
+        let prefix_val = from[0].update(ctx, event).map(|tv| tv.value());
+        let tree_changed = from[1].update(ctx, event).map(|tv| tv.value());
         let tree_is_new = tree_changed.is_some();
         if let Some(v) = tree_changed {
             self.tree_val = Some(v);
@@ -208,6 +210,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.tree_val = None;
     }
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.tree_val = None;
+    }
+
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
@@ -249,8 +255,8 @@ macro_rules! db_event_accessor {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+            const EFFECT: EffectKind = EffectKind::Async;
             const NAME: &str = $builtin_name;
-            const NEEDS_CALLSITE: bool = false;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
@@ -293,6 +299,10 @@ macro_rules! db_event_accessor {
                     ctx.rt.unref_var(bid, self.top_id);
                 }
                 self.cached.clear();
+            }
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                self.cached.clear()
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

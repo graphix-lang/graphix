@@ -2,22 +2,28 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::{
-    errf, typ::FnType, typ::Type, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
+    ExecCtx, Node, Rt, Scope, UserEvent,
+    effects::EffectKind,
+    errf,
+    typ::{FnType, Type},
 };
 use graphix_package_core::{
-    extract_cast_type, is_struct, CachedArgs, CachedArgsAsync, CachedVals, EvalCached,
-    EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    extract_cast_type, is_struct,
 };
-use graphix_package_sys::{get_stream, StreamKind};
+use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
 use std::sync::Arc;
-use tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 use triomphe::Arc as TArc;
 
 // ── TOML ↔ Value conversion ──────────────────────────────────────
@@ -128,9 +134,9 @@ struct TomlReadEv {
 }
 
 impl EvalCachedAsync for TomlReadEv {
-    const NAME: &str = "toml_read";
-    const NEEDS_CALLSITE: bool = true;
     type Args = ReadInput;
+
+    const NAME: &str = "toml_read";
 
     fn init<R: Rt, E: UserEvent>(
         _ctx: &mut ExecCtx<R, E>,
@@ -143,22 +149,25 @@ impl EvalCachedAsync for TomlReadEv {
         Self { cast_typ: extract_cast_type(resolved) }
     }
 
-    fn typecheck<R: Rt, E: UserEvent>(
+    fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("toml::read requires a concrete return type")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if self.cast_typ.is_none() {
+            bail!("toml::read requires a concrete return type")
         }
+        Ok(())
     }
 
     fn map_value<R: Rt, E: UserEvent>(
@@ -231,8 +240,9 @@ type TomlRead = CachedArgsAsync<TomlReadEv>;
 struct TomlWriteStrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "toml_write_str";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -261,8 +271,9 @@ type TomlWriteStr = CachedArgs<TomlWriteStrEv>;
 struct TomlWriteBytesEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "toml_write_bytes";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         let pretty = cached.get::<bool>(0)?;
@@ -291,9 +302,9 @@ type TomlWriteBytes = CachedArgs<TomlWriteBytesEv>;
 struct TomlWriteStreamEv;
 
 impl EvalCachedAsync for TomlWriteStreamEv {
-    const NAME: &str = "toml_write_stream";
-    const NEEDS_CALLSITE: bool = false;
     type Args = (bool, Arc<Mutex<Option<StreamKind>>>, toml::Value);
+
+    const NAME: &str = "toml_write_stream";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let pretty = cached.get::<bool>(0)?;

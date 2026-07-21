@@ -13,10 +13,13 @@ const IS_ERR: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(is_err, IS_ERR, |v: Result<&Value>| match v {
     Ok(Value::Bool(b)) => *b,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER_ERR: &str = r#"
 {
@@ -25,15 +28,19 @@ const FILTER_ERR: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — blocked on: filter_err builtin not yet fused
 run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ERROR: &str = r#"
   error("foo")
 "#;
 
+// `error(v)` is a Sync builtin (`fn(e: 'a) -> Error<'a>`) — now fuses as a
+// value-shape `DynCall` (an error value, runtime `Value::Error(Arc)`,
+// reusing the bytes/map two-register `Value` machinery).
 run!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
@@ -46,10 +53,13 @@ const ONCE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(once, ONCE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP: &str = r#"
 {
@@ -58,6 +68,9 @@ const SKIP: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(skip, SKIP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -66,7 +79,7 @@ run!(skip, SKIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP_ZERO: &str = r#"
 {
@@ -75,6 +88,9 @@ const SKIP_ZERO: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -83,7 +99,7 @@ run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SKIP_ALL: &str = r#"
 {
@@ -92,10 +108,13 @@ const SKIP_ALL: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const TAKE: &str = r#"
 {
@@ -104,6 +123,9 @@ const TAKE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(take, TAKE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -112,7 +134,7 @@ run!(take, TAKE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const TAKE_ZERO: &str = r#"
 {
@@ -121,10 +143,13 @@ const TAKE_ZERO: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const TAKE_MORE: &str = r#"
 {
@@ -133,6 +158,9 @@ const TAKE_MORE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(take_more, TAKE_MORE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -141,7 +169,7 @@ run!(take_more, TAKE_MORE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ALL: &str = r#"
 {
@@ -152,10 +180,13 @@ const ALL: &str = r#"
 }
 "#;
 
+// Not fused, by design: `all: fn(@args: Any) -> Any` is fully dynamic
+// (`Any` args + return). The dynamism is explicit in the signature, so
+// the user gets the compatible-but-slow path predictably.
 run!(all, ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SUM: &str = r#"
 {
@@ -164,10 +195,17 @@ const SUM: &str = r#"
 }
 "#;
 
+// Not fused, by design: `sum: fn(@args: Array<Number>) -> Number`. A
+// `Number` array is heterogeneous — each element may be a different
+// number type — so the result type is genuinely dynamic and can't be a
+// concrete kernel return. The dynamism is visible in the type, so the
+// user gets the compatible-but-slow path predictably. (A monomorphic
+// `'a: Number` signature would mean a *homogeneous* array — a different,
+// narrower promise than `sum` makes.)
 run!(sum, SUM, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const PRODUCT: &str = r#"
 {
@@ -176,10 +214,14 @@ const PRODUCT: &str = r#"
 }
 "#;
 
+// Not fused, by design: same as `sum` — `product: fn(@args:
+// Array<Number>) -> Number` is dynamic over a heterogeneous numeric
+// array. This fixture's `[5, 2, 2, 1.05]` is literally mixed (i64 +
+// f64), so the runtime element type isn't statically known.
 run!(product, PRODUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(21.0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const DIVIDE: &str = r#"
 {
@@ -188,9 +230,38 @@ const DIVIDE: &str = r#"
 }
 "#;
 
+// Not fused, by design: same as `sum` — `divide` over a heterogeneous
+// `Array<Number>` is dynamic.
 run!(divide, DIVIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// min/max are VALUE-LEVEL (Eric's ruling 2026-07-08): each argument
+// compares as a whole value under graphix's total order — the old
+// recursive flatten was a bscript holdover that contradicted the
+// declared type (`min([1,2],[3])` promised an Array and returned a
+// scalar, breaking the JIT return ABI — soak jul07b).
+const MIN_VALUE_LEVEL: &str = r#"
+   min([1, 9], [3, 4])
+"#;
+
+run!(min_value_level, MIN_VALUE_LEVEL, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(9)]),
+        _ => false,
+    }
+});
+
+const MAX_VALUE_LEVEL: &str = r#"
+   max([1, 9], [3, 4])
+"#;
+
+run!(max_value_level, MAX_VALUE_LEVEL, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(4)]),
+        _ => false,
+    }
 });
 
 const MIN: &str = r#"
@@ -200,7 +271,7 @@ const MIN: &str = r#"
 run!(min, MIN, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAX: &str = r#"
    max(1, 2, 3, 4, 5, 6, 0)
@@ -209,7 +280,7 @@ const MAX: &str = r#"
 run!(max, MAX, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const AND: &str = r#"
 {
@@ -223,7 +294,7 @@ const AND: &str = r#"
 run!(and, AND, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const OR: &str = r#"
   or(false, false, true)
@@ -232,7 +303,7 @@ const OR: &str = r#"
 run!(or, OR, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const INDEX: &str = r#"
 {
@@ -241,10 +312,13 @@ const INDEX: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(index, INDEX, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const SLICE: &str = r#"
 {
@@ -253,6 +327,8 @@ const SLICE: &str = r#"
 }
 "#;
 
+// Not fused, by design: uses `sum` over `Array<Number>` slices —
+// dynamic by design (see the `sum` fixture above).
 run!(slice, SLICE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -261,7 +337,7 @@ run!(slice, SLICE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER0: &str = r#"
 {
@@ -270,12 +346,15 @@ const FILTER0: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(filter0, FILTER0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const FILTER1: &str = r#"
 {
@@ -289,7 +368,7 @@ run!(filter1, FILTER1, |v: Result<&Value>| {
         Ok(_) => false,
         Err(_) => true,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const QUEUE: &str = r#"
 {
@@ -314,7 +393,7 @@ run!(queue, QUEUE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const QUEUEFN_IMMEDIATE: &str = r#"
 {
@@ -323,12 +402,15 @@ const QUEUEFN_IMMEDIATE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(70)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const QUEUEFN_QUEUE_POP: &str = r#"
 {
@@ -340,6 +422,9 @@ const QUEUEFN_QUEUE_POP: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -348,7 +433,7 @@ run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const QUEUEFN_MULTI_ARG: &str = r#"
 {
@@ -362,6 +447,9 @@ const QUEUEFN_MULTI_ARG: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -370,7 +458,7 @@ run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 {
@@ -383,6 +471,9 @@ const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -391,7 +482,7 @@ run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Verify #count writes when the queue grows. The wrapper writes count
 // every time it pushes (pops happen via the queuefn node when triggered).
@@ -408,6 +499,9 @@ const QUEUEFN_COUNT_REF: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -416,7 +510,32 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// SOUNDNESS BOUNDARY (folding `static_resolve_fn_args` into `typecheck1`):
+// a queuefn (async wrapper) passed as a HOF callback must NOT be statically
+// resolved/fused — that would inline the inner lambda and BYPASS the queue.
+// `qf`'s bind value is a CallSite (`queuefn(...)`), not a `Lambda`, so the
+// value-based discovery in `try_static_resolve` skips it, so the collection
+// callback remains dynamic (`FuseExpect::None`). A regression that fused it
+// would flip this to `Jit`. Single-element map so the first (immediate)
+// call produces a value: `qf(7) -> 70`.
+const QUEUEFN_HOF_CALLBACK: &str = r#"
+{
+  let qf = queuefn(#trigger: never(), |x: i64| -> i64 x * 10);
+  array::map([i64:7], qf)
+}
+"#;
+
+run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::I64(70)] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Verify the wrapped fn is called when the wrapper output is fed back to
 // the trigger. Each pop allows the next to fire, so all queued
@@ -431,6 +550,9 @@ const QUEUEFN_FEEDBACK_DRAIN: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -441,7 +563,7 @@ run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Trigger arriving before any wrapper invocations should bank pop_count, so
 // later calls dispatch immediately rather than queueing.
@@ -456,6 +578,9 @@ const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_trigger_before_fn,
     QUEUEFN_TRIGGER_BEFORE_FN,
@@ -467,8 +592,7 @@ run!(
             },
             _ => false,
         }
-    }
-);
+    }; graphix_package_core::testing::FuseExpect::None);
 
 // Verify a wrapped fn with a trigger-style arg (`tick ~ x + 1000`) is not
 // fooled by queueing: each tick/x pair emits exactly once, no spurious
@@ -488,6 +612,9 @@ const QUEUEFN_TRIGGER_ARG: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_trigger_arg,
     QUEUEFN_TRIGGER_ARG,
@@ -499,8 +626,7 @@ run!(
             },
             _ => false,
         }
-    }
-);
+    }; graphix_package_core::testing::FuseExpect::None);
 
 // The point of queuefn is to protect an async-side-effecting fn from being
 // re-entered before its current invocation has produced a result. This test
@@ -530,6 +656,9 @@ const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_net_subscribe,
     QUEUEFN_NET_SUBSCRIBE,
@@ -541,8 +670,7 @@ run!(
             },
             _ => false,
         }
-    }
-);
+    }; graphix_package_core::testing::FuseExpect::None);
 
 // Verify the per-cycle delta semantics. Wrapped fn only emits when its tick
 // arg fires (`tick ~ x + 1000`). Two ticks pair with two of three x values;
@@ -569,6 +697,9 @@ const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_delta_per_cycle,
     QUEUEFN_DELTA_PER_CYCLE,
@@ -577,8 +708,7 @@ run!(
             Ok(Value::I64(2)) => true,
             _ => false,
         }
-    }
-);
+    }; graphix_package_core::testing::FuseExpect::Jit);
 
 const COUNT: &str = r#"
 {
@@ -587,6 +717,9 @@ const COUNT: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(count, COUNT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -595,7 +728,7 @@ run!(count, COUNT, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SAMPLE: &str = r#"
 {
@@ -605,6 +738,9 @@ const SAMPLE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sample, SAMPLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -615,7 +751,7 @@ run!(sample, SAMPLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const UNIQ: &str = r#"
 {
@@ -624,17 +760,23 @@ const UNIQ: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(uniq, UNIQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(1)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SEQ: &str = r#"
   array::group(seq(0, 4), |n, _| n == 4)
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(seq, SEQ, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -643,7 +785,7 @@ run!(seq, SEQ, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const THROTTLE: &str = r#"
 {
@@ -653,6 +795,9 @@ const THROTTLE: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(throttle, THROTTLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -661,7 +806,7 @@ run!(throttle, THROTTLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NEVER: &str = r#"
 {
@@ -675,7 +820,7 @@ run!(never, NEVER, |v: Result<&Value>| {
         Ok(Value::I64(0)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MEAN: &str = r#"
 {
@@ -689,18 +834,21 @@ run!(mean, MEAN, |v: Result<&Value>| {
         Ok(Value::F64(1.5)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const RAND: &str = r#"
   rand::rand(#clock:null)
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(rand, RAND, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(v)) if *v >= 0. && *v < 1.0 => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RAND_PICK: &str = r#"
   rand::pick(["Chicken is coming", "Grape", "Pilot!"])
@@ -711,7 +859,7 @@ run!(rand_pick, RAND_PICK, |v: Result<&Value>| {
         Ok(Value::String(v)) => v == "Chicken is coming" || v == "Grape" || v == "Pilot!",
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const RAND_SHUFFLE: &str = r#"
   rand::shuffle(["Chicken is coming", "Grape", "Pilot!"])
@@ -726,7 +874,7 @@ run!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
         }
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_BASIC: &str = r#"
 {
@@ -739,7 +887,7 @@ const HOLD_BASIC: &str = r#"
 run!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_MULTIPLE: &str = r#"
 {
@@ -751,10 +899,14 @@ const HOLD_MULTIPLE: &str = r#"
 }
 "#;
 
+// The hold call itself node-walks (hold is deliberately Async: it is
+// update-history-sensitive and the DynCall protocol re-delivers every
+// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
+// the scalar sub-regions around it fuse.
 run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_NO_TRIGGER: &str = r#"
 {
@@ -764,10 +916,14 @@ const HOLD_NO_TRIGGER: &str = r#"
 }
 "#;
 
+// The hold call itself node-walks (hold is deliberately Async: it is
+// update-history-sensitive and the DynCall protocol re-delivers every
+// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
+// the scalar sub-regions around it fuse.
 run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
 {
@@ -778,14 +934,85 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 }
 "#;
 
+// The hold call itself node-walks (hold is deliberately Async: it is
+// update-history-sensitive and the DynCall protocol re-delivers every
+// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
+// the scalar sub-regions around it fuse.
 run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     Ok(Value::I64(300)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NOW: &str = r#"sys::time::now(null)"#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(now, NOW, |v: Result<&Value>| match v {
     Ok(Value::DateTime(_)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
+
+const ONCE_TAINTED_NOT_COUNTED: &str = r#"
+{
+  let v = i64:0;
+  let x = once({
+    let rec f = |n: i64| -> i64 select n {
+      m if m <= i64:0 => (m / m),
+      m => f(m - i64:1)
+    };
+    let v = f(i64:1);
+    let r = &v;
+    *r <- i64:1;
+    select v {
+      x if true => i64:200,
+      x => x
+    }
+  } * i64:2);
+  [v, x]
+}
+"#;
+
+run!(
+    once_tainted_not_counted,
+    ONCE_TAINTED_NOT_COUNTED,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => {
+                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                    == vec![0, 400]
+            }
+            _ => false,
+        }
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+const TVAL_UNION_BLIND_PRINT: &str = r#"
+{
+  let a = [i64:0, ("foo", f64:42.)];
+  let out = select a {
+    [x, tl..] => tl,
+    _ => never()
+  };
+  "[array::group(out, |i, x| true)]"
+}
+"#;
+
+// TVal's union-member selection must prefer INFORMATIVE members: the
+// never() arm's cell terminal-settles to ⊥, which (like Any and an
+// unbound tvar) is_a-matches ANY value, so first-match printed the
+// tuple element type-blind (as an array) — and mode-dependently, since
+// fusion's binding checks settle the cell differently (jul19f
+// divergence_000000, pinned tval-union-blind-print-jul2026).
+run!(
+    tval_union_blind_print,
+    TVAL_UNION_BLIND_PRINT,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::String(s)) => &**s == r#"[[("foo", 42)]]"#,
+            _ => false,
+        }
+    };
+    graphix_package_core::testing::FuseExpect::None
+);

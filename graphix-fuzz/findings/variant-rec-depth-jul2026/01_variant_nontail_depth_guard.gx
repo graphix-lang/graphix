@@ -1,0 +1,19 @@
+// bisect: soak jul05 item 12 family — the original crasher
+// (`{let rec f = |n| select i64:3 {i64:0 => `Varint(u64:127), _ =>
+// n + f(n - i64:1)}; f(i64:3)}`) stack-overflowed the JIT: the
+// pre-fix recursion typing laundered the [variant, i64] union to Any
+// and a kernel fused over the wrong ABI. That program is ill-typed
+// (`n + f(...)` where f can return a variant) and now REJECTS at
+// compile in both modes (the mono-recursion knot + honest unions).
+// This pin is the WELL-TYPED twin: an unannotated variant-returning
+// non-tail recursion at depth 1M — the type infers [`A, `B]
+// honestly, the region de-fuses (variant-return recursion has no
+// native path), and BOTH modes bottom at the call-depth guard:
+// empty-trace agreement.
+{
+  let rec f = |n: i64| select n {
+    i64:0 => `A,
+    _ => select f(n - i64:1) { `A => `B, `B => `A }
+  };
+  select f(i64:1000000) { `A => i64:1, `B => i64:2 }
+}

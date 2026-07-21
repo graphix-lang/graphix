@@ -3,9 +3,8 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::Result;
-use arcstr::{literal, ArcStr};
-use graphix_compiler::errf;
-use graphix_compiler::{ExecCtx, Rt, UserEvent};
+use arcstr::{ArcStr, literal};
+use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
@@ -30,8 +29,9 @@ struct IsMatchEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsMatchEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_is_match";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -56,8 +56,9 @@ struct FindEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FindEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_find";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -85,8 +86,9 @@ struct CapturesEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for CapturesEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_captures";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -118,8 +120,9 @@ struct SplitEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_split";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {
@@ -146,8 +149,9 @@ struct SplitNEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitNEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "re_splitn";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         if let Some(Value::String(s)) = &from.0[0] {

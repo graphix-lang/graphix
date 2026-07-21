@@ -1,0 +1,17 @@
+// bisect: fusion/JIT WRONG-VALUE bug, nondeterministic — soak jul07h
+// fuzz/divergence_000001, the first wrong-answer manifestation of the
+// fusion-shape flap (task #19). A callee kernel (`helper`) inlines a
+// fold whose callback captures helper's param `x`; when the capture's
+// instantiation BindId drifted (run-to-run, the type/shape flap),
+// JitEnv::lookup's unrestricted NAME fallback resolved `x` to the fold
+// ELEMENT binding — which FoldQ name-binds as literally "x" — so slot
+// 1 read the element 3 instead of the captured 5: interp 19, jit 17
+// on ~5/6 runs (19 on the rest). FIXED: the name fallback serves only
+// id-LESS synthetic locals; a same-named local with a DIFFERENT real
+// id is a distinct binding, and a missed capture id Errs the site (the
+// region de-fuses — never a wrong answer). The never-by-name
+// discipline of audit-jul2026/03, applied to the emit env. The id
+// DRIFT itself is the still-open #19 investigation.
+// mutant: {use array; let helper = |x: i64| -> i64 array::fold([x, i64:3], i64:0, |a, b| a + x + i64:1 * b); let outer = |x: i64| -> i64 helper(x) + i64:1; outer(i64:5)}
+// minimized:
+{f64:0.; let helper = |x: i64| -> i64 array::fold([x, i64:3], i64:0, |a, b| a + x + i64:1 * b); let outer = |x: i64| -> i64 helper(x) + i64:1; outer(i64:5)}

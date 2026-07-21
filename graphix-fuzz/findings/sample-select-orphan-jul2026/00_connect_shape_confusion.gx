@@ -1,0 +1,12 @@
+// bisect: typecheck unsoundness (soak-jul14b fuzz divergence_000005).
+// `Sample::compile` snapshotted its RHS type before typecheck;
+// Select::typecheck0 REPLACES its typ field (finding-37 orphan class),
+// so `st <- in0 ~ select {...}` checked the connect against the
+// select's pre-typecheck EMPTY primitive set — contained by anything —
+// and a {b, y} struct flowed into a {last, n}-typed binding. The JIT
+// then read fields by declared offset (i64:42) while the node-walk's
+// Value arith promoted (f64:42.). Sample::typecheck0 now re-reads the
+// RHS type after checking children; this program is a compile error in
+// both modes.
+// schedule-v1: cap=64 events=512; in0=i64:0
+{let st = { last: i64:0, n: i64:0 }; st <- in0 ~ select i64:100 {i64:42 => { b: f64:1., y: cast<i64>(u8:2)$ }, _ => { b: f64:0., y: i64:42 }}; st.n * i64:1 - st.last}

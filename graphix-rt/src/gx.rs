@@ -1,16 +1,15 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use futures::{channel::mpsc, future::try_join_all, StreamExt};
+use futures::{StreamExt, channel::mpsc, future::try_join_all};
 use graphix_compiler::{
-    compile,
+    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope, compile,
     expr::{
-        self, read_to_arcstr, Expr, ExprId, ExprKind, ModPath, ModuleResolver, Origin,
-        Source,
+        self, Expr, ExprId, ExprKind, ModPath, ModuleResolver, Origin, Source,
+        read_to_arcstr,
     },
     node::{genn, lambda::LambdaDef},
     typ::Type,
-    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope,
 };
 use indexmap::IndexMap;
 use log::{debug, error, info};
@@ -25,15 +24,18 @@ use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
 };
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::{
-    collections::{hash_map::Entry, VecDeque},
+    collections::{VecDeque, hash_map::Entry},
     future, mem, result,
     time::Duration,
 };
 use tokio::{
     fs, select,
-    sync::mpsc::{self as tmpsc, error::SendTimeoutError, UnboundedReceiver},
+    sync::{
+        mpsc::{self as tmpsc, UnboundedReceiver, error::SendTimeoutError},
+        oneshot,
+    },
     task::{JoinError, JoinSet},
     time::{self, Instant},
 };
@@ -41,11 +43,112 @@ use triomphe::Arc;
 
 use crate::{
     Callable, CallableId, CompExp, CompRes, GXConfig, GXEvent, GXExt, GXHandle, GXRt,
-    Ref, ToGX, UpdateBatch, WriteBatch,
+    Ref, ToGX, TraceEvent, TraceSegment, UpdateBatch, WriteBatch,
 };
 
+static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
+    std::sync::LazyLock::new(|| Pool::new(4, 8192));
+
+/// Runtime-side trace recording (see [`GXHandle::trace_start`]). The
+/// invariant everything here serves: what gets recorded is a pure
+/// function of the traced program's own event stream — never of when
+/// control messages happened to arrive — so two runs of the same
+/// program produce comparable traces. That is why both budgets are
+/// fixed at `trace_start`, why only ACTIVE cycles (cycles in which a
+/// traced node emitted) count against `max_cycles`, and why tripping
+/// either cap silences the trace permanently instead of just closing
+/// the current segment.
+struct TraceState {
+    events: GPooled<Vec<TraceEvent>>,
+    max_events: usize,
+    max_cycles: u64,
+    /// active cycles since the last segment boundary
+    active_cycles: u64,
+    emitted_this_cycle: bool,
+    capped_cycles: bool,
+    capped_events: bool,
+    waiter: Option<oneshot::Sender<Option<TraceSegment>>>,
+}
+
+impl TraceState {
+    fn new(max_events: usize, max_cycles: u64) -> Self {
+        Self {
+            events: TRACE_EVENTS.take(),
+            max_events,
+            max_cycles,
+            active_cycles: 0,
+            emitted_this_cycle: false,
+            capped_cycles: false,
+            capped_events: false,
+            waiter: None,
+        }
+    }
+
+    fn capped(&self) -> bool {
+        self.capped_cycles || self.capped_events
+    }
+
+    fn record(&mut self, cycle: u64, id: ExprId, v: &Value) {
+        if self.capped() {
+            return;
+        }
+        self.emitted_this_cycle = true;
+        if self.events.len() >= self.max_events {
+            self.capped_events = true;
+        } else {
+            self.events.push(TraceEvent::Updated { cycle, id, value: v.clone() });
+        }
+    }
+
+    /// Compile anchors don't count against either budget — they are
+    /// bounded by the caller's own compile calls, not by the program.
+    fn record_compiled(&mut self, cycle: u64, id: ExprId) {
+        if !self.capped() {
+            self.events.push(TraceEvent::Compiled { cycle, id });
+        }
+    }
+
+    /// Bookkeeping at the end of `do_cycle` for the cycle that just ran.
+    fn cycle_end(&mut self, cycle: u64) {
+        if mem::take(&mut self.emitted_this_cycle) {
+            self.active_cycles += 1;
+            if self.active_cycles >= self.max_cycles {
+                self.capped_cycles = true;
+            }
+        }
+        if self.capped() {
+            self.resolve(cycle)
+        }
+    }
+
+    fn wait(&mut self, res: oneshot::Sender<Option<TraceSegment>>, cycle: u64) {
+        self.waiter = Some(res);
+        if self.capped() {
+            self.resolve(cycle)
+        }
+    }
+
+    fn resolve(&mut self, end_cycle: u64) {
+        if let Some(tx) = self.waiter.take() {
+            let seg = TraceSegment {
+                events: mem::replace(&mut self.events, TRACE_EVENTS.take()),
+                end_cycle,
+                capped_cycles: self.capped_cycles,
+                capped_events: self.capped_events,
+            };
+            self.active_cycles = 0;
+            self.emitted_this_cycle = false;
+            let _ = tx.send(Some(seg));
+        }
+    }
+}
+
 fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
-    match &n.spec().kind {
+    is_output_kind(&n.spec().kind)
+}
+
+fn is_output_kind(kind: &ExprKind) -> bool {
+    match kind {
         ExprKind::Bind { .. }
         | ExprKind::Lambda { .. }
         | ExprKind::Use { .. }
@@ -56,8 +159,55 @@ fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
     }
 }
 
+/// Wrap a sequence of top-level Exprs from a file into a synthetic
+/// `ExprKind::Do`. Per the unified-fusion design (§ "Files-as-
+/// modules"), this gives the compiler ONE Expr to compile and ONE
+/// Node back — fusion runs over the whole file's graph in one
+/// pass, with cross-Bind dependencies visible because they're all
+/// inside the one Do block.
+///
+/// `Do` was chosen over `Module` for the wrap because the file's
+/// last expression value needs to propagate out as the runtime
+/// output; `Module` blocks discard their last value while `Do`
+/// blocks return it. The "file IS a module" framing in the design
+/// applies to module-resolver imports — when another file does
+/// `mod foo;` against this file, the resolver inserts a real
+/// `ExprKind::Module` in the importing file's AST. The
+/// load-execution wrap is purely an execution-time scope to make
+/// fusion see the whole file at once.
+fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
+    Expr {
+        id: ExprId::new(),
+        ori,
+        pos: Default::default(),
+        kind: ExprKind::Do { exprs },
+        dec: None,
+    }
+}
+
 async fn or_never(b: bool) {
     if !b {
+        future::pending().await
+    }
+}
+
+/// The idle-grace re-poll: when armed, wake the main loop after a
+/// short delay so the idle verdict is confirmed on a SECOND pass. A
+/// spawned task that is mid-flight (scheduled on another worker,
+/// about to deliver a var update) is invisible to every drainable
+/// queue, so a single-pass idle test raced it — the deref-echo class
+/// (soak jul05 items 3/20/24): the same program's trace verdict
+/// flipped between Timeout and empty run-to-run, in both modes
+/// independently. The grace gives an in-flight local task the
+/// scheduler time to land; a genuinely idle runtime just resolves one
+/// grace-delay later. Long-running tasks (timers, IO) still read as
+/// idle — deliberately: the oracle excludes genuinely-async programs,
+/// and counting any outstanding task as busy would Timeout every
+/// timer program forever.
+async fn idle_grace(armed: bool) {
+    if armed {
+        time::sleep(Duration::from_millis(2)).await
+    } else {
         future::pending().await
     }
 }
@@ -112,6 +262,15 @@ pub(super) struct GX<X: GXExt> {
     batch_pool: Pool<Vec<GXEvent>>,
     flags: BitFlags<CFlag>,
     commit_tasks: JoinSet<()>,
+    /// A pending `WaitResultOrIdle` request: deliver the first value the
+    /// watched expr emits, or `None` when the runtime next goes idle. See
+    /// `GXHandle::wait_result_or_idle`.
+    result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
+    /// Index of the currently-running (or next) `do_cycle`. Absolute
+    /// values are not comparable across runs — see [`TraceEvent`].
+    cycle: u64,
+    /// Active trace recording, if any. See [`GXHandle::trace_start`].
+    trace: Option<TraceState>,
 }
 
 impl<X: GXExt> GX<X> {
@@ -152,6 +311,9 @@ impl<X: GXExt> GX<X> {
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
             commit_tasks: JoinSet::new(),
+            result_watch: None,
+            cycle: 0,
+            trace: None,
         };
         let st = Instant::now();
         if let Some(root) = cfg.root {
@@ -189,12 +351,36 @@ impl<X: GXExt> GX<X> {
                 }
             };
         }
+        // Variable DELIVERY is where `Rt::cached` advances: the Vacant
+        // arm below is a value landing in `event.variables` this cycle;
+        // the Occupied arm re-queues (NOT delivered — cached must not
+        // move, or a variable set N times in one cycle would show its
+        // final value while the deliveries still had cycles to run).
+        macro_rules! push_var_event {
+            ($id:expr, $v:expr) => {
+                match self.event.variables.entry($id) {
+                    Entry::Vacant(e) => {
+                        self.ctx.rt.cached.insert($id, $v.clone());
+                        // an ordinary runtime delivery is a FIRED event
+                        e.insert(graphix_compiler::TagValue::fired($v));
+                        if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
+                            for id in exps.keys() {
+                                self.ctx.rt.updated.entry(*id).or_insert(false);
+                            }
+                        }
+                    }
+                    Entry::Occupied(_) => {
+                        self.ctx.rt.var_updates.push_back(($id, $v));
+                    }
+                }
+            };
+        }
         for _ in 0..self.ctx.rt.var_updates.len() {
             let (id, v) = self.ctx.rt.var_updates.pop_front().unwrap();
-            push_event!(id, v, variables, by_ref, var_updates)
+            push_var_event!(id, v)
         }
         for (id, v) in tasks.drain(..) {
-            push_event!(id, v, variables, by_ref, var_updates)
+            push_var_event!(id, v)
         }
         for _ in 0..self.ctx.rt.custom_updates.len() {
             let (id, u) = self.ctx.rt.custom_updates.pop_front().unwrap();
@@ -232,30 +418,96 @@ impl<X: GXExt> GX<X> {
         if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.event) {
             error!("could not marshall user events {e:?}")
         }
-        for (id, n) in self.nodes.iter_mut() {
-            if let Some(init) = self.ctx.rt.updated.get(id) {
-                let mut clear: LPooled<Vec<BindId>> = LPooled::take();
-                self.event.init = *init;
-                if self.event.init {
-                    let mut refs = Refs::default();
-                    n.refs(&mut refs);
-                    refs.with_external_refs(|id| {
-                        if let Some(v) = self.ctx.cached.get(&id) {
-                            if let Entry::Vacant(e) = self.event.variables.entry(id) {
-                                e.insert(v.clone());
-                                clear.push(id);
+        // Point the JIT interrupt helper at this runtime's control on the
+        // current worker (the cycle may run on a migrated thread).
+        graphix_compiler::fusion::emit_helpers::set_interrupt_ptr(&self.ctx.control);
+        // Run the synchronous node updates inside `block_in_place` so a
+        // wedged node (a runaway loop) doesn't starve the rest of the
+        // tokio runtime — the IO tasks and the caller that would
+        // `interrupt()`/`abort()` it. `block_in_place` only isolates on a
+        // multi-threaded runtime; on `current_thread` there's nowhere to
+        // migrate, so run inline (the abort flag still breaks the loop;
+        // IO just stalls until it does).
+        let mut run_nodes = || {
+            for (id, n) in self.nodes.iter_mut() {
+                if let Some(init) = self.ctx.rt.updated.get(id) {
+                    let mut clear: LPooled<Vec<BindId>> = LPooled::take();
+                    self.event.init = *init;
+                    if self.event.init {
+                        let mut refs = Refs::default();
+                        n.refs(&mut refs);
+                        refs.with_external_refs(|id| {
+                            if let Some(v) = self.ctx.rt.cached.get(&id) {
+                                if let Entry::Vacant(e) = self.event.variables.entry(id) {
+                                    // FIRED: an init view — the fresh
+                                    // top sees everything as new
+                                    e.insert(graphix_compiler::TagValue::fired(
+                                        v.clone(),
+                                    ));
+                                    clear.push(id);
+                                }
+                            }
+                        });
+                    }
+                    // The runtime delivery boundary is a firing FORCE
+                    // point (the kernel-output twin): only a FIRED
+                    // production becomes an event; a stale or tainted
+                    // one is dropped here.
+                    if let Some(tv) = n.update(&mut self.ctx, &mut self.event)
+                        && tv.is_fired()
+                    {
+                        let v = tv.value();
+                        let watched = matches!(
+                            self.result_watch.as_ref(),
+                            Some((wid, _)) if wid == id
+                        );
+                        if watched {
+                            if let Some((_, tx)) = self.result_watch.take() {
+                                let _ = tx.send(Some(v.clone()));
                             }
                         }
-                    });
-                }
-                if let Some(v) = n.update(&mut self.ctx, &mut self.event) {
-                    batch.push(GXEvent::Updated(*id, v))
-                }
-                for id in clear.drain(..) {
-                    self.event.variables.remove(&id);
+                        if let Some(tr) = self.trace.as_mut() {
+                            tr.record(self.cycle, *id, &v);
+                        }
+                        batch.push(GXEvent::Updated(*id, v))
+                    }
+                    // Runtime diagnostics the update produced (bottoms
+                    // the user must hear about — depth-limit trips),
+                    // attributed to this top-level expression.
+                    for d in self.ctx.diagnostics.drain(..) {
+                        batch.push(GXEvent::Diagnostic(Some(*id), d));
+                    }
+                    for id in clear.drain(..) {
+                        self.event.variables.remove(&id);
+                    }
                 }
             }
+        };
+        if matches!(
+            tokio::runtime::Handle::current().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::CurrentThread
+        ) {
+            run_nodes();
+        } else {
+            tokio::task::block_in_place(run_nodes);
         }
+        // The one-shot interrupt is consumed; abort stays sticky for the
+        // run loop's pre-cycle shutdown check. The call-depth counter
+        // resets with it — pure insurance against a leaked push, which
+        // would otherwise ratchet every later cycle toward a spurious
+        // depth limit.
+        self.ctx.control.clear_interrupt();
+        self.ctx.control.depth_reset();
+        // Diagnostics produced OUTSIDE a node update (a callable
+        // invocation, an extension cycle) have no top-level expr to
+        // attribute; forward them unattributed rather than drop them.
+        for d in self.ctx.diagnostics.drain(..) {
+            batch.push(GXEvent::Diagnostic(None, d));
+        }
+        if let Some(tr) = self.trace.as_mut() {
+            tr.cycle_end(self.cycle);
+        }
+        self.cycle += 1;
         loop {
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
                 Ok(()) => break,
@@ -299,10 +551,14 @@ impl<X: GXExt> GX<X> {
                     let _ = res.send(self.check(&path, resolvers, initial_scope).await);
                 }
                 ToGX::Compile { text, rt, res } => {
-                    let _ = res.send(self.compile(rt, text).await);
+                    let r = self.compile(rt, text).await;
+                    self.record_compiled(&r);
+                    let _ = res.send(r);
                 }
                 ToGX::Load { path, rt, res } => {
-                    let _ = res.send(self.load(rt, &path).await);
+                    let r = self.load(rt, &path).await;
+                    self.record_compiled(&r);
+                    let _ = res.send(r);
                 }
                 ToGX::Delete { id } => {
                     if let Some(mut n) = self.nodes.shift_remove(&id) {
@@ -317,9 +573,13 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
-                ToGX::Set { id, v } => {
-                    self.ctx.cached.insert(id, v.clone());
-                    tasks.push((id, v))
+                ToGX::Set { id, v } => tasks.push((id, v)),
+                ToGX::SetMany { sets } => {
+                    // One message ⇒ one input batch ⇒ every update
+                    // lands in the same cycle (see GXHandle::set_many).
+                    for (id, v) in sets {
+                        tasks.push((id, v))
+                    }
                 }
                 ToGX::DeleteCallable { id } => self.delete_callable(id),
                 ToGX::Call { id, args } => {
@@ -327,6 +587,76 @@ impl<X: GXExt> GX<X> {
                         error!("calling callable {id:?} failed with {e:?}")
                     }
                 }
+                ToGX::MatchShape { id, spec, res } => {
+                    let outcome = self
+                        .nodes
+                        .get(&id)
+                        .map(|n| graphix_compiler::node_shape::match_node(n, &spec));
+                    let _ = res.send(outcome);
+                }
+                ToGX::DescribeShape { id, res } => {
+                    let desc = self
+                        .nodes
+                        .get(&id)
+                        .map(graphix_compiler::node_shape::describe_node);
+                    let _ = res.send(desc);
+                }
+                ToGX::EnvStats { res } => {
+                    let by_id_len = self.ctx.env.by_id.len();
+                    let ref_var_keys = self.ctx.rt.by_ref.len();
+                    let ref_var_total = self
+                        .ctx
+                        .rt
+                        .by_ref
+                        .values()
+                        .map(|m| m.values().copied().sum::<usize>())
+                        .sum();
+                    let _ = res.send(crate::EnvStats {
+                        by_id_len,
+                        ref_var_keys,
+                        ref_var_total,
+                    });
+                }
+                ToGX::FusionStats { res } => {
+                    let _ = res.send(self.ctx.fusion.stats.clone());
+                }
+                ToGX::CycleReady { res } => {
+                    let _ = res.send(self.cycle_ready());
+                }
+                ToGX::WaitResultOrIdle { id, res } => {
+                    // Register the watch. `do_cycle` runs unconditionally
+                    // right after this batch, so the watch gets at least one
+                    // shot at being fulfilled (Some) before the top-of-loop
+                    // idle check fulfills it None on quiescence. A second
+                    // request supersedes any pending watch (its sender drops,
+                    // surfacing as a cancellation to that caller).
+                    self.result_watch = Some((id, res));
+                }
+                ToGX::TraceStart { max_events, max_cycles } => {
+                    // Replacing an active trace drops its pending waiter
+                    // (that caller sees a cancellation) and its events.
+                    self.trace = Some(TraceState::new(max_events, max_cycles));
+                }
+                ToGX::TraceWaitIdle { res } => match self.trace.as_mut() {
+                    None => {
+                        let _ = res.send(None);
+                    }
+                    // An already-capped trace resolves here; otherwise
+                    // the waiter resolves at the top-of-loop idle check
+                    // or when a cap trips at the end of a cycle.
+                    Some(tr) => tr.wait(res, self.cycle),
+                },
+            }
+        }
+    }
+
+    /// Record a [`TraceEvent::Compiled`] anchor for each expression of a
+    /// successful `compile`/`load`, at the moment the nodes are
+    /// registered (their init cycle is `self.cycle`, the next to run).
+    fn record_compiled(&mut self, r: &Result<CompRes<X>>) {
+        if let (Ok(cr), Some(tr)) = (r, self.trace.as_mut()) {
+            for e in cr.exprs.iter() {
+                tr.record_compiled(self.cycle, e.id);
             }
         }
     }
@@ -349,6 +679,27 @@ impl<X: GXExt> GX<X> {
         let exprs =
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
+        // Reset the unstable-bindings set for this batch. `Connect::compile`
+        // re-populates it lazily during the `compile` pass below — every
+        // `<-` site inserts the resolved BindId, so by the time the
+        // fusion passes run, the set reflects all Connect targets.
+        // Prune the static-resolution index by the OUTGOING batch's
+        // `<-` targets instead of clearing it (see the field doc,
+        // #203 + the jul12 shell resolution FLAP): stable cross-batch
+        // entries (the stdlib's exports above all) must survive into
+        // this batch, or resolution falls to the `rt.cached()`
+        // fallback — whose contents depend on whether the previous
+        // batch's init cycle has RUN yet, making FUSION a race
+        // (release shell: identical program, instances fused on some
+        // runs and node-walked on others). A `<-`-retargeted lambda
+        // is exactly the staleness the old clear guarded against, and
+        // the outgoing unstable set names each one; shadowing mints
+        // fresh BindIds, so a pruned id can never be re-inserted with
+        // a stale value.
+        for id in self.ctx.unstable_bindings.iter() {
+            self.ctx.bind_to_lambda.remove(id);
+        }
+        self.ctx.unstable_bindings.clear();
         let mut nodes = exprs
             .iter()
             .map(|e| {
@@ -361,6 +712,7 @@ impl<X: GXExt> GX<X> {
             self.ctx.rt.updated.insert(e.id, true);
             self.nodes.insert(e.id, n);
         }
+        let _ = &scope;
         Ok(())
     }
 
@@ -371,12 +723,35 @@ impl<X: GXExt> GX<X> {
         let exprs =
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
+        // Pre-scan for `<-` (Connect) targets across the whole
+        // program so the fusion call-resolution path can refuse to
+        // register those bindings. `Connect::compile` populates
+        // `ctx.unstable_bindings` with the resolved BindId as each
+        // `<-` site is compiled — clear the carry-over from a
+        // previous batch, then let compile populate.
+        // Prune the static-resolution index by the OUTGOING batch's
+        // `<-` targets instead of clearing it (see the field doc,
+        // #203 + the jul12 shell resolution FLAP): stable cross-batch
+        // entries (the stdlib's exports above all) must survive into
+        // this batch, or resolution falls to the `rt.cached()`
+        // fallback — whose contents depend on whether the previous
+        // batch's init cycle has RUN yet, making FUSION a race
+        // (release shell: identical program, instances fused on some
+        // runs and node-walked on others). A `<-`-retargeted lambda
+        // is exactly the staleness the old clear guarded against, and
+        // the outgoing unstable set names each one; shadowing mints
+        // fresh BindIds, so a pruned id can never be re-inserted with
+        // a stale value.
+        for id in self.ctx.unstable_bindings.iter() {
+            self.ctx.bind_to_lambda.remove(id);
+        }
+        self.ctx.unstable_bindings.clear();
         let mut nodes = exprs
             .iter()
             .map(|e| compile(&mut self.ctx, self.flags, &scope, e.clone()))
             .collect::<Result<LPooled<Vec<_>>>>()
             .with_context(|| ori.clone())?;
-        let exprs = exprs
+        let comp_exprs = exprs
             .iter()
             .zip(nodes.drain(..))
             .map(|(e, n)| {
@@ -387,7 +762,8 @@ impl<X: GXExt> GX<X> {
                 CompExp { id: e.id, output, typ, rt: rt.clone() }
             })
             .collect::<SmallVec<[_; 1]>>();
-        Ok(CompRes { exprs, env: self.ctx.env.clone() })
+        let _ = &scope;
+        Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() })
     }
 
     async fn load_exprs(&self, source: &Source) -> Result<(Origin, Arc<[Expr]>)> {
@@ -396,11 +772,7 @@ impl<X: GXExt> GX<X> {
                 let file = fs::canonicalize(file).await?;
                 let s = fs::read_to_string(&file).await?;
                 let s = if s.starts_with("#!") {
-                    if let Some(i) = s.find('\n') {
-                        &s[i..]
-                    } else {
-                        s.as_str()
-                    }
+                    if let Some(i) = s.find('\n') { &s[i..] } else { s.as_str() }
                 } else {
                     s.as_str()
                 };
@@ -465,22 +837,32 @@ impl<X: GXExt> GX<X> {
         resolver_override: Option<Vec<ModuleResolver>>,
         initial_scope: Option<ArcStr>,
     ) -> Result<crate::CheckResult> {
+        self.check_inner(source, resolver_override, initial_scope).await.map(|(_, r)| r)
+    }
+
+    /// Like `check`, but also returns the (post-resolve) Expr tree.
+    async fn check_inner(
+        &mut self,
+        source: &Source,
+        resolver_override: Option<Vec<ModuleResolver>>,
+        initial_scope: Option<ArcStr>,
+    ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
+        // The LSP shares one long-lived runtime across every checked file.
+        // Fusion still runs (to verify `#[native]` and check the fused
+        // graph), but a check NEVER executes its kernels — the compiled
+        // nodes are deleted below. Left alone, each file's kernels pile
+        // into the single persistent JIT module until cranelift's finalize
+        // chokes on the bloat, a cross-file crash that bricks the runtime.
+        // Reset the JIT per check so each file is hermetic, exactly like a
+        // fresh-runtime `--check`. Gated on `lsp_mode`: that's the only
+        // shared-runtime check path, and it never holds a live kernel.
+        if self.ctx.env.lsp_mode {
+            self.ctx.fusion.reset_jit_for_check()?;
+        }
         let env = self.ctx.env.clone();
-        let prev_refs = std::mem::replace(
-            &mut self.ctx.references,
-            graphix_compiler::REFERENCE_SITE_POOL.take(),
-        );
-        let prev_modrefs = std::mem::replace(
-            &mut self.ctx.module_references,
-            graphix_compiler::MODULE_REF_SITE_POOL.take(),
-        );
-        let prev_scopemap = std::mem::replace(
-            &mut self.ctx.scope_map,
-            graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
-        );
-        let prev_lsp = if self.ctx.env.lsp_mode {
-            self.ctx.env.lsp.replace(Arc::new(parking_lot::Mutex::new(
-                graphix_compiler::env::Lsp::new(),
+        let prev_ide = if self.ctx.env.lsp_mode {
+            self.ctx.env.ide.replace(Arc::new(parking_lot::Mutex::new(
+                graphix_compiler::ide::Ide::new(),
             )))
         } else {
             None
@@ -506,6 +888,15 @@ impl<X: GXExt> GX<X> {
             }))
             .await?;
             info!("resolve time: {:?}", st.elapsed());
+            // Prune by the outgoing `<-` targets, like the load/compile
+            // batch entries (the jul12 resolution-flap fix): stable
+            // entries survive so check diagnostics resolve the same
+            // way run-to-run. Growth is bounded by `Bind::delete`
+            // removing its ids. (`unstable_bindings` is not reset on
+            // this path — pre-existing; fusion is off under lsp.)
+            for id in self.ctx.unstable_bindings.iter() {
+                self.ctx.bind_to_lambda.remove(id);
+            }
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
             for e in exprs.iter() {
                 let res = compile(&mut self.ctx, self.flags, &scope, e.clone())
@@ -521,35 +912,20 @@ impl<X: GXExt> GX<X> {
                 }
             }
             let env = self.ctx.env.clone();
-            let references = std::mem::replace(
-                &mut self.ctx.references,
-                graphix_compiler::REFERENCE_SITE_POOL.take(),
-            );
-            let module_references = std::mem::replace(
-                &mut self.ctx.module_references,
-                graphix_compiler::MODULE_REF_SITE_POOL.take(),
-            );
-            let lsp = match self.ctx.env.lsp.as_ref() {
-                None => graphix_compiler::env::Lsp::new(),
-                Some(lsp) => {
-                    std::mem::replace(&mut *lsp.lock(), graphix_compiler::env::Lsp::new())
+            let ide = match self.ctx.env.ide.as_ref() {
+                None => graphix_compiler::ide::Ide::new(),
+                Some(ide) => {
+                    std::mem::replace(&mut *ide.lock(), graphix_compiler::ide::Ide::new())
                 }
             };
-            let scope_map = std::mem::replace(
-                &mut self.ctx.scope_map,
-                graphix_compiler::SCOPE_MAP_ENTRY_POOL.take(),
-            );
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }
-            Ok(crate::CheckResult { env, references, module_references, scope_map, lsp })
+            Ok((Arc::from_iter(exprs), crate::CheckResult { env, ide }))
         };
         let res = go.await;
         self.ctx.env = env;
-        self.ctx.references = prev_refs;
-        self.ctx.module_references = prev_modrefs;
-        self.ctx.scope_map = prev_scopemap;
-        self.ctx.env.lsp = prev_lsp;
+        self.ctx.env.ide = prev_ide;
         res
     }
 
@@ -563,17 +939,41 @@ impl<X: GXExt> GX<X> {
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
         info!("resolve time: {:?}", st.elapsed());
-        let mut res = smallvec![];
-        for e in exprs.iter() {
-            let top_id = e.id;
-            let n = compile(&mut self.ctx, self.flags, &scope, e.clone())
-                .with_context(|| ori.clone())?;
-            let has_out = is_output(&n);
-            let typ = n.typ().clone();
-            self.nodes.insert(top_id, n);
-            self.ctx.rt.updated.insert(top_id, true);
-            res.push(CompExp { id: top_id, output: has_out, typ, rt: rt.clone() })
+        // Wrap the file's top-level Exprs in a synthetic Do block
+        // so the compiler sees ONE Expr and produces ONE Node. The
+        // fusion pass then walks the file's entire graph in a
+        // single pass with cross-Bind dependencies visible inside
+        // the Do's Block.
+        let output = exprs.last().map(|e| is_output_kind(&e.kind)).unwrap_or(false);
+        let wrapped =
+            wrap_file_in_do(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
+        let top_id = wrapped.id;
+        // Clear the carry-over `unstable_bindings`; `Connect::compile`
+        // re-populates with resolved BindIds as each `<-` site is
+        // compiled below.
+        // Prune the static-resolution index by the OUTGOING batch's
+        // `<-` targets instead of clearing it (see the field doc,
+        // #203 + the jul12 shell resolution FLAP): stable cross-batch
+        // entries (the stdlib's exports above all) must survive into
+        // this batch, or resolution falls to the `rt.cached()`
+        // fallback — whose contents depend on whether the previous
+        // batch's init cycle has RUN yet, making FUSION a race
+        // (release shell: identical program, instances fused on some
+        // runs and node-walked on others). A `<-`-retargeted lambda
+        // is exactly the staleness the old clear guarded against, and
+        // the outgoing unstable set names each one; shadowing mints
+        // fresh BindIds, so a pruned id can never be re-inserted with
+        // a stale value.
+        for id in self.ctx.unstable_bindings.iter() {
+            self.ctx.bind_to_lambda.remove(id);
         }
+        self.ctx.unstable_bindings.clear();
+        let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
+            .with_context(|| ori.clone())?;
+        let typ = n.typ().clone();
+        self.nodes.insert(top_id, n);
+        self.ctx.rt.updated.insert(top_id, true);
+        let res = smallvec![CompExp { id: top_id, output, typ, rt: rt.clone() }];
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
 
@@ -625,7 +1025,7 @@ impl<X: GXExt> GX<X> {
             bid: id,
             typ,
             target_bid,
-            last: self.ctx.cached.get(&id).cloned(),
+            last: self.ctx.rt.cached.get(&id).cloned(),
             rt,
         })
     }
@@ -662,10 +1062,20 @@ impl<X: GXExt> GX<X> {
         let mut custom_tasks = vec![];
         let mut input = vec![];
         let mut rpcs = vec![];
+        // Consecutive apparently-idle passes — the two-pass idle
+        // confirmation (see `idle_grace`). Reset by any ready work.
+        let mut idle_passes: u32 = 0;
         let onemin = Duration::from_secs(60);
         'main: loop {
+            // Abort/shutdown: if the handle was dropped or `abort()` was
+            // called, exit before doing any more work. A wedged
+            // `do_cycle` loop also breaks on this (the in-loop poll), then
+            // returns here. Pending commands' response channels drop on
+            // return, so blocked callers get an error instead of hanging.
+            if self.ctx.control.aborted() {
+                return Ok(());
+            }
             let now = Instant::now();
-            let ready = self.cycle_ready();
             let mut updates = None;
             let mut writes = None;
             macro_rules! peek {
@@ -726,7 +1136,60 @@ impl<X: GXExt> GX<X> {
                     $(peek!($item));+
                 }};
             }
+            // Drain every non-blocking source BEFORE the idle test: a
+            // queued-but-undelivered update (a var write in flight
+            // through a watch channel — the deref-echo class, soak
+            // jul05 items 3/20/24) is pending work, but the collections
+            // `cycle_ready` inspects don't see it until a drain.
+            // Sampling idleness pre-drain resolved the trace / result
+            // watchers a cycle early, NONDETERMINISTICALLY (it raced
+            // the writer task) — a selfcheck-class oracle hole: the
+            // same program's verdict flipped between Timeout and an
+            // empty trace run-to-run, in both modes independently.
+            peek!(
+                updates,
+                writes,
+                watches,
+                tasks,
+                var_watches,
+                custom_tasks,
+                rpcs,
+                input
+            );
+            let ready = self.cycle_ready()
+                || updates.is_some()
+                || writes.is_some()
+                || !tasks.is_empty()
+                || !custom_tasks.is_empty()
+                || !rpcs.is_empty()
+                || !input.is_empty();
+            // A `WaitResultOrIdle` watcher whose expr didn't emit during
+            // the previous cycle resolves to `None` when the runtime goes
+            // idle — no future cycle can produce its result. Idle is
+            // confirmed on a SECOND consecutive pass (the `idle_grace`
+            // re-poll arms the wake-up): the first apparently-idle pass
+            // may be racing an in-flight spawned task whose delivery no
+            // drain can see yet.
+            if !ready {
+                let waiter = self.result_watch.is_some() || self.trace.is_some();
+                if waiter && idle_passes == 0 {
+                    idle_passes = 1;
+                } else {
+                    if let Some((_, tx)) = self.result_watch.take() {
+                        let _ = tx.send(None);
+                    }
+                    if let Some(tr) = self.trace.as_mut() {
+                        tr.resolve(self.cycle);
+                    }
+                    idle_passes = 0;
+                }
+            } else {
+                idle_passes = 0;
+            }
             select! {
+                _ = idle_grace(idle_passes > 0 && !ready) => {
+                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
+                },
                 rp = maybe_next(
                     self.ctx.rt.rpc_overflow.is_empty(),
                     &mut self.ctx.rt.rpcs

@@ -1,0 +1,8 @@
+// bisect: agreement pin (companion to 01). The pended encode is
+// CONSUMED by `buffer::len`, so the whole program's output chain
+// bottoms — both modes must stay silent (Trace([])). Pins that the
+// #219 pend placeholder does NOT leak an ExtraFire: the tainted-arg
+// skip path taints len's scalar result and the kernel return gate
+// (emit_force) bottoms the output, matching the node-walk where the
+// builtin's None never fires downstream.
+buffer::len(buffer::encode([`Pad(u64:18446744073709551615)]))

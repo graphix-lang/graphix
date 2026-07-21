@@ -23,9 +23,9 @@ pub(crate) trait ClipboardOp: Debug + Default + Send + Sync + 'static {
 pub(crate) struct ClipboardBuiltin<Op: ClipboardOp>(PhantomData<Op>);
 
 impl<Op: ClipboardOp> EvalCachedAsync for ClipboardBuiltin<Op> {
-    const NAME: &str = Op::NAME;
-    const NEEDS_CALLSITE: bool = false;
     type Args = Op::Args;
+
+    const NAME: &str = Op::NAME;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Op::Args> {
         Op::prepare(cached)
@@ -59,8 +59,9 @@ fn with_clipboard(
 pub(crate) struct ReadTextOp;
 
 impl ClipboardOp for ReadTextOp {
-    const NAME: &str = "gui_clipboard_read_text";
     type Args = ();
+
+    const NAME: &str = "gui_clipboard_read_text";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
         cached.0[0].as_ref()?;
@@ -80,8 +81,9 @@ pub(crate) type ReadText = CachedArgsAsync<ClipboardBuiltin<ReadTextOp>>;
 pub(crate) struct WriteTextOp;
 
 impl ClipboardOp for WriteTextOp {
-    const NAME: &str = "gui_clipboard_write_text";
     type Args = ArcStr;
+
+    const NAME: &str = "gui_clipboard_write_text";
 
     fn prepare(cached: &CachedVals) -> Option<ArcStr> {
         cached.get::<ArcStr>(0)
@@ -103,8 +105,9 @@ pub(crate) type WriteText = CachedArgsAsync<ClipboardBuiltin<WriteTextOp>>;
 pub(crate) struct ReadImageOp;
 
 impl ClipboardOp for ReadImageOp {
-    const NAME: &str = "gui_clipboard_read_image";
     type Args = ();
+
+    const NAME: &str = "gui_clipboard_read_image";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
         cached.0[0].as_ref()?;
@@ -134,8 +137,9 @@ pub(crate) struct ImageArgs {
 pub(crate) struct WriteImageOp;
 
 impl ClipboardOp for WriteImageOp {
-    const NAME: &str = "gui_clipboard_write_image";
     type Args = ImageArgs;
+
+    const NAME: &str = "gui_clipboard_write_image";
 
     fn prepare(cached: &CachedVals) -> Option<ImageArgs> {
         image_args_from_value(cached.0[0].as_ref()?)
@@ -162,8 +166,9 @@ pub(crate) type WriteImage = CachedArgsAsync<ClipboardBuiltin<WriteImageOp>>;
 pub(crate) struct ReadHtmlOp;
 
 impl ClipboardOp for ReadHtmlOp {
-    const NAME: &str = "gui_clipboard_read_html";
     type Args = ();
+
+    const NAME: &str = "gui_clipboard_read_html";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
         cached.0[0].as_ref()?;
@@ -189,8 +194,9 @@ pub(crate) struct HtmlArgs {
 pub(crate) struct WriteHtmlOp;
 
 impl ClipboardOp for WriteHtmlOp {
-    const NAME: &str = "gui_clipboard_write_html";
     type Args = HtmlArgs;
+
+    const NAME: &str = "gui_clipboard_write_html";
 
     fn prepare(cached: &CachedVals) -> Option<HtmlArgs> {
         html_args_from_value(cached.0[0].as_ref()?)
@@ -214,8 +220,9 @@ pub(crate) type WriteHtml = CachedArgsAsync<ClipboardBuiltin<WriteHtmlOp>>;
 pub(crate) struct ReadFilesOp;
 
 impl ClipboardOp for ReadFilesOp {
-    const NAME: &str = "gui_clipboard_read_files";
     type Args = ();
+
+    const NAME: &str = "gui_clipboard_read_files";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
         cached.0[0].as_ref()?;
@@ -235,8 +242,9 @@ pub(crate) type ReadFiles = CachedArgsAsync<ClipboardBuiltin<ReadFilesOp>>;
 pub(crate) struct WriteFilesOp;
 
 impl ClipboardOp for WriteFilesOp {
-    const NAME: &str = "gui_clipboard_write_files";
     type Args = Vec<String>;
+
+    const NAME: &str = "gui_clipboard_write_files";
 
     fn prepare(cached: &CachedVals) -> Option<Vec<String>> {
         file_list_from_value(cached.0[0].as_ref()?)
@@ -259,8 +267,9 @@ pub(crate) type WriteFiles = CachedArgsAsync<ClipboardBuiltin<WriteFilesOp>>;
 pub(crate) struct ClearOp;
 
 impl ClipboardOp for ClearOp {
-    const NAME: &str = "gui_clipboard_clear";
     type Args = ();
+
+    const NAME: &str = "gui_clipboard_clear";
 
     fn prepare(cached: &CachedVals) -> Option<()> {
         cached.0[0].as_ref()?;

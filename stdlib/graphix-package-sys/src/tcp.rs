@@ -1,7 +1,7 @@
 use arcstr::ArcStr;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use netidx_value::{abstract_type::AbstractWrapper, Abstract, Value};
+use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
@@ -12,7 +12,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{get_stream, wrap_tcp, StreamKind};
+use crate::{StreamKind, get_stream, wrap_tcp};
 
 // ── Abstract TcpListenerValue ──────────────────────────────────
 
@@ -75,9 +75,9 @@ fn get_listener(cached: &CachedVals, idx: usize) -> Option<Arc<TcpListener>> {
 pub(crate) struct TcpConnectEv;
 
 impl EvalCachedAsync for TcpConnectEv {
-    const NAME: &str = "sys_tcp_connect";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
+
+    const NAME: &str = "sys_tcp_connect";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -101,9 +101,9 @@ pub(crate) type TcpConnect = CachedArgsAsync<TcpConnectEv>;
 pub(crate) struct TcpListenEv;
 
 impl EvalCachedAsync for TcpListenEv {
-    const NAME: &str = "sys_tcp_listen";
-    const NEEDS_CALLSITE: bool = false;
     type Args = ArcStr;
+
+    const NAME: &str = "sys_tcp_listen";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.get::<ArcStr>(0)
@@ -128,9 +128,9 @@ pub(crate) type TcpListen = CachedArgsAsync<TcpListenEv>;
 pub(crate) struct TcpAcceptEv;
 
 impl EvalCachedAsync for TcpAcceptEv {
-    const NAME: &str = "sys_tcp_accept";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TcpListener>;
+
+    const NAME: &str = "sys_tcp_accept";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let _ = cached.0.get(1)?.as_ref()?;
@@ -155,9 +155,9 @@ pub(crate) type TcpAccept = CachedArgsAsync<TcpAcceptEv>;
 pub(crate) struct TcpShutdownEv;
 
 impl EvalCachedAsync for TcpShutdownEv {
-    const NAME: &str = "sys_tcp_shutdown";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
+
+    const NAME: &str = "sys_tcp_shutdown";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -187,9 +187,9 @@ pub(crate) type TcpShutdown = CachedArgsAsync<TcpShutdownEv>;
 pub(crate) struct TcpPeerAddrEv;
 
 impl EvalCachedAsync for TcpPeerAddrEv {
-    const NAME: &str = "sys_tcp_peer_addr";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
+
+    const NAME: &str = "sys_tcp_peer_addr";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -221,9 +221,9 @@ pub(crate) type TcpPeerAddr = CachedArgsAsync<TcpPeerAddrEv>;
 pub(crate) struct TcpLocalAddrEv;
 
 impl EvalCachedAsync for TcpLocalAddrEv {
-    const NAME: &str = "sys_tcp_local_addr";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<Mutex<Option<StreamKind>>>;
+
+    const NAME: &str = "sys_tcp_local_addr";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_stream(cached, 0)
@@ -255,9 +255,9 @@ pub(crate) type TcpLocalAddr = CachedArgsAsync<TcpLocalAddrEv>;
 pub(crate) struct TcpListenerAddrEv;
 
 impl EvalCachedAsync for TcpListenerAddrEv {
-    const NAME: &str = "sys_tcp_listener_addr";
-    const NEEDS_CALLSITE: bool = false;
     type Args = Arc<TcpListener>;
+
+    const NAME: &str = "sys_tcp_listener_addr";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         get_listener(cached, 0)

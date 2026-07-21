@@ -1,0 +1,17 @@
+// Integer reduction: fold (+) over a 100k-element array.
+// Clean single-loop HOF — fuses to a native loop under the JIT.
+//
+// Self-timed: t0/t1 bracket only the computation (parse/typecheck/compile
+// happen before cycle 1, so they're excluded). The fold's accumulator is
+// seeded with cast<i64>(t0) so the result depends on a runtime value,
+// which forces the t0 -> compute -> t1 ordering and defeats const-folding.
+// The epoch-second seed is constant within a run, so re-runs differ only
+// by whole seconds.
+let n = 100000;
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = array::fold(array::init(n, |i| i), seed, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("fold_sum n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

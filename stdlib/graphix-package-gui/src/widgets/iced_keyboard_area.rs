@@ -1,12 +1,11 @@
 use iced_core::{
-    keyboard,
+    Clipboard, Element, Event, Length, Rectangle, Shell, Size, Vector, Widget, keyboard,
     layout::{self, Layout},
     mouse, overlay, renderer,
     widget::{
-        tree::{self, Tree},
         Operation,
+        tree::{self, Tree},
     },
-    Clipboard, Element, Event, Length, Rectangle, Shell, Size, Vector, Widget,
 };
 
 use super::{Message, Renderer};

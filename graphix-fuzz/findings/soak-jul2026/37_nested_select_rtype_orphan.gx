@@ -1,0 +1,18 @@
+// divergence: nested-select arm union built from PRE-typecheck types
+// `-> i64` accepted a body whose select had a NESTED-select arm
+// yielding STRUCTS: Select::typecheck0 built rtype (the arm union) in
+// its FIRST loop, before arm typecheck0 runs — and a nested select
+// REPLACES its typ field (`self.typ = rtype`), so the outer union
+// held the inner's orphaned pre-typecheck empty tvar, which the
+// enclosing annotation check greedily bound to i64. The fused kernel
+// then compiled a scalar i64 return and leaked the struct POINTER
+// (jit emitted I64(139997763397040); interp emitted the struct).
+// The flat twin (rt6: struct arm directly) always rejected. Fixed by
+// unioning rtype AFTER each arm's typecheck0 (second loop) — the
+// program is now a COMPILE ERROR in both modes, like its flat twin.
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [String("b"), F64(0.0)] }) })))), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [String("y"), I64(42)] }) }))))] }) })))))], capped: false }] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(139997763397040))], capped: false }] })
+// mutant: {let rec g = |n: i64| -> i64 select n {i64:0 => select i64:100 {i64:42 => { b: f64:1., y: cast<i64>(u8:2)$ }, _ => { b: f64:0., y: i64:42 }}, _ => g(n - i64:1)}; g(i64:3)}
+// minimized:
+{let rec g = |n: i64| -> i64 select i64:0 {i64:0 => select i64:0 {i64:42 => { b: f64:1., y: cast<i64>(u8:2)$ }, _ => { b: f64:0., y: i64:42 }}, _ => g(n - i64:1)}; g(i64:3)}

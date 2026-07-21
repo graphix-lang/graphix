@@ -26,7 +26,7 @@ let uniq = |v: 'a| -> 'a 'core_uniq;
 let queue = |#clock: Any, v: 'a| -> 'a 'core_queue;
 let queuefn = |#count: &[i64, null] = &null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
 let hold = |#clock: Any, v: 'a| -> 'a 'core_hold;
-let never = |@args: Any| -> 'a 'core_never;
+let never = |@args: Any| -> _ 'core_never;
 let dbg = |#dest: [`Stdout, `Stderr, Log] = `Stderr, v: 'a| -> 'a 'core_dbg;
 let log = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_log;
 let print = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_print;

@@ -1,0 +1,5 @@
+// bisect: interp (node-walk) errors / fused-interp wrong-value / jit SIGFPE crash — three-way divergence; the JIT core-dumps before `check` can emit a bisect label (exit 136 = signal 8)
+// interp/jit: Verified independently. Typechecks clean (--check exit 0). `graphix-fuzz run` shows Interp: Timeout, Fused: Value(i32:-2147483648), Jit line absent because the process SIGFPE core-dumps (exit 136 = 128+8). Confirmed stable/deterministic across 3 runs (identical Interp/Fused output, identical exit 13
+// root_cause: Three divergent handlings of i32::MIN / -1 signed-division overflow. (1) JIT: graphix-compiler/src/gir_jit.rs:6269 `b.ins().sdiv(l, r)` in compile_bin is an unguarded raw cranelift signed divide; on x86-64 it lowers to `idiv`, which raises #DE/SIGFPE on the MIN/-1 overflow (and on div-by-zero) -> whole runtime crashes. (2) Fused interp: graphix-compiler/src/gir_interp.rs:1984 `$a.wrapping_div($b)` returns i32::MIN -> Value(i32:-2147483648), a silently wrong value, no error. (3) Node-walk (canonical): graphix-compiler/src/node/op.rs:550 `arith_op!(Div, ...)` uses netidx Value's Div trait, which
+
+i32:-2147483648 / i32:-1

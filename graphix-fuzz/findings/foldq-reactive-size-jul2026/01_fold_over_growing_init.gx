@@ -1,0 +1,19 @@
+// bisect: NODE-WALK bug (the JIT was correct) — soak jul07e
+// fuzz/divergence_000000. `array::fold` over an array whose LENGTH is
+// reactive (`array::init(list::iter(...), |i| i+1)` grows 1→2→3→4):
+// FoldQ conflated its per-cycle EMIT gate with the held chain state in
+// one `inits` vec. On a resize the old slots stay quiet (the callback
+// `|acc, x| acc + 2` never consumes `x`), the quiet-reset wiped their
+// held accumulators, so the first NEW slot's acc priming
+// (`inits[i-1]`) found nothing — the chain never completed and the
+// destroyed state made every later resize fail too: interp emitted
+// once and went permanently silent; the fused loop re-ran all slots
+// per resize and emitted 2, 4, 6, 8. FIXED: a separate `held` vec
+// (last value each slot actually produced) survives quiet cycles and
+// primes growth — the interior-bottom cache-substitute discipline (a
+// prior success is never destroyed by a later no-fire); `inits` keeps
+// the emit-gate role unchanged (closed callbacks still don't re-fire
+// the chain on same-length updates).
+// mutant: {let a = array::init(list::iter(list::from_array([i64:1, i64:2, i64:3, i64:4])), |i| i + i64:1); array::fold(a, i64:0, |acc, x| acc + i64:2)}
+// minimized:
+{let a = array::init(list::iter(list::from_array([i64:0, i64:2, i64:3, i64:4])), |i| i + i64:1); array::fold(a, i64:0, |acc, x| acc + i64:2)}

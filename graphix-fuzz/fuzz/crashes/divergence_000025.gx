@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Value(I64(99))
+// jit:    Timeout
+// mutant: {let v = rand::rand(#start: i64:100, #end: i64:9, #clock: i64:1); select i64:0 {i64:2 => v, _ => i64:99}}
+// minimized:
+{let v = rand::rand(#start: i64:0, #end: i64:0, #clock: i64:1); select i64:0 {i64:2 => v, _ => i64:99}}

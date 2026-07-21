@@ -1,0 +1,13 @@
+// schedule-v1: cap=64 events=512; in0=i64:5; in0=i64:7
+// bisect: fusion/JIT bug (interp != jit) — BOTH SIDES were wrong
+// jit (pre-fix):    Trace([0:0]; []; []) — fired only at init: the
+//   rebind-and-jump rebound PAYLOADS only, so the acc formal's disc
+//   stayed at its entry value (the const seed's non-init STALE) and
+//   the return flagged not-fresh forever.
+// interp (pre-fix): epoch 2 value 43 instead of 28 — the loop's
+//   pat.bind writes leaked into ctx.cached, so the next call's quiet
+//   const arg (i64:0) read the PREVIOUS loop's final accumulator.
+// Fixed 2026-07-05: the tail rebind carries the disc (the same
+// carry-the-firing lesson as fold/#9), and the interp snapshots/
+// restores the formals' cached entries around the loop.
+{let rec g = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => g(n - i64:1, acc + n)}; g(in0, i64:0)}

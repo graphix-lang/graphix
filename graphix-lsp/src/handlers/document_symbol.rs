@@ -6,9 +6,5 @@ pub fn handle(
     params: DocumentSymbolParams,
 ) -> Option<DocumentSymbolResponse> {
     let symbols = state.document_symbols(&params.text_document.uri);
-    if symbols.is_empty() {
-        None
-    } else {
-        Some(DocumentSymbolResponse::Nested(symbols))
-    }
+    if symbols.is_empty() { None } else { Some(DocumentSymbolResponse::Nested(symbols)) }
 }

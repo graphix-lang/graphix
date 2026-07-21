@@ -8,7 +8,6 @@ use crate::{
 };
 use arcstr::literal;
 use netidx::{publisher::Typ, utils::Either};
-use parking_lot::RwLock;
 
 #[allow(unused)]
 fn parse_typexpr(s: &str) -> anyhow::Result<Type> {
@@ -76,6 +75,146 @@ fn raw_string() {
     let s = r#"r'[]asd[[][]askj'"#;
     let p = Value::String(literal!(r#"[]asd[[][]askj"#));
     assert_eq!(ExprKind::Constant(p).to_expr_nopos(), parse_one(&s).unwrap());
+}
+
+// ── retained comments ──
+// A comment is legal only on its own line directly above an expression,
+// where it is captured into that expression's `dec`. Every other position
+// is a parse error, so "every comment is preserved in the AST" holds.
+
+#[test]
+fn comment_above_expr_captured() {
+    let e = parse_one("// hello\n42").unwrap();
+    let dec = e.dec.as_ref().expect("comment should attach to the expr below");
+    assert_eq!(&dec.comments[..], &[literal!(" hello")]);
+}
+
+#[test]
+fn comment_block_round_trips() {
+    // A run of `//` lines above an expr survives print -> parse, verbatim.
+    let e = parse_one("// first\n// second\n42").unwrap();
+    let e2 = parse_one(&e.to_string()).unwrap();
+    let c = e2.dec.as_ref().expect("comments lost on round-trip");
+    assert_eq!(&c.comments[..], &[literal!(" first"), literal!(" second")]);
+}
+
+#[test]
+fn comment_above_block_item() {
+    // A comment above an item inside a do block attaches to that item.
+    let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
+    match &e.kind {
+        ExprKind::Do { exprs } => {
+            let last = exprs.last().unwrap();
+            assert_eq!(
+                &last.dec.as_ref().expect("comment lost").comments[..],
+                &[literal!(" note")],
+            );
+        }
+        other => panic!("expected a do block, got {other:?}"),
+    }
+}
+
+#[test]
+fn interior_comment_is_error() {
+    // Between an operator and its operand — not above an expression.
+    assert!(parse_one("1 +\n// nope\n2").is_err());
+}
+
+#[test]
+fn trailing_block_comment_is_error() {
+    // Dangling after the last item of a block (nothing below to attach to).
+    assert!(parse_one("{ let x = 1; x\n// nope\n}").is_err());
+}
+
+// ── attributes ──
+// `#[name]` / `#[name(args)]` on its own line above an expression, captured
+// into `dec.attrs` exactly where a comment would be captured.
+
+#[test]
+fn attr_above_expr_captured() {
+    let e = parse_one("#[native]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("attribute should attach to the expr below");
+    assert_eq!(dec.attrs.len(), 1);
+    assert_eq!(&dec.attrs[0].name, &literal!("native"));
+    assert!(dec.attrs[0].args.is_empty());
+}
+
+#[test]
+fn attr_with_args_captured() {
+    let e = parse_one("#[foo(1, 2)]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("attribute lost");
+    assert_eq!(dec.attrs.len(), 1);
+    assert_eq!(&dec.attrs[0].name, &literal!("foo"));
+    assert_eq!(dec.attrs[0].args.len(), 2);
+}
+
+#[test]
+fn whitespace_in_empty_delimiters() {
+    // The empty-list terminator look-ahead skips whitespace, so each loose
+    // form must parse identically to its tight twin. The printer never emits
+    // the loose forms, so the pretty round-trip can't cover this.
+    for (loose, tight) in [
+        ("any( )", "any()"),
+        ("any(\n)", "any()"),
+        ("[ ]", "[]"),
+        ("[\n  ]", "[]"),
+        ("{ \n }", "{}"),
+        ("| | 42", "|| 42"),
+    ] {
+        assert_eq!(parse_one(tight).unwrap(), parse_one(loose).unwrap(), "{loose}");
+    }
+    let e = parse_one("#[foo( )]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("attribute lost");
+    assert!(dec.attrs[0].args.is_empty());
+    assert_eq!(
+        parse_typexpr("fn( ) -> i64").unwrap(),
+        parse_typexpr("fn() -> i64").unwrap()
+    );
+    assert_eq!(
+        parse_structure_pattern("[ ]").unwrap(),
+        parse_structure_pattern("[]").unwrap()
+    );
+}
+
+#[test]
+fn attr_round_trips() {
+    // print -> parse preserves attributes verbatim (args included).
+    let e = parse_one("#[native]\n#[foo(1, 2)]\n42").unwrap();
+    let e2 = parse_one(&e.to_string()).unwrap();
+    let dec = e2.dec.as_ref().expect("attributes lost on round-trip");
+    assert_eq!(dec.attrs.len(), 2);
+    assert_eq!(&dec.attrs[0].name, &literal!("native"));
+    assert_eq!(&dec.attrs[1].name, &literal!("foo"));
+    assert_eq!(dec.attrs[1].args.len(), 2);
+}
+
+#[test]
+fn comment_and_attr_interleave() {
+    // A comment and an attribute above the same expr both land in `dec`.
+    let e = parse_one("// note\n#[native]\n42").unwrap();
+    let dec = e.dec.as_ref().expect("decorations lost");
+    assert_eq!(&dec.comments[..], &[literal!(" note")]);
+    assert_eq!(dec.attrs.len(), 1);
+    assert_eq!(&dec.attrs[0].name, &literal!("native"));
+}
+
+#[test]
+fn attr_above_block_item() {
+    let e = parse_one("{ let x = 1;\n#[native]\nx }").unwrap();
+    match &e.kind {
+        ExprKind::Do { exprs } => {
+            let last = exprs.last().unwrap();
+            let dec = last.dec.as_ref().expect("attribute lost");
+            assert_eq!(&dec.attrs[0].name, &literal!("native"));
+        }
+        other => panic!("expected a do block, got {other:?}"),
+    }
+}
+
+#[test]
+fn interior_attr_is_error() {
+    // Between an operator and its operand — not above an expression.
+    assert!(parse_one("1 +\n#[native]\n2").is_err());
 }
 
 #[test]
@@ -632,11 +771,11 @@ fn select1() {
         ),
         (
             Pattern {
-                type_predicate: Some(Type::Ref (TypeRef {
-                    scope: ModPath::root(),
-                    name: ["Foo"].into(),
-                    params: Arc::from_iter([]),
-                 ..Default::default()})),
+                type_predicate: Some(Type::Ref(TypeRef::synthetic(
+                    ModPath::root(),
+                    ["Foo"].into(),
+                    Arc::from_iter([]),
+                ))),
                 structure_predicate: StructurePattern::Struct {
                     all: None,
                     exhaustive: false,
@@ -789,13 +928,13 @@ fn lambda() {
                 labeled: None,
                 pattern: StructurePattern::Bind("foo".into()),
                 constraint: None,
-                        pos: Default::default(),
+                pos: Default::default(),
             },
             Arg {
                 labeled: None,
                 pattern: StructurePattern::Bind("bar".into()),
                 constraint: None,
-                        pos: Default::default(),
+                pos: Default::default(),
             },
         ]),
         rtype: None,
@@ -871,7 +1010,7 @@ fn apply_lambda() {
                     labeled: None,
                     pattern: StructurePattern::Bind("a".into()),
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 }]),
                 vargs: Some(None),
                 rtype: None,
@@ -900,20 +1039,20 @@ fn apply_typed_lambda() {
                         labeled: None,
                         pattern: StructurePattern::Bind("a".into()),
                         constraint: None,
-                                        pos: Default::default(),
+                        pos: Default::default(),
                     },
                     Arg {
                         labeled: None,
                         pattern: StructurePattern::Bind("b".into()),
                         constraint: Some(Type::Set(Arc::from_iter([
                             Type::Primitive(Typ::Null.into()),
-                            Type::Ref (TypeRef {
-                                scope: ModPath::root(),
-                                name: ["Number"].into(),
-                                params: Arc::from_iter([]),
-                             ..Default::default()}),
+                            Type::Ref(TypeRef::synthetic(
+                                ModPath::root(),
+                                ["Number"].into(),
+                                Arc::from_iter([]),
+                            )),
                         ]))),
-                                        pos: Default::default(),
+                        pos: Default::default(),
                     },
                 ]),
                 vargs: Some(Some(Type::Primitive(Typ::String.into()))),
@@ -945,7 +1084,7 @@ fn typed_array() {
                 constraint: Some(Type::Array(Arc::new(Type::TVar(TVar::empty_named(
                     "a".into(),
                 ))))),
-                        pos: Default::default(),
+                pos: Default::default(),
             }]),
             vargs: None,
             constraints: Arc::from_iter([]),
@@ -969,28 +1108,19 @@ fn labeled_argument_lambda() {
         typ: Some(Type::Fn(Arc::new(FnType {
             args: Arc::from_iter([
                 FnArgType {
-                    kind: FnArgKind::Labeled {
-                        name: "foo".into(),
-                        has_default: true,
-                    },
-                    typ: Type::Ref (TypeRef {
-                        scope: ModPath::root(),
-                        name: ["Number"].into(),
-                        params: Arc::from_iter([]),
-                     ..Default::default()}),
+                    kind: FnArgKind::Labeled { name: "foo".into(), has_default: true },
+                    typ: Type::Ref(TypeRef::synthetic(
+                        ModPath::root(),
+                        ["Number"].into(),
+                        Arc::from_iter([]),
+                    )),
                 },
                 FnArgType {
-                    kind: FnArgKind::Labeled {
-                        name: "bar".into(),
-                        has_default: true,
-                    },
+                    kind: FnArgKind::Labeled { name: "bar".into(), has_default: true },
                     typ: Type::Primitive(Typ::String.into()),
                 },
                 FnArgType {
-                    kind: FnArgKind::Labeled {
-                        name: "a".into(),
-                        has_default: false,
-                    },
+                    kind: FnArgKind::Labeled { name: "a".into(), has_default: false },
                     typ: Type::Any,
                 },
                 FnArgType {
@@ -1002,7 +1132,6 @@ fn labeled_argument_lambda() {
             rtype: Type::Primitive(Typ::String.into()),
             throws: Type::Bottom,
             explicit_throws: false,
-            constraints: Arc::new(RwLock::new(LPooled::take())),
             ..Default::default()
         }))),
         value: ExprKind::Lambda(Arc::new(LambdaExpr {
@@ -1012,12 +1141,12 @@ fn labeled_argument_lambda() {
                     labeled: Some(Some(
                         ExprKind::Constant(Value::I64(3)).to_expr_nopos(),
                     )),
-                    constraint: Some(Type::Ref (TypeRef {
-                        scope: ModPath::root(),
-                        name: ["Number"].into(),
-                        params: Arc::from_iter([]),
-                     ..Default::default()})),
-                                pos: Default::default(),
+                    constraint: Some(Type::Ref(TypeRef::synthetic(
+                        ModPath::root(),
+                        ["Number"].into(),
+                        Arc::from_iter([]),
+                    ))),
+                    pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("bar".into()),
@@ -1025,19 +1154,19 @@ fn labeled_argument_lambda() {
                         ExprKind::Constant("hello".into()).to_expr_nopos(),
                     )),
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("a".into()),
                     labeled: Some(None),
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("baz".into()),
                     labeled: None,
                     constraint: None,
-                                pos: Default::default(),
+                    pos: Default::default(),
                 },
             ]),
             vargs: None,
@@ -1295,6 +1424,130 @@ fn tupleref() {
     assert_eq!(e, pe)
 }
 
+// Postfix chaining (a.b.c, f(x)(y), a[i][j], m{k}.f, …) is a deliberate
+// language superset added by the primary + postfix-loop parser. The loop folds
+// postfix operators LEFT, so each chain link's source is the accumulated expr.
+
+fn refx(name: &str) -> Expr {
+    ExprKind::Ref { name: [name].into() }.to_expr_nopos()
+}
+
+#[test]
+fn struct_ref_chain() {
+    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
+        .to_expr_nopos();
+    let abc = ExprKind::StructRef { source: Arc::new(ab), field: literal!("c") }
+        .to_expr_nopos();
+    assert_eq!(abc, parse_one("a.b.c").unwrap());
+}
+
+#[test]
+fn tuple_ref_chain() {
+    let a0 = ExprKind::TupleRef { source: Arc::new(refx("a")), field: 0 }.to_expr_nopos();
+    let a01 = ExprKind::TupleRef { source: Arc::new(a0), field: 1 }.to_expr_nopos();
+    assert_eq!(a01, parse_one("a.0.1").unwrap());
+}
+
+#[test]
+fn apply_chain() {
+    let fx = ExprKind::Apply(ApplyExpr {
+        function: Arc::new(refx("f")),
+        args: Arc::from_iter([(None, refx("x"))]),
+    })
+    .to_expr_nopos();
+    let fxy = ExprKind::Apply(ApplyExpr {
+        function: Arc::new(fx),
+        args: Arc::from_iter([(None, refx("y"))]),
+    })
+    .to_expr_nopos();
+    assert_eq!(fxy, parse_one("f(x)(y)").unwrap());
+}
+
+#[test]
+fn array_ref_chain() {
+    let ai = ExprKind::ArrayRef { source: Arc::new(refx("a")), i: Arc::new(refx("i")) }
+        .to_expr_nopos();
+    let aij = ExprKind::ArrayRef { source: Arc::new(ai), i: Arc::new(refx("j")) }
+        .to_expr_nopos();
+    assert_eq!(aij, parse_one("a[i][j]").unwrap());
+}
+
+#[test]
+fn map_then_struct_chain() {
+    // m{k}.f  =>  StructRef(MapRef(m, k), f)
+    let mk = ExprKind::MapRef { source: Arc::new(refx("m")), key: Arc::new(refx("k")) }
+        .to_expr_nopos();
+    let mkf = ExprKind::StructRef { source: Arc::new(mk), field: literal!("f") }
+        .to_expr_nopos();
+    assert_eq!(mkf, parse_one("m{k}.f").unwrap());
+}
+
+#[test]
+fn apply_then_struct_ref() {
+    // f(x).b  =>  StructRef(Apply(f, [x]), b)  — apply is a chain base
+    let fx = ExprKind::Apply(ApplyExpr {
+        function: Arc::new(refx("f")),
+        args: Arc::from_iter([(None, refx("x"))]),
+    })
+    .to_expr_nopos();
+    let fxb = ExprKind::StructRef { source: Arc::new(fx), field: literal!("b") }
+        .to_expr_nopos();
+    assert_eq!(fxb, parse_one("f(x).b").unwrap());
+}
+
+#[test]
+fn paren_strip_before_postfix() {
+    // (a).b strips the parens: StructRef(a, b), not StructRef(ExplicitParens(a), b)
+    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
+        .to_expr_nopos();
+    assert_eq!(ab, parse_one("(a).b").unwrap());
+}
+
+#[test]
+fn paren_no_postfix_is_explicit() {
+    let pa = ExprKind::ExplicitParens(Arc::new(refx("a"))).to_expr_nopos();
+    assert_eq!(pa, parse_one("(a)").unwrap());
+}
+
+#[test]
+fn nested_parens_linear() {
+    // ((((1)))) parses to nested ExplicitParens around a constant — linearly.
+    let mut e = ExprKind::Constant(Value::I64(1)).to_expr_nopos();
+    for _ in 0..4 {
+        e = ExprKind::ExplicitParens(Arc::new(e)).to_expr_nopos();
+    }
+    assert_eq!(e, parse_one("((((1))))").unwrap());
+}
+
+#[test]
+fn qop_wraps_whole_chain() {
+    // a.b?  =>  Qop(StructRef(a, b))
+    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
+        .to_expr_nopos();
+    let q = ExprKind::Qop(Arc::new(ab)).to_expr_nopos();
+    assert_eq!(q, parse_one("a.b?").unwrap());
+}
+
+#[test]
+fn print_bare_chains_round_trip() {
+    // The printer emits bare chains for chain-node sources and parenthesizes
+    // non-chain sources; both must round-trip to the same AST.
+    for (src, expect) in [
+        ("a.b.c", "a.b.c"),
+        ("f(x)(y)", "f(x)(y)"),
+        ("a[i][j]", "a[i][j]"),
+        ("m{k}.f", "m{k}.f"),
+        ("f(x){k}", "f(x){k}"),
+        ("(a + b).c", "(a + b).c"), // non-chain source stays parenthesized
+        ("(42).0", "(i64:42).0"),   // constant source stays parenthesized
+    ] {
+        let e = parse_one(src).unwrap();
+        let printed = format!("{e}");
+        assert_eq!(printed, expect, "printing {src}");
+        assert_eq!(e, parse_one(&printed).unwrap(), "round-trip {src}");
+    }
+}
+
 #[allow(unused)]
 fn parse_prop0(s: &str) -> anyhow::Result<Type> {
     crate::expr::parser::typ()
@@ -1410,4 +1663,30 @@ fn checked_associativity() {
     }
     .to_expr_nopos();
     assert_eq!(e, parse_one("1 -? 2 -? 3").unwrap());
+}
+
+// ── `<-` connect vs `< -` (less-than of a negation) ──
+// Unary minus (`Neg`) made `<-` ambiguous with `< -`. `<` must not swallow
+// the `-` of a connect.
+
+#[test]
+fn connect_not_lt_neg() {
+    let e = parse_one("a <- b").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Connect { .. }), "got {:?}", e.kind);
+}
+
+#[test]
+fn lt_neg_with_space() {
+    let e = parse_one("a < -b").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Lt { .. }), "got {:?}", e.kind);
+}
+
+#[test]
+fn parenthesized_connect_round_trips() {
+    // The regression the round-trip proptest caught: a (derefed)
+    // parenthesized connect must survive print -> parse as a connect,
+    // not collapse to `< -`.
+    let e = parse_one("*(a <- b)").unwrap();
+    let e2 = parse_one(&e.to_string()).unwrap();
+    assert_eq!(e.kind, e2.kind);
 }

@@ -39,3 +39,6 @@ sled = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 uuid = { workspace = true }
+
+[build-dependencies]
+graphix-ast-pack = { path = "../../graphix-ast-pack" }

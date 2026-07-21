@@ -18,35 +18,37 @@
 //! `widget.handle_update`, the same as in production.
 
 use ahash::AHashMap;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use crossterm::event::Event;
-use graphix_compiler::expr::{ExprId, ModuleResolver};
-use graphix_compiler::BindId;
-use graphix_package_core::testing::{self, RegisterFn, TestCtx};
+use graphix_compiler::{
+    BindId,
+    expr::{ExprId, ModuleResolver},
+};
+use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use nohash::IntMap;
 use poolshark::global::GPooled;
 use ratatui::{
+    Terminal,
     backend::{Backend, TestBackend},
     buffer::Buffer,
-    Terminal,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::{compile, input_handler::event_to_value, TuiW};
+use crate::{TuiW, compile, input_handler::event_to_value};
 
 mod panic_test;
 mod widgets_test;
 
-const TEST_REGISTER: &[RegisterFn] = &[
-    <graphix_package_core::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_array::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_map::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_str::P as graphix_package::Package<NoExt>>::register,
-    <graphix_package_sys::P as graphix_package::Package<NoExt>>::register,
-    <crate::P as graphix_package::Package<NoExt>>::register,
+const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
+    &graphix_package_core::P,
+    &graphix_package_array::P,
+    &graphix_package_map::P,
+    &graphix_package_str::P,
+    &graphix_package_sys::P,
+    &crate::P,
 ];
 
 /// Default render area used by the harness when the test doesn't pick
@@ -87,7 +89,7 @@ impl TuiTestHarness {
         let (tx, mut rx) = mpsc::channel(100);
         let tbl = AHashMap::from_iter([(
             netidx_core::path::Path::from("/test.gx"),
-            arcstr::ArcStr::from(code),
+            graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(code)),
         )]);
         let resolver = ModuleResolver::VFS(tbl);
         let ctx = testing::init_with_resolvers(tx, TEST_REGISTER, vec![resolver]).await?;

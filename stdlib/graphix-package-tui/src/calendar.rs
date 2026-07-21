@@ -1,5 +1,5 @@
 use super::{StyleV, TuiW, TuiWidget};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
@@ -7,9 +7,9 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::calendar::{CalendarEventStore, Monthly},
-    Frame,
 };
 use time::{Date, Month};
 use tokio::try_join;
@@ -45,11 +45,7 @@ fn coerce_date(year: i64, month: i64, day: i64) -> (Date, Option<(i64, i64, i64)
     // 1970-01-01 — better than panicking.
     let date = Date::from_calendar_date(y, m, d_clamped as u8)
         .unwrap_or_else(|_| Date::from_calendar_date(1970, Month::January, 1).unwrap());
-    if clamped {
-        (date, Some((year, month, day)))
-    } else {
-        (date, None)
-    }
+    if clamped { (date, Some((year, month, day))) } else { (date, None) }
 }
 
 fn month_length(year: i32, month: Month) -> u8 {
@@ -110,8 +106,14 @@ pub(super) struct CalendarW<X: GXExt> {
 
 impl<X: GXExt> CalendarW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, default_style), (_, display_date), (_, events), (_, show_month), (_, show_surrounding), (_, show_weekday)] =
-            v.cast_to::<[(ArcStr, u64); 6]>().context("calendar fields")?;
+        let [
+            (_, default_style),
+            (_, display_date),
+            (_, events),
+            (_, show_month),
+            (_, show_surrounding),
+            (_, show_weekday),
+        ] = v.cast_to::<[(ArcStr, u64); 6]>().context("calendar fields")?;
         let (
             default_style,
             display_date,

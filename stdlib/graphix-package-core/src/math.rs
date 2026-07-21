@@ -1,15 +1,21 @@
-use graphix_compiler::{ExecCtx, Rt, UserEvent};
+use arcstr::ArcStr;
+use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
 use netidx_value::Value;
 
 use crate::{CachedArgs, CachedVals, EvalCached};
+
+/// Variant tag for the catchable error `math::clamp` returns on an
+/// invalid range (`Error<`ClampError(string)>`).
+static CLAMP_ERR_TAG: ArcStr = arcstr::literal!("ClampError");
 
 macro_rules! unary_f64 {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
+            const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
             const NAME: &str = $name;
-            const NEEDS_CALLSITE: bool = false;
 
             fn eval(
                 &mut self,
@@ -29,8 +35,9 @@ macro_rules! binary_f64 {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
+            const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
             const NAME: &str = $name;
-            const NEEDS_CALLSITE: bool = false;
 
             fn eval(
                 &mut self,
@@ -51,8 +58,9 @@ macro_rules! unary_f64_pred {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
+            const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
             const NAME: &str = $name;
-            const NEEDS_CALLSITE: bool = false;
 
             fn eval(
                 &mut self,
@@ -119,13 +127,28 @@ binary_f64!(MathMaxEv, MathMax, "core_math_max", max);
 #[derive(Debug, Default)]
 pub(crate) struct MathClampEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_math_clamp";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let x = from.get::<f64>(0)?;
         let lo = from.get::<f64>(1)?;
         let hi = from.get::<f64>(2)?;
+        // `f64::clamp` PANICS (aborting the whole runtime) when the range
+        // is invalid — `lo > hi`, or either bound is NaN (`!(lo <= hi)`
+        // catches both). A wrong-argument bug shouldn't crash: clamp's
+        // return type is the union `[f64, Error<`ClampError(string)>]`, so
+        // an invalid range returns a CATCHABLE error value (unlike the
+        // arith operators' log+bottom — those bottom so well-typed numeric
+        // code isn't peppered with `$`/`?`; clamp is rare enough that an
+        // explicit error type is the better trade).
+        if !(lo <= hi) {
+            return Some(errf!(
+                CLAMP_ERR_TAG,
+                "math::clamp: invalid range lo={lo}, hi={hi} (lo > hi or NaN)"
+            ));
+        }
         Some(Value::F64(x.clamp(lo, hi)))
     }
 }
@@ -134,23 +157,8 @@ pub(crate) type MathClamp = CachedArgs<MathClampEv>;
 // ── Predicates ─────────────────────────────────────────────────────
 unary_f64_pred!(MathIsNanEv, MathIsNan, "core_math_is_nan", is_nan);
 unary_f64_pred!(MathIsFiniteEv, MathIsFinite, "core_math_is_finite", is_finite);
-unary_f64_pred!(
-    MathIsInfiniteEv,
-    MathIsInfinite,
-    "core_math_is_infinite",
-    is_infinite
-);
+unary_f64_pred!(MathIsInfiniteEv, MathIsInfinite, "core_math_is_infinite", is_infinite);
 
 // ── Conversion ─────────────────────────────────────────────────────
-unary_f64!(
-    MathToDegreesEv,
-    MathToDegrees,
-    "core_math_to_degrees",
-    to_degrees
-);
-unary_f64!(
-    MathToRadiansEv,
-    MathToRadians,
-    "core_math_to_radians",
-    to_radians
-);
+unary_f64!(MathToDegreesEv, MathToDegrees, "core_math_to_degrees", to_degrees);
+unary_f64!(MathToRadiansEv, MathToRadians, "core_math_to_radians", to_radians);

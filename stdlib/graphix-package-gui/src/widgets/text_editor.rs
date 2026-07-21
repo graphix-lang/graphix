@@ -29,8 +29,17 @@ pub(crate) struct TextEditorW<X: GXExt> {
 
 impl<X: GXExt> TextEditorW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, content), (_, disabled), (_, font), (_, height), (_, on_edit), (_, padding), (_, placeholder), (_, size), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 9]>().context("text_editor flds")?;
+        let [
+            (_, content),
+            (_, disabled),
+            (_, font),
+            (_, height),
+            (_, on_edit),
+            (_, padding),
+            (_, placeholder),
+            (_, size),
+            (_, width),
+        ] = source.cast_to::<[(ArcStr, u64); 9]>().context("text_editor flds")?;
         let (content, disabled, font, height, on_edit, padding, placeholder, size, width) =
             try_join! {
                 gx.compile_ref(content),

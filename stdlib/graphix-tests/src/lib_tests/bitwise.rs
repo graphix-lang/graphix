@@ -44,9 +44,7 @@ const BIT_XOR_SELF: &str = r#"
   bit_xor(u8:0x2A, u8:0x2A)
 "#;
 
-run!(bit_xor_self, BIT_XOR_SELF, |v: Result<&Value>| {
-    matches!(v, Ok(Value::U8(0)))
-});
+run!(bit_xor_self, BIT_XOR_SELF, |v: Result<&Value>| { matches!(v, Ok(Value::U8(0))) });
 
 // ── bit_not ──────────────────────────────────────────────────────
 
@@ -72,17 +70,13 @@ const SHL_BASIC: &str = r#"
   shl(u8:1, u8:4)
 "#;
 
-run!(shl_basic, SHL_BASIC, |v: Result<&Value>| {
-    matches!(v, Ok(Value::U8(0x10)))
-});
+run!(shl_basic, SHL_BASIC, |v: Result<&Value>| { matches!(v, Ok(Value::U8(0x10))) });
 
 const SHL_ZERO: &str = r#"
   shl(u8:0x2A, u8:0)
 "#;
 
-run!(shl_zero, SHL_ZERO, |v: Result<&Value>| {
-    matches!(v, Ok(Value::U8(0x2A)))
-});
+run!(shl_zero, SHL_ZERO, |v: Result<&Value>| { matches!(v, Ok(Value::U8(0x2A))) });
 
 // ── shr ──────────────────────────────────────────────────────────
 
@@ -90,9 +84,7 @@ const SHR_BASIC: &str = r#"
   shr(u8:0x10, u8:4)
 "#;
 
-run!(shr_basic, SHR_BASIC, |v: Result<&Value>| {
-    matches!(v, Ok(Value::U8(1)))
-});
+run!(shr_basic, SHR_BASIC, |v: Result<&Value>| { matches!(v, Ok(Value::U8(1))) });
 
 // ── polymorphism (non-u8 types) ──────────────────────────────────
 
@@ -108,6 +100,4 @@ const SHL_I64: &str = r#"
   shl(i64:1, i64:32)
 "#;
 
-run!(shl_i64, SHL_I64, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(0x100000000)))
-});
+run!(shl_i64, SHL_I64, |v: Result<&Value>| { matches!(v, Ok(Value::I64(0x100000000))) });

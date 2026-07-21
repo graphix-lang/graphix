@@ -1,0 +1,12 @@
+// bisect: fusion/JIT over-fire (jul16a fuzz class A proper — the root
+// nested-ragged shape). The INNER loop of a nested map runs at loop
+// depth > 0 with a per-outer-slot varying length, so its prev-length
+// word could not claim static state and fell back to the conservative
+// rule — re-firing on every guard-input update where the interp's
+// per-outer-slot inner MapQ instance is quiet on unchanged selections
+// and same lengths (interp c=2, jit c=4). Fixed by chaining a
+// per-enclosing-slot prev-length word through the enclosing frame's
+// slot-table chain (slot_state_sites keys nested collection callsites
+// alongside guarded selects; the chain anchors in the state buffer at
+// root or the site block in callees).
+{let x = array::iter([i64:0, i64:0, i64:3, i64:4]); let m = x / i64:3; let src = [[m]]; src <- select count(x) {i64:2 => [[i64:10], [i64:20, i64:30]], _ => never()}; let a = array::map(src, |ys| array::map(ys, |y| select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2})); let c = count(a); select count(x) {i64:4 => c, _ => never()}}

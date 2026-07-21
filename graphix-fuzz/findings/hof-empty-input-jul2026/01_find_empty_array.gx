@@ -1,0 +1,10 @@
+// bisect: NODE-WALK bug (JIT was correct) — soak jul06c
+// (divergence_000048, B7). `array::find` over an empty array: interp
+// returned the empty ARRAY itself, jit returned null. Root: MapQ's
+// empty-input shortcut (`if a.len() == 0 { return
+// Some(T::Collection::project(a)) }`, graphix-package-core lib.rs)
+// returned the projected empty collection for EVERY MapFn impl without
+// consulting `T::finish` — right for map/filter, wrong for
+// find/find_map whose finish yields Null on no-match. FIXED: the empty
+// case calls `self.t.finish(&self.slots, &self.cur)`.
+array::find({let a: Array<i64> = []; a}, |x| true)

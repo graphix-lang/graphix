@@ -2,34 +2,23 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
-use compact_str::format_compact;
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use graphix_compiler::{
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue,
+    UserEvent,
+    effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
     node::genn,
     typ::{FnType, TVal, Type, TypeRef},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
-    TypecheckPhase, UserEvent,
 };
 use graphix_rt::GXRt;
-use immutable_chunkmap::map::Map as CMap;
-use netidx::path::Path;
-use netidx::subscriber::Value;
+use netidx::{path::Path, subscriber::Value};
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
-use poolshark::local::LPooled;
-use std::{
-    any::Any,
-    collections::{hash_map::Entry, VecDeque},
-    fmt::Debug,
-    iter,
-    marker::PhantomData,
-    time::Duration,
-};
+use std::{any::Any, collections::VecDeque, fmt::Debug, iter, time::Duration};
 use tokio::time::Instant;
-use triomphe::Arc as TArc;
 
 pub(crate) mod buffer;
 pub(crate) mod math;
@@ -43,7 +32,7 @@ pub(crate) mod queuefn;
 pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     let ft = resolved_typ?;
     let typ = match &ft.rtype {
-        Type::Ref (TypeRef { name, params, .. })
+        Type::Ref(TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
         {
             params[0].clone()
@@ -62,6 +51,40 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
         _ => return None,
     };
     if typ.has_unbound() {
+        return None;
+    }
+    // A ⊥-settled target is just as unusable as an unbound one: ⊥
+    // means "nothing ever constrained this cell" (never-as-Bottom's
+    // terminal settle), so there is no type to DIRECT the
+    // deserialization — and the value WOULD flow at runtime, laundering
+    // it under the never-arrives type into positions that trust the
+    // type system completely. Reject → the builtin's "type must be
+    // known, annotations needed" error, exactly as for unbound. The
+    // artifact also arrives as a ⊥ MEMBER of a set: a collection
+    // callback's cell aliasing left `str::parse`'s target as the whole
+    // `[⊥, Error<ParseError>]` union, which a top-level-only check
+    // missed — Bottom has no surface syntax, so a ⊥ member is always a
+    // settle artifact, never an annotated target (soak-jul14b 000003).
+    // The walk is RECURSIVE through set members (jul16g divergence
+    // 000000: a nested-map callback's artifact arrived as
+    // `[[⊥, Error<ParseError>], Error<ParseError>]` — the ⊥ one level
+    // inside a set MEMBER, which the one-level check accepted; the
+    // fused parse then cast through the garbage union while the
+    // interp's runtime slot instance erred). Depth-capped against
+    // pathological recursive unions; recursion only descends Sets, so
+    // ordinary recursive types (variant members) terminate naturally.
+    fn contains_bottom(t: &Type, depth: u32) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        let t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
+        match t {
+            Type::Bottom => true,
+            Type::Set(els) => els.iter().any(|e| contains_bottom(e, depth + 1)),
+            _ => false,
+        }
+    }
+    if contains_bottom(&typ, 0) {
         return None;
     }
     Some(typ)
@@ -194,34 +217,75 @@ pub fn is_struct(arr: &ValArray) -> bool {
 // ── Shared traits and structs ──────────────────────────────────────
 
 #[derive(Debug)]
-pub struct CachedVals(pub Box<[Option<Value>]>);
+pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 
 impl CachedVals {
     pub fn new<R: Rt, E: UserEvent>(from: &[Node<R, E>]) -> CachedVals {
-        CachedVals(from.into_iter().map(|_| None).collect())
+        CachedVals(
+            from.into_iter().map(|_| None).collect(),
+            from.into_iter().map(|_| Tag::FIRED).collect(),
+        )
     }
 
     pub fn clear(&mut self) {
         for v in &mut self.0 {
             *v = None
         }
+        for t in &mut self.1 {
+            *t = Tag::FIRED
+        }
     }
 
+    /// True if any arg slot currently holds a taint (a poisoned value
+    /// event arrived and no clean production has overwritten it since
+    /// — the kernel's per-slot taint bit).
+    pub fn any_tainted(&self) -> bool {
+        self.1.iter().any(|t| t.is_tainted())
+    }
+
+    /// Update the slots from the arg nodes; `true` iff any production
+    /// TRIGGERED (fired or tainted — a merely-stale production
+    /// refreshes its slot silently). A tainted production marks the
+    /// slot's tag but keeps the previous (helper-safe) value.
     pub fn update<R: Rt, E: UserEvent>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> bool {
-        from.into_iter().enumerate().fold(false, |res, (i, src)| {
-            match src.update(ctx, event) {
-                None => res,
-                v @ Some(_) => {
-                    self.0[i] = v;
-                    true
+        self.update_full(ctx, from, event).is_some_and(|t| t.triggers())
+    }
+
+    /// [`Self::update`] with the full production summary: `None` = no
+    /// production at all; `Some(tag)` = productions arrived — TAINT if
+    /// any tainted, else FIRED if any fired, else STALE (value-channel
+    /// refresh only).
+    pub fn update_full<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> Option<Tag> {
+        let mut prod: Option<Tag> = None;
+        for (i, src) in from.iter_mut().enumerate() {
+            if let Some(tv) = src.update(ctx, event) {
+                let (v, tag) = tv.into_parts();
+                if tag.is_tainted() {
+                    self.1[i] = Tag::TAINT;
+                } else {
+                    self.0[i] = Some(v);
+                    self.1[i] = tag;
                 }
+                prod = Some(match prod {
+                    None => tag,
+                    // taint ORs; fired beats stale
+                    Some(p) if p.is_tainted() || tag.is_tainted() => Tag::TAINT,
+                    Some(p) if p.is_fired() || tag.is_fired() => Tag::FIRED,
+                    Some(_) => Tag::STALE,
+                });
             }
-        })
+        }
+        prod
     }
 
     /// Like update, but return the indexes of the nodes that updated
@@ -234,12 +298,15 @@ impl CachedVals {
         event: &mut Event<E>,
     ) {
         for (i, n) in from.iter_mut().enumerate() {
-            match n.update(ctx, event) {
-                None => (),
-                v => {
-                    self.0[i] = v;
-                    up[i] = true
+            if let Some(tv) = n.update(ctx, event) {
+                let (v, tag) = tv.into_parts();
+                if tag.is_tainted() {
+                    self.1[i] = Tag::TAINT;
+                } else {
+                    self.0[i] = Some(v);
+                    self.1[i] = tag;
                 }
+                up[i] = tag.triggers();
             }
         }
     }
@@ -262,7 +329,21 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     Debug + Default + Send + Sync + 'static
 {
     const NAME: &str;
-    const NEEDS_CALLSITE: bool;
+    /// Sync/async classification for fusion. Same semantics as
+    /// `BuiltIn::EFFECT`: defaults to `Async` (conservative); override
+    /// to `Sync` when the cached operation produces all of its output
+    /// on the same cycle as the most recent input that triggered it.
+    /// `CachedArgs<T>`'s `BuiltIn` impl pulls this through to the
+    /// builtin registry.
+    const EFFECT: EffectKind = EffectKind::Async;
+    /// Same semantics as `BuiltIn::STATELESS`: `eval` is a
+    /// deterministic function of the current args with no external
+    /// effect and no cross-invocation state in `Self` (an internal
+    /// memo/scratch that never changes an output is fine) — so
+    /// deleting the instance and re-initializing it fresh is
+    /// unobservable. Conservative default: `false`. Pulled through to
+    /// the builtin registry by `CachedArgs<T>`'s `BuiltIn` impl.
+    const STATELESS: bool = false;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -277,11 +358,19 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
     ) -> Result<()> {
         Ok(())
     }
@@ -290,12 +379,21 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 #[derive(Debug)]
 pub struct CachedArgs<T> {
     cached: CachedVals,
+    /// The last value `eval` produced — the builtin's RESULT slot on
+    /// the value channel: a merely-stale arg refresh re-surfaces it
+    /// (tagged stale via `out_tag`) instead of re-running `eval`,
+    /// exactly the kernel's DynCall result temp.
+    last_result: Option<Value>,
+    /// The tag of the last value `update` returned (see
+    /// `Apply::out_tag`).
+    last_out: Tag,
     t: T,
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
+    const EFFECT: EffectKind = T::EFFECT;
     const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = T::NEEDS_CALLSITE;
+    const STATELESS: bool = T::STATELESS;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -307,6 +405,8 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
             cached: CachedVals::new(from),
+            last_result: None,
+            last_out: Tag::FIRED,
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -320,30 +420,76 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if self.cached.update(ctx, from, event) {
-            self.t.eval(ctx, &self.cached)
-        } else {
-            None
+        match self.cached.update_full(ctx, from, event) {
+            None => None,
+            Some(_) if self.cached.any_tainted() => {
+                // DEFENSE-IN-DEPTH: unreachable when the seams hold —
+                // the CallSite gates every builtin's tainted arg
+                // productions to silence and the fused DynCall
+                // delivers taint-masked slots as absence (Eric's
+                // rulings 2026-07-19/20), so no poisoned delivery can
+                // reach these slots. If a new channel leaks one, emit
+                // the tainted placeholder (loud downstream) rather
+                // than replaying stale state.
+                self.last_out = Tag::TAINT;
+                Some(Value::Null)
+            }
+            Some(t) if t.is_fired() => {
+                let res = self.t.eval(ctx, &self.cached);
+                if let Some(v) = &res {
+                    self.last_result = Some(v.clone());
+                }
+                self.last_out = Tag::FIRED;
+                res
+            }
+            Some(_) => {
+                // stale refresh: surface the result slot on the value
+                // channel — eval does NOT re-run
+                self.last_out = Tag::STALE;
+                self.last_result.clone()
+            }
         }
     }
 
-    fn typecheck(
+    fn out_tag(&self) -> Tag {
+        self.last_out
+    }
+
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.t.typecheck(ctx, from, phase)
+        self.t.typecheck0(ctx, from)
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.t.typecheck1(ctx, from, resolved)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.cached.clear()
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The arg slots PERSIST: they are the interpreter's VALUE
+        // channel — the kernel twin of a computed value held in an SSA
+        // temp while the FIRING channel (the slots-word) stays quiet. A
+        // const-result feeder (`f(v)` with a constant body) fires once
+        // ever; its slot value is what lets `push(res, f(v))` keep
+        // emitting per fired `res`, exactly like the kernel (the
+        // hof_const_body_prev_len pin). `t`'s own state (a tally, a
+        // memo) is the builtin's semantics and also survives.
+    }
 }
 
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
     const NAME: &str;
-    const NEEDS_CALLSITE: bool;
 
     type Args: Debug + Any + Send + Sync;
 
@@ -367,11 +513,19 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
         Some(v)
     }
 
-    fn typecheck<R: Rt, E: UserEvent>(
+    fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        _resolved: &FnType,
     ) -> Result<()> {
         Ok(())
     }
@@ -392,7 +546,6 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
 
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<T> {
     const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = T::NEEDS_CALLSITE;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -428,9 +581,9 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         {
             self.queued.push_back(args);
         }
-        let res = event.variables.remove(&self.id).and_then(|v| {
+        let res = event.variables.remove(&self.id).and_then(|tv| {
             self.running = false;
-            self.t.map_value(ctx, v)
+            self.t.map_value(ctx, tv.value())
         });
         if !self.running
             && let Some(args) = self.queued.pop_front()
@@ -442,13 +595,21 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         res
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        self.t.typecheck(ctx, from, phase)
+        self.t.typecheck0(ctx, from)
+    }
+
+    fn typecheck1(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.t.typecheck1(ctx, from, resolved)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -464,513 +625,11 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         ctx.rt.ref_var(id, self.top_id);
         self.id = id;
     }
-}
 
-pub trait MapCollection: Debug + Clone + Default + Send + Sync + 'static {
-    /// return the length of the collection
-    fn len(&self) -> usize;
-
-    /// iterate the collection elements as values
-    fn iter_values(&self) -> impl Iterator<Item = Value>;
-
-    /// given a value, return Some if the value is the collection type
-    /// we are mapping.
-    fn select(v: Value) -> Option<Self>;
-
-    /// given a collection wrap it in a value
-    fn project(self) -> Value;
-
-    /// return the element type given the function type
-    fn etyp(ft: &FnType) -> Result<Type>;
-}
-
-impl MapCollection for ValArray {
-    fn iter_values(&self) -> impl Iterator<Item = Value> {
-        (**self).iter().cloned()
-    }
-
-    fn len(&self) -> usize {
-        (**self).len()
-    }
-
-    fn select(v: Value) -> Option<Self> {
-        match v {
-            Value::Array(a) => Some(a.clone()),
-            _ => None,
-        }
-    }
-
-    fn project(self) -> Value {
-        Value::Array(self)
-    }
-
-    fn etyp(ft: &FnType) -> Result<Type> {
-        match &ft.args[0].typ {
-            Type::Array(et) => Ok((**et).clone()),
-            _ => bail!("expected array"),
-        }
-    }
-}
-
-impl MapCollection for CMap<Value, Value, 32> {
-    fn iter_values(&self) -> impl Iterator<Item = Value> {
-        self.into_iter().map(|(k, v)| {
-            Value::Array(ValArray::from_iter_exact([k.clone(), v.clone()].into_iter()))
-        })
-    }
-
-    fn len(&self) -> usize {
-        CMap::len(self)
-    }
-
-    fn select(v: Value) -> Option<Self> {
-        match v {
-            Value::Map(m) => Some(m.clone()),
-            _ => None,
-        }
-    }
-
-    fn project(self) -> Value {
-        Value::Map(self)
-    }
-
-    fn etyp(ft: &FnType) -> Result<Type> {
-        match &ft.args[0].typ {
-            Type::Map { key, value } => {
-                Ok(Type::Tuple(TArc::from_iter([(**key).clone(), (**value).clone()])))
-            }
-            _ => bail!("expected Map, got {:?}", ft.args[0].typ),
-        }
-    }
-}
-
-pub trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
-    type Collection: MapCollection;
-
-    const NAME: &str;
-
-    /// finish will be called when every lambda instance has produced
-    /// a value for the updated array. Out contains the output of the
-    /// predicate lambda for each index i, and a is the array. out and
-    /// a are guaranteed to have the same length. out\[i\].cur is
-    /// guaranteed to be Some.
-    fn finish(&mut self, slots: &[Slot<R, E>], a: &Self::Collection) -> Option<Value>;
-}
-
-#[derive(Debug)]
-pub struct Slot<R: Rt, E: UserEvent> {
-    pub id: BindId,
-    pub pred: Node<R, E>,
-    pub cur: Option<Value>,
-}
-
-impl<R: Rt, E: UserEvent> Slot<R, E> {
-    pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.pred.delete(ctx);
-        ctx.cached.remove(&self.id);
-        ctx.env.unbind_variable(self.id);
-    }
-}
-
-#[derive(Debug)]
-pub struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
-    scope: Scope,
-    predid: BindId,
-    top_id: ExprId,
-    mftyp: TArc<FnType>,
-    etyp: Type,
-    slots: Vec<Slot<R, E>>,
-    cur: T::Collection,
-    t: T,
-}
-
-impl<R: Rt, E: UserEvent, T: MapFn<R, E>> BuiltIn<R, E> for MapQ<R, E, T> {
-    const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = false;
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        typ: &'a graphix_compiler::typ::FnType,
-        resolved: Option<&'d FnType>,
-        scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        match from {
-            [_, _] => {
-                let typ = resolved.unwrap_or(typ);
-                Ok(Box::new(Self {
-                    scope: scope
-                        .append(&format_compact!("fn{}", LambdaId::new().inner())),
-                    predid: BindId::new(),
-                    top_id,
-                    etyp: T::Collection::etyp(typ)?,
-                    mftyp: match &typ.args[1].typ {
-                        Type::Fn(ft) => ft.clone(),
-                        t => bail!("expected a function not {t}"),
-                    },
-                    slots: vec![],
-                    cur: Default::default(),
-                    t: T::default(),
-                }))
-            }
-            _ => bail!("expected two arguments"),
-        }
-    }
-}
-
-impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Apply<R, E> for MapQ<R, E, T> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        let slen = self.slots.len();
-        if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.predid, v.clone());
-            event.variables.insert(self.predid, v);
-        }
-        let (up, resized) =
-            match from[0].update(ctx, event).and_then(|v| T::Collection::select(v)) {
-                Some(a) if a.len() == slen => (Some(a), false),
-                Some(a) if a.len() < slen => {
-                    while self.slots.len() > a.len() {
-                        if let Some(mut s) = self.slots.pop() {
-                            s.delete(ctx)
-                        }
-                    }
-                    (Some(a), true)
-                }
-                Some(a) => {
-                    while self.slots.len() < a.len() {
-                        let (id, node) = genn::bind(
-                            ctx,
-                            &self.scope.lexical,
-                            "x",
-                            self.etyp.clone(),
-                            self.top_id,
-                        );
-                        let fargs = vec![node];
-                        let fnode = genn::reference(
-                            ctx,
-                            self.predid,
-                            Type::Fn(self.mftyp.clone()),
-                            self.top_id,
-                        );
-                        let pred = genn::apply(
-                            fnode,
-                            self.scope.clone(),
-                            fargs,
-                            &self.mftyp,
-                            self.top_id,
-                        );
-                        self.slots.push(Slot { id, pred, cur: None });
-                    }
-                    (Some(a), true)
-                }
-                None => (None, false),
-            };
-        if let Some(a) = up {
-            for (s, v) in self.slots.iter().zip(a.iter_values()) {
-                ctx.cached.insert(s.id, v.clone());
-                event.variables.insert(s.id, v);
-            }
-            self.cur = a.clone();
-            if a.len() == 0 {
-                return Some(T::Collection::project(a));
-            }
-        }
-        let init = event.init;
-        let mut up = resized;
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if i == slen {
-                // new nodes were added starting here
-                event.init = true;
-                if let Entry::Vacant(e) = event.variables.entry(self.predid)
-                    && let Some(v) = ctx.cached.get(&self.predid)
-                {
-                    e.insert(v.clone());
-                }
-            }
-            if let Some(v) = s.pred.update(ctx, event) {
-                s.cur = Some(v);
-                up = true;
-            }
-        }
-        event.init = init;
-        if up && self.slots.iter().all(|s| s.cur.is_some()) {
-            self.t.finish(&mut &self.slots, &self.cur)
-        } else {
-            None
-        }
-    }
-
-    fn typecheck(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
-    ) -> anyhow::Result<()> {
-        let mftyp = match &from[1].typ() {
-            Type::Fn(ft) => ft.clone(),
-            t => bail!("expected a function not {t}"),
-        };
-        let (_, node) =
-            genn::bind(ctx, &self.scope.lexical, "x", self.etyp.clone(), self.top_id);
-        let fargs = vec![node];
-        let ft = mftyp.clone();
-        let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
-        let mut node = genn::apply(fnode, self.scope.clone(), fargs, &ft, self.top_id);
-        node.typecheck(ctx)?;
-        node.delete(ctx);
-        Ok(())
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        for s in &self.slots {
-            s.pred.refs(refs)
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.predid);
-        for sl in &mut self.slots {
-            sl.delete(ctx)
-        }
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.cur = Default::default();
-        for sl in &mut self.slots {
-            sl.cur = None;
-            sl.pred.sleep(ctx);
-        }
-    }
-}
-
-pub trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
-    type Collection: MapCollection;
-
-    const NAME: &str;
-}
-
-#[derive(Debug)]
-pub struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
-    top_id: ExprId,
-    fid: BindId,
-    scope: Scope,
-    binds: Vec<BindId>,
-    nodes: Vec<Node<R, E>>,
-    inits: Vec<Option<Value>>,
-    initids: Vec<BindId>,
-    initid: BindId,
-    mftype: TArc<FnType>,
-    etyp: Type,
-    ityp: Type,
-    init: Option<Value>,
-    t: PhantomData<T>,
-}
-
-impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> BuiltIn<R, E> for FoldQ<R, E, T> {
-    const NAME: &str = T::NAME;
-    const NEEDS_CALLSITE: bool = false;
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        typ: &'a FnType,
-        resolved: Option<&'d FnType>,
-        scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        match from {
-            [_, _, _] => {
-                let typ = resolved.unwrap_or(typ);
-                Ok(Box::new(Self {
-                    top_id,
-                    scope: scope.clone(),
-                    binds: vec![],
-                    nodes: vec![],
-                    inits: vec![],
-                    initids: vec![],
-                    initid: BindId::new(),
-                    fid: BindId::new(),
-                    etyp: T::Collection::etyp(typ)?,
-                    ityp: typ.args[1].typ.clone(),
-                    mftype: match &typ.args[2].typ {
-                        Type::Fn(ft) => ft.clone(),
-                        t => bail!("expected a function not {t}"),
-                    },
-                    init: None,
-                    t: PhantomData,
-                }))
-            }
-            _ => bail!("expected three arguments"),
-        }
-    }
-}
-
-impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> Option<Value> {
-        let init = match from[0].update(ctx, event).and_then(|v| T::Collection::select(v))
-        {
-            None => self.nodes.len(),
-            Some(a) if a.len() == self.binds.len() => {
-                for (id, v) in self.binds.iter().zip(a.iter_values()) {
-                    ctx.cached.insert(*id, v.clone());
-                    event.variables.insert(*id, v.clone());
-                }
-                self.nodes.len()
-            }
-            Some(a) => {
-                let vals = a.iter_values().collect::<LPooled<Vec<Value>>>();
-                while self.binds.len() < a.len() {
-                    self.binds.push(BindId::new());
-                    self.inits.push(None);
-                    self.initids.push(BindId::new());
-                }
-                while a.len() < self.binds.len() {
-                    if let Some(id) = self.binds.pop() {
-                        ctx.cached.remove(&id);
-                    }
-                    if let Some(id) = self.initids.pop() {
-                        ctx.cached.remove(&id);
-                    }
-                    self.inits.pop();
-                    if let Some(mut n) = self.nodes.pop() {
-                        n.delete(ctx);
-                    }
-                }
-                let init = self.nodes.len();
-                for i in 0..self.binds.len() {
-                    ctx.cached.insert(self.binds[i], vals[i].clone());
-                    event.variables.insert(self.binds[i], vals[i].clone());
-                    if i >= self.nodes.len() {
-                        let n = genn::reference(
-                            ctx,
-                            if i == 0 { self.initid } else { self.initids[i - 1] },
-                            self.ityp.clone(),
-                            self.top_id,
-                        );
-                        let x = genn::reference(
-                            ctx,
-                            self.binds[i],
-                            self.etyp.clone(),
-                            self.top_id,
-                        );
-                        let fnode = genn::reference(
-                            ctx,
-                            self.fid,
-                            Type::Fn(self.mftype.clone()),
-                            self.top_id,
-                        );
-                        let node = genn::apply(
-                            fnode,
-                            self.scope.clone(),
-                            vec![n, x],
-                            &self.mftype,
-                            self.top_id,
-                        );
-                        self.nodes.push(node);
-                    }
-                }
-                init
-            }
-        };
-        if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.initid, v.clone());
-            event.variables.insert(self.initid, v.clone());
-            self.init = Some(v);
-        }
-        if let Some(v) = from[2].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
-        }
-        let old_init = event.init;
-        for i in 0..self.nodes.len() {
-            if i == init {
-                event.init = true;
-                if let Some(v) = ctx.cached.get(&self.fid)
-                    && let Entry::Vacant(e) = event.variables.entry(self.fid)
-                {
-                    e.insert(v.clone());
-                }
-                if i == 0 {
-                    if let Some(v) = self.init.as_ref()
-                        && let Entry::Vacant(e) = event.variables.entry(self.initid)
-                    {
-                        e.insert(v.clone());
-                    }
-                } else {
-                    if let Some(v) = self.inits[i - 1].clone() {
-                        event.variables.insert(self.initids[i - 1], v);
-                    }
-                }
-            }
-            match self.nodes[i].update(ctx, event) {
-                Some(v) => {
-                    ctx.cached.insert(self.initids[i], v.clone());
-                    event.variables.insert(self.initids[i], v.clone());
-                    self.inits[i] = Some(v);
-                }
-                None => {
-                    ctx.cached.remove(&self.initids[i]);
-                    event.variables.remove(&self.initids[i]);
-                    self.inits[i] = None;
-                }
-            }
-        }
-        event.init = old_init;
-        self.inits.last().and_then(|v| v.clone())
-    }
-
-    fn typecheck(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
-    ) -> anyhow::Result<()> {
-        let mut n = genn::reference(ctx, self.initid, self.ityp.clone(), self.top_id);
-        let x = genn::reference(ctx, BindId::new(), self.etyp.clone(), self.top_id);
-        let fnode =
-            genn::reference(ctx, self.fid, Type::Fn(self.mftype.clone()), self.top_id);
-        n = genn::apply(fnode, self.scope.clone(), vec![n, x], &self.mftype, self.top_id);
-        n.typecheck(ctx)?;
-        n.delete(ctx);
-        Ok(())
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        for n in &self.nodes {
-            n.refs(refs)
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let i =
-            iter::once(&self.initid).chain(self.binds.iter()).chain(self.initids.iter());
-        for id in i {
-            ctx.cached.remove(id);
-        }
-        for n in &mut self.nodes {
-            n.delete(ctx);
-        }
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.init = None;
-        for v in &mut self.inits {
-            *v = None
-        }
-        for n in &mut self.nodes {
-            n.sleep(ctx)
-        }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Async wrapper: queued results and the running flag are
+        // in-flight semantics; the arg cache feeds re-evaluation on
+        // completion. Async builtins never sit inside a sync frame.
     }
 }
 
@@ -980,8 +639,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Apply<R, E> for FoldQ<R, E, T> {
 struct IsErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_is_err";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1002,21 +662,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|v| match v {
+        from[0].update(ctx, event).map(|tv| match tv.value() {
             Value::Error(_) => Value::Bool(true),
             _ => Value::Bool(false),
         })
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
 struct FilterErr;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_filter_err";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1037,21 +700,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|v| match v {
+        from[0].update(ctx, event).and_then(|tv| match tv.value() {
             v @ Value::Error(_) => Some(v),
             _ => None,
         })
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
 struct ToError;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_error";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1072,10 +737,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|e| Value::Error(triomphe::Arc::new(e)))
+        from[0].update(ctx, event).map(|e| Value::Error(e.value().into()))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -1084,8 +751,16 @@ struct Once {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_once";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1112,7 +787,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
                     None
                 } else {
                     self.val = true;
-                    Some(v)
+                    Some(v.value())
                 }
             }),
             _ => None,
@@ -1122,6 +797,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.val = false
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The fired flag is SEMANTIC (once per subscription lifetime,
+        // not once per frame) — sleep's reset is the arm-rewake
+        // restart semantics, which a frame reset must not replicate.
+    }
 }
 
 #[derive(Debug)]
@@ -1130,8 +811,16 @@ struct Take {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_take";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1153,7 +842,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.cast_to::<usize>().ok())
+            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
@@ -1163,7 +852,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
                 None => None,
                 Some(n) if *n > 0 => {
                     *n -= 1;
-                    return Some(v);
+                    return Some(v.value());
                 }
                 Some(_) => None,
             },
@@ -1173,6 +862,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.n = None
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The countdown is semantic (take/skip across the node's
+        // lifetime); only sleep's arm-rewake restarts it.
+    }
 }
 
 #[derive(Debug)]
@@ -1181,8 +875,16 @@ struct Skip {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_skip";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1204,19 +906,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.cast_to::<usize>().ok())
+            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
         match from[1].update(ctx, event) {
             None => None,
             Some(v) => match &mut self.n {
-                None => Some(v),
+                None => Some(v.value()),
                 Some(n) if *n > 0 => {
                     *n -= 1;
                     None
                 }
-                Some(_) => Some(v),
+                Some(_) => Some(v.value()),
             },
         }
     }
@@ -1224,14 +926,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.n = None
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The countdown is semantic (take/skip across the node's
+        // lifetime); only sleep's arm-rewake restarts it.
+    }
 }
 
 #[derive(Debug, Default)]
 struct AllEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_all";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &*from.0 {
@@ -1264,8 +971,8 @@ fn add_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 struct SumEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_sum";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1289,8 +996,8 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_product";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1314,8 +1021,8 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_divide";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
@@ -1331,23 +1038,30 @@ type Divide = CachedArgs<DivideEv>;
 struct MinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_min";
-    const NEEDS_CALLSITE: bool = false;
 
+    // VALUE-LEVEL: each argument is compared as a whole value under
+    // graphix's total order — no recursive flattening. The flatten was
+    // a bscript holdover that contradicted the declared type
+    // (`fn(a: 'a, @args: 'a) -> 'a` resolves 'a := Array<i64> for
+    // `min([1,2], [3])` and promises an array back; the flattened
+    // scalar broke the JIT's return ABI — soak jul07b). Eric's ruling
+    // 2026-07-08: the impl does what the type says.
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = None;
-        for v in from.flat_iter() {
+        let mut res: Option<&Value> = None;
+        for v in from.0.iter() {
             match (res, v) {
-                (None, None) | (Some(_), None) => return None,
-                (None, Some(v)) => {
-                    res = Some(v);
-                }
+                (_, None) => return None,
+                (None, Some(v)) => res = Some(v),
                 (Some(v0), Some(v)) => {
-                    res = if v < v0 { Some(v) } else { Some(v0) };
+                    if v < v0 {
+                        res = Some(v)
+                    }
                 }
             }
         }
-        res
+        res.cloned()
     }
 }
 
@@ -1357,23 +1071,24 @@ type Min = CachedArgs<MinEv>;
 struct MaxEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_max";
-    const NEEDS_CALLSITE: bool = false;
 
+    // VALUE-LEVEL, no flattening — see `MinEv`.
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = None;
-        for v in from.flat_iter() {
+        let mut res: Option<&Value> = None;
+        for v in from.0.iter() {
             match (res, v) {
-                (None, None) | (Some(_), None) => return None,
-                (None, Some(v)) => {
-                    res = Some(v);
-                }
+                (_, None) => return None,
+                (None, Some(v)) => res = Some(v),
                 (Some(v0), Some(v)) => {
-                    res = if v > v0 { Some(v) } else { Some(v0) };
+                    if v > v0 {
+                        res = Some(v)
+                    }
                 }
             }
         }
-        res
+        res.cloned()
     }
 }
 
@@ -1383,8 +1098,8 @@ type Max = CachedArgs<MaxEv>;
 struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_and";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
@@ -1407,8 +1122,8 @@ type And = CachedArgs<AndEv>;
 struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_or";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
@@ -1497,8 +1212,9 @@ macro_rules! int_shift {
 struct BitAndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_and";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, &)
@@ -1511,8 +1227,9 @@ type BitAnd = CachedArgs<BitAndEv>;
 struct BitOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_or";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, |)
@@ -1525,8 +1242,9 @@ type BitOr = CachedArgs<BitOrEv>;
 struct BitXorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_xor";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_binop!(from, ^)
@@ -1539,8 +1257,9 @@ type BitXor = CachedArgs<BitXorEv>;
 struct BitNotEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_bit_not";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -1567,8 +1286,9 @@ type BitNot = CachedArgs<BitNotEv>;
 struct ShlEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_shl";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shl)
@@ -1581,8 +1301,9 @@ type Shl = CachedArgs<ShlEv>;
 struct ShrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_shr";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         int_shift!(from, wrapping_shr)
@@ -1605,8 +1326,8 @@ struct Filter<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_filter";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1642,28 +1363,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(v) = from[1].update(ctx, event) {
-            ctx.cached.insert(self.fid, v.clone());
-            event.variables.insert(self.fid, v);
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+            ctx.rt.cached_mut().insert(self.fid, v.clone());
+            event.variables.insert(self.fid, TagValue::fired(v));
         }
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx, event).map(|tv| tv.value()) {
             self.pending = Some(v.clone());
-            ctx.cached.insert(self.x, v.clone());
-            event.variables.insert(self.x, v);
+            ctx.rt.cached_mut().insert(self.x, v.clone());
+            event.variables.insert(self.x, TagValue::fired(v));
         }
-        self.pred.update(ctx, event).and_then(|b| match b {
+        self.pred.update(ctx, event).and_then(|b| match b.value() {
             Value::Bool(true) => self.pending.clone(),
             _ => None,
         })
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> anyhow::Result<()> {
-        self.pred.typecheck(ctx)?;
+        self.pred.typecheck0(ctx)?;
         Ok(())
     }
 
@@ -1672,8 +1392,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.cached.remove(&self.fid);
-        ctx.cached.remove(&self.x);
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
     }
@@ -1681,6 +1401,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pending = None;
         self.pred.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // `pending` (the held candidate value) and the published
+        // pred-fn/element values are all per-invocation replay memory.
+        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.pending = None;
+        self.pred.reset_replay(ctx);
     }
 }
 
@@ -1694,7 +1423,6 @@ struct Queue {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "core_queue";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1726,13 +1454,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
             self.triggered += 1;
         }
         if let Some(v) = from[1].update(ctx, event) {
-            self.queue.push_back(v);
+            self.queue.push_back(v.value());
         }
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
             ctx.rt.set_var(self.id, self.queue.pop_front().unwrap());
         }
-        event.variables.get(&self.id).cloned()
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1746,6 +1474,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         self.triggered = 0;
         self.queue.clear();
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The queue and trigger debt are semantic buffering; delivery
+        // rides set_var (async, so never inside a sync frame anyway).
+    }
 }
 
 #[derive(Debug)]
@@ -1755,8 +1488,17 @@ struct Hold {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
+    // Async, deliberately (the F2 flip, same as Uniq below): hold is
+    // UPDATE-HISTORY-SENSITIVE — `current` is take()n on emission and
+    // re-arms only when `v` ACTUALLY updates, and `triggered` counts
+    // clock updates. The fused DynCall dispatch protocol re-delivers
+    // EVERY arg as a fresh update on every dispatch, so a fused hold
+    // re-latched `v` each clock tick and re-emitted the same value on
+    // every trigger (soak jul07c: interp emitted once, jit once per
+    // clock). Async = fusion boundary = the node-walk runs it with
+    // exact per-arg update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_hold";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1784,7 +1526,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
             self.triggered += 1;
         }
         if let Some(v) = from[1].update(ctx, event) {
-            self.current = Some(v);
+            self.current = Some(v.value());
         }
         if self.triggered > 0
             && let Some(v) = self.current.take()
@@ -1802,6 +1544,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         self.triggered = 0;
         self.current = None;
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // hold's held value and trigger debt ARE its contract (sample
+        // semantics) — not replay memory.
+    }
 }
 
 #[derive(Debug)]
@@ -1813,7 +1560,6 @@ struct Seq {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "core_seq";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1840,6 +1586,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         if self.args.update(ctx, from, event) {
             match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
+                    // Range guard (the array::init precedent, same
+                    // shared cap): each element is one queued set_var —
+                    // an unbounded range is a synchronous,
+                    // uninterruptible loop and a memory bomb
+                    // (seq(i64::MIN, 4) wedged its evaluator past every
+                    // deadline — soak jul06g). i128: j - i overflows
+                    // i64 for exactly the ranges being rejected.
+                    let e = literal!("SeqError");
+                    if *j as i128 - *i as i128
+                        > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
+                    {
+                        return Some(errf!(
+                            e,
+                            "seq range {i}..{j} exceeds the {} element limit",
+                            graphix_compiler::node::MAX_ARRAY_INIT_LEN
+                        ));
+                    }
                     for v in *i..*j {
                         ctx.rt.set_var(self.id, Value::I64(v));
                     }
@@ -1850,7 +1613,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                 }
             }
         }
-        event.variables.get(&self.id).cloned()
+        event.variables.get(&self.id).map(|tv| tv.value_cloned())
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1862,6 +1625,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -1875,7 +1640,6 @@ struct Throttle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "core_throttle";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1957,6 +1721,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.wait = Duration::ZERO;
         self.args.clear();
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // Timing state is semantic, and the cached args feed the
+        // in-flight timer's emission (async — never inside a sync
+        // frame).
+    }
 }
 
 #[derive(Debug)]
@@ -1965,8 +1735,16 @@ struct Count {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_count";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -1998,14 +1776,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.count = 0
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The tally is the canonical semantic-state example — it
+        // accumulates across frames in both backends.
+    }
 }
 
 #[derive(Debug, Default)]
 struct MeanEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_mean";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("MeanError");
@@ -2039,8 +1822,16 @@ type Mean = CachedArgs<MeanEv>;
 struct Uniq(Option<Value>);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
+    // Async, deliberately (F2 flip): this builtin's semantics are
+    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
+    // arg updated on which cycle. The fused DynCall dispatch protocol
+    // re-delivers EVERY arg as a fresh update on every dispatch (the
+    // kernel can't reproduce per-arg update granularity), so eager
+    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
+    // every cycle and never passed an event). Async = fusion boundary
+    // = the node-walk runs it with exact update semantics.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_uniq";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2061,7 +1852,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|v| {
+        from[0].update(ctx, event).and_then(|tv| {
+            let v = tv.value();
             if Some(&v) != self.0.as_ref() {
                 self.0 = Some(v.clone());
                 Some(v)
@@ -2074,14 +1866,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.0 = None
     }
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // The held value is uniq's CONTRACT (dedup across time), not
+        // replay memory.
+    }
 }
 
 #[derive(Debug)]
 struct Never;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
+    // Async, deliberately: `Async` means "output may appear on a later
+    // cycle, autonomously, or never" — never() is the limiting case of
+    // that contract. Marking it Sync let it fuse as a DynCall that
+    // pended on EVERY kernel run: wasted work in used positions, and
+    // in dead positions the whole-kernel pending bottomed results the
+    // node-walk still produces (the dead-pend divergence). As a fusion
+    // boundary the node-walk handles it — zero work, exact semantics.
+    // This is also what exempts `never()` from the dead-variadic-call
+    // compile error (callsite.rs `reject_dead_variadic_call`): never()
+    // is the sanctioned way to write a value that never arrives.
+    const EFFECT: EffectKind = EffectKind::Async;
     const NAME: &str = "core_never";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2109,6 +1916,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Never {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2158,8 +1967,8 @@ struct Dbg {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_dbg";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2185,11 +1994,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(v) = from[0].update(ctx, event)
-            && let Ok(d) = v.cast_to::<LogDest>()
+            && let Ok(d) = v.value().cast_to::<LogDest>()
         {
             self.dest = d;
         }
         from[1].update(ctx, event).map(|v| {
+            let v = v.value();
             let tv = TVal { env: &ctx.env, typ: &self.typ, v: &v };
             match self.dest {
                 LogDest::Stderr => {
@@ -2222,11 +2032,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn typecheck(
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
-        _phase: TypecheckPhase<'_>,
     ) -> Result<()> {
         self.typ = from[1].typ().clone();
         Ok(())
@@ -2240,8 +2051,8 @@ struct Log {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
+    const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_log";
-    const NEEDS_CALLSITE: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut ExecCtx<R, E>,
@@ -2263,11 +2074,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         event: &mut Event<E>,
     ) -> Option<Value> {
         if let Some(v) = from[0].update(ctx, event)
-            && let Ok(d) = v.cast_to::<LogDest>()
+            && let Ok(d) = v.value().cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
             match self.dest {
                 LogDest::Stdout => println!("{}: {}", self.scope.lexical, tv),
@@ -2285,6 +2096,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! printfn {
@@ -2296,8 +2109,8 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
+            const EFFECT: EffectKind = EffectKind::Sync;
             const NAME: &str = $name;
-            const NEEDS_CALLSITE: bool = false;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
@@ -2320,11 +2133,11 @@ macro_rules! printfn {
             ) -> Option<Value> {
                 use std::fmt::Write;
                 if let Some(v) = from[0].update(ctx, event)
-                    && let Ok(d) = v.cast_to::<LogDest>()
+                    && let Ok(d) = v.value().cast_to::<LogDest>()
                 {
                     self.dest = d;
                 }
-                if let Some(v) = from[1].update(ctx, event) {
+                if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
                     self.buf.clear();
                     match v {
                         Value::String(s) => write!(self.buf, "{s}"),
@@ -2351,6 +2164,8 @@ macro_rules! printfn {
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }

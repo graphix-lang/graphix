@@ -1,0 +1,1 @@
+{let b = [is_err({let x: u32 = never(); let encoded = buffer::encode([`U32(u32:12345)]); buffer::decode(encoded, [`U32(&x)])?; x}), i64:4]; array::map([i64:1], |x| array::map(b, |y| i64:7))}

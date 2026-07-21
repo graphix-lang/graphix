@@ -2,16 +2,17 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{bail, Context, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Context, Result, bail};
+use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    effects::EffectKind,
     err, errf,
     expr::ExprId,
     typ::{FnType, Type},
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TypecheckPhase, UserEvent,
 };
-use graphix_package_core::{extract_cast_type, CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, extract_cast_type};
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
@@ -21,8 +22,9 @@ use std::cell::RefCell;
 struct StartsWithEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StartsWithEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_starts_with";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -44,8 +46,9 @@ type StartsWith = CachedArgs<StartsWithEv>;
 struct EndsWithEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EndsWithEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_ends_with";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -67,8 +70,9 @@ type EndsWith = CachedArgs<EndsWithEv>;
 struct ContainsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_contains";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -90,8 +94,9 @@ type Contains = CachedArgs<ContainsEv>;
 struct StripPrefixEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripPrefixEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_strip_prefix";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -110,8 +115,9 @@ type StripPrefix = CachedArgs<StripPrefixEv>;
 struct StripSuffixEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripSuffixEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_strip_suffix";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
@@ -130,8 +136,9 @@ type StripSuffix = CachedArgs<StripSuffixEv>;
 struct TrimEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_trim";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -147,8 +154,9 @@ type Trim = CachedArgs<TrimEv>;
 struct TrimStartEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimStartEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_trim_start";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -164,8 +172,9 @@ type TrimStart = CachedArgs<TrimStartEv>;
 struct TrimEndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEndEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_trim_end";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -181,8 +190,9 @@ type TrimEnd = CachedArgs<TrimEndEv>;
 struct ReplaceEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReplaceEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_replace";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1], &from.0[2]) {
@@ -202,8 +212,9 @@ type Replace = CachedArgs<ReplaceEv>;
 struct DirnameEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DirnameEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_dirname";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -223,8 +234,9 @@ type Dirname = CachedArgs<DirnameEv>;
 struct BasenameEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BasenameEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_basename";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -243,8 +255,9 @@ type Basename = CachedArgs<BasenameEv>;
 struct RowColEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for RowColEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_row_col";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -277,8 +290,9 @@ type RowCol = CachedArgs<RowColEv>;
 struct StringJoinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringJoinEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_join";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         thread_local! {
@@ -338,8 +352,9 @@ type StringJoin = CachedArgs<StringJoinEv>;
 struct StringConcatEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringConcatEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_concat";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         thread_local! {
@@ -414,8 +429,9 @@ macro_rules! escape_fn {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+            const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
             const NAME: &str = $builtin_name;
-            const NEEDS_CALLSITE: bool = false;
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
@@ -443,7 +459,10 @@ macro_rules! escape_fn {
                     match &self.args.0[0] {
                         Some(esc) => match build_escape(esc.clone()) {
                             Err(e) => {
-                                return Some(errf!(TAG, "escape: invalid argument {e:?}"))
+                                return Some(errf!(
+                                    TAG,
+                                    "escape: invalid argument {e:?}"
+                                ));
                             }
                             Ok(esc) => self.escape = Some(esc),
                         },
@@ -462,6 +481,13 @@ macro_rules! escape_fn {
                 self.escape = None;
                 self.args.clear();
             }
+
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                // The cached args are replay memory; the compiled
+                // escape is a pure memo derived from them and
+                // survives.
+                self.args.clear()
+            }
         }
     };
 }
@@ -476,7 +502,6 @@ macro_rules! string_split {
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
             const NAME: &str = $builtin;
-            const NEEDS_CALLSITE: bool = false;
 
             fn eval(
                 &mut self,
@@ -515,7 +540,6 @@ macro_rules! string_splitn {
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
             const NAME: &str = $builtin;
-            const NEEDS_CALLSITE: bool = false;
 
             fn eval(
                 &mut self,
@@ -535,7 +559,7 @@ macro_rules! string_splitn {
                 let n = match &from.0[1] {
                     Some(Value::I64(n)) if *n > 0 => *n as usize,
                     Some(v) => {
-                        return Some(errf!(TAG, "splitn: {v} must be a number > 0"))
+                        return Some(errf!(TAG, "splitn: {v} must be a number > 0"));
                     }
                     None => return None,
                 };
@@ -559,8 +583,9 @@ string_splitn!(StringRSplitNEv, StringRSplitN, "str_rsplitn", rsplitn);
 struct StringSplitEscapedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitEscapedEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_split_escaped";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("SplitEscError");
@@ -592,8 +617,9 @@ type StringSplitEscaped = CachedArgs<StringSplitEscapedEv>;
 struct StringSplitNEscapedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitNEscapedEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_splitn_escaped";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("SplitNEscError");
@@ -630,8 +656,9 @@ type StringSplitNEscaped = CachedArgs<StringSplitNEscapedEv>;
 struct StringSplitOnceEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitOnceEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_split_once";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         for p in &from.0[..] {
@@ -662,8 +689,9 @@ type StringSplitOnce = CachedArgs<StringSplitOnceEv>;
 struct StringRSplitOnceEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringRSplitOnceEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_rsplit_once";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         for p in &from.0[..] {
@@ -694,8 +722,9 @@ type StringRSplitOnce = CachedArgs<StringRSplitOnceEv>;
 struct StringToLowerEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToLowerEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_to_lower";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -711,8 +740,9 @@ type StringToLower = CachedArgs<StringToLowerEv>;
 struct StringToUpperEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToUpperEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_to_upper";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -731,8 +761,9 @@ struct SprintfEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SprintfEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_sprintf";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -761,8 +792,9 @@ type Sprintf = CachedArgs<SprintfEv>;
 struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_len";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[0] {
@@ -778,8 +810,9 @@ type Len = CachedArgs<LenEv>;
 struct SubEv(String);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_sub";
-    const NEEDS_CALLSITE: bool = false;
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match &from.0[..] {
@@ -796,7 +829,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
                 }
                 Some(Value::String(ArcStr::from(&self.0)))
             }
-            v => Some(errf!(literal!("SubError"), "sub args must be non negative {v:?}")),
+            v @ [Some(_), Some(_), Some(_)] => {
+                Some(errf!(literal!("SubError"), "sub args must be non negative {v:?}"))
+            }
+            _ => None,
         }
     }
 }
@@ -809,8 +845,9 @@ struct ParseEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "str_parse";
-    const NEEDS_CALLSITE: bool = true;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -823,22 +860,28 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
         Self { cast_typ: extract_cast_type(resolved) }
     }
 
-    fn typecheck(
+    fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
-        phase: TypecheckPhase<'_>,
     ) -> Result<()> {
-        match phase {
-            TypecheckPhase::Lambda => Ok(()),
-            TypecheckPhase::CallSite(resolved) => {
-                self.cast_typ = extract_cast_type(Some(resolved));
-                if self.cast_typ.is_none() {
-                    bail!("str::parse requires a concrete return type")
-                }
-                Ok(())
-            }
+        Ok(())
+    }
+
+    fn typecheck1(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.cast_typ = extract_cast_type(Some(resolved));
+        if std::env::var_os("GXDBG_PARSE").is_some() {
+            eprintln!("PARSE-TC1 cast_typ={:?} resolved={resolved:?}", self.cast_typ);
         }
+        if self.cast_typ.is_none() {
+            bail!("str::parse requires a concrete return type")
+        }
+        Ok(())
     }
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -852,6 +895,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
             },
             _ => return None,
         };
+        if std::env::var_os("GXDBG_PARSE").is_some() {
+            eprintln!("PARSE cast_typ={:?}", self.cast_typ);
+        }
         Some(match &self.cast_typ {
             Some(typ) => typ.cast_value(&ctx.env, raw),
             None => errf!("TypeError", "parse requires a concrete type annotation"),

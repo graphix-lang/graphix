@@ -4,11 +4,11 @@
 //! GPU-accelerated chart rendering.
 
 use crate::widgets::Renderer;
-use iced_core::{alignment, text::Alignment as TextAlign, Color, Point, Size, Vector};
+use iced_core::{Color, Point, Size, Vector, alignment, text::Alignment as TextAlign};
 use iced_widget::canvas::{Frame, Path, Stroke};
 use plotters_backend::{
-    text_anchor, BackendColor, BackendCoord, BackendStyle, BackendTextStyle,
-    DrawingBackend, DrawingErrorKind, FontTransform,
+    BackendColor, BackendCoord, BackendStyle, BackendTextStyle, DrawingBackend,
+    DrawingErrorKind, FontTransform, text_anchor,
 };
 use std::convert::Infallible;
 

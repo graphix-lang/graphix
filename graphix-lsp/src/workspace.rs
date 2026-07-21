@@ -10,7 +10,7 @@
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_compiler::expr::{parser, ExprKind, ModuleKind, Origin, SigKind, Source};
+use graphix_compiler::expr::{ExprKind, ModuleKind, Origin, SigKind, Source, parser};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 

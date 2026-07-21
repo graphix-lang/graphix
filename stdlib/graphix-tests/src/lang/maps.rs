@@ -87,6 +87,7 @@ const MAP_REF0: &str = r#"
 }
 "#;
 
+// `m{key}` (MapRef) lowers to the map-ref CLIF emission (Nullable<V>).
 run!(map_ref0, MAP_REF0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
@@ -99,6 +100,7 @@ const MAP_REF1: &str = r#"
 }
 "#;
 
+// integer key + string value.
 run!(map_ref1, MAP_REF1, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "two" => true,
     _ => false,
@@ -111,6 +113,7 @@ const MAP_REF2: &str = r#"
 }
 "#;
 
+// bool key.
 run!(map_ref2, MAP_REF2, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s.as_str() == "yes" => true,
     _ => false,
@@ -123,6 +126,7 @@ const MAP_REF_MISSING: &str = r#"
 }
 "#;
 
+// missing key → `MapKeyError` (the `[V, Error]` Nullable error arm).
 run!(map_ref_missing, MAP_REF_MISSING, |v: Result<&Value>| match v {
     Ok(Value::Error(e)) => {
         if let Ok((tag, msg)) = e.as_ref().clone().cast_to::<(ArcStr, ArcStr)>() {
@@ -144,7 +148,7 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, |v: Result<&Value>| match v {
     Err(_) => true, // Type error at compile time is expected
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAP_NESTED: &str = r#"
 {
@@ -153,6 +157,9 @@ const MAP_NESTED: &str = r#"
 }
 "#;
 
+// nested map literal: `node_const_value` recurses into the inner Map
+// node so the whole constant folds to one `ConstValue`, then `m{key}`
+// (MapRef) reads it.
 run!(map_nested, MAP_NESTED, |v: Result<&Value>| match v {
     Ok(Value::Map(inner_map)) => {
         inner_map
@@ -172,6 +179,9 @@ const MAP_COMPLEX_KEYS: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<(Value, Value)>() {
         Ok((Value::String(s1), Value::String(s2)))
@@ -180,7 +190,7 @@ run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const MAP_WITH_ARRAYS: &str = r#"
 {
@@ -189,6 +199,10 @@ const MAP_WITH_ARRAYS: &str = r#"
 }
 "#;
 
+// ASPIRE: Jit (currently None) — the map literal const-folds now, but the
+// value type is a heterogeneous union `[Array<i64>, Array<string>]`, so
+// `from_type` on the `m{key}` (MapRef) result `[V, Error]` returns None
+// (V isn't an option/result/uniform shape). Blocked on union-value lowering.
 run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
     Ok(Value::Array(arr)) => {
         arr.len() == 3
@@ -197,4 +211,4 @@ run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
             && arr.get(2).map(|v| *v == Value::I64(3)).unwrap_or(false)
     }
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::Jit);

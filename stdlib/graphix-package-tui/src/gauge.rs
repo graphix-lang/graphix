@@ -6,7 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::Value;
-use ratatui::{layout::Rect, widgets::Gauge, Frame};
+use ratatui::{Frame, layout::Rect, widgets::Gauge};
 use tokio::try_join;
 
 /// Clamp `raw` into the [0, 1] range ratatui requires (it panics on
@@ -15,11 +15,7 @@ use tokio::try_join;
 /// instead of on every redraw. `last` carries the previously warned
 /// value's bit pattern so the dedup is reliable across NaN and signed
 /// zero. NaN clamps to 0.0 since ratatui can't draw it either.
-pub(super) fn clamp_ratio(
-    widget: &str,
-    last: &mut Option<u64>,
-    raw: f64,
-) -> f64 {
+pub(super) fn clamp_ratio(widget: &str, last: &mut Option<u64>, raw: f64) -> f64 {
     if (0.0..=1.0).contains(&raw) {
         *last = None;
         return raw;

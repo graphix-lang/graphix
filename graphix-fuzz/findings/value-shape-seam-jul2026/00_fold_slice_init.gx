@@ -1,0 +1,11 @@
+// jul16h/jul17a: FoldAcc::Value seam type confusion (SIGSEGV /
+// panic_invalid_enum_construction). The fold's acc is VALUE-shaped
+// (the slice init types the acc `[Array<i64>, Error]`), but the body's
+// OWN shape is a bare Array — its raw emission is a composite box
+// pointer (`*mut ValArray`), which is NOT a Value payload (a Value's
+// word is the ValArray bits themselves). The pairing crossed the
+// kernel boundary and every consumer that decoded it (Typ::get,
+// Display) dereferenced garbage. Fixed by routing FoldAcc::Value
+// init/body through emit_owned_value_operand_node — the same widening
+// the callee-return seam adopted for soak jul05 items 5/10/13.
+array::fold([[i64:1], [i64:2]], {let a = [i64:1, i64:2, i64:3, i64:4]; a[i64:1..i64:3]}, |acc, v| v)

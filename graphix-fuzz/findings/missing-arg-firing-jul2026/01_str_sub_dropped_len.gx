@@ -1,0 +1,11 @@
+// bisect: NODE-WALK bug (JIT was correct; Eric ruled 2026-07-06) — soak
+// jul06c (divergence_000037, B6). `#len` is `$`-dropped (checked div0 →
+// error → `$` produces no value), so the labeled arg NEVER fires. The
+// node-walk fired str::sub anyway with len=None and its catch-all match
+// arm returned the SubError value; the JIT's #219 taint channel
+// correctly produced no output (a builtin doesn't fire until its args
+// are present). Root: SubEv::eval's `v => Some(errf!(...))` catch-all
+// conflated MISSING args (None — not a value event) with PRESENT-but-
+// invalid args (the real SubError case). FIXED: error only when all
+// three args are Some; otherwise None (graphix-package-str lib.rs).
+str::sub(#start: i64:0, #len: (i64:0 /? i64:0)$, "💗💖🍇")

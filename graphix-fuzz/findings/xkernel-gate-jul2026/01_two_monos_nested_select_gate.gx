@@ -1,0 +1,23 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:i64:1])
+// jit:    Trace([]) — output gated, NEVER fires
+// Found by the jul04 combined soak, generate campaign seed 70402
+// (corpus-generate/divergence_000001, ~09:16 on 07-05); hand-reduced
+// via probes p61-p79.
+// root_cause: NOT yet pinpointed (needs emit instrumentation) — the
+// triangle is fully probe-verified though. Required simultaneously:
+// (1) v0 born from a NESTED select (select-in-arm) over a nullable —
+//     the flat single-level select AGREES (p79);
+// (2) TWO monomorphizations of the same lambda, BOTH called: the i64
+//     call (v3) and the f64 call consuming v0 (v4) — dropping either
+//     call AGREES (p78/p70), and v4 is otherwise DEAD;
+// (3) the final select's arm consuming v0 (`cast<i64>(v0)$`) — an
+//     arm not touching v0 AGREES (p72).
+// Lambda body shape irrelevant (identity suffices, p73); nested call
+// v1(v1(v0)) not needed (single call diverges, p76); guard arm and
+// tuple producer irrelevant (p69/p71). Suspect the callee-result
+// flags protocol (b10a5ee9) or #219 taint interplay leaking a
+// not-fresh/taint bit across the two callee instances into v0's (or
+// the arm path's) disc. Both suspects landed 2026-07-04.
+// minimized:
+{let v0: [f64, null] = null; let v0 = select v0 {null as _ => select v0 {null as _ => f64:1., f64 as n => n}, f64 as v0 => (f64:0.1 - (f64:2.5 % v0))}; let v1 = 'a: Number|v2: 'a| -> 'a v2; let v3: i64 = v1(i64:2); let v4: f64 = v1(v0); select v3 {v5 => cast<i64>(v0)$}}

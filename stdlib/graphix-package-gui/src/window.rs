@@ -1,6 +1,6 @@
 use crate::{
     types::{ImageSourceV, SizeV, ThemeV},
-    widgets::{compile, EmptyW, GuiW},
+    widgets::{EmptyW, GuiW, compile},
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -8,8 +8,7 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::mouse;
 use netidx::publisher::Value;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use tokio::try_join;
 use winit::window::{Window, WindowAttributes, WindowId};

@@ -1,0 +1,30 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:[["bar", i64:42]]]) — acc = the struct
+// jit:    Trace([0:i64:<heap ptr>]) — struct pointer LEAKED as i64
+// Found by the jul04 combined soak, fuzz campaign seed 70412
+// (corpus-fuzz/divergence_000010's family, ~10:1x on 07-05);
+// hand-reduced probes p80-p88. NOT a Phase-B regression — the
+// pre-Phase-B 13:32 shell ALSO compiles it (exit 0); the program is
+// legitimately typed. This is a FUSION soundness bug.
+// root_cause: a RECURSIVE lambda whose parameter has a UNION type
+// (scalar ∪ non-scalar, here [i64, {bar:i64}]) fuses even though
+// abi_kind([i64,struct]) correctly returns None (non-fusable). The
+// cross-kernel/recursive kernel sig is derived from the INIT-CALL's
+// concrete argument type (i64:0), so acc is fused as an i64 register;
+// the recursion passes a struct, whose ValArray pointer is then
+// returned tagged I64. Symmetric crash variants (do NOT promote —
+// they kill the in-process regress worker):
+//   - init={struct}, recursion=i64:7  -> MISALIGNED POINTER DEREF
+//     panic (emit_helpers.rs:577, addr 0x7): raw 7 deref'd as ptr.
+//   - acc union [i64, f64]             -> cranelift worker panic
+//     ("runtime did not respond"), the audit-bug-2 shape.
+// Proof it's the inferred-vs-declared type gap: annotating
+// `acc: [i64, {bar:i64}]` EXPLICITLY -> AGREE (abi_kind sees the
+// union, bails, node-walks); non-recursive union param -> AGREE
+// (p83, no standalone kernel); pure-struct acc -> AGREE (p81, fixed
+// ABI). fix: the recursive/cross-kernel sig derivation must read the
+// param's DECLARED (fully-inferred, possibly union) type through
+// abi_kind and bail to node-walk when it's None — never derive the
+// register ABI from one concrete call site's arg.
+// minimized:
+{let rec f = |n, acc| select n {i64:0 => acc, _ => f(i64:0, {bar: i64:42})}; f(i64:100, i64:0)}

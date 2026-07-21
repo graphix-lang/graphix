@@ -1,9 +1,11 @@
-use super::dataset::{chart_mode, ChartMode, DatasetEntry, XYKind};
-use super::interact::{draw_tooltip, ChartState, PlotInfo};
-use super::plotters_backend::{estimate_text, IcedBackend};
-use super::ranges::*;
-use super::types::*;
-use super::ChartW;
+use super::{
+    ChartW,
+    dataset::{ChartMode, DatasetEntry, XYKind, chart_mode},
+    interact::{ChartState, PlotInfo, draw_tooltip},
+    plotters_backend::{IcedBackend, estimate_text},
+    ranges::*,
+    types::*,
+};
 use crate::widgets::Renderer;
 use graphix_rt::GXExt;
 use iced_core::mouse;
@@ -17,7 +19,7 @@ use plotters::{
         IntoSegmentedCoord, LineSeries, SeriesLabelPosition, SurfaceSeries,
     },
     style::{
-        Color as PlotColor, IntoFont, RGBColor, ShapeStyle, TextStyle, BLACK, WHITE,
+        BLACK, Color as PlotColor, IntoFont, RGBColor, ShapeStyle, TextStyle, WHITE,
     },
 };
 

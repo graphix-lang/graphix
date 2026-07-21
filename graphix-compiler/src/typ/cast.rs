@@ -1,25 +1,33 @@
 use crate::{
+    AbstractTypeRegistry, CAST_ERR_TAG,
     env::Env,
     errf,
     typ::{RefHist, Type, TypeRef},
-    AbstractTypeRegistry, CAST_ERR_TAG,
 };
 use ahash::AHashSet;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use enumflags2::{bitflags, BitFlags};
+use enumflags2::{BitFlags, bitflags};
 use immutable_chunkmap::map::Map;
 use netidx::publisher::{Typ, Value};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::iter;
-use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
 #[repr(u8)]
 pub enum IsAFlags {
-    /// When set, Type::Abstract matches any Value::Abstract
+    /// When set, Type::Abstract matches ANY value. An abstract type's
+    /// representation is hidden, so a checked match is impossible from
+    /// outside its module — the one consumer (the `TVal` printer)
+    /// trusts the typechecker instead. Without the flag an abstract
+    /// matches nothing: runtime dispatch (`select`) must never claim a
+    /// value it can't verify. The old halfway reading (flag = match
+    /// `Value::Abstract` carriers only) mis-flagged every hidden-rep
+    /// abstract (a `list::List` result printed through the mismatch
+    /// diagnostic, whose unbounded Debug dump then overflowed the
+    /// stack — jul17a crash_000003).
     MatchAbstract,
 }
 
@@ -36,7 +44,7 @@ impl Type {
             Type::Set(s) | Type::Abstract { id: _, params: s } => Ok(for t in s.iter() {
                 t.check_cast_int(env, hist)?
             }),
-            Type::TVar(tv) => match &*tv.read().typ.read() {
+            Type::TVar(tv) => match &tv.read().typ.read().typ {
                 Some(t) => t.check_cast_int(env, hist),
                 None => bail!("can't cast a value to a free type variable"),
             },
@@ -99,7 +107,7 @@ impl Type {
                     Value::Error(v) => (*v).clone(),
                     v => v,
                 };
-                Ok(Value::Error(Arc::new(e.cast_value_int(env, hist, v)?)))
+                Ok(Value::Error(e.cast_value_int(env, hist, v)?.into()))
             }
             Type::Array(et) => match v {
                 Value::Array(elts) => {
@@ -256,7 +264,7 @@ impl Type {
                 .iter()
                 .find_map(|t| t.cast_value_int(env, hist, v.clone()).ok())
                 .ok_or_else(|| anyhow!("can't cast {v} to {self}")),
-            Type::TVar(tv) => match &*tv.read().typ.read() {
+            Type::TVar(tv) => match &tv.read().typ.read().typ {
                 Some(t) => t.cast_value_int(env, hist, v.clone()),
                 None => Ok(v),
             },
@@ -291,9 +299,7 @@ impl Type {
                 }
             },
             Type::Primitive(t) => t.contains(Typ::get(&v)),
-            Type::Abstract { .. } => {
-                flags.contains(IsAFlags::MatchAbstract) && matches!(v, Value::Abstract(_))
-            }
+            Type::Abstract { .. } => flags.contains(IsAFlags::MatchAbstract),
             Type::Any => true,
             Type::Array(et) => match v {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
@@ -354,7 +360,7 @@ impl Type {
                 }
                 _ => false,
             },
-            Type::TVar(tv) => match &*tv.read().typ.read() {
+            Type::TVar(tv) => match &tv.read().typ.read().typ {
                 None => true,
                 Some(t) => t.is_a_int(env, hist, flags, v),
             },

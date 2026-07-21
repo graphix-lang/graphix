@@ -1,0 +1,8 @@
+// bisect: GIR/emit bug (interp != fused)
+// interp/jit: Confirmed empirically: `graphix-fuzz run` shows Interp=Value("first=alpha") but Fused panics at gir_interp.rs:989 ("Concat child has unexpected EvalResult: Nullable(String(\"alpha\")) — GIR is malformed") → RuntimeErr(runtime died), stable across 3+ runs. This is a genuine interp-vs-fused (gir-inter
+// root_cause: StringInterpolate emit_node (graphix-compiler/src/fusion/lowering.rs:3216-3225) lowers every interpolated part via emit_node and wraps them in GirOp::Concat WITHOUT checking that each part's GirType is String or scalar Prim. `words[0]` (an array index over Array<string>) lowers via emit_array_ref (lowering.rs:1915, result type set at line 1932) to GirOp::ArrayGet typed GirType::Nullable<string> — the bounds-check [elem, Error] shape. The gir-interp Concat handler (gir_interp.rs:969-995) only handles EvalResult::String and EvalResult::Scalar; the Nullable child hits the catch-all panic at gir_i
+
+{
+  let words = ["alpha", "beta"];
+  "first=[words[0]]"
+}

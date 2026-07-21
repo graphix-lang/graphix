@@ -1,0 +1,6 @@
+// bisect: same family as 01 (triage item 13, corpus-fuzz/crash_000012)
+// — list::find_map with a tuple-returning callback; the list package
+// has no direct-path scaffold, so the callback always goes through the
+// per-slot template kernel — the broken value-shape return. SIGSEGV.
+// Fixed by emit_return_from_node.
+{type T = (string, i64); let l: list::List<T> = list::from_array([("foo", i64:1), ("bar", i64:2), ("baz", i64:3)]); list::find_map(l, |(k, v): T| (i64:1, i64:2))}

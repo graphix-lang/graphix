@@ -1,0 +1,10 @@
+// jul17c katana divergence 000000: a let-bound BARE cast (no `$`/`?`)
+// crashed the jit runtime ("runtime did not respond"). The cast node's
+// static type is the fallible `[T, Error]` union → `emit_let_node`
+// classifies Value and declares an I64 payload var, but the scalar
+// fast path in `emit_cast_node` returned a raw F64-typed payload —
+// cranelift frontend def_var type-mismatch panic. Fixed by widening
+// the fast path's result to the 2-word Value wire shape
+// (`scalar_to_payload_i64`); `$`/`?` unwrap narrows back with
+// `cast_u64_to_prim`.
+{let v = cast<f64>(i64:-9223372036854775808); v; i64:42}

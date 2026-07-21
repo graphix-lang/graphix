@@ -1,0 +1,12 @@
+// bisect: NODE-WALK formatting bug (JIT was correct; Eric ruled
+// 2026-07-06: never type-prefix default int/float in string
+// interpolation, nested included) — soak jul06c (divergence_000005,
+// B4). Interpolating a union-typed array (`words[0]`: the union carries
+// a ⊥-settled never()-arm member): interp printed `[i64:0, i64:20,
+// i64:30]`, jit `[0, 20, 30]`. Root: TVal's fallback paths wrote
+// `NakedValue(v)`, which is NOT recursive — a composite falls through
+// to netidx's TYPED Value display, so nested elements printed
+// `i64:`-prefixed whenever the static type didn't guide the walk.
+// FIXED: fmt_naked_rec (typ/tval.rs) recurses composite values,
+// printing every leaf naked.
+{let words = [[i64:0, i64:20, i64:30], {let tick = array::iter([i64:1, i64:2, i64:3, i64:4]); let acc = ""; acc <- tick ~ "[acc]x"; let s = select str::len(acc) {i64:0 => never(), _ => acc}; let l = str::len(s) * i64:2; select count(l) {i64:4 => l, _ => never()}}]; "[list::to_array(list::sort(#numeric: true, list::from_array(["5", "50", "6", "40", "1"])))][words[i64:0]]"}

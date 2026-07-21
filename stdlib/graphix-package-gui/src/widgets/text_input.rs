@@ -26,8 +26,18 @@ pub(crate) struct TextInputW<X: GXExt> {
 
 impl<X: GXExt> TextInputW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, disabled), (_, font), (_, is_secure), (_, on_input), (_, on_submit), (_, padding), (_, placeholder), (_, size), (_, value), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 10]>().context("text_input flds")?;
+        let [
+            (_, disabled),
+            (_, font),
+            (_, is_secure),
+            (_, on_input),
+            (_, on_submit),
+            (_, padding),
+            (_, placeholder),
+            (_, size),
+            (_, value),
+            (_, width),
+        ] = source.cast_to::<[(ArcStr, u64); 10]>().context("text_input flds")?;
         let (
             disabled,
             font,

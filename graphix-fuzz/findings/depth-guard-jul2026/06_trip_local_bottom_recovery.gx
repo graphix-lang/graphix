@@ -1,0 +1,20 @@
+// bisect: the depth-trip whole-kernel-abort residual, made feasible —
+// soak jul07h fuzz/divergence_000000 exposed the class (a
+// no-progress `fib(n) = fib(n) + fib(n-2)` tree: the node-walk grinds
+// a depth-bounded, breadth-exponential tree ~forever while the fused
+// kernel's FIRST depth trip aborted the whole region and emitted a
+// value instantly — interp Timeout vs jit Trace). This probe pins the
+// VALUE-level consequence cheaply: the tripping call sits in fold's
+// init argument INSIDE the fused region, and the callback ignores the
+// accumulator — the node-walk's per-dispatch bottom lets the fold
+// RECOVER (emits 42), the whole-kernel abort swallowed it (fused
+// emitted nothing). FIXED: a cross-kernel/self-call depth trip skips
+// the dispatch and continues with a #219 tainted shape-safe
+// placeholder (emit_lambda_call_node branches to a merge instead of
+// emit_bottom_abort), so the bottom stays local exactly like the
+// node-walk's guarded dispatch — and the runaway-tree class above now
+// grinds identically in both modes (Timeout/Timeout agreement,
+// interrupt-abortable per dispatch).
+// mutant: hand probe (jul07h investigation)
+// minimized:
+{let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) }; array::fold([i64:41], f(i64:256), |acc, x| x + i64:1)}

@@ -1,27 +1,48 @@
-use super::pattern::StructPatternNode;
+use super::{collection::CollectionIntrinsic, pattern::StructPatternNode};
 use crate::{
-    bailat,
+    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
+    Scope, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
+    fusion::{
+        emit::{BodyCx, CompiledExpr, emit_ref_node},
+        fuse,
+    },
+    ide::ReferenceSite,
     typ::Type,
-    wrap, BindId, CFlag, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, Update,
-    UserEvent,
+    wrap,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Value;
 use triomphe::Arc;
 
 #[derive(Debug)]
-pub(crate) struct Bind<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    pattern: StructPatternNode,
-    node: Node<R, E>,
+pub struct Bind<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub(crate) typ: Type,
+    pub(crate) pattern: StructPatternNode,
+    pub(crate) node: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
+    /// The single `BindId` this binding introduces, when the pattern
+    /// binds exactly one name (`let x = …`). `None` for destructuring
+    /// patterns. Used by the fusion walker (ValueBind candidates) and
+    /// the JIT block-let binder (BindId-keyed env slots).
+    pub(crate) fn single_bind_id(&self) -> Option<BindId> {
+        let mut id: Option<BindId> = None;
+        let mut count = 0usize;
+        self.pattern.ids(&mut |i| {
+            count += 1;
+            if id.is_none() {
+                id = Some(i);
+            }
+        });
+        if count == 1 { id } else { None }
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -69,10 +90,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     let ptyp = pattern.infer_type_predicate(&ctx.env)?;
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
-                            bailat!(
-                                spec,
-                                "match error {typ} can't be matched by {ptyp}"
-                            )
+                            bailat!(spec, "match error {typ} can't be matched by {ptyp}")
                         })?
                     }
                     typ
@@ -92,7 +110,64 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
+        // If the bind's value is a builtin lambda (`let foo = |...| 'name`),
+        // stash the metadata on `ctx.builtin_bindings` so the fusion
+        // pass can recognise `Apply { function: Ref(foo) }` sites as
+        // direct calls to a builtin and lower them via
+        // `FnSource::Builtin`. Only fires for single-bind patterns
+        // (multi-bind destructure of a lambda doesn't happen in
+        // practice) and when the lambda body is the `'name` form.
+        // If the bind's value is a builtin lambda (`let foo = |...| 'name`)
+        // and the pattern is a simple `let <name> = ...`, register
+        // the builtin metadata on `ctx.builtin_bindings` keyed by
+        // (scope, name). Fusion's discovery pass looks up by
+        // (scope, name) at every `Apply` site, so it doesn't
+        // matter that sig and impl get different `BindId`s.
+        if let ExprKind::Bind(be) = &spec.kind {
+            if let expr::StructurePattern::Bind(bind_name) = &be.pattern {
+                if let ExprKind::Lambda(lam) = &value.kind {
+                    if let netidx::utils::Either::Right(builtin_name) = &lam.body {
+                        if CollectionIntrinsic::from_name(builtin_name).is_none()
+                            && let Type::Fn(fn_type) = node.typ()
+                        {
+                            // Lambda Node's def field holds the
+                            // LambdaDef; downcast through NodeView::Lambda
+                            // to pull its id. Used at fusion time to
+                            // look up the lambda's env+scope when
+                            // compiling labeled-default arg expressions.
+                            let lambda_id = match node.view() {
+                                NodeView::Lambda(l) => l.lambda_id::<R, E>(),
+                                _ => None,
+                            };
+                            ctx.builtin_bindings.insert(
+                                (
+                                    scope.lexical.clone(),
+                                    compact_str::CompactString::from(bind_name.as_str()),
+                                ),
+                                BuiltinBindInfo {
+                                    name: builtin_name.clone(),
+                                    argspec: lam.args.clone(),
+                                    typ: fn_type.clone(),
+                                    lambda_id,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
         Ok(Box::new(Self { spec, typ, pattern, node }))
+    }
+
+    /// The LambdaDef `Value` this binding holds, when its value node is
+    /// a lambda (`let f = |…| …`) — `None` otherwise. The one home for
+    /// "is this a lambda binding," consumed by `Bind::typecheck0` to
+    /// populate `ctx.bind_to_lambda` (the static-resolution index).
+    pub(crate) fn lambda_def_value(&self) -> Option<Value> {
+        match self.node.view() {
+            NodeView::Lambda(l) => Some(l.def_value().clone()),
+            _ => None,
+        }
     }
 
     /// Return the id if this bind has only a single binding, otherwise return None
@@ -105,22 +180,34 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             }
             n += 1
         });
-        if n == 1 {
-            id
-        } else {
-            None
-        }
+        if n == 1 { id } else { None }
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(v) = self.node.update(ctx, event) {
-            self.pattern.bind(&v, &mut |id, v| {
-                event.variables.insert(id, v.clone());
-                ctx.cached.insert(id, v);
-                ctx.rt.notify_set(id);
-            })
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        if let Some(tv) = self.node.update(ctx, event) {
+            let (v, tag) = tv.into_parts();
+            if tag.is_tainted() {
+                // Never destructure a taint placeholder (the kernel's
+                // destructuring-consumer force): poison each bound name
+                // instead, and keep the placeholder OUT of the
+                // cross-cycle store.
+                self.pattern.ids(&mut |id| {
+                    event.variables.insert(id, TagValue::tainted(Value::Null));
+                    ctx.rt.notify_set(id);
+                });
+            } else {
+                self.pattern.bind(&v, &mut |id, v| {
+                    event.variables.insert(id, TagValue::tagged(v.clone(), tag));
+                    ctx.rt.cached_mut().insert(id, v);
+                    ctx.rt.notify_set(id);
+                })
+            }
         }
         None
     }
@@ -133,12 +220,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The static-resolution index survives across batches since the
+        // jul12 flap fix — a deleted bind's entry must go with it, or a
+        // long-lived runtime (LSP/REPL) accumulates dead LambdaDefs.
+        self.pattern.ids(&mut |id| {
+            ctx.bind_to_lambda.remove(&id);
+        });
         self.node.delete(ctx);
         self.pattern.delete(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.node.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.node.reset_replay(ctx);
     }
 
     fn typ(&self) -> &Type {
@@ -149,22 +246,71 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         &self.spec
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.node, self.node.typecheck(ctx))?;
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.node, self.node.typecheck0(ctx))?;
         wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        // Record this binding in the static-resolution index so a
+        // `CallSite` whose `fnode` resolves to it can pre-bind in
+        // `typecheck1`. Recording faux/inside-lambda binds is harmless:
+        // lexical scoping means no outside `Ref` resolves to them, and
+        // resolution never descends lambda bodies.
+        if let Some(fv) = self.lambda_def_value() {
+            self.pattern.ids(&mut |id| {
+                if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                    eprintln!("B2L-INS {id:?} {}", self.spec);
+                }
+                ctx.bind_to_lambda.insert(id, fv.clone());
+            });
+        }
         Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.node, self.node.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Bind(self)
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // Fuse the bound VALUE, never the Bind itself: the Bind must
+        // stay live to drive the publish of the result to its BindId
+        // (the ValueBind splice shape). A whole-Bind fusion can't
+        // happen anyway — Bind has no emit_clif, so any try_fuse
+        // rooted here fails structurally.
+        fuse(&mut self.node, ctx)?;
+        Ok(None)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct Ref {
-    pub(super) spec: Arc<Expr>,
-    pub(super) typ: Type,
-    pub(super) id: BindId,
+pub struct Ref {
+    pub(crate) spec: Arc<Expr>,
+    pub typ: Type,
+    pub id: BindId,
     pub(super) top_id: ExprId,
 }
 
 impl Ref {
+    /// Construct a `Ref` node from its already-resolved components.
+    /// AOT codegen uses this after name resolution has already
+    /// assigned a BindId and a Type.
+    ///
+    /// Callers must ensure the runtime is told about the reference
+    /// (via `ctx.rt.ref_var(id, top_id)`) separately — this
+    /// constructor is a pure builder and does not touch ExecCtx.
+    #[allow(dead_code)]
+    pub fn new<R: Rt, E: UserEvent>(
+        id: BindId,
+        typ: Type,
+        top_id: ExprId,
+        spec: Expr,
+    ) -> Node<R, E> {
+        Box::new(Self { spec: Arc::new(spec), typ, id, top_id })
+    }
+
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
@@ -180,7 +326,7 @@ impl Ref {
                 let def_pos = bind.pos;
                 let def_ori = bind.ori.clone();
                 if ctx.env.lsp_mode {
-                    ctx.references.push(crate::ReferenceSite {
+                    ctx.env.push_reference(ReferenceSite {
                         pos: spec.pos,
                         ori: spec.ori.clone(),
                         name: name.clone(),
@@ -202,7 +348,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> Option<TagValue> {
+        // The entry's tag flows through: an ordinary delivery is
+        // fired, a frame re-delivery/seed is stale, a poisoned bind
+        // is tainted.
         event.variables.get(&self.id).map(|v| v.clone())
     }
 
@@ -216,6 +365,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -224,20 +375,45 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &self.typ
     }
 
-    fn typecheck(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
+    }
+
+    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Ref(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_ref_node(cx, self.spec.as_ref(), &self.typ, self.id)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct ByRef<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    child: Node<R, E>,
-    id: BindId,
+pub struct ByRef<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub child: Node<R, E>,
+    pub id: BindId,
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
+    /// Construct a `ByRef` node from an already-compiled child.
+    /// AOT codegen supplies the `BindId` (allocated at codegen time,
+    /// reused when the generated tree is built) and the resolved
+    /// `Type`. Interpreter `compile` still handles the additional
+    /// byref-chain plumbing it needs — generated code that wants
+    /// ref-to-ref chaining must mirror that separately via
+    /// `ctx.env.byref_chain.insert_cow(...)` before building the
+    /// node.
+    #[allow(dead_code)]
+    pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
+        Box::new(Self { spec, typ, child, id })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -257,15 +433,33 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(v) = self.child.update(ctx, event) {
-            ctx.set_var(self.id, v);
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        // Fired-only write gate: a stale refresh must not re-write the
+        // referent, and a taint placeholder must never enter the
+        // cross-cycle store.
+        if let Some(tv) = self.child.update(ctx, event) {
+            if tv.is_fired() {
+                let v = tv.value();
+                if event.init {
+                    // Seed the cache WITHOUT queuing a delivery: `Deref`'s
+                    // init fallback reads the cache THIS cycle, so the
+                    // queued write would arrive next cycle as a duplicate —
+                    // every deref (and anything downstream, e.g. an HOF
+                    // slot's predicate) re-fired once with the same value
+                    // (soak finding corpus-fuzz/divergence_000027; Eric's
+                    // ruling 2026-07-04: the echo was the wart, the JIT's
+                    // single delivery is correct).
+                    ctx.rt.cached_mut().insert(self.id, v);
+                } else {
+                    ctx.rt.set_var(self.id, v);
+                }
+            }
         }
-        if event.init {
-            Some(Value::U64(self.id.inner()))
-        } else {
-            None
-        }
+        if event.init { Some(TagValue::fired(Value::U64(self.id.inner()))) } else { None }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -275,6 +469,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.child.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.child.reset_replay(ctx);
     }
 
     fn spec(&self) -> &Expr {
@@ -289,23 +487,41 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.child.refs(refs)
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck(ctx))?;
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck0(ctx))?;
         let t = Type::ByRef(Arc::new(self.child.typ().clone()));
         wrap!(self, self.typ.check_contains(&ctx.env, &t))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::ByRef(self)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct Deref<R: Rt, E: UserEvent> {
-    spec: Expr,
-    typ: Type,
-    child: Node<R, E>,
-    id: Option<BindId>,
-    top_id: ExprId,
+pub struct Deref<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub child: Node<R, E>,
+    pub id: Option<BindId>,
+    pub(super) top_id: ExprId,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
+    /// Build a `Deref` node from an already-compiled child that
+    /// evaluates to a `Value::U64` / `Value::V64` holding a BindId.
+    /// AOT codegen passes the resolved type rather than leaving an
+    /// empty type variable for the interpreter to pin down later.
+    #[allow(dead_code)]
+    pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
+        Box::new(Self { spec, typ, child, id: None, top_id })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -321,10 +537,17 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Option<Value> {
-        if let Some(v) = self.child.update(ctx, event) {
-            if let Value::U64(i) | Value::V64(i) = v {
-                let new_id = BindId::from(i);
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        if let Some(tv) = self.child.update(ctx, event) {
+            let id = tv.with_value(|v| match v {
+                Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
+                _ => None,
+            });
+            if let Some(new_id) = id {
                 if self.id != Some(new_id) {
                     if let Some(old) = self.id {
                         ctx.rt.unref_var(old, self.top_id);
@@ -335,7 +558,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             }
         }
         self.id.and_then(|id| match event.variables.get(&id).cloned() {
-            None if event.init => ctx.cached.get(&id).cloned(),
+            None if event.init => ctx.rt.cached().get(&id).cloned().map(TagValue::fired),
             v => v,
         })
     }
@@ -349,6 +572,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.child.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.child.reset_replay(ctx);
     }
 
     fn spec(&self) -> &Expr {
@@ -366,13 +593,34 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn typecheck(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck(ctx))?;
-        let typ = match self.child.typ() {
-            Type::ByRef(t) => (**t).clone(),
-            _ => bail!("expected reference"),
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck0(ctx))?;
+        // Deref TVars before matching: a container/accessor read's
+        // type is a TVar BOUND to `&T`, not a bare `Type::ByRef` —
+        // `*(a[0]$)` over `Array<&i64>` was rejected here while the
+        // runtime handles it by construction (a ref VALUE is
+        // `Value::U64(bind_id)` wherever it came from; `update`
+        // re-registers lazily off the value). The structural match
+        // made container-stored refs a compile error for no semantic
+        // reason (2026-07-08).
+        let typ = self.child.typ().with_deref(|t| match t {
+            Some(Type::ByRef(t)) => Some((**t).clone()),
+            _ => None,
+        });
+        let typ = match typ {
+            Some(t) => t,
+            None => bail!("expected reference"),
         };
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
         Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Deref(self)
     }
 }

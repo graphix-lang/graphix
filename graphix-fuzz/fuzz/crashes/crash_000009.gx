@@ -1,0 +1,4 @@
+// CRASH: child signal: 6 (SIGABRT) (core dumped) | thread 'tokio-rt-worker' (3341051) has overflowed its stack | fatal runtime error: stack overflow, aborting
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let rec f = |x: i64| select x {x if x < i64:10 => f(x % i64:1), x => args::parse}; f(i64:2)}

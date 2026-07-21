@@ -1,0 +1,19 @@
+/// Fused mandelbrot inner loop: runs the zr/zi escape-time iteration
+/// as native Rust and returns the iteration count remaining when the
+/// point escaped (or 0 if it didn't escape). Used to measure the
+/// ceiling of node-fusion speedups on the mandelbrot benchmark.
+val mandelbrot_iterate: fn(zr: f64, zi: f64, cr: f64, ci: f64, max: i64) -> i64;
+
+/// Auto-generated version of `mandelbrot_iterate` — produced by
+/// `graphix_compiler::fusion::emit_function_kernel` applied to the
+/// hand-written Graphix source. Kept alongside the hand-written kernel
+/// so we can A/B them and confirm the codegen pipeline produces
+/// bit-identical output at the same speed.
+val iterate_auto: fn(zr: f64, zi: f64, cr: f64, ci: f64, max: i64) -> i64;
+
+/// Auto-generated pixel callback from mandelbrot_bench_annotated.gx.
+/// Takes a pixel index and returns the escape-time count; all
+/// configuration (w, h, xmin/xmax/ymin/ymax, dx/dy, max_iter) is
+/// baked in as Rust constants that rustc folds at build time. The
+/// inner call to iterate is a direct Rust function call.
+val pixel_auto: fn(idx: i64) -> i64;

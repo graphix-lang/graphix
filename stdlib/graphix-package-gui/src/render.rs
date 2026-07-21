@@ -9,8 +9,10 @@
 //! dependency to ensure type compatibility with iced.
 
 use anyhow::{Context, Result};
-use iced_wgpu::graphics::{Shell, Viewport};
-use iced_wgpu::wgpu;
+use iced_wgpu::{
+    graphics::{Shell, Viewport},
+    wgpu,
+};
 use std::sync::Arc;
 use winit::window::Window;
 

@@ -1,0 +1,12 @@
+// bisect: SIGABRT in graphix_valarray_get_arcstr (jul16a fuzz
+// crash_000003, pre-existing). str::parse("42")? can't cast to the
+// tuple type, so the array literal's third element is the #219 taint
+// placeholder (Value::Null); array::find's |(k, _)| destructure leaf
+// reads trusted the typechecker's shape proof (get_unchecked +
+// unreachable_unchecked) and hit UB → a non-unwinding panic across
+// the extern "C" boundary → abort. Fixed by making the element/field
+// read helper family TOTAL: OOB or unexpected-shape reads produce the
+// return shape's placeholder (0 / "" / empty array / Null) — the
+// values on those paths are dead under the taint discipline (the loop
+// result taints via the source disc; both modes are silent here).
+{type T = (string, i64); let a: Array<T> = [("foo", i64:1), ("bar", i64:2), str::parse("42")?]; array::find(a, |(k, _): T| k == "bar")}

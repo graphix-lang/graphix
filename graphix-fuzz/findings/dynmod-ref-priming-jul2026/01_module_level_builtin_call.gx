@@ -1,0 +1,21 @@
+// bisect: MODE-INDEPENDENT dynamic-module bug, recorded as a fusion
+// divergence because the modes' fused/node-walk split shifted where it
+// bit — soak jul07b's first dynamic-module catches (3 findings, one
+// root). A module-level BUILTIN CALL in a dynamically loaded module
+// (`let v8 = str::len(...)`) never fired: the runtime-compiled nodes'
+// external refs (the stdlib `len` binding's lambda value, delivered at
+// startup, long gone) were never primed — `Ref::update` reads only
+// `event.variables`, and `Module::update`'s dynamic-compile path,
+// unlike the lazy `CallSite::bind`, primed nothing. The exported call
+// then never produced while the module STATUS still reported success.
+// A builtin call INSIDE an exported lambda body worked (the outer
+// call's bind() primed it) — which is why only module-level calls
+// died. FIXED: Module::update primes the fresh nodes' external refs
+// from ctx.cached after every dynamic (re)compile, exactly as bind()
+// does (node/module.rs).
+{
+  let v8 = mod d1 dynamic { sandbox whitelist [core, str]; sig { val g0: fn(a0: bool) -> i64 }; source "let v8 = str::len(\"graphix\");\nlet g0 = |v9: bool| -> i64 (-((v8 - i64:-100)))" };
+  let v9 = select v8 {error as _ => i64:0, null as _ => d1::g0(true)};
+  let v11: i64 = (str::len("graphix") + i64:1);
+  v9
+}

@@ -1,11 +1,11 @@
 use crate::{GXExt, UpdateBatch, WriteBatch};
 use ahash::AHashMap;
-use anyhow::{bail, Result};
-use arcstr::{literal, ArcStr};
+use anyhow::{Result, bail};
+use arcstr::{ArcStr, literal};
 use chrono::prelude::*;
 use compact_str::format_compact;
-use futures::{channel::mpsc, stream::SelectAll, FutureExt};
-use graphix_compiler::{expr::ExprId, BindId, CustomBuiltinType, Rt};
+use futures::{FutureExt, channel::mpsc, stream::SelectAll};
+use graphix_compiler::{BindId, CustomBuiltinType, Rt, expr::ExprId};
 use netidx::{
     path::Path,
     protocol::valarray::ValArray,
@@ -20,7 +20,7 @@ use netidx_protocols::rpc::{
 use nohash::IntMap;
 use poolshark::global::GPooled;
 use std::{
-    collections::{hash_map::Entry, VecDeque},
+    collections::{VecDeque, hash_map::Entry},
     fmt::Debug,
     future,
     time::Duration,
@@ -32,6 +32,19 @@ use tokio::{
 };
 use triomphe::Arc;
 
+/// `GRAPHIX_DBG_VARS=1` — print every runtime variable event:
+/// `REF_VAR`/`UNREF_VAR` (the (BindId, ExprId) wake-interest refcount),
+/// `SET_VAR` (a queued cross-cycle write), and `NOTIFY_SET` (same-cycle
+/// bind delivery with the current interest map). The tool for "who
+/// publishes/wakes this bind" — found the dead-eliminated module
+/// statement (a fused region waiting forever on a feeder whose producer
+/// was spliced away, 2026-07-08). Checked once; set before launch.
+fn dbg_vars() -> bool {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("GRAPHIX_DBG_VARS").is_some());
+    *ON
+}
+
 #[derive(Debug)]
 pub(super) struct RpcClient {
     proc: rpc::client::Proc,
@@ -40,6 +53,11 @@ pub(super) struct RpcClient {
 
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
+    /// The last DELIVERED value of every bound variable — see
+    /// [`Rt::cached`]. Written by the cycle loop as each variable
+    /// event lands in `event.variables`, and by the same-cycle
+    /// publishers through [`Rt::cached_mut`].
+    pub(super) cached: IntMap<BindId, Value>,
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
     pub(super) subscribed: IntMap<SubId, IntMap<ExprId, usize>>,
     pub(super) published: IntMap<Id, IntMap<ExprId, usize>>,
@@ -91,6 +109,7 @@ impl<X: GXExt> GXRt<X> {
         let mut var_watches = SelectAll::new();
         var_watches.push(dummy_rx);
         Self {
+            cached: IntMap::default(),
             by_ref: IntMap::default(),
             var_updates: VecDeque::new(),
             custom_updates: VecDeque::new(),
@@ -130,7 +149,7 @@ macro_rules! or_err {
             Ok(v) => v,
             Err(e) => {
                 let e = ArcStr::from(format_compact!("{e:?}").as_str());
-                let e = Value::Error(Arc::new(Value::String(e)));
+                let e = Value::Error(Value::String(e).into());
                 return ($bindid, e);
             }
         }
@@ -152,8 +171,17 @@ macro_rules! check_changed {
 impl<X: GXExt> Rt for GXRt<X> {
     type AbortHandle = task::AbortHandle;
 
+    fn cached(&self) -> &IntMap<BindId, Value> {
+        &self.cached
+    }
+
+    fn cached_mut(&mut self) -> &mut IntMap<BindId, Value> {
+        &mut self.cached
+    }
+
     fn clear(&mut self) {
         let Self {
+            cached,
             by_ref,
             var_updates,
             custom_updates,
@@ -186,6 +214,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         } = self;
         ext.clear();
         updated.clear();
+        cached.clear();
         by_ref.clear();
         var_updates.clear();
         custom_updates.clear();
@@ -388,10 +417,16 @@ impl<X: GXExt> Rt for GXRt<X> {
     }
 
     fn ref_var(&mut self, id: BindId, ref_by: ExprId) {
+        if dbg_vars() {
+            eprintln!("REF_VAR {id:?} by {ref_by:?}");
+        }
         *self.by_ref.entry(id).or_default().entry(ref_by).or_default() += 1;
     }
 
     fn unref_var(&mut self, id: BindId, ref_by: ExprId) {
+        if dbg_vars() {
+            eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
+        }
         if let Some(refs) = self.by_ref.get_mut(&id) {
             if let Some(cn) = refs.get_mut(&ref_by) {
                 *cn -= 1;
@@ -406,10 +441,16 @@ impl<X: GXExt> Rt for GXRt<X> {
     }
 
     fn set_var(&mut self, id: BindId, value: Value) {
+        if dbg_vars() {
+            eprintln!("SET_VAR {id:?} = {value}");
+        }
         self.var_updates.push_back((id, value.clone()));
     }
 
     fn notify_set(&mut self, id: BindId) {
+        if dbg_vars() {
+            eprintln!("NOTIFY_SET {id:?} -> {:?}", self.by_ref.get(&id));
+        }
         if let Some(refed) = self.by_ref.get(&id) {
             for eid in refed.keys() {
                 self.updated.entry(*eid).or_default();

@@ -1,0 +1,13 @@
+// bisect: jit parsed I64(42) vs interp runtime TypeError (jul16g fuzz
+// divergence 000000, pre-existing). The 000003 fix rejected ⊥ MEMBERS
+// of a set cast target one level deep; a NESTED map::map callback's
+// cell aliasing produced [[⊥, Error<ParseError>], Error<ParseError>]
+// — the ⊥ one level inside a set member — which extract_cast_type
+// accepted, so the fused parse cast through the garbage union while
+// the interp's runtime-minted slot instance saw an unresolved view and
+// erred (two prototype tc1 bails were also swallowed by the instance
+// recheck). Fixed: the ⊥-member walk is recursive through sets
+// (depth-capped); the program now compile-rejects in both modes
+// ("str::parse requires a concrete return type"), matching every
+// other unannotated-parse shape.
+{let m = {"a" => i64:1}; map::map(m, |(k, v)| ({let m2 = {"b" => i64:2}; map::map(m2, |(k2, v2)| (str::parse("42"), v2))}, v))}

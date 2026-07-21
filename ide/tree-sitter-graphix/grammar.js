@@ -59,6 +59,10 @@ module.exports = grammar({
     [$.variant_type, $.variant_pattern],
     [$.variant_type_args, $.variant_pattern],
     [$.lambda, $._primary_expression],
+    // `apply` is both a top-level arithmetic expression and a postfix-chain
+    // base (in `_primary_expression`), so an apply followed by e.g. `;` is
+    // ambiguous until the next token; let the GLR parser keep both.
+    [$._arithmetic_expression, $._primary_expression],
     [$._expression, $.or_never],
     [$.lambda, $.or_never],
     [$._expression, $.qop],
@@ -627,6 +631,9 @@ module.exports = grammar({
 
     unary_expression: $ => prec('unary', choice(
       seq('!', $._expression),
+      // Unary minus. `<-` is a distinct (longer) token, so this does not
+      // collide with connect; `a < -b` (space) stays a comparison.
+      seq('-', $._expression),
     )),
 
     // Apply (function call)
@@ -728,6 +735,9 @@ module.exports = grammar({
       $.array_ref,
       $.array_slice,
       $.map_ref,
+      // Apply is a postfix-chain base too, so `f(x).field`, `f(x)[i]`,
+      // `f(x){k}`, and `f(x)(y)` chain like the combine parser folds them.
+      $.apply,
       $.qop,
       $.or_never,
       $.parenthesized_expression,
@@ -741,8 +751,14 @@ module.exports = grammar({
     ),
 
     number: $ => token(prec(1, choice(
-      // Duration literals (must come before floats/integers to match correctly)
-      /\d+(\.\d*)?[smhd]/,
+      // Duration literals (must come before floats/integers to match
+      // correctly). The fractional part requires ≥1 digit: with `\.\d*`
+      // (zero digits allowed) a chained tuple-index→field access whose
+      // field starts with s/m/h/d — `x.5.summary`, `x.<n>.duration_ms` —
+      // lexed `5.s` / `<n>.d` as a "duration", stealing the identifier's
+      // first letter and erroring on the rest. `\d+.\d+[smhd]` can't span
+      // two dots, so postfix chains lex cleanly.
+      /\d+(\.\d+)?[smhd]/,
       // Scientific notation
       /[+-]?\d+(\.\d+)?[eE][+-]?\d+/,
       // Floats (require at least one digit after decimal to avoid consuming '..' operator)

@@ -11,8 +11,10 @@
 
 use lsp_types::Uri;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 /// Characters that must be percent-encoded inside a URI path segment.
 /// We keep `/` unencoded so directory separators stay readable. The set

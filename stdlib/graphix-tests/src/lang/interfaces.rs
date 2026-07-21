@@ -12,7 +12,10 @@ use netidx::publisher::Value;
 // Basic Abstract Type Tests
 // =============================================================================
 
-// Basic abstract type: interface declares abstract type, implementation provides concrete
+// Basic abstract type: interface declares abstract type, implementation provides concrete.
+// Fuses+JITs: fusion resolves the abstract `T` to its concrete `i64`
+// rep (registered by `check_sig`) via `resolve_abstract`, so the
+// cross-module `get(make(42))` lowers to a kernel.
 run!(
     abstract_type_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -29,10 +32,13 @@ run!(
         type T = i64;
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
-    "#
-);
+    "#);
 
 // Abstract type implemented as a struct
+// ASPIRE: Jit (currently None) — blocked on: cross-module struct-arg / string-return fn (i64 twin abstract_type_basic fuses)
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_struct_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
@@ -49,8 +55,7 @@ run!(
         type Handle = { value: string };
         let make = |x: string| -> Handle { value: x };
         let get_name = |h: Handle| h.value
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Interface without abstract types (regression test - should still work)
 run!(
@@ -65,8 +70,7 @@ run!(
         val add: fn(a: i64, b: i64) -> i64     "#,
     "/test/inner.gx" => r#"
         let add = |a: i64, b: i64| -> i64 a + b
-    "#
-);
+    "#);
 
 // =============================================================================
 // Multiple Abstract Types
@@ -94,8 +98,7 @@ run!(
         let make_a = |x: i64| -> A { x };
         let make_b = |y: i64| -> B { y };
         let combine = |a: A, b: B| -> i64 a.x + b.y
-    "#
-);
+    "#);
 
 // Two modules using same abstract type name with different definitions
 run!(
@@ -125,8 +128,7 @@ run!(
         type T = i64;
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
-    "#
-);
+    "#);
 
 // Abstract type used in exported type definition
 run!(
@@ -147,14 +149,16 @@ run!(
         type First = i64;
         let make_pair = |a: i64, b: string| -> Pair { first: a, second: b };
         let get_first = |p: Pair| -> i64 p.first
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types in Compound Types
 // =============================================================================
 
 // Abstract type in variant (exported type references abstract type)
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_in_variant,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -176,8 +180,7 @@ run!(
             `Some(t) => t.value,
             `None => default
         }
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Abstract type in tuple
 run!(
@@ -197,8 +200,7 @@ run!(
         type Elem = i64;
         let make_pair = |a: i64, b: i64| -> Pair (a, b);
         let sum_pair = |p: Pair| -> i64 p.0 + p.1
-    "#
-);
+    "#);
 
 // Abstract type in array
 run!(
@@ -217,14 +219,16 @@ run!(
         type Elem = i64;
         let make_array = |arr: Array<i64>| -> Array<Elem> arr;
         let sum_array = |arr: Array<Elem>| -> i64 array::fold(arr, 0, |acc, x| acc + x)
-    "#
-);
+    "#);
 
 // =============================================================================
 // Abstract Type used in Recursive Type
 // =============================================================================
 
 // Abstract type used in recursive type
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_recursive,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
@@ -247,8 +251,7 @@ run!(
             `Cons(x, rest) => x + sum(rest),
             `Nil => 0
         }
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types with ByRef
@@ -280,8 +283,7 @@ run!(
         let make = |x: i64| -> Counter x;
         let get = |c: Counter| -> i64 c;
         let increment = |c: &Counter| -> null { *c <- once(*c) + 1; null }
-    "#
-);
+    "#);
 
 // =============================================================================
 // Nested Modules with Abstract Types
@@ -310,8 +312,7 @@ run!(
         type T = { v: i64 };
         let make = |x: i64| -> T { v: x };
         let get = |t: T| -> i64 t.v
-    "#
-);
+    "#);
 
 // =============================================================================
 // Dynamic Modules with Abstract Types
@@ -341,7 +342,7 @@ run!(
             null as _ => dyn::double(dyn::make(42))
         }
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Error Cases
@@ -362,7 +363,7 @@ run!(
     "/test/inner.gx" => r#"
         let x = 42
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Abstract type in implementation is allowed (type stays opaque)
 run!(
@@ -380,7 +381,7 @@ run!(
         type T;
         let x = 42
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Error: signature type mismatch (function returns wrong type)
 run!(
@@ -398,7 +399,7 @@ run!(
         type T = string;
         let make = |x: i64| -> i64 x
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Error: abstract type parameter constraint mismatch
 run!(
@@ -416,11 +417,12 @@ run!(
         type T<'a> = { val: 'a };
         let make = |x: 'a| -> T<'a> { val: x }
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Abstract type constraint is automatically enforced on functions
 // The constraint on type Box<'a: Number> should propagate to wrap/unwrap
 // without needing to repeat the constraint in the val declarations
+// ASPIRE: Jit (currently None) — blocked on: constrained abstract-type fn (unconstrained twin abstract_type_parameterized_basic fuses)
 run!(
     abstract_type_constraint_auto_enforced,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -439,7 +441,7 @@ run!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
     "#
-);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // Error: abstract type constraint violation - string doesn't satisfy Number
 // The constraint from type Box<'a: Number> should reject non-Number types
@@ -461,7 +463,7 @@ run!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Error: extra type parameter in implementation
 run!(
@@ -479,7 +481,7 @@ run!(
         type T<'a, 'b> = ('a, 'b);
         let x = 42
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // Error: function argument type doesn't match abstract type
 // Signature says get takes T, but implementation's concrete type doesn't match
@@ -498,13 +500,16 @@ run!(
         type T = string;
         let get = |t: i64| -> i64 t
     "#
-);
+; graphix_package_core::testing::FuseExpect::None);
 
 // =============================================================================
 // Parameterized Abstract Types
 // =============================================================================
 
 // Basic parameterized abstract type
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_parameterized_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -522,10 +527,12 @@ run!(
         type Box<'a> = { value: 'a };
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type instantiated with different concrete types
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_parameterized_multi_instantiation,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
@@ -544,8 +551,7 @@ run!(
         type Box<'a> = { value: 'a };
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let unwrap = |b: Box<'a>| -> 'a b.value
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with constraint - use concrete type in interface
 // Note: Constrained type parameters in val declarations use a different syntax.
@@ -567,8 +573,7 @@ run!(
         type NumWrapper<'a: Number> = 'a;
         let wrap = |x: i64| -> IntWrapper x;
         let double = |w: IntWrapper| -> i64 w + w
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type in nested position (Array of Box)
 run!(
@@ -589,10 +594,12 @@ run!(
         let wrap = |x: 'a| -> Box<'a> { value: x };
         let sum_boxes = |boxes: IntBoxArray| -> i64
             array::fold(boxes, 0, |acc, b| acc + b.value)
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with two type parameters
+// ASPIRE: Jit (currently None) — doesn't fuse its body into a
+// kernel yet; the prior "fused" status was the hollow
+// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     abstract_type_parameterized_two_params,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
@@ -612,8 +619,7 @@ run!(
         let make = |a: 'a, b: 'b| -> Pair<'a, 'b> { first: a, second: b };
         let get_first = |p: Pair<'a, 'b>| -> 'a p.first;
         let get_second = |p: Pair<'a, 'b>| -> 'b p.second
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Abstract Types in Map
@@ -641,8 +647,7 @@ run!(
         let make_key = |x: i64| -> Key x;
         let make_map = || -> KeyMap {42 => "found", 99 => "other"};
         let lookup = |m: KeyMap, k: Key| m{k}?
-    "#
-);
+    "#);
 
 // Abstract type as Map value
 run!(
@@ -666,10 +671,9 @@ run!(
         let make_map = || -> ValMap {"key" => { inner: 42 }};
         let get = |m: ValMap, k: string| -> Val m{k}?;
         let unwrap = |v: Val| -> i64 v.inner
-    "#
-);
+    "#);
 
-// Abstract types as both Map key and value
+// Abstract types as both Map key and value.
 run!(
     abstract_type_map_key_and_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(100))),
@@ -696,14 +700,15 @@ run!(
         let make_map = |k: K, n: i64| -> KVMap {k => n};
         let lookup = |m: KVMap, k: K| -> V m{k}?;
         let get_val = |v: V| -> i64 v
-    "#
-);
+    "#);
 
 // =============================================================================
 // Abstract Types in Throws Clause
 // =============================================================================
 
-// Abstract type as error payload in throws clause
+// Abstract type as error payload in throws clause. Fuses now: the
+// try body fuses (TryCatch::fuse descends) and the handler-ful `?` in
+// `try inner::risky(42)` delivers in-kernel (variable-write-in-kernel).
 run!(
     abstract_type_in_throws,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -724,11 +729,13 @@ run!(
     "/test/inner.gx" => r#"
         type ErrPayload = { code: i64, msg: string };
         let risky = |x: i64| -> i64 x
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Abstract type used with a function that has throws clause
-// This tests that functions returning abstract types can be declared with throws
+// Abstract type used with a function that has throws clause.
+// Fuses now (Stage 2): `get_value` is a transitive callee whose body holds a
+// handler-ful `?` (`a[0]?`, caught by the outer `try`) — a qop-deliver DynCall.
+// That DynCall is delivered through the region-wide combined `dyn_slots` table
+// (the callee's slot offset by its base), so the whole `try ... catch` fuses.
 run!(
     abstract_type_with_throws_clause,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -754,8 +761,7 @@ run!(
             let a = [t.value + 41];
             a[0]?
         }
-    "#
-);
+    "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
 // Cross-Module Abstract Type Usage
@@ -793,5 +799,4 @@ run!(
         type T = i64;
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
-    "#
-);
+    "#);

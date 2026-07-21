@@ -1,0 +1,16 @@
+// bisect: interp fired once vs jit init+4 (jul16g fuzz divergence
+// 000001, pre-existing). The rec loop's jump arg is CAPTURE-fed
+// (`countdown(n - 1, x / 3)`); on capture-only cycles the retained
+// tail-select arm left the recursive arm ASLEEP, so the interp never
+// re-evaluated, where the kernel (whose params are formals ++
+// captures) re-derived and emitted. FIXED by replay-frames v3
+// (2026-07-17): the framed-first gate includes capture fires, which
+// is safe because framed re-derivation now carries the honest tag
+// algebra — tail-spine selects ride the arm's organic tag inside
+// frames (the kernel's emit_body_tail no-scrutinee-fold), value
+// selects fire on BECOMING selected (persistent `selected` makes the
+// changed path a genuine change), ridden jump args keep their
+// previous entry's TAG as well as its value (the kernel's rebind
+// keeps the old disc), and the lambda result override is
+// downgrade-only. Re-deriving is not re-firing.
+{let x = array::iter([i64:0, i64:0, i64:3, i64:0]); let m = x / i64:3; let f = |n| {let rec countdown = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => countdown(n - i64:1, x / i64:3)}; countdown(i64:100, i64:0)}; let c = count(f(i64:0)); select count(x) {i64:4 => c, _ => never()}}
