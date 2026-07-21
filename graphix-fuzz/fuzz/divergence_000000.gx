@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (final values, interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(5, I64(1))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(4, I64(2))], capped: false }] })
-// mutant: {let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let a = array::map([sys::tcp::connect("127.0.0.1:1")], |i| array::map([i64:-1], |j| array::map([i64:0], |k| select k {i64:0 if m == i64:0 => i64:1, _ => i64:2}))); let c = count(a); select count(x) {i64:4 => c, _ => never()}}
-// minimized:
-{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let a = array::map([sys::tcp::connect("127.0.0.1:1")], |i| array::map([i64:-1], |j| array::map([i64:0], |k| select k {i64:0 if m == i64:0 => i64:1, _ => i64:2}))); let c = count(a); select count(x) {i64:4 => c, _ => never()}}
