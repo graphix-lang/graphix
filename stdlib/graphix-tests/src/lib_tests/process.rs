@@ -181,6 +181,28 @@ run!(process_exit_status, PROCESS_EXIT_STATUS, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
+const PROCESS_ENV: &str = r#"
+{
+  use opt;
+  let options = sys::process::options(
+    #args: ["-c", "printf \"$FOO\""],
+    #env: {"FOO" => "bar"},
+    #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+    #kill_on_drop: true,
+    "/bin/sh"
+  );
+  let child = sys::process::spawn(options)?;
+  let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
+  buffer::to_string(sys::io::read(stdout, u64:1024)?)?
+}
+"#;
+
+#[cfg(unix)]
+run!(process_env, PROCESS_ENV, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "bar")
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+#[cfg(unix)]
 const PROCESS_GRACEFUL_KILL: &str = r#"
 {
   let options = sys::process::options(

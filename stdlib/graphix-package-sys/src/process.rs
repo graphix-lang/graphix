@@ -1,12 +1,13 @@
-use anyhow::{bail, Result};
+use ahash::AHashMap;
+use anyhow::Result;
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use immutable_chunkmap::map::Map as CMap;
 use netidx_activation::process::{spawn as os_spawn, stop_proc, Job, Spawned};
 use netidx_derive::{FromValue, IntoValue};
 use netidx_value::{abstract_type::AbstractWrapper, Abstract, FromValue as _, Value};
+use poolshark::local::LPooled;
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
@@ -184,50 +185,15 @@ struct StdioConfig {
     stderr: Stdio,
 }
 
-// CR claude for eric: SpawnOptionsValue/SpawnOptions are 7-field twins
-// existing only so TryFrom can narrow `env: Value` to the Map rep. If
-// netidx's FromValue derives through CMap<Value, Value, 32> (Value::Map
-// holds exactly that), `env` can be typed directly and the twin struct
-// + TryFrom collapse. Worth a try; if FromValue can't, leave it.
 #[derive(Debug, FromValue)]
-struct SpawnOptionsValue {
-    command: ArcStr,
-    args: Vec<ArcStr>,
-    cwd: Option<ArcStr>,
-    clear_env: bool,
-    env: Value,
-    stdio: StdioConfig,
-    kill_on_drop: bool,
-}
-
-#[derive(Debug)]
 pub(crate) struct SpawnOptions {
     command: ArcStr,
     args: Vec<ArcStr>,
     cwd: Option<ArcStr>,
     clear_env: bool,
-    env: CMap<Value, Value, 32>,
+    env: LPooled<AHashMap<ArcStr, Option<ArcStr>>>,
     stdio: StdioConfig,
     kill_on_drop: bool,
-}
-
-impl TryFrom<SpawnOptionsValue> for SpawnOptions {
-    type Error = anyhow::Error;
-
-    fn try_from(options: SpawnOptionsValue) -> Result<Self> {
-        let Value::Map(env) = options.env else {
-            bail!("field `env` must be Map<string, [string, null]>");
-        };
-        Ok(Self {
-            command: options.command,
-            args: options.args,
-            cwd: options.cwd,
-            clear_env: options.clear_env,
-            env,
-            stdio: options.stdio,
-            kill_on_drop: options.kill_on_drop,
-        })
-    }
 }
 
 #[derive(Debug, IntoValue)]
@@ -247,22 +213,17 @@ fn stdio_to_process(stdio: Stdio) -> ProcessStdio {
     }
 }
 
-fn apply_env(cmd: &mut Command, env: CMap<Value, Value, 32>) -> Result<()> {
-    for (key, val) in env.into_iter() {
-        let Value::String(key) = key else {
-            bail!("env keys must be strings");
-        };
+fn apply_env(cmd: &mut Command, mut env: LPooled<AHashMap<ArcStr, Option<ArcStr>>>) {
+    for (key, val) in env.drain() {
         match val {
-            Value::String(val) => {
-                cmd.env(&**key, &**val);
+            Some(val) => {
+                cmd.env(&*key, &*val);
             }
-            Value::Null => {
-                cmd.env_remove(&**key);
+            None => {
+                cmd.env_remove(&*key);
             }
-            _ => bail!("env values must be string or null"),
         }
     }
-    Ok(())
 }
 
 impl From<ProcValue> for Value {
@@ -296,7 +257,7 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
     if opts.clear_env {
         cmd.env_clear();
     }
-    apply_env(&mut cmd, opts.env)?;
+    apply_env(&mut cmd, opts.env);
     cmd.stdin(stdio_to_process(opts.stdio.stdin));
     cmd.stdout(stdio_to_process(opts.stdio.stdout));
     cmd.stderr(stdio_to_process(opts.stdio.stderr));
@@ -329,7 +290,7 @@ impl EvalCachedAsync for ProcessSpawnEv {
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let options = cached.0.get(0)?.as_ref()?;
-        Some(SpawnOptionsValue::from_value(options.clone()).and_then(TryInto::try_into))
+        Some(SpawnOptions::from_value(options.clone()))
     }
 
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
