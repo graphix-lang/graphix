@@ -574,7 +574,6 @@ graphix_derive::defpackage! {
         tcp::TcpLocalAddr,
         tcp::TcpListenerAddr,
         process::ProcessSpawn,
-        process::ProcessExitStatus,
         process::ProcessWait,
         process::ProcessKill,
         process::ProcessPid,

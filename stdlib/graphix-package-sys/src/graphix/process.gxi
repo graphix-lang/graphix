@@ -61,10 +61,6 @@ val options: fn(
 /// handle kills a still-running child.
 val spawn: fn(options: SpawnOptions) -> Result<Child, `ProcessError(string)>;
 
-/// Return the last known process exit status, or null if the process is
-/// still running.
-val exit_status: fn(proc: Proc) -> Result<[ExitStatus, null], `ProcessError(string)>;
-
 /// Wait until the process exits and return its status. Multiple callers may
 /// wait on the same process concurrently.
 val wait: fn(proc: Proc) -> Result<ExitStatus, `ProcessError(string)>;

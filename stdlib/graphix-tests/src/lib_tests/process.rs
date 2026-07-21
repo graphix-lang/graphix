@@ -141,46 +141,6 @@ run!(process_kill_during_wait, PROCESS_KILL_DURING_WAIT, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
-const PROCESS_EXIT_STATUS: &str = r#"
-{
-  let options = sys::process::options(
-    #args: ["-c", "exit 0"],
-    #kill_on_drop: true,
-    "/bin/sh"
-  );
-  let child = sys::process::spawn(options)?;
-  let before = sys::process::exit_status(child.proc)?;
-  let after = sys::process::wait(child.proc)?;
-  select before {
-    null => after.success,
-    _ => false,
-  }
-}
-"#;
-
-#[cfg(windows)]
-const PROCESS_EXIT_STATUS: &str = r#"
-{
-  let options = sys::process::options(
-    #args: ["/C", "exit /B 0"],
-    #kill_on_drop: true,
-    "cmd.exe"
-  );
-  let child = sys::process::spawn(options)?;
-  let before = sys::process::exit_status(child.proc)?;
-  let after = sys::process::wait(child.proc)?;
-  select before {
-    null => after.success,
-    _ => false,
-  }
-}
-"#;
-
-run!(process_exit_status, PROCESS_EXIT_STATUS, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
-
-#[cfg(unix)]
 const PROCESS_ENV: &str = r#"
 {
   use opt;

@@ -49,10 +49,6 @@ impl std::fmt::Debug for ManagedProc {
 }
 
 impl ManagedProc {
-    fn status(&self) -> Status {
-        self.status_rx.borrow().clone()
-    }
-
     /// Stop the child: graceful signal, `grace` to comply, hard kill as
     /// the backstop (`stop_proc`). Resolves after the child is dead. A
     /// closed channel or dropped ack means the child already exited —
@@ -308,43 +304,6 @@ impl EvalCachedAsync for ProcessSpawnEv {
 }
 
 pub(crate) type ProcessSpawn = CachedArgsAsync<ProcessSpawnEv>;
-
-// -- ProcessExitStatus -------------------------------------------------------
-
-// CR claude for eric: design question — `exit_status` samples the watch
-// once per delivery of its `proc` argument and never re-fires, so the
-// natural `spawn → exit_status` reads null essentially always and the
-// caller must re-trigger it manually (`exit_status(timer ~ proc)`).
-// The watch channel is already there; subscribing it would make this a
-// reactive status source (null while running, then the ExitStatus) —
-// which is the graphix-native shape, and distinct from `wait` (one-shot
-// final). If sample-only is the intent, the .gxi doc should warn about
-// the retrigger idiom. Relatedly the exit_status fixture races under
-// load: a >100ms dispatch delay lets "exit 0" land before the sample
-// and the test yields false.
-#[derive(Debug, Default)]
-pub(crate) struct ProcessExitStatusEv;
-
-impl EvalCachedAsync for ProcessExitStatusEv {
-    const NAME: &str = "sys_process_exit_status";
-    type Args = ProcValue;
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_proc(cached, 0)
-    }
-
-    fn eval(proc: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match proc.inner.status() {
-                Some(Ok(status)) => status.into(),
-                Some(Err(e)) => errf!("ProcessError", "{e}"),
-                None => Value::Null,
-            }
-        }
-    }
-}
-
-pub(crate) type ProcessExitStatus = CachedArgsAsync<ProcessExitStatusEv>;
 
 // -- ProcessWait -------------------------------------------------------------
 

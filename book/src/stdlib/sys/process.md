@@ -61,8 +61,6 @@ val options: fn(
 
 val spawn: fn(options: SpawnOptions) -> Result<Child, `ProcessError(string)>;
 
-val exit_status: fn(proc: Proc) -> Result<[ExitStatus, null], `ProcessError(string)>;
-
 val wait: fn(proc: Proc) -> Result<ExitStatus, `ProcessError(string)>;
 
 val pid: fn(proc: Proc) -> i64;
@@ -79,6 +77,19 @@ child is also assigned to a job object, so it is terminated even if
 the graphix process crashes; a child spawned with `kill_on_drop:
 false` is detached and may outlive the graphix process on every
 platform.
+
+There is no separate status-probe function: `wait` is the reactive
+status source. To track running state, give it an initial value:
+
+```graphix
+let status = `Running;
+status <- `Exited(sys::process::wait(child.proc)?)
+```
+
+`status` holds `` `Running `` until the process exits, then fires
+exactly once with the exit status — no polling, no race. A `wait`
+called after the process has already exited fires immediately, and
+multiple concurrent waiters are fine.
 
 Example:
 
