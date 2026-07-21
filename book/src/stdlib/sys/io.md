@@ -32,6 +32,8 @@ val write_exact: fn(stream: Stream<'a>, data: bytes) -> Result<null, `IOError(st
 /// Flush any buffered writes.
 val flush: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
 
+val close: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
+
 /// Return a handle to standard input.
 val stdin: fn(trigger: Any) -> Stream<`Stdio>;
 

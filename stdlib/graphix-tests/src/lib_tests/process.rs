@@ -141,6 +141,32 @@ run!(process_kill_during_wait, PROCESS_KILL_DURING_WAIT, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
+const PROCESS_STDIN_EOF: &str = r#"
+{
+  use opt;
+  let options = sys::process::options(
+    #args: ["-c", "cat"],
+    #stdio: sys::process::stdio(#stdin: `Pipe, #stdout: `Pipe, #stderr: `Inherit),
+    #kill_on_drop: true,
+    "/bin/sh"
+  );
+  let child = sys::process::spawn(options)?;
+  let stdin = opt::ok_or(child.stdin, `Null("stdin"))?;
+  let wrote = sys::io::write_exact(stdin, buffer::from_string("eof-test"))?;
+  let closed = sys::io::close(wrote ~ stdin)?;
+  let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
+  let out = buffer::to_string(sys::io::read(closed ~ stdout, u64:1024)?)?;
+  let status = sys::process::wait(out ~ child.proc)?;
+  status.success && out == "eof-test"
+}
+"#;
+
+#[cfg(unix)]
+run!(process_stdin_eof, PROCESS_STDIN_EOF, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+#[cfg(unix)]
 const PROCESS_ENV: &str = r#"
 {
   use opt;

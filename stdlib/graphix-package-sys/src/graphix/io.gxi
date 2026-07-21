@@ -22,14 +22,12 @@ val write_exact: fn(stream: Stream<'a>, data: bytes) -> Result<null, `IOError(st
 /// Flush any buffered writes.
 val flush: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
 
-// CR claude for eric: there is no `close`/`shutdown`, and with
-// Stream<`Pipe> that's now a real gap: a child that reads stdin until
-// EOF (cat, sort, wc, sh -s — most filters) can never be driven to
-// completion, because nothing closes the write side. The stdin test
-// dodges this with a fixed-length read plus kill. Suggest
-// `val close: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>`
-// that takes the StreamKind out of its slot (poll_shutdown for
-// writers) — useful for every stream kind, load-bearing for pipes.
+/// Close the stream, releasing the underlying resource. For writable
+/// streams pending data is flushed and end-of-stream is signaled — a
+/// piped child stdin delivers EOF, so a read-until-EOF child can run
+/// to completion. Closing an already-closed stream is a no-op;
+/// subsequent operations on a closed stream return an error.
+val close: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
 
 /// Return a handle to standard input.
 val stdin: fn(trigger: Any) -> Stream<`Stdio>;

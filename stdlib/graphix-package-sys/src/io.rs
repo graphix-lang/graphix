@@ -175,6 +175,38 @@ impl EvalCachedAsync for IoFlushEv {
 
 pub(crate) type IoFlush = CachedArgsAsync<IoFlushEv>;
 
+// ── IoClose ────────────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+pub(crate) struct IoCloseEv;
+
+impl EvalCachedAsync for IoCloseEv {
+    type Args = Arc<Mutex<Option<StreamKind>>>;
+
+    const NAME: &str = "sys_io_close";
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        get_stream(cached, 0)
+    }
+
+    fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
+        async move {
+            // Take the kind out first: concurrent ops see the stream
+            // closed immediately, and a second close is a no-op.
+            let kind = stream.lock().await.take();
+            let Some(mut kind) = kind else {
+                return Value::Null;
+            };
+            match kind.shutdown().await {
+                Ok(()) => Value::Null,
+                Err(e) => errf!("IOError", "close failed: {e}"),
+            }
+        }
+    }
+}
+
+pub(crate) type IoClose = CachedArgsAsync<IoCloseEv>;
+
 #[derive(Debug, Default)]
 pub(crate) struct IoStdinEv;
 

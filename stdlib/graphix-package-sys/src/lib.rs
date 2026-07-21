@@ -563,6 +563,7 @@ graphix_derive::defpackage! {
         io::IoWrite,
         io::IoWriteExact,
         io::IoFlush,
+        io::IoClose,
         io::IoStdin,
         io::IoStdout,
         io::IoStderr,
