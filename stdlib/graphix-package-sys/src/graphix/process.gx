@@ -1,0 +1,30 @@
+type Proc;
+let stdio = |
+  #stdin: Stdio = `Inherit,
+  #stdout: Stdio = `Inherit,
+  #stderr: Stdio = `Inherit
+| -> StdioConfig { stdin, stdout, stderr };
+
+let options = |
+  #args: Array<string> = [],
+  #cwd: [string, null] = null,
+  #clear_env: bool = false,
+  #env: Map<string, [string, null]> = {},
+  #stdio: StdioConfig = stdio(),
+  #kill_on_drop: bool = false,
+  command: string
+| -> SpawnOptions {
+  command,
+  args,
+  cwd,
+  clear_env,
+  env,
+  stdio,
+  kill_on_drop
+};
+
+let spawn = |options: SpawnOptions| -> Result<Child, `ProcessError(string)> 'sys_process_spawn;
+let exit_status = |proc: Proc| -> Result<[ExitStatus, null], `ProcessError(string)> 'sys_process_exit_status;
+let wait = |proc: Proc| -> Result<ExitStatus, `ProcessError(string)> 'sys_process_wait;
+let pid = |proc: Proc| -> i64 'sys_process_pid;
+let kill = |proc: Proc| -> Result<null, `ProcessError(string)> 'sys_process_kill

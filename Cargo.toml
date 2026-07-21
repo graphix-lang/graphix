@@ -48,6 +48,7 @@ indexmap = "2"
 log = "0.4"
 lsp-server = "0.7"
 lsp-types = "0.97"
+libc = "0.2"
 netidx-core = { version = "0.32.0", path = "../netidx/netidx-core" }
 netidx-derive = { version = "0.32.0", path = "../netidx/netidx-derive" }
 netidx-protocols = { version = "0.32.0", path = "../netidx/netidx-protocols" }

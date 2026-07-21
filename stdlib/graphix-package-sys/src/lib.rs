@@ -35,6 +35,7 @@ pub(crate) mod fs;
 pub(crate) mod io;
 pub(crate) mod metadata;
 pub(crate) mod net;
+pub(crate) mod process;
 pub(crate) mod tcp;
 pub(crate) mod time;
 pub(crate) mod tls;
@@ -49,6 +50,9 @@ pub enum StreamKind {
     Stdin(tokio::io::Stdin),
     Stdout(tokio::io::Stdout),
     Stderr(tokio::io::Stderr),
+    ChildStdin(tokio::process::ChildStdin),
+    ChildStdout(tokio::process::ChildStdout),
+    ChildStderr(tokio::process::ChildStderr),
 }
 
 impl std::fmt::Debug for StreamKind {
@@ -60,6 +64,9 @@ impl std::fmt::Debug for StreamKind {
             StreamKind::Stdin(_) => f.debug_tuple("Stdin").finish(),
             StreamKind::Stdout(_) => f.debug_tuple("Stdout").finish(),
             StreamKind::Stderr(_) => f.debug_tuple("Stderr").finish(),
+            StreamKind::ChildStdin(_) => f.debug_tuple("ChildStdin").finish(),
+            StreamKind::ChildStdout(_) => f.debug_tuple("ChildStdout").finish(),
+            StreamKind::ChildStderr(_) => f.debug_tuple("ChildStderr").finish(),
         }
     }
 }
@@ -88,10 +95,12 @@ impl AsyncRead for StreamKind {
             StreamKind::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Tls(s) => Pin::new(s).poll_read(cx, buf),
             StreamKind::Stdin(s) => Pin::new(s).poll_read(cx, buf),
-            StreamKind::Stdout(_) | StreamKind::Stderr(_) => {
+            StreamKind::ChildStdout(s) => Pin::new(s).poll_read(cx, buf),
+            StreamKind::ChildStderr(s) => Pin::new(s).poll_read(cx, buf),
+            StreamKind::Stdout(_) | StreamKind::Stderr(_) | StreamKind::ChildStdin(_) => {
                 Poll::Ready(Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
-                    "cannot read from stdout/stderr",
+                    "cannot read from write-only stream",
                 )))
             }
         }
@@ -110,9 +119,12 @@ impl AsyncWrite for StreamKind {
             StreamKind::Tls(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Stdout(s) => Pin::new(s).poll_write(cx, buf),
             StreamKind::Stderr(s) => Pin::new(s).poll_write(cx, buf),
-            StreamKind::Stdin(_) => Poll::Ready(Err(std::io::Error::new(
+            StreamKind::ChildStdin(s) => Pin::new(s).poll_write(cx, buf),
+            StreamKind::Stdin(_)
+            | StreamKind::ChildStdout(_)
+            | StreamKind::ChildStderr(_) => Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "cannot write to stdin",
+                "cannot write to read-only stream",
             ))),
         }
     }
@@ -127,7 +139,10 @@ impl AsyncWrite for StreamKind {
             StreamKind::Tls(s) => Pin::new(s).poll_flush(cx),
             StreamKind::Stdout(s) => Pin::new(s).poll_flush(cx),
             StreamKind::Stderr(s) => Pin::new(s).poll_flush(cx),
-            StreamKind::Stdin(_) => Poll::Ready(Ok(())),
+            StreamKind::ChildStdin(s) => Pin::new(s).poll_flush(cx),
+            StreamKind::Stdin(_)
+            | StreamKind::ChildStdout(_)
+            | StreamKind::ChildStderr(_) => Poll::Ready(Ok(())),
         }
     }
 
@@ -141,7 +156,10 @@ impl AsyncWrite for StreamKind {
             StreamKind::Tls(s) => Pin::new(s).poll_shutdown(cx),
             StreamKind::Stdout(s) => Pin::new(s).poll_shutdown(cx),
             StreamKind::Stderr(s) => Pin::new(s).poll_shutdown(cx),
-            StreamKind::Stdin(_) => Poll::Ready(Ok(())),
+            StreamKind::ChildStdin(s) => Pin::new(s).poll_shutdown(cx),
+            StreamKind::Stdin(_)
+            | StreamKind::ChildStdout(_)
+            | StreamKind::ChildStderr(_) => Poll::Ready(Ok(())),
         }
     }
 }
@@ -197,6 +215,10 @@ pub(crate) fn wrap_file(file: tokio::fs::File) -> Value {
 pub(crate) fn wrap_tcp(stream: tokio::net::TcpStream) -> Value {
     STREAM_WRAPPER
         .wrap(StreamValue { inner: Arc::new(Mutex::new(Some(StreamKind::Tcp(stream)))) })
+}
+
+pub(crate) fn wrap_stream(kind: StreamKind) -> Value {
+    STREAM_WRAPPER.wrap(StreamValue { inner: Arc::new(Mutex::new(Some(kind))) })
 }
 
 pub fn get_stream(
@@ -551,6 +573,11 @@ graphix_derive::defpackage! {
         tcp::TcpPeerAddr,
         tcp::TcpLocalAddr,
         tcp::TcpListenerAddr,
+        process::ProcessSpawn,
+        process::ProcessExitStatus,
+        process::ProcessWait,
+        process::ProcessKill,
+        process::ProcessPid,
         tls::TlsConnect,
         tls::TlsAccept,
         net::Write,

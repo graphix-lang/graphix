@@ -1,8 +1,8 @@
 /// An opaque handle to an I/O stream. The phantom type parameter indicates
 /// the underlying stream kind, constraining which operations are valid.
 /// Stream<`File> for files, Stream<`Tcp> for TCP, Stream<`Tls> for TLS,
-/// Stream<`Stdio> for stdin/stdout/stderr.
-type Stream<'a: [`File, `Tcp, `Tls, `Stdio]>;
+/// Stream<`Stdio> for stdin/stdout/stderr, Stream<`Pipe> for child pipes.
+type Stream<'a: [`File, `Tcp, `Tls, `Stdio, `Pipe]>;
 
 /// Read up to n bytes from the stream. May return fewer bytes than
 /// requested if fewer are available.
