@@ -1,0 +1,15 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:i64:7])
+// jit:    Trace([]) — output never fires
+// Found by the jul19i soak, ryouko generate lane (divergence_000087,
+// 2026-07-21 03:04); hand-reduced from a 40-binding dyn-module original.
+// root_cause: `emit_struct_with_node` was the last caller of the
+// FORCED accessor-source extraction — a tainted base struct (here: the
+// region input `v`, whose producer `{a: i64:1 % i64:0}` is bottom)
+// took `emit_bottom_abort`, killing the WHOLE kernel before the fused
+// call to `f`, whose const body never consumes the arg. The node-walk
+// fires the const body at init via first-dispatch priming regardless
+// of the never-firing arg. Fix: struct-with migrated to the guarded
+// discipline (unforced source + guarded unchanged-field reads +
+// src_disc folded into the result), the forced variant deleted.
+{let f = |x: {a: i64}| -> i64 i64:7; let v = {a: i64:1 % i64:0}; f({v with a: i64:2})}

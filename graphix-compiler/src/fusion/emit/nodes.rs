@@ -25,11 +25,10 @@ use netidx_value::Value;
 use super::{
     abi::{
         CompiledExpr, LocalKind, TAINT, const_stale_gate, emit_scalar_taint_cache,
-        is_tainted, is_untainted, prim_to_value_disc, propagate_flags, scalar_disc,
-        value_disc,
+        is_tainted, prim_to_value_disc, propagate_flags, scalar_disc, value_disc,
     },
     body::{
-        BodyCx, emit_bottom_abort, ensure_owned_composite_src, ensure_owned_value_src,
+        BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
         node_composite_source, ref_local_name,
     },
     call::{CompositeSource, emit_dyncall_node},
@@ -910,6 +909,13 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     })?;
     let (arr_ptr, src, src_disc) =
         emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    // A tainted source (a #219 placeholder — e.g. a region input that
+    // never fired) does NOT abort: the unchanged-field reads below are
+    // guarded, the built struct is shape-safe, and `src_disc`'s TAINT
+    // folds into the result disc — the with-update's consumers gate,
+    // exactly like the accessors (jul19i divergence_000087: the old
+    // whole-kernel abort here killed a fused call whose const-body
+    // callee never consumed the arg).
     // Register an Owned source: a replaced-field bottom-abort between here
     // and the finalize would otherwise leak it (a Borrowed source is
     // env-owned — nothing to drop).
@@ -953,10 +959,11 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
             }
             None => {
                 // Unchanged field — read the value from the source struct
-                // (an owned clone, no abort) and push it.
+                // (an owned clone; guarded — a tainted source's placeholder
+                // has no fields to read) and push it.
                 let ftyp = resolve_node_typ(cx.ctx, field_typ);
                 let idx = cx.b.ins().iconst(types::I64, i as i64);
-                let cv = compile_element_read(cx.b, arr_ptr, idx, &ftyp, true, cx.ctx)?;
+                let cv = emit_guarded_element_read(cx, arr_ptr, src_disc, idx, &ftyp, true)?;
                 scaffold::push_field(cx, inner, cv, &ftyp, CompositeSource::Owned)?;
             }
         }
@@ -1027,37 +1034,6 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     }
 }
 
-/// Compile an accessor's composite source to borrowed ValArray bits,
-/// returning the pointer plus its ownership classification. Shared by
-/// the tuple/struct/array element-read relays; the caller drops an
-/// Owned pointer after the read (the element helpers clone the slot
-/// out, so the temporary producer would otherwise leak — a Borrowed
-/// read stays owned by its env slot).
-fn emit_accessor_source_node<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    want: AbiKind,
-) -> Result<(ClifValue, CompositeSource, ClifValue)> {
-    if kernel_abi::abi_kind(cx.registry(), source.typ()) != Some(want) {
-        return Err(anyhow!(
-            "emit_clif: accessor source of type {:?} isn't {want:?}",
-            source.typ()
-        ));
-    }
-    let src = node_composite_source(source);
-    // #219: FORCE the source taint — `t.0` / `s.field` / `a[i]` over a
-    // missing composite bottoms the kernel (folds away for an untainted
-    // source; only a Borrowed missing input can be tainted, and it owns
-    // nothing to leak on the abort path).
-    let cv = source.emit_clif(cx)?;
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    // The source disc (TAINT now forced clear, STALE preserved) — the
-    // caller AND-folds it: `t.0` / `s.field` / `a[i]` fires iff the source
-    // (and, for `a[i]`, the index) fired.
-    Ok((cv.payload, src, cv.disc))
-}
-
 /// Drop an accessor's temporary Owned source after the element read.
 fn emit_accessor_source_drop(
     cx: &mut BodyCx,
@@ -1071,10 +1047,16 @@ fn emit_accessor_source_drop(
     Ok(())
 }
 
-/// Like [`emit_accessor_source_node`] but WITHOUT the taint force — for
-/// callers that guard the read themselves
-/// ([`emit_guarded_element_read`]). The returned disc may carry TAINT.
-fn emit_accessor_source_node_unforced<R: Rt, E: UserEvent>(
+/// Compile an accessor's composite source to borrowed ValArray bits,
+/// returning the pointer plus its ownership classification. Shared by
+/// the tuple/struct/array element-read relays and the struct-with; the
+/// caller drops an Owned pointer after the read (the element helpers
+/// clone the slot out, so the temporary producer would otherwise leak —
+/// a Borrowed read stays owned by its env slot). The returned disc may
+/// carry TAINT (a #219 placeholder source) — callers guard the actual
+/// reads ([`emit_guarded_element_read`]) and fold the disc so taint
+/// gates at the consumer, never a whole-kernel abort.
+fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     want: AbiKind,
@@ -1181,7 +1163,7 @@ pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
     // (#218) — resolve before the read classifies by abi_kind.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let (arr_ptr, src, src_disc) =
-        emit_accessor_source_node_unforced(cx, source, AbiKind::Tuple)?;
+        emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
     let result =
         emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, false)?;
@@ -1205,7 +1187,7 @@ pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
     // Same abstract-Ref resolution as the tuple read (#218).
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let (arr_ptr, src, src_disc) =
-        emit_accessor_source_node_unforced(cx, source, AbiKind::Struct)?;
+        emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
     let result =
         emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, true)?;
@@ -1236,7 +1218,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         // disc below — forcing here kernel-bottomed live chains through
         // a tainted literal (triage item 23).
         let (arr_ptr, src, src_disc) =
-            emit_accessor_source_node_unforced(cx, source, AbiKind::Array)?;
+            emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;
