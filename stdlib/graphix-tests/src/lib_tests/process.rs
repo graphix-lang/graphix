@@ -37,7 +37,7 @@ const PROCESS_STDOUT_PIPE: &str = r#"
 
 run!(process_stdout_pipe, PROCESS_STDOUT_PIPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_STDIN_PIPE: &str = r#"
@@ -63,7 +63,7 @@ const PROCESS_STDIN_PIPE: &str = r#"
 #[cfg(unix)]
 run!(process_stdin_pipe, PROCESS_STDIN_PIPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "ping")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_WAIT_STATUS: &str = r#"
@@ -98,7 +98,7 @@ run!(process_wait_status, PROCESS_WAIT_STATUS, |v: Result<&Value>| match v {
             && matches!(&a[1], Value::Array(pair) if pair.len() == 2 && matches!((&pair[0], &pair[1]), (Value::String(k), Value::Bool(false)) if &**k == "success"))
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_CONCURRENT_WAIT: &str = r#"
@@ -138,7 +138,7 @@ const PROCESS_KILL_DURING_WAIT: &str = r#"
 #[cfg(unix)]
 run!(process_kill_during_wait, PROCESS_KILL_DURING_WAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_EXIT_STATUS: &str = r#"
@@ -178,7 +178,7 @@ const PROCESS_EXIT_STATUS: &str = r#"
 
 run!(process_exit_status, PROCESS_EXIT_STATUS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const PROCESS_SPAWN_FAIL: &str = r#"
 {
@@ -192,4 +192,4 @@ const PROCESS_SPAWN_FAIL: &str = r#"
 
 run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
