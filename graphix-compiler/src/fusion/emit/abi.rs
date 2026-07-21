@@ -362,6 +362,13 @@ pub(super) fn is_not_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValu
     b.ins().icmp_imm(IntCC::NotEqual, m, 0)
 }
 
+/// Complement of [`is_not_fresh`]: true (I8 bool) iff neither
+/// [`TAINT`] nor [`STALE`] is set — this value FIRED this cycle.
+pub(super) fn is_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
+    let m = b.ins().band_imm(disc, TAINT | STALE);
+    b.ins().icmp_imm(IntCC::Equal, m, 0)
+}
+
 /// OR [`STALE`] into a constant's `disc` on every NON-init cycle: a
 /// constant node fires only at init (`event.init`, wire slot 0), then
 /// reports not-fired (a cached value) — the node-walk's `Constant`

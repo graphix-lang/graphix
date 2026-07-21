@@ -19,7 +19,8 @@ use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        emit_scalar_taint_cache, is_tainted, is_untainted, propagate_flags, scalar_disc,
+        emit_scalar_taint_cache, is_fresh, is_tainted, is_untainted, propagate_flags,
+        scalar_disc,
         taint_if, value_disc,
     },
     body::{
@@ -903,11 +904,18 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // and mints a REAL ArithError value). The node-walk never runs the
     // div at all, so delivering it to a catch handler invents an error
     // the program never raised (soak finding corpus-fuzz/
-    // divergence_000030: the wrong catch arm fired). Delivers below
-    // gate on `deliverable`; the abort/taint paths still treat it as
-    // no-value.
-    let untainted = is_untainted(cx.b, disc);
-    let deliverable = cx.b.ins().band(is_err, untainted);
+    // divergence_000030: the wrong catch arm fired). A STALE error is
+    // the same phantom via the CACHE: the qop taint-cache degrades a
+    // dropped error to the prior success + STALE, ops compute on the
+    // ride (STALE ANDs across operands), and the minted error never
+    // FIRED — the node-walk's `Qop::update` runs only when its inner
+    // returns `Some`, so a no-fire cycle delivers nothing (jul19i
+    // katana divergence_000000: the taint-only gate re-delivered a div
+    // error minted from a cached operand, a ghost second write to the
+    // handler var). Delivery requires FRESH — is_err && !TAINT &&
+    // !STALE; the abort/taint paths still treat it as no-value.
+    let fresh = is_fresh(cx.b, disc);
+    let deliverable = cx.b.ins().band(is_err, fresh);
     match kernel_abi::abi_kind(cx.registry(), &success_typ) {
         // Prim success — BRANCHLESS per-value taint. The payload word
         // holds the success bits when !is_err; on the error path the

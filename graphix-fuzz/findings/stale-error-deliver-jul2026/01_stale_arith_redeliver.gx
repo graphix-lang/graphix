@@ -1,0 +1,16 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([1:ArithError, 2:ArrayIndexError])
+// jit:    Trace([1:ArithError, 2:ArrayIndexError, 3:ArithError]) — ghost re-delivery
+// Found by the jul19i soak, katana fuzz lane (divergence_000000,
+// 2026-07-21 10:56); hand-reduced from the nested-try/select original.
+// root_cause: the `?` handler-site deliver gate (emit/flow.rs) checked
+// `is_err && untainted` only. Cycle 1: `a[s]?` raises the index error
+// (delivered, correct) and its taint-cache rides the prior success `0`
+// with STALE; the checked div computes `0 /? 0` from the cached ride
+// and mints a REAL ArithError whose disc carries STALE (not TAINT), so
+// the taint-only gate re-delivered it — a second same-cycle write to
+// the handler var, which the runtime queues for the NEXT cycle (the
+// epoch-3 ghost). The node-walk's `Qop::update` runs only when its
+// inner returns `Some`: a no-fire cycle delivers nothing. Fix: the
+// deliver gate requires FRESH (is_err && !TAINT && !STALE).
+{let a = [i64:0]; let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let s = i64:0; s <- i64:6; try (a[s]? /? i64:0)? catch(e) => err0 <- e; err0}
