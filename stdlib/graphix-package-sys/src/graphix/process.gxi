@@ -72,5 +72,9 @@ val wait: fn(proc: Proc) -> Result<ExitStatus, `ProcessError(string)>;
 /// Return the OS process identifier assigned when the process was spawned.
 val pid: fn(proc: Proc) -> i64;
 
-/// Kill the process if it is still running.
-val kill: fn(proc: Proc) -> Result<null, `ProcessError(string)>;
+/// Stop the process if it is still running: signal graceful shutdown
+/// (SIGTERM on unix, the shutdown event on Windows), give it #grace to
+/// comply, then hard-kill as the backstop. The default #grace of zero
+/// is an immediate hard kill. Resolves after the process is dead; a
+/// no-op for a process that already exited.
+val kill: fn(?#grace: duration, proc: Proc) -> null;

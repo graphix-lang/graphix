@@ -27,4 +27,4 @@ let spawn = |options: SpawnOptions| -> Result<Child, `ProcessError(string)> 'sys
 let exit_status = |proc: Proc| -> Result<[ExitStatus, null], `ProcessError(string)> 'sys_process_exit_status;
 let wait = |proc: Proc| -> Result<ExitStatus, `ProcessError(string)> 'sys_process_wait;
 let pid = |proc: Proc| -> i64 'sys_process_pid;
-let kill = |proc: Proc| -> Result<null, `ProcessError(string)> 'sys_process_kill
+let kill = |#grace: duration = duration:0.s, proc: Proc| -> null 'sys_process_kill

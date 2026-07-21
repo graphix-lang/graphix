@@ -1,91 +1,108 @@
 use anyhow::{bail, Result};
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use immutable_chunkmap::map::Map as CMap;
+use netidx_activation::process::{spawn as os_spawn, stop_proc, Job, Spawned};
 use netidx_derive::{FromValue, IntoValue};
 use netidx_value::{abstract_type::AbstractWrapper, Abstract, FromValue as _, Value};
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
     process::{ExitStatus as StdExitStatus, Stdio as ProcessStdio},
-    sync::{Arc, LazyLock, Weak},
+    sync::{LazyLock, OnceLock},
+    time::Duration,
 };
 use tokio::{
-    process::{Child as TokioChild, Command},
-    sync::{watch, Mutex},
-    time::{self, Duration},
+    process::Command,
+    sync::{mpsc, oneshot, watch},
 };
+use triomphe::Arc;
 
 use crate::{wrap_stream, StreamKind};
 
 // -- Abstract ProcValue -------------------------------------------------------
 
-#[derive(Debug)]
+type Status = Option<Result<ExitStatusValue, ArcStr>>;
+
+struct KillReq {
+    grace: Duration,
+    done: oneshot::Sender<()>,
+}
+
+/// Handle to a supervised child. The child itself is owned by a spawned
+/// task ([`own_child`]) — kill requests travel over `ctl`, the exit
+/// status arrives on the watch. Dropping the last handle closes `ctl`,
+/// which is the kill-on-drop signal.
 struct ManagedProc {
-    child: Mutex<Option<TokioChild>>,
     pid: i64,
-    kill_on_drop: bool,
-    status_tx: watch::Sender<Option<Result<ExitStatusValue, ArcStr>>>,
-    status_rx: watch::Receiver<Option<Result<ExitStatusValue, ArcStr>>>,
+    ctl: mpsc::UnboundedSender<KillReq>,
+    status_rx: watch::Receiver<Status>,
+}
+
+impl std::fmt::Debug for ManagedProc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagedProc").field("pid", &self.pid).finish()
+    }
 }
 
 impl ManagedProc {
-    fn new(child: TokioChild, pid: i64, kill_on_drop: bool) -> Self {
-        let (status_tx, status_rx) = watch::channel(None);
-        Self { child: Mutex::new(Some(child)), pid, kill_on_drop, status_tx, status_rx }
-    }
-
-    fn set_status(&self, status: Result<ExitStatusValue, ArcStr>) {
-        let _ = self.status_tx.send(Some(status));
-    }
-
-    fn status(&self) -> Option<Result<ExitStatusValue, ArcStr>> {
+    fn status(&self) -> Status {
         self.status_rx.borrow().clone()
     }
-}
 
-async fn poll_child(proc: Weak<ManagedProc>) {
-    let mut interval = time::interval(Duration::from_millis(100));
-    loop {
-        interval.tick().await;
-        let Some(proc) = proc.upgrade() else {
-            return;
-        };
-        if proc.status().is_some() {
-            return;
-        }
-        let status = {
-            let mut guard = proc.child.lock().await;
-            let Some(child) = guard.as_mut() else {
-                return;
-            };
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let _ = guard.take();
-                    Some(Ok(status.into()))
-                }
-                Ok(None) => None,
-                Err(e) => Some(Err(ArcStr::from(e.to_string().as_str()))),
-            }
-        };
-        if let Some(status) = status {
-            proc.set_status(status);
-            return;
+    /// Stop the child: graceful signal, `grace` to comply, hard kill as
+    /// the backstop (`stop_proc`). Resolves after the child is dead. A
+    /// closed channel or dropped ack means the child already exited —
+    /// a no-op, matching "kill if still running".
+    async fn kill(&self, grace: Duration) {
+        let (done, ack) = oneshot::channel();
+        if self.ctl.send(KillReq { grace, done }).is_ok() {
+            let _ = ack.await;
         }
     }
 }
 
-impl Drop for ManagedProc {
-    fn drop(&mut self) {
-        if !self.kill_on_drop || self.status_rx.borrow().is_some() {
-            return;
+/// The task that owns the child. All mutable access lives here: `wait`
+/// and kill requests are serialized by the select loop, so there is no
+/// lock and no polling. Biased: an exited child wins a race with a kill
+/// request (the kill acks as a no-op from the drain loop).
+async fn own_child(
+    mut spawned: Spawned,
+    kill_on_drop: bool,
+    status_tx: watch::Sender<Status>,
+    mut ctl: mpsc::UnboundedReceiver<KillReq>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            status = spawned.wait() => {
+                let status = match status {
+                    Ok(s) => Ok(s.into()),
+                    Err(e) => Err(ArcStr::from(format_compact!("{e}").as_str())),
+                };
+                let _ = status_tx.send(Some(status));
+                break;
+            }
+            req = ctl.recv() => match req {
+                Some(KillReq { grace, done }) => {
+                    stop_proc(&mut spawned, grace).await;
+                    let _ = done.send(());
+                }
+                None => {
+                    // Every handle dropped — nobody can observe the
+                    // status anymore.
+                    if kill_on_drop {
+                        stop_proc(&mut spawned, Duration::ZERO).await;
+                    }
+                    break;
+                }
+            },
         }
-        if let Ok(mut child) = self.child.try_lock()
-            && let Some(child) = child.as_mut()
-        {
-            let _ = child.start_kill();
-        }
+    }
+    while let Some(KillReq { done, .. }) = ctl.recv().await {
+        let _ = done.send(());
     }
 }
 
@@ -110,13 +127,13 @@ impl PartialOrd for ProcValue {
 
 impl Ord for ProcValue {
     fn cmp(&self, other: &Self) -> Ordering {
-        Arc::as_ptr(&self.inner).cmp(&Arc::as_ptr(&other.inner))
+        (&*self.inner as *const ManagedProc).cmp(&(&*other.inner as *const ManagedProc))
     }
 }
 
 impl Hash for ProcValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.inner).hash(state)
+        (&*self.inner as *const ManagedProc).hash(state)
     }
 }
 
@@ -167,6 +184,11 @@ struct StdioConfig {
     stderr: Stdio,
 }
 
+// CR claude for eric: SpawnOptionsValue/SpawnOptions are 7-field twins
+// existing only so TryFrom can narrow `env: Value` to the Map rep. If
+// netidx's FromValue derives through CMap<Value, Value, 32> (Value::Map
+// holds exactly that), `env` can be typed directly and the twin struct
+// + TryFrom collapse. Worth a try; if FromValue can't, leave it.
 #[derive(Debug, FromValue)]
 struct SpawnOptionsValue {
     command: ArcStr,
@@ -243,14 +265,24 @@ fn apply_env(cmd: &mut Command, env: CMap<Value, Value, 32>) -> Result<()> {
     Ok(())
 }
 
-fn proc_value(proc: ProcValue) -> Value {
-    PROC_WRAPPER.wrap(proc)
-}
-
 impl From<ProcValue> for Value {
     fn from(proc: ProcValue) -> Self {
-        proc_value(proc)
+        PROC_WRAPPER.wrap(proc)
     }
+}
+
+/// The one [`Job`] every graphix-spawned child is assigned to. On
+/// Windows this is a `KILL_ON_JOB_CLOSE` job object, so children die
+/// with the graphix process; a no-op handle on unix. A raced double
+/// init drops the loser's empty job harmlessly.
+static JOB: OnceLock<Job> = OnceLock::new();
+
+fn job() -> Result<&'static Job> {
+    if let Some(job) = JOB.get() {
+        return Ok(job);
+    }
+    let job = Job::new()?;
+    Ok(JOB.get_or_init(|| job))
 }
 
 fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
@@ -267,17 +299,20 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
     cmd.stdout(stdio_to_process(opts.stdio.stdout));
     cmd.stderr(stdio_to_process(opts.stdio.stderr));
 
-    let mut child = cmd.spawn()?;
-    let pid =
-        child.id().ok_or_else(|| anyhow::anyhow!("child process has no OS pid"))?;
-    let stdin = child.stdin.take().map(|s| wrap_stream(StreamKind::ChildStdin(s)));
-    let stdout = child.stdout.take().map(|s| wrap_stream(StreamKind::ChildStdout(s)));
-    let stderr = child.stderr.take().map(|s| wrap_stream(StreamKind::ChildStderr(s)));
-    let inner = Arc::new(ManagedProc::new(child, pid as i64, opts.kill_on_drop));
-    tokio::spawn(poll_child(Arc::downgrade(&inner)));
-    let proc = ProcValue { inner };
+    let mut spawned = os_spawn(cmd, job()?)?;
+    let pid = spawned
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("child process has no OS pid"))?
+        as i64;
+    let stdin = spawned.take_stdin().map(|s| wrap_stream(StreamKind::ChildStdin(s)));
+    let stdout = spawned.take_stdout().map(|s| wrap_stream(StreamKind::ChildStdout(s)));
+    let stderr = spawned.take_stderr().map(|s| wrap_stream(StreamKind::ChildStderr(s)));
+    let (status_tx, status_rx) = watch::channel(None);
+    let (ctl, ctl_rx) = mpsc::unbounded_channel();
+    tokio::spawn(own_child(spawned, opts.kill_on_drop, status_tx, ctl_rx));
+    let proc = ProcValue { inner: Arc::new(ManagedProc { pid, ctl, status_rx }) };
 
-    Ok(ChildBundle { proc, pid: pid as i64, stdin, stdout, stderr })
+    Ok(ChildBundle { proc, pid, stdin, stdout, stderr })
 }
 
 // -- ProcessSpawn ------------------------------------------------------------
@@ -312,6 +347,17 @@ pub(crate) type ProcessSpawn = CachedArgsAsync<ProcessSpawnEv>;
 
 // -- ProcessExitStatus -------------------------------------------------------
 
+// CR claude for eric: design question — `exit_status` samples the watch
+// once per delivery of its `proc` argument and never re-fires, so the
+// natural `spawn → exit_status` reads null essentially always and the
+// caller must re-trigger it manually (`exit_status(timer ~ proc)`).
+// The watch channel is already there; subscribing it would make this a
+// reactive status source (null while running, then the ExitStatus) —
+// which is the graphix-native shape, and distinct from `wait` (one-shot
+// final). If sample-only is the intent, the .gxi doc should warn about
+// the retrigger idiom. Relatedly the exit_status fixture races under
+// load: a >100ms dispatch delay lets "exit 0" land before the sample
+// and the test yields false.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessExitStatusEv;
 
@@ -373,25 +419,18 @@ pub(crate) struct ProcessKillEv;
 
 impl EvalCachedAsync for ProcessKillEv {
     const NAME: &str = "sys_process_kill";
-    type Args = ProcValue;
+    type Args = (ProcValue, Duration);
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_proc(cached, 0)
+        let grace = cached.0.get(0)?.as_ref()?.clone().cast_to::<Duration>().ok()?;
+        let proc = get_proc(cached, 1)?;
+        Some((proc, grace))
     }
 
-    fn eval(proc: Self::Args) -> impl Future<Output = Value> + Send {
+    fn eval((proc, grace): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            if proc.inner.status().is_some() {
-                return Value::Null;
-            }
-            let mut child = proc.inner.child.lock().await;
-            let Some(child) = child.as_mut() else {
-                return Value::Null;
-            };
-            match child.start_kill() {
-                Ok(()) => Value::Null,
-                Err(e) => errf!("ProcessError", "kill failed: {e}"),
-            }
+            proc.inner.kill(grace).await;
+            Value::Null
         }
     }
 }

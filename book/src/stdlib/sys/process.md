@@ -67,8 +67,16 @@ val wait: fn(proc: Proc) -> Result<ExitStatus, `ProcessError(string)>;
 
 val pid: fn(proc: Proc) -> i64;
 
-val kill: fn(proc: Proc) -> Result<null, `ProcessError(string)>;
+val kill: fn(?#grace: duration, proc: Proc) -> null;
 ```
+
+`kill` stops a running process gracefully: it signals shutdown (SIGTERM
+on unix, a shutdown event on Windows), gives the process `#grace` to
+comply, then hard-kills as the backstop. The default grace of zero is
+an immediate hard kill. It resolves after the process is dead, and is
+a no-op for a process that already exited. On Windows every spawned
+child is also assigned to a job object, so children are terminated if
+the graphix process itself exits.
 
 Example:
 

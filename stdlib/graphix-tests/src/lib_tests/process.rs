@@ -55,7 +55,7 @@ const PROCESS_STDIN_PIPE: &str = r#"
   let flushed = sys::io::flush(wrote ~ stdin)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
   let out = buffer::to_string(sys::io::read(flushed ~ stdout, u64:4)?)?;
-  sys::process::kill(out ~ child.proc)?;
+  sys::process::kill(out ~ child.proc);
   out
 }
 "#;
@@ -130,7 +130,7 @@ const PROCESS_KILL_DURING_WAIT: &str = r#"
   );
   let child = sys::process::spawn(options)?;
   let status = sys::process::wait(child.proc)?;
-  let killed = sys::process::kill(sys::time::timer(duration:100.ms, false) ~ child.proc)?;
+  let killed = sys::process::kill(sys::time::timer(duration:100.ms, false) ~ child.proc);
   !status.success && killed == null
 }
 "#;
@@ -177,6 +177,26 @@ const PROCESS_EXIT_STATUS: &str = r#"
 "#;
 
 run!(process_exit_status, PROCESS_EXIT_STATUS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+#[cfg(unix)]
+const PROCESS_GRACEFUL_KILL: &str = r#"
+{
+  let options = sys::process::options(
+    #args: ["-c", "trap 'exit 0' TERM; sleep 10 & wait"],
+    #kill_on_drop: true,
+    "/bin/sh"
+  );
+  let child = sys::process::spawn(options)?;
+  let status = sys::process::wait(child.proc)?;
+  sys::process::kill(#grace: duration:5.s, sys::time::timer(duration:100.ms, false) ~ child.proc);
+  status.success
+}
+"#;
+
+#[cfg(unix)]
+run!(process_graceful_kill, PROCESS_GRACEFUL_KILL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
