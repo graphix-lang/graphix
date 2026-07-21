@@ -540,7 +540,22 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // self-clocked `iterq` — the final value depends on whether the
         // listener lands before or after the walk; 8x re-check AGREEs
         // on an idle machine, the recorded miss needed soak load).
-        if code.contains("<-") {
+        // Fire-count-sensitive builtins are the `<-`-less version of
+        // the same leak: their final value counts/folds FIRES, and how
+        // many times a node fires depends on where the async arrival
+        // lands relative to other events (jul21a fuzz
+        // divergence_000000: `count` of a guarded select whose
+        // becoming-selected transitions straddle a `tcp::connect`
+        // arrival — flaps 3/5 in EITHER mode; de-asynced it agrees
+        // deterministically).
+        let fire_count_sensitive = [
+            "count(", "sum(", "product(", "mean(", "min(", "max(", "all(",
+            "and(", "or(", "queue(", "throttle(", "take(", "skip(", "window(",
+            "iterq",
+        ];
+        if code.contains("<-")
+            || fire_count_sensitive.iter().any(|m| code.contains(m))
+        {
             return OracleTier::Excluded;
         }
         return OracleTier::FinalValues;
