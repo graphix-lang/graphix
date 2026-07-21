@@ -271,9 +271,11 @@ impl From<ProcValue> for Value {
     }
 }
 
-/// The one [`Job`] every graphix-spawned child is assigned to. On
-/// Windows this is a `KILL_ON_JOB_CLOSE` job object, so children die
-/// with the graphix process; a no-op handle on unix. A raced double
+/// The one [`Job`] `kill_on_drop` children are assigned to. On Windows
+/// this is a `KILL_ON_JOB_CLOSE` job object, so those children die with
+/// the graphix process even if it crashes; a no-op handle on unix.
+/// `kill_on_drop: false` children are spawned OUTSIDE the job so they
+/// may outlive the graphix process on every platform. A raced double
 /// init drops the loser's empty job harmlessly.
 static JOB: OnceLock<Job> = OnceLock::new();
 
@@ -299,7 +301,8 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
     cmd.stdout(stdio_to_process(opts.stdio.stdout));
     cmd.stderr(stdio_to_process(opts.stdio.stderr));
 
-    let mut spawned = os_spawn(cmd, job()?)?;
+    let job = if opts.kill_on_drop { Some(job()?) } else { None };
+    let mut spawned = os_spawn(cmd, job)?;
     let pid = spawned
         .id()
         .ok_or_else(|| anyhow::anyhow!("child process has no OS pid"))?

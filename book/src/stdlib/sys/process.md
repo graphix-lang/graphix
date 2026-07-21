@@ -74,9 +74,11 @@ val kill: fn(?#grace: duration, proc: Proc) -> null;
 on unix, a shutdown event on Windows), gives the process `#grace` to
 comply, then hard-kills as the backstop. The default grace of zero is
 an immediate hard kill. It resolves after the process is dead, and is
-a no-op for a process that already exited. On Windows every spawned
-child is also assigned to a job object, so children are terminated if
-the graphix process itself exits.
+a no-op for a process that already exited. On Windows a `kill_on_drop`
+child is also assigned to a job object, so it is terminated even if
+the graphix process crashes; a child spawned with `kill_on_drop:
+false` is detached and may outlive the graphix process on every
+platform.
 
 Example:
 
