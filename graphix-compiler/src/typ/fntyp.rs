@@ -851,7 +851,14 @@ impl FnType {
             vargs.collect_tvars(known)
         }
         rtype.collect_tvars(known);
-        self.for_each_sig_constraint(&mut |tc| tc.collect_tvars(known));
+        // Reachability through a cell conjunct is over the conjunct's
+        // CANONICAL form: a tvar mentioned only in a portion that
+        // normalizes away (`['join, Any]` → Any) carries no constraint
+        // force, and collecting it made FnType identity depend on the
+        // raw stored form — the printed twin reparses canonical and the
+        // severed edge broke Eq (expr_round_trip3 at ~2.6M cases). The
+        // alias/unfreeze walkers stay raw: they touch the stored cells.
+        self.for_each_sig_constraint(&mut |tc| tc.normalize().collect_tvars(known));
         throws.collect_tvars(known);
     }
 
