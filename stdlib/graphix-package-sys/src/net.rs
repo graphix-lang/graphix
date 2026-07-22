@@ -1,3 +1,4 @@
+use crate::netstate::{NetRpcCall, NetState, NetWrite};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
@@ -20,6 +21,7 @@ use netidx_core::utils::Either;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use netidx_value::ValArray;
 use smallvec::{SmallVec, smallvec};
+use std::any::Any;
 use std::collections::VecDeque;
 use triomphe::Arc as TArc;
 
@@ -44,6 +46,7 @@ fn as_path(v: Value) -> Option<Path> {
 pub(crate) struct Write {
     args: CachedVals,
     top_id: ExprId,
+    id: BindId,
     dv: Either<(Path, Dval), Vec<Value>>,
 }
 
@@ -62,6 +65,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
         Ok(Box::new(Write {
             args: CachedVals::new(from),
             dv: Either::Right(vec![]),
+            id: BindId::new(),
             top_id,
         }))
     }
@@ -105,11 +109,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                     return Some(Value::Error(e.into()));
                 }
                 Some(path) => {
-                    let dv = ctx.rt.subscribe(
+                    let net = NetState::get(ctx);
+                    let dv = match net.subscribe(
+                        ctx,
                         UpdatesFlags::empty(),
                         path.clone(),
-                        self.top_id,
-                    );
+                        self.id,
+                    ) {
+                        Ok(dv) => dv,
+                        Err(e) => {
+                            let e = errf!(literal!("WriteError"), "{e:?}");
+                            return Some(Value::Error(e.into()));
+                        }
+                    };
                     match &mut self.dv {
                         Either::Left(_) => (),
                         Either::Right(q) => {
@@ -129,8 +141,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Either::Left((path, dv)) = &self.dv {
-            ctx.rt.unsubscribe(path.clone(), dv.clone(), self.top_id)
+        if let Either::Left((_, dv)) = &self.dv {
+            NetState::get(ctx).unsubscribe(dv.clone(), self.id)
         }
         self.dv = Either::Right(vec![])
     }
@@ -138,8 +150,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.args.clear();
         match &mut self.dv {
-            Either::Left((path, dv)) => {
-                ctx.rt.unsubscribe(path.clone(), dv.clone(), self.top_id);
+            Either::Left((_, dv)) => {
+                let dv = dv.clone();
+                NetState::get(ctx).unsubscribe(dv, self.id);
                 self.dv = Either::Right(vec![])
             }
             Either::Right(_) => (),
@@ -164,6 +177,7 @@ impl Write {
 pub(crate) struct Subscribe {
     args: CachedVals,
     cur: Option<(Path, Dval)>,
+    id: BindId,
     top_id: ExprId,
     cast_typ: Option<Type>,
 }
@@ -173,16 +187,19 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     const NAME: &str = "sys_net_subscribe";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.rt.ref_var(id, top_id);
         Ok(Box::new(Subscribe {
             args: CachedVals::new(from),
             cur: None,
+            id,
             top_id,
             cast_typ: extract_cast_type(resolved),
         }))
@@ -203,26 +220,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         match (path, path_up) {
             (Some(_), false) | (None, false) => (),
             (None, true) => {
-                if let Some((path, dv)) = self.cur.take() {
-                    ctx.rt.unsubscribe(path, dv, self.top_id)
+                if let Some((_, dv)) = self.cur.take() {
+                    NetState::get(ctx).unsubscribe(dv, self.id)
                 }
                 return None;
             }
             (Some(Value::String(path)), true)
                 if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
             {
-                if let Some((path, dv)) = self.cur.take() {
-                    ctx.rt.unsubscribe(path, dv, self.top_id)
+                let net = NetState::get(ctx);
+                if let Some((_, dv)) = self.cur.take() {
+                    net.unsubscribe(dv, self.id)
                 }
                 let path = Path::from(path);
                 if !Path::is_absolute(&path) {
                     return Some(err!(ERR_TAG, "expected absolute path"));
                 }
-                let dval = ctx.rt.subscribe(
+                let dval = match net.subscribe(
+                    ctx,
                     UpdatesFlags::BEGIN_WITH_LAST,
                     path.clone(),
-                    self.top_id,
-                );
+                    self.id,
+                ) {
+                    Ok(dv) => dv,
+                    Err(e) => return Some(errf!(ERR_TAG, "{e:?}")),
+                };
                 self.cur = Some((path, dval));
             }
             (Some(Value::String(_)), true) => (),
@@ -230,13 +252,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                 return Some(errf!(ERR_TAG, "invalid path {v}, expected string"));
             }
         }
-        self.cur.as_ref().and_then(|(_, dv)| {
-            event.netidx.get(&dv.id()).map(|e| match e {
-                subscriber::Event::Unsubscribed => Value::error(literal!("unsubscribed")),
-                subscriber::Event::Update(v) => match &self.cast_typ {
-                    Some(typ) => typ.cast_value(&ctx.env, v.clone()),
-                    None => v.clone(),
-                },
+        // updates arrive on our BindId via the NetState pump; the pump
+        // already translated Unsubscribed to the error value
+        self.cur.as_ref().and_then(|_| {
+            event.variables.get(&self.id).map(|v| match &self.cast_typ {
+                Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
+                None => v.value_cloned(),
             })
         })
     }
@@ -263,16 +284,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some((path, dv)) = self.cur.take() {
-            ctx.rt.unsubscribe(path, dv, self.top_id)
+        ctx.rt.unref_var(self.id, self.top_id);
+        if let Some((_, dv)) = self.cur.take() {
+            NetState::get(ctx).unsubscribe(dv, self.id)
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.args.clear();
-        if let Some((path, dv)) = self.cur.take() {
-            ctx.rt.unsubscribe(path, dv, self.top_id);
+        if let Some((_, dv)) = self.cur.take() {
+            NetState::get(ctx).unsubscribe(dv, self.id);
         }
+        ctx.rt.unref_var(self.id, self.top_id);
+        self.id = BindId::new();
+        ctx.rt.ref_var(self.id, self.top_id);
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -348,7 +373,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             ((Some(path), Some(args)), (_, true))
             | ((Some(path), Some(args)), (true, _)) => match parse_args(path, args) {
                 Err(e) => return Some(errf!(literal!("RpcError"), "{e}")),
-                Ok((path, args)) => ctx.rt.call_rpc(path, args, self.id),
+                Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
             },
             ((None, _), (_, _)) | ((_, None), (_, _)) | ((_, _), (false, false)) => (),
         }
@@ -407,7 +432,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 }
 
 macro_rules! list {
-    ($name:ident, $builtin:literal, $method:ident, $typ:literal) => {
+    ($name:ident, $builtin:literal, $table:expr, $typ:literal) => {
         #[derive(Debug)]
         pub(crate) struct $name {
             args: CachedVals,
@@ -459,10 +484,10 @@ macro_rules! list {
                     {
                         let path = Path::from(path);
                         self.current = Some(path.clone());
-                        ctx.rt.$method(self.id, path);
+                        NetState::get(ctx).list(ctx, self.id, path, $table);
                     }
                     (Some(Value::String(path)), _, true) => {
-                        ctx.rt.$method(self.id, Path::from(path));
+                        NetState::get(ctx).list(ctx, self.id, Path::from(path), $table);
                     }
                     _ => (),
                 }
@@ -477,12 +502,12 @@ macro_rules! list {
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
                 ctx.rt.unref_var(self.id, self.top_id);
-                ctx.rt.stop_list(self.id);
+                NetState::get(ctx).stop_list(self.id);
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
                 ctx.rt.unref_var(self.id, self.top_id);
-                ctx.rt.stop_list(self.id);
+                NetState::get(ctx).stop_list(self.id);
                 self.id = BindId::new();
                 ctx.rt.ref_var(self.id, self.top_id);
                 self.current = None;
@@ -499,14 +524,14 @@ macro_rules! list {
 list!(
     List,
     "sys_net_list",
-    list,
+    false,
     "fn(?#update:Any, string) -> Result<Array<string>, `ListError(string)>"
 );
 
 list!(
     ListTable,
     "sys_net_list_table",
-    list_table,
+    true,
     "fn(?#update:Any, string) -> Result<Table, `ListError(string)>"
 );
 
@@ -528,6 +553,9 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
     top_id: ExprId,
     x: BindId,
     pid: BindId,
+    /// write requests on the published value arrive here as custom
+    /// events (routed by the NetState pump)
+    wid: BindId,
     on_write: Node<R, E>,
     cast_typ: Option<Type>,
 }
@@ -563,12 +591,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                 );
                 let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
                 let on_write = genn::apply(fnode, scope, vec![xn], &mftyp, top_id);
+                let wid = BindId::new();
+                ctx.rt.ref_var(wid, top_id);
                 Ok(Box::new(Publish {
                     args: CachedVals::new(from),
                     current: None,
                     top_id,
                     pid,
                     x,
+                    wid,
                     on_write,
                     cast_typ: extract_publish_cast_type(resolved),
                 }))
@@ -588,7 +619,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         macro_rules! publish {
             ($path:expr, $v:expr) => {{
                 let path = Path::from($path.clone());
-                match ctx.rt.publish(path.clone(), $v.clone(), self.top_id) {
+                let net = NetState::get(ctx);
+                match net.publish(ctx, path.clone(), $v.clone(), self.wid) {
                     Err(e) => {
                         let msg: ArcStr = format_compact!("{e:?}").as_str().into();
                         let e: Value = (literal!("PublishError"), msg).into();
@@ -613,26 +645,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 if self.current.as_ref().map(|(p, _)| &**p != path).unwrap_or(true) =>
             {
                 if let Some((_, id)) = self.current.take() {
-                    ctx.rt.unpublish(id, self.top_id);
+                    NetState::get(ctx).unpublish(id);
                 }
                 publish!(path, v)
             }
             ([_, true], [Some(Value::String(path)), Some(v)]) => match &self.current {
-                Some((_, val)) => ctx.rt.update(val, v.clone()),
+                Some((_, val)) => NetState::get(ctx).update_val(val, v.clone()),
                 None => publish!(path, v),
             },
             _ => (),
         }
         let mut reply = None;
-        if let Some((_, val)) = &self.current {
-            if let Some(req) = event.writes.remove(&val.id()) {
-                let v = match &self.cast_typ {
-                    Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
-                    None => req.value.clone(),
-                };
-                ctx.rt.cached_mut().insert(self.x, v.clone());
-                event.variables.insert(self.x, TagValue::fired(v));
-                reply = req.send_result;
+        if self.current.is_some() {
+            if let Some(mut cbt) = event.custom.remove(&self.wid) {
+                if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
+                    let req = &mut w.0;
+                    let v = match &self.cast_typ {
+                        Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
+                        None => req.value.clone(),
+                    };
+                    ctx.rt.cached_mut().insert(self.x, v.clone());
+                    event.variables.insert(self.x, TagValue::fired(v));
+                    reply = req.send_result.take();
+                }
             }
         }
         if let Some(v) = self.on_write.update(ctx, event) {
@@ -668,8 +703,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some((_, val)) = self.current.take() {
-            ctx.rt.unpublish(val, self.top_id);
+            NetState::get(ctx).unpublish(val);
         }
+        ctx.rt.unref_var(self.wid, self.top_id);
         ctx.rt.cached_mut().remove(&self.pid);
         ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
@@ -678,7 +714,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some((_, val)) = self.current.take() {
-            ctx.rt.unpublish(val, self.top_id);
+            NetState::get(ctx).unpublish(val);
         }
         self.args.clear();
         self.on_write.sleep(ctx);
@@ -703,7 +739,7 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     queue: VecDeque<server::RpcCall>,
     argbuf: SmallVec<[(ArcStr, Value); 6]>,
     ready: bool,
-    current: Option<Path>,
+    current: Option<(Path, server::Proc)>,
     cast_typ: Option<Type>,
 }
 
@@ -890,9 +926,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             }
         }
         if changed[0] || changed[1] || changed[2] {
-            if let Some(path) = self.current.take() {
-                ctx.rt.unpublish_rpc(path);
-            }
+            // dropping the proc unpublishes it
+            self.current = None;
             if let (Some(Value::String(path)), Some(doc)) =
                 (&self.args.0[0], &self.args.0[1])
             {
@@ -929,14 +964,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                         .collect::<Vec<_>>(),
                     _ => vec![],
                 };
-                if let Err(e) =
-                    ctx.rt.publish_rpc(path.clone(), doc.clone(), spec, self.id)
-                {
-                    let e: ArcStr = format_compact!("{e:?}").as_str().into();
-                    let e: Value = (literal!("PublishRpcError"), e).into();
-                    return Some(Value::Error(e.into()));
-                }
-                self.current = Some(path);
+                let proc = match NetState::get(ctx).publish_rpc(
+                    ctx,
+                    path.clone(),
+                    doc.clone(),
+                    spec,
+                    self.id,
+                ) {
+                    Ok(proc) => proc,
+                    Err(e) => {
+                        let e: ArcStr = format_compact!("{e:?}").as_str().into();
+                        let e: Value = (literal!("PublishRpcError"), e).into();
+                        return Some(Value::Error(e.into()));
+                    }
+                };
+                self.current = Some((path, proc));
             }
         }
         macro_rules! set {
@@ -956,8 +998,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 event.variables.insert(self.x, TagValue::fired(args));
             }};
         }
-        if let Some(c) = event.rpc_calls.remove(&self.id) {
-            self.queue.push_back(c);
+        if let Some(mut cbt) = event.custom.remove(&self.id) {
+            if let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>() {
+                if let Some(c) = c.0.take() {
+                    self.queue.push_back(c);
+                }
+            }
         }
         if self.ready && self.queue.len() > 0 {
             if let Some(c) = self.queue.front() {
@@ -1006,9 +1052,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.unref_var(self.id, self.top_id);
-        if let Some(path) = self.current.take() {
-            ctx.rt.unpublish_rpc(path);
-        }
+        self.current = None;
         ctx.rt.cached_mut().remove(&self.x);
         ctx.env.unbind_variable(self.x);
         ctx.rt.cached_mut().remove(&self.pid);
@@ -1019,9 +1063,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         ctx.rt.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
-        if let Some(path) = self.current.take() {
-            ctx.rt.unpublish_rpc(path);
-        }
+        self.current = None;
         self.args.clear();
         self.queue.clear();
         self.argbuf.clear();

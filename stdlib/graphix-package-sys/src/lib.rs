@@ -36,6 +36,7 @@ pub(crate) mod io;
 pub mod loader;
 pub(crate) mod metadata;
 pub(crate) mod net;
+pub mod netstate;
 pub(crate) mod process;
 pub(crate) mod tcp;
 pub(crate) mod time;
