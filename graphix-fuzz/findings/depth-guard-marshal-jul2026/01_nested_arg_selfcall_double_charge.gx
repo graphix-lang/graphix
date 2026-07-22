@@ -1,0 +1,25 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:i64:255])
+// jit:    Trace([]) — whole result quiet (tainted trip placeholder)
+// Found by the jul22a soak, ryouko fuzz lane (divergence_000000,
+// 2026-07-22, within the campaign's first hour).
+// root_cause: the kernel's call-depth guard charged TWO units per
+// recursion level where the interp charges one. `emit_lambda_call_node`
+// ran `graphix_depth_push` BEFORE argument marshalling, so the outer
+// self-call's unit was held while its arg expression — containing the
+// inner self-call `f(n - 1)` — evaluated and recursed: every level of
+// the deep chain held the outer call's unit plus the inner dispatch's.
+// The interp's CallSite evaluates args before `GXLambda::update`
+// pushes, so it holds one unit per active dispatch. With
+// DEFAULT_MAX_CALL_DEPTH = 256 the kernel tripped at exactly n=128
+// (interp fine through n=255); the tripped call's #219 tainted
+// placeholder rode up through `+` and silenced the whole result.
+// Plain linear recursion (one self-call, in value position but not in
+// another self-call's arg) agreed at every depth — the double charge
+// needs the call-inside-call-arg nesting. Fix: push AFTER marshalling
+// (the trip path now drops the already-marshalled owned args, like
+// the pending-abort path); the callee-init site word being consumed
+// by a tripped call matches the interp, whose `first_update` is
+// consumed before the dispatch. Both backends now trip at the same
+// logical depth (n=256+ agrees: both quiet).
+{let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n + f(n - select n {i64:0 => i64:0, _ => f(n - i64:1) + array::len([n])})}; f(i64:255)}
