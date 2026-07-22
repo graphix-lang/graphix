@@ -114,6 +114,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let tainted = arg.tag.is_tainted();
         let arg_up = arg_prod.is_some();
         let arg_fired = arg_prod.is_some_and(|t| t.is_fired());
+        // Fold a tail-spine scrutinee's firing into the dispatch-wide
+        // accumulator (the kernel's `tail_scrut_stale`, folded by
+        // `emit_select_node_tail` per pass and applied at every
+        // `emit_kernel_return`). The arms terminate individually and a
+        // jump arm's emission is swallowed by the tail-call stash, so
+        // this is the only channel that carries the scrutinee's
+        // control-dependence firing to the final base-arm emission — a
+        // const base arm re-selected by a later cycle's loop read
+        // stale here while the kernel's return fold fired (jul21g
+        // divergence). Depth-0 passes fold too: a dispatch whose
+        // previous cycle didn't loop runs its first pass unframed, and
+        // that pass's entry delivery is iteration 1's disc.
+        if arg_fired && tail_position.load(Ordering::Relaxed) {
+            ctx.tail_scrut_fired = true;
+        }
         // Arm binds carry the SCRUTINEE's production tag (the kernel's
         // arm-bind disc carry): a stale scrutinee production — a
         // framed re-derivation from a quiet entry — binds STALE
@@ -246,14 +261,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         // spine is loop mechanics (the dispatch arm
                         // oscillates between the jump and base arms
                         // every framed evaluation) — the result is an
-                        // event iff the arm's own production fired
-                        // (jump-rebound formals and frame seeds carry
-                        // honest tags, so the organic tag IS the
-                        // kernel's disc algebra). Residual: a guard-
-                        // driven re-selection of a const arm on the
-                        // tail spine reads stale here where the
-                        // kernel's entry-derived seam fires — no known
-                        // witness; revisit if the fuzzer finds one.
+                        // event iff the arm's own production fired.
+                        // The scrutinee's control-dependence firing is
+                        // NOT lost by the stale read here: it rides
+                        // `ctx.tail_scrut_fired` (folded above) and
+                        // upgrades the final result tag at the
+                        // dispatch, the kernel's return fold (jul21g
+                        // divergence: a const base arm re-selected by
+                        // a later cycle's loop). Residual: a FEEDER-
+                        // guard-driven re-selection of a const arm
+                        // (scrutinee quiet, a capture flips the guard)
+                        // reads stale here where the kernel's
+                        // `tail_sel_path` selection word fires on
+                        // final-selection change — no known witness;
+                        // revisit if the fuzzer finds one.
                         let fired = prod.is_some_and(|t| t.is_fired());
                         let tag = if fired { Tag::FIRED } else { Tag::STALE };
                         arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))

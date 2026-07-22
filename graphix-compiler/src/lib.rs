@@ -1660,6 +1660,16 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// was a genuine init (`const_stale_gate`). Only meaningful when
     /// `frame_depth > 0`.
     pub(crate) frame_init: bool,
+    /// Accumulates the tail-spine selects' scrutinee firing across one
+    /// tail-loop dispatch — the interp twin of the kernel's
+    /// `tail_scrut_stale` loop accumulator, which every
+    /// `emit_kernel_return` folds into the result disc: a dispatch's
+    /// result fires if its value chain fired OR any tail-select
+    /// scrutinee on the executed path did (control-dependence firing).
+    /// Tail-spine selects OR into it (`node/select.rs`); the tail-loop
+    /// dispatch saves/resets it on entry and applies it in the
+    /// result-tag derivation (`node/lambda.rs`).
+    pub(crate) tail_scrut_fired: bool,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1705,6 +1715,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             diagnostics: Vec::new(),
             frame_depth: 0,
             frame_init: false,
+            tail_scrut_fired: false,
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

@@ -1,0 +1,27 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:f64:0.]) — cycle-1 result fire DROPPED
+// jit:    Trace([0:f64:0. 1:f64:0.])
+// Found by the jul21a/g soak, ryouko fuzz lane (divergence_000000,
+// 2026-07-22); hand-reduced from the str::parse-bottom original (the
+// bottom arg was irrelevant — the plain recursion diverged too).
+// root_cause: the interp had no twin of the kernel's tail-scrutinee
+// accumulator. Kernel: `emit_select_node_tail` folds each pass's
+// scrutinee firing into `tail_scrut_stale` (band — fired is sticky
+// across loop iterations) and every `emit_kernel_return` folds it into
+// the result disc: the result fires if its value chain fired OR any
+// tail-select scrutinee on the executed path did. Interp: the
+// tail-spine select suppresses the scrutinee fold per pass (loop
+// plumbing) and jump-arm emissions are swallowed by the tail-call
+// stash, so nothing carried the entry's control-dependence firing to
+// the final base-arm emission. With a CONST base arm (stale inside
+// frames — const_stale_gate) the organic tag was the only channel and
+// cycle 1's f(3)→f(0)→0.0 emitted STALE: one fire where the kernel
+// (correctly, per the v3 rule "a result is an event iff an input the
+// result depends on fired" — the dispatch depends on n) fired twice.
+// An n-DEPENDENT base arm (cast<f64>(n)$) agreed on both backends —
+// the same program with a const arm dropped the event. Fix:
+// ctx.tail_scrut_fired (interp twin, reset per dispatch in lambda.rs,
+// OR'd by tail-spine selects in select.rs, applied as a FIRED upgrade
+// in the dispatch's result-tag derivation). This pin: cycle 0 LOOPS
+// (prev_looped set) so cycle 1's first pass runs FRAMED.
+{let rec f = |n: i64| -> f64 select n {i64:0 => f64:0., _ => f(i64:0)}; let s = i64:6; s <- once(s ~ i64:3); f(s)}

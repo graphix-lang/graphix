@@ -963,7 +963,8 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
                 // has no fields to read) and push it.
                 let ftyp = resolve_node_typ(cx.ctx, field_typ);
                 let idx = cx.b.ins().iconst(types::I64, i as i64);
-                let cv = emit_guarded_element_read(cx, arr_ptr, src_disc, idx, &ftyp, true)?;
+                let cv =
+                    emit_guarded_element_read(cx, arr_ptr, src_disc, idx, &ftyp, true)?;
                 scaffold::push_field(cx, inner, cv, &ftyp, CompositeSource::Owned)?;
             }
         }
@@ -1162,8 +1163,7 @@ pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
     // Node-carried elem types can be Refs to abstract type names
     // (#218) — resolve before the read classifies by abi_kind.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let (arr_ptr, src, src_disc) =
-        emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
+    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
     let result =
         emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, false)?;

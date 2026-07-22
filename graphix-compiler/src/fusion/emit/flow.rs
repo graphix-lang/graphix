@@ -20,8 +20,7 @@ use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
         emit_scalar_taint_cache, is_fresh, is_tainted, is_untainted, propagate_flags,
-        scalar_disc,
-        taint_if, value_disc,
+        scalar_disc, taint_if, value_disc,
     },
     body::{
         BodyCx, emit_kernel_bottom, emit_kernel_return, emit_return_from_node,

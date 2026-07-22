@@ -1,0 +1,11 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:f64:0.]) — cycle-1 result fire DROPPED
+// jit:    Trace([0:f64:0. 1:f64:0.])
+// Same class as 01, the OTHER dispatch leg: cycle 0 hits the base arm
+// directly (n=0, no loop → prev_looped=false), so cycle 1's first
+// pass runs UNFRAMED at depth 0 before the jump's framed passes. The
+// fix's accumulator therefore folds tail-spine scrutinee firing at
+// ANY frame depth — the depth-0 entry delivery is the kernel loop's
+// iteration-1 disc, and gating the fold on frame_depth > 0 would have
+// fixed 01 while leaving this leg diverging.
+{let rec f = |n: i64| -> f64 select n {i64:0 => f64:0., _ => f(i64:0)}; let s = i64:0; s <- once(s ~ i64:6); f(s)}

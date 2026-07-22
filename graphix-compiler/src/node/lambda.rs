@@ -498,6 +498,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 self.body.reset_replay(ctx);
                 frame.extend(seeds.iter().map(|(k, v)| (*k, v.clone())));
             }
+            // Fresh tail-scrutinee accumulator for this dispatch (the
+            // kernel initializes `tail_scrut_stale` per invocation);
+            // the previous value is restored below so nested
+            // dispatches can't bleed into each other.
+            let prev_tsf = mem::replace(&mut ctx.tail_scrut_fired, false);
             let res = loop {
                 // Cooperative interrupt: a wedged tail loop aborts to bottom
                 // when `interrupt()`/`abort()` is requested (`do_cycle` clears
@@ -614,23 +619,38 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // view, or a captured input triggered this cycle. A first
             // pass that never jumped and wasn't framed ran on the real
             // event and keeps its organic tag.
-            match res {
+            let res = match res {
                 Some(tv) if (reentered || framed) && !tv.is_tainted() => {
-                    // DOWNGRADE-only (replay-frames v3): with
-                    // constants stale inside frames, frame-forced
-                    // init never counting as a fire, and the
-                    // tail-spine no-scrutinee-fold, the body's
-                    // organic tag IS the kernel's disc algebra — ride
-                    // it. The stale force below only protects the #8
-                    // class (a dispatch nothing genuinely triggered
-                    // must not emit); the old unconditional
-                    // FIRED-upgrade re-fired results whose fired
-                    // inputs a quiet select had suppressed.
+                    // DOWNGRADE-only on the value chain (replay-frames
+                    // v3): with constants stale inside frames,
+                    // frame-forced init never counting as a fire, and
+                    // the tail-spine no-scrutinee-fold, the body's
+                    // organic tag IS the kernel's value-chain disc —
+                    // ride it. Two folds on top, both kernel twins:
+                    // the stale force protects the #8 class (a
+                    // dispatch nothing genuinely triggered must not
+                    // emit; the old unconditional FIRED-upgrade
+                    // re-fired results whose fired inputs a quiet
+                    // select had suppressed), and the tail-scrutinee
+                    // accumulator upgrades — `emit_kernel_return`'s
+                    // `fold_stale`: the result fires if any tail-
+                    // select scrutinee on the executed path fired,
+                    // even when the taken arm's own production is
+                    // stale (a const base arm re-selected by a later
+                    // cycle's loop — jul21g divergence).
                     let entry = entry_fired || externals_triggered(&self.body, event);
-                    if entry { Some(tv) } else { Some(TagValue::stale(tv.value())) }
+                    if !entry {
+                        Some(TagValue::stale(tv.value()))
+                    } else if ctx.tail_scrut_fired {
+                        Some(TagValue::fired(tv.value()))
+                    } else {
+                        Some(tv)
+                    }
                 }
                 res => res,
-            }
+            };
+            ctx.tail_scrut_fired = prev_tsf;
+            res
         };
         match ctx.active_lambdas.entry(self.id) {
             MapEntry::Occupied(mut e) => {
