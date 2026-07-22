@@ -13,7 +13,7 @@
 
 use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;
-use graphix_compiler::{CFlag, expr::ModuleResolver};
+use graphix_compiler::{CFlag, expr::VfsResolver};
 use graphix_rt::GXEvent;
 use netidx_value::Value;
 use std::time::Duration;
@@ -36,7 +36,7 @@ async fn first_value(flags: BitFlags<CFlag>) -> Result<Value> {
     let ctx = graphix_package_core::testing::init_with_flags_and_setup(
         tx,
         &crate::TEST_REGISTER,
-        vec![ModuleResolver::VFS(tbl)],
+        vec![VfsResolver::new(tbl)],
         flags,
         |_| {},
     )

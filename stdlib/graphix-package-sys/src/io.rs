@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use crate::{get_stream, wrap_stream, StreamKind};
+use crate::{StreamKind, get_stream, wrap_stream};
 
 // ── IoRead ─────────────────────────────────────────────────────
 

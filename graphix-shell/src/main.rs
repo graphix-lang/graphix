@@ -5,7 +5,7 @@ use enumflags2::BitFlags;
 use flexi_logger::{FileSpec, Logger};
 use graphix_compiler::{
     CFlag,
-    expr::{ModuleResolver, Source},
+    expr::{FilesResolver, Source},
 };
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_rt::NoExt;
@@ -355,14 +355,19 @@ fn tokio_main(
         }
         if let Some(f) = &p.file {
             let source = match f.strip_prefix("netidx:") {
+                #[cfg(feature = "sys")]
                 Some(path) => {
-                    shell = shell.module_resolvers(vec![ModuleResolver::Netidx {
-                        subscriber: subscriber.clone(),
-                        base: netidx::path::Path::from(ArcStr::from(path)),
-                        timeout: None,
-                    }]);
+                    shell = shell.module_resolvers(vec![
+                        graphix_package_sys::loader::NetidxResolver::new(
+                            subscriber.clone(),
+                            netidx::path::Path::from(ArcStr::from(path)),
+                            None,
+                        ),
+                    ]);
                     Source::Netidx(Path::from(ArcStr::from(path)))
                 }
+                #[cfg(not(feature = "sys"))]
+                Some(_) => bail!("netidx: sources require the sys feature"),
                 None => {
                     let path = PathBuf::from(&**f).canonicalize()?;
                     let path = if path.is_dir() { path.join("main.gx") } else { path };
@@ -371,10 +376,8 @@ fn tokio_main(
                         None => (),
                         Some(p) => {
                             let p = PathBuf::from(p);
-                            shell = shell.module_resolvers(vec![ModuleResolver::Files {
-                                base: p,
-                                overrides: None,
-                            }]);
+                            shell =
+                                shell.module_resolvers(vec![FilesResolver::new(p, None)]);
                         }
                     };
                     Source::File(path)

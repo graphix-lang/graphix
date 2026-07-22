@@ -29,7 +29,7 @@ pub mod trace;
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use graphix_compiler::{CFlag, FusionStats, expr::ModuleResolver};
+use graphix_compiler::{CFlag, FusionStats, expr::VfsResolver};
 use graphix_package::Package;
 use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
 use graphix_rt::{GXEvent, NoExt};
@@ -202,7 +202,7 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
             graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
         );
     }
-    let resolver = ModuleResolver::VFS(tbl);
+    let resolver = VfsResolver::new(tbl);
     let ctx = match init_with_flags_and_setup(
         tx,
         REGISTER,
@@ -275,7 +275,7 @@ pub async fn run_program_with_stats(
             graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
         );
     }
-    let resolver = ModuleResolver::VFS(tbl);
+    let resolver = VfsResolver::new(tbl);
     let ctx = match init_with_flags_and_setup(
         tx,
         REGISTER,
@@ -549,13 +549,23 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // arrival — flaps 3/5 in EITHER mode; de-asynced it agrees
         // deterministically).
         let fire_count_sensitive = [
-            "count(", "sum(", "product(", "mean(", "min(", "max(", "all(",
-            "and(", "or(", "queue(", "throttle(", "take(", "skip(", "window(",
+            "count(",
+            "sum(",
+            "product(",
+            "mean(",
+            "min(",
+            "max(",
+            "all(",
+            "and(",
+            "or(",
+            "queue(",
+            "throttle(",
+            "take(",
+            "skip(",
+            "window(",
             "iterq",
         ];
-        if code.contains("<-")
-            || fire_count_sensitive.iter().any(|m| code.contains(m))
-        {
+        if code.contains("<-") || fire_count_sensitive.iter().any(|m| code.contains(m)) {
             return OracleTier::Excluded;
         }
         return OracleTier::FinalValues;
@@ -3163,7 +3173,7 @@ mod trace_probes {
             Path::from("/test.gx"),
             graphix_compiler::expr::VfsEntry::from(ArcStr::from(program.to_string())),
         )]);
-        let resolver = ModuleResolver::VFS(tbl);
+        let resolver = VfsResolver::new(tbl);
         let ctx =
             init_with_flags_and_setup(tx, REGISTER, vec![resolver], mode.flags(), |_| {})
                 .await

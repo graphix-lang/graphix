@@ -12,7 +12,10 @@ use netidx_derive::Pack;
 pub use pattern::{Pattern, StructurePattern};
 use poolshark::local::LPooled;
 use regex::Regex;
-pub use resolver::{BufferOverrides, ModuleResolver, VfsEntry, add_interface_modules};
+pub use resolver::{
+    BufferOverrides, FilesResolver, ModuleResolver, Resolution, ResolverFactory,
+    ResolverRef, Resolvers, VfsEntry, VfsResolver, add_interface_modules, parse_modpath,
+};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, Visitor},

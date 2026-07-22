@@ -9,7 +9,7 @@ use crate::{
     format_with_flags,
 };
 use ahash::AHashMap;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use combine::stream::position::SourcePosition;
@@ -17,16 +17,11 @@ use compact_str::format_compact;
 use futures::future::try_join_all;
 use indexmap::IndexSet;
 use log::info;
-use netidx::{
-    path::Path,
-    subscriber::{Event, Subscriber},
-    utils::Either,
-};
-use netidx_value::Value;
+use netidx::{path::Path, utils::Either};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
-use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr, time::Duration};
-use tokio::{join, task, time::Instant, try_join};
+use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr};
+use tokio::{task, time::Instant, try_join};
 use triomphe::Arc;
 
 pub type BufferOverrides = Arc<Mutex<AHashMap<PathBuf, ArcStr>>>;
@@ -49,36 +44,146 @@ impl From<ArcStr> for VfsEntry {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ModuleResolver {
-    VFS(AHashMap<Path, VfsEntry>),
-    Files { base: PathBuf, overrides: Option<BufferOverrides> },
-    Netidx { subscriber: Subscriber, base: Path, timeout: Option<Duration> },
+/// A module source loader. The compiler ships [`VfsResolver`] and
+/// [`FilesResolver`]; loaders for other transports live in the package
+/// that owns the transport (e.g. the netidx loader in
+/// graphix-package-sys) and are threaded in by the embedder — the core
+/// has no knowledge of any network.
+pub trait ModuleResolver: std::fmt::Debug + Send + Sync {
+    /// Try to resolve module `name` in `scope` under `parent`. Return
+    /// [`Resolution::TryNextMethod`] (pushing any diagnostic into
+    /// `errors`) to let the next resolver in the list try.
+    fn resolve<'a>(
+        &'a self,
+        scope: &'a ModPath,
+        parent: &'a Arc<Origin>,
+        name: &'a Path,
+        errors: &'a mut Vec<anyhow::Error>,
+    ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>>;
+
+    /// Derive a resolver for the SUBMODULES of a module whose
+    /// implementation came from `source`, when this resolver
+    /// understands that source kind (e.g. the netidx loader answers
+    /// `Source::Netidx(p)` with a clone based at `p`). The compiler
+    /// handles `Source::File` itself; everything else is offered to
+    /// the resolver list in order.
+    fn for_source(&self, _source: &Source) -> Option<ResolverRef> {
+        None
+    }
+
+    /// Fetch a single top-level source this resolver's transport
+    /// understands (the runtime's `Source::Netidx` script-file load).
+    /// `None` (the default) means "not my transport".
+    fn fetch_source<'a>(
+        &'a self,
+        _source: &'a Source,
+    ) -> Option<Pin<Box<dyn Future<Output = Result<ArcStr>> + Send + Sync + 'a>>> {
+        None
+    }
+
+    /// The LSP buffer-overrides this resolver carries, if any — used
+    /// when the compiler derives directory-based prepend resolvers for
+    /// relative includes.
+    fn overrides(&self) -> Option<BufferOverrides> {
+        None
+    }
 }
 
-impl ModuleResolver {
-    pub fn parse_env(
-        subscriber: Subscriber,
-        timeout: Option<Duration>,
-        s: &str,
-    ) -> Result<Vec<Self>> {
-        let mut res = vec![];
-        for l in escaping::split(s, '\\', ',') {
-            let l = l.trim();
-            if let Some(s) = l.strip_prefix("netidx:") {
-                let base = Path::from_str(s);
-                let r = Self::Netidx { subscriber: subscriber.clone(), timeout, base };
-                res.push(r);
-            } else if let Some(s) = l.strip_prefix("file:") {
-                let base = PathBuf::from_str(s)?;
-                let r = Self::Files { base, overrides: None };
-                res.push(r);
-            } else {
-                bail!("expected netidx: or file:")
+/// A shared resolver handle. `std::sync::Arc`: resolvers are
+/// cold-path configuration objects and triomphe cannot unsize to
+/// trait objects.
+pub type ResolverRef = std::sync::Arc<dyn ModuleResolver>;
+
+/// Resolvers threaded through module resolution, tried in order.
+pub type Resolvers = std::sync::Arc<[ResolverRef]>;
+
+/// Constructs a resolver from the payload of a `scheme:` entry in
+/// GRAPHIX_MODPATH (the part after the colon). Registered by the
+/// embedder per scheme — the shell registers the sys package's
+/// `netidx` factory; `file` is built in.
+pub type ResolverFactory =
+    std::sync::Arc<dyn Fn(&str) -> Result<ResolverRef> + Send + Sync>;
+
+/// In-memory module store — the stdlib packages and test sources.
+#[derive(Debug, Clone)]
+pub struct VfsResolver(pub AHashMap<Path, VfsEntry>);
+
+impl VfsResolver {
+    pub fn new(vfs: AHashMap<Path, VfsEntry>) -> ResolverRef {
+        std::sync::Arc::new(VfsResolver(vfs))
+    }
+}
+
+impl ModuleResolver for VfsResolver {
+    fn resolve<'a>(
+        &'a self,
+        scope: &'a ModPath,
+        parent: &'a Arc<Origin>,
+        name: &'a Path,
+        _errors: &'a mut Vec<anyhow::Error>,
+    ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
+        Box::pin(async move { resolve_from_vfs(scope, parent, name, &self.0) })
+    }
+}
+
+/// Filesystem loader rooted at `base`, with optional LSP buffer
+/// overrides.
+#[derive(Debug, Clone)]
+pub struct FilesResolver {
+    pub base: PathBuf,
+    pub overrides: Option<BufferOverrides>,
+}
+
+impl FilesResolver {
+    pub fn new(base: PathBuf, overrides: Option<BufferOverrides>) -> ResolverRef {
+        std::sync::Arc::new(FilesResolver { base, overrides })
+    }
+}
+
+impl ModuleResolver for FilesResolver {
+    fn resolve<'a>(
+        &'a self,
+        _scope: &'a ModPath,
+        parent: &'a Arc<Origin>,
+        name: &'a Path,
+        errors: &'a mut Vec<anyhow::Error>,
+    ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
+        Box::pin(async move {
+            resolve_from_files(parent, name, &self.base, self.overrides.as_ref(), errors)
+                .await
+        })
+    }
+
+    fn overrides(&self) -> Option<BufferOverrides> {
+        self.overrides.clone()
+    }
+}
+
+/// Parse a GRAPHIX_MODPATH-style list (`scheme:payload,{...}`) into
+/// resolvers. `file:` is built in; other schemes look up `factories`.
+pub fn parse_modpath(
+    factories: &AHashMap<ArcStr, ResolverFactory>,
+    s: &str,
+) -> Result<Vec<ResolverRef>> {
+    let mut res: Vec<ResolverRef> = vec![];
+    for l in escaping::split(s, '\\', ',') {
+        let l = l.trim();
+        if let Some(s) = l.strip_prefix("file:") {
+            let base = PathBuf::from_str(s)?;
+            res.push(std::sync::Arc::new(FilesResolver { base, overrides: None }));
+        } else {
+            match l
+                .split_once(':')
+                .and_then(|(scheme, rest)| factories.get(scheme).map(|f| f(rest)))
+            {
+                Some(r) => res.push(r?),
+                None => {
+                    bail!("no resolver for {l}: expected file: or a registered scheme")
+                }
             }
         }
-        Ok(res)
     }
+    Ok(res)
 }
 
 /// `GRAPHIX_DISABLE_PACKED_AST=1` forces module resolution to parse source
@@ -91,7 +196,9 @@ fn packed_ast_disabled() -> bool {
     *DISABLED
 }
 
-enum Resolution {
+/// The result of one resolver's attempt — the [`ModuleResolver`]
+/// trait's currency.
+pub enum Resolution {
     Resolved {
         interface: Option<Origin>,
         implementation: Origin,
@@ -102,6 +209,19 @@ enum Resolution {
         intf_packed: Option<Bytes>,
     },
     TryNextMethod,
+}
+
+impl Resolution {
+    /// Build a parse-always resolution (no packed AST) — the shape
+    /// every non-VFS loader returns.
+    pub fn parsed(interface: Option<Origin>, implementation: Origin) -> Self {
+        Resolution::Resolved {
+            interface,
+            implementation,
+            impl_packed: None,
+            intf_packed: None,
+        }
+    }
 }
 
 fn resolve_from_vfs(
@@ -188,54 +308,6 @@ async fn resolve_from_files(
     };
     let interface = match read(overrides, &intf_path).await {
         Ok(s) => Some(ori!(s, intf_path)),
-        Err(_) => None,
-    };
-    // file/netidx resolvers always parse — never packed.
-    Resolution::Resolved {
-        interface,
-        implementation,
-        impl_packed: None,
-        intf_packed: None,
-    }
-}
-
-async fn resolve_from_netidx(
-    parent: &Arc<Origin>,
-    name: &Path,
-    subscriber: &Subscriber,
-    base: &Path,
-    timeout: &Option<Duration>,
-    errors: &mut Vec<anyhow::Error>,
-) -> Resolution {
-    macro_rules! ori {
-        ($v:expr, $p:expr) => {
-            match $v.last() {
-                Event::Update(Value::String(text)) => Origin {
-                    parent: Some(parent.clone()),
-                    source: Source::Netidx($p.clone()),
-                    text,
-                },
-                Event::Unsubscribed | Event::Update(_) => {
-                    errors.push(anyhow!("expected string"));
-                    return Resolution::TryNextMethod;
-                }
-            }
-        };
-    }
-    let impl_path = base.append(&format_compact!("{name}.gx"));
-    let intf_path = base.append(&format_compact!("{name}.gxi"));
-    let impl_sub = subscriber.subscribe_nondurable_one(impl_path.clone(), *timeout);
-    let intf_sub = subscriber.subscribe_nondurable_one(intf_path.clone(), *timeout);
-    let (impl_sub, intf_sub) = join!(impl_sub, intf_sub);
-    let implementation = match impl_sub {
-        Ok(v) => ori!(v, impl_path),
-        Err(e) => {
-            errors.push(e);
-            return Resolution::TryNextMethod;
-        }
-    };
-    let interface = match intf_sub {
-        Ok(v) => Some(ori!(v, intf_path)),
         Err(_) => None,
     };
     // file/netidx resolvers always parse — never packed.
@@ -435,8 +507,8 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
 
 async fn resolve(
     scope: ModPath,
-    prepend: Option<Arc<ModuleResolver>>,
-    resolvers: Arc<[ModuleResolver]>,
+    prepend: Option<ResolverRef>,
+    resolvers: Resolvers,
     id: ExprId,
     parent: Arc<Origin>,
     pos: SourcePosition,
@@ -459,36 +531,9 @@ async fn resolve(
     let ts = Instant::now();
     let name = Path::from(name);
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
-    for r in prepend.iter().map(|r| r.as_ref()).chain(resolvers.iter()) {
-        let (interface, implementation, impl_packed, intf_packed) = match r {
-            ModuleResolver::VFS(vfs) => {
-                check!(resolve_from_vfs(&scope, &parent, &name, vfs))
-            }
-            ModuleResolver::Files { base, overrides } => {
-                check!(
-                    resolve_from_files(
-                        &parent,
-                        &name,
-                        base,
-                        overrides.as_ref(),
-                        &mut errors
-                    )
-                    .await
-                )
-            }
-            ModuleResolver::Netidx { subscriber, base, timeout } => {
-                let r = resolve_from_netidx(
-                    &parent,
-                    &name,
-                    subscriber,
-                    base,
-                    timeout,
-                    &mut errors,
-                )
-                .await;
-                check!(r)
-            }
-        };
+    for r in prepend.iter().map(|r| &**r).chain(resolvers.iter().map(|r| &**r)) {
+        let (interface, implementation, impl_packed, intf_packed) =
+            check!(r.resolve(&scope, &parent, &name, &mut errors).await);
         // Decode the pre-parsed AST if the VFS entry shipped one, else parse
         // the source. Both run on a blocking thread (decode and parse are CPU
         // work, and `serialize::unpack_module` sets the per-module `Origin` +
@@ -559,10 +604,7 @@ impl Expr {
     /// the resolvers list. Each resolver will be tried in order,
     /// until one succeeds. If no resolver succeeds then an error will
     /// be returned.
-    pub async fn resolve_modules<'a>(
-        &'a self,
-        resolvers: &'a Arc<[ModuleResolver]>,
-    ) -> Result<Expr> {
+    pub async fn resolve_modules<'a>(&'a self, resolvers: &'a Resolvers) -> Result<Expr> {
         self.resolve_modules_in_scope(&ModPath::root(), resolvers).await
     }
 
@@ -572,7 +614,7 @@ impl Expr {
     pub async fn resolve_modules_in_scope<'a>(
         &'a self,
         scope: &'a ModPath,
-        resolvers: &'a Arc<[ModuleResolver]>,
+        resolvers: &'a Resolvers,
     ) -> Result<Expr> {
         self.resolve_modules_int(scope, &None, resolvers).await
     }
@@ -580,8 +622,8 @@ impl Expr {
     async fn resolve_modules_int<'a>(
         &'a self,
         scope: &ModPath,
-        prepend: &'a Option<Arc<ModuleResolver>>,
-        resolvers: &'a Arc<[ModuleResolver]>,
+        prepend: &'a Option<ResolverRef>,
+        resolvers: &'a Resolvers,
     ) -> Result<Expr> {
         if self.has_unresolved_modules() {
             self.resolve_modules_inner(scope, prepend, resolvers).await
@@ -593,8 +635,8 @@ impl Expr {
     fn resolve_modules_inner<'a>(
         &'a self,
         scope: &'a ModPath,
-        prepend: &'a Option<Arc<ModuleResolver>>,
-        resolvers: &'a Arc<[ModuleResolver]>,
+        prepend: &'a Option<ResolverRef>,
+        resolvers: &'a Resolvers,
     ) -> Pin<Box<dyn Future<Output = Result<Expr>> + Send + Sync + 'a>> {
         macro_rules! subexprs {
             ($args:expr) => {{
@@ -662,8 +704,12 @@ impl Expr {
                 value: ModuleKind::Unresolved { from_interface },
                 name,
             } => {
-                let (id, pos, prepend, resolvers) =
-                    (self.id, self.pos, prepend.clone(), Arc::clone(resolvers));
+                let (id, pos, prepend, resolvers) = (
+                    self.id,
+                    self.pos,
+                    prepend.clone(),
+                    std::sync::Arc::clone(resolvers),
+                );
                 Box::pin(async move {
                     let e = resolve(
                         scope.clone(),
@@ -710,35 +756,23 @@ impl Expr {
                             Some(stem) => parent.join(stem),
                             None => parent.to_path_buf(),
                         };
-                        let overrides = resolvers.iter().find_map(|m| match m {
-                            ModuleResolver::Files { overrides: Some(o), .. } => {
-                                Some(o.clone())
-                            }
-                            _ => None,
-                        });
-                        Some(Arc::new(ModuleResolver::Files { base: dir, overrides }))
+                        let overrides = resolvers.iter().find_map(|m| m.overrides());
+                        Some(std::sync::Arc::new(FilesResolver { base: dir, overrides })
+                            as ResolverRef)
                     }
                     None => match &self.ori.source {
                         Source::Unspecified | Source::Internal(_) => None,
                         Source::File(p) => p.parent().map(|p| {
-                            let overrides = resolvers.iter().find_map(|m| match m {
-                                ModuleResolver::Files { overrides: Some(o), .. } => {
-                                    Some(o.clone())
-                                }
-                                _ => None,
-                            });
-                            Arc::new(ModuleResolver::Files { base: p.into(), overrides })
+                            let overrides = resolvers.iter().find_map(|m| m.overrides());
+                            std::sync::Arc::new(FilesResolver {
+                                base: p.into(),
+                                overrides,
+                            }) as ResolverRef
                         }),
-                        Source::Netidx(p) => resolvers.iter().find_map(|m| match m {
-                            ModuleResolver::Netidx { subscriber, timeout, .. } => {
-                                Some(Arc::new(ModuleResolver::Netidx {
-                                    subscriber: subscriber.clone(),
-                                    base: p.clone(),
-                                    timeout: *timeout,
-                                }))
-                            }
-                            ModuleResolver::Files { .. } | ModuleResolver::VFS(_) => None,
-                        }),
+                        // Non-file transports (e.g. netidx) are offered to
+                        // the resolver list in order — the owning loader
+                        // derives a child based at the source's path.
+                        source => resolvers.iter().find_map(|m| m.for_source(source)),
                     },
                 };
                 let exprs = try_join_all(exprs.iter().map(|e| async {

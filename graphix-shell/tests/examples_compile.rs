@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use futures::{StreamExt, stream};
-use graphix_compiler::expr::{ModuleResolver, Source};
+use graphix_compiler::expr::{FilesResolver, Source};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use netidx::InternalOnly;
@@ -42,9 +42,7 @@ fn example_files(dir: &Path) -> Result<Vec<PathBuf>> {
             }
         }
         files.extend(here.into_iter().filter(|p| {
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .is_none_or(|s| !submodules.contains(s))
+            p.file_stem().and_then(|s| s.to_str()).is_none_or(|s| !submodules.contains(s))
         }));
     }
     files.sort();
@@ -71,10 +69,7 @@ async fn examples_compile() -> Result<()> {
                 let r = ShellBuilder::<NoExt>::default()
                     .publisher(publisher)
                     .subscriber(subscriber)
-                    .module_resolvers(vec![ModuleResolver::Files {
-                        base,
-                        overrides: None,
-                    }])
+                    .module_resolvers(vec![FilesResolver::new(base, None)])
                     .mode(Mode::Check(Source::File(f.clone())))
                     .build()
                     .expect("building shell")

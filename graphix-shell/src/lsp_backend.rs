@@ -8,7 +8,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, ExecCtx,
     env::Env,
-    expr::{BufferOverrides, ModuleResolver, Source},
+    expr::{BufferOverrides, FilesResolver, ResolverRef, Source, VfsResolver},
 };
 use graphix_lsp::{LspBackend, TypecheckResult};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
@@ -53,12 +53,12 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
             .context("registering stdlib modules")?;
     }
     let root = graphix_package::root_module_source(&root_mods);
-    let mut resolvers: Vec<ModuleResolver> = vec![ModuleResolver::VFS(vfs)];
+    let mut resolvers: Vec<ResolverRef> = vec![VfsResolver::new(vfs)];
     // Cache the stdlib (+ later, GRAPHIX_MODPATH) layer so per-project
     // checks can prepend it under their own BufferOverride resolver.
     let base_resolvers = resolvers.clone();
     for root in roots {
-        resolvers.push(ModuleResolver::Files { base: root, overrides: None });
+        resolvers.push(FilesResolver::new(root, None));
     }
     // lsp_mode (set below) forces fusion off in compile() — a check-only
     // runtime never executes, so it must never fuse. No flag needed here.
@@ -133,7 +133,7 @@ struct ShellLspBackend {
     /// be in scope regardless of which project we're checking. The
     /// per-call `BufferOverride` (rooted at the file's parent dir) is
     /// appended in `typecheck_project`.
-    base_resolvers: Vec<ModuleResolver>,
+    base_resolvers: Vec<ResolverRef>,
     /// Shared open-buffer override map. Mutated by the LSP on every
     /// `did_open` / `did_change` / `did_close`. Layered into every
     /// resolver chain, so unsaved edits in any open buffer are visible
@@ -148,13 +148,13 @@ impl ShellLspBackend {
     /// and falls through to the disk for anything not in the map.
     /// Sibling-module imports work the same way they do when running
     /// the file directly, plus the editor-buffer view is honored.
-    fn resolvers_for(&self, file: &Path) -> Vec<ModuleResolver> {
+    fn resolvers_for(&self, file: &Path) -> Vec<ResolverRef> {
         let mut resolvers = self.base_resolvers.clone();
         if let Some(parent) = file.parent() {
-            resolvers.push(ModuleResolver::Files {
-                base: parent.to_path_buf(),
-                overrides: Some(self.buffer_overrides.clone()),
-            });
+            resolvers.push(FilesResolver::new(
+                parent.to_path_buf(),
+                Some(self.buffer_overrides.clone()),
+            ));
         }
         resolvers
     }

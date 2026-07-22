@@ -1,6 +1,9 @@
 use anyhow::{Result, bail};
 use enumflags2::BitFlags;
-use graphix_compiler::{CFlag, expr::ModuleResolver};
+use graphix_compiler::{
+    CFlag,
+    expr::{ResolverRef, VfsResolver},
+};
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
 use netidx::publisher::Value;
 use poolshark::global::GPooled;
@@ -95,7 +98,7 @@ pub type PackageRef = &'static dyn graphix_package::Package<NoExt>;
 pub async fn init_with_resolvers(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
-    resolvers: Vec<ModuleResolver>,
+    resolvers: Vec<ResolverRef>,
 ) -> Result<TestCtx> {
     init_with_setup(sub, register, resolvers, |_| {}).await
 }
@@ -110,7 +113,7 @@ pub async fn init(
 pub async fn init_with_setup<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
-    resolvers: Vec<ModuleResolver>,
+    resolvers: Vec<ResolverRef>,
     setup: F,
 ) -> Result<TestCtx>
 where
@@ -132,7 +135,7 @@ where
 pub async fn init_with_flags_and_setup<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
-    resolvers: Vec<ModuleResolver>,
+    resolvers: Vec<ResolverRef>,
     flags: BitFlags<CFlag>,
     setup: F,
 ) -> Result<TestCtx>
@@ -155,7 +158,7 @@ where
 pub async fn init_lsp_mode<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
-    resolvers: Vec<ModuleResolver>,
+    resolvers: Vec<ResolverRef>,
     flags: BitFlags<CFlag>,
     setup: F,
 ) -> Result<TestCtx>
@@ -173,7 +176,7 @@ where
 async fn init_inner<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
-    resolvers: Vec<ModuleResolver>,
+    resolvers: Vec<ResolverRef>,
     flags: BitFlags<CFlag>,
     lsp_mode: bool,
     setup: F,
@@ -199,7 +202,7 @@ where
     }
     setup(&mut ctx);
     let root = graphix_package::root_module_source(&root_mods);
-    let mut all_resolvers = vec![ModuleResolver::VFS(modules)];
+    let mut all_resolvers = vec![VfsResolver::new(modules)];
     all_resolvers.extend(resolvers);
     Ok(TestCtx {
         internal_only: env,
@@ -242,7 +245,7 @@ where
         netidx_core::path::Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(gx_code)),
     )]);
-    let resolver = ModuleResolver::VFS(tbl);
+    let resolver = VfsResolver::new(tbl);
     let ctx = init_with_setup(tx, register, vec![resolver], setup).await?;
     let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let eid = compiled.exprs[0].id;
@@ -282,7 +285,7 @@ pub async fn eval_converged(
         netidx_core::path::Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(gx_code)),
     )]);
-    let resolver = ModuleResolver::VFS(tbl);
+    let resolver = VfsResolver::new(tbl);
     let ctx = init_with_setup(tx, register, vec![resolver], |_| {}).await?;
     let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let eid = compiled.exprs[0].id;
@@ -333,7 +336,7 @@ pub async fn eval_packed(
     let entry = graphix_compiler::expr::VfsEntry { source, packed: Some(packed) };
     let tbl =
         ahash::AHashMap::from_iter([(netidx_core::path::Path::from("/test.gx"), entry)]);
-    let resolver = ModuleResolver::VFS(tbl);
+    let resolver = VfsResolver::new(tbl);
     let ctx = init_with_resolvers(tx, register, vec![resolver]).await?;
     let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let eid = compiled.exprs[0].id;
@@ -452,7 +455,7 @@ macro_rules! run {
                         ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from($code)),
                     )),+
                 ]);
-                let resolver = ::graphix_compiler::expr::ModuleResolver::VFS(tbl);
+                let resolver = ::graphix_compiler::expr::VfsResolver::new(tbl);
                 let ctx = $crate::testing::init_with_flags_and_setup(
                     tx, &crate::TEST_REGISTER, vec![resolver], flags,
                     |_ctx| {},

@@ -185,7 +185,10 @@
       "Bash(RUST_LOG=warn timeout 8 /home/eric/tmp/target/debug/graphix --no-fusion --log-dir /tmp/claude-1000/-home-eric-proj-graphix-cranelift/bbb6c43b-3651-4ce1-b916-264ef8cb9cbb/scratchpad/log-nw /tmp/claude-1000/-home-eric-proj-graphix-cranelift/bbb6c43b-3651-4ce1-b916-264ef8cb9cbb/scratchpad/ornevertest.gx)",
       "Bash(RUST_LOG=warn timeout 8 /home/eric/tmp/target/debug/graphix --log-dir /tmp/claude-1000/-home-eric-proj-graphix-cranelift/bbb6c43b-3651-4ce1-b916-264ef8cb9cbb/scratchpad/log-fu /tmp/claude-1000/-home-eric-proj-graphix-cranelift/bbb6c43b-3651-4ce1-b916-264ef8cb9cbb/scratchpad/ornevertest.gx)",
       "Bash(printf 'let g = |v: {x: i64, y: i64}| v;\\\\nlet t = g\\({x: 1, y: 2}\\);\\\\nlet u = {x: 3, y: 4};\\\\n{t with x: select u { {x, y} => x + y }}\\\\n')",
-      "Bash(timeout 30 /home/eric/tmp/target/debug/graphix --check swcontrol.gx)"
+      "Bash(timeout 30 /home/eric/tmp/target/debug/graphix --check swcontrol.gx)",
+      "Read(//home/eric/proj/netidx/netidx-core/src/**)",
+      "Bash(awk 'NR>=1155 && NR<=1310 && /fn |type AbortHandle/' graphix-compiler/src/lib.rs)",
+      "Bash(awk -F: '$1>=1155 && $1<=1310')"
     ],
     "deny": [],
     "ask": []

@@ -4,9 +4,9 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use netidx_activation::process::{spawn as os_spawn, stop_proc, Job, Spawned};
+use netidx_activation::process::{Job, Spawned, spawn as os_spawn, stop_proc};
 use netidx_derive::{FromValue, IntoValue};
-use netidx_value::{abstract_type::AbstractWrapper, Abstract, FromValue as _, Value};
+use netidx_value::{Abstract, FromValue as _, Value, abstract_type::AbstractWrapper};
 use poolshark::local::LPooled;
 use std::{
     cmp::Ordering,
@@ -21,7 +21,7 @@ use tokio::{
 };
 use triomphe::Arc;
 
-use crate::{wrap_stream, StreamKind};
+use crate::{StreamKind, wrap_stream};
 
 // -- Abstract ProcValue -------------------------------------------------------
 
@@ -260,10 +260,9 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
 
     let job = if opts.kill_on_drop { Some(job()?) } else { None };
     let mut spawned = os_spawn(cmd, job)?;
-    let pid = spawned
-        .id()
-        .ok_or_else(|| anyhow::anyhow!("child process has no OS pid"))?
-        as i64;
+    let pid =
+        spawned.id().ok_or_else(|| anyhow::anyhow!("child process has no OS pid"))?
+            as i64;
     let stdin = spawned.take_stdin().map(|s| wrap_stream(StreamKind::ChildStdin(s)));
     let stdout = spawned.take_stdout().map(|s| wrap_stream(StreamKind::ChildStdout(s)));
     let stderr = spawned.take_stderr().map(|s| wrap_stream(StreamKind::ChildStderr(s)));
@@ -322,7 +321,9 @@ impl EvalCachedAsync for ProcessWaitEv {
         async move {
             let mut status = proc.inner.status_rx.clone();
             let result = match status.wait_for(|status| status.is_some()).await {
-                Ok(status) => status.clone().expect("wait_for predicate guarantees status"),
+                Ok(status) => {
+                    status.clone().expect("wait_for predicate guarantees status")
+                }
                 Err(e) => return errf!("ProcessError", "status channel closed: {e}"),
             };
             match result {

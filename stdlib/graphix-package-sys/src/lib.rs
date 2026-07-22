@@ -33,6 +33,7 @@ pub(crate) mod dir;
 pub(crate) mod dirs_mod;
 pub(crate) mod fs;
 pub(crate) mod io;
+pub mod loader;
 pub(crate) mod metadata;
 pub(crate) mod net;
 pub(crate) mod process;

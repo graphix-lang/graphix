@@ -5,19 +5,15 @@ use futures::{StreamExt, channel::mpsc, future::try_join_all};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope, compile,
     expr::{
-        self, Expr, ExprId, ExprKind, ModPath, ModuleResolver, Origin, Source,
-        read_to_arcstr,
+        self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
+        Resolvers, Source, parse_modpath, read_to_arcstr,
     },
     node::{genn, lambda::LambdaDef},
     typ::Type,
 };
 use indexmap::IndexMap;
 use log::{debug, error, info};
-use netidx::{
-    protocol::valarray::ValArray,
-    publisher::Value,
-    subscriber::{self, Dval},
-};
+use netidx::{protocol::valarray::ValArray, publisher::Value, subscriber::Dval};
 use netidx_protocols::rpc::server::RpcCall;
 use nohash::{BuildNoHashHasher, IntMap};
 use poolshark::{
@@ -256,7 +252,7 @@ pub(super) struct GX<X: GXExt> {
     nodes: IndexMap<ExprId, Node<GXRt<X>, X::UserEvent>, BuildNoHashHasher<ExprId>>,
     callables: IntMap<CallableId, CallableInt>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
-    resolvers: Arc<[ModuleResolver]>,
+    resolvers: Resolvers,
     publish_timeout: Option<Duration>,
     last_rpc_gc: Instant,
     batch_pool: Pool<Vec<GXEvent>>,
@@ -275,20 +271,13 @@ pub(super) struct GX<X: GXExt> {
 
 impl<X: GXExt> GX<X> {
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
-        let resolvers_default = |r: &mut Vec<ModuleResolver>| match dirs::data_dir() {
+        let resolvers_default = |r: &mut Vec<ResolverRef>| match dirs::data_dir() {
             None => (),
-            Some(dd) => r.push(ModuleResolver::Files {
-                base: dd.join("graphix"),
-                overrides: None,
-            }),
+            Some(dd) => r.push(FilesResolver::new(dd.join("graphix"), None)),
         };
         match std::env::var("GRAPHIX_MODPATH") {
             Err(_) => resolvers_default(&mut cfg.resolvers),
-            Ok(mp) => match ModuleResolver::parse_env(
-                cfg.ctx.rt.subscriber.clone(),
-                cfg.resolve_timeout,
-                &mp,
-            ) {
+            Ok(mp) => match parse_modpath(&cfg.resolver_factories, &mp) {
                 Ok(r) => cfg.resolvers.extend(r),
                 Err(e) => {
                     error!("failed to parse GRAPHIX_MODPATH, using default {e:?}");
@@ -305,7 +294,7 @@ impl<X: GXExt> GX<X> {
             nodes: IndexMap::default(),
             callables: IntMap::default(),
             sub: cfg.sub,
-            resolvers: Arc::from(cfg.resolvers),
+            resolvers: std::sync::Arc::from(cfg.resolvers),
             publish_timeout: cfg.publish_timeout,
             last_rpc_gc: Instant::now(),
             batch_pool: Pool::new(10, 1000000),
@@ -801,22 +790,16 @@ impl<X: GXExt> GX<X> {
                 };
                 (ori, exprs)
             }
-            Source::Netidx(path) => {
-                let val = self
-                    .ctx
-                    .rt
-                    .subscriber
-                    .subscribe_nondurable_one(path.clone(), None)
-                    .await?;
-                let src = match val.last() {
-                    subscriber::Event::Unsubscribed => {
-                        bail!("could not subscribe to {path}")
-                    }
-                    subscriber::Event::Update(Value::String(s)) => s,
-                    subscriber::Event::Update(v) => {
-                        bail!("can't load {v} expected a string")
-                    }
-                };
+            source @ Source::Netidx(_) => {
+                // Non-file transports are fetched by whichever resolver
+                // claims the source (the netidx loader lives in
+                // graphix-package-sys since the netidx extraction).
+                let fetch = self
+                    .resolvers
+                    .iter()
+                    .find_map(|r| r.fetch_source(source))
+                    .ok_or_else(|| anyhow!("no module resolver can load {source:?}"))?;
+                let src = fetch.await?;
                 let ori =
                     Origin { parent: None, source: source.clone(), text: src.clone() };
                 (ori.clone(), expr::parser::parse(ori)?)
@@ -834,7 +817,7 @@ impl<X: GXExt> GX<X> {
     async fn check(
         &mut self,
         source: &Source,
-        resolver_override: Option<Vec<ModuleResolver>>,
+        resolver_override: Option<Vec<ResolverRef>>,
         initial_scope: Option<ArcStr>,
     ) -> Result<crate::CheckResult> {
         self.check_inner(source, resolver_override, initial_scope).await.map(|(_, r)| r)
@@ -844,7 +827,7 @@ impl<X: GXExt> GX<X> {
     async fn check_inner(
         &mut self,
         source: &Source,
-        resolver_override: Option<Vec<ModuleResolver>>,
+        resolver_override: Option<Vec<ResolverRef>>,
         initial_scope: Option<ArcStr>,
     ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
         // The LSP shares one long-lived runtime across every checked file.
@@ -867,8 +850,8 @@ impl<X: GXExt> GX<X> {
         } else {
             None
         };
-        let resolvers_for_call: Arc<[ModuleResolver]> = match resolver_override {
-            Some(v) => Arc::from(v),
+        let resolvers_for_call: Resolvers = match resolver_override {
+            Some(v) => std::sync::Arc::from(v),
             None => self.resolvers.clone(),
         };
         let go = async {

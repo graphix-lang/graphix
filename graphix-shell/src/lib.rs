@@ -10,7 +10,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, ExecCtx, FusionStats, PrintFlag,
     env::Env,
-    expr::{CouldNotResolve, ExprId, ModuleResolver, Source},
+    expr::{CouldNotResolve, ExprId, ResolverRef, Source, VfsResolver},
     format_with_flags,
     typ::TVal,
 };
@@ -162,7 +162,7 @@ pub struct Shell<X: GXExt> {
     resolve_timeout: Option<Duration>,
     /// define module resolvers to append to the default list
     #[builder(default)]
-    module_resolvers: Vec<ModuleResolver>,
+    module_resolvers: Vec<ResolverRef>,
     /// set the shell's mode
     #[builder(default = "Mode::Repl")]
     mode: Mode,
@@ -255,11 +255,25 @@ impl<X: GXExt> Shell<X> {
         };
         flags.insert(self.enable_flags);
         flags.remove(self.disable_flags);
-        let mut mods = vec![ModuleResolver::VFS(vfs_modules)];
+        let mut mods = vec![VfsResolver::new(vfs_modules)];
         for res in self.module_resolvers.drain(..) {
             mods.push(res);
         }
         let mut gx = GXConfig::builder(ctx, sub);
+        // GRAPHIX_MODPATH `netidx:` entries resolve through the sys
+        // package's loader (the compiler only knows `file:`).
+        #[cfg(feature = "sys")]
+        {
+            let mut factories = ahash::AHashMap::default();
+            factories.insert(
+                arcstr::literal!("netidx"),
+                graphix_package_sys::loader::NetidxResolver::factory(
+                    self.subscriber.clone(),
+                    self.resolve_timeout,
+                ),
+            );
+            gx = gx.resolver_factories(factories);
+        }
         gx = gx.flags(flags);
         if let Some(s) = self.publish_timeout {
             gx = gx.publish_timeout(s);
@@ -333,9 +347,7 @@ impl<X: GXExt> Shell<X> {
     }
 
     async fn check_with(&self, gx: &GXHandle<X>) -> Result<()> {
-        let Mode::Check(source) = &self.mode else {
-            bail!("check requires Mode::Check")
-        };
+        let Mode::Check(source) = &self.mode else { bail!("check requires Mode::Check") };
         let initial_scope = match source {
             Source::File(p) => graphix_lsp::workspace::detect_package_scope(p),
             _ => None,

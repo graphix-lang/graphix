@@ -16,7 +16,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     BindId, CFlag, Control, Event, ExecCtx, FusionStats, NoUserEvent, Scope, UserEvent,
     env::Env,
-    expr::{ExprId, ModPath, ModuleResolver, Source},
+    expr::{ExprId, ModPath, ResolverFactory, ResolverRef, Source},
     ide::Ide,
     typ::{FnType, Type},
 };
@@ -426,7 +426,7 @@ enum ToGX<X: GXExt> {
         /// for this check only. Used by IDE tooling that needs
         /// project-scoped module resolution without rebuilding the
         /// runtime.
-        resolvers: Option<Vec<ModuleResolver>>,
+        resolvers: Option<Vec<ResolverRef>>,
         /// If provided, compile the source under this scope rather
         /// than at the root. Used by IDE tooling editing a graphix
         /// package crate (`graphix-package-<x>`) so its `mod.gx` body
@@ -705,7 +705,7 @@ impl<X: GXExt> GXHandle<X> {
     /// isn't visible from the project's external view.
     ///
     /// To check editor buffers without saving, layer a
-    /// [`ModuleResolver::BufferOverride`] into the resolver chain — its
+    /// a buffer-override resolver into the resolver chain — its
     /// override map shadows the on-disk version per path while
     /// preserving `Source::File` origins, so reference matching and
     /// goto-def land on the same file paths as a disk check would.
@@ -732,7 +732,7 @@ impl<X: GXExt> GXHandle<X> {
     pub async fn check_with_resolvers(
         &self,
         path: Source,
-        resolvers: Vec<ModuleResolver>,
+        resolvers: Vec<ResolverRef>,
         initial_scope: Option<ArcStr>,
     ) -> Result<CheckResult> {
         Ok(self
@@ -997,7 +997,11 @@ pub struct GXConfig<X: GXExt> {
     root: Option<ArcStr>,
     /// The set of module resolvers to use when resolving loaded modules
     #[builder(default)]
-    resolvers: Vec<ModuleResolver>,
+    resolvers: Vec<ResolverRef>,
+    /// GRAPHIX_MODPATH scheme -> resolver factories (e.g. the sys
+    /// package's `netidx` factory). `file:` is built in.
+    #[builder(default)]
+    resolver_factories: ahash::AHashMap<arcstr::ArcStr, ResolverFactory>,
     /// The channel that will receive events from the runtime
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     /// The set of compiler flags. Default empty.

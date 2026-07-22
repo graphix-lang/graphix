@@ -1,8 +1,9 @@
 use ahash::AHashMap;
+use graphix_compiler::expr::VfsResolver;
 use anyhow::{Context, Result, bail};
 use graphix_compiler::{
     BindId,
-    expr::{ExprId, ModuleResolver},
+    expr::ExprId,
 };
 use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
@@ -61,7 +62,7 @@ impl GuiTestHarness {
             netidx_core::path::Path::from("/test.gx"),
             graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(code)),
         )]);
-        let resolver = ModuleResolver::VFS(tbl);
+        let resolver = VfsResolver::new(tbl);
         let ctx = testing::init_with_resolvers(tx, TEST_REGISTER, vec![resolver]).await?;
         let gx = ctx.rt.clone();
         let compiled = gx
