@@ -1,0 +1,41 @@
+// bisect: perf (was: asymmetric timeout — interp superpolynomial, JIT ms)
+// Found by the jul22b soak (divergence_000000, 2026-07-22); parked for a
+// ruling, dug in 2026-07-22 per Eric ("a user could write this and
+// expect it to be fast"). Values always AGREED — the class was wall
+// time: depth 50 = 29s, 60 = 85s, 254 = effectively never, on a
+// re-fired deep NON-TAIL transient recursion (n + f(n-1)) with a
+// collection fold in the base arm. TWO root causes, both fixed:
+//
+// 1. PRIME-park thrash (node/callsite.rs, `ctx.transient_prime`): a
+//    parked transient rebind on a non-init view PRIMES its fresh
+//    instance under a forced init view — which fresh-binds the entire
+//    remaining recursion chain — and the prime's unwind then PARKED
+//    (deleted) all of it, so the REPLAY found a freshly parked site
+//    one level down and re-primed the remaining chain again, per
+//    level: O(depth²) instance compiles per re-fire epoch, plus a
+//    full 100-slot fold rebuild per level. Parking is now suspended
+//    while a prime is on the stack; the replay descends the live
+//    primed chain and everything parks once, on the replay's unwind —
+//    O(depth) compiles per epoch.
+//
+// 2. Per-bind typecheck1 degradation (node/lambda.rs + typ/fntyp.rs):
+//    every lambda compile inserts its def into `ctx.lambda_defs` and
+//    nothing ever removed it, so each lazy re-bind's callback defs
+//    were RETAINED for the life of the process — and because every
+//    instance signature SHARES the def's `LambdaIds` node, each
+//    bind's unification linked its fresh callback signatures into
+//    that one shared link-graph node. `typecheck1`'s `ids()` walk
+//    (and `finalize_lambda` per id) got linearly slower with every
+//    bind ever executed: measured 25µs → 1.1ms per bind over 90k
+//    binds at FIXED depth. Fixed at both ends: `Lambda::delete` now
+//    removes its def from `lambda_defs` (the defs drop with their
+//    graph), and `ids()` prunes dead weak links as it walks (the
+//    shared node's set stays O(live)). This one degraded ANY
+//    long-running program doing runtime lazy binds, not just
+//    recursion.
+//
+// Post-fix the program below (the original finding, depth 254) runs
+// both modes well inside the 3s regress timeout; either regression
+// brings back a loud TIMEOUT here.
+// schedule-v1: cap=64 events=512; in0=i64:4; in0=i64:4; in0=i64:-9223372036854775808
+{let rec f = |n: i64| -> i64 select n {i64:0 => {let xs = array::init(i64:100, |idx: i64| idx); array::fold(xs, i64:0, |acc, x| in0 * i64:0)}, _ => n + f(n - i64:1)}; f(i64:254)}

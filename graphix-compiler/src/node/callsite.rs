@@ -934,6 +934,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         set: &mut Vec<BindId>,
     ) -> Result<()> {
         self.release_parked(ctx);
+        let _bind_span = crate::perfdbg::span(&crate::perfdbg::BIND_NS);
+        if crate::perfdbg::enabled() {
+            crate::perfdbg::BIND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let setup_span = crate::perfdbg::span(&crate::perfdbg::SETUP_NS);
         // Build arg_refs + InitFn + typecheck. The closure primes
         // each freshly-compiled default's external refs into
         // `event.variables` from `ctx.cached`, so the bound function
@@ -951,6 +956,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             });
         })?;
+        drop(setup_span);
         self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::DynamicBound { def: fv, apply, transient: false };
         // The publish loop ran before this bind resolved the callee —
@@ -990,6 +996,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 },
             );
             if previous.is_none() {
+                let _tc1_span = crate::perfdbg::span(&crate::perfdbg::TC1_NS);
                 if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
                     if std::env::var_os("GXDBG_SWALLOW").is_some() {
                         eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
@@ -1006,6 +1013,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
             if let ApplyView::Lambda(g) = apply.view() {
+                let _an_span = crate::perfdbg::span(&crate::perfdbg::ANALYZE_NS);
                 let self_bind = match self.fnode.view() {
                     NodeView::Ref(r) => Some(r.id),
                     _ => None,
@@ -1021,6 +1029,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // and parks the def, so the recursion holds O(depth) instances
         // instead of one per dynamic call (the full call tree).
         if ctx.active_lambdas.contains_key(&f.id) && f.intrinsic_effect.lock().is_sync() {
+            let _tbo_span = crate::perfdbg::span(&crate::perfdbg::TBO_NS);
             let ok = match self.callee.apply() {
                 Some(a) => match a.view() {
                     ApplyView::Lambda(g) => transient_body_ok(g, ctx),
@@ -1569,11 +1578,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // derives only from what actually fired this cycle,
                 // exactly as it would have through the retained twin.
                 let prime_start = rebound_parked.unwrap();
+                if crate::perfdbg::enabled() {
+                    crate::perfdbg::PRIME_CALLS
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    crate::perfdbg::CLONE_ENTRIES.fetch_add(
+                        event.variables.len() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
                 let mut prime_map = event.variables.clone();
                 mem::swap(&mut event.variables, &mut prime_map);
                 let init = mem::replace(&mut event.init, true);
+                let refs_span = crate::perfdbg::span(&crate::perfdbg::REFS_NS);
                 let mut refs = Refs::default();
                 f.refs(&mut refs);
+                drop(refs_span);
                 refs.with_external_refs(|id| {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
                         if let Some(v) = ctx.rt.cached().get(&id) {
@@ -1581,13 +1600,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         }
                     }
                 });
+                let prime_span = crate::perfdbg::span(&crate::perfdbg::PRIME_NS);
+                // Instances bound during the prime must survive it: the
+                // replay descends into them as live callees. Without
+                // this the prime's unwind parked (deleted) the entire
+                // chain it had just built and the replay re-primed one
+                // level down — O(depth²) compiles per re-fire epoch.
+                // See `ExecCtx::transient_prime`.
+                let prev_prime = mem::replace(&mut ctx.transient_prime, true);
                 let _prime = f.update(ctx, &mut self.arg_refs, event);
+                ctx.transient_prime = prev_prime;
+                drop(prime_span);
                 event.init = init;
                 mem::swap(&mut event.variables, &mut prime_map);
                 for id in &set[prime_start..] {
                     event.variables.remove(id);
                 }
+                let replay_span = crate::perfdbg::span(&crate::perfdbg::REPLAY_NS);
                 let res = f.update(ctx, &mut self.arg_refs, event);
+                drop(replay_span);
                 res.map(|v| TagValue::tagged(v, f.out_tag()))
             }
             Some(f) => {
@@ -1644,10 +1675,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // minus the fnode's own target: a re-delivered identical def
         // must stay a quiet no-op, as it is for a retained instance),
         // take over their runtime registrations so capture events keep
-        // flowing to this top, then delete the instance. `transient`
-        // never survives an update — bind and park happen in the same
-        // call.
-        if matches!(&self.callee, Callee::DynamicBound { transient: true, .. }) {
+        // flowing to this top, then delete the instance. Under a PRIME
+        // (`ctx.transient_prime`) parking is deferred — the enclosing
+        // replay needs the primed chain live; every instance still
+        // parks before the outermost transient dispatch returns (the
+        // replay pass re-runs this update with the flag clear, and the
+        // outermost park's delete cleans any subtree the replay didn't
+        // reach). Outside a prime, `transient` never survives an
+        // update — bind and park happen in the same call.
+        if !ctx.transient_prime
+            && matches!(&self.callee, Callee::DynamicBound { transient: true, .. })
+        {
             let Callee::DynamicBound { def, mut apply, .. } =
                 mem::replace(&mut self.callee, Callee::DynamicUnbound)
             else {
@@ -1657,8 +1695,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 NodeView::Ref(r) => Some(r.id),
                 _ => None,
             };
+            let refs_span = crate::perfdbg::span(&crate::perfdbg::REFS_NS);
             let mut refs = Refs::default();
             apply.refs(&mut refs);
+            drop(refs_span);
             let mut ext: LPooled<Vec<BindId>> = LPooled::take();
             refs.with_external_refs(|id| {
                 if Some(id) != fnode_id {
@@ -1668,7 +1708,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             for id in ext.iter() {
                 ctx.rt.ref_var(*id, self.top_id);
             }
+            let del_span = crate::perfdbg::span(&crate::perfdbg::DELETE_NS);
             apply.delete(ctx);
+            drop(del_span);
             self.callee =
                 Callee::TransientParked { def, ext_refs: ext.drain(..).collect() };
         }

@@ -100,6 +100,26 @@ Three pieces, all runtime-side (`node/callsite.rs`, `node/lambda.rs`):
    re-bind is the ordinary `bind()` path — same compile, same cached-arg
    priming — so a re-bound call is indistinguishable from a first call.
 
+   On a NON-init view the rebind is PRIME-then-REPLAY (soak-jul13b
+   generate_000001): the fresh instance first evaluates against a
+   private variables map under a forced init view (filling its caches;
+   the result is discarded), then re-evaluates against the real event
+   so firedness derives only from what actually fired. Parking is
+   SUSPENDED while a prime is on the stack (`ctx.transient_prime`,
+   jul22b): the prime's init view makes every inner site fresh-bind
+   the whole remaining chain, and if those instances parked on the
+   prime's unwind (as they originally did), the replay found freshly
+   parked sites at every level and re-primed one level down —
+   re-building and re-discarding the remaining chain PER LEVEL,
+   O(depth²) compiles per re-fire epoch (with a superlinear constant
+   on top; depth 60 took 85s where the JIT took ms). With parking
+   deferred, the replay descends into the live primed chain by
+   ordinary dispatch and every instance parks exactly once, on the
+   replay's unwind — O(depth) compiles per epoch. Whatever subtree the
+   replay doesn't reach is deleted by the outermost park (instance
+   delete is recursive and releases nested parked sites' takeover
+   registrations), so nothing survives the cycle.
+
 Peak memory becomes O(active depth), which the 256 call-depth guard caps
 at a few MB. The unwind is natural stack discipline: each instance's
 transient children have already parked by the time it parks.
@@ -111,11 +131,24 @@ transient children have already parked by the time it parks.
   9.6GB → ~130MB peak, same wall time.
 - Re-fired recursion (a reactive program re-firing a deep non-tail
   recursion every cycle): re-compiles per call where the retained tree
-  re-walked warm nodes. This workload is already ~10^5x off the JIT;
-  correctness of the fallback (not dying) wins. If it ever matters, the
-  follow-up is a per-`LambdaDef` instance pool: park into a freelist,
-  re-bind by rebinding formals + dispatching with `event.init = true` —
-  precisely the tail-loop re-entry contract generalized to non-tail.
+  re-walked warm nodes — O(depth) compiles per re-fire epoch since the
+  prime-park suspension above (jul22b; it was O(depth²) before). This
+  workload remains well off the JIT; correctness of the fallback (not
+  dying) wins. If the per-epoch recompile ever matters, the follow-up
+  is a per-`LambdaDef` instance pool: park into a freelist, re-bind by
+  rebinding formals + dispatching with `event.init = true` — precisely
+  the tail-loop re-entry contract generalized to non-tail.
+
+  The same investigation found a GLOBAL degradation the recompile
+  volume exposed: `ctx.lambda_defs` retained every lazily-compiled
+  def forever (insert at `Lambda` compile, no removal), and since
+  every instance signature SHARES the def's `LambdaIds` node, each
+  bind's unification linked its fresh callback signatures into that
+  one shared link-graph node — `typecheck1`'s `ids()` walks got
+  linearly slower for the life of the process (25µs → 1.1ms per bind
+  over 90k binds). Fixed at both ends: `Lambda::delete` removes its
+  def from `lambda_defs`, and `ids()` prunes dead weak links as it
+  walks, so the shared node's set stays O(live).
 - Runtime lazy binds never fuse (`InitFn` builds a plain `GXLambda`;
   fusion runs at compile time only), so deleting and recompiling a
   transient instance can never discard spliced kernels.

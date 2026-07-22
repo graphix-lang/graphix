@@ -216,21 +216,6 @@ struct LambdaIdsInner {
     links: IntSet<Link>,
 }
 
-impl LambdaIdsInner {
-    fn walk<F: FnMut(LambdaId)>(&self, visited: &mut IntSet<usize>, f: &mut F) {
-        if let Some(id) = self.own {
-            f(id)
-        }
-        for link in &self.links {
-            if visited.insert(link.addr())
-                && let Some(link) = link.upgrade()
-            {
-                link.0.read().walk(visited, f)
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct LambdaIds(SArc<RwLock<LambdaIdsInner>>);
 
@@ -245,13 +230,36 @@ impl LambdaIds {
         self.0.write().own = Some(id)
     }
 
+    /// Walk the link graph, collecting every live linked id. Dead links
+    /// (the linked FnType was dropped — e.g. a transient recursion
+    /// instance's signature) are PRUNED as the walk encounters them:
+    /// without the prune each runtime lazy bind left one dead weak link
+    /// behind in the shared def's set forever, and `typecheck1`'s walks
+    /// got linearly slower with every bind for the life of the process
+    /// (the jul22b transient-recursion perf class — per-bind typecheck
+    /// grew 25µs → 1.1ms over 90k binds). Locks one node at a time
+    /// (never nested).
     pub fn ids(&self) -> LPooled<IntSet<LambdaId>> {
         let mut visited: LPooled<IntSet<usize>> = LPooled::take();
         let mut ids: LPooled<IntSet<LambdaId>> = LPooled::take();
+        let mut work: LPooled<Vec<LambdaIds>> = LPooled::take();
         visited.insert(SArc::as_ptr(&self.0) as usize);
-        self.0.read().walk(&mut visited, &mut |id| {
-            ids.insert(id);
-        });
+        work.push(self.clone());
+        while let Some(node) = work.pop() {
+            let mut inner = node.0.write();
+            if let Some(id) = inner.own {
+                ids.insert(id);
+            }
+            inner.links.retain(|link| match link.upgrade() {
+                Some(next) => {
+                    if visited.insert(link.addr()) {
+                        work.push(next);
+                    }
+                    true
+                }
+                None => false,
+            });
+        }
         ids
     }
 

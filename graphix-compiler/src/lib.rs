@@ -17,6 +17,7 @@ pub mod fusion;
 pub mod ide;
 pub mod node;
 pub mod node_shape;
+pub mod perfdbg;
 pub mod tval;
 pub mod typ;
 
@@ -1631,6 +1632,18 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// O(depth) instances instead of one per dynamic call (the full
     /// call TREE — fib(28) retained 1M instances / 9.6GB).
     pub(crate) active_lambdas: nohash::IntMap<LambdaId, u32>,
+    /// True while a parked-transient rebind's PRIME evaluation is on the
+    /// Rust call stack (`CallSite::update`'s prime-then-replay arm). The
+    /// park block gates on it: instances bound DURING the prime stay
+    /// live so the REPLAY descends into them via ordinary dispatch
+    /// instead of finding freshly-parked sites and re-priming one level
+    /// down — which re-built and re-discarded the entire remaining
+    /// recursion chain at EVERY level (O(depth²) compiles per re-fire
+    /// epoch, the jul22b transient-recursion perf class). Everything
+    /// still parks on the replay's unwind: each inner site's replay-pass
+    /// update runs its own park block with this flag clear, and the
+    /// outermost park deletes whatever the replay didn't touch.
+    pub(crate) transient_prime: bool,
     /// Interrupt/abort control, shared (cloned `Arc`) with the runtime
     /// handle. Loops poll it via [`Self::interrupted`] to abort a wedge;
     /// the runtime polls `control.aborted()` to shut down. See [`Control`].
@@ -1711,6 +1724,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             active_lambdas: nohash::IntMap::default(),
+            transient_prime: false,
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
             frame_depth: 0,

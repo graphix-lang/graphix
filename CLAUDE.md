@@ -326,6 +326,13 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   site statically resolve" — found the batch-entry
   `bind_to_lambda.clear()` that made shell fusion a race (the jul12
   resolution flap).
+- `GRAPHIX_DBG_PERF=1` — cumulative runtime-lazy-bind phase counters
+  (bind/setup/typecheck1/analyze/transient-gate times, prime/replay
+  times, park delete/refs times), dumped to stderr every 250ms by a
+  background thread (`perfdbg.rs`). The tool for "why is the interp
+  slow on re-fired lazy binds" — found BOTH jul22b transient-recursion
+  perf dragons (prime-park thrash + the `lambda_defs`/`LambdaIds`
+  typecheck1 degradation) via growth-law analysis of the dumps.
 
 ### Type Alias Expansion in Contains
 

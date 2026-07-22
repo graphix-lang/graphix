@@ -1362,7 +1362,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The compile inserted this node's def into `ctx.lambda_defs`;
+        // without this removal the map retained every lazily-compiled
+        // def forever (each transient-recursion re-bind mints a few),
+        // which kept the defs' `LambdaIds` link-graph nodes alive — so
+        // `typecheck1`'s `ids()` walks grew without bound for the life
+        // of the process (25µs → 1.1ms per bind over 90k binds, the
+        // jul22b class). Dropping the map entry drops the def, the
+        // dead links prune on the next walk, and `finalize_lambda`
+        // correctly skips ids with no live def.
+        if let Some(def) = self.def.downcast_ref::<LambdaDef<R, E>>() {
+            ctx.lambda_defs.remove(&def.id);
+        }
+    }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
