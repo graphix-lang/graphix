@@ -333,6 +333,14 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   slow on re-fired lazy binds" — found BOTH jul22b transient-recursion
   perf dragons (prime-park thrash + the `lambda_defs`/`LambdaIds`
   typecheck1 degradation) via growth-law analysis of the dumps.
+- `GRAPHIX_DBG_CYCLE_BT=1` — print a backtrace at every
+  `cycle_refused` mark (the occurs-refusal poison bit, both the
+  `mark_cycle_refused` sites and the TVar×TVar positional guard).
+  The tool for "which walk refused this merge" — established that
+  the jul22e flap class's marks are channel-indistinguishable from
+  genuine infinite types (~5% name-walk, rest positional), killing
+  the scoped-aliasing remodel in an hour (see
+  design/tvar_constraints.md's 2026-07-22 note).
 
 ### Type Alias Expansion in Contains
 

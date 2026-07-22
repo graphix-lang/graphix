@@ -41,9 +41,24 @@
 // agree), so the fix had to land on the clean side — dependency
 // order does: innermost cells settle first, so witnesses close
 // before their referrers and the name-alias merge's occurs probe
-// resolves through bound cells. Note for future work: collect_tvars
-// still dedups cells BY NAME (fold's 'a vs flat_map's 'a collide;
-// the settle set holds one of them) — identity-keying was NOT
-// needed for this fix (ordering the existing set sufficed) but the
-// lossiness is real and documented at FnType::settle_terminal.
+// resolves through bound cells.
+//
+// SCOPED-ALIASING EVALUATED AND REJECTED (Eric + diagnosis,
+// 2026-07-22): the idea of making the alias machinery scope-aware
+// (declared-only constraint legs) so cross-scope same-name cells
+// never alias was diagnosed with GRAPHIX_DBG_CYCLE_BT backtraces:
+// this program takes ~42 cycle_refused marks per CLEAN compile
+// across ~12 cells, with a channel profile IDENTICAL to the
+// infinite-type-jul2026 pins (programs that must keep erroring) —
+// ~50% positional would_cycle guards in check_site_arg's acceptance
+// walks, ~25% CallSite containment, ~15% check_instance_type, and
+// only ~5% via FnType::alias_tvars (the channel scoping would
+// remove). There is NO channel-level separation between benign
+// cross-scope entanglement and a genuine infinite type; the only
+// discriminator is the marked cell's STATE at terminal settle
+// (open + unconstrained → error), which the dependency-ordered
+// settle controls deterministically. The refusals themselves are
+// the jul06h contract working as designed (refuse the merge,
+// inference stays looser, at worst rejects, never hangs). Full note
+// in design/tvar_constraints.md.
 {let a = array::init(array::iter([i64:1, i64:2, i64:1, i64:4]), |i| array::flat_map); let f = array::fold(a, i64:0, |acc, x| acc + i64:2); array::group(f, |n, _| n <= i64:4)}

@@ -606,6 +606,14 @@ impl TVar {
         if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
             eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
         }
+        if std::env::var("GRAPHIX_DBG_CYCLE_BT").is_ok() {
+            eprintln!(
+                "CYCLE-REFUSED '{}({:x})\n{}",
+                self.name,
+                self.cell_addr(),
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
         self.read().typ.write().cycle_refused = true;
     }
 

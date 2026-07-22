@@ -669,6 +669,12 @@ impl Type {
                         return Ok(true);
                     }
                     if would_cycle_inner(addr0, tt1) || would_cycle_inner(addr1, tt0) {
+                        if std::env::var("GRAPHIX_DBG_CYCLE_BT").is_ok() {
+                            eprintln!(
+                                "CYCLE-REFUSED-PAIR ({addr0:x},{addr1:x})\n{}",
+                                std::backtrace::Backtrace::force_capture()
+                            );
+                        }
                         t0.typ.write().cycle_refused = true;
                         t1.typ.write().cycle_refused = true;
                         return Ok(true);

@@ -505,3 +505,47 @@ through:
   text can't express — reparse aliased it and views diverged.
 - Pack wire format unchanged: decode rebuilds `quantifiers` from the
   encoded pair names.
+
+## Cross-scope name entanglement: diagnosed, scoped aliasing rejected (2026-07-22)
+
+The jul22e settle-order flap (a first-class `array::flat_map` value
+flowing into fold's element type — `settle-order-jul2026/01`) raised
+the question of whether same-NAMED tvars from DIFFERENT quantifier
+scopes should ever alias. A polymorphic fn value's instantiated
+signature arriving as PAYLOAD in another signature's types brings a
+second scope into the walks; aliasing its `'a` with the native `'a`
+would build the infinite type, which the jul06h merge-occurs guard
+refuses (`alias`/`alias_cells` + the positional `would_cycle` guards
+in the TVar×TVar contains arm), marking `cycle_refused`.
+
+Eric's candidate direction — scope-aware aliasing (declared-only
+constraint legs in `FnType::alias_tvars`, keyed on `quantifiers`,
+instead of his older adding-scope-to-tvar-names idea) — was
+DIAGNOSED before implementation with `GRAPHIX_DBG_CYCLE_BT`
+(env-gated backtrace on every `cycle_refused` mark; permanent tool).
+Verdict, from the flap + typecheck-liveness + tvar-alias-sever +
+infinite-type pin matrix (10× each, dev build):
+
+- The flap class takes ~42 marks per CLEAN compile across ~12 cells,
+  with a channel profile IDENTICAL to the infinite-type pins (which
+  must keep erroring): ~50% positional `would_cycle` in
+  `check_site_arg` acceptance walks, ~25% CallSite containment,
+  ~15% `check_instance_type`, ~5% via `FnType::alias_tvars`.
+- Scoping the alias legs would remove only that last ~5%; the same
+  cells get marked positionally regardless. NO observable outcome
+  changes — there is no channel-level separation between benign
+  cross-scope entanglement and a genuine infinite type.
+- The only discriminator between the classes is the marked cell's
+  STATE at terminal settle (open + unconstrained → error). The
+  dependency-ordered settle (`FnType::settle_terminal`, 8d7f481e)
+  controls that deterministically and IS the complete fix, not a
+  stopgap.
+- The refusals are the jul06h contract working as designed: skip the
+  merge, inference stays looser, at worst rejects, never hangs.
+
+Rules that stand: nested-fn name flatness WITHIN one signature is
+rank-1 polymorphism and is load-bearing (`inlang_map`, the def-gate
+param knot, self-referential quantifier constraints). Alias maps are
+already per-signature (fresh per entry point; contains carries no
+name map). Do not resurrect per-Fn-boundary scoping (rank-2) or cell
+provenance machinery without a live witness this diagnosis missed.
