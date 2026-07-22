@@ -1,0 +1,52 @@
+// PENDING RULING (Eric): NONDETERMINISTIC COMPILE OUTCOME — the same
+// program compiles clean or fails the occurs check depending on the
+// terminal settle's iteration order (jul22e divergence_000000,
+// 2026-07-22; PRE-EXISTING — bd7b4b69 flaps identically, today's
+// fixes exonerated by bisect against the jul22c campaign binary).
+//
+// Shape: a FIRST-CLASS reference to a polymorphic collection HOF
+// (`|i| array::flat_map` — the stdlib lambda as a VALUE, never
+// called) flowing into fold's element type. Per process, --check
+// flips ~50/50 between clean and "cannot infer a finite type here:
+// unification requires a type that contains itself" (anchored at
+// fold's stdlib signature). In campaign runs the flap lands on
+// either mode independently, producing CompileErr-vs-Trace
+// divergences in BOTH directions plus "could not send batch"
+// runtime teardown noise as collateral.
+//
+// PROOF the settle order decides it (temporary sort experiment in
+// CallSite::typecheck1's terminal settle, reverted):
+//   - AHashMap drain order (status quo): ~50/50 per process
+//     (ahash per-process seeding).
+//   - ascending-name settle order:  20/20 ERROR.
+//   - descending-name settle order: 20/20 CLEAN.
+//
+// Mechanism (GRAPHIX_DBG_BIND, bind_err vs bind_clean): fold's
+// element cell 'a carries a CONSTRAINT that is flat_map's full fn
+// type, which itself contains flat_map's OWN still-open instance
+// cells ('a/'b — and note both "a"s collide in the name-keyed
+// collect_tvars map). If the INNER cells settle first (to bottom),
+// the outer cell's conjunction witness is closed — clean. If the
+// OUTER cell settles first, its witness embeds open cells that
+// later unification folds back into the same cell — the occurs
+// check fires. Settle order is the whole difference.
+//
+// Ruling needed on the intended semantics, not just determinism:
+// the program is VALID when it compiles (runs 2,4,2,8 — both modes
+// agree), so deterministically picking the error (e.g. sorted
+// ascending) would regress a working program. Options:
+//   1. dependency-ordered settle: settle cells appearing INSIDE
+//      other cells' constraint witnesses first (innermost-first) so
+//      a witness never embeds an open cell — makes the CLEAN
+//      outcome the deterministic one. (My recommendation.)
+//   2. recursive settle at witness time: settle_or_bottom settles
+//      any open cells inside the chosen witness before binding.
+//   3. also worth a look while in there: collect_tvars dedups cells
+//      BY NAME — two distinct same-named cells (fold's 'a vs
+//      flat_map's 'a here) collide, so only one is settled
+//      directly. Keying by cell identity may be part of the story.
+//
+// Until ruled, campaign lanes re-find this class at ~50% per
+// subject in this shape — treat CompileErr-vs-Trace flaps on
+// first-class collection-HOF values as known.
+{let a = array::init(array::iter([i64:1, i64:2, i64:1, i64:4]), |i| array::flat_map); let f = array::fold(a, i64:0, |acc, x| acc + i64:2); array::group(f, |n, _| n <= i64:4)}
