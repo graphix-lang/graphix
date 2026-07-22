@@ -1,0 +1,21 @@
+// bisect: crash (was: child SIGABRT, tokio worker stack overflow)
+// Found by the jul22b soak, ryouko fuzz lane (crash_000001, 2026-07-22).
+// root_cause: `m <- {"d" => 4, m => 5}` nests the map inside itself
+// as a KEY one level per cycle (a non-quiescent connect loop), and
+// after thousands of cycles the value's teardown recursed once per
+// nesting level through `immutable_chunkmap::avl::Node::drop` →
+// chunk drop → inner map's Node::drop — stack overflow, SIGABRT.
+// ValArray already had a DepthGuard deferred-drop (netidx-value
+// array.rs — why deep arrays/lists never crashed); chunkmap grew the
+// same machinery (DepthGuard + drain_deferred, `pool` feature) in
+// 2.1.3, which the graphix Cargo.lock predated at 2.1.2. Fix: lock
+// bump to immutable-chunkmap 2.1.3 (Cargo.lock is gitignored — the
+// bump is per-machine; a fresh resolve gets 2.1.3+ automatically).
+// This pin doubles as the deploy gate for stale locks: on a 2.1.2
+// machine the in-process regress run crashes instead of letting a
+// crashy binary soak. Ordinary recursion can't build such nesting
+// (the 256 call-depth guard bounds per-evaluation nesting) — only
+// unbounded cross-cycle growth reaches it. netidx's own workspace
+// lock should get the same bump for the release (its req 2.1.0
+// admits it).
+{let m = {{let h = |s: {a: i64, b: i64}| s.a + s.b; let g = |x: i64, y: i64| h({ a: x, b: y }); g(i64:3, i64:4)} => i64:1, "b" => i64:2, "c" => i64:3}; m <- {"d" => i64:4, m => i64:5}; let clock = i64:1; let (_, v) = map::iterq(#clock, m); array::group(v, |n, _| {let m: Map<string, i64> = {}; n == i64:-9223372036854775808})}
