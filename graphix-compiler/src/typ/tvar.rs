@@ -474,7 +474,7 @@ impl TVar {
         let mut s = self.write();
         let o = other.read();
         if !Arc::ptr_eq(&s.typ, &o.typ) {
-            if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+            if crate::dbgenv::graphix_dbg_bind() {
                 eprintln!(
                     "CELL-MERGE '{}({:x}) <=> '{}({:x})",
                     self.name,
@@ -525,7 +525,7 @@ impl TVar {
             let oc = o.typ.read();
             (oc.typ.clone(), oc.constraints.clone())
         };
-        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+        if crate::dbgenv::graphix_dbg_bind() {
             eprintln!(
                 "COPY '{}({:x}) <= '{}: {:?}",
                 self.name,
@@ -534,7 +534,7 @@ impl TVar {
                 typ
             );
         }
-        if let Ok(id) = std::env::var("GRAPHIX_DBG_BIND_BT") {
+        if let Some(id) = crate::dbgenv::graphix_dbg_bind_bt_id() {
             if id == s.id.inner().to_string() {
                 eprintln!(
                     "BT for write to '{}({}):\n{}",
@@ -603,10 +603,10 @@ impl TVar {
     /// Record an occurs-check refusal on this cell — see
     /// [`TCell::cycle_refused`].
     pub(super) fn mark_cycle_refused(&self) {
-        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+        if crate::dbgenv::graphix_dbg_bind() {
             eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
         }
-        if std::env::var("GRAPHIX_DBG_CYCLE_BT").is_ok() {
+        if crate::dbgenv::graphix_dbg_cycle_bt() {
             eprintln!(
                 "CYCLE-REFUSED '{}({:x})\n{}",
                 self.name,

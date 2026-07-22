@@ -12,7 +12,16 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
-use immutable_chunkmap::{map::MapS as Map, set::SetS as Set};
+// SIZE 16, not MapS (=256): the env maps are WRITE-heavy at compile
+// time (one insert_cow per bind/typedef while the whole stdlib
+// compiles), and a COW insert clones the touched chunk — at 256
+// entries of ~100-byte `Bind` that was ~25KB of memcpy plus ~1k
+// refcount bumps PER INSERT, ~20% of total compile time in the
+// jul22 samply profile; measured knee: 256→74ms/16→57ms per stdlib
+// compile, regress suite −10%. Small chunks trade slightly deeper trees
+// (reads stay O(log n)) for 16x cheaper writes.
+pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, 16>;
+pub type Set<K> = immutable_chunkmap::set::Set<K, 16>;
 use netidx::path::Path;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;

@@ -126,7 +126,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if std::env::var_os("GXDBG_KERNEL_SLEEP").is_some() {
+        if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
         }
         // Delegates: `Kernel::sleep` KEEPS the input slots (the

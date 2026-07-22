@@ -323,7 +323,7 @@ impl CachedVals {
     }
 }
 
-pub type ByRefChain = immutable_chunkmap::map::MapS<BindId, BindId>;
+pub type ByRefChain = graphix_compiler::env::Map<BindId, BindId>;
 
 pub trait EvalCached<R: Rt, E: UserEvent>:
     Debug + Default + Send + Sync + 'static

@@ -818,7 +818,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             .unwrap_or(BindMode::Definition);
         let mut apply = self.init_prepared_bind(ctx, scope, f, mode)?;
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
-            if std::env::var_os("GXDBG_SWALLOW").is_some() {
+            if crate::dbgenv::gxdbg_swallow() {
                 eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
             }
         }
@@ -1015,7 +1015,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if previous.is_none() {
                 let _tc1_span = crate::perfdbg::span(&crate::perfdbg::TC1_NS);
                 if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
-                    if std::env::var_os("GXDBG_SWALLOW").is_some() {
+                    if crate::dbgenv::gxdbg_swallow() {
                         eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
                     }
                     log::trace!("bind: lazy-bound callee body typecheck1 failed: {e:#}");
@@ -1208,7 +1208,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // so the `&mut self` for `resolve_static` is unencumbered.
         let target: Option<Value> = match self.fnode.view() {
             NodeView::Ref(r) => {
-                if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                if crate::dbgenv::gxdbg_resolve() {
                     eprintln!(
                         "RESOLVE {} id={:?} unstable={} b2l={} cached={}",
                         self.spec,
@@ -1236,7 +1236,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         if let Err(e) = self.resolve_static(ctx, def) {
             if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() {
-                if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                if crate::dbgenv::gxdbg_resolve() {
                     eprintln!("RESOLVE-DISCARD {}: {e:#}", self.spec);
                 }
                 self.discard_static_resolution(ctx);
@@ -1555,7 +1555,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
             _ => bound,
         };
-        if std::env::var_os("GXDBG_CS").is_some() {
+        if crate::dbgenv::gxdbg_cs() {
             let kind = match self.callee.apply() {
                 None => "none",
                 Some(a) => match a.view() {
@@ -1679,7 +1679,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         } else {
             res
         };
-        if std::env::var_os("GXDBG_CS").is_some() {
+        if crate::dbgenv::gxdbg_cs() {
             // Result-tag companion to the pre-dispatch CS line above —
             // localized the tail-loop tag derivation and the fd0 stale
             // escape (jul10h 000007).

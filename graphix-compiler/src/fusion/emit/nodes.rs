@@ -151,9 +151,7 @@ pub(crate) fn emit_ref_node(
     let name = ref_local_name(spec)
         .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
     let (vv, kind) = {
-        if cx.env.lookup(id, name).is_none()
-            && std::env::var_os("GXDBG_REFMISS").is_some()
-        {
+        if cx.env.lookup(id, name).is_none() && crate::dbgenv::gxdbg_refmiss() {
             eprintln!(
                 "REFMISS `{name}` id={id:?} locals={:?}",
                 cx.env

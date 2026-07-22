@@ -911,7 +911,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let Some(return_type) =
         freeze_region_return(&ctx.fusion.abstract_registry, node.typ(), &ctx.env)
     else {
-        if std::env::var_os("GXDBG_FREEZE_RET").is_some() {
+        if crate::dbgenv::gxdbg_freeze_ret() {
             crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 eprintln!("FREEZE-RET-MISS {:?} typ={}", node.spec().id, node.typ());
                 Ok::<_, std::fmt::Error>(())
@@ -1080,7 +1080,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             // `GRAPHIX_DUMP_CLIF` — a kernel gated forever on a "missing"
             // input usually means an input here froze under a lied-about
             // type (#18 was diagnosed with exactly this dump).
-            if std::env::var_os("GRAPHIX_DBG_REGION").is_some() {
+            if crate::dbgenv::graphix_dbg_region() {
                 for (i, fv) in inputs.iter().enumerate() {
                     let deref =
                         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
@@ -1156,7 +1156,7 @@ pub(crate) fn freeze_region_return(
     env: &Env,
 ) -> Option<Type> {
     use kernel_abi::AbiKind;
-    if std::env::var_os("GRAPHIX_DBG_FREEZE").is_some() {
+    if crate::dbgenv::graphix_dbg_freeze() {
         let d = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             compact_str::format_compact!("{typ}")
         });

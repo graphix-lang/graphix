@@ -170,7 +170,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         if tainted {
             return if arg_up { Some(TagValue::tainted(Value::Null)) } else { None };
         }
-        if std::env::var_os("GRAPHIX_DBG_SELECT").is_some() {
+        if crate::dbgenv::graphix_dbg_select() {
             eprintln!(
                 "SELECT upd init={} arg_up={arg_up} pat_up={pat_up} sel={:?} vars={}",
                 event.init,

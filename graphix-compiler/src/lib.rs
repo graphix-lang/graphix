@@ -10,6 +10,7 @@ extern crate combine;
 extern crate serde_derive;
 
 pub mod analysis;
+pub(crate) mod dbgenv;
 pub mod effects;
 pub mod env;
 pub mod expr;
@@ -1118,7 +1119,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
                 report.push(failure);
             }
         });
-        if std::env::var_os("GXDBG_NATIVE_ALL").is_some() {
+        if crate::dbgenv::gxdbg_native_all() {
             for failure in ctx.fusion.stats.failed.iter() {
                 eprintln!("NATIVE-ALL {:?}: {}", failure.id, failure.reason);
             }

@@ -108,7 +108,7 @@ impl crate::typ::TVar {
                 // open conjunct leaves, every cell sharing the conjunct
                 // saw the write).
                 let w = w.reset_tvars();
-                if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                if crate::dbgenv::graphix_dbg_bind() {
                     eprintln!("SETTLE '{}({:x}) := {w:?}", self.name, self.cell_addr());
                 }
                 self.read().typ.write().typ = Some(w);
@@ -164,10 +164,10 @@ impl crate::typ::TVar {
                     )
                 }
                 drop(cell);
-                if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                if crate::dbgenv::graphix_dbg_bind() {
                     eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
                 }
-                if std::env::var("GRAPHIX_DBG_BIND_BT").is_ok() {
+                if crate::dbgenv::graphix_dbg_bind_bt() {
                     eprintln!("{}", std::backtrace::Backtrace::force_capture());
                 }
                 tv.typ.write().typ = Some(Type::Bottom);
@@ -546,7 +546,7 @@ impl Type {
                 // conjunct: `f(y) + 1` bound the param's quantified 'a
                 // to i64 through the flagless operand pre-bind).
                 if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() {
-                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                    if crate::dbgenv::graphix_dbg_bind() {
                         eprintln!("BIND lhs '{}({:x}) := Any", t0.name, t0.cell_addr());
                     }
                     t0.read().typ.write().typ = Some(Self::Any);
@@ -669,7 +669,7 @@ impl Type {
                         return Ok(true);
                     }
                     if would_cycle_inner(addr0, tt1) || would_cycle_inner(addr1, tt0) {
-                        if std::env::var("GRAPHIX_DBG_CYCLE_BT").is_ok() {
+                        if crate::dbgenv::graphix_dbg_cycle_bt() {
                             eprintln!(
                                 "CYCLE-REFUSED-PAIR ({addr0:x},{addr1:x})\n{}",
                                 std::backtrace::Backtrace::force_capture()
@@ -721,7 +721,7 @@ impl Type {
                             ActOrRecurse::Recurse(tt0.clone(), b.clone())
                         }
                         (Some(b), None) => {
-                            if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                            if crate::dbgenv::graphix_dbg_bind() {
                                 eprintln!(
                                     "TT-RIGHTCOPY '{} <= '{}",
                                     t1.id.inner(),
@@ -731,7 +731,7 @@ impl Type {
                             ActOrRecurse::Act(Act::RightCopy, Some(b.clone()))
                         }
                         (None, Some(b)) => {
-                            if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                            if crate::dbgenv::graphix_dbg_bind() {
                                 eprintln!(
                                     "TT-LEFTCOPY '{} <= '{}",
                                     t0.id.inner(),
@@ -762,7 +762,7 @@ impl Type {
                         t1.copy(t0)
                     }
                     Act::RightAlias if flags.contains(ContainsFlags::AliasTVars) => {
-                        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                        if crate::dbgenv::graphix_dbg_bind() {
                             eprintln!(
                                 "RALIAS '{}({:x}) -> '{}({:x})",
                                 t1.name,
@@ -774,7 +774,7 @@ impl Type {
                         t1.alias(t0)
                     }
                     Act::LeftAlias if flags.contains(ContainsFlags::AliasTVars) => {
-                        if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                        if crate::dbgenv::graphix_dbg_bind() {
                             eprintln!(
                                 "LALIAS '{}({:x}) -> '{}({:x})",
                                 t0.name,
@@ -826,7 +826,7 @@ impl Type {
                     return Ok(false);
                 }
                 if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() {
-                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                    if crate::dbgenv::graphix_dbg_bind() {
                         eprintln!(
                             "BIND lhs '{}({:x}) := {t1:?}",
                             t0.name,
@@ -868,7 +868,7 @@ impl Type {
                     return Ok(false);
                 }
                 if flags.contains(ContainsFlags::InitTVars) && !t1.is_rigid() {
-                    if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                    if crate::dbgenv::graphix_dbg_bind() {
                         eprintln!(
                             "BIND rhs '{}({:x}) := {t0:?}",
                             t1.name,

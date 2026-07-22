@@ -676,7 +676,7 @@ impl FnType {
                 // the lie.
                 let t = t.reset_tvars();
                 let tc = t.normalize();
-                if std::env::var("GRAPHIX_DBG_BIND").is_ok() {
+                if crate::dbgenv::graphix_dbg_bind() {
                     eprintln!(
                         "CONSTRAIN-KNOWN '{}({:x}) += {tc:?}",
                         tv.name,

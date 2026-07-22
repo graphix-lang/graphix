@@ -291,7 +291,7 @@ fn check_instance_type<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let probe = expected.check_contains_rigid(&ctx.env, actual);
     if let Err(e) = &probe
-        && std::env::var_os("GXDBG_INSTCHECK").is_some()
+        && crate::dbgenv::gxdbg_instcheck()
     {
         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             eprintln!(
@@ -317,7 +317,7 @@ fn check_instance_type<R: Rt, E: UserEvent>(
                 scope,
             );
             let r = expected.check_contains_rigid(&ctx.env, &actual);
-            if r.is_err() && std::env::var_os("GXDBG_INSTCHECK").is_some() {
+            if r.is_err() && crate::dbgenv::gxdbg_instcheck() {
                 crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                     eprintln!(
                         "INSTCHECK-RETRY-FAIL scope={scope}\n  expected={expected}\n  actual={actual}\n  err={:#}",
@@ -394,7 +394,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             LambdaDispatch::Graphix => {
                 if !ctx.control.depth_push() {
                     let limit = ctx.control.max_call_depth();
-                    if std::env::var("GRAPHIX_DBG_DEPTH").is_ok() {
+                    if crate::dbgenv::graphix_dbg_depth() {
                         eprintln!(
                             "DEPTH TRIP lambda id={:?} tail_loop={}",
                             self.id,
@@ -748,7 +748,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // the same region-fusion pass as the top-level graph. Collection
         // callbacks then compile inside the instance when their calls
         // resolved statically.
-        if std::env::var_os("GXDBG_INSTANCE_FUSION").is_some() {
+        if crate::dbgenv::gxdbg_instance_fusion() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
             let r = crate::fusion::fuse(&mut self.body, ctx);
@@ -1537,7 +1537,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // (finding 37 diverged with a pointer-typed leak under audit
         // and AGREEs under enforcement). Never trust value output from
         // an audit-mode run of a program whose defs it rejected.
-        if res.is_err() && std::env::var_os("GRAPHIX_RIGID_AUDIT").is_some() {
+        if res.is_err() && crate::dbgenv::graphix_rigid_audit() {
             if let Err(e) = &res {
                 eprintln!("RIGID-AUDIT reject: {} — {e:#}", Update::<R, E>::spec(self));
             }

@@ -1352,7 +1352,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let mut discovery = BuiltinCallDiscovery::default();
     walk_node_for_builtin_calls(g.body(), ec, &mut discovery);
     sig.fn_params = discovery.fn_params;
-    if std::env::var("GRAPHIX_DBG_KERNELS").is_ok() {
+    if crate::dbgenv::graphix_dbg_kernels() {
         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             eprintln!(
                 "KERNEL BUILT {kernel_name}: ret={return_typ} kind={:?}",

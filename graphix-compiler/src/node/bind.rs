@@ -256,7 +256,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // resolution never descends lambda bodies.
         if let Some(fv) = self.lambda_def_value() {
             self.pattern.ids(&mut |id| {
-                if std::env::var_os("GXDBG_RESOLVE").is_some() {
+                if crate::dbgenv::gxdbg_resolve() {
                     eprintln!("B2L-INS {id:?} {}", self.spec);
                 }
                 ctx.bind_to_lambda.insert(id, fv.clone());

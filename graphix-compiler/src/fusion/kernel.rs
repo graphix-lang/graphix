@@ -1024,7 +1024,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         if !any_updated && !has_dynamic_fn_params && event.init {
             any_updated = true;
         }
-        if std::env::var_os("GXDBG_KPOLL").is_some() {
+        if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
                 "KPOLL {} init={} any_updated={any_updated} any_produced={any_produced} fired={:?} present={:?} fd={}",
                 self.kernel.fn_name,
@@ -1058,7 +1058,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             }
             return None;
         }
-        if std::env::var("GRAPHIX_DBG_INVOKE").is_ok() {
+        if crate::dbgenv::graphix_dbg_invoke() {
             eprintln!(
                 "KERNEL INVOKE {} init={} fired={:?} present={:?}",
                 self.kernel.fn_name,
@@ -1418,7 +1418,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if std::env::var_os("GXDBG_KERNEL_SLEEP").is_some() {
+        if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("KERNEL-APPLY-SLEEP {}", self.kernel.fn_name);
         }
         // The per-arg last-value slots are KEPT — they are the
@@ -1461,7 +1461,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             self.state[*w as usize] = 0;
         }
         self.free_reset_chains();
-        if std::env::var_os("GXDBG_RESET").is_some() {
+        if crate::dbgenv::gxdbg_reset() {
             eprintln!("KERNEL-RESET words={:?}", self.jit.replay_state_words);
         }
     }

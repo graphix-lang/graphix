@@ -102,7 +102,7 @@ impl<'a> TVal<'a> {
         f: &mut fmt::Formatter<'_>,
         hist: &mut AHashSet<(usize, usize)>,
     ) -> fmt::Result {
-        if std::env::var_os("GRAPHIX_DBG_TVAL").is_some() {
+        if crate::dbgenv::graphix_dbg_tval() {
             format_with_flags(PrintFlag::DerefTVars, || {
                 eprintln!("TVAL typ={} v={}", self.typ, NakedPrefix(self.v));
             });

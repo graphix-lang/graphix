@@ -299,7 +299,7 @@ fn body_effect<R: Rt, E: UserEvent>(
     let mut acc = EffectKind::Sync;
     fusion::for_each_node(body, &mut |n| {
         let e = node_effect(n, eff, self_ids, ctx);
-        if matches!(e, EffectKind::Async) && std::env::var_os("GXDBG_EFFECT").is_some() {
+        if matches!(e, EffectKind::Async) && crate::dbgenv::gxdbg_effect() {
             eprintln!("EFFECT-ASYNC-NODE node={}", n.spec());
         }
         acc = acc.join(e);
@@ -461,7 +461,7 @@ fn callee_effect<R: Rt, E: UserEvent>(
         }
     }
     // Unknown dynamic dispatch / fn-typed parameter call.
-    if std::env::var_os("GXDBG_EFFECT").is_some() {
+    if crate::dbgenv::gxdbg_effect() {
         eprintln!("EFFECT-ASYNC-FALLBACK cs={}", cs.fnode().spec());
     }
     EffectKind::Async
