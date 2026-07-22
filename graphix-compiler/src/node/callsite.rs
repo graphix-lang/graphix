@@ -957,6 +957,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             });
         })?;
         drop(setup_span);
+        // Defensive: if the def being bound lost its `lambda_defs`
+        // entry (its defining `Lambda` node was deleted — an escaped
+        // value from a torn-down subtree, e.g. a dyn-module reload),
+        // restore the entry for the duration of this bind's
+        // elaboration so the by-id consumers below (`finalize_lambda`
+        // via the body typecheck1, `analyze_bound_callee`'s effect
+        // resolution) see the def exactly as a compile-time
+        // elaboration would. Removed again before returning: entry
+        // lifetime stays tied to the defining node (the jul22b
+        // `lambda_defs` retention fix), and a live def's entry hits
+        // the `contains_key` and is never touched.
+        let restored_def = if ctx.lambda_defs.contains_key(&f.id) {
+            false
+        } else {
+            ctx.lambda_defs.insert(f.id, fv.clone());
+            true
+        };
         self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::DynamicBound { def: fv, apply, transient: false };
         // The publish loop ran before this bind resolved the callee —
@@ -1065,6 +1082,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         }
         event.init = prev_init;
+        if restored_def {
+            ctx.lambda_defs.remove(&f.id);
+        }
         Ok(())
     }
 
