@@ -1,0 +1,35 @@
+// PENDING RULING (Eric): interp PERFORMANCE class, not a correctness
+// divergence — values AGREE at every depth where the interp finishes.
+// Found by jul22b (divergence_000000, 2026-07-22, asymmetric timeout:
+// interp exceeded 8x budget, JIT produced [0:32385] x4 epochs in ms).
+//
+// Shape: deep NON-TAIL recursion (n + f(n-1), transient instances)
+// whose base arm holds a collection fold reading a reactive input,
+// re-driven over multiple epochs (schedule below: 3 in0 events).
+// Interp cost is SUPERPOLYNOMIAL in depth: 20 -> 1.2s, 40 -> 6.6s,
+// 50 -> 29s, 60 -> 85s, 80 -> timeout (per-10-level multiplier
+// ~3-4x); at the finding's depth 254 the interp effectively never
+// terminates. The JIT computes the same trace in milliseconds.
+//
+// Measurements (fixed 100-slot fold, 4 epochs): CallSite dispatches
+// are LINEAR in depth (~660/level); runtime var events (DBG_VARS) are
+// QUADRATIC (second difference constant); wall time is worse than
+// cubic — so per-dispatch cost grows with depth on top of the
+// quadratic event count. All three ingredients are required: single
+// epoch is fast (p1), shallow depth is fast (p2), no-fold is fast
+// (p3). Pre-existing (jul21g-era binary: same magnitude, 24s at
+// depth 50) — NOT a regression from the jul22 fixes.
+//
+// Suspected area: the transient-parked instance lifecycle on re-fire
+// epochs (re-bind/prime-then-replay per level) interacting with the
+// collection's per-slot subgraph in the base arm — but the growth law
+// wasn't fully pinned to a mechanism. Needs a design-level look at
+// the transient re-dispatch path, which is why this is parked rather
+// than fixed: an unfusable variant of this shape wedges a node-walk
+// program for real (the node-walk is canonical AND the fallback).
+//
+// Fuzzer-side question, separately: whether asymmetric-timeout
+// findings of this class should keep flooding campaigns (precedent:
+// jul08k fib(30) asymmetric timeout was closed as noise).
+// schedule-v1: cap=64 events=512; in0=i64:4; in0=i64:4; in0=i64:-9223372036854775808
+{let rec f = |n: i64| -> i64 select n {i64:0 => {let xs = array::init(i64:100, |idx: i64| idx); array::fold(xs, i64:0, |acc, x| in0 * i64:0)}, _ => n + f(n - i64:1)}; f(i64:254)}
