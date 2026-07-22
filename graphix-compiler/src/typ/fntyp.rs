@@ -612,7 +612,7 @@ impl FnType {
     /// component types (constraint TYPES live in the cells since phase
     /// C). Guarded per `FnType` address: a conjunct Fn reaching back
     /// here would recurse forever (see `constraint_view`).
-    fn for_each_sig_constraint(&self, f: &mut impl FnMut(&Type)) {
+    pub(crate) fn for_each_sig_constraint(&self, f: &mut impl FnMut(&Type)) {
         let key = self as *const Self as usize;
         if Self::walking(|w| w.insert(key)) {
             for tv in self.sig_tvars().values() {

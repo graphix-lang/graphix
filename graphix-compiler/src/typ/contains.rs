@@ -2,13 +2,15 @@ use crate::{
     PrintFlag,
     env::Env,
     format_with_flags,
-    typ::{AndAc, RefHist, Type, TypeRef, tvar::would_cycle_inner},
+    typ::{AndAc, FnType, RefHist, TVar, Type, TypeRef, tvar::would_cycle_inner},
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
+use arcstr::ArcStr;
 use enumflags2::{BitFlags, bitflags};
 use netidx::publisher::Typ;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::fmt::Debug;
 use triomphe::Arc;
 
@@ -173,6 +175,145 @@ impl crate::typ::TVar {
             }
         }
         self.settle(env)
+    }
+}
+
+/// Record which settle-set members `t` references, descending through
+/// NON-member cells' bindings and constraints (a witness routinely
+/// embeds intermediate cells) but stopping at members — a member's own
+/// transitive reach is its own node's edge list, so topological
+/// ordering composes. `visited` breaks cell cycles; per-node, since it
+/// only guards the non-member descent.
+fn settle_refs(
+    t: &Type,
+    index: &AHashMap<usize, usize>,
+    visited: &mut AHashSet<usize>,
+    out: &mut SmallVec<[usize; 4]>,
+) {
+    match t {
+        Type::TVar(tv) => {
+            let addr = tv.cell_addr();
+            if let Some(&i) = index.get(&addr) {
+                out.push(i);
+            } else if visited.insert(addr) {
+                let (bound, cons) = {
+                    let g = tv.read();
+                    let cell = g.typ.read();
+                    (cell.typ.clone(), cell.constraints.clone())
+                };
+                if let Some(b) = &bound {
+                    settle_refs(b, index, visited, out);
+                }
+                for c in cons.iter() {
+                    settle_refs(c, index, visited, out);
+                }
+            }
+        }
+        Type::Fn(ft) => {
+            for arg in ft.args.iter() {
+                settle_refs(&arg.typ, index, visited, out);
+            }
+            if let Some(vargs) = &ft.vargs {
+                settle_refs(vargs, index, visited, out);
+            }
+            settle_refs(&ft.rtype, index, visited, out);
+            ft.for_each_sig_constraint(&mut |c| settle_refs(c, index, visited, out));
+            settle_refs(&ft.throws, index, visited, out);
+        }
+        t => t.for_each_child(&mut |c| settle_refs(c, index, visited, out)),
+    }
+}
+
+impl FnType {
+    /// Terminal settle of a call site's resolved signature,
+    /// DEPENDENCY-ORDERED (Eric's ruling, 2026-07-22): a set member
+    /// settles only after every member reachable through its binding
+    /// or constraint conjuncts, so no settle materializes a witness —
+    /// and no later unification runs a reachability probe — around a
+    /// still-open sibling. The previous `AHashMap` drain order let
+    /// per-process hash seeding decide which side of `alias`'s
+    /// merge-occurs refusal a program landed on: the same program
+    /// compiled clean or failed "cannot infer a finite type" ~50/50
+    /// per process (the jul22e settle-order flap — a first-class
+    /// `array::flat_map` value flowing into fold's element type).
+    ///
+    /// Determinism rules: ordering keys are (name, TVarId) ONLY —
+    /// `cell_addr` is ASLR-dependent and is used solely for identity.
+    /// Reference cycles settle in DFS post-order, deterministic under
+    /// the same key. `rtype_cell` joins the set by cell identity (a
+    /// name collision with a distinct signature cell must not drop
+    /// it — the pre-ordered code settled it unconditionally).
+    /// `defaulted` cells are exempt from settling as before (their
+    /// types belong to the default expressions compiled at static
+    /// resolution) but still participate in ordering.
+    pub fn settle_terminal(
+        &self,
+        env: &Env,
+        rtype_cell: Option<&TVar>,
+        defaulted: &AHashSet<usize>,
+    ) -> Result<()> {
+        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut tvs);
+        let mut nodes: LPooled<Vec<(ArcStr, TVar)>> = tvs.drain().collect();
+        if let Some(tv) = rtype_cell {
+            if !nodes.iter().any(|(_, n)| n.cell_addr() == tv.cell_addr()) {
+                nodes.push((tv.name.clone(), tv.clone()));
+            }
+        }
+        nodes.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
+        });
+        let mut index: LPooled<AHashMap<usize, usize>> = LPooled::take();
+        for (i, (_, tv)) in nodes.iter().enumerate() {
+            index.insert(tv.cell_addr(), i);
+        }
+        let mut edges: LPooled<Vec<SmallVec<[usize; 4]>>> = LPooled::take();
+        for (_, tv) in nodes.iter() {
+            let mut out: SmallVec<[usize; 4]> = SmallVec::new();
+            let mut visited: LPooled<AHashSet<usize>> = LPooled::take();
+            let (bound, cons) = {
+                let g = tv.read();
+                let cell = g.typ.read();
+                (cell.typ.clone(), cell.constraints.clone())
+            };
+            if let Some(b) = &bound {
+                settle_refs(b, &index, &mut visited, &mut out);
+            }
+            for c in cons.iter() {
+                settle_refs(c, &index, &mut visited, &mut out);
+            }
+            out.sort_unstable();
+            out.dedup();
+            edges.push(out);
+        }
+        fn visit(
+            i: usize,
+            edges: &[SmallVec<[usize; 4]>],
+            seen: &mut [bool],
+            order: &mut LPooled<Vec<usize>>,
+        ) {
+            if seen[i] {
+                return;
+            }
+            seen[i] = true;
+            for &j in edges[i].iter() {
+                visit(j, edges, seen, order);
+            }
+            order.push(i);
+        }
+        let mut seen: LPooled<Vec<bool>> = LPooled::take();
+        seen.resize(nodes.len(), false);
+        let mut order: LPooled<Vec<usize>> = LPooled::take();
+        for i in 0..nodes.len() {
+            visit(i, &edges, &mut seen, &mut order);
+        }
+        for i in order.drain(..) {
+            let tv = &nodes[i].1;
+            if !defaulted.contains(&tv.cell_addr()) {
+                tv.settle_or_bottom(env)?;
+            }
+        }
+        Ok(())
     }
 }
 

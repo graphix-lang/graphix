@@ -1,8 +1,14 @@
-// PENDING RULING (Eric): NONDETERMINISTIC COMPILE OUTCOME — the same
-// program compiles clean or fails the occurs check depending on the
-// terminal settle's iteration order (jul22e divergence_000000,
-// 2026-07-22; PRE-EXISTING — bd7b4b69 flaps identically, today's
-// fixes exonerated by bisect against the jul22c campaign binary).
+// bisect: fixed (was: NONDETERMINISTIC COMPILE OUTCOME — the same
+// program compiled clean or failed the occurs check depending on the
+// terminal settle's iteration order; jul22e divergence_000000,
+// 2026-07-22; pre-existing — bd7b4b69 flapped identically).
+// RULED (Eric, 2026-07-22): dependency-ordered settle. FIXED:
+// `FnType::settle_terminal` (typ/contains.rs) settles a set member
+// only after every member reachable through its binding or
+// constraint conjuncts (DFS post-order, (name, TVarId) key — never
+// cell_addr, which is ASLR-dependent), replacing the AHashMap drain
+// loop in CallSite::typecheck1. 25/25 deterministic-CLEAN; detcheck
+// 271/0. Original analysis below.
 //
 // Shape: a FIRST-CLASS reference to a polymorphic collection HOF
 // (`|i| array::flat_map` — the stdlib lambda as a VALUE, never
@@ -31,22 +37,13 @@
 // later unification folds back into the same cell — the occurs
 // check fires. Settle order is the whole difference.
 //
-// Ruling needed on the intended semantics, not just determinism:
-// the program is VALID when it compiles (runs 2,4,2,8 — both modes
-// agree), so deterministically picking the error (e.g. sorted
-// ascending) would regress a working program. Options:
-//   1. dependency-ordered settle: settle cells appearing INSIDE
-//      other cells' constraint witnesses first (innermost-first) so
-//      a witness never embeds an open cell — makes the CLEAN
-//      outcome the deterministic one. (My recommendation.)
-//   2. recursive settle at witness time: settle_or_bottom settles
-//      any open cells inside the chosen witness before binding.
-//   3. also worth a look while in there: collect_tvars dedups cells
-//      BY NAME — two distinct same-named cells (fold's 'a vs
-//      flat_map's 'a here) collide, so only one is settled
-//      directly. Keying by cell identity may be part of the story.
-//
-// Until ruled, campaign lanes re-find this class at ~50% per
-// subject in this shape — treat CompileErr-vs-Trace flaps on
-// first-class collection-HOF values as known.
+// The program is VALID when it compiles (runs 2,4,2,8 — both modes
+// agree), so the fix had to land on the clean side — dependency
+// order does: innermost cells settle first, so witnesses close
+// before their referrers and the name-alias merge's occurs probe
+// resolves through bound cells. Note for future work: collect_tvars
+// still dedups cells BY NAME (fold's 'a vs flat_map's 'a collide;
+// the settle set holds one of them) — identity-keying was NOT
+// needed for this fix (ordering the existing set sufficed) but the
+// lossiness is real and documented at FnType::settle_terminal.
 {let a = array::init(array::iter([i64:1, i64:2, i64:1, i64:4]), |i| array::flat_map); let f = array::fold(a, i64:0, |acc, x| acc + i64:2); array::group(f, |n, _| n <= i64:4)}

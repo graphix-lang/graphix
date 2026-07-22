@@ -2081,33 +2081,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
             let defaulted: LPooled<AHashSet<usize>> =
                 dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            ftype.collect_tvars(&mut tvs);
-            for (_, tv) in tvs.drain() {
-                if !defaulted.contains(&tv.cell_addr()) {
-                    // Terminal: an unconstrained cell still open after
-                    // the whole tc0 phase defaults to ⊥ — see
-                    // `TVar::settle_or_bottom`.
-                    wrap!(self, tv.settle_or_bottom(&ctx.env))?;
-                }
-            }
-            // The call's OWN result cell settles terminally too: for a
+            // The call's OWN result cell joins the settle set: for a
             // callee whose declared rtype is the LITERAL ⊥ (`never()`)
-            // the cell never appears in the ftype walk above — the ⊥
-            // unifies against it WITHOUT binding (the open-cell rule in
+            // the cell never appears in the ftype walk — the ⊥ unifies
+            // against it WITHOUT binding (the open-cell rule in
             // contains) — so if no writer refined it during tc0
             // (`let res = never(); res <- v` binds it to v's type
             // there), it is the type of a value that never arrives.
-            // The defaulted-arg exemption applies here too: tc0 aliased
+            // The defaulted-arg exemption covers it too: tc0 aliased
             // `self.rtype` with the instance rtype, so for a callee
             // like `rand(#start='a, #end='a) -> 'a` this IS the
             // defaulted cell, and settling it would foreclose the
-            // default exprs binding it at static resolution.
-            if let Type::TVar(tv) = &self.rtype
-                && !defaulted.contains(&tv.cell_addr())
-            {
-                wrap!(self, tv.settle_or_bottom(&ctx.env))?;
-            }
+            // default exprs binding it at static resolution. Settle
+            // ORDER is dependency-first — see
+            // `FnType::settle_terminal` (the jul22e settle-order
+            // flap).
+            let rtc = match &self.rtype {
+                Type::TVar(tv) => Some(tv),
+                _ => None,
+            };
+            wrap!(self, ftype.settle_terminal(&ctx.env, rtc, &defaulted))?;
         }
         self.refresh_static_ftype();
         let resolved = ftype.resolve_tvars();
