@@ -24,25 +24,10 @@ use anyhow::Result;
 use graphix_compiler::expr::Source;
 use graphix_rt::NoExt;
 use graphix_shell::{MainThreadHandle, Mode, ShellBuilder};
-use netidx::{
-    publisher::{DesiredAuth, PublisherBuilder},
-    subscriber::Subscriber,
-};
 
-async fn tokio_main(
-    cfg: netidx::config::Config,
-    auth: DesiredAuth,
-    run_on_main: MainThreadHandle,
-) -> Result<()> {
-    let publisher = PublisherBuilder::new(cfg.clone())
-        .desired_auth(auth.clone())
-        .build()
-        .await?;
-    let subscriber = Subscriber::new(cfg, auth)?;
+async fn tokio_main(run_on_main: MainThreadHandle) -> Result<()> {
     ShellBuilder::<NoExt>::default()
         .mode(Mode::Script(Source::from("main.gx")))
-        .publisher(publisher)
-        .subscriber(subscriber)
         .no_init(true)
         .build()?
         .run(run_on_main)
@@ -50,8 +35,6 @@ async fn tokio_main(
 }
 
 fn main() -> Result<()> {
-    let cfg = netidx::config::Config::load_default()?;
-    let auth = DesiredAuth::Anonymous;
     let (handle, main_rx) = MainThreadHandle::new();
     let tokio_thread = std::thread::Builder::new()
         .name("tokio".into())
@@ -59,7 +42,7 @@ fn main() -> Result<()> {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
-                .block_on(tokio_main(cfg, auth, handle))
+                .block_on(tokio_main(handle))
         })
         .expect("spawn tokio thread");
     while let Ok(f) = main_rx.recv() {
@@ -73,6 +56,43 @@ fn main() -> Result<()> {
 receiver you drive on the main thread. The receiver yields closures the
 shell wants executed there; calling each in turn is enough.
 
+## Netidx Configuration
+
+By default `sys::net` runs against a process-internal netidx (resolver,
+publisher, and subscriber in-process), materialized lazily the first
+time a program performs a netidx operation. Nothing to configure — and
+programs that never touch `sys::net` never create it.
+
+To connect to a real netidx environment, seed a
+[`NetConfig`](https://docs.rs/graphix-package-core/latest/graphix_package_core/enum.NetConfig.html)
+into the context with `setup_context` — the general hook for
+embedder-seeded package state, run against the freshly created context
+before anything compiles:
+
+```rust
+use graphix_package_core::NetConfig;
+use netidx::publisher::DesiredAuth;
+
+let config = netidx::config::Config::load_default()?;
+ShellBuilder::<NoExt>::default()
+    .mode(Mode::Script(Source::from("main.gx")))
+    .setup_context(Box::new(move |ctx| {
+        ctx.libstate.set(NetConfig::Config {
+            config,
+            auth: DesiredAuth::Anonymous,
+            bind: None,
+        });
+    }))
+    .build()?
+    .run(run_on_main)
+    .await
+```
+
+Use `NetConfig::Ready { publisher, subscriber }` if your application
+already holds netidx handles it wants graphix to share. Other packages
+document their own libstate entries; `setup_context` is the single
+place to seed them all.
+
 ## Module Resolvers
 
 If you want to bundle additional Graphix source files into your binary (beyond
@@ -80,27 +100,31 @@ what packages provide), you can add module resolvers. A VFS resolver maps
 virtual paths to source code:
 
 ```rust
+use ahash::AHashMap;
 use arcstr::literal;
-use graphix_compiler::expr::ModuleResolver;
-use fxhash::FxHashMap;
+use graphix_compiler::expr::{ResolverRef, VfsResolver};
 use netidx_core::path::Path;
 
-fn my_modules() -> ModuleResolver {
-    ModuleResolver::VFS(FxHashMap::from_iter([
-        (Path::from("/myapp"), literal!(include_str!("myapp/mod.gx"))),
-        (Path::from("/myapp/util"), literal!(include_str!("myapp/util.gx"))),
+fn my_modules() -> ResolverRef {
+    VfsResolver::new(AHashMap::from_iter([
+        (Path::from("/myapp"), literal!(include_str!("myapp/mod.gx")).into()),
+        (Path::from("/myapp/util"), literal!(include_str!("myapp/util.gx")).into()),
     ]))
 }
 
 ShellBuilder::<NoExt>::default()
     .module_resolvers(vec![my_modules()])
     .mode(Mode::Script(Source::from("main.gx")))
-    .publisher(publisher)
-    .subscriber(subscriber)
     .build()?
     .run(run_on_main)
     .await
 ```
+
+Module loading is the
+[`ModuleResolver`](https://docs.rs/graphix-compiler/latest/graphix_compiler/expr/trait.ModuleResolver.html)
+trait, so a resolver can load source from anywhere — the `sys` package
+ships one that loads modules published in netidx (the shell's
+`netidx:` scheme).
 
 You can have as many module resolvers as you like. When loading modules they are
 checked in order, so earlier ones shadow later ones.
@@ -118,8 +142,6 @@ You can build a REPL with pre-loaded modules by setting the mode to
 ShellBuilder::<NoExt>::default()
     .module_resolvers(vec![my_modules()])
     .mode(Mode::Repl)
-    .publisher(publisher)
-    .subscriber(subscriber)
     .build()?
     .run(run_on_main)
     .await

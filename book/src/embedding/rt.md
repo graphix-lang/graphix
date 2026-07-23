@@ -26,7 +26,7 @@ use graphix_rt::{GXConfig, GXRt, NoExt};
 use tokio::sync::mpsc;
 
 // set up an execution context using the generic runtime with no customization
-let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber))?;
+let mut ctx = ExecCtx::new(GXRt::<NoExt>::new())?;
 // ... use the context to register all your built-ins, etc
 
 // set up a channel to receive events from the RT
