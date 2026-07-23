@@ -195,6 +195,13 @@ where
         env.publisher().clone(),
         env.subscriber().clone(),
     ))?;
+    // ONE netidx universe: the sys::net package (NetState) must share
+    // this InternalOnly, or a test's publishes land in a different
+    // resolver than gx.subscriber()'s reads (the data_table tests).
+    ctx.libstate.set(crate::NetConfig::Ready {
+        publisher: env.publisher().clone(),
+        subscriber: env.subscriber().clone(),
+    });
     let mut modules = ahash::AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
     for p in register {

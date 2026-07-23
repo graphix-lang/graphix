@@ -14,6 +14,7 @@ use anyhow::{Error, Result, anyhow};
 use arcstr::literal;
 use futures::{StreamExt, channel::mpsc};
 use graphix_compiler::{BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent};
+use graphix_package_core::{NetConfig, NetTimeouts};
 use netidx::{
     config::Config,
     path::Path,
@@ -37,20 +38,6 @@ use std::{
 };
 use tokio::{sync::oneshot, task, time};
 use triomphe::Arc as TArc;
-
-/// Embedder-provided netidx configuration, seeded into `ctx.libstate`
-/// BEFORE package registration (the `ProgramArgs` precedent). Absent →
-/// `Internal`.
-#[derive(Debug, Clone)]
-pub enum NetConfig {
-    /// Use these pre-built handles (the shell's real-config path).
-    Ready { publisher: Publisher, subscriber: Subscriber },
-    /// Build from a netidx config + auth on first use.
-    Config { config: Config, auth: DesiredAuth, bind: Option<BindCfg> },
-    /// Process-internal netidx (resolver + pub/sub) on demand — the
-    /// test/fuzz/`--no-netidx` default.
-    Internal,
-}
 
 /// A subscription update routed to a builtin's BindId. Unsubscribed
 /// becomes the same error value the pre-extraction runtime delivered.
@@ -132,6 +119,8 @@ struct Inner {
     publish_timeout: Option<Duration>,
     subscribe_timeout: Option<Duration>,
 }
+
+pub use graphix_package_core::NetConfig as NetConfigExport;
 
 /// The libstate entry. Clone-cheap; one per ExecCtx.
 #[derive(Clone)]
@@ -632,12 +621,4 @@ impl NetState {
     ) -> Result<Subscriber> {
         Ok(self.handles(ctx)?.subscriber.clone())
     }
-}
-
-/// Optional embedder-seeded timeouts (the shell's --publish-timeout /
-/// --resolve-timeout).
-#[derive(Debug, Clone)]
-pub struct NetTimeouts {
-    pub publish: Option<Duration>,
-    pub subscribe: Option<Duration>,
 }

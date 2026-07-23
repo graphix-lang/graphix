@@ -2281,3 +2281,35 @@ graphix_derive::defpackage! {
         opt::OptIsNoneOr as opt::OptIsNoneOr<GXRt<X>, X::UserEvent>,
     ],
 }
+
+/// Embedder-provided netidx configuration for the `sys::net` package
+/// (and any other library that wants netidx), seeded into
+/// `ctx.libstate` BEFORE package registration. Absent → `Internal`.
+/// Lives in package-core so the test harness and embedders can seed
+/// it without depending on package-sys.
+#[derive(Debug, Clone)]
+pub enum NetConfig {
+    /// Use these pre-built handles (a real config, or a shared
+    /// InternalOnly).
+    Ready {
+        publisher: netidx::publisher::Publisher,
+        subscriber: netidx::subscriber::Subscriber,
+    },
+    /// Build from a netidx config + auth on first use.
+    Config {
+        config: netidx::config::Config,
+        auth: netidx::publisher::DesiredAuth,
+        bind: Option<netidx::publisher::BindCfg>,
+    },
+    /// Process-internal netidx (resolver + pub/sub) on demand — the
+    /// test/fuzz/`--no-netidx` default.
+    Internal,
+}
+
+/// Optional embedder-seeded netidx timeouts (the shell's
+/// --publish-timeout / --resolve-timeout).
+#[derive(Debug, Clone)]
+pub struct NetTimeouts {
+    pub publish: Option<std::time::Duration>,
+    pub subscribe: Option<std::time::Duration>,
+}
