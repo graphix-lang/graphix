@@ -566,8 +566,8 @@ pub struct TraceSegment {
     /// a cap tripped). Same non-determinism caveat as
     /// [`TraceEvent`] cycles — relative use only.
     pub end_cycle: u64,
-    /// The trace hit its active-cycle budget (a runaway program). Once
-    /// tripped the trace is permanently quiet — see
+    /// The trace hit its worked-cycle budget (a runaway or never-idle
+    /// program). Once tripped the trace is permanently quiet — see
     /// [`GXHandle::trace_start`].
     pub capped_cycles: bool,
     /// The trace hit its total event budget. Permanently quiet, as above.
@@ -869,9 +869,12 @@ impl<X: GXExt> GXHandle<X> {
     /// per-wait budget would cut a runaway program's recording at a
     /// point that depends on when the wait message happened to arrive.
     /// `max_events` bounds the total events recorded across the whole
-    /// trace; `max_cycles` bounds the ACTIVE cycles (cycles in which at
-    /// least one traced node emitted — control-message cycles don't
-    /// count) per segment. When either budget is exhausted the trace
+    /// trace; `max_cycles` bounds the WORKED cycles (cycles in which
+    /// the graph was handed program events, including eventless
+    /// internal churn — control-message cycles don't count) per
+    /// segment, making it a cycle DEADLINE that resolves
+    /// [`trace_wait_idle`](Self::trace_wait_idle) even for a program
+    /// that never quiesces. When either budget is exhausted the trace
     /// goes PERMANENTLY quiet (the segment reports `capped_*`), so
     /// later segments of a capped trace are deterministically empty.
     pub fn trace_start(&self, max_events: usize, max_cycles: u64) -> Result<()> {

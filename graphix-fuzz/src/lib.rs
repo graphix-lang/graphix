@@ -3362,6 +3362,29 @@ mod trace_probes {
         assert_eq!(vals[23], Value::I64(23));
     }
 
+    /// An eventless spinner — a self-connect loop whose only traced
+    /// output is permanently bottom — must hit the WORKED-cycle cap
+    /// and resolve the waiter. The emission-only meter left it
+    /// uncapped and `trace_wait_idle` hanging until the harness's
+    /// outer deadline (the jul22k reactive HANG-noise class); the
+    /// worked-cycle deadline turns the class into an exact
+    /// comparison: both modes cap at the same program-driven cycle
+    /// count with identical traces.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_eventless_spinner_caps() {
+        let prog =
+            "let x = i64:0;\nx <- x + i64:1;\nlet result = x + (x % i64:0)";
+        let (i1, _) = drive_traced(Mode::Interp, "", prog, 512, 24, &[]).await;
+        let (i2, _) = drive_traced(Mode::Interp, "", prog, 512, 24, &[]).await;
+        let (j1, _) = drive_traced(Mode::Jit, "", prog, 512, 24, &[]).await;
+        assert_eq!(shapes(&i1), shapes(&i2), "interp self-determinism");
+        assert_eq!(shapes(&i1), shapes(&j1), "interp vs jit");
+        let seg = &i1[0];
+        assert!(seg.capped_cycles, "spinner must hit the cycle cap: {seg:?}");
+        let jseg = &j1[0];
+        assert!(jseg.capped_cycles, "jit spinner must cap too: {jseg:?}");
+    }
+
     /// `trace_wait_idle` without `trace_start` is an error, not a hang.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trace_wait_without_start_errors() {

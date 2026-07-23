@@ -45,17 +45,23 @@ static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
 /// function of the traced program's own event stream — never of when
 /// control messages happened to arrive — so two runs of the same
 /// program produce comparable traces. That is why both budgets are
-/// fixed at `trace_start`, why only ACTIVE cycles (cycles in which a
-/// traced node emitted) count against `max_cycles`, and why tripping
-/// either cap silences the trace permanently instead of just closing
-/// the current segment.
+/// fixed at `trace_start`, why only WORKED cycles (cycles in which the
+/// graph was handed program events — delivered variables, custom
+/// events, or marked nodes; control-only cycles run no nodes and don't
+/// count) count against `max_cycles`, and why tripping either cap
+/// silences the trace permanently instead of just closing the current
+/// segment. Worked cycles include eventless internal churn (a
+/// self-connect loop whose outputs never fire), so the cycle cap is a
+/// CYCLE DEADLINE: `wait` always resolves for a never-idle program and
+/// two modes compare exactly at the same program-driven cycle count —
+/// the emission-only meter left invisible spinners uncapped and the
+/// waiter hanging (jul22k reactive noise class).
 struct TraceState {
     events: GPooled<Vec<TraceEvent>>,
     max_events: usize,
     max_cycles: u64,
-    /// active cycles since the last segment boundary
-    active_cycles: u64,
-    emitted_this_cycle: bool,
+    /// worked cycles since the last segment boundary
+    worked_cycles: u64,
     capped_cycles: bool,
     capped_events: bool,
     waiter: Option<oneshot::Sender<Option<TraceSegment>>>,
@@ -67,8 +73,7 @@ impl TraceState {
             events: TRACE_EVENTS.take(),
             max_events,
             max_cycles,
-            active_cycles: 0,
-            emitted_this_cycle: false,
+            worked_cycles: 0,
             capped_cycles: false,
             capped_events: false,
             waiter: None,
@@ -83,7 +88,6 @@ impl TraceState {
         if self.capped() {
             return;
         }
-        self.emitted_this_cycle = true;
         if self.events.len() >= self.max_events {
             self.capped_events = true;
         } else {
@@ -99,11 +103,12 @@ impl TraceState {
         }
     }
 
-    /// Bookkeeping at the end of `do_cycle` for the cycle that just ran.
-    fn cycle_end(&mut self, cycle: u64) {
-        if mem::take(&mut self.emitted_this_cycle) {
-            self.active_cycles += 1;
-            if self.active_cycles >= self.max_cycles {
+    /// Bookkeeping at the end of `do_cycle` for the cycle that just
+    /// ran; `worked` = the cycle delivered program events to the graph.
+    fn cycle_end(&mut self, cycle: u64, worked: bool) {
+        if worked {
+            self.worked_cycles += 1;
+            if self.worked_cycles >= self.max_cycles {
                 self.capped_cycles = true;
             }
         }
@@ -127,8 +132,7 @@ impl TraceState {
                 capped_cycles: self.capped_cycles,
                 capped_events: self.capped_events,
             };
-            self.active_cycles = 0;
-            self.emitted_this_cycle = false;
+            self.worked_cycles = 0;
             let _ = tx.send(Some(seg));
         }
     }
@@ -348,6 +352,9 @@ impl<X: GXExt> GX<X> {
         // Point the JIT interrupt helper at this runtime's control on the
         // current worker (the cycle may run on a migrated thread).
         graphix_compiler::fusion::emit_helpers::set_interrupt_ptr(&self.ctx.control);
+        let worked = !self.ctx.rt.updated.is_empty()
+            || !self.event.variables.is_empty()
+            || !self.event.custom.is_empty();
         // Run the synchronous node updates inside `block_in_place` so a
         // wedged node (a runaway loop) doesn't starve the rest of the
         // tokio runtime — the IO tasks and the caller that would
@@ -432,7 +439,7 @@ impl<X: GXExt> GX<X> {
             batch.push(GXEvent::Diagnostic(None, d));
         }
         if let Some(tr) = self.trace.as_mut() {
-            tr.cycle_end(self.cycle);
+            tr.cycle_end(self.cycle, worked);
         }
         self.cycle += 1;
         loop {
