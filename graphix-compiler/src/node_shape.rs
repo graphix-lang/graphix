@@ -330,7 +330,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
                 .iter()
                 .filter_map(|(k, a)| a.node.as_ref().map(|n| (k, n)))
                 .collect();
-            entries.sort_by(|(a, _), (b, _)| arg_key_ord(a).cmp(&arg_key_ord(b)));
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
             kids.extend(entries.into_iter().map(|(_, n)| n));
         }
         V::Select(s) => {
@@ -422,16 +422,6 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         | V::Or(_) => unreachable!("handled above"),
     }
     Some(kids)
-}
-
-/// Sort key for a `CallSite` arg: positional args (by index) before
-/// named args (by name), for a deterministic child order.
-fn arg_key_ord(k: &crate::node::callsite::ArgKey) -> (u8, usize, ArcStr) {
-    use crate::node::callsite::ArgKey;
-    match k {
-        ArgKey::Positional(p) => (0, *p, ArcStr::new()),
-        ArgKey::Named(n) => (1, 0, n.clone()),
-    }
 }
 
 /// The `NodeView` variant name, used as the `Node { kind }` tag.

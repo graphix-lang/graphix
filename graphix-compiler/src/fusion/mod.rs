@@ -512,10 +512,17 @@ pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
             }
         }
         NodeView::CallSite(cs) => {
-            for arg in cs.args.values() {
-                if let Some(n) = &arg.node {
-                    rec!(n)
-                }
+            // The args map is hash-ordered; walk in ArgKey order or the
+            // discovery order downstream (callee fn indices, DynCall slot
+            // bases) becomes a per-process coin flip (the #19 class).
+            let mut args: LPooled<Vec<(&crate::node::callsite::ArgKey, &Node<R, E>)>> =
+                cs.args
+                    .iter()
+                    .filter_map(|(k, a)| a.node.as_ref().map(|n| (k, n)))
+                    .collect();
+            args.sort_by(|(a, _), (b, _)| a.cmp(b));
+            for (_, n) in args.drain(..) {
+                rec!(n)
             }
             rec!(&cs.fnode)
         }

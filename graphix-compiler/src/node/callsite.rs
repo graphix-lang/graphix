@@ -73,7 +73,7 @@ fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum ArgKey {
     Positional(usize),
     Named(ArcStr),
