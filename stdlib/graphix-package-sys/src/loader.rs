@@ -3,12 +3,17 @@
 //! has no networking since the 2026-07 netidx extraction,
 //! design/netidx_extraction.md); Atlas and the shell's `netidx:`
 //! script prefix thread it in as an ordinary [`ModuleResolver`].
+use crate::netstate::NetHandles;
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use compact_str::format_compact;
-use graphix_compiler::expr::{
-    ModPath, ModuleResolver, Origin, Resolution, ResolverFactory, ResolverRef, Source,
+use graphix_compiler::{
+    LibState,
+    expr::{
+        ModPath, ModuleResolver, Origin, Resolution, ResolverFactory, ResolverRef, Source,
+    },
 };
+use graphix_package_core::NetConfig;
 use netidx::{
     path::Path,
     subscriber::{Event, Subscriber},
@@ -19,10 +24,16 @@ use tokio::join;
 use triomphe::Arc;
 
 #[derive(Debug, Clone)]
+enum SubSource {
+    Ready(Subscriber),
+    Lazy { handles: NetHandles, cfg: NetConfig },
+}
+
+#[derive(Debug, Clone)]
 pub struct NetidxResolver {
-    pub subscriber: Subscriber,
-    pub base: Path,
-    pub timeout: Option<Duration>,
+    source: SubSource,
+    base: Path,
+    timeout: Option<Duration>,
 }
 
 impl NetidxResolver {
@@ -31,19 +42,41 @@ impl NetidxResolver {
         base: Path,
         timeout: Option<Duration>,
     ) -> ResolverRef {
-        std::sync::Arc::new(NetidxResolver { subscriber, base, timeout })
-    }
-
-    /// A GRAPHIX_MODPATH factory for `netidx:<base>` entries.
-    pub fn factory(subscriber: Subscriber, timeout: Option<Duration>) -> ResolverFactory {
-        std::sync::Arc::new(move |rest: &str| {
-            Ok(NetidxResolver::new(subscriber.clone(), Path::from_str(rest), timeout))
+        std::sync::Arc::new(NetidxResolver {
+            source: SubSource::Ready(subscriber),
+            base,
+            timeout,
         })
     }
 
+    /// A GRAPHIX_MODPATH factory for `netidx:<base>` entries. The
+    /// netidx handles come from the context's libstate at first use:
+    /// the same universe sys::net's builtins use, materialized from
+    /// the seeded [`NetConfig`] (Internal when unseeded).
+    pub fn factory(timeout: Option<Duration>) -> ResolverFactory {
+        std::sync::Arc::new(move |libstate: &mut LibState, rest: &str| {
+            let handles = libstate.get_or_default::<NetHandles>().clone();
+            let cfg = libstate.get::<NetConfig>().cloned().unwrap_or(NetConfig::Internal);
+            Ok(std::sync::Arc::new(NetidxResolver {
+                source: SubSource::Lazy { handles, cfg },
+                base: Path::from_str(rest),
+                timeout,
+            }))
+        })
+    }
+
+    fn subscriber(&self) -> Result<Subscriber> {
+        match &self.source {
+            SubSource::Ready(s) => Ok(s.clone()),
+            SubSource::Lazy { handles, cfg } => handles.subscriber(cfg.clone()),
+        }
+    }
+
     async fn fetch_one(&self, path: Path) -> Result<ArcStr> {
-        let v =
-            self.subscriber.subscribe_nondurable_one(path.clone(), self.timeout).await?;
+        let v = self
+            .subscriber()?
+            .subscribe_nondurable_one(path.clone(), self.timeout)
+            .await?;
         match v.last() {
             Event::Update(Value::String(text)) => Ok(text),
             Event::Unsubscribed | Event::Update(_) => {
@@ -87,11 +120,11 @@ impl ModuleResolver for NetidxResolver {
 
     fn for_source(&self, source: &Source) -> Option<ResolverRef> {
         match source {
-            Source::Netidx(p) => Some(NetidxResolver::new(
-                self.subscriber.clone(),
-                p.clone(),
-                self.timeout,
-            )),
+            Source::Netidx(p) => Some(std::sync::Arc::new(NetidxResolver {
+                source: self.source.clone(),
+                base: p.clone(),
+                timeout: self.timeout,
+            })),
             _ => None,
         }
     }

@@ -230,8 +230,34 @@ wanted). The jul22 lazy-netidx branch stays stashed
 - TIME_WAIT flat at 1 after fuzz bursts; the port ceiling is
   structurally dead; soak restored to full PAR.
 
+## Shell API tidy (2026-07-23, Eric's design)
+
+The shell *library* is now netidx-agnostic too. ShellBuilder's
+netidx-specific fields (`net_config`, `publish_timeout`,
+`resolve_timeout`) are replaced by two generic mechanisms:
+
+- `setup_context: Option<SetupContext<X>>` — a `FnOnce(&mut
+  ExecCtx)` run in `Shell::init` right after context creation. The
+  CLI (main.rs, the netidx-aware embedder) seeds `NetConfig` and
+  `NetTimeouts` there; any package's embedder-seeded libstate entry
+  uses the same hook.
+- `resolver_factories` passthrough to `GXConfig` — the CLI registers
+  the sys package's `netidx:` factory itself.
+
+`ResolverFactory` now receives `&mut LibState` (parse_modpath runs
+inside `GX::new` with the ctx in hand), and the netidx factory reads
+its config from libstate at registration time (Eric's call): the raw
+handles live in a standalone shared libstate entry `NetHandles`
+(package-sys netstate.rs) that BOTH the module loader and
+`NetState` materialize through, whichever touches netidx first —
+one universe, no ordering constraint. This retires the "netidx:
+MODPATH only under NetConfig::Ready" limitation: the factory
+registers unconditionally and materializes from whatever NetConfig
+is seeded (Internal when unseeded).
+
 Deferred (small, non-blocking): the `net::configure(...)` language-
-level config hook; `netidx:` GRAPHIX_MODPATH entries under a
-non-Ready NetConfig (currently: register the factory only with real
-handles); the hollow `krb5_iov` feature stubs left in compiler/rt
-for feature-unification compatibility.
+level config hook (only the publish timeout is currently meaningful
+global state — `NetTimeouts.subscribe` was trimmed as dead, and
+per-call `#timeout` args are the graphix-shaped alternative for
+subscribe/rpc); the hollow `krb5_iov` feature stubs left in
+compiler/rt for feature-unification compatibility.

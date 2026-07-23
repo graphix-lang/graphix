@@ -83,6 +83,112 @@ impl Drop for InternalGuard {
     }
 }
 
+/// The raw netidx handles — a standalone libstate entry shared by
+/// [`NetState`] and the `netidx:` module loader, so whichever touches
+/// netidx first materializes the ONE universe both use.
+#[derive(Clone, Default)]
+pub struct NetHandles(Arc<OnceLock<Handles>>);
+
+impl std::fmt::Debug for NetHandles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NetHandles")
+    }
+}
+
+impl NetHandles {
+    fn get(&self) -> Option<&Handles> {
+        self.0.get()
+    }
+
+    pub fn subscriber(&self, cfg: NetConfig) -> Result<Subscriber> {
+        Ok(self.get_or_materialize(cfg)?.subscriber.clone())
+    }
+}
+
+impl NetHandles {
+    fn get_or_materialize(&self, cfg: NetConfig) -> Result<&Handles> {
+        if let Some(h) = self.0.get() {
+            return Ok(h);
+        }
+        let handles = match cfg {
+            NetConfig::Ready { publisher, subscriber } => {
+                Handles { publisher, subscriber, _own: None }
+            }
+            cfg => {
+                let (tx, rx) = std::sync::mpsc::channel::<Result<_, Error>>();
+                let (shutdown, shutdown_rx) = oneshot::channel::<()>();
+                std::thread::Builder::new()
+                    .name("gx-netidx".into())
+                    .spawn(move || {
+                        let rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            Ok(rt) => rt,
+                            Err(e) => {
+                                let _ = tx.send(Err(Error::from(e)));
+                                return;
+                            }
+                        };
+                        rt.block_on(async move {
+                            let r = async {
+                                match cfg {
+                                    NetConfig::Ready { .. } => unreachable!(),
+                                    NetConfig::Internal => {
+                                        let env = netidx::InternalOnly::new().await?;
+                                        let p = env.publisher().clone();
+                                        let s = env.subscriber().clone();
+                                        Ok::<_, Error>((
+                                            p,
+                                            s,
+                                            Some(Box::new(env)
+                                                as Box<dyn std::any::Any + Send>),
+                                        ))
+                                    }
+                                    NetConfig::Config { config, auth, bind } => {
+                                        let publisher =
+                                            PublisherBuilder::new(config.clone())
+                                                .desired_auth(auth.clone())
+                                                .bind_cfg(bind)
+                                                .build()
+                                                .await?;
+                                        let subscriber = SubscriberBuilder::new(config)
+                                            .desired_auth(auth)
+                                            .build()?;
+                                        Ok((publisher, subscriber, None))
+                                    }
+                                }
+                            }
+                            .await;
+                            match r {
+                                Err(e) => {
+                                    let _ = tx.send(Err(e));
+                                }
+                                Ok((p, s, own)) => {
+                                    let _ = tx.send(Ok((p, s)));
+                                    // hold the internal env (and this
+                                    // runtime's tasks) until shutdown
+                                    let _own = own;
+                                    let _ = shutdown_rx.await;
+                                }
+                            }
+                        })
+                    })
+                    .map_err(|e| anyhow!("spawning the netidx thread: {e:?}"))?;
+                let (publisher, subscriber) =
+                    rx.recv().map_err(|_| anyhow!("netidx thread died"))??;
+                Handles {
+                    publisher,
+                    subscriber,
+                    _own: Some(InternalGuard { shutdown: Some(shutdown) }),
+                }
+            }
+        };
+        let _ = self.0.set(handles);
+        Ok(self.0.get().unwrap())
+    }
+}
+
 #[derive(Default)]
 struct Routes {
     /// netidx SHARES Dvals by path: several builtins subscribing the
@@ -94,7 +200,7 @@ struct Routes {
 }
 
 struct Inner {
-    handles: OnceLock<Handles>,
+    handles: NetHandles,
     routes: Arc<Mutex<Routes>>,
     // channel ends handed to netidx; the pump translates into the
     // graph's watch channels
@@ -151,8 +257,9 @@ impl NetState {
         let (mut custom_tx, custom_rx) = mpsc::channel(100);
         ctx.rt.watch_var(var_rx);
         ctx.rt.watch(custom_rx);
+        let handles = ctx.libstate.get_or_default::<NetHandles>().clone();
         let st = NetState(Arc::new(Inner {
-            handles: OnceLock::new(),
+            handles,
             routes: routes.clone(),
             updates_tx,
             writes_tx,
@@ -286,86 +393,8 @@ impl NetState {
     /// builtin code on any tokio flavor; the calling thread blocks for
     /// the spinup once per runtime.
     fn handles<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) -> Result<&Handles> {
-        if let Some(h) = self.0.handles.get() {
-            return Ok(h);
-        }
         let cfg = ctx.libstate.get::<NetConfig>().cloned().unwrap_or(NetConfig::Internal);
-        let handles = match cfg {
-            NetConfig::Ready { publisher, subscriber } => {
-                Handles { publisher, subscriber, _own: None }
-            }
-            cfg => {
-                let (tx, rx) = std::sync::mpsc::channel::<Result<_, Error>>();
-                let (shutdown, shutdown_rx) = oneshot::channel::<()>();
-                std::thread::Builder::new()
-                    .name("gx-netidx".into())
-                    .spawn(move || {
-                        let rt = match tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                        {
-                            Ok(rt) => rt,
-                            Err(e) => {
-                                let _ = tx.send(Err(Error::from(e)));
-                                return;
-                            }
-                        };
-                        rt.block_on(async move {
-                            let r = async {
-                                match cfg {
-                                    NetConfig::Ready { .. } => unreachable!(),
-                                    NetConfig::Internal => {
-                                        let env = netidx::InternalOnly::new().await?;
-                                        let p = env.publisher().clone();
-                                        let s = env.subscriber().clone();
-                                        Ok::<_, Error>((
-                                            p,
-                                            s,
-                                            Some(Box::new(env)
-                                                as Box<dyn std::any::Any + Send>),
-                                        ))
-                                    }
-                                    NetConfig::Config { config, auth, bind } => {
-                                        let publisher =
-                                            PublisherBuilder::new(config.clone())
-                                                .desired_auth(auth.clone())
-                                                .bind_cfg(bind)
-                                                .build()
-                                                .await?;
-                                        let subscriber = SubscriberBuilder::new(config)
-                                            .desired_auth(auth)
-                                            .build()?;
-                                        Ok((publisher, subscriber, None))
-                                    }
-                                }
-                            }
-                            .await;
-                            match r {
-                                Err(e) => {
-                                    let _ = tx.send(Err(e));
-                                }
-                                Ok((p, s, own)) => {
-                                    let _ = tx.send(Ok((p, s)));
-                                    // hold the internal env (and this
-                                    // runtime's tasks) until shutdown
-                                    let _own = own;
-                                    let _ = shutdown_rx.await;
-                                }
-                            }
-                        })
-                    })
-                    .map_err(|e| anyhow!("spawning the netidx thread: {e:?}"))?;
-                let (publisher, subscriber) =
-                    rx.recv().map_err(|_| anyhow!("netidx thread died"))??;
-                Handles {
-                    publisher,
-                    subscriber,
-                    _own: Some(InternalGuard { shutdown: Some(shutdown) }),
-                }
-            }
-        };
-        let _ = self.0.handles.set(handles);
-        Ok(self.0.handles.get().unwrap())
+        self.0.handles.get_or_materialize(cfg)
     }
 
     pub(crate) fn subscribe<R: Rt, E: UserEvent>(

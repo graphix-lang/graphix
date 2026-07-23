@@ -245,13 +245,15 @@ impl<X: GXExt> GX<X> {
         };
         match std::env::var("GRAPHIX_MODPATH") {
             Err(_) => resolvers_default(&mut cfg.resolvers),
-            Ok(mp) => match parse_modpath(&cfg.resolver_factories, &mp) {
-                Ok(r) => cfg.resolvers.extend(r),
-                Err(e) => {
-                    error!("failed to parse GRAPHIX_MODPATH, using default {e:?}");
-                    resolvers_default(&mut cfg.resolvers)
+            Ok(mp) => {
+                match parse_modpath(&cfg.resolver_factories, &mut cfg.ctx.libstate, &mp) {
+                    Ok(r) => cfg.resolvers.extend(r),
+                    Err(e) => {
+                        error!("failed to parse GRAPHIX_MODPATH, using default {e:?}");
+                        resolvers_default(&mut cfg.resolvers)
+                    }
                 }
-            },
+            }
         };
         let event = Event::new(cfg.ctx.rt.ext.empty_event());
         let mut ctx = cfg.ctx;

@@ -10,20 +10,20 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, ExecCtx, FusionStats, PrintFlag,
     env::Env,
-    expr::{CouldNotResolve, ExprId, ResolverRef, Source, VfsResolver},
+    expr::{CouldNotResolve, ExprId, ResolverFactory, ResolverRef, Source, VfsResolver},
     format_with_flags,
     typ::TVal,
 };
 use graphix_package::{
     Cdc, CustomResult, IndexSet, MainThreadHandle, Package, root_module_source,
 };
-use graphix_package_core::{NetConfig, NetTimeouts, ProgramArgs};
+use graphix_package_core::ProgramArgs;
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
 use input::InputReader;
 use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
-use std::{marker::PhantomData, process::exit, time::Duration};
+use std::{marker::PhantomData, process::exit};
 use tokio::{select, sync::mpsc};
 
 mod completion;
@@ -144,31 +144,33 @@ impl Mode {
     }
 }
 
+/// The embedder's context-setup hook — runs against the freshly
+/// created [`ExecCtx`] before anything compiles. The place to seed
+/// package libstate entries (the CLI seeds sys::net's `NetConfig`
+/// and `NetTimeouts` here); embedders can do whatever they need.
+pub type SetupContext<X> =
+    Box<dyn FnOnce(&mut ExecCtx<GXRt<X>, <X as GXExt>::UserEvent>) + Send + 'static>;
+
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 pub struct Shell<X: GXExt> {
     /// do not run the users init module
     #[builder(default = "false")]
     no_init: bool,
-    /// drop subscribers if they don't consume updates after this timeout
-    #[builder(setter(strip_option), default)]
-    publish_timeout: Option<Duration>,
-    /// module resolution from netidx will fail if it can't subscribe
-    /// before this time elapses
-    #[builder(setter(strip_option), default)]
-    resolve_timeout: Option<Duration>,
     /// define module resolvers to append to the default list
     #[builder(default)]
     module_resolvers: Vec<ResolverRef>,
+    /// GRAPHIX_MODPATH `scheme:` -> resolver factory registrations
+    /// (the CLI registers the sys package's `netidx:` factory)
+    #[builder(default)]
+    resolver_factories: ahash::AHashMap<ArcStr, ResolverFactory>,
+    /// run against the freshly created context before compilation —
+    /// see [`SetupContext`]
+    #[builder(setter(strip_option), default)]
+    setup_context: Option<SetupContext<X>>,
     /// set the shell's mode
     #[builder(default = "Mode::Repl")]
     mode: Mode,
-    /// The netidx configuration seeded into `ctx.libstate` for the
-    /// sys::net package. Defaults to `NetConfig::Internal` — a
-    /// process-internal netidx materialized only if a program
-    /// actually performs a netidx operation.
-    #[builder(default = "NetConfig::Internal")]
-    net_config: NetConfig,
     /// Enable compiler flags, these will be ORed with the default set of flags
     /// for the mode.
     #[builder(default)]
@@ -220,8 +222,9 @@ impl<X: GXExt> Shell<X> {
     ) -> Result<GXHandle<X>> {
         let mut ctx =
             ExecCtx::new(GXRt::<X>::new()).context("creating graphix context")?;
-        ctx.libstate.set(self.net_config.clone());
-        ctx.libstate.set(NetTimeouts { publish: self.publish_timeout });
+        if let Some(setup) = self.setup_context.take() {
+            setup(&mut ctx);
+        }
         let mut args = vec![];
         if let Mode::Script(source) | Mode::Check(source) = &self.mode {
             if let Source::File(p) = source {
@@ -255,19 +258,8 @@ impl<X: GXExt> Shell<X> {
             mods.push(res);
         }
         let mut gx = GXConfig::builder(ctx, sub);
-        // GRAPHIX_MODPATH `netidx:` entries resolve through the sys
-        // package's loader (the compiler only knows `file:`).
-        #[cfg(feature = "sys")]
-        if let NetConfig::Ready { subscriber, .. } = &self.net_config {
-            let mut factories = ahash::AHashMap::default();
-            factories.insert(
-                arcstr::literal!("netidx"),
-                graphix_package_sys::loader::NetidxResolver::factory(
-                    subscriber.clone(),
-                    self.resolve_timeout,
-                ),
-            );
-            gx = gx.resolver_factories(factories);
+        if !self.resolver_factories.is_empty() {
+            gx = gx.resolver_factories(std::mem::take(&mut self.resolver_factories));
         }
         gx = gx.flags(flags);
         let handle = gx

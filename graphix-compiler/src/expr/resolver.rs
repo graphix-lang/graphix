@@ -100,9 +100,12 @@ pub type Resolvers = std::sync::Arc<[ResolverRef]>;
 /// Constructs a resolver from the payload of a `scheme:` entry in
 /// GRAPHIX_MODPATH (the part after the colon). Registered by the
 /// embedder per scheme — the shell registers the sys package's
-/// `netidx` factory; `file` is built in.
-pub type ResolverFactory =
-    std::sync::Arc<dyn Fn(&str) -> Result<ResolverRef> + Send + Sync>;
+/// `netidx` factory; `file` is built in. The factory receives the
+/// context's [`LibState`] so package resolvers can share state (e.g.
+/// config and connection handles) with their package's builtins.
+pub type ResolverFactory = std::sync::Arc<
+    dyn Fn(&mut crate::LibState, &str) -> Result<ResolverRef> + Send + Sync,
+>;
 
 /// In-memory module store — the stdlib packages and test sources.
 #[derive(Debug, Clone)]
@@ -163,6 +166,7 @@ impl ModuleResolver for FilesResolver {
 /// resolvers. `file:` is built in; other schemes look up `factories`.
 pub fn parse_modpath(
     factories: &AHashMap<ArcStr, ResolverFactory>,
+    libstate: &mut crate::LibState,
     s: &str,
 ) -> Result<Vec<ResolverRef>> {
     let mut res: Vec<ResolverRef> = vec![];
@@ -172,10 +176,9 @@ pub fn parse_modpath(
             let base = PathBuf::from_str(s)?;
             res.push(std::sync::Arc::new(FilesResolver { base, overrides: None }));
         } else {
-            match l
-                .split_once(':')
-                .and_then(|(scheme, rest)| factories.get(scheme).map(|f| f(rest)))
-            {
+            match l.split_once(':').and_then(|(scheme, rest)| {
+                factories.get(scheme).map(|f| f(libstate, rest))
+            }) {
                 Some(r) => res.push(r?),
                 None => {
                     bail!("no resolver for {l}: expected file: or a registered scheme")

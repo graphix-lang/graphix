@@ -8,7 +8,7 @@ use graphix_compiler::{
     expr::{FilesResolver, Source},
 };
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
-use graphix_package_core::NetConfig;
+use graphix_package_core::{NetConfig, NetTimeouts};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use log::info;
@@ -346,11 +346,24 @@ fn tokio_main(
         shell = shell.program_args(program_args);
         shell = shell.no_init(p.no_init);
         shell = shell.fusion_stats(p.fusion_stats);
-        if let Some(t) = p.publish_timeout {
-            shell = shell.publish_timeout(Duration::from_secs(t));
+        {
+            let net_config = net_config.clone();
+            let publish = p.publish_timeout.map(Duration::from_secs);
+            shell = shell.setup_context(Box::new(move |ctx| {
+                ctx.libstate.set(net_config);
+                ctx.libstate.set(NetTimeouts { publish });
+            }));
         }
-        if let Some(t) = p.resolve_timeout {
-            shell = shell.resolve_timeout(Duration::from_secs(t));
+        #[cfg(feature = "sys")]
+        {
+            let mut factories = ahash::AHashMap::default();
+            factories.insert(
+                arcstr::literal!("netidx"),
+                graphix_package_sys::loader::NetidxResolver::factory(
+                    p.resolve_timeout.map(Duration::from_secs),
+                ),
+            );
+            shell = shell.resolver_factories(factories);
         }
         if p.file.is_none() && p.check {
             bail!("check mode requires a file to check")
@@ -401,7 +414,6 @@ fn tokio_main(
             enable.insert(CFlag::FusionDisabled);
         }
         shell
-            .net_config(net_config)
             .enable_flags(enable)
             .disable_flags(disable)
             .build()?
