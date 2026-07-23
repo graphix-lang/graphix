@@ -1,4 +1,20 @@
 {let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v))); (m([i64:1], |x| x * i64:2), m(["a"], |s| str::parse))}
+// ROOT-CAUSED + FIXED (2026-07-23): NOT a lost wake — a same-thread
+// RwLock SELF-DEADLOCK in the tvar constraint machinery.
+// TCell::add_constraint's dedup runs a full structural Type::eq, and
+// the merge paths (alias/alias_cells/copy/add_cell_constraint) ran it
+// under held tvar/cell write guards; a conjunct that CONTAINS the
+// tvar being merged (here: 'b instantiated to str::parse's fn type
+// through the polymorphic wrapper) makes the eq walk TVar::read the
+// held lock — parked forever at 0 CPU, at COMPILE time, both modes.
+// Everything below (race/heisenbug/load-dependence) was misdiagnosis:
+// deterministic wedge + pipeline-exit-code artifacts + load jitter.
+// Fix: dedup pre-computed lock-free from cloned constraint lists;
+// push-only under guards (typecheck is single-threaded per ctx).
+// Minimal repro: {let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| ->
+// Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v)));
+// m(["a"], |s| str::parse)}. Both modes now AGREE with real values.
+// ORIGINAL (superseded) TRIAGE below, kept for the record.
 // PENDING TRIAGE (claude, 2026-07-23, jul23c fuzz @<1k subjects — the
 // V3 composition vocabulary's first novel reach). NONDETERMINISTIC
 // LOST-WAKE: the program's result sometimes never fires and script

@@ -157,6 +157,14 @@ impl TCell {
     }
 
     /// Add `c` to the conjunction unless an equal member is present.
+    ///
+    /// LOCK DISCIPLINE: the dedup eq-walk can reach this very cell (a
+    /// conjunct may contain the cell's own tvar — the reachability
+    /// Debug/Display cycle-guard against), so this must NOT run under
+    /// a held tvar/cell write guard: the walk's `TVar::read` on the
+    /// guarded lock self-deadlocks at 0 CPU (the jul23c lost-wake
+    /// wedge). Callers holding guards pre-compute the dedup lock-free
+    /// and push directly.
     pub(crate) fn add_constraint(&mut self, c: Type) {
         if !self.constraints.iter().any(|e| e == &c) {
             self.constraints.push(c)
@@ -350,10 +358,15 @@ impl TVar {
         }))
     }
 
-    /// Add a conjunct to this var's CELL constraints (deduped).
+    /// Add a conjunct to this var's CELL constraints (deduped). The
+    /// dedup runs lock-free (see `TCell::add_constraint`'s lock
+    /// discipline).
     pub fn add_cell_constraint(&self, c: Type) {
         let cell = self.read().typ.clone();
-        cell.write().add_constraint(c);
+        let existing = cell.read().constraints.clone();
+        if !existing.iter().any(|e| e == &c) {
+            cell.write().constraints.push(c);
+        }
     }
 
     /// The cell's constraint conjunction (cloned out).
@@ -402,17 +415,37 @@ impl TVar {
                 }
             }
         }
+        // Constraint dedup PRE-COMPUTED lock-free: the eq walk can
+        // re-enter these very cells/tvars through a self-referential
+        // conjunct (see `TCell::add_constraint`).
+        let to_add = {
+            let s_cell = self.read().typ.clone();
+            let o_cell = other.read().typ.clone();
+            if Arc::ptr_eq(&s_cell, &o_cell) {
+                Vec::new()
+            } else {
+                let mine = s_cell.read().constraints.clone();
+                let theirs = o_cell.read().constraints.clone();
+                let mut to_add: Vec<Type> = Vec::new();
+                for c in mine {
+                    if !theirs.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c)
+                    {
+                        to_add.push(c)
+                    }
+                }
+                to_add
+            }
+        };
         let mut s = self.write();
         if !s.frozen {
             s.frozen = true;
             let o = other.read();
             s.id = o.id;
             if !Arc::ptr_eq(&s.typ, &o.typ) {
-                let mine = s.typ.read().constraints.clone();
                 {
                     let mut oc = o.typ.write();
-                    for c in mine {
-                        oc.add_constraint(c);
+                    for c in to_add {
+                        oc.constraints.push(c);
                     }
                 }
                 // FORWARD-LINK the abandoned cell before moving off it:
@@ -471,6 +504,25 @@ impl TVar {
                 return;
             }
         }
+        // Lock-free dedup, same discipline as [`Self::alias`].
+        let to_add = {
+            let s_cell = self.read().typ.clone();
+            let o_cell = other.read().typ.clone();
+            if Arc::ptr_eq(&s_cell, &o_cell) {
+                Vec::new()
+            } else {
+                let mine = s_cell.read().constraints.clone();
+                let theirs = o_cell.read().constraints.clone();
+                let mut to_add: Vec<Type> = Vec::new();
+                for c in mine {
+                    if !theirs.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c)
+                    {
+                        to_add.push(c)
+                    }
+                }
+                to_add
+            }
+        };
         let mut s = self.write();
         let o = other.read();
         if !Arc::ptr_eq(&s.typ, &o.typ) {
@@ -483,11 +535,10 @@ impl TVar {
                     Arc::as_ptr(&o.typ).addr()
                 );
             }
-            let mine = s.typ.read().constraints.clone();
             {
                 let mut oc = o.typ.write();
-                for c in mine {
-                    oc.add_constraint(c);
+                for c in to_add {
+                    oc.constraints.push(c);
                 }
             }
             // Same forward-link as [`Self::alias`] — sharers of the
@@ -544,10 +595,19 @@ impl TVar {
                 );
             }
         }
+        // Lock-free dedup against self's existing conjuncts (see
+        // `TCell::add_constraint`'s lock discipline).
+        let existing = s.typ.read().constraints.clone();
+        let mut to_add: Vec<Type> = Vec::new();
+        for c in ocons {
+            if !existing.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c) {
+                to_add.push(c)
+            }
+        }
         let mut sc = s.typ.write();
         sc.typ = typ;
-        for c in ocons {
-            sc.add_constraint(c);
+        for c in to_add {
+            sc.constraints.push(c);
         }
     }
 
