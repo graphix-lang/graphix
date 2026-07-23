@@ -1,0 +1,20 @@
+// bisect: asymmetric timeout (interp exceeded 8x budget; JIT produced a value — verify the node-walk terminates and agrees before reading this as a JIT bug)
+// interp: Timeout
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(7))], capped: false }] })
+// mutant: {let rec f = |n: i64| -> i64 select select n {i64:0 => str::len("abc"), _ => f(n - i64:1) + array::len([n])} {m if m <= i64:0 => i64:1 % m, m => f(m - i64:1)}; let v = f(i64:1); array::fold([i64:5, i64:7], v, |a, x| x)}
+// minimized:
+{let rec f = |n: i64| -> i64 select select n {i64:0 => str::len("abc"), _ => f(n - i64:1)} {m if m <= i64:0 => i64:1 % m, m => f(m - i64:1)}; let v = f(i64:1); array::fold([i64:5, i64:7], v, |a, x| x)}
+// TRIAGE (claude, 2026-07-23): the accepted abort-vs-retry seam, pending
+// Eric's ruling per the asymmetric-timeout policy. f(1) <-> f(2) is
+// INFINITELY mutually recursive through the nested selects. Interp:
+// depth-trip -> transient-recursion retry EVERY cycle, never idle, no
+// value ever (the fold's init arrives as ABSENCE, blocking the node).
+// JIT: aborts once to a tainted placeholder; the acc-ignoring fold
+// callback recovers by the consumption rule and emits 7, then idles.
+// Control: a plain bottom init (1/0) AGREEs in both modes — the split
+// is delivery mode (tainted TagValue vs absence), not recovery logic.
+// Under the worked-cycle deadline (3b0bc013) this class records as a
+// deterministic cap-mismatch (interp [] capped vs jit [7] idle) — and
+// it is WHY cap-mismatch must stay a recorded divergence: prefix-pass
+// cannot distinguish "interp merely slow" (fib) from "JIT value the
+// interp never produces" (this).
