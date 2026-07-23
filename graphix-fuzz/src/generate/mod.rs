@@ -101,6 +101,17 @@ pub struct GenCfg {
     pub max_lets: usize,
     /// Depth passed to `random_type` for value-let and tail types.
     pub type_depth: usize,
+    /// A statement slot embeds a whole generated SUBPROGRAM as a typed
+    /// block value (`let v: T = { …; tail: T }`) — template
+    /// composition (Eric's depth-ceiling design, 2026-07-23): blocks
+    /// are self-contained by construction, so composition adds depth
+    /// without cross-seam type obligations. 50/50 the inner block
+    /// shares the outer scope (capture-across-block-boundary shapes)
+    /// vs generating closed.
+    pub p_subprogram: f64,
+    /// Remaining nesting budget for subprogram slots (decremented per
+    /// level; 0 disables the arm).
+    pub subprogram_depth: usize,
 }
 
 impl Default for GenCfg {
@@ -125,6 +136,8 @@ impl Default for GenCfg {
             p_ref: 0.1,
             max_lets: 6,
             type_depth: 2,
+            p_subprogram: 0.10,
+            subprogram_depth: 2,
         }
     }
 }
@@ -146,6 +159,8 @@ pub fn big_cfg() -> GenCfg {
 /// the failure mode this fuzzer exists to catch in the compiler).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GenStats {
+    /// Subprogram (nested typed block) slots emitted.
+    pub subprograms: usize,
     /// A lambda name was rebound (organically or via the template) —
     /// audit bug-1 shape.
     pub lambda_rebind: bool,
@@ -341,38 +356,62 @@ pub fn gen_program(rng: &mut Rng) -> String {
 pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut ctx = GenCtx::new();
     let mut stats = GenStats::default();
-    let mut stmts = Vec::new();
     let mut files: Vec<(String, String)> = Vec::new();
+    let stmts = gen_slots(&mut ctx, rng, cfg, &mut stats, Some(&mut files));
+    let tail_ty = types::random_type(rng, cfg.type_depth);
+    let tail = patterns::maybe_select(&ctx, rng, &tail_ty, 3)
+        .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &tail_ty, 3));
+    let prog = if stmts.is_empty() {
+        tail
+    } else {
+        format!("{{ {}; {} }}", stmts.join("; "), tail)
+    };
+    let prog = if files.is_empty() { prog } else { crate::files::render(&prog, &files) };
+    (prog, stats)
+}
+
+/// One run of statement slots. `files` present = top level (module and
+/// dynamic-module arms enabled — those emit file sections and `mod`
+/// statements, which only parse at the program's top level); `None` =
+/// a nested subprogram block.
+fn gen_slots(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+    mut files: Option<&mut Vec<(String, String)>>,
+) -> Vec<String> {
+    let mut stmts = Vec::new();
     let mut nmodules = 0usize;
     let mut ndynmods = 0usize;
     let nslots = rng.below(cfg.max_lets + 1);
     for _ in 0..nslots {
-        if chance(rng, cfg.p_module) {
-            let m = modules::gen_module(&mut ctx, rng, cfg, &mut stats, nmodules);
+        if files.is_some() && chance(rng, cfg.p_module) {
+            let m = modules::gen_module(ctx, rng, cfg, stats, nmodules);
             nmodules += 1;
-            files.extend(m.files);
+            files.as_deref_mut().unwrap().extend(m.files);
             stmts.extend(m.stmts);
-        } else if chance(rng, cfg.p_dynmod) {
+        } else if files.is_some() && chance(rng, cfg.p_dynmod) {
             let n = ndynmods;
             ndynmods += 1;
-            stmts.extend(modules::gen_dynamic_module(&mut ctx, rng, cfg, &mut stats, n));
+            stmts.extend(modules::gen_dynamic_module(ctx, rng, cfg, stats, n));
+        } else if cfg.subprogram_depth > 0 && chance(rng, cfg.p_subprogram) {
+            stmts.push(gen_subprogram_stmt(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_ref) {
-            stmts.extend(funcs::gen_ref_stmts(&mut ctx, rng, cfg, &mut stats));
+            stmts.extend(funcs::gen_ref_stmts(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_rec) {
-            stmts.extend(funcs::gen_rec_lambda(&mut ctx, rng, cfg, &mut stats));
+            stmts.extend(funcs::gen_rec_lambda(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_error_lambda) {
-            stmts.extend(funcs::gen_error_arm_lambda(&mut ctx, rng, cfg, &mut stats));
+            stmts.extend(funcs::gen_error_arm_lambda(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_lambda_shadow_template) {
-            stmts.extend(funcs::gen_shadowed_lambda_template(
-                &mut ctx, rng, cfg, &mut stats,
-            ));
+            stmts.extend(funcs::gen_shadowed_lambda_template(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_bare) {
-            stmts.extend(funcs::gen_bare_lambda(&mut ctx, rng, cfg));
+            stmts.extend(funcs::gen_bare_lambda(ctx, rng, cfg));
         } else if chance(rng, cfg.p_lambda) {
             if chance(rng, cfg.p_poly) {
-                stmts.extend(funcs::gen_poly_lambda(&mut ctx, rng, cfg, &mut stats));
+                stmts.extend(funcs::gen_poly_lambda(ctx, rng, cfg, stats));
             } else {
-                stmts.push(funcs::gen_typed_lambda(&mut ctx, rng, cfg, &mut stats));
+                stmts.push(funcs::gen_typed_lambda(ctx, rng, cfg, stats));
             }
         } else {
             let variant = chance(rng, cfg.p_variant);
@@ -381,8 +420,8 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
             } else {
                 types::random_type(rng, cfg.type_depth)
             };
-            let val = patterns::maybe_select(&ctx, rng, &ty, 3)
-                .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &ty, 3));
+            let val = patterns::maybe_select(ctx, rng, &ty, 3)
+                .unwrap_or_else(|| exprs::gen_typed(ctx, rng, &ty, 3));
             let name = ctx.name_for_bind(rng, cfg);
             let must = variant || ty.contains_nullable();
             let stmt = if must || chance(rng, cfg.p_annotate) {
@@ -394,16 +433,59 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
             ctx.push(name, ty);
         }
     }
-    let tail_ty = types::random_type(rng, cfg.type_depth);
-    let tail = patterns::maybe_select(&ctx, rng, &tail_ty, 3)
-        .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &tail_ty, 3));
-    let prog = if stmts.is_empty() {
-        tail
+    stmts
+}
+
+/// A subprogram slot: a nested generated block bound as a typed value.
+/// The inner block either CAPTURES (shares the outer scope — its
+/// lambdas and selects can close over enclosing bindings; the scope
+/// mark keeps its own lets block-local) or generates CLOSED (a fresh
+/// ctx — fully self-contained composition). Module/file arms are
+/// disabled inside (top-level-only constructs), and the nesting budget
+/// decrements per level.
+fn gen_subprogram_stmt(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+) -> String {
+    stats.subprograms += 1;
+    let ty = types::random_type(rng, cfg.type_depth);
+    let mut inner_cfg = cfg.clone();
+    inner_cfg.subprogram_depth = cfg.subprogram_depth - 1;
+    inner_cfg.max_lets = (cfg.max_lets / 2).max(2);
+    let block = if chance(rng, 0.5) {
+        let mark = ctx.mark();
+        let b = gen_block(ctx, rng, &inner_cfg, stats, &ty);
+        ctx.truncate(mark);
+        b
     } else {
-        format!("{{ {}; {} }}", stmts.join("; "), tail)
+        let mut inner = GenCtx::new();
+        inner.next = ctx.next;
+        let b = gen_block(&mut inner, rng, &inner_cfg, stats, &ty);
+        ctx.next = inner.next;
+        b
     };
-    let prog = if files.is_empty() { prog } else { crate::files::render(&prog, &files) };
-    (prog, stats)
+    let name = ctx.name_for_bind(rng, cfg);
+    let stmt = format!("let {name}: {} = {block}", ty.render());
+    ctx.push(name, ty);
+    stmt
+}
+
+/// A nested block with a REQUIRED tail type — the typed splice point.
+/// Zero slots degenerates to a bare typed expression (a block needs
+/// two or more elements to parse).
+fn gen_block(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+    tail_ty: &GenType,
+) -> String {
+    let stmts = gen_slots(ctx, rng, cfg, stats, None);
+    let tail = patterns::maybe_select(ctx, rng, tail_ty, 3)
+        .unwrap_or_else(|| exprs::gen_typed(ctx, rng, tail_ty, 3));
+    if stmts.is_empty() { tail } else { format!("{{ {}; {} }}", stmts.join("; "), tail) }
 }
 
 #[cfg(test)]
@@ -431,6 +513,22 @@ mod test {
                 Some(&rest[..end])
             })
             .collect()
+    }
+
+    /// Subprogram composition presence: at the default profile a
+    /// healthy fraction of programs embed a nested typed block, and
+    /// nesting reaches depth 2 somewhere in the sample. Catches a
+    /// weights/budget bug silently disabling the arm.
+    #[test]
+    fn subprogram_presence() {
+        let mut rng = Rng::new(0xabcd);
+        let cfg = GenCfg::default();
+        let mut n = 0usize;
+        for _ in 0..300 {
+            let (_, stats) = gen_program_stats(&cfg, &mut rng);
+            n += stats.subprograms;
+        }
+        assert!(n > 30, "subprogram slots over 300 programs: {n}");
     }
 
     /// Shape presence: with the default profile a healthy fraction of

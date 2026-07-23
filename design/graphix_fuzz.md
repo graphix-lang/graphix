@@ -614,3 +614,16 @@ subjects are re-execs of the binary): the prof22 round measured ~12%
 of subject CPU in glibc malloc internals, dominated by per-subject
 cold-start allocation — exactly an allocator's job. The compiler and
 shell crates are untouched.
+
+**Template composition** (stage 2, same day): a statement slot may
+embed a whole generated SUBPROGRAM as a typed block value
+(`gen_subprogram_stmt` → `gen_block` with a REQUIRED tail type — the
+typed splice point). 50/50 the inner block shares the outer scope
+(capture-across-block-boundary shapes; `GenCtx::mark`/`truncate`
+keeps its lets block-local) vs generating fully closed. Module/file
+arms are top-level-only and disabled inside; the nesting budget
+(`subprogram_depth`, default 2) decrements per level. Compile rate
+held at 100.0% (gen-check 3000, old vs new) — composition adds depth
+with zero cross-seam type obligations, per Eric's mostly-self-
+contained-templates design. Reactive generation has its own slot
+loop and does not compose yet (future).
