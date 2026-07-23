@@ -1,0 +1,24 @@
+{let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v))); (m([i64:1], |x| x * i64:2), m(["a"], |s| str::parse))}
+// PENDING TRIAGE (claude, 2026-07-23, jul23c fuzz @<1k subjects — the
+// V3 composition vocabulary's first novel reach). NONDETERMINISTIC
+// LOST-WAKE: the program's result sometimes never fires and script
+// mode waits forever (fuzz child: HANG at outer deadline; shell:
+// timeout with ZERO output). Characterization:
+// - BOTH modes affected identically (--no-fusion and jit) → shared
+//   machinery, not a kernel bug. PRE-EXISTING: reproduces 3/3 on the
+//   pre-depth-trip-ruling binary (4638fe47).
+// - Race, not deadlock: at wedge time every thread is PARKED (main in
+//   the main-thread pump, workers idle; gdb all-thread bt) — the
+//   runtime is idle-waiting on a value that was lost, not stuck.
+// - HEISENBUG: GRAPHIX_DBG_VARS=1 (eprintln timing) makes it SUCCEED;
+//   same file flips wedge/success across runs under load.
+// - Shape matters: two instantiations of the polymorphic lambda
+//   called DIRECTLY in the tuple literal wedge; let-binding the same
+//   two calls and returning (r1, r2) is FINE; either call alone is
+//   FINE. -i (no init module) still wedges.
+// - Prime suspect: the FLAGGED-FOR-REVIEW racy rt.cached() fallback
+//   in runtime lazy-bind resolution (the jul12 shell-flap fix left it
+//   for shapes the bind_to_lambda index can't know) — a value set
+//   before a ref registers, backfill misses, node waits forever.
+// - Repro: loop the shell under timeout; wedge rate is load- and
+//   binary-dependent (release wedges more often than debug).
