@@ -10,7 +10,6 @@ use poolshark::global::GPooled;
 use tokio::sync::mpsc;
 
 pub struct TestCtx {
-    pub internal_only: netidx::InternalOnly,
     pub rt: GXHandle<NoExt>,
 }
 
@@ -80,7 +79,6 @@ pub fn check_fuse_expectation(expect: FuseExpect) {
 impl TestCtx {
     pub async fn shutdown(self) {
         drop(self.rt);
-        self.internal_only.shutdown().await
     }
 
     /// Snapshot the compile-time fusion outcome counters. See
@@ -190,18 +188,11 @@ where
     ),
 {
     let _ = env_logger::try_init();
-    let env = netidx::InternalOnly::new().await?;
-    let mut ctx = graphix_compiler::ExecCtx::new(GXRt::<NoExt>::new(
-        env.publisher().clone(),
-        env.subscriber().clone(),
-    ))?;
-    // ONE netidx universe: the sys::net package (NetState) must share
-    // this InternalOnly, or a test's publishes land in a different
-    // resolver than gx.subscriber()'s reads (the data_table tests).
-    ctx.libstate.set(crate::NetConfig::Ready {
-        publisher: env.publisher().clone(),
-        subscriber: env.subscriber().clone(),
-    });
+    // No netidx: the runtime is network-free since the extraction.
+    // Tests that use sys::net (or the gui data_table) share ONE
+    // process-internal netidx materialized on demand by NetState
+    // (NetConfig defaults to Internal when nothing is seeded).
+    let mut ctx = graphix_compiler::ExecCtx::new(GXRt::<NoExt>::new())?;
     let mut modules = ahash::AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
     for p in register {
@@ -212,7 +203,6 @@ where
     let mut all_resolvers = vec![VfsResolver::new(modules)];
     all_resolvers.extend(resolvers);
     Ok(TestCtx {
-        internal_only: env,
         rt: GXConfig::builder(ctx, sub)
             .root(root)
             .resolvers(all_resolvers)

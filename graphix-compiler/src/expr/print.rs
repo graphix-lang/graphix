@@ -8,7 +8,7 @@ use crate::{
     typ::Type,
 };
 use compact_str::format_compact;
-use netidx::{path::Path, utils::Either};
+use netidx_core::{path::Path, utils::Either};
 use netidx_value::{Value, parser::VAL_ESC};
 use poolshark::local::LPooled;
 use std::fmt::{self, Formatter, Write};

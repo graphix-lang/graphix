@@ -8,7 +8,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::{BitFlags, bitflags};
-use netidx::publisher::Typ;
+use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt::Debug;

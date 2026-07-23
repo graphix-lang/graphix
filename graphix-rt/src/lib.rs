@@ -21,18 +21,14 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use log::error;
-use netidx::{
-    protocol::valarray::ValArray,
-    publisher::{Value, WriteRequest},
-    subscriber::{self, SubId},
-};
 use netidx_core::atomic_id;
 use netidx_value::FromValue;
+use netidx_value::{ValArray, Value};
 use nohash::IntSet;
 use poolshark::global::GPooled;
 use serde_derive::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::{fmt, future, sync::Arc, time::Duration};
+use std::{fmt, future, sync::Arc};
 use tokio::{
     sync::{
         mpsc::{self as tmpsc},
@@ -117,9 +113,6 @@ impl GXExt for NoExt {
         NoUserEvent
     }
 }
-
-type UpdateBatch = GPooled<Vec<(SubId, subscriber::Event)>>;
-type WriteBatch = GPooled<Vec<WriteRequest>>;
 
 #[derive(Debug)]
 pub struct CompExp<X: GXExt> {
@@ -412,6 +405,13 @@ enum ToGX<X: GXExt> {
     GetEnv {
         res: oneshot::Sender<Env>,
     },
+    /// Run a closure with the runtime's ExecCtx — the generic bridge
+    /// for handle-side consumers that need `ctx.libstate` (e.g. the
+    /// gui data_table reading the sys::net package's NetState; the
+    /// core itself is network-free).
+    WithCtx {
+        f: Box<dyn FnOnce(&mut ExecCtx<GXRt<X>, X::UserEvent>) + Send>,
+    },
     Delete {
         id: ExprId,
     },
@@ -594,7 +594,6 @@ pub struct EnvStats {
 struct GXHandleInner<X: GXExt> {
     tx: tmpsc::UnboundedSender<ToGX<X>>,
     task: JoinHandle<()>,
-    subscriber: netidx::subscriber::Subscriber,
     /// Shared (cloned from `ctx.control`) interrupt/abort control. See
     /// [`GXHandle::interrupt`] / [`GXHandle::abort`].
     control: triomphe::Arc<Control>,
@@ -628,9 +627,25 @@ impl<X: GXExt> Clone for GXHandle<X> {
 }
 
 impl<X: GXExt> GXHandle<X> {
-    /// Get a clone of the netidx subscriber used by this runtime.
-    pub fn subscriber(&self) -> netidx::subscriber::Subscriber {
-        self.0.subscriber.clone()
+    /// Run `f` with the runtime's `ExecCtx` on the runtime task and
+    /// return its result. The generic accessor for handle-side
+    /// consumers of `ctx.libstate` (e.g. the gui data_table fetching
+    /// the sys::net NetState's subscriber).
+    pub async fn with_ctx<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut ExecCtx<GXRt<X>, X::UserEvent>) -> T + Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .tx
+            .send(ToGX::WithCtx {
+                f: Box::new(move |ctx| {
+                    let _ = tx.send(f(ctx));
+                }),
+            })
+            .map_err(|_| anyhow!("runtime is shut down"))?;
+        Ok(rx.await?)
     }
 
     /// Request that in-flight loops in the runtime abort to bottom this
@@ -982,14 +997,6 @@ impl<X: GXExt> GXHandle<X> {
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 pub struct GXConfig<X: GXExt> {
-    /// The subscribe timeout to use when resolving modules in
-    /// netidx. Resolution will fail if the subscription does not
-    /// succeed before this timeout elapses.
-    #[builder(setter(strip_option), default)]
-    resolve_timeout: Option<Duration>,
-    /// The publish timeout to use when sending published batches. Default None.
-    #[builder(setter(strip_option), default)]
-    publish_timeout: Option<Duration>,
     /// The execution context with any builtins already registered
     ctx: ExecCtx<GXRt<X>, X::UserEvent>,
     /// The text of the root module
@@ -1033,7 +1040,6 @@ impl<X: GXExt> GXConfig<X> {
     /// library. To build a runtime with the full standard library and nothing
     /// else simply pass the output of `graphix_stdlib::register` to start.
     pub async fn start(self) -> Result<GXHandle<X>> {
-        let subscriber = self.ctx.rt.subscriber.clone();
         // Clone the interrupt/abort control before `self` moves into the
         // spawned task, so the handle and the running `ExecCtx` share it.
         let control = self.ctx.control.clone();
@@ -1053,6 +1059,6 @@ impl<X: GXExt> GXConfig<X> {
             };
         });
         init_rx.await??;
-        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, subscriber, control })))
+        Ok(GXHandle(Arc::new(GXHandleInner { tx, task, control })))
     }
 }

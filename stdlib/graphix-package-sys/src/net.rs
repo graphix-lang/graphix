@@ -15,7 +15,7 @@ use graphix_package_core::{CachedVals, arity1, arity2, extract_cast_type};
 use netidx::{
     path::Path,
     publisher::{Typ, Val},
-    subscriber::{self, Dval, UpdatesFlags, Value},
+    subscriber::{Dval, UpdatesFlags, Value},
 };
 use netidx_core::utils::Either;
 use netidx_protocols::rpc::server::{self, ArgSpec};
@@ -45,7 +45,6 @@ fn as_path(v: Value) -> Option<Path> {
 #[derive(Debug)]
 pub(crate) struct Write {
     args: CachedVals,
-    top_id: ExprId,
     id: BindId,
     dv: Either<(Path, Dval), Vec<Value>>,
 }
@@ -62,11 +61,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
+        let _ = top_id;
         Ok(Box::new(Write {
             args: CachedVals::new(from),
             dv: Either::Right(vec![]),
             id: BindId::new(),
-            top_id,
         }))
     }
 }

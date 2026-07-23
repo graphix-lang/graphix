@@ -9,8 +9,8 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::{BitFlags, bitflags};
 use immutable_chunkmap::map::Map;
-use netidx::publisher::{Typ, Value};
 use netidx_value::ValArray;
+use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use std::iter;
 

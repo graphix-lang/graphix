@@ -1,5 +1,5 @@
 use super::parser;
-use netidx::path::Path;
+use netidx_core::path::Path;
 use netidx_derive::Pack;
 use std::{borrow::Borrow, fmt, ops::Deref, result, str::FromStr};
 

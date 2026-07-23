@@ -25,7 +25,8 @@ use combine::{
 };
 use compact_str::CompactString;
 use escaping::Escape;
-use netidx::{path::Path, publisher::Value};
+use netidx_core::path::Path;
+use netidx_value::Value;
 use netidx_value::parser::{
     VAL_ESC, VAL_MUST_ESC, escaped_string, not_prefix, sep_by_tok, sep_by1_tok,
     value as parse_value,

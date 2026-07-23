@@ -2,7 +2,7 @@ use crate::typ::{TVar, Type, TypeRef};
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx::publisher::Typ;
+use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{iter, mem::Discriminant};

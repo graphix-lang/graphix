@@ -12,8 +12,8 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx::subscriber::Value;
 use netidx_value::Typ;
+use netidx_value::Value;
 use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, sync::atomic::Ordering};
 

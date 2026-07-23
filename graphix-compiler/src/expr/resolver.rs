@@ -17,7 +17,7 @@ use compact_str::format_compact;
 use futures::future::try_join_all;
 use indexmap::IndexSet;
 use log::info;
-use netidx::{path::Path, utils::Either};
+use netidx_core::{path::Path, utils::Either};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr};

@@ -14,7 +14,7 @@ exclude = ["book", "../book"]
 
 [features]
 default = []
-krb5_iov = ["netidx/krb5_iov"]
+krb5_iov = []
 
 [dependencies]
 anyhow = { workspace = true }
@@ -33,9 +33,7 @@ graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
 immutable-chunkmap = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }
-netidx = { workspace = true }
 netidx-core = { workspace = true }
-netidx-protocols = { workspace = true }
 netidx-value = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }

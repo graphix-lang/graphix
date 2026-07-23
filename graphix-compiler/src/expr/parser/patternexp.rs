@@ -16,7 +16,7 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
-use netidx::utils::Either;
+use netidx_core::utils::Either;
 use netidx_value::parser::{VAL_ESC, VAL_MUST_ESC, value as parse_value};
 use poolshark::local::LPooled;
 use triomphe::Arc;

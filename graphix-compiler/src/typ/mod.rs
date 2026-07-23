@@ -8,8 +8,9 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx::{publisher::Typ, utils::Either};
+use netidx_core::utils::Either;
 use netidx_derive::Pack;
+use netidx_value::Typ;
 use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::{IsoPoolable, local::LPooled};
@@ -478,7 +479,7 @@ impl TypeRef {
         env.find_visible(&self.scope, &self.name, |s, n| {
             env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
                 Arc::new(ResolvedRef {
-                    canonical_scope: ModPath(netidx::path::Path::from(
+                    canonical_scope: ModPath(netidx_core::path::Path::from(
                         arcstr::ArcStr::from(s),
                     )),
                     pos: d.pos,
@@ -1011,7 +1012,7 @@ impl Type {
                 if let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) {
                     let resolved = env.find_visible(&tr.scope, &tr.name, |s, n| {
                         env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
-                            let canonical = ModPath(netidx::path::Path::from(
+                            let canonical = ModPath(netidx_core::path::Path::from(
                                 arcstr::ArcStr::from(s),
                             ));
                             (canonical, d.pos, d.ori.clone())

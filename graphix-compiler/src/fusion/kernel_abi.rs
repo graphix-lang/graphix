@@ -123,8 +123,9 @@ impl AbstractRegistry {
     }
 
     fn visible_from(&self, def: &AbstractDef, scope: &ModPath) -> bool {
-        let mut candidate = netidx::path::Path::parts(&scope.0);
-        netidx::path::Path::parts(&def.scope.0).all(|part| candidate.next() == Some(part))
+        let mut candidate = netidx_core::path::Path::parts(&scope.0);
+        netidx_core::path::Path::parts(&def.scope.0)
+            .all(|part| candidate.next() == Some(part))
     }
 }
 

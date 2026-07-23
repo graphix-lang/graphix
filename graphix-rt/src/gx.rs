@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use futures::{StreamExt, channel::mpsc, future::try_join_all};
+use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope, compile,
     expr::{
@@ -13,19 +13,14 @@ use graphix_compiler::{
 };
 use indexmap::IndexMap;
 use log::{debug, error, info};
-use netidx::{protocol::valarray::ValArray, publisher::Value, subscriber::Dval};
-use netidx_protocols::rpc::server::RpcCall;
+use netidx_value::{ValArray, Value};
 use nohash::{BuildNoHashHasher, IntMap};
 use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
 };
 use smallvec::{SmallVec, smallvec};
-use std::{
-    collections::{VecDeque, hash_map::Entry},
-    future, mem, result,
-    time::Duration,
-};
+use std::{collections::hash_map::Entry, future, mem, result, time::Duration};
 use tokio::{
     fs, select,
     sync::{
@@ -39,7 +34,7 @@ use triomphe::Arc;
 
 use crate::{
     Callable, CallableId, CompExp, CompRes, GXConfig, GXEvent, GXExt, GXHandle, GXRt,
-    Ref, ToGX, TraceEvent, TraceSegment, UpdateBatch, WriteBatch,
+    Ref, ToGX, TraceEvent, TraceSegment,
 };
 
 static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
@@ -217,30 +212,6 @@ async fn join_or_wait<T: 'static>(
     }
 }
 
-async fn maybe_next<T>(go: bool, ch: &mut mpsc::Receiver<T>) -> T {
-    if go {
-        match ch.next().await {
-            None => future::pending().await,
-            Some(v) => v,
-        }
-    } else {
-        future::pending().await
-    }
-}
-
-async fn unsubscribe_ready(pending: &VecDeque<(Instant, Dval)>, now: Instant) {
-    if pending.len() == 0 {
-        future::pending().await
-    } else {
-        let (ts, _) = pending.front().unwrap();
-        let one = Duration::from_secs(1);
-        let elapsed = now - *ts;
-        if elapsed < one {
-            time::sleep(one - elapsed).await
-        }
-    }
-}
-
 struct CallableInt {
     expr: ExprId,
     args: Box<[BindId]>,
@@ -253,11 +224,8 @@ pub(super) struct GX<X: GXExt> {
     callables: IntMap<CallableId, CallableInt>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Resolvers,
-    publish_timeout: Option<Duration>,
-    last_rpc_gc: Instant,
     batch_pool: Pool<Vec<GXEvent>>,
     flags: BitFlags<CFlag>,
-    commit_tasks: JoinSet<()>,
     /// A pending `WaitResultOrIdle` request: deliver the first value the
     /// watched expr emits, or `None` when the runtime next goes idle. See
     /// `GXHandle::wait_result_or_idle`.
@@ -295,11 +263,8 @@ impl<X: GXExt> GX<X> {
             callables: IntMap::default(),
             sub: cfg.sub,
             resolvers: std::sync::Arc::from(cfg.resolvers),
-            publish_timeout: cfg.publish_timeout,
-            last_rpc_gc: Instant::now(),
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
-            commit_tasks: JoinSet::new(),
             result_watch: None,
             cycle: 0,
             trace: None,
@@ -314,11 +279,8 @@ impl<X: GXExt> GX<X> {
 
     async fn do_cycle(
         &mut self,
-        updates: Option<UpdateBatch>,
-        writes: Option<WriteBatch>,
         tasks: &mut Vec<(BindId, Value)>,
         custom_tasks: &mut Vec<(BindId, Box<dyn CustomBuiltinType>)>,
-        rpcs: &mut Vec<(BindId, RpcCall)>,
         to_rt: &mut UnboundedReceiver<ToGX<X>>,
         input: &mut Vec<ToGX<X>>,
         mut batch: GPooled<Vec<GXEvent>>,
@@ -377,32 +339,6 @@ impl<X: GXExt> GX<X> {
         }
         for (id, u) in custom_tasks.drain(..) {
             push_event!(id, u, custom, by_ref, custom_updates)
-        }
-        for _ in 0..self.ctx.rt.rpc_overflow.len() {
-            let (id, v) = self.ctx.rt.rpc_overflow.pop_front().unwrap();
-            push_event!(id, v, rpc_calls, by_ref, rpc_overflow)
-        }
-        for (id, v) in rpcs.drain(..) {
-            push_event!(id, v, rpc_calls, by_ref, rpc_overflow)
-        }
-        for _ in 0..self.ctx.rt.net_updates.len() {
-            let (id, v) = self.ctx.rt.net_updates.pop_front().unwrap();
-            push_event!(id, v, netidx, subscribed, net_updates)
-        }
-        if let Some(mut updates) = updates {
-            for (id, v) in updates.drain(..) {
-                push_event!(id, v, netidx, subscribed, net_updates)
-            }
-        }
-        for _ in 0..self.ctx.rt.net_writes.len() {
-            let (id, v) = self.ctx.rt.net_writes.pop_front().unwrap();
-            push_event!(id, v, writes, published, net_writes)
-        }
-        if let Some(mut writes) = writes {
-            for wr in writes.drain(..) {
-                let id = wr.id;
-                push_event!(id, wr, writes, published, net_writes)
-            }
         }
         if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.event) {
             error!("could not marshall user events {e:?}")
@@ -516,13 +452,6 @@ impl<X: GXExt> GX<X> {
         }
         self.event.clear();
         self.ctx.rt.updated.clear();
-        if self.ctx.rt.batch.len() > 0 {
-            let batch =
-                mem::replace(&mut self.ctx.rt.batch, self.ctx.rt.publisher.start_batch());
-            let timeout = self.publish_timeout;
-            while let Some(_) = self.commit_tasks.try_join_next() {}
-            self.commit_tasks.spawn(async move { batch.commit(timeout).await });
-        }
     }
 
     async fn process_input_batch(
@@ -533,6 +462,7 @@ impl<X: GXExt> GX<X> {
     ) {
         for m in input.drain(..) {
             match m {
+                ToGX::WithCtx { f } => f(&mut self.ctx),
                 ToGX::GetEnv { res } => {
                     let _ = res.send(self.ctx.env.clone());
                 }
@@ -654,9 +584,6 @@ impl<X: GXExt> GX<X> {
         !self.ctx.rt.updated.is_empty()
             || self.ctx.rt.var_updates.len() > 0
             || self.ctx.rt.custom_updates.len() > 0
-            || self.ctx.rt.net_updates.len() > 0
-            || self.ctx.rt.net_writes.len() > 0
-            || self.ctx.rt.rpc_overflow.len() > 0
             || self.ctx.rt.ext.is_ready()
     }
 
@@ -860,7 +787,8 @@ impl<X: GXExt> GX<X> {
             let scope = match &initial_scope {
                 None => Scope::root(),
                 Some(s) => {
-                    let path = ModPath(netidx::path::Path::root().append(s.as_str()));
+                    let path =
+                        ModPath(netidx_core::path::Path::root().append(s.as_str()));
                     self.ctx.env.unbind_scope_subtree(&path);
                     Scope { lexical: path.clone(), dynamic: path }
                 }
@@ -1041,14 +969,12 @@ impl<X: GXExt> GX<X> {
         mut self,
         mut to_rt: tmpsc::UnboundedReceiver<ToGX<X>>,
     ) -> Result<()> {
-        let mut tasks = vec![];
-        let mut custom_tasks = vec![];
+        let mut tasks: Vec<(BindId, Value)> = vec![];
+        let mut custom_tasks: Vec<(BindId, Box<dyn CustomBuiltinType>)> = vec![];
         let mut input = vec![];
-        let mut rpcs = vec![];
         // Consecutive apparently-idle passes — the two-pass idle
         // confirmation (see `idle_grace`). Reset by any ready work.
         let mut idle_passes: u32 = 0;
-        let onemin = Duration::from_secs(60);
         'main: loop {
             // Abort/shutdown: if the handle was dropped or `abort()` was
             // called, exit before doing any more work. A wedged
@@ -1058,27 +984,7 @@ impl<X: GXExt> GX<X> {
             if self.ctx.control.aborted() {
                 return Ok(());
             }
-            let now = Instant::now();
-            let mut updates = None;
-            let mut writes = None;
             macro_rules! peek {
-                (updates) => {
-                    if self.ctx.rt.net_updates.is_empty() {
-                        while let Ok(mut up) = self.ctx.rt.updates.try_recv() {
-                            match &mut updates {
-                                None => updates = Some(up),
-                                Some(prev) => prev.extend(up.drain(..)),
-                            }
-                        }
-                    }
-                };
-                (writes) => {
-                    if self.ctx.rt.net_writes.is_empty() {
-                        if let Ok(wr) = self.ctx.rt.writes.try_recv() {
-                            writes = Some(wr);
-                        }
-                    }
-                };
                 (tasks) => {
                     while let Some(Ok(up)) = self.ctx.rt.tasks.try_join_next() {
                         tasks.push(up);
@@ -1103,13 +1009,6 @@ impl<X: GXExt> GX<X> {
                         }
                     }
                 };
-                (rpcs) => {
-                    if self.ctx.rt.rpc_overflow.is_empty() {
-                        while let Ok(up) = self.ctx.rt.rpcs.try_recv() {
-                            rpcs.push(up);
-                        }
-                    }
-                };
                 (input) => {
                     while let Ok(m) = to_rt.try_recv() {
                         input.push(m);
@@ -1129,22 +1028,10 @@ impl<X: GXExt> GX<X> {
             // the writer task) — a selfcheck-class oracle hole: the
             // same program's verdict flipped between Timeout and an
             // empty trace run-to-run, in both modes independently.
-            peek!(
-                updates,
-                writes,
-                watches,
-                tasks,
-                var_watches,
-                custom_tasks,
-                rpcs,
-                input
-            );
+            peek!(watches, tasks, var_watches, custom_tasks, input);
             let ready = self.cycle_ready()
-                || updates.is_some()
-                || writes.is_some()
                 || !tasks.is_empty()
                 || !custom_tasks.is_empty()
-                || !rpcs.is_empty()
                 || !input.is_empty();
             // A `WaitResultOrIdle` watcher whose expr didn't emit during
             // the previous cycle resolves to `None` when the runtime goes
@@ -1171,40 +1058,19 @@ impl<X: GXExt> GX<X> {
             }
             select! {
                 _ = idle_grace(idle_passes > 0 && !ready) => {
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
-                },
-                rp = maybe_next(
-                    self.ctx.rt.rpc_overflow.is_empty(),
-                    &mut self.ctx.rt.rpcs
-                ) => {
-                    rpcs.push(rp);
-                    peek!(updates, tasks, custom_tasks, watches, var_watches, writes, rpcs, input)
-                }
-                wr = maybe_next(
-                    self.ctx.rt.net_writes.is_empty(),
-                    &mut self.ctx.rt.writes
-                ) => {
-                    writes = Some(wr);
-                    peek!(updates, tasks, custom_tasks, watches, var_watches, rpcs, input);
-                },
-                up = maybe_next(
-                    self.ctx.rt.net_updates.is_empty(),
-                    &mut self.ctx.rt.updates
-                ) => {
-                    updates = Some(up);
-                    peek!(updates, writes, custom_tasks, watches, var_watches, tasks, rpcs, input);
+                    peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = join_or_wait(&mut self.ctx.rt.tasks) => {
                     if let Ok(up) = up {
                         tasks.push(up);
                     }
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
+                    peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = join_or_wait(&mut self.ctx.rt.custom_tasks) => {
                     if let Ok(up) = up {
                         custom_tasks.push(up);
                     }
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
+                    peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = self.ctx.rt.watches.next() => {
                     if let Some(mut up) = up {
@@ -1212,7 +1078,7 @@ impl<X: GXExt> GX<X> {
                             custom_tasks.push(v);
                         }
                     }
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
+                    peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = self.ctx.rt.var_watches.next() => {
                     if let Some(mut up) = up {
@@ -1220,53 +1086,28 @@ impl<X: GXExt> GX<X> {
                             tasks.push(v);
                         }
                     }
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
+                    peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 _ = or_never(ready) => {
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input)
+                    peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 n = to_rt.recv_many(&mut input, 100000) => {
                     if n == 0 {
                         break 'main Ok(())
                     }
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs);
+                    peek!(watches, tasks, var_watches, custom_tasks);
                 },
                 r = self.ctx.rt.ext.update_sources() => {
                     if let Err(e) = r {
                         error!("failed to update custom event sources {e:?}")
                     }
-                    peek!(updates, writes, watches, tasks, var_watches, custom_tasks, rpcs, input);
-                },
-                () = unsubscribe_ready(&self.ctx.rt.pending_unsubscribe, now) => {
-                    while let Some((ts, _)) = self.ctx.rt.pending_unsubscribe.front() {
-                        if ts.elapsed() >= Duration::from_secs(1) {
-                            self.ctx.rt.pending_unsubscribe.pop_front();
-                        } else {
-                            break
-                        }
-                    }
-                    continue 'main
+                    peek!(watches, tasks, var_watches, custom_tasks, input);
                 },
             }
             let mut batch = self.batch_pool.take();
             self.process_input_batch(&mut tasks, &mut input, &mut batch).await;
-            self.do_cycle(
-                updates,
-                writes,
-                &mut tasks,
-                &mut custom_tasks,
-                &mut rpcs,
-                &mut to_rt,
-                &mut input,
-                batch,
-            )
-            .await;
-            if !self.ctx.rt.rpc_clients.is_empty() {
-                if now - self.last_rpc_gc >= onemin {
-                    self.last_rpc_gc = now;
-                    self.ctx.rt.rpc_clients.retain(|_, c| now - c.last_used <= onemin);
-                }
-            }
+            self.do_cycle(&mut tasks, &mut custom_tasks, &mut to_rt, &mut input, batch)
+                .await;
         }
     }
 }

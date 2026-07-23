@@ -126,7 +126,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         if let ExprKind::Bind(be) = &spec.kind {
             if let expr::StructurePattern::Bind(bind_name) = &be.pattern {
                 if let ExprKind::Lambda(lam) = &value.kind {
-                    if let netidx::utils::Either::Right(builtin_name) = &lam.body {
+                    if let netidx_core::utils::Either::Right(builtin_name) = &lam.body {
                         if CollectionIntrinsic::from_name(builtin_name).is_none()
                             && let Type::Fn(fn_type) = node.typ()
                         {

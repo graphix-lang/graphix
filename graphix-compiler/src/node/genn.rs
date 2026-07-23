@@ -11,7 +11,7 @@ use crate::{
 use ahash::AHashMap;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
-use netidx::publisher::{Typ, Value};
+use netidx_value::{Typ, Value};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::sync::atomic::AtomicBool;

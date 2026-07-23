@@ -22,7 +22,7 @@ use compact_str::CompactString;
 // (reads stay O(log n)) for 16x cheaper writes.
 pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, 16>;
 pub type Set<K> = immutable_chunkmap::set::Set<K, 16>;
-use netidx::path::Path;
+use netidx_core::path::Path;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{fmt, iter, mem, ops::Bound};

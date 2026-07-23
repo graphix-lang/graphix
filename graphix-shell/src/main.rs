@@ -8,6 +8,7 @@ use graphix_compiler::{
     expr::{FilesResolver, Source},
 };
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
+use graphix_package_core::NetConfig;
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use log::info;
@@ -329,14 +330,15 @@ fn tokio_main(
                 .context("starting log")?;
         }
         info!("graphix shell starting");
-        let mut _internal = None;
-        let (publisher, subscriber) = if p.no_netidx {
-            let i = InternalOnly::new().await?;
-            let (p, s) = (i.publisher().clone(), i.subscriber().clone());
-            _internal = Some(i);
-            (p, s)
+        // netidx is a package concern now (design/netidx_extraction.md):
+        // the shell just seeds NetConfig. --no-netidx (or a config
+        // failure) means Internal-on-demand — programs that never use
+        // sys::net never touch the network.
+        let net_config = if p.no_netidx {
+            NetConfig::Internal
         } else {
-            p.get_pub_sub(cfg).await?
+            let (publisher, subscriber) = p.get_pub_sub(cfg).await?;
+            NetConfig::Ready { publisher, subscriber }
         };
         let mut shell = ShellBuilder::<NoExt>::default();
         let program_args: Vec<ArcStr> =
@@ -357,10 +359,18 @@ fn tokio_main(
             let source = match f.strip_prefix("netidx:") {
                 #[cfg(feature = "sys")]
                 Some(path) => {
+                    let subscriber = match &net_config {
+                        NetConfig::Ready { subscriber, .. } => subscriber.clone(),
+                        _ => {
+                            bail!(
+                                "loading a netidx: script requires netidx                                  (remove --no-netidx)"
+                            )
+                        }
+                    };
                     shell = shell.module_resolvers(vec![
                         graphix_package_sys::loader::NetidxResolver::new(
-                            subscriber.clone(),
-                            netidx::path::Path::from(ArcStr::from(path)),
+                            subscriber,
+                            netidx_core::path::Path::from(ArcStr::from(path)),
                             None,
                         ),
                     ]);
@@ -391,8 +401,7 @@ fn tokio_main(
             enable.insert(CFlag::FusionDisabled);
         }
         shell
-            .publisher(publisher)
-            .subscriber(subscriber)
+            .net_config(net_config)
             .enable_flags(enable)
             .disable_flags(disable)
             .build()?

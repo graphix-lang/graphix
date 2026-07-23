@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
-use netidx::{publisher::Typ, subscriber::Value};
+use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
 use std::fmt::Debug;
 use triomphe::Arc;

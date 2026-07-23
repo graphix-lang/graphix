@@ -50,13 +50,7 @@ use enumflags2::bitflags;
 use expr::{Attr, Expr};
 use futures::channel::mpsc;
 use log::info;
-use netidx::{
-    path::Path,
-    publisher::{Id, Val, WriteRequest},
-    subscriber::{self, Dval, SubId, UpdatesFlags, Value},
-};
-use netidx_protocols::rpc::server::{ArgSpec, RpcCall};
-use netidx_value::{Abstract, abstract_type::AbstractWrapper};
+use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use node::compiler;
 use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
@@ -468,9 +462,6 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
 pub struct Event<E: UserEvent> {
     pub init: bool,
     pub variables: IntMap<BindId, TagValue>,
-    pub netidx: IntMap<SubId, subscriber::Event>,
-    pub writes: IntMap<Id, WriteRequest>,
-    pub rpc_calls: IntMap<BindId, RpcCall>,
     pub custom: IntMap<BindId, Box<dyn CustomBuiltinType>>,
     pub user: E,
 }
@@ -480,22 +471,16 @@ impl<E: UserEvent> Event<E> {
         Event {
             init: false,
             variables: IntMap::default(),
-            netidx: IntMap::default(),
-            writes: IntMap::default(),
-            rpc_calls: IntMap::default(),
             custom: IntMap::default(),
             user,
         }
     }
 
     pub fn clear(&mut self) {
-        let Self { init, variables, netidx, rpc_calls, writes, custom, user } = self;
+        let Self { init, variables, custom, user } = self;
         *init = false;
         variables.clear();
-        netidx.clear();
-        rpc_calls.clear();
         custom.clear();
-        writes.clear();
         user.clear();
     }
 }
@@ -1157,40 +1142,6 @@ pub trait Rt: Debug + Any {
 
     fn clear(&mut self);
 
-    /// Subscribe to the specified netidx path
-    ///
-    /// When the subscription updates you are expected to deliver
-    /// Netidx events to the expression specified by ref_by.
-    fn subscribe(&mut self, flags: UpdatesFlags, path: Path, ref_by: ExprId) -> Dval;
-
-    /// Called when a subscription is no longer needed
-    fn unsubscribe(&mut self, path: Path, dv: Dval, ref_by: ExprId);
-
-    /// List the netidx path, return Value::Null if the path did not
-    /// change. When the path did update you should send the output
-    /// back as a properly formatted struct with two fields, rows and
-    /// columns both containing string arrays.
-    fn list(&mut self, id: BindId, path: Path);
-
-    /// List the table at path, return Value::Null if the path did not
-    /// change
-    fn list_table(&mut self, id: BindId, path: Path);
-
-    /// list or table will no longer be called on this BindId, and
-    /// related resources can be cleaned up.
-    fn stop_list(&mut self, id: BindId);
-
-    /// Publish the specified value, returning it's Id, which must be
-    /// used to update the value and unpublish it. If the path is
-    /// already published, return an error.
-    fn publish(&mut self, path: Path, value: Value, ref_by: ExprId) -> Result<Val>;
-
-    /// Update the specified value
-    fn update(&mut self, id: &Val, value: Value);
-
-    /// Stop publishing the specified id
-    fn unpublish(&mut self, id: Val, ref_by: ExprId);
-
     /// This will be called by the compiler whenever a bound variable
     /// is referenced. The ref_by is the toplevel expression that
     /// contains the variable reference. When a variable event
@@ -1240,32 +1191,6 @@ pub trait Rt: Debug + Any {
     /// toplevel node this method is called to notify the runtime that needs to
     /// update any dependent toplevel nodes.
     fn notify_set(&mut self, id: BindId);
-
-    /// This must return results from the same path in the call order.
-    ///
-    /// when the rpc returns you are expected to deliver a Variable
-    /// event with the specified id to the expression specified by
-    /// ref_by.
-    fn call_rpc(&mut self, name: Path, args: Vec<(ArcStr, Value)>, id: BindId);
-
-    /// Publish an rpc at the specified path with the specified
-    /// procedure level doc and arg spec.
-    ///
-    /// When the RPC is called the rpc table in event will be
-    /// populated under the specified bind id.
-    ///
-    /// If the procedure is already published an error will be
-    /// returned
-    fn publish_rpc(
-        &mut self,
-        name: Path,
-        doc: Value,
-        spec: Vec<ArgSpec>,
-        id: BindId,
-    ) -> Result<()>;
-
-    /// unpublish the rpc identified by the bind id.
-    fn unpublish_rpc(&mut self, name: Path);
 
     /// arrange to have a Timer event delivered after timeout. When
     /// the timer expires you are expected to deliver a Variable event

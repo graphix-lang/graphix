@@ -32,8 +32,8 @@ use crate::{
     node::{bind::Ref, compiler::compile, lambda::LambdaDef},
     typ::FnType,
 };
-use netidx::subscriber::Value;
 use netidx_value::ValArray;
+use netidx_value::Value;
 use std::sync::Arc;
 
 // ─── Kernel: the Apply<R, E> wrapper ────────────────────────────

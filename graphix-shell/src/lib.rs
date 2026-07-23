@@ -17,13 +17,10 @@ use graphix_compiler::{
 use graphix_package::{
     Cdc, CustomResult, IndexSet, MainThreadHandle, Package, root_module_source,
 };
-use graphix_package_core::ProgramArgs;
+use graphix_package_core::{NetConfig, NetTimeouts, ProgramArgs};
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
 use input::InputReader;
-use netidx::{
-    publisher::{Publisher, Value},
-    subscriber::Subscriber,
-};
+use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
 use std::{marker::PhantomData, process::exit, time::Duration};
@@ -166,14 +163,12 @@ pub struct Shell<X: GXExt> {
     /// set the shell's mode
     #[builder(default = "Mode::Repl")]
     mode: Mode,
-    /// The netidx publisher to use. If you do not wish to use netidx
-    /// you can use netidx::InternalOnly to create an internal netidx
-    /// environment
-    publisher: Publisher,
-    /// The netidx subscriber to use. If you do not wish to use netidx
-    /// you can use netidx::InternalOnly to create an internal netidx
-    /// environment
-    subscriber: Subscriber,
+    /// The netidx configuration seeded into `ctx.libstate` for the
+    /// sys::net package. Defaults to `NetConfig::Internal` — a
+    /// process-internal netidx materialized only if a program
+    /// actually performs a netidx operation.
+    #[builder(default = "NetConfig::Internal")]
+    net_config: NetConfig,
     /// Enable compiler flags, these will be ORed with the default set of flags
     /// for the mode.
     #[builder(default)]
@@ -223,10 +218,13 @@ impl<X: GXExt> Shell<X> {
         &mut self,
         sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     ) -> Result<GXHandle<X>> {
-        let publisher = self.publisher.clone();
-        let subscriber = self.subscriber.clone();
-        let mut ctx = ExecCtx::new(GXRt::<X>::new(publisher, subscriber))
-            .context("creating graphix context")?;
+        let mut ctx =
+            ExecCtx::new(GXRt::<X>::new()).context("creating graphix context")?;
+        ctx.libstate.set(self.net_config.clone());
+        ctx.libstate.set(NetTimeouts {
+            publish: self.publish_timeout,
+            subscribe: self.resolve_timeout,
+        });
         let mut args = vec![];
         if let Mode::Script(source) | Mode::Check(source) = &self.mode {
             if let Source::File(p) = source {
@@ -263,24 +261,18 @@ impl<X: GXExt> Shell<X> {
         // GRAPHIX_MODPATH `netidx:` entries resolve through the sys
         // package's loader (the compiler only knows `file:`).
         #[cfg(feature = "sys")]
-        {
+        if let NetConfig::Ready { subscriber, .. } = &self.net_config {
             let mut factories = ahash::AHashMap::default();
             factories.insert(
                 arcstr::literal!("netidx"),
                 graphix_package_sys::loader::NetidxResolver::factory(
-                    self.subscriber.clone(),
+                    subscriber.clone(),
                     self.resolve_timeout,
                 ),
             );
             gx = gx.resolver_factories(factories);
         }
         gx = gx.flags(flags);
-        if let Some(s) = self.publish_timeout {
-            gx = gx.publish_timeout(s);
-        }
-        if let Some(s) = self.resolve_timeout {
-            gx = gx.resolve_timeout(s);
-        }
         let handle = gx
             .root(root)
             .resolvers(mods)

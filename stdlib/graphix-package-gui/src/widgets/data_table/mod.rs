@@ -274,7 +274,11 @@ impl<X: GXExt> DataTableW<X> {
         let sort_by = sort_by_ref.last.as_ref().map(parse_sort_by).unwrap_or_default();
         let selection =
             selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
-        let subscriber = gx.subscriber();
+        let subscriber = gx
+            .with_ctx(|ctx| {
+                graphix_package_sys::netstate::NetState::get(ctx).subscriber(ctx)
+            })
+            .await??;
         let rt = tokio::runtime::Handle::current();
         let show_row_name =
             TRef::new(show_row_name_ref).context("data_table tref show_row_name")?;

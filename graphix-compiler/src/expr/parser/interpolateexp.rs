@@ -5,7 +5,7 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
-use netidx::publisher::Value;
+use netidx_value::Value;
 use netidx_value::parser::escaped_string;
 use poolshark::local::LPooled;
 use triomphe::Arc;

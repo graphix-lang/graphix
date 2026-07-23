@@ -1354,5 +1354,5 @@ pub(super) fn ref_local_name(spec: &Expr) -> Option<&str> {
         _ => return None,
     };
     let s: &str = name.0.as_ref();
-    Some(netidx::path::Path::basename(s).unwrap_or(s))
+    Some(netidx_core::path::Path::basename(s).unwrap_or(s))
 }

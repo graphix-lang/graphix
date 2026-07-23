@@ -16,11 +16,9 @@ use futures::{StreamExt, channel::mpsc};
 use graphix_compiler::{BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{NetConfig, NetTimeouts};
 use netidx::{
-    config::Config,
     path::Path,
     publisher::{
-        BindCfg, DesiredAuth, Id, PublishFlags, Publisher, PublisherBuilder, UpdateBatch,
-        Val, WriteRequest,
+        Id, PublishFlags, Publisher, PublisherBuilder, UpdateBatch, Val, WriteRequest,
     },
     resolver_client::ChangeTracker,
     subscriber::{
@@ -32,12 +30,10 @@ use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
 use std::{
-    collections::VecDeque,
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
 };
 use tokio::{sync::oneshot, task, time};
-use triomphe::Arc as TArc;
 
 /// A subscription update routed to a builtin's BindId. Unsubscribed
 /// becomes the same error value the pre-extraction runtime delivered.
@@ -117,7 +113,6 @@ struct Inner {
     // per-list-builtin resolver change trackers
     change_trackers: Mutex<IntMap<BindId, Arc<tokio::sync::Mutex<ChangeTracker>>>>,
     publish_timeout: Option<Duration>,
-    subscribe_timeout: Option<Duration>,
 }
 
 pub use graphix_package_core::NetConfig as NetConfigExport;
@@ -136,7 +131,7 @@ impl NetState {
     /// Get (or create) the net state for this runtime. On creation the
     /// pump/flusher/graveyard tasks spawn and their delivery channels
     /// register with the runtime — which is why this needs `ctx`.
-    pub(crate) fn get<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> NetState {
+    pub fn get<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> NetState {
         if let Some(st) = ctx.libstate.get::<NetState>() {
             return st.clone();
         }
@@ -168,7 +163,6 @@ impl NetState {
             rpc_clients: Mutex::new(Vec::new()),
             change_trackers: Mutex::new(IntMap::default()),
             publish_timeout: timeouts.publish,
-            subscribe_timeout: timeouts.subscribe,
         }));
         // PUMP: netidx events -> graph events. Subscription updates
         // route SubId -> the subscribing builtin's BindId; writes route

@@ -3,7 +3,7 @@ use crate::{
     expr::print::{PrettyBuf, PrettyDisplay},
     typ::{Type, TypeRef},
 };
-use netidx::publisher::Typ;
+use netidx_value::Typ;
 use std::fmt::{self, Write};
 
 impl fmt::Display for Type {

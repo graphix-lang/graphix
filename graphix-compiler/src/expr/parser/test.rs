@@ -7,7 +7,8 @@ use crate::{
     typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
 use arcstr::literal;
-use netidx::{publisher::Typ, utils::Either};
+use netidx_core::utils::Either;
+use netidx_value::Typ;
 
 #[allow(unused)]
 fn parse_typexpr(s: &str) -> anyhow::Result<Type> {

@@ -7,8 +7,8 @@ use crate::{
 use bytes::Bytes;
 use chrono::prelude::*;
 use enumflags2::BitFlags;
-use netidx::protocol::value::Typ;
 use netidx_value::PBytes;
+use netidx_value::Typ;
 use parser::RESERVED;
 use poolshark::local::LPooled;
 use prop::option;

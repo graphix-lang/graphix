@@ -1,8 +1,8 @@
 use super::{PrintFlag, Type, TypeRef, cast::IsAFlags};
 use crate::{env::Env, typ::format_with_flags};
 use ahash::AHashSet;
-use netidx::publisher::Value;
 use netidx_value::NakedValue;
+use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt;

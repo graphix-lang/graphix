@@ -16,7 +16,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx::subscriber::Value;
+use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;

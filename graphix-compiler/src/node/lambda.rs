@@ -19,7 +19,9 @@ use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use log::error;
-use netidx::{pack::Pack, subscriber::Value, utils::Either};
+use netidx_core::pack::Pack;
+use netidx_core::utils::Either;
+use netidx_value::Value;
 use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -108,14 +110,14 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
     fn encode(
         &self,
         _buf: &mut impl bytes::BufMut,
-    ) -> std::result::Result<(), netidx::pack::PackError> {
-        Err(netidx::pack::PackError::Application(0))
+    ) -> std::result::Result<(), netidx_core::pack::PackError> {
+        Err(netidx_core::pack::PackError::Application(0))
     }
 
     fn decode(
         _buf: &mut impl bytes::Buf,
-    ) -> std::result::Result<Self, netidx::pack::PackError> {
-        Err(netidx::pack::PackError::Application(0))
+    ) -> std::result::Result<Self, netidx_core::pack::PackError> {
+        Err(netidx_core::pack::PackError::Application(0))
     }
 }
 

@@ -5,7 +5,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::Result;
 use enumflags2::BitFlags;
-use netidx::publisher::Typ;
+use netidx_value::Typ;
 use poolshark::local::LPooled;
 use std::iter;
 use triomphe::Arc;

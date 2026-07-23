@@ -10,7 +10,6 @@ use futures::{StreamExt, stream};
 use graphix_compiler::expr::{FilesResolver, Source};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
-use netidx::InternalOnly;
 use std::{
     collections::HashSet,
     fs,
@@ -59,24 +58,17 @@ async fn examples_compile() -> Result<()> {
         files.len(),
         examples.display()
     );
-    let internal = InternalOnly::new().await?;
     let failures: Vec<String> = stream::iter(files)
-        .map(|f| {
-            let publisher = internal.publisher().clone();
-            let subscriber = internal.subscriber().clone();
-            async move {
-                let base = f.parent().expect("example has a parent dir").to_path_buf();
-                let r = ShellBuilder::<NoExt>::default()
-                    .publisher(publisher)
-                    .subscriber(subscriber)
-                    .module_resolvers(vec![FilesResolver::new(base, None)])
-                    .mode(Mode::Check(Source::File(f.clone())))
-                    .build()
-                    .expect("building shell")
-                    .check()
-                    .await;
-                r.err().map(|e| format!("{}: {e:#}", f.display()))
-            }
+        .map(|f| async move {
+            let base = f.parent().expect("example has a parent dir").to_path_buf();
+            let r = ShellBuilder::<NoExt>::default()
+                .module_resolvers(vec![FilesResolver::new(base, None)])
+                .mode(Mode::Check(Source::File(f.clone())))
+                .build()
+                .expect("building shell")
+                .check()
+                .await;
+            r.err().map(|e| format!("{}: {e:#}", f.display()))
         })
         .buffer_unordered(8)
         .filter_map(|r| async move { r })

@@ -18,7 +18,7 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
-use netidx::utils::Either;
+use netidx_core::utils::Either;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 

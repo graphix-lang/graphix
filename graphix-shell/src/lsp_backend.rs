@@ -13,7 +13,6 @@ use graphix_compiler::{
 use graphix_lsp::{LspBackend, TypecheckResult};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
 use lsp_types::{InitializeParams, Uri};
-use netidx::InternalOnly;
 use parking_lot::Mutex;
 use poolshark::global::GPooled;
 use std::{
@@ -41,11 +40,8 @@ pub fn run() -> Result<()> {
 }
 
 async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
-    let netidx = InternalOnly::new().await.context("starting internal netidx")?;
-    let publisher = netidx.publisher().clone();
-    let subscriber = netidx.subscriber().clone();
-    let mut ctx = ExecCtx::new(GXRt::<NoExt>::new(publisher, subscriber))
-        .context("creating graphix context")?;
+    let mut ctx =
+        ExecCtx::new(GXRt::<NoExt>::new()).context("creating graphix context")?;
     let mut vfs = AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
     for pkg in crate::stdlib_packages::<NoExt>() {
@@ -77,12 +73,10 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
         .start()
         .await
         .context("loading stdlib")?;
-    let _keep_netidx = StdArc::new(netidx);
     let buffer_overrides: BufferOverrides = Arc::new(Mutex::new(AHashMap::default()));
     Ok(StdArc::new(ShellLspBackend {
         gx,
         rt_handle: Handle::current(),
-        _keep_netidx,
         base_resolvers,
         buffer_overrides,
     }))
@@ -128,7 +122,6 @@ fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
 struct ShellLspBackend {
     gx: GXHandle<NoExt>,
     rt_handle: Handle,
-    _keep_netidx: StdArc<InternalOnly>,
     /// Stdlib + GRAPHIX_MODPATH-derived resolvers. Anything that should
     /// be in scope regardless of which project we're checking. The
     /// per-call `BufferOverride` (rooted at the file's parent dir) is

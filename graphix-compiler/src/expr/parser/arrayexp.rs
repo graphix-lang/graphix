@@ -11,7 +11,8 @@ use combine::{
     token, unexpected_any, value,
 };
 use compact_str::CompactString;
-use netidx::{publisher::Value, utils::Either};
+use netidx_core::utils::Either;
+use netidx_value::Value;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 

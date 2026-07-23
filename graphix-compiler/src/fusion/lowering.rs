@@ -461,8 +461,8 @@ pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
     // because we read its value from a local binding in the kernel.
     // `foo::bar` would require a more elaborate story.
     let s: &str = path.0.as_ref();
-    let base = netidx::path::Path::basename(s)?;
-    if netidx::path::Path::levels(s) != 1 {
+    let base = netidx_core::path::Path::basename(s)?;
+    if netidx_core::path::Path::levels(s) != 1 {
         return None;
     }
     Some(base)
