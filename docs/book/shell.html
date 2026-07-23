@@ -355,17 +355,20 @@ utils::helper()
 <p>The shell searches these paths in order, returning the first match found.</p>
 <h3 id="the-graphix_modpath-environment-variable"><a class="header" href="#the-graphix_modpath-environment-variable">The GRAPHIX_MODPATH Environment Variable</a></h3>
 <p>You can extend the module search path by setting <code>GRAPHIX_MODPATH</code>:</p>
-<pre><code class="language-bash">export GRAPHIX_MODPATH=netidx:/shared/modules,/home/user/graphix-lib
+<pre><code class="language-bash">export GRAPHIX_MODPATH=netidx:/shared/modules,file:/home/user/graphix-lib
 graphix myprogram.gx
 </code></pre>
-<p>The syntax is a comma-separated list of paths:</p>
+<p>The syntax is a comma-separated list of <code>scheme:</code> entries:</p>
 <ul>
-<li>Paths starting with <code>netidx:</code> are netidx paths</li>
-<li>Other paths are treated as filesystem paths</li>
+<li><code>file:</code> entries are filesystem paths (on Windows, the prefix also
+keeps drive letters unambiguous: <code>file:C:\graphix\lib</code>)</li>
+<li><code>netidx:</code> entries are netidx paths (available when netidx is
+enabled)</li>
+<li>Other schemes can be registered by embedders</li>
 <li>Escape literal commas in paths with <code>\</code></li>
 </ul>
 <p>Example:</p>
-<pre><code class="language-bash">GRAPHIX_MODPATH=netidx:/foo,/home/user/lib,/path/with\,comma
+<pre><code class="language-bash">GRAPHIX_MODPATH=netidx:/foo,file:/home/user/lib,file:/path/with\,comma
 </code></pre>
 <p>This adds:</p>
 <ul>

@@ -267,18 +267,21 @@ The shell searches these paths in order, returning the first match found.
 You can extend the module search path by setting `GRAPHIX_MODPATH`:
 
 ```bash
-export GRAPHIX_MODPATH=netidx:/shared/modules,/home/user/graphix-lib
+export GRAPHIX_MODPATH=netidx:/shared/modules,file:/home/user/graphix-lib
 graphix myprogram.gx
 ```
 
-The syntax is a comma-separated list of paths:
-- Paths starting with `netidx:` are netidx paths
-- Other paths are treated as filesystem paths
+The syntax is a comma-separated list of `scheme:` entries:
+- `file:` entries are filesystem paths (on Windows, the prefix also
+  keeps drive letters unambiguous: `file:C:\graphix\lib`)
+- `netidx:` entries are netidx paths (available when netidx is
+  enabled)
+- Other schemes can be registered by embedders
 - Escape literal commas in paths with `\`
 
 Example:
 ```bash
-GRAPHIX_MODPATH=netidx:/foo,/home/user/lib,/path/with\,comma
+GRAPHIX_MODPATH=netidx:/foo,file:/home/user/lib,file:/path/with\,comma
 ```
 
 This adds:
