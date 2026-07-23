@@ -370,6 +370,19 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     (prog, stats)
 }
 
+/// Geometric slot draw (Eric's design, 2026-07-23): P(stop) =
+/// 1/(mean+1) per step — same mean as the old uniform draw but with a
+/// heavy tail, so occasional long dataflow chains appear organically
+/// without a separate profile. Capped to protect the minimizer and
+/// per-subject cost.
+pub(crate) fn geo_slots(rng: &mut Rng, mean: usize, cap: usize) -> usize {
+    let mut n = 0;
+    while n < cap && rng.below(mean + 1) != 0 {
+        n += 1;
+    }
+    n
+}
+
 /// One run of statement slots. `files` present = top level (module and
 /// dynamic-module arms enabled — those emit file sections and `mod`
 /// statements, which only parse at the program's top level); `None` =
@@ -384,7 +397,7 @@ fn gen_slots(
     let mut stmts = Vec::new();
     let mut nmodules = 0usize;
     let mut ndynmods = 0usize;
-    let nslots = rng.below(cfg.max_lets + 1);
+    let nslots = geo_slots(rng, (cfg.max_lets / 2).max(1), (cfg.max_lets * 4).min(48));
     for _ in 0..nslots {
         if files.is_some() && chance(rng, cfg.p_module) {
             let m = modules::gen_module(ctx, rng, cfg, stats, nmodules);

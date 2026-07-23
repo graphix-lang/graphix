@@ -158,7 +158,13 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     // The schedule: 1–4 epochs, each injecting a non-empty subset of
     // the inputs. Values stay mild here — pushing them toward edges is
     // the M3 mutation's job.
-    let n_epochs = 1 + rng.below(4);
+    // Geometric epoch draw (mean 4, tail to 12): the remaining known
+    // residual classes are all CROSS-EPOCH phenomena, so schedule
+    // length is the exploration axis that buys coverage where the
+    // open risk sits. Budgets scale with the schedule (they ride the
+    // header as data — identical in both modes, so a cap mismatch
+    // stays a real divergence).
+    let n_epochs = 1 + super::geo_slots(rng, 3, 11);
     stats.epochs = n_epochs;
     let mut epochs: Vec<Vec<(String, Value)>> = Vec::with_capacity(n_epochs);
     for _ in 0..n_epochs {
@@ -181,7 +187,11 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
             epochs[i].push((name.clone(), injection_value(rng, ty)));
         }
     }
-    let sched = Schedule { epochs, ..Schedule::default() };
+    let sched = Schedule {
+        epochs,
+        max_cycles: crate::trace::MAX_CYCLES + 16 * n_epochs as u64,
+        max_events: crate::trace::MAX_EVENTS + 128 * n_epochs,
+    };
     (sched.render(&body), stats)
 }
 

@@ -637,3 +637,14 @@ vocabulary, reactive's contract can't. reactive-check: 99.8%
 compiled, 97.2% quiesced, 98.5% epochs-advanced. Presence pinned by
 reactive_composition_presence; shape_presence thresholds retuned for
 the deliberate arm dilution (cross-cycle 30→25%, slept-arm 15→12%).
+
+**Length distributions** (same day, Eric's design): sync slot counts
+are a GEOMETRIC draw (P(stop)=1/(mean+1), mean = max_lets/2 — same
+mean as the old uniform, heavy tail capped at max_lets*4 clamped 48),
+so occasional long dataflow chains appear organically: sampled
+programs now reach 60-130+ lets (geometric x composition compounding)
+at a 100.0% compile rate. Reactive epochs are geometric too (mean 4,
+tail to 12 — schedule length is the axis pointed at the cross-epoch
+residual classes), with the trace budgets SCALED per schedule
+(max_cycles += 16/epoch, max_events += 128/epoch; budgets ride the
+header as data, so a cap mismatch stays a real divergence).
