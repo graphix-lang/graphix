@@ -117,7 +117,7 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     // `--reactive` selects the reactive (scheduled) generator wherever
     // a generator is used; it's stripped before positional parsing so
