@@ -625,5 +625,15 @@ arms are top-level-only and disabled inside; the nesting budget
 (`subprogram_depth`, default 2) decrements per level. Compile rate
 held at 100.0% (gen-check 3000, old vs new) — composition adds depth
 with zero cross-seam type obligations, per Eric's mostly-self-
-contained-templates design. Reactive generation has its own slot
-loop and does not compose yet (future).
+contained-templates design. **Reactive composition** (same day): the reactive sync-let arm can
+emit a composed subprogram slot, and a new `nested_connect` template
+generates a block-valued binding whose BODY connects to an outer
+target — the connect-across-block-boundary shape (a known fusion
+coverage seam). Reactive subprogram BINDINGS never shadow
+(p_shadow/p_collision zeroed for the outer name): the live/tail
+machinery references bindings by NAME, so a shadow at a different
+type breaks the tail's typing — the sync lane keeps the full shadow
+vocabulary, reactive's contract can't. reactive-check: 99.8%
+compiled, 97.2% quiesced, 98.5% epochs-advanced. Presence pinned by
+reactive_composition_presence; shape_presence thresholds retuned for
+the deliberate arm dilution (cross-cycle 30→25%, slept-arm 15→12%).

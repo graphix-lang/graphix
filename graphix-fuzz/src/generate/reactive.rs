@@ -33,6 +33,11 @@ pub struct ReactiveStats {
     pub runaway: bool,
     pub dyn_reload: bool,
     pub slept_arms: usize,
+    /// Sync subprogram slots embedded (template composition).
+    pub subprograms: usize,
+    /// Block-valued bindings whose body CONNECTS to an outer target —
+    /// the connect-across-block-boundary shape.
+    pub nested_connects: usize,
 }
 
 /// Generate one reactive WRAPPER (schedule header + body) with the
@@ -41,7 +46,7 @@ pub fn gen_reactive_program(rng: &mut Rng) -> String {
     gen_reactive_stats(&GenCfg::default(), rng).0
 }
 
-pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats) {
+pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats) {
     // Runaway programs are generated WITHOUT inputs or epochs: a
     // free-running program's cycles never pause, so where an injection
     // lands in its active-cycle stream is wall-clock timing — no driver
@@ -86,15 +91,32 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
     let n_templates = 1 + rng.below(3);
     for _ in 0..n_templates {
         if chance(rng, 0.25) {
-            // A plain sync let over the enriched vocabulary.
-            let ty = types::random_type(rng, 2);
-            let val = exprs::gen_typed(&ctx, rng, &ty, 2);
-            let name = ctx.fresh();
-            stmts.push(format!("let {name}: {} = {val}", ty.render()));
-            ctx.push(name, ty);
+            if cfg.subprogram_depth > 0 && chance(rng, 0.4) {
+                // A composed sync SUBPROGRAM slot (template
+                // composition): a nested typed block, optionally
+                // capturing the reactive bindings in scope. The
+                // OUTER binding never shadows (p_shadow/p_collision
+                // zeroed): reactive's live/tail machinery references
+                // bindings by NAME, so a shadow at a different type
+                // breaks the tail's typing — the sync lane keeps the
+                // full shadow vocabulary, this lane's contract can't.
+                let mut sub_cfg = cfg.clone();
+                sub_cfg.p_shadow = 0.0;
+                sub_cfg.p_collision = 0.0;
+                let mut gs = super::GenStats::default();
+                stmts.push(super::gen_subprogram_stmt(&mut ctx, rng, &sub_cfg, &mut gs));
+                stats.subprograms += gs.subprograms;
+            } else {
+                // A plain sync let over the enriched vocabulary.
+                let ty = types::random_type(rng, 2);
+                let val = exprs::gen_typed(&ctx, rng, &ty, 2);
+                let name = ctx.fresh();
+                stmts.push(format!("let {name}: {} = {val}", ty.render()));
+                ctx.push(name, ty);
+            }
             continue;
         }
-        match rng.below(12) {
+        match rng.below(14) {
             0 | 1 => counter(&mut ctx, rng, &mut stmts, &mut stats),
             2..=4 => {
                 accumulator(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live)
@@ -102,6 +124,9 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
             5..=7 => cross_cycle(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
             8 => sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut live),
             9 | 10 => slept_arm(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
+            11 | 12 => {
+                nested_connect(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live)
+            }
             _ => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
         }
     }
@@ -116,10 +141,12 @@ pub fn gen_reactive_stats(_cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStat
         let i64s: Vec<String> =
             ctx.vars_of(&I64).into_iter().map(|s| s.to_string()).collect();
         let mut t = live[rng.below(live.len())].clone();
-        for _ in 0..rng.below(3) {
-            let n = &i64s[rng.below(i64s.len())];
-            let op = ["+", "-", "*"][rng.below(3)];
-            t = format!("({t} {op} {n})");
+        if !i64s.is_empty() {
+            for _ in 0..rng.below(3) {
+                let n = &i64s[rng.below(i64s.len())];
+                let op = ["+", "-", "*"][rng.below(3)];
+                t = format!("({t} {op} {n})");
+            }
         }
         t
     };
@@ -193,6 +220,42 @@ fn counter(
 /// An input-gated accumulator through the connect lift — scalar,
 /// array (the sliding-window idiom), string, or struct, by the
 /// input's type and the roll.
+/// A block-valued binding whose BODY connects to an outer target —
+/// the connect-across-block-boundary shape (the fusion lift machinery
+/// must hoist the target out of the enclosing region; arm-lifted
+/// connects in nested positions are a known coverage seam). The
+/// target rides `live`: it accumulates on every injection of its
+/// input, so the tail stays observable.
+fn nested_connect(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    inputs: &[(String, GenType)],
+    stmts: &mut Vec<String>,
+    st: &mut ReactiveStats,
+    live: &mut Vec<String>,
+) {
+    let i64s: Vec<&(String, GenType)> =
+        inputs.iter().filter(|(_, t)| *t == I64).collect();
+    if i64s.is_empty() {
+        return accumulator(ctx, rng, inputs, stmts, st, live);
+    }
+    let (input, _) = i64s[rng.below(i64s.len())];
+    st.nested_connects += 1;
+    let t = ctx.fresh();
+    stmts.push(format!("let {t} = i64:0"));
+    ctx.push(t.clone(), I64);
+    let b = ctx.fresh();
+    let mark = ctx.mark();
+    let inner = ctx.fresh();
+    let iv = exprs::gen_typed(ctx, rng, &I64, 2);
+    stmts.push(format!(
+        "let {b}: i64 = {{ let {inner}: i64 = {iv};          {t} <- {input} ~ ({t} + {inner}); ({inner} + i64:1) }}"
+    ));
+    ctx.truncate(mark);
+    ctx.push(b, I64);
+    live.push(t);
+}
+
 fn accumulator(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -476,6 +539,22 @@ fn gen_runaway_burst(rng: &mut Rng) -> (String, ReactiveStats) {
 mod test {
     use super::*;
 
+    /// Composition presence: subprogram slots and nested connects both
+    /// appear at the default profile. Catches a weights/budget bug
+    /// silently disabling either.
+    #[test]
+    fn reactive_composition_presence() {
+        let mut rng = Rng::new(0x5150);
+        let (mut nsub, mut nconn) = (0usize, 0usize);
+        for _ in 0..400 {
+            let (_, st) = gen_reactive_stats(&GenCfg::default(), &mut rng);
+            nsub += st.subprograms;
+            nconn += st.nested_connects;
+        }
+        assert!(nsub > 10, "subprogram slots over 400 programs: {nsub}");
+        assert!(nconn > 15, "nested connects over 400 programs: {nconn}");
+    }
+
     #[test]
     fn determinism() {
         let mut a = Rng::new(0xabcd);
@@ -513,10 +592,14 @@ mod test {
             slept += (st.slept_arms > 0) as usize;
         }
         assert!(acc * 100 / N >= 25, "accumulators in only {acc}/{N}");
-        assert!(cc * 100 / N >= 30, "cross-cycle in only {cc}/{N}");
+        // 30% → 25%: the 2026-07-23 composition arms (subprogram +
+        // nested-connect) fund their probability by diluting the
+        // template match — deliberate retune, not a silent weights bug.
+        assert!(cc * 100 / N >= 25, "cross-cycle in only {cc}/{N}");
         assert!(ctr * 100 / N >= 10, "counters in only {ctr}/{N}");
         assert!(run * 100 / N >= 1, "runaways in only {run}/{N}");
         assert!(run * 100 / N <= 15, "runaways in {run}/{N} — too hot");
-        assert!(slept * 100 / N >= 15, "slept-arm selects in only {slept}/{N}");
+        // 15% -> 12%: same composition-arm dilution retune as above.
+        assert!(slept * 100 / N >= 12, "slept-arm selects in only {slept}/{N}");
     }
 }
