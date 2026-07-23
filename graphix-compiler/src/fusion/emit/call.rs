@@ -172,6 +172,29 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let bit = cx.b.ins().ishl_imm(t64, i as i64);
         taint_mask = cx.b.ins().bor(taint_mask, bit);
     }
+    // IN-LOOP init-run exactness (katana jul21a, fold-acc-taint-jul2026):
+    // one scaffold-loop DynCall site serves EVERY collection position,
+    // so its cached slot state crosses position boundaries the
+    // node-walk's per-position CallSites never cross — riding it can
+    // resurrect a value whose per-position cache would be EMPTY (a
+    // fold's broken acc chain re-fired off another position's acc).
+    // On an INIT view the per-position caches are provably empty (the
+    // positions were just created; a newly-taken select arm's override
+    // counts — its interp sites are fresh too), so a masked delivery
+    // must not ride ANYTHING: force the mask all-ones — no production
+    // reaches eval, the dispatcher pends, and the pend paths below
+    // produce the tainted placeholder. Non-init rides keep the ruled
+    // mask semantics (a position-invariant arg's ride is correct and
+    // load-bearing; cross-position rides on non-init runs remain a
+    // known approximation — see design/collection_intrinsics.md).
+    if cx.ctx.loop_depth.get() > 0 {
+        let any = cx.b.ins().icmp_imm(IntCC::NotEqual, taint_mask, 0);
+        let init = cx.init_flag();
+        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+        let bottom_now = cx.b.ins().band(any, init_b);
+        let all_masked = cx.b.ins().iconst(types::I64, -1);
+        taint_mask = cx.b.ins().select(bottom_now, all_masked, taint_mask);
+    }
     // The result-disc fold must treat a masked (absent) arg as
     // NEUTRAL — it did not fire (STALE) and its bottom must NOT taint
     // a result eval computed over the remaining slots (the interp's

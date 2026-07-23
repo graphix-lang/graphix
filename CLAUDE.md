@@ -38,7 +38,7 @@ Additional directories:
 - **examples/**: Symlink to `book/src/examples/` for convenience
 - **docs/**: Compiled HTML documentation
 
-The compiler depends on netidx (a networked publish-subscribe system) which is expected to be at `../netidx/` (sibling directory).
+The compiler and runtime depend only on netidx's VALUE layer (`netidx-core`/`netidx-value` — `Value`, `Type`, `Path`, Pack); the netidx NETWORKING crates appear only in stdlib packages (`sys`, `db`, ...). The netidx repo is expected at `../netidx/` (sibling directory). See "Netidx extraction" below.
 
 The project uses workspace-level dependencies where possible.
 
@@ -120,12 +120,20 @@ The `Update` trait requires:
 ### Runtime System
 
 The runtime (`graphix-rt`) implements the `Rt` trait which handles:
-- Netidx subscriptions and publications
 - Variable references and updates
-- RPC calls
 - Timer events
+- Spawned tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`) — the generic conduits packages use to feed external events into the graph
 
 Event processing is batch-based: the runtime collects all simultaneous events into an `Event` struct and delivers them to the graph in one cycle. Multiple updates to the same variable in one cycle must be queued for the next cycle.
+
+### Netidx extraction (2026-07 — the core is network-free)
+
+`graphix-compiler` and `graphix-rt` have ZERO netidx networking dependency (`design/netidx_extraction.md`). The architecture:
+
+- **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`): async `resolve`/`for_source`/`fetch_source`; `VfsResolver`/`FilesResolver` live in-core, the netidx loader is `NetidxResolver` in `graphix-package-sys/src/loader.rs`. `ResolverFactory` (GRAPHIX_MODPATH `scheme:` registry) receives `&mut LibState`, so package factories share state with their package's builtins.
+- **sys::net owns its netidx** via `NetState` in `ctx.libstate` (`graphix-package-sys/src/netstate.rs`): one subscription pump (netidx batches → `Rt::watch_var`, with shared-Dval fan-out routing — netidx SHARES Dvals by path), writes/RPC-server calls as `CustomBuiltinType` events with reply channels, a package-side coalescing publish flusher, a 60s Dval unsubscribe graveyard, and an on-use-GC'd RPC client cache.
+- **`NetHandles`** is a standalone shared libstate entry holding the raw publisher/subscriber: BOTH the module loader and `NetState` materialize through it, whichever touches netidx first — one universe per context. Materialization reads the seeded `NetConfig` (package-core: `Ready`/`Config`/`Internal`); unseeded defaults to `Internal` — a process-internal netidx built on demand on a dedicated side thread. Fuzz/test children that never touch sys::net have zero network (this killed the soak port-exhaustion ceiling).
+- **The shell library is netidx-agnostic**: `ShellBuilder::setup_context` (a `FnOnce(&mut ExecCtx)` run at init) is the generic embedder hook for seeding package libstate entries, and `resolver_factories` passes scheme registrations through to `GXConfig`. The CLI (`main.rs`) is the netidx-aware embedder: it seeds `NetConfig`/`NetTimeouts` in the hook and registers the `netidx:` factory. `GXHandle::with_ctx` (a boxed-closure `ToGX` message) is the handle-side bridge to `ctx.libstate` for code without a ctx (the gui data_table fetches the subscriber through it).
 
 ### Type System
 
@@ -872,6 +880,7 @@ in `run!` fixtures and bench programs). The decision is recorded in
   (default `unimplemented!()`); widgets needing test-state inspection (e.g.
   `DataTableW`) override it, and `GuiTestHarness::dt()/dt_mut()` downcast. Tests
   fire per-column callbacks via `gx.call(callable_id, args)` (mirrors the
-  widget's own dispatch). `InternalOnly` test ctx DOES spin up a real in-process
-  resolver, so `sys::net` round-trips work — but publisher coalescing means
+  widget's own dispatch). test contexts default to
+  `NetConfig::Internal`, so a test that uses `sys::net` materializes a real
+  in-process netidx on demand and round-trips work — but publisher coalescing means
   rapid updates collapse; space them with one-shot timers for multi-point tests.
