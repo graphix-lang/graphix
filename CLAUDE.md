@@ -349,6 +349,14 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   genuine infinite types (~5% name-walk, rest positional), killing
   the scoped-aliasing remodel in an hour (see
   design/tvar_constraints.md's 2026-07-22 note).
+- `GXDBG_RPC=1` — trace the whole sys::net rpc path (`RPCDBG`:
+  server proc publish/republish, client call start + reply, NetState
+  pump receipt, PublishRpc queue/dispatch/reply/sleep). Lives in
+  graphix-package-sys (netstate.rs `rpc_dbg()` + net.rs). The tool
+  for "where did this rpc call stall" — found the netidx publisher
+  receipt/read deadlock behind the net_rpc0 flake (2026-07-23,
+  netidx aede75e6): combine with `RUST_LOG=netidx=debug` +
+  `--log-dir` to see the subscription/durable-retry side.
 
 ### Type Alias Expansion in Contains
 

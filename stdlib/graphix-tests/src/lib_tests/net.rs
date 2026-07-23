@@ -135,8 +135,8 @@ const NET_RPC0: &str = r#"
       v <- args.val;
       args.val ~ null
     });
-  let r: i64 = sys::net::call(set_val, {val: 42})?;
-  let r2: i64 = sys::net::call(get_val, null)?;
+  let r: null = sys::net::call(set_val, {val: 42})?;
+  let r2: i64 = sys::net::call(get_val, r)?;
   r2
 }
 "#;

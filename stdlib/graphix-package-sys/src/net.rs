@@ -925,6 +925,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             }
         }
         if changed[0] || changed[1] || changed[2] {
+            if crate::netstate::rpc_dbg() {
+                eprintln!(
+                    "RPCDBG publish_rpc {:?}: (re)publish changed={changed:?} had={:?}",
+                    self.id,
+                    self.current.as_ref().map(|(p, _)| p)
+                );
+            }
             // dropping the proc unpublishes it
             self.current = None;
             if let (Some(Value::String(path)), Some(doc)) =
@@ -1000,12 +1007,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         if let Some(mut cbt) = event.custom.remove(&self.id) {
             if let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>() {
                 if let Some(c) = c.0.take() {
+                    if crate::netstate::rpc_dbg() {
+                        eprintln!(
+                            "RPCDBG publish_rpc {:?}: call queued (ready={} qlen={})",
+                            self.id,
+                            self.ready,
+                            self.queue.len()
+                        );
+                    }
                     self.queue.push_back(c);
                 }
             }
         }
         if self.ready && self.queue.len() > 0 {
             if let Some(c) = self.queue.front() {
+                if crate::netstate::rpc_dbg() {
+                    eprintln!("RPCDBG publish_rpc {:?}: dispatch", self.id);
+                }
                 set!(c)
             }
         }
@@ -1015,10 +1033,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 Some(v) => {
                     self.ready = true;
                     if let Some(mut call) = self.queue.pop_front() {
+                        if crate::netstate::rpc_dbg() {
+                            eprintln!("RPCDBG publish_rpc {:?}: reply {v:?}", self.id);
+                        }
                         call.reply.send(v.value());
                     }
                     match self.queue.front() {
-                        Some(c) => set!(c),
+                        Some(c) => {
+                            if crate::netstate::rpc_dbg() {
+                                eprintln!(
+                                    "RPCDBG publish_rpc {:?}: dispatch next",
+                                    self.id
+                                );
+                            }
+                            set!(c)
+                        }
                         None => break None,
                     }
                 }
@@ -1059,6 +1088,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if crate::netstate::rpc_dbg() {
+            eprintln!("RPCDBG publish_rpc {:?}: sleep (id re-minted)", self.id);
+        }
         ctx.rt.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);

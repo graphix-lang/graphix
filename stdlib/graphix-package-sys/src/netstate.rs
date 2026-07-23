@@ -35,6 +35,11 @@ use std::{
 };
 use tokio::{sync::oneshot, task, time};
 
+pub(crate) fn rpc_dbg() -> bool {
+    static ON: LazyLock<bool> = LazyLock::new(|| std::env::var("GXDBG_RPC").is_ok());
+    *ON
+}
+
 /// A subscription update routed to a builtin's BindId. Unsubscribed
 /// becomes the same error value the pre-extraction runtime delivered.
 fn translate(ev: NEvent) -> Value {
@@ -341,6 +346,9 @@ impl NetState {
                         call = rpcs_rx.next() => match call {
                             None => break,
                             Some((id, call)) => {
+                                if rpc_dbg() {
+                                    eprintln!("RPCDBG pump: call for {id:?}");
+                                }
                                 let mut out = CBATCH.take();
                                 out.push((
                                     id,
@@ -474,6 +482,7 @@ impl NetState {
         id: BindId,
     ) {
         use netidx_protocols::rpc::client::Proc;
+        let dbg_path = path.clone();
         let proc = {
             let subscriber = match self.handles(ctx) {
                 Ok(h) => h.subscriber.clone(),
@@ -508,6 +517,9 @@ impl NetState {
                 ctx.rt.set_var(id, Value::error(e.as_str()));
             }
             Ok(proc) => {
+                if rpc_dbg() {
+                    eprintln!("RPCDBG client: calling {dbg_path} for {id:?}");
+                }
                 ctx.rt.spawn_var(async move {
                     let r = match proc.call(args).await {
                         Ok(v) => v,
@@ -516,6 +528,9 @@ impl NetState {
                             Value::error(e.as_str())
                         }
                     };
+                    if rpc_dbg() {
+                        eprintln!("RPCDBG client: reply from {dbg_path} for {id:?}: {r}");
+                    }
                     (id, r)
                 });
             }
@@ -531,6 +546,9 @@ impl NetState {
         id: BindId,
     ) -> Result<netidx_protocols::rpc::server::Proc> {
         use netidx_protocols::rpc::server::Proc;
+        if rpc_dbg() {
+            eprintln!("RPCDBG server: publishing {path} for {id:?}");
+        }
         let rpcs_tx = self.0.rpcs_tx.clone();
         let publisher = self.handles(ctx)?.publisher.clone();
         let proc = Proc::new(
