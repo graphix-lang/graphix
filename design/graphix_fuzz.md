@@ -568,3 +568,49 @@ The fixes, in the same order:
    freely; `GRAPHIX_FUZZ_CORPUS` still overrides). Soak corpus dirs
    belong under `~/tmp/target/fuzz/<campaign>/`; durable triage
    summaries are written by hand into the repo as before.
+
+## §13 Cycle-deadline oracle + the evolutionary ring (2026-07-23, Eric's designs)
+
+**Worked-cycle deadline** (3b0bc013): the trace `max_cycles` budget
+counts WORKED cycles — cycles where the graph was handed program
+events (delivered variables, custom events, marked nodes), including
+eventless internal churn; control-only cycles are still excluded, so
+recording stays a pure function of the program's own stream. The cap
+is a cycle DEADLINE: `trace_wait_idle` always resolves, and a
+never-idle program (a `v0 <- v0 + 1` spinner with bottom outputs)
+becomes an exact differential subject — both modes compare at the
+same program-driven cycle count. Cap dispositions were already
+schedule data; a cap mismatch (interp capped vs jit idle) stays a
+RECORDED divergence deliberately: prefix agreement cannot distinguish
+"interp merely slow" (the ruled-benign fib class) from "the JIT
+produced a value the interp never emits" (the abort-vs-retry seam,
+fuzz/pending-ruling/abort_seam_asym_timeout.gx).
+
+**The evolutionary ring** (fuzz lane only): agreeing mutants where
+BOTH modes produced runtime traces (check-one exit 7; CompileErr/
+Timeout/nondet-cleared agreements are oracle subjects but not
+ancestors) and whose AST shape signature is NOVEL join a bounded
+FIFO ring (256) of mutation seeds; `next_prog` samples 50/50 from
+ring vs base seeds. The shape signature is an order-independent
+multiset hash over (node-kind, arity) pairs with a triviality floor
+(8..=600 nodes, must contain a lambda/select/apply) — a statement
+shuffle is not novel, a new construct/arity combination is. This
+turns the k-edit orbit around the curated seeds into an outward
+random walk while the 50/50 mix and FIFO eviction bound drift.
+`FuzzStats::novel` ("N novel shapes" in the progress line) is the
+exploration metric: if it keeps climbing while findings stay zero,
+the clean signal strengthens; if it plateaus, the reachable space is
+saturating and the next vocabulary/composition investment is due.
+Ring trajectories are NOT seed-reproducible (pool completion order
+feeds the ring); findings embed their program text, and seed-replay
+tooling (selfcheck/detcheck/gen-check) never uses the ring.
+Deliberately NOT ring-fed: the donor transplant pool (static, from
+base seeds) and the generate lanes. Future: kernel-signature novelty
+(child-reported) as a stronger fitness than AST shape; template
+composition to raise the generator's depth ceiling.
+
+**mimalloc** is the fuzz binary's global allocator (harness-only;
+subjects are re-execs of the binary): the prof22 round measured ~12%
+of subject CPU in glibc malloc internals, dominated by per-subject
+cold-start allocation — exactly an allocator's job. The compiler and
+shell crates are untouched.

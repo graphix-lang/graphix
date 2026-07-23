@@ -675,6 +675,42 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
 }
 
 /// Build the transplant donor pool: every subtree of every seed.
+/// AST shape signature for ring admission: an order-independent hash
+/// over (node-kind discriminant, child arity) pairs, plus the node
+/// count and whether the tree contains a construct worth breeding from
+/// (a lambda, select, or application). Splits any schedule header /
+/// file sections off first, exactly like [`mutate_wrapper`]. `None` =
+/// unparseable (never admitted).
+pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
+    let (_, body) = crate::schedule::Schedule::parse(prog).ok()?;
+    let (body, _) = crate::files::split(body).ok()?;
+    let e = parse_one(&body).ok()?;
+    let mut sig = 0u64;
+    let mut nodes = 0usize;
+    let mut interesting = false;
+    fn walk(e: &Expr, sig: &mut u64, nodes: &mut usize, interesting: &mut bool) {
+        use std::hash::{Hash, Hasher};
+        *nodes += 1;
+        if matches!(
+            &e.kind,
+            ExprKind::Lambda(_) | ExprKind::Select { .. } | ExprKind::Apply(_)
+        ) {
+            *interesting = true;
+        }
+        let mut arity = 0usize;
+        for_each_child(e, &mut |_| arity += 1);
+        let mut h = ahash::AHasher::default();
+        std::mem::discriminant(&e.kind).hash(&mut h);
+        arity.hash(&mut h);
+        // Multiset sum: order-independent, so a pure statement shuffle
+        // isn't "novel" — only new construct/arity combinations are.
+        *sig = sig.wrapping_add(h.finish());
+        for_each_child(e, &mut |c| walk(c, sig, nodes, interesting));
+    }
+    walk(&e, &mut sig, &mut nodes, &mut interesting);
+    Some((sig, nodes, interesting))
+}
+
 pub fn donor_pool(seeds: &[&str]) -> Vec<Expr> {
     let mut pool = Vec::new();
     for s in seeds {

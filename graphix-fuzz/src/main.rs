@@ -17,6 +17,14 @@ use std::{
     time::Duration,
 };
 
+// The harness allocates like the compiler it drives, and subjects are
+// re-execs of this binary — mimalloc cuts the glibc malloc tail (~12%
+// of subject CPU in the prof22 profiling round; the cold-start alloc
+// storm is exactly what a modern allocator absorbs). Harness-only:
+// the shell/compiler crates are untouched.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Parse an iteration count. `forever`/`inf`/`0` → run forever (`None`);
 /// a number → that many; absent/garbage → a sane default.
 fn parse_iters(arg: Option<&String>, default: usize) -> Option<usize> {
@@ -481,10 +489,16 @@ async fn main() -> Result<()> {
         }
         Some("check-one") => {
             let code = read_stdin()?;
-            let status = match check(code.trim(), campaign_timeout()).await {
-                None => 0,
-                Some(_) => 10,
-            };
+            // 0 = agree; 7 = agree AND both modes produced runtime
+            // traces (the parent's ring-admission bar); 10 = diverge.
+            let status =
+                match graphix_fuzz::check_classified(code.trim(), campaign_timeout())
+                    .await
+                {
+                    (Some(_), _) => 10,
+                    (None, true) => 7,
+                    (None, false) => 0,
+                };
             std::process::exit(status);
         }
         // Hidden: the isolated selfcheck worker (program on stdin;
@@ -568,11 +582,12 @@ async fn main() -> Result<()> {
             let new = corpus.len() - before;
             println!(
                 "done: {} programs, {} divergences, {} crashes \
-                 ({new} new, {} total in corpus)",
+                 ({new} new, {} total in corpus), {} novel shapes",
                 stats.run,
                 stats.divergences,
                 stats.crashes,
-                corpus.len()
+                corpus.len(),
+                stats.novel
             );
             if new > 0 || regressions > 0 {
                 std::process::exit(1);

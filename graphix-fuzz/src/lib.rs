@@ -617,6 +617,18 @@ impl Divergence {
 /// ran, for shape exercise and crash coverage, but no value comparison
 /// is sound for it).
 pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
+    check_classified(code, timeout).await.0
+}
+
+/// [`check`] plus the ring-admission classification: `true` iff the
+/// programs AGREED with both outcomes being runtime traces — the bar
+/// for using an agreeing mutant as a mutation ancestor (a
+/// CompileErr/Timeout agreement is a fine oracle subject but a bad
+/// seed, and a nondeterminism-cleared agreement is worse).
+pub async fn check_classified(
+    code: &str,
+    timeout: Duration,
+) -> (Option<Divergence>, bool) {
     let tier = oracle_tier(code);
     // The two evaluators must agree, or it's a divergence. Each mode
     // spins up its own runtime, so run them concurrently — `join!`
@@ -626,10 +638,12 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
         run_program(code, Mode::Jit, timeout),
     );
     if tier == OracleTier::Excluded {
-        return None;
+        return (None, false);
     }
     if interp.agrees_with_at(&jit, tier) {
-        return None;
+        let ran =
+            matches!(&interp, Outcome::Trace(_)) && matches!(&jit, Outcome::Trace(_));
+        return (None, ran);
     }
     // Reference-side Timeout with a VALUE-BEARING jit trace: as likely
     // "the node-walk is orders of magnitude slower than native on a
@@ -653,7 +667,7 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
         let slow_budget = (timeout * 8).max(Duration::from_secs(60));
         let slow = run_program(code, Mode::Interp, slow_budget).await;
         if slow.agrees_with_at(&jit, tier) {
-            return None;
+            return (None, matches!(&slow, Outcome::Trace(_)));
         }
     }
     // The symmetric direction — jit Timeout against a value-bearing
@@ -670,7 +684,7 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
         let slow_budget = (timeout * 8).max(Duration::from_secs(60));
         let slow = run_program(code, Mode::Jit, slow_budget).await;
         if interp.agrees_with_at(&slow, tier) {
-            return None;
+            return (None, matches!(&slow, Outcome::Trace(_)));
         }
     }
     // Suspected divergence — but first rule out nondeterminism: a value
@@ -681,9 +695,9 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
     // program is nondeterministic there, not a backend bug.
     let interp2 = run_program(code, Mode::Interp, timeout).await;
     if !interp.agrees_with_at(&interp2, tier) {
-        return None;
+        return (None, false);
     }
-    Some(Divergence { code: code.to_string(), interp, jit, tier })
+    (Some(Divergence { code: code.to_string(), interp, jit, tier }), false)
 }
 
 /// Coarse "same bug" key: the bisection class + the interp/jit outcome
@@ -1021,6 +1035,10 @@ pub struct FuzzStats {
     /// Mutants that KILLED their (isolated) evaluator process — signal
     /// death, abort, or a wedged child (including duplicates).
     pub crashes: usize,
+    /// Ring admissions: agreeing, both-modes-ran mutants whose AST
+    /// shape signature was NOVEL this campaign — the exploration
+    /// metric (0 in generate lanes, which pass a no-op admitter).
+    pub novel: usize,
 }
 
 /// A persistent, deduplicated divergence corpus on disk. Loaded once at
@@ -1228,19 +1246,67 @@ pub async fn fuzz(
     let seeds = corpus::all_seeds();
     let donors = mutate::donor_pool(&seeds);
     let mut rng = mutate::Rng::new(seed);
-    run_pool(corpus, iters, timeout, || {
-        // Mutate a random seed; retry a few times if a mutation chain
-        // didn't yield a parseable program, falling back to a raw seed
-        // (always valid) so the pool never stalls. `mutate_wrapper`
-        // preserves (and M3-mutates) schedule headers.
-        for _ in 0..8 {
-            let s = seeds[rng.below(seeds.len())];
-            if let Some(p) = mutate::mutate_wrapper(s, &donors, &mut rng, 5) {
-                return p;
+    // The evolutionary RING (Eric's design, 2026-07-23): agreeing
+    // both-modes-ran mutants with a NOVEL AST shape join a bounded
+    // pool of mutation ancestors, so the campaign walks outward from
+    // the curated seeds instead of orbiting a few edits around them.
+    // Guard rails against drift: the admission bar (ran + non-trivial
+    // + shape-novel), a 50/50 base-seed mix so the walk can't leave
+    // the bug-rich shapes behind, and FIFO eviction bounding lineage
+    // depth. Trajectories are NOT seed-reproducible (pool completion
+    // order feeds the ring) — findings stay reproducible from their
+    // recorded program text, and seed-replay tooling (selfcheck/
+    // gen-check/detcheck) never uses the ring.
+    let ring = std::sync::Mutex::new((
+        std::collections::VecDeque::<String>::new(),
+        ahash::AHashSet::<u64>::new(),
+    ));
+    const RING_CAP: usize = 256;
+    run_pool(
+        corpus,
+        iters,
+        timeout,
+        || {
+            // Mutate a random seed; retry a few times if a mutation chain
+            // didn't yield a parseable program, falling back to a raw seed
+            // (always valid) so the pool never stalls. `mutate_wrapper`
+            // preserves (and M3-mutates) schedule headers.
+            for _ in 0..8 {
+                let s = {
+                    let ring = ring.lock().unwrap();
+                    if !ring.0.is_empty() && rng.below(2) == 0 {
+                        ring.0[rng.below(ring.0.len())].clone()
+                    } else {
+                        seeds[rng.below(seeds.len())].to_string()
+                    }
+                };
+                if let Some(p) = mutate::mutate_wrapper(&s, &donors, &mut rng, 5) {
+                    return p;
+                }
             }
-        }
-        seeds[rng.below(seeds.len())].to_string()
-    })
+            seeds[rng.below(seeds.len())].to_string()
+        },
+        |prog, ran| {
+            if !ran {
+                return false;
+            }
+            let Some((sig, nodes, interesting)) = mutate::shape_stats(prog) else {
+                return false;
+            };
+            if nodes < 8 || nodes > 600 || !interesting {
+                return false;
+            }
+            let mut ring = ring.lock().unwrap();
+            if !ring.1.insert(sig) {
+                return false;
+            }
+            ring.0.push_back(prog.to_string());
+            if ring.0.len() > RING_CAP {
+                ring.0.pop_front();
+            }
+            true
+        },
+    )
     .await
 }
 
@@ -1282,19 +1348,28 @@ pub async fn generate_campaign(
     reactive: bool,
 ) -> FuzzStats {
     let mut rng = mutate::Rng::new(seed);
-    run_pool(corpus, iters, timeout, || {
-        if reactive {
-            generate::reactive::gen_reactive_program(&mut rng)
-        } else {
-            generate::gen_program(&mut rng)
-        }
-    })
+    run_pool(
+        corpus,
+        iters,
+        timeout,
+        || {
+            if reactive {
+                generate::reactive::gen_reactive_program(&mut rng)
+            } else {
+                generate::gen_program(&mut rng)
+            }
+        },
+        |_, _| false,
+    )
     .await
 }
 
 /// What one pool slot concluded about a program.
 enum PoolResult {
-    Agree,
+    Agree {
+        /// Both outcomes were runtime traces — the ring-admission bar.
+        ran: bool,
+    },
     Diverge(Divergence),
     /// The isolated child died (signal / abort / hang) — the program
     /// kills the evaluator itself. String = wait status + stderr tail.
@@ -1686,15 +1761,18 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
     // (sys::io::stdout — soak jul06g false crash). Anything else is a
     // crash.
     match out.status.code() {
-        Some(0) => PoolResult::Agree,
+        Some(0) => PoolResult::Agree { ran: false },
+        // Agreement where both modes RAN (exit 7, see `check-one`) —
+        // the mutation ring may breed from this program.
+        Some(7) => PoolResult::Agree { ran: true },
         // The child proved the program diverges WITHOUT dying, so an
         // in-process re-check of the SAME program is safe — re-run it
         // here to get the full Divergence for the record pipeline.
         Some(10) => match check(prog, timeout).await {
             Some(d) => PoolResult::Diverge(d),
             // Flaky (borderline timeout) — drop it rather than record
-            // an unreproducible finding.
-            None => PoolResult::Agree,
+            // an unreproducible finding (and never breed from it).
+            None => PoolResult::Agree { ran: false },
         },
         _ => {
             // Include the child's last stderr lines — the std
@@ -1811,6 +1889,10 @@ async fn run_pool(
     iters: Option<usize>,
     timeout: Duration,
     mut next_prog: impl FnMut() -> String,
+    // Called on every agreeing result with the ran flag; returns true
+    // iff the program was admitted to a mutation ring as a NOVEL shape
+    // (counted in `FuzzStats::novel`). Generate lanes pass a no-op.
+    mut on_agree: impl FnMut(&str, bool) -> bool,
 ) -> FuzzStats {
     use tokio::task::JoinSet;
     let par = parallelism();
@@ -1833,9 +1915,9 @@ async fn run_pool(
             let res = if isolate {
                 check_isolated(&prog, timeout).await
             } else {
-                match check(&prog, timeout).await {
-                    Some(d) => PoolResult::Diverge(d),
-                    None => PoolResult::Agree,
+                match check_classified(&prog, timeout).await {
+                    (Some(d), _) => PoolResult::Diverge(d),
+                    (None, ran) => PoolResult::Agree { ran },
                 }
             };
             (prog, res)
@@ -1864,13 +1946,18 @@ async fn run_pool(
                     stats.run += 1;
                     if stats.run % 1000 == 0 {
                         eprintln!(
-                            "  …{} run, {} divergences, {} crashes, {} in corpus",
+                            "  …{} run, {} divergences, {} crashes, {} in corpus, {} novel shapes",
                             stats.run, stats.divergences, stats.crashes,
-                            corpus.len()
+                            corpus.len(), stats.novel
                         );
                     }
                     let finding = match res {
-                        PoolResult::Agree => false,
+                        PoolResult::Agree { ran } => {
+                            if on_agree(&prog, ran) {
+                                stats.novel += 1;
+                            }
+                            false
+                        }
                         PoolResult::Crash(status) => {
                             // A HANG in a program touching IO/async
                             // modules is environmental, not a bug: the
@@ -3372,8 +3459,7 @@ mod trace_probes {
     /// count with identical traces.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trace_eventless_spinner_caps() {
-        let prog =
-            "let x = i64:0;\nx <- x + i64:1;\nlet result = x + (x % i64:0)";
+        let prog = "let x = i64:0;\nx <- x + i64:1;\nlet result = x + (x % i64:0)";
         let (i1, _) = drive_traced(Mode::Interp, "", prog, 512, 24, &[]).await;
         let (i2, _) = drive_traced(Mode::Interp, "", prog, 512, 24, &[]).await;
         let (j1, _) = drive_traced(Mode::Jit, "", prog, 512, 24, &[]).await;
