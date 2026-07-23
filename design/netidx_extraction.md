@@ -211,3 +211,27 @@ wanted). The jul22 lazy-netidx branch stays stashed
    subscriber out of NetState at widget construction and threads it
    into the widget, replacing `gx.subscriber()`. NetState is defined
    in package-sys; gui depends on it.
+
+## Status: LANDED (2026-07-22/23)
+
+- Phase 1 dd0d71af: ModuleResolver trait; netidx loader in
+  package-sys (loader.rs).
+- Phase 3 cf919be6 (+ace02ca6): sys::net on package-owned NetState
+  (netstate.rs) — pump with shared-Dval fan-out routing,
+  CustomBuiltinType write/rpc events, package-side flusher, Internal-
+  on-demand on a side thread. NetConfig/NetTimeouts in package-core.
+- Phase 2 05617a51: the core cut. graphix-compiler and graphix-rt
+  have NO netidx/netidx-protocols dependency (net -527 lines).
+  GXRt::new() takes no args; GXHandle::with_ctx (generic ToGX
+  closure) is the handle-side bridge to ctx.libstate — needed
+  because the gui data_table thread has no ctx (amends decision 4:
+  the data flows via libstate as ruled, with_ctx is just the
+  accessor).
+- TIME_WAIT flat at 1 after fuzz bursts; the port ceiling is
+  structurally dead; soak restored to full PAR.
+
+Deferred (small, non-blocking): the `net::configure(...)` language-
+level config hook; `netidx:` GRAPHIX_MODPATH entries under a
+non-Ready NetConfig (currently: register the factory only with real
+handles); the hollow `krb5_iov` feature stubs left in compiler/rt
+for feature-unification compatibility.
