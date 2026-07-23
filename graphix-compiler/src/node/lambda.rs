@@ -405,7 +405,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     }
                     error!(
                         "call depth limit ({limit}) exceeded in {} — deep non-tail \
-                         recursion produces no value (raise via \
+                         recursion produces a settled bottom (raise via \
                          Control::set_max_call_depth)",
                         self.body.spec()
                     );
@@ -413,7 +413,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                         limit,
                         spec: self.body.spec().clone(),
                     });
-                    return None;
+                    // A depth trip is a SETTLED, DELIVERED tainted
+                    // bottom (Eric's ruling 2026-07-23), not absence:
+                    // an identical retry re-trips deterministically
+                    // (the limit is structural, not a resource), so
+                    // re-evaluation must wait for a genuine input
+                    // event. Delivery matters doubly: (1) it matches
+                    // the kernel's abort-to-tainted-placeholder at the
+                    // call seam (the abort-seam divergence: an
+                    // acc-ignoring fold recovers from a delivered
+                    // tainted init in both modes, but blocked forever
+                    // on interp absence); (2) it breaks the tail-loop
+                    // wedge — under absence, the unwinding frames'
+                    // RETAINED tail arms re-fired off their own formal
+                    // deliveries and re-stashed pendings, spinning the
+                    // outermost loop through 256-deep descents inside
+                    // ONE never-ending cycle. A delivered taint makes
+                    // each unwinding select dispatch on the tainted
+                    // scrutinee (tainted bottom, no arm evaluation),
+                    // so no pending is stashed. Clearing the slot is
+                    // insurance against unenumerated stash shapes.
+                    ctx.pending_tail_call = None;
+                    let (v, tag) = TagValue::tainted(Value::Null).into_parts();
+                    self.last_out = tag;
+                    return Some(v);
                 }
                 true
             }

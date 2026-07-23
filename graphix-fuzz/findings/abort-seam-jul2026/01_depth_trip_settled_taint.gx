@@ -3,7 +3,30 @@
 // jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(7))], capped: false }] })
 // mutant: {let rec f = |n: i64| -> i64 select select n {i64:0 => str::len("abc"), _ => f(n - i64:1) + array::len([n])} {m if m <= i64:0 => i64:1 % m, m => f(m - i64:1)}; let v = f(i64:1); array::fold([i64:5, i64:7], v, |a, x| x)}
 // minimized:
-{let rec f = |n: i64| -> i64 select select n {i64:0 => str::len("abc"), _ => f(n - i64:1)} {m if m <= i64:0 => i64:1 % m, m => f(m - i64:1)}; let v = f(i64:1); array::fold([i64:5, i64:7], v, |a, x| x)}
+
+{
+	let rec f = |n: i64| -> i64
+		select
+			select n {
+				i64:0 => str::len("abc"),
+				_ => f(n - i64:1)
+			}
+		{
+			m if m <= i64:0 => i64:1 % m,
+			m => f(m - i64:1)
+	    };
+	let v = f(i64:1);
+	array::fold([i64:5, i64:7], v, |a, x| x)
+}
+
+// RULED + FIXED (Eric, 2026-07-23): depth-limit-exceeded is a
+// SETTLED, DELIVERED tainted bottom (node/lambda.rs trip site) — an
+// identical retry re-trips deterministically, so re-evaluation waits
+// for a genuine input event. Delivery matches the kernel's
+// abort-to-placeholder seam AND breaks the tail-loop wedge (retained
+// tail arms re-fired off their own formal deliveries under absence,
+// spinning one never-ending cycle). Both modes now AGREE: Trace([7]),
+// idle. Original triage below.
 // TRIAGE (claude, 2026-07-23): the accepted abort-vs-retry seam, pending
 // Eric's ruling per the asymmetric-timeout policy. f(1) <-> f(2) is
 // INFINITELY mutually recursive through the nested selects. Interp:
