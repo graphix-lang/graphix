@@ -139,7 +139,7 @@ impl NetState {
             .libstate
             .get::<NetTimeouts>()
             .cloned()
-            .unwrap_or(NetTimeouts { publish: None, subscribe: None });
+            .unwrap_or(NetTimeouts { publish: None });
         let (updates_tx, mut updates_rx) = mpsc::channel(100);
         let (writes_tx, mut writes_rx) = mpsc::channel(100);
         let (rpcs_tx, mut rpcs_rx) = mpsc::channel(100);

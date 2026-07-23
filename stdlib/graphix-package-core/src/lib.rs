@@ -2306,10 +2306,11 @@ pub enum NetConfig {
     Internal,
 }
 
-/// Optional embedder-seeded netidx timeouts (the shell's
-/// --publish-timeout / --resolve-timeout).
+/// Optional embedder-seeded netidx tuning (the shell's
+/// --publish-timeout). `publish` bounds the publish flusher's batch
+/// commit: a subscriber that doesn't consume updates within the
+/// timeout is dropped; None (the default) waits.
 #[derive(Debug, Clone)]
 pub struct NetTimeouts {
     pub publish: Option<std::time::Duration>,
-    pub subscribe: Option<std::time::Duration>,
 }

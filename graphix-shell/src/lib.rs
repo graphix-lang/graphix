@@ -221,10 +221,7 @@ impl<X: GXExt> Shell<X> {
         let mut ctx =
             ExecCtx::new(GXRt::<X>::new()).context("creating graphix context")?;
         ctx.libstate.set(self.net_config.clone());
-        ctx.libstate.set(NetTimeouts {
-            publish: self.publish_timeout,
-            subscribe: self.resolve_timeout,
-        });
+        ctx.libstate.set(NetTimeouts { publish: self.publish_timeout });
         let mut args = vec![];
         if let Mode::Script(source) | Mode::Check(source) = &self.mode {
             if let Source::File(p) = source {
