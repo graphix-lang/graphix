@@ -1,0 +1,2 @@
+// schedule-v1: cap=96 events=768; in0=i64:1
+{let rec v4 = |v5: i64| -> i64 select v5 {v6 if v6 <= i64:0 => (i64:2 / in0), v6 => v4(v6 - i64:1)}; let v10 = v4(i64:1); let v11 = i64:0; v11 <- in0 ~ (v11 + v10); v11}

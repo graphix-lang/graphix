@@ -693,6 +693,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // Surface the body result's tag across the clean-Value Apply
         // boundary (the CallSite reconstitutes via `out_tag`).
         match res {
+            // The dispatch-exit twin of the kernel's depth-0 bottom rule
+            // (`Kernel::update`'s pending path / the compiled epilogue's
+            // taint pend): a tainted production is intra-frame currency —
+            // poison for slot caches — and must not escape a dispatch
+            // into reactive (depth-0) space, where bottom is ABSENCE
+            // (op.rs/error.rs mint None at depth 0; a kernel whose output
+            // consumes taint returns None). Escaping leaked the taint
+            // into depth-0 operand caches: a `~` fed by a bottoming
+            // recursive callee consumed its trigger debt on the tainted
+            // production where the unframed twin (and the kernel) held
+            // the debt — one delivery vs two (jul23e divergence 000000).
+            // The depth-trip's OWN settled tainted bottom (Eric's ruling
+            // 2026-07-23) returns before this seam and still DELIVERS to
+            // its enclosing body; only a result that consumed it unwinds
+            // here as absence, exactly the kernel's output boundary.
+            Some(tv) if tv.is_tainted() && ctx.frame_depth == 0 => None,
             Some(tv) => {
                 let (v, tag) = tv.into_parts();
                 self.last_out = tag;
