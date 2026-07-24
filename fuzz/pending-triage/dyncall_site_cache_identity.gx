@@ -1,0 +1,80 @@
+// PARKED 2026-07-24 (jul23f generate divergence_000000, found ~15min
+// into the first campaign on c8d6e932). Triaged to root cause; the fix
+// is a DESIGN CHANGE on the DynCall dispatch seam — needs Eric's
+// review before implementation (see DESIGN below).
+//
+// interp: Trace([])            — correct: the outer call's arg is
+//                                bottom, the callsite never dispatches
+// jit:    Trace([0:"xyz"])     — the INNER call's interior
+//                                str::replace result, resurrected by
+//                                the OUTER call's masked dispatch
+//
+// MINIMAL REPRO (local twin; the original was cross-module — module
+// membership is irrelevant, s7b == s6):
+//
+// {let f0 = |v22: string| -> string
+//    str::replace(#pat: "hello", #rep: "a", v22);
+//  f0(str::sub(#start: i64:0, #len: (i64:0 /? i64:0)$, f0("xyz"))$)}
+//
+// LOAD-BEARING INGREDIENTS (each verified by a variant that AGREEs):
+//   - TWO call sites of the same lambda callee (single call: agree)
+//   - the callee body contains a BUILTIN call (DynCall). Identity
+//     body agrees; interpolation-only body agrees (taint poisons the
+//     interp string cleanly); a bare str::replace body diverges.
+//   - the second call's arg is bottom ((0 /? 0)$ → error → $ drops)
+//
+// MECHANISM:
+//   The interp instantiates the callee body PER CALLSITE — the inner
+//   and outer f0 calls own separate replace nodes with separate
+//   CachedArgs; the outer callsite also never dispatches (no arg
+//   fired). The fused callee has ONE compiled body, so its interior
+//   replace is ONE graphix_dyncall emit site → ONE DynCallSlot → ONE
+//   inner Apply SHARED by every call site (kernel.rs DynCallSlot:
+//   `current` is a single instance). Inner call: v22 delivered fired
+//   "xyz" → replace caches + fires "xyz". Outer call: v22
+//   taint-masked → NO delivery (dyncall-partial-args-jul2026: masked
+//   arg = absence, cached slot rides its previous state) → replace's
+//   cache still holds the INNER call's "xyz"; #pat/#rep are body
+//   constants delivered fired on every dispatch → any-arg-fired →
+//   eval fires → clean "xyz" escapes the callee. The partial-args
+//   ruling is correct when the ridden state is the call site's OWN
+//   history; here it is ANOTHER site's. This is exactly the
+//   fold-acc-taint (a0741205) KNOWN RESIDUAL — "cross-position rides
+//   on non-init runs; real fix is per-position DynCall cache identity
+//   (select-style slot tables), only if the fuzzer surfaces it" —
+//   now surfaced OUTSIDE collections, in straight-line double-call
+//   code, so the trigger condition for the real fix has fired.
+//
+// WHY NO SITE IDENTITY EXISTS TODAY: emit_site_block (emit/call.rs)
+//   passes 0 when the callee's SiteLayout claims no words — f0 has no
+//   selects/loops, so BOTH call sites pass a null site block; even
+//   the per-call-site state channel can't distinguish them.
+//
+// DESIGN (the "select-style slot tables" fix, for review):
+//   1. Every interior DynCall emit site claims ONE identity word
+//      through the same channel selects claim state: callee root →
+//      site word (forces SiteLayout.words ≥ 1 via normal claim
+//      accounting); callee/region in-loop → chain leaf word (this
+//      ALSO kills the fold-acc-taint per-position residual); region
+//      root → state word (redundant — Kernel instance is already the
+//      site — but uniform).
+//   2. The emitted graphix_dyncall gains a 4th arg: the identity
+//      word's ADDRESS (null-guarded; back-edge/null block → 0).
+//   3. dispatch_typed / DynCallSlot::dispatch: if *addr == 0, mint a
+//      nonzero id from a global counter and store (lazy, survives
+//      block reuse — address-as-key would alias after chain frees;
+//      the word's VALUE is the key). Slot keys inner-Apply instances
+//      by id: `instances: Map<u64, (lambda_ptr, Apply, fired)>`.
+//      Key 0 = the transient bucket (recursive back-edges) — fresh
+//      per-activation semantics is the node-walk twin there; note
+//      cross-depth rides within one recursion remain a (pre-existing)
+//      residual of the 0 bucket.
+//   4. delete/sleep/refs/reset_replay iterate all instances.
+//   RISK: same seam where the sticky-latch fold-acc fix broke
+//   soak-jul2026/12 (consumption-based recovery) — gate on the full
+//   pin battery + a soak round before trusting.
+//
+// The finding file lives in the jul23f campaign corpus
+// (~/tmp/target/fuzz/jul23f/generate/divergence_000000.gx); promote a
+// pin to findings/ WITH the fix, not before (regress runs in-process).
+{let f0 = |v22: string| -> string str::replace(#pat: "hello", #rep: "a", v22); f0(str::sub(#start: i64:0, #len: (i64:0 /? i64:0)$, f0("xyz"))$)}
