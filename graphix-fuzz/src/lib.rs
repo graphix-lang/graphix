@@ -515,15 +515,23 @@ pub enum OracleTier {
 pub fn oracle_tier(code: &str) -> OracleTier {
     // Value-nondeterministic sources: random values, wall-clock time
     // (timers deliver it, `now()` returns it), generated temp paths,
-    // netidx registration timing, and OS-assigned socket addresses
+    // netidx registration timing, OS-assigned socket addresses
     // (generated programs bind port 0, so the addr getters read back
     // an ephemeral port — the same environmental-value leak as a
     // tempdir path; soak jul08d found `local_addr(s)? <= addr` as a
-    // coin flip that passed the interp-self-agreement filter).
+    // coin flip that passed the interp-self-agreement filter), signal
+    // delivery racing child execution (`kill` of a TERM-trapping shell
+    // flips `status.success` on whether TERM lands before or after the
+    // trap installs — soak jul23f found it under lane load only; the
+    // class hid behind `sys::time` because every kill fixture paired
+    // with a timer trigger until a mutant swapped the trigger out),
+    // and OS-assigned pids (same class as the addr getters).
     let excluded = [
         "rand::",
         "sys::time",
         "sys::net",
+        "sys::process::kill",
+        "sys::process::pid",
         "tempdir",
         "listener_addr",
         "local_addr",
