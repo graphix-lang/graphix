@@ -540,6 +540,35 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     if excluded.iter().any(|m| code.contains(m)) {
         return OracleTier::Excluded;
     }
+    // An fs MUTATION racing an fs OBSERVATION: nothing orders two
+    // async IO builtins unless the program threads a data edge between
+    // them, and mutation freely severs that edge (soak jul23f
+    // divergence_000001: the seed fixture reads back a written file
+    // with the read triggered off the write's result; the mutant
+    // swapped the trigger for a constant, so the read races the
+    // write's create+truncate — interp saw the content, jit the
+    // just-truncated empty file; flips run-to-run under lane load).
+    // One-sided fs programs (only mutators or only observers) keep
+    // their value comparison.
+    let fs_mutators = [
+        "sys::fs::write_all",
+        "sys::fs::create_dir",
+        "sys::fs::remove_dir",
+        "sys::fs::remove_file",
+    ];
+    let fs_observers = [
+        "sys::fs::read_all",
+        "sys::fs::readdir",
+        "sys::fs::metadata",
+        "sys::fs::is_file",
+        "sys::fs::is_dir",
+        "sys::fs::watch",
+    ];
+    if fs_mutators.iter().any(|m| code.contains(m))
+        && fs_observers.iter().any(|m| code.contains(m))
+    {
+        return OracleTier::Excluded;
+    }
     if ["sys::", "http::"].iter().any(|m| code.contains(m)) {
         // FinalValues assumes the async values themselves settle
         // deterministically. A `<-` weaves async ARRIVAL ORDER into
