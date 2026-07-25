@@ -1625,3 +1625,28 @@ run!(dyncall_site_identity_state, DYNCALL_SITE_IDENTITY_STATE, |v: Result<&Value
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+const DYNCALL_SEED_BACKEDGE: &str = r#"
+{
+  let g = |s: string| -> i64 str::len(s);
+  let rec f = |n: i64| -> i64 select n {
+    x if x <= i64:0 => g("a"),
+    x => x + f(x - i64:1)
+  };
+  g("bb") + f(i64:2)
+}
+"#;
+
+// dyncall-site-identity-jul2026 crash pin: g's pre-bound builtin
+// slot is dispatched BOTH with an identity word (the root-level
+// g("bb") call) and key-0 (f's recursive activation calls g through
+// a null back-edge site block). The identity seed-take must not
+// strip `current` from a pre-bound slot — the key-0 path relies on
+// it, and the resulting unwrap panic aborted the process (it cannot
+// unwind through JIT frames).
+run!(dyncall_seed_backedge, DYNCALL_SEED_BACKEDGE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::I64(6)) => true,
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);

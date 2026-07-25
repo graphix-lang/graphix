@@ -610,16 +610,24 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
             return Some(i);
         }
-        // First dispatch for this id. The eagerly pre-bound/pre-inited
-        // Apply seeds it when its callee matches — a slot's dispatches
-        // are either all key-0 or all identity-keyed, so the bucket
-        // roles can't collide. A non-matching seed stays put (slot
-        // delete cleans it up).
-        let seed_ok = match (&self.current, lambda_ptr) {
-            (Some((p, _)), Some(np)) => *p == np,
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
+        // First dispatch for this id. A NON-pre-bound slot's eagerly
+        // pre-inited Apply seeds it when its callee matches (that
+        // path self-heals from a taken seed: a later key-0 dispatch
+        // re-inits via needs_init). A PRE-BOUND slot NEVER surrenders
+        // `current`: one slot's dispatches are NOT all-identity or
+        // all-key-0 — a recursive back-edge activation executes the
+        // same compiled instruction with a NULL site block, and the
+        // pre-bound key-0 path relies on `current` being Some (jul23f
+        // generate crash_000001: the taken seed left the back-edge
+        // dispatch to unwrap None — a panic that can't unwind through
+        // the JIT frames, so the process aborts). The recipe mints an
+        // equivalent Apply for the identity site instead.
+        let seed_ok = !self.pre_bound
+            && match (&self.current, lambda_ptr) {
+                (Some((p, _)), Some(np)) => *p == np,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
         let inst = if seed_ok {
             let (p, apply) = self.current.take().unwrap();
             SiteInstance { lambda_ptr: p, apply, fired: self.fired }

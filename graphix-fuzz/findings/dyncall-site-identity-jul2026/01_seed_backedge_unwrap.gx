@@ -1,0 +1,15 @@
+// jul23f generate crash_000001 (same day as the site-identity fix
+// landed, fae16427 soak round), hand-minimized. SIGABRT: the
+// identity path's seed-take assumed a slot's dispatches are either
+// all key-0 or all identity-keyed — FALSE: a recursive activation's
+// null site block sends the same compiled instruction to key 0.
+// Here g's pre-bound str::len slot: the root-level g("bb") call
+// (identity) TOOK the eagerly pre-bound Apply out of `current`;
+// f's recursion-depth-0 arm then called g through f's null back-edge
+// block (key 0), and the pre-bound key-0 path unwrapped the empty
+// `current` — a panic that can't unwind through the JIT frames, so
+// the process aborts. FIX: pre-bound slots never surrender
+// `current`; identity sites mint an equivalent Apply from the
+// recipe (non-pre-bound seeds still transfer — their key-0 path
+// self-heals via needs_init).
+{let g = |s: string| -> i64 str::len(s); let rec f = |n: i64| -> i64 select n { x if x <= i64:0 => g("a"), x => x + f(x - i64:1) }; g("bb") + f(i64:2)}
