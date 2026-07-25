@@ -1602,3 +1602,26 @@ run!(
     |v: Result<&Value>| matches!(v, Err(_));
     graphix_package_core::testing::FuseExpect::None
 );
+
+const DYNCALL_SITE_IDENTITY_STATE: &str = r#"
+{
+  let f0 = |v: f64| -> f64 mean(v)$;
+  f0(f0(10.0) + 10.0)
+}
+"#;
+
+// dyncall-site-identity-jul2026: TWO call sites of a fused callee
+// whose body is a bare builtin call dispatch through ONE compiled
+// dyncall instruction — each site must own its inner Apply (cache AND
+// state), matching the interp's per-callsite instantiation. `mean`
+// folds over its CachedArgs, so a shared instance would average both
+// sites' deliveries: inner f0(10)=10, outer f0(20) on a SHARED slot
+// gives mean(10,20)=15; per-site gives 20. The masked-absence twin
+// (the jul23f finding, no value produced) is pinned in
+// findings/dyncall-site-identity-jul2026/.
+run!(dyncall_site_identity_state, DYNCALL_SITE_IDENTITY_STATE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::F64(x)) => *x == 20.0,
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);

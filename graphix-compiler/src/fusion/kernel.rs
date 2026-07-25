@@ -41,9 +41,31 @@ use std::sync::Arc;
 /// Per-DynCall-site state. For each fn-typed param of the kernel we
 /// pre-allocate a slot containing the BindIds the side-channel uses,
 /// the [`Ref`]-style nodes that read from those BindIds (passed as
-/// `from` to the inner Apply's `update`), and a cache of the most
-/// recently constructed inner Apply (invalidated when the LambdaDef
-/// pointer changes).
+/// `from` to the inner Apply's `update`), and the inner Apply
+/// instances the dispatches run against.
+///
+/// SITE IDENTITY (dyncall-site-identity-jul2026): one slot serves ONE
+/// static `graphix_dyncall` instruction in the region's compiled code
+/// — but that instruction can be reached on behalf of MANY logical
+/// call sites (a callee body compiled once, called from several
+/// caller emit sites), where the node-walk instantiates the callee
+/// body — and therefore the interior builtin's Apply and its
+/// CachedArgs — per callsite. Sharing one Apply across those sites
+/// let a masked (absent) delivery ride ANOTHER site's cached args
+/// (soak jul23f). Each emission site therefore claims one identity
+/// WORD from the same state channel selects use (region root →
+/// instance word; callee root → per-call-site block word); the
+/// dispatcher lazily mints a nonzero id into the word on first use
+/// and `instances` keys a full inner Apply per id — cache AND any
+/// builtin state get exactly the per-site identity the interp gives
+/// them. `current` remains the KEY-0 bucket: sites with no identity
+/// word (v1: scaffold-loop bodies, whose per-slot semantics keep the
+/// documented init-mask approximation; recursive back-edges, whose
+/// null site block is the pre-existing 0-bucket residual) share it,
+/// exactly the pre-identity behavior — and it doubles as the SEED
+/// for the first minted instance (a slot's dispatches are either all
+/// key-0 or all identity-keyed, never mixed, so the roles can't
+/// collide).
 ///
 /// Generic over `R, E` because the cached `Box<dyn Apply<R, E>>` and
 /// the arg-ref nodes are.
@@ -57,12 +79,25 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// Per-arg `Ref` nodes that read from `bind_ids`. Passed as the
     /// `from: &mut [Node<R, E>]` slice to the inner Apply's `update`.
     arg_refs: Vec<Node<R, E>>,
-    /// Cached `(LambdaDef pointer, Apply instance)`. Invalidated when
-    /// a new LambdaDef arrives (different raw pointer) — typical case
-    /// is the hot loop where the same callback is reused. For
+    /// Cached `(LambdaDef pointer, Apply instance)` for KEY-0
+    /// dispatches (no identity word — see the struct doc). Invalidated
+    /// when a new LambdaDef arrives (different raw pointer) — typical
+    /// case is the hot loop where the same callback is reused. For
     /// pre-bound slots (`pre_bound = true`) the pointer is a stable
-    /// sentinel and `dispatch` never re-inits.
+    /// sentinel and `dispatch` never re-inits. On an identity slot it
+    /// instead holds the eagerly pre-bound/pre-inited Apply until the
+    /// first mint takes it as that instance's seed.
     current: Option<(*const u8, Box<dyn Apply<R, E>>)>,
+    /// Per-SITE-IDENTITY inner Apply instances, keyed by the minted
+    /// identity-word value (never 0). Linear scan — a slot rarely has
+    /// more than a couple of live sites. An id orphaned by a freed
+    /// per-slot site block lingers here until slot death (its
+    /// `delete` runs then; the interp deletes at truncation — the
+    /// deferred cleanup is a documented v1 residual).
+    instances: Vec<(u64, SiteInstance<R, E>)>,
+    /// How to construct a FRESH inner Apply when a new site id mints
+    /// and the seed is already taken. Captured at pre-bind time.
+    recipe: SlotRecipe<R, E>,
     /// `true` when the slot was bound at Kernel construction time
     /// (e.g. `FnSource::Builtin` — the call target is fixed and
     /// can't change). `dispatch` short-circuits the LambdaDef
@@ -91,6 +126,31 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     scope: Scope,
     /// Top-level expression id for the inner Apply's diagnostics.
     top_id: ExprId,
+}
+
+/// One per-site-identity inner Apply (see [`DynCallSlot`]'s SITE
+/// IDENTITY doc): the site's own callee instance, cache and state
+/// included, plus its own first-dispatch flag.
+struct SiteInstance<R: Rt, E: UserEvent> {
+    /// LambdaDef address the Apply was inited from (rebind check for
+    /// non-pre-bound slots; a sentinel for pre-bound ones).
+    lambda_ptr: *const u8,
+    apply: Box<dyn Apply<R, E>>,
+    /// `false` until this instance's first dispatch — forces the init
+    /// view exactly like the slot-level flag does for the key-0 bucket.
+    fired: bool,
+}
+
+/// How `dispatch` builds a fresh inner Apply for a newly minted site
+/// id once the eager seed (`current`) is taken. The pre-bound
+/// variants replicate what their `pre_bind_*` constructed; `Lambda`
+/// inits from the LambdaDef value in hand at dispatch (the same path
+/// a callback swap takes on the key-0 bucket).
+enum SlotRecipe<R: Rt, E: UserEvent> {
+    Lambda,
+    Builtin { init: crate::BuiltInInitFn<R, E>, typ: FnType },
+    Cast { target: crate::typ::Type },
+    QopDeliver { handler_id: BindId, spec: Expr },
 }
 
 unsafe impl<R: Rt, E: UserEvent> Send for DynCallSlot<R, E> {}
@@ -126,6 +186,8 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             bind_ids,
             arg_refs,
             current: None,
+            instances: Vec::new(),
+            recipe: SlotRecipe::Lambda,
             pre_bound: false,
             default_external_refs: Vec::new(),
             fired: false,
@@ -290,6 +352,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // dispatch checks `pre_bound` first and never reads this.
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
+        self.recipe = SlotRecipe::Builtin { init, typ: typ.clone() };
         self.pre_bound = true;
         Ok(())
     }
@@ -335,9 +398,10 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// runs `CastApply::update` directly and never re-binds.
     pub fn pre_bind_cast(&mut self, target: crate::typ::Type) {
         let apply: Box<dyn Apply<R, E>> =
-            Box::new(CastApply { target, _p: std::marker::PhantomData });
+            Box::new(CastApply { target: target.clone(), _p: std::marker::PhantomData });
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
+        self.recipe = SlotRecipe::Cast { target };
         self.pre_bound = true;
     }
 
@@ -346,10 +410,13 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// `arg_refs[0]` from `DynCallSlot::new` reads the side-channeled
     /// error value the kernel marshals on the qop's error path.
     pub fn pre_bind_qop_deliver(&mut self, handler_id: BindId, spec: Expr) {
-        let apply: Box<dyn Apply<R, E>> =
-            Box::new(crate::node::error::QopDeliverApply { handler_id, spec });
+        let apply: Box<dyn Apply<R, E>> = Box::new(crate::node::error::QopDeliverApply {
+            handler_id,
+            spec: spec.clone(),
+        });
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
+        self.recipe = SlotRecipe::QopDeliver { handler_id, spec };
         self.pre_bound = true;
     }
 
@@ -369,6 +436,10 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         if let Some((_, apply)) = &mut self.current {
             apply.sleep(ctx);
         }
+        for (_, inst) in &mut self.instances {
+            inst.apply.sleep(ctx);
+            inst.fired = false;
+        }
         for n in &mut self.arg_refs {
             n.sleep(ctx);
         }
@@ -385,6 +456,9 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         if let Some((_, mut apply)) = self.current.take() {
             apply.delete(ctx);
         }
+        for (_, mut inst) in self.instances.drain(..) {
+            inst.apply.delete(ctx);
+        }
         for n in &mut self.arg_refs {
             n.delete(ctx);
         }
@@ -397,48 +471,57 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         event: &mut crate::Event<E>,
         args: &[Value],
         taint_mask: u64,
+        site_id: u64,
     ) -> Option<Value> {
         debug_assert_eq!(args.len(), self.bind_ids.len(), "DynCall arity");
-        // Pre-bound (FnSource::Builtin) slots: the target was fixed
-        // at construction; never re-init, ignore `lambda_value`.
-        if !self.pre_bound {
-            // Resolve the callee's LambdaDef out of the Value via
-            // `downcast_ref`. We key the cache by the LambdaDef's
-            // address (stable for the lifetime of the inner
-            // Arc<AbstractInner>), so the hot path of "same callback
-            // re-invoked" reuses the existing Apply without
-            // re-init'ing.
-            let lambda_def =
-                lambda_value.downcast_ref::<LambdaDef<R, E>>().unwrap_or_else(|| {
-                    panic!(
-                        "DynCall: fn-arg value isn't a LambdaDef — \
-                         typecheck should have rejected this"
+        // Resolve WHICH inner Apply runs: `None` = the key-0 bucket
+        // (no identity word — see the struct doc), `Some(i)` = the
+        // site's own instance at `instances[i]`.
+        let inst_idx = if site_id != 0 {
+            Some(self.ensure_instance(site_id, lambda_value, ctx)?)
+        } else {
+            // Pre-bound (FnSource::Builtin) slots: the target was fixed
+            // at construction; never re-init, ignore `lambda_value`.
+            if !self.pre_bound {
+                // Resolve the callee's LambdaDef out of the Value via
+                // `downcast_ref`. We key the cache by the LambdaDef's
+                // address (stable for the lifetime of the inner
+                // Arc<AbstractInner>), so the hot path of "same callback
+                // re-invoked" reuses the existing Apply without
+                // re-init'ing.
+                let lambda_def =
+                    lambda_value.downcast_ref::<LambdaDef<R, E>>().unwrap_or_else(|| {
+                        panic!(
+                            "DynCall: fn-arg value isn't a LambdaDef — \
+                             typecheck should have rejected this"
+                        )
+                    });
+                let lambda_ptr = lambda_def as *const _ as *const u8;
+                let needs_init = match &self.current {
+                    Some((p, _)) if *p == lambda_ptr => false,
+                    _ => true,
+                };
+                if needs_init {
+                    // Drop the old Apply (if any) so it releases resources
+                    // before we initialize a new one.
+                    if let Some((_, mut prev)) = self.current.take() {
+                        prev.delete(ctx);
+                    }
+                    let new_apply = (lambda_def.init)(
+                        &self.scope,
+                        ctx,
+                        &mut self.arg_refs,
+                        crate::BindMode::Definition,
+                        self.top_id,
                     )
-                });
-            let lambda_ptr = lambda_def as *const _ as *const u8;
-            let needs_init = match &self.current {
-                Some((p, _)) if *p == lambda_ptr => false,
-                _ => true,
-            };
-            if needs_init {
-                // Drop the old Apply (if any) so it releases resources
-                // before we initialize a new one.
-                if let Some((_, mut prev)) = self.current.take() {
-                    prev.delete(ctx);
+                    .ok()?;
+                    self.current = Some((lambda_ptr, new_apply));
+                    // A fresh Apply: its next update is its init.
+                    self.fired = false;
                 }
-                let new_apply = (lambda_def.init)(
-                    &self.scope,
-                    ctx,
-                    &mut self.arg_refs,
-                    crate::BindMode::Definition,
-                    self.top_id,
-                )
-                .ok()?;
-                self.current = Some((lambda_ptr, new_apply));
-                // A fresh Apply: its next update is its init.
-                self.fired = false;
             }
-        }
+            None
+        };
         // Side-channel: stash each arg Value at its BindId so the
         // arg_refs `Ref` nodes read it inside `apply.update`. FIRED:
         // the kernel already decided this call happens — the delivery
@@ -464,16 +547,23 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // produce on `event.init`, and the outer cycle may be long
         // past init (an async-fed region's first fire). Force the
         // init view for this one update, then restore.
-        let first = !self.fired;
-        self.fired = true;
+        let (apply, fired) = match inst_idx {
+            None => {
+                let cur = self.current.as_mut().unwrap();
+                (&mut cur.1, &mut self.fired)
+            }
+            Some(i) => {
+                let inst = &mut self.instances[i].1;
+                (&mut inst.apply, &mut inst.fired)
+            }
+        };
+        let first = !*fired;
+        *fired = true;
         let saved_init = event.init;
         if first {
             event.init = true;
         }
-        let result = {
-            let apply = &mut self.current.as_mut().unwrap().1;
-            apply.update(ctx, &mut self.arg_refs, event)
-        };
+        let result = apply.update(ctx, &mut self.arg_refs, event);
         event.init = saved_init;
         // Cleanup: remove the side-channel entries so a downstream
         // dispatcher (or the outer event loop) doesn't see them.
@@ -481,6 +571,121 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             event.variables.remove(&id);
         }
         result
+    }
+
+    /// Find or mint the [`SiteInstance`] for `site_id`, rebinding a
+    /// non-pre-bound instance whose LambdaDef changed (the per-site
+    /// twin of the key-0 rebind). Returns the instance's index in
+    /// `instances`; `None` when an init fails (the dispatch is
+    /// skipped this cycle, matching the key-0 path's `.ok()?`).
+    fn ensure_instance(
+        &mut self,
+        site_id: u64,
+        lambda_value: &Value,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Option<usize> {
+        let lambda_ptr = if self.pre_bound {
+            None
+        } else {
+            let def =
+                lambda_value.downcast_ref::<LambdaDef<R, E>>().unwrap_or_else(|| {
+                    panic!(
+                        "DynCall: fn-arg value isn't a LambdaDef — \
+                         typecheck should have rejected this"
+                    )
+                });
+            Some(def as *const _ as *const u8)
+        };
+        if let Some(i) = self.instances.iter().position(|(id, _)| *id == site_id) {
+            if let Some(p) = lambda_ptr
+                && self.instances[i].1.lambda_ptr != p
+            {
+                // Callback swap at this site: re-init, delete the old.
+                let apply = self.mint(lambda_value, ctx)?;
+                let mut prev = std::mem::replace(
+                    &mut self.instances[i].1,
+                    SiteInstance { lambda_ptr: p, apply, fired: false },
+                );
+                prev.apply.delete(ctx);
+            }
+            return Some(i);
+        }
+        // First dispatch for this id. The eagerly pre-bound/pre-inited
+        // Apply seeds it when its callee matches — a slot's dispatches
+        // are either all key-0 or all identity-keyed, so the bucket
+        // roles can't collide. A non-matching seed stays put (slot
+        // delete cleans it up).
+        let seed_ok = match (&self.current, lambda_ptr) {
+            (Some((p, _)), Some(np)) => *p == np,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        let inst = if seed_ok {
+            let (p, apply) = self.current.take().unwrap();
+            SiteInstance { lambda_ptr: p, apply, fired: self.fired }
+        } else {
+            let apply = self.mint(lambda_value, ctx)?;
+            SiteInstance {
+                lambda_ptr: lambda_ptr.unwrap_or(std::ptr::null()),
+                apply,
+                fired: false,
+            }
+        };
+        self.instances.push((site_id, inst));
+        Some(self.instances.len() - 1)
+    }
+
+    /// Construct a fresh inner Apply per the slot's recipe. `None` on
+    /// init failure.
+    fn mint(
+        &mut self,
+        lambda_value: &Value,
+        ctx: &mut ExecCtx<R, E>,
+    ) -> Option<Box<dyn Apply<R, E>>> {
+        match &self.recipe {
+            SlotRecipe::Lambda => {
+                let def = lambda_value.downcast_ref::<LambdaDef<R, E>>()?;
+                (def.init)(
+                    &self.scope,
+                    ctx,
+                    &mut self.arg_refs,
+                    crate::BindMode::Definition,
+                    self.top_id,
+                )
+                .ok()
+            }
+            SlotRecipe::Builtin { init, typ } => {
+                init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id).ok()
+            }
+            SlotRecipe::Cast { target } => Some(Box::new(CastApply {
+                target: target.clone(),
+                _p: std::marker::PhantomData,
+            })),
+            SlotRecipe::QopDeliver { handler_id, spec } => {
+                Some(Box::new(crate::node::error::QopDeliverApply {
+                    handler_id: *handler_id,
+                    spec: spec.clone(),
+                }))
+            }
+        }
+    }
+
+    /// Subscription refs for every inner Apply this slot holds (the
+    /// key-0 bucket plus per-site instances) and the arg-ref side
+    /// channel — the slot's share of `Kernel::refs`.
+    pub fn refs(&self, refs: &mut Refs) {
+        if let Some((_, inner)) = &self.current {
+            inner.refs(refs);
+        }
+        for (_, inst) in &self.instances {
+            inst.apply.refs(refs);
+        }
+        for n in &self.arg_refs {
+            n.refs(refs);
+        }
+        for id in &self.bind_ids {
+            refs.bound.insert(*id);
+        }
     }
 }
 
@@ -547,6 +752,11 @@ struct DispatcherState<R: Rt, E: UserEvent> {
     event: *mut Event<E>,
 }
 
+/// Site-identity id mint (see `dispatch_typed`). Starts at 1 — 0 is
+/// the key-0 bucket. Global: ids only need uniqueness within one
+/// slot's lifetime, which a process-wide counter gives trivially.
+static NEXT_SITE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// Monomorphized DynCall dispatcher. The function pointer is stored
 /// in `DynDispatchHandle.dispatch` per-call by `Kernel::update`.
 ///
@@ -559,6 +769,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
     taint_mask: u64,
+    site_word: *mut u64,
 ) -> DynCallRet {
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
@@ -570,9 +781,29 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     // fresh Vec — a per-DynCall allocation that also forfeited the
     // pool return.)
     let args_vec = unsafe { *Box::from_raw(args) };
+    // SITE IDENTITY: the emission site claimed one state word whose
+    // ADDRESS rides in `site_word` (null = no identity — key-0 bucket:
+    // v1 scaffold-loop sites, recursive back-edges, qop-deliver). A
+    // zero word means first-ever dispatch through this site's storage:
+    // mint a fresh nonzero id and store it — the word's VALUE is the
+    // key, so storage freed and reused (a per-slot site block after a
+    // resize) reads 0 again and mints FRESH, exactly the node-walk's
+    // fresh per-position instance.
+    let site_id = if site_word.is_null() {
+        0
+    } else {
+        let w = unsafe { *site_word };
+        if w == 0 {
+            let id = NEXT_SITE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            unsafe { *site_word = id };
+            id
+        } else {
+            w
+        }
+    };
     let slot = &mut slots[fn_index as usize];
     let lambda_v = &fn_arg_values[fn_index as usize];
-    match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask) {
+    match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, site_id) {
         Some(v) => {
             // Unified Value ABI: hand back the Value's two `repr(u64)`
             // words for EVERY return type — the call site adapts per
@@ -1478,15 +1709,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // update — exactly the DynCall hang we caught with the
         // differential harness.
         for slot in &self.dyn_slots {
-            if let Some((_, inner)) = &slot.current {
-                inner.refs(refs);
-            }
-            for n in &slot.arg_refs {
-                n.refs(refs);
-            }
-            for id in &slot.bind_ids {
-                refs.bound.insert(*id);
-            }
+            slot.refs(refs);
         }
         for fp in &self.kernel.fn_params {
             if let FnSource::Binding { bind_id } = &fp.source {

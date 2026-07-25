@@ -1,0 +1,18 @@
+// jul23f generate divergence_000000 (found ~15min into the first
+// campaign on c8d6e932), local twin of the cross-module original.
+// interp: Trace([]) — the outer call's arg is bottom, its callsite
+// never dispatches. jit (pre-fix): Trace([0:"xyz"]) — the fused
+// callee has ONE compiled body, so its interior str::replace was ONE
+// graphix_dyncall emit site → ONE DynCallSlot → ONE inner Apply
+// shared by BOTH call sites; the outer call's taint-masked v22
+// delivered ABSENCE (dyncall-partial-args-jul2026) and the shared
+// CachedArgs rode the INNER call's "xyz" — another site's history,
+// where the interp's per-callsite instantiation rides only its OWN.
+// FIX (dyncall-site-identity-jul2026): each DynCall emission site
+// claims one identity word through the state channel selects use
+// (region root → instance word; callee root → per-call-site block
+// word); the dispatcher mints an id into it and keys a full inner
+// Apply per site — cache AND builtin state get the node-walk's
+// per-callsite identity. Scaffold-loop sites and recursive
+// back-edges stay on the shared key-0 bucket (documented residuals).
+{let f0 = |v22: string| -> string str::replace(#pat: "hello", #rep: "a", v22); f0(str::sub(#start: i64:0, #len: (i64:0 /? i64:0)$, f0("xyz"))$)}

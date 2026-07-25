@@ -546,6 +546,22 @@ enforces it):**
   `builtin-taint-gate-jul2026` + `dyncall-partial-args-jul2026` (the
   latter also fixed `array::window` to require ALL its args — its
   eval produced `[]` at `#n: 0` with the val slot absent).
+- **DynCall SITE IDENTITY** (2026-07-25, soak jul23f): the ridden
+  state must be the call site's OWN history — a compiled callee
+  body's interior builtin is ONE `graphix_dyncall` instruction
+  reached from every caller emit site, and the previously-shared
+  single inner Apply let a masked delivery resurrect ANOTHER site's
+  cached args. Each emission site now claims one identity word
+  through the select-state channel (region root → instance word,
+  callee root → per-call-site block word), `graphix_dyncall` carries
+  its address, and the dispatcher mints an id and keys a full inner
+  Apply per site (`DynCallSlot.instances`) — cache AND builtin state
+  get the interp's per-callsite identity. Key 0 = the shared legacy
+  bucket: scaffold-loop sites (v1, keeping the init-mask
+  approximation), recursive back-edges, qop-deliver.
+  `design/kernel_instance_state.md` "DynCall site identity"; pinned
+  by `dyncall_site_identity_state` +
+  `findings/dyncall-site-identity-jul2026/`.
 - An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield to
   the scheduler) — accepted/correct; the reactive node-walk's per-cycle
   "continue" is the artifact.

@@ -287,3 +287,50 @@ canonical and correct), not a firing residual. The shared first-call-
 ever word at in-loop call sites was AUDITED (late-created slot,
 const-bodied callee): traces agree — the resize firing path covers
 the new slot's delivery.
+
+## DynCall site identity (BUILT 2026-07-25 — the algebra applied to builtin instances)
+
+Soak jul23f (generate divergence_000000) surfaced the same identity
+question one layer down: a fused callee body is compiled ONCE, so an
+interior builtin call is one `graphix_dyncall` instruction → one
+`DynCallSlot` → one inner Apply shared by every logical call site,
+where the node-walk instantiates the callee body — interior builtin,
+`CachedArgs` and all — per callsite. Under the partial-args ruling
+(a taint-masked arg delivers ABSENCE and the cached slot rides its
+previous state) the ridden state could be ANOTHER site's history: the
+outer call of `{let f0 = |v| str::replace(#pat:.., #rep:.., v);
+f0(..bottom.. f0("xyz") ..)}` resurrected the inner call's "xyz".
+
+The fix reuses the select-identity channel wholesale:
+
+- Every DynCall emission site (`emit_dyncall_site_word`, emit/call.rs)
+  claims ONE identity word: region root → an instance state word
+  (redundant with the slot's own per-instance identity, but uniform);
+  callee root → a per-call-site block word (null-guarded, 0 on
+  recursive back-edges). `graphix_dyncall` carries the word's ADDRESS
+  as a 4th arg.
+- `dispatch_typed` lazily mints a nonzero id into a zero word
+  (global counter; the word's VALUE is the key, so freed/reused
+  storage reads 0 and mints fresh — the node-walk's fresh
+  per-position instance). `DynCallSlot.instances` keys a full
+  `SiteInstance` (Apply + lambda_ptr + fired) per id: cache AND any
+  builtin state get per-site identity. The eagerly pre-bound/
+  pre-inited Apply seeds the first mint.
+- Key 0 remains the shared legacy bucket, used by: scaffold-loop
+  sites (v1 — their per-slot semantics keep the documented init-mask
+  approximation from `design/collection_intrinsics.md`; a per-slot
+  identity chain via the slot-table machinery is the natural
+  follow-up and would also close the fold-acc-taint per-position
+  residual), recursive back-edges (null site block — cross-depth
+  rides within one recursion are a pre-existing residual), and
+  qop-deliver (stateless by construction).
+- `sleep`/`delete`/`refs` iterate the bucket AND all instances (the
+  C3 semantics). An id orphaned by a freed per-slot site block
+  lingers in `instances` until slot death — deferred (not leaked)
+  cleanup; the interp deletes at truncation. Documented v1 residual,
+  bounded by resize churn.
+
+Pinned by `dyncall_site_identity_state` (per-site builtin STATE:
+`mean` in a twice-called callee — shared would average both sites)
+and `findings/dyncall-site-identity-jul2026/` (the masked-absence
+cache ride).

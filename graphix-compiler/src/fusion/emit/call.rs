@@ -32,6 +32,38 @@ use super::{
     },
 };
 
+/// The SITE-IDENTITY word address for a DynCall emission site
+/// (dyncall-site-identity-jul2026): one static `graphix_dyncall`
+/// instruction can be reached on behalf of many logical call sites (a
+/// callee body compiled once, called from several caller emit sites),
+/// where the node-walk instantiates the interior builtin per
+/// callsite. The site claims one word from the same channel selects
+/// claim state — region root: an instance word (redundant with the
+/// slot's own per-instance identity, but uniform); callee root: a
+/// per-call-site block word (null-guarded — 0 on recursive
+/// back-edges, the key-0 bucket) — and the dispatcher keys a full
+/// inner Apply per minted word value. Scaffold-loop sites pass 0 in
+/// v1: their per-slot semantics keep the documented init-mask
+/// approximation (`design/collection_intrinsics.md`), a per-slot
+/// identity chain is the follow-up.
+fn emit_dyncall_site_word(cx: &mut BodyCx) -> ClifValue {
+    if cx.ctx.loop_depth.get() > 0 {
+        return cx.b.ins().iconst(types::I64, 0);
+    }
+    if let Some(off) = cx.claim_state_word() {
+        let sp = cx.state_ptr();
+        return cx.b.ins().iadd_imm(sp, off as i64);
+    }
+    if let Some(off) = cx.claim_site_word() {
+        let base = cx.site_ptr();
+        let addr = cx.b.ins().iadd_imm(base, off as i64);
+        let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        return cx.b.ins().select(has, addr, zero);
+    }
+    cx.b.ins().iconst(types::I64, 0)
+}
+
 /// Builtin DynCall — marshal the (marshal-ordered) `args` into a
 /// fresh `LPooled<Vec<Value>>` buf, dispatch via `graphix_dyncall`
 /// against the `FnSource::Builtin` slot at `info.fn_index`, then
@@ -215,9 +247,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     };
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
+    let site_word = emit_dyncall_site_word(cx);
     // The buf's in-flight cover ends here: the dispatcher consumes it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, taint_mask]);
+    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, taint_mask, site_word]);
     // Unified Value ABI: `graphix_dyncall` returns the result's
     // genuine (disc, payload) Value pair for every return type; the
     // decode below adapts per the static shape.
