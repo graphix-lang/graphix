@@ -155,6 +155,7 @@ verify_campaign() {
         }
         pid=$(lane_pid "$dir" "$lane")
         while read -r ni; do
+            [[ $ni == - ]] && continue
             [[ $ni == "$nice_level" ]] || {
                 echo "$lane session $pid contains process at nice $ni" >&2
                 return 1
