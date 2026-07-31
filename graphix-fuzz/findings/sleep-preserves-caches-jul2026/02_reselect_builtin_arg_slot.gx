@@ -1,0 +1,16 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin
+// Constructed sibling witness of 01 during the fix audit (2026-07-31):
+// the builtin arg-slot twin. `CachedArgs::sleep` cleared the CachedVals
+// arg slots, so on arm re-selection a bottoming arg (1/v0 at v0=0) left
+// its slot empty, eval saw a missing arg and produced nothing, and the
+// select emitted the arm wrapper cache (1). The kernel's DynCall site
+// instance persists across deselection (dyncall_site_identity_state):
+// the bottomed arg masks, the cached slot rides (1), the fresh arg
+// delivers 10, and max(10, 1) fires 10.
+// Pre-fix: interp Trace([0:i64:1]; [0:i64:9]; [0:i64:1])
+//          jit    Trace([0:i64:1]; [0:i64:9]; [0:i64:10])
+// Same ruling as 01: the arg slots are the value channel (their
+// reset_replay already persisted them); sleep now preserves them too.
+// Both backends emit 10 at epoch 2.
+// schedule-v1: cap=144 events=1152; in1=bool:true; in1=bool:false in0=i64:1
+{let v0 = i64:1 - in0; select in1 {true => i64:9, _ => max(in0 * i64:10, i64:1 / v0)}}

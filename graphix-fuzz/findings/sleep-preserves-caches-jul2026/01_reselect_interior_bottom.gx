@@ -1,0 +1,19 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin
+// Found by soak jul30a reactive lane (seed 2612000000 range, 2026-07-31,
+// campaign binary 73de0cab); minimized by hand from divergence_000000.
+// Pre-fix: interp Trace([0:i64:-1]; [0:i64:9]; [0:i64:-1])
+//          jit    Trace([0:i64:-1]; [0:i64:9]; [0:i64:0])
+// root_cause: interior op-cache memory across arm DESELECTION differed.
+// `Cached::sleep` cleared the resident value, so on re-selection a
+// bottoming interior op (1/v0 at v0=0) had no cache to ride, the arm
+// body produced nothing, and the becoming-selected fire fell back to
+// the arm wrapper's surviving cache (-1, the epoch-0 output). The
+// kernel's honor-gated replay words persist across deselection, so it
+// rode the div's stale word (1) and computed in0-1 = 0. Continuously-
+// selected and first-selection variants agreed all along (combineLatest
+// rides / no-history silence).
+// RULING (Eric, 2026-07-31): 0 is right — sleep is PAUSE, value-channel
+// caches survive it; the kernel semantics stand and `Cached::sleep`
+// preserves the resident value. Both backends now emit 0 at epoch 2.
+// schedule-v1: cap=144 events=1152; in1=bool:true; in1=bool:false in0=i64:1
+{let v0 = i64:1 - in0; select in1 {true => i64:9, _ => in0 - (i64:1 / v0)}}

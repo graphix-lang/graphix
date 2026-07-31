@@ -297,8 +297,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.current = None;
-        self.current_tag = Tag::FIRED;
+        // `current` (the source's resident value) survives sleep —
+        // sleep is PAUSE, matching `Cached::sleep` (Eric's ruling
+        // 2026-07-31, select_reselect_interior_bottom).
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }

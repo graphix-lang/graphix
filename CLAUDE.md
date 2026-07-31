@@ -546,6 +546,16 @@ enforces it):**
   `builtin-taint-gate-jul2026` + `dyncall-partial-args-jul2026` (the
   latter also fixed `array::window` to require ALL its args — its
   eval produced `[]` at `#n: 0` with the val slot absent).
+- **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
+  value-channel caches survive an arm's sleep — `Cached` residents,
+  `CachedArgs` arg slots, `StructWith.current`, collection slot
+  values/acc-carries — so a deselected-then-reselected arm whose fresh
+  computation bottoms RIDES its history, exactly like the kernel's
+  persistent replay words / DynCall slots / per-slot state words (the
+  kernel needed no change). Async builtins' documented arm-rewake
+  RESTART semantics (`once`/`take`/`skip`/`uniq`/`hold`/... clear on
+  sleep) are unchanged — they never fuse, so no kernel twin constrains
+  them. Pinned by `sleep-preserves-caches-jul2026/`.
 - **DynCall SITE IDENTITY** (2026-07-25, soak jul23f): the ridden
   state must be the call site's OWN history — a compiled callee
   body's interior builtin is ONE `graphix_dyncall` instruction

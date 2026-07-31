@@ -473,7 +473,12 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.cached.clear()
+        // The arg slots survive sleep exactly as they survive replay
+        // resets (below): sleep is PAUSE, and the kernel twin — the
+        // DynCall site instance's cached slots — persists across arm
+        // deselection, riding on the next dispatch (Eric's ruling
+        // 2026-07-31, select_reselect_interior_bottom; witnessed via
+        // `max(in0 * 10, 1 / v0)` in a re-woken arm).
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {

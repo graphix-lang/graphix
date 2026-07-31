@@ -324,9 +324,14 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
         self.update(ctx, event).is_some_and(|t| t.triggers())
     }
 
+    /// Sleep is PAUSE, not reset: the resident value (and its at-rest
+    /// taint) survives, so a re-woken subtree resumes from its history
+    /// exactly like the kernel's replay/ride words — a deselected-then-
+    /// reselected arm whose fresh computation bottoms rides its cached
+    /// operands instead of forgetting them (Eric's ruling 2026-07-31,
+    /// select_reselect_interior_bottom). Contrast [`Self::reset_replay`],
+    /// where frame state never survives.
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.cached = None;
-        self.tag = Tag::FIRED;
         self.node.sleep(ctx)
     }
 

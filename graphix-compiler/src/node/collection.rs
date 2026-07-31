@@ -803,11 +803,14 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Slot values and `current` survive sleep — sleep is PAUSE
+        // (Eric's ruling 2026-07-31): while awake a bottoming callback
+        // already rides its slot's previous value (`update` only
+        // overwrites on production), and the kernel's per-slot state
+        // words persist across arm deselection, so a re-woken
+        // collection resumes from its history like every other node.
         self.base.source.sleep(ctx);
-        self.current = T::Collection::default();
         for slot in self.slots.iter_mut() {
-            slot.value = None;
-            slot.tag = Tag::STALE;
             slot.call.sleep(ctx);
         }
     }
@@ -1256,14 +1259,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // The fold seed, per-slot acc-carry (`held`), and slot tags
+        // survive sleep — sleep is PAUSE (Eric's ruling 2026-07-31);
+        // the kernel twins (FoldAcc carry, sticky flag folds) persist
+        // across arm deselection. `cycle` is re-derived by every
+        // update pass, so preserving it is inert.
         self.base.source.sleep(ctx);
         self.base.init.sleep(ctx);
-        self.init = None;
-        self.source_present = false;
         for slot in self.slots.iter_mut() {
-            slot.cycle = None;
-            slot.held = None;
-            slot.tag = Tag::STALE;
             slot.call.sleep(ctx);
         }
     }
