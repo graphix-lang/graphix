@@ -389,7 +389,7 @@ where
                 .map(|mut ps: LPooled<Vec<(TVar, Option<Type>)>>| {
                     Arc::from_iter(ps.drain(..))
                 })
-                .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from(Vec::new()));
+                .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from_iter([]));
             let typ = match typ {
                 Some(typ) => typ,
                 None => {

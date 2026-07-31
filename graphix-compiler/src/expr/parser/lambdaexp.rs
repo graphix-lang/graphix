@@ -51,7 +51,8 @@ where
 /// and anonymous, possibly empty) and validates that labeled args precede
 /// anonymous ones. The caller pairs this with the already-parsed function
 /// expression to build the `Apply` node.
-pub(super) fn apply_args<I>() -> impl Parser<I, Output = Vec<(Option<ArcStr>, Expr)>>
+pub(super) fn apply_args<I>()
+-> impl Parser<I, Output = LPooled<Vec<(Option<ArcStr>, Expr)>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -62,9 +63,9 @@ where
         sptoken(')'),
         spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
     )
-    .then(|args: Vec<(Option<ArcStr>, Expr)>| {
+    .then(|args: LPooled<Vec<(Option<ArcStr>, Expr)>>| {
         let mut anon = false;
-        for (a, _) in &args {
+        for (a, _) in &*args {
             if a.is_some() && anon {
                 return unexpected_any(
                     "labeled arguments must come before anonymous arguments",

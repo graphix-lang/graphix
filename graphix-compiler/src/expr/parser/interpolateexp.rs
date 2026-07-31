@@ -52,48 +52,17 @@ parser! {
             ),
         )
             .map(|(pos, mut toks): (_, LPooled<Vec<Intp>>)| {
-                let mut argvec = vec![];
-                toks.drain(..)
-                    .fold(None, |src, tok| -> Option<Expr> {
-                        match (src, tok) {
-                            (None, t @ Intp::Lit(_, _)) => Some(t.to_expr()),
-                            (None, Intp::Expr(s)) => {
-                                argvec.push(s);
-                                Some(
-                                    ExprKind::StringInterpolate {
-                                        args: Arc::from_iter(argvec.clone().into_iter()),
-                                    }
-                                    .to_expr(pos),
-                                )
-                            }
-                            (Some(src @ Expr { kind: ExprKind::Constant(_), .. }), s) => {
-                                argvec.extend([src, s.to_expr()]);
-                                Some(
-                                    ExprKind::StringInterpolate {
-                                        args: Arc::from_iter(argvec.clone().into_iter()),
-                                    }
-                                    .to_expr(pos),
-                                )
-                            }
-                            (
-                                Some(Expr {
-                                    kind: ExprKind::StringInterpolate { args: _ },
-                                    ..
-                                }),
-                                s,
-                            ) => {
-                                argvec.push(s.to_expr());
-                                Some(
-                                    ExprKind::StringInterpolate {
-                                        args: Arc::from_iter(argvec.clone().into_iter()),
-                                    }
-                                    .to_expr(pos),
-                                )
-                            }
-                            (_, _) => unreachable!(),
-                        }
-                    })
-                    .unwrap_or_else(|| ExprKind::Constant(Value::from("")).to_expr(pos))
+                // A lone literal is a plain constant; anything else — any
+                // interpolated expr, or several parts — is one
+                // StringInterpolate over the parts in order.
+                match &toks[..] {
+                    [] => ExprKind::Constant(Value::from("")).to_expr(pos),
+                    [Intp::Lit(_, _)] => toks.drain(..).next().unwrap().to_expr(),
+                    _ => ExprKind::StringInterpolate {
+                        args: Arc::from_iter(toks.drain(..).map(Intp::to_expr)),
+                    }
+                    .to_expr(pos),
+                }
             })
     }
 }

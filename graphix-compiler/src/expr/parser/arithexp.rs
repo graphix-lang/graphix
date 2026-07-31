@@ -59,7 +59,7 @@ enum Post {
     Index(usize),                                      // `.0`     -> TupleRef
     Array(Either<(Option<Expr>, Option<Expr>), Expr>), // `[i]`/`[a..b]`
     Key(Expr),                                         // `{k}`    -> MapRef
-    Call(Vec<(Option<ArcStr>, Expr)>),                 // `(args)` -> Apply
+    Call(LPooled<Vec<(Option<ArcStr>, Expr)>>),        // `(args)` -> Apply
 }
 
 enum QopSuffix {
@@ -116,10 +116,11 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
         }
         .to_expr(pos),
         Post::Key(key) => ExprKind::MapRef { source, key: Arc::new(key) }.to_expr(pos),
-        Post::Call(args) => {
-            ExprKind::Apply(ApplyExpr { function: source, args: Arc::from(args) })
-                .to_expr(pos)
-        }
+        Post::Call(mut args) => ExprKind::Apply(ApplyExpr {
+            function: source,
+            args: Arc::from_iter(args.drain(..)),
+        })
+        .to_expr(pos),
     }
 }
 

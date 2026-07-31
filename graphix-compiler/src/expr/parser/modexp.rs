@@ -14,6 +14,7 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token,
 };
+use poolshark::local::LPooled;
 use triomphe::Arc;
 
 parser! {
@@ -68,8 +69,12 @@ where
     spstring("sig").with(spaces()).with(between(
         token('{'),
         sptoken('}'),
-        sep_by1_tok(sig_item(), semisep(), token('}'))
-            .map(|i: Vec<SigItem>| Sig { toplevel: false, items: Arc::from(i) }),
+        sep_by1_tok(sig_item(), semisep(), token('}')).map(
+            |mut i: LPooled<Vec<SigItem>>| Sig {
+                toplevel: false,
+                items: Arc::from_iter(i.drain(..)),
+            },
+        ),
     ))
 }
 
@@ -87,14 +92,18 @@ where
                 sptoken(']'),
                 sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
             ))
-            .map(|l: Vec<ModPath>| Sandbox::Blacklist(Arc::from(l))),
+            .map(|mut l: LPooled<Vec<ModPath>>| {
+                Sandbox::Blacklist(Arc::from_iter(l.drain(..)))
+            }),
         spstring("whitelist")
             .with(between(
                 sptoken('['),
                 sptoken(']'),
                 sep_by1_tok(spaces().with(modpath()), csep(), token(']')),
             ))
-            .map(|l: Vec<ModPath>| Sandbox::Whitelist(Arc::from(l))),
+            .map(|mut l: LPooled<Vec<ModPath>>| {
+                Sandbox::Whitelist(Arc::from_iter(l.drain(..)))
+            }),
     ))
 }
 
