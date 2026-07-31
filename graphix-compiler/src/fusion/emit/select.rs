@@ -294,8 +294,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // guard term — the guardless treatment; claiming anyway cost the
     // recursion-hot symbolic bench ~14% in null-guard branches for
     // memory that could never refine anything.
-    let guard_feeders: Vec<Variable> = {
-        let mut ids: Vec<BindId> = Vec::new();
+    let guard_feeders: smallvec::SmallVec<[Variable; 8]> = {
+        let mut ids: smallvec::SmallVec<[BindId; 8]> = smallvec::SmallVec::new();
         for (pat, _) in sel.arms.iter() {
             if let Some(g) = &pat.guard {
                 let mut refs = crate::Refs::default();
@@ -631,7 +631,7 @@ fn emit_composite_pattern_cond(
     scrut_typ: &Type,
     pat: &StructPatternNode,
     fail: Block,
-    binds: &mut Vec<SelectArmBind>,
+    binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
     // The length read up front (safe on the empty taint placeholder) —
     // suffix leaves index relative to it.
@@ -645,7 +645,8 @@ fn emit_composite_pattern_cond(
         sub: &'p StructPatternNode,
         typ: Type,
     }
-    let (leaves, len_cc, n): (Vec<LeafSpec>, IntCC, usize) = match pat {
+    let (leaves, len_cc, n): (smallvec::SmallVec<[LeafSpec; 8]>, IntCC, usize) = match pat
+    {
         StructPatternNode::Slice { tuple, all, binds: pbinds } => {
             if all.is_some() {
                 return Err(anyhow!(
@@ -680,7 +681,7 @@ fn emit_composite_pattern_cond(
                 .map(|(j, sub)| {
                     Ok(LeafSpec { idx: ElemIdx::FromStart(j), sub, typ: elt(j)? })
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
             (leaves, IntCC::Equal, pbinds.len())
         }
         StructPatternNode::SlicePrefix { all, prefix, tail } => {
@@ -763,7 +764,7 @@ fn emit_composite_pattern_cond(
                     })?;
                     Ok(LeafSpec { idx: ElemIdx::StructField(*i), sub, typ })
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
             (leaves, IntCC::SignedGreaterThanOrEqual, sbinds.len())
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
@@ -771,8 +772,10 @@ fn emit_composite_pattern_cond(
     // Classify each leaf BEFORE emitting anything (an Err mid-emission
     // would abandon the kernel build — fine — but classify-first keeps
     // the failure cheap and the emission below straight-line).
-    let mut lit_leaves: Vec<(ElemIdx, PrimType, &Value)> = Vec::new();
-    let mut nested: Vec<(ElemIdx, &StructPatternNode, Type)> = Vec::new();
+    let mut lit_leaves: smallvec::SmallVec<[(ElemIdx, PrimType, &Value); 8]> =
+        smallvec::SmallVec::new();
+    let mut nested: smallvec::SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> =
+        smallvec::SmallVec::new();
     for leaf in &leaves {
         match leaf.sub {
             StructPatternNode::Ignore => {}
@@ -996,7 +999,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let early_fail =
             if composite_structural { Some(cx.b.create_block()) } else { None };
         // Structure condition + the binds to install once matched.
-        let mut binds: Vec<SelectArmBind> = Vec::new();
+        let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
         let scond: Option<ClifValue> = match &pat.structure_predicate {
             StructPatternNode::Ignore => None,
             StructPatternNode::Bind(id) => match scrut {

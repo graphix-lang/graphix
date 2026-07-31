@@ -25,7 +25,7 @@ use netidx_core::atomic_id;
 use netidx_value::FromValue;
 use netidx_value::{ValArray, Value};
 use nohash::IntSet;
-use poolshark::global::GPooled;
+use poolshark::global::{GPooled, Pool};
 use serde_derive::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::{fmt, future, sync::Arc};
@@ -464,7 +464,7 @@ enum ToGX<X: GXExt> {
     /// one `SetMany` is processed in one batch by construction. See
     /// [`GXHandle::set_many`].
     SetMany {
-        sets: SmallVec<[(BindId, Value); 4]>,
+        sets: GPooled<Vec<(BindId, Value)>>,
     },
     Call {
         id: CallableId,
@@ -984,8 +984,14 @@ impl<X: GXExt> GXHandle<X> {
         &self,
         sets: impl IntoIterator<Item = (BindId, Value)>,
     ) -> Result<()> {
-        let sets: SmallVec<[(BindId, Value); 4]> = sets.into_iter().collect();
-        self.0.tx.send(ToGX::SetMany { sets }).map_err(|_| anyhow!("runtime is dead"))
+        static SETS: std::sync::LazyLock<Pool<Vec<(BindId, Value)>>> =
+            std::sync::LazyLock::new(|| Pool::new(16, 8192));
+        let mut batch = SETS.take();
+        batch.extend(sets);
+        self.0
+            .tx
+            .send(ToGX::SetMany { sets: batch })
+            .map_err(|_| anyhow!("runtime is dead"))
     }
 
     /// Call a callable by id with the given arguments

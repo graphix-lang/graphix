@@ -455,9 +455,9 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         return Err(anyhow!("emit_clif: labeled args on a self tail-call"));
     }
     let n = spec_apply.args.len();
-    let mut new_vals = Vec::with_capacity(n);
-    let mut sources = Vec::with_capacity(n);
-    let mut taints = Vec::with_capacity(n);
+    let mut new_vals: smallvec::SmallVec<[_; 8]> = smallvec::SmallVec::new();
+    let mut sources: smallvec::SmallVec<[_; 8]> = smallvec::SmallVec::new();
+    let mut taints: smallvec::SmallVec<[_; 8]> = smallvec::SmallVec::new();
     for i in 0..n {
         let arg = cs
             .arg_positional(i)

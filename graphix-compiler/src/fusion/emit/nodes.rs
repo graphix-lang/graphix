@@ -572,7 +572,7 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     // #219: a tainted part (a div0 inside `[..]`) renders harmlessly into
     // the buffer; its taint accumulates and forces the result at the
     // output. Collect part discs and fold them into the result disc.
-    let mut part_discs: Vec<ClifValue> = Vec::with_capacity(args.len());
+    let mut part_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for a in args {
         let part = &a.node;
         // `freeze_for_abi_normalized` so a select-valued part (whose type is
@@ -816,7 +816,7 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
     let call = cx.b.ins().call(buf_new, &[cap]);
     let buf = cx.b.inst_results(call)[0];
-    let mut field_discs = Vec::with_capacity(fields.len());
+    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for f in fields {
         field_discs.push(emit_push_field_node(cx, buf, &f.node)?);
     }
@@ -852,7 +852,7 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     if names.len() != fields.len() {
         return Err(anyhow!("emit_clif: struct literal name/field arity mismatch"));
     }
-    let mut indexed: Vec<(&ArcStr, &Cached<R, E>)> =
+    let mut indexed: smallvec::SmallVec<[(&ArcStr, &Cached<R, E>); 8]> =
         names.iter().zip(fields.iter()).collect();
     indexed.sort_by(|a, b| a.0.cmp(b.0));
     let buf_new = cx.helper("graphix_value_buf_new")?;
@@ -862,7 +862,7 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     let outer_cap = cx.b.ins().iconst(types::I64, indexed.len() as i64);
     let call = cx.b.ins().call(buf_new, &[outer_cap]);
     let outer = cx.b.inst_results(call)[0];
-    let mut field_discs = Vec::with_capacity(indexed.len());
+    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for (name, field) in indexed {
         let inner_cap = cx.b.ins().iconst(types::I64, 2);
         let call = cx.b.ins().call(buf_new, &[inner_cap]);
@@ -899,12 +899,13 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Sorted (name, type) fields of the source struct — cloned out of the
     // deref before emitting (lock discipline).
-    let fields: Vec<(ArcStr, Type)> = source.typ().with_deref(|t| match t {
-        Some(Type::Struct(flds)) => {
-            Ok(flds.iter().map(|(n, t)| (n.clone(), t.clone())).collect())
-        }
-        _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
-    })?;
+    let fields: poolshark::local::LPooled<Vec<(ArcStr, Type)>> =
+        source.typ().with_deref(|t| match t {
+            Some(Type::Struct(flds)) => {
+                Ok(flds.iter().map(|(n, t)| (n.clone(), t.clone())).collect())
+            }
+            _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
+        })?;
     let (arr_ptr, src, src_disc) =
         emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     // A tainted source (a #219 placeholder — e.g. a region input that
@@ -939,7 +940,8 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     // The struct fires iff the source fired OR any replacement fired: fold
     // the source disc once (all unchanged fields share its freshness) and
     // each replacement's disc.
-    let mut field_discs: Vec<ClifValue> = vec![src_disc];
+    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> =
+        smallvec::smallvec![src_disc];
     for (i, (name, field_typ)) in fields.iter().enumerate() {
         let inner_cap = cx.b.ins().iconst(types::I64, 2);
         let call = cx.b.ins().call(buf_new, &[inner_cap]);
@@ -1018,7 +1020,8 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let call = cx.b.ins().call(buf_new, &[cap]);
         let buf = cx.b.inst_results(call)[0];
         cx.b.ins().call(push_arcstr, &[buf, tag_ptr]);
-        let mut payload_discs = Vec::with_capacity(payloads.len());
+        let mut payload_discs: smallvec::SmallVec<[ClifValue; 8]> =
+            smallvec::SmallVec::new();
         for p in payloads {
             payload_discs.push(emit_push_field_node(cx, buf, &p.node)?);
         }
@@ -1305,12 +1308,13 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     let scv = emit_owned_value_operand_node(cx, source)?;
     // #219: source + present-bound taint propagates into the slice
     // result (forced at the output).
-    let mut taint_discs: Vec<ClifValue> = vec![scv.disc];
+    let mut taint_discs: smallvec::SmallVec<[ClifValue; 8]> =
+        smallvec::smallvec![scv.disc];
     let emit_bound = |cx: &mut BodyCx,
                       n: Option<&Node<R, E>>,
                       flag: i64,
                       flags: &mut i64,
-                      taint: &mut Vec<ClifValue>|
+                      taint: &mut smallvec::SmallVec<[ClifValue; 8]>|
      -> Result<ClifValue> {
         match n {
             None => Ok(cx.b.ins().iconst(types::I64, 0)),

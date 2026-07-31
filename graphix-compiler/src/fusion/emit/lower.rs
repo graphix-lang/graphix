@@ -58,7 +58,9 @@ pub(super) fn compile_into_function(
     // Snapshot block params before declaring Variables: declare_var
     // takes &mut self on the FunctionBuilder, which would conflict
     // with the &[Value] returned from block_params.
-    let initial_vals: Vec<ClifValue> = b.block_params(entry).to_vec();
+    let mut initial_vals: poolshark::local::LPooled<Vec<ClifValue>> =
+        poolshark::local::LPooled::take();
+    initial_vals.extend_from_slice(b.block_params(entry));
     // The leading cycle-context words (`CTX_WIRE_SLOTS`), BEFORE the
     // params (`abi_params` wire slots start past them): the
     // `event.init` flag (1 on the kernel's init cycle — read by
@@ -657,7 +659,7 @@ pub(crate) struct LowerCtx<'a> {
     /// Lifted connect-target bind ids (let-bound scalar counters routed
     /// in as feeders). Read by [`emit_let_node`] (seed-select) and
     /// [`emit_connect_node`] (write gate). See [`BodyEmitter::lifted`].
-    pub(super) lifted: &'a ahash::AHashSet<BindId>,
+    pub(super) lifted: &'a nohash::IntSet<BindId>,
     /// DynCall `fn_index` base for the body being emitted (see
     /// [`BodyEmitter::fn_index_offset`]). Added to every DynCall's
     /// `info.fn_index` at emit so a callee body indexes the region-wide

@@ -366,14 +366,14 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             let mut nodes = exprs
                 .iter()
                 .map(|e| compile(ctx, self.flags, e.clone(), &self.scope, self.top_id))
-                .collect::<Result<Vec<_>>>()?;
-            for n in &mut nodes {
+                .collect::<Result<poolshark::local::LPooled<Vec<_>>>>()?;
+            for n in nodes.iter_mut() {
                 n.typecheck0(ctx)?
             }
             Ok(nodes)
         });
         ctx.builtins_allowed = true;
-        let nodes = nodes?;
+        let mut nodes = nodes?;
         let private_env = self.env.clone();
         match &mut self.dynamic_sig_env {
             None => check_sig(
@@ -397,7 +397,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 )
             })?,
         }
-        self.nodes = Box::from(nodes);
+        self.nodes = nodes.drain(..).collect();
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
     }

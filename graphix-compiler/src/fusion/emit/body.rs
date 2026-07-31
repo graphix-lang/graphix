@@ -64,7 +64,7 @@ pub(super) fn emit_tail_rebind_jump(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
     ctx: &LowerCtx,
-    new_vals: Vec<CompiledExpr>,
+    new_vals: smallvec::SmallVec<[CompiledExpr; 8]>,
     sources: &[CompositeSource],
     taints: &[ClifValue],
 ) -> Result<()> {
@@ -202,12 +202,10 @@ pub(super) fn emit_tail_rebind_jump(
     // Composite slot rebinds already drop their old value (above);
     // skip any entry whose name matches a rebind slot. Drop every other
     // owned non-slot local above the param mark, by kind.
-    let slot_names: std::collections::HashSet<&str> =
-        slots.iter().map(|s| s.name.as_str()).collect();
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> = env.locals
         [ctx.tail.param_mark..]
         .iter()
-        .filter(|l| !slot_names.contains(l.name.as_str()))
+        .filter(|l| !slots.iter().any(|s| s.name == l.name))
         .map(|l| (l.kind, l.vv))
         .collect();
     for (kind, vv) in drops {
@@ -378,7 +376,7 @@ pub(super) struct BodySpec<'a> {
     /// The region's LIFTED connect-target bind ids — let-bound scalar
     /// counters/accumulators routed in as kernel inputs (feeders).
     /// Empty for callees and for any region with no lifts.
-    pub(super) lifted: &'a ahash::AHashSet<BindId>,
+    pub(super) lifted: &'a nohash::IntSet<BindId>,
     /// Whether this body may claim per-instance state words — `true`
     /// only for the region parent's root body. See
     /// [`StateChannel::enabled`].
@@ -586,7 +584,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         // (len, src_disc, idx_var) of each enclosing loop,
         // outermost first. Every open loop pushed a frame, so the
         // stack IS the enclosing-loop chain.
-        let enclosing: Vec<(ClifValue, ClifValue, Variable)> = {
+        let enclosing: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
             let frames = self.ctx.slot_tables.borrow();
             debug_assert_eq!(
                 frames.len(),
@@ -761,11 +759,11 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             if f.depth != self.ctx.loop_depth.get() {
                 return None;
             }
-            let enclosing: Vec<(ClifValue, ClifValue, Variable)> = frames
-                [..frames.len() - 1]
-                .iter()
-                .map(|g| (g.len, g.src_disc, g.idx_var))
-                .collect();
+            let enclosing: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> =
+                frames[..frames.len() - 1]
+                    .iter()
+                    .map(|g| (g.len, g.src_disc, g.idx_var))
+                    .collect();
             (f.idx_var, f.len, f.src_disc, enclosing)
         };
         let off = self.claim_state_word_loop_invariant()?;

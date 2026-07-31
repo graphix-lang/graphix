@@ -307,8 +307,8 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         }
     };
     let apply_id = apply_expr.id;
-    let mut call_positional: Vec<usize> = Vec::new();
-    let mut call_labeled: ahash::AHashMap<&str, usize> = ahash::AHashMap::default();
+    let mut call_positional: smallvec::SmallVec<[usize; 8]> = smallvec::SmallVec::new();
+    let mut call_labeled: LPooled<ahash::AHashMap<&str, usize>> = LPooled::take();
     for (call_idx, (label, _)) in a.args.iter().enumerate() {
         match label {
             Some(name) => {
@@ -317,7 +317,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             None => call_positional.push(call_idx),
         }
     }
-    let mut layout: Vec<BuiltinSlot> = Vec::new();
+    let mut layout: LPooled<Vec<BuiltinSlot>> = LPooled::take();
     let mut arg_types: Vec<Type> = Vec::new();
     let mut marshal_arg_indices: Vec<usize> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
@@ -388,7 +388,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             }
         }
     }
-    let remaining: Vec<_> = pos_iter.collect();
+    let remaining: smallvec::SmallVec<[_; 8]> = pos_iter.collect();
     if !remaining.is_empty() {
         if fn_type.vargs.is_none() {
             return;
@@ -444,7 +444,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         source: FnSource::Builtin {
             name: info.name.clone(),
             typ: fn_type,
-            layout: std::sync::Arc::from(layout),
+            layout: std::sync::Arc::from_iter(layout.drain(..)),
             lambda_id: info.lambda_id,
         },
         arg_types: arg_types.clone(),
@@ -1168,12 +1168,11 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // "x"). The FnArgKind name still names the slot for by-name
     // resolution of destructured formals (no single id).
     let typ = g.typ();
-    let n_formal = typ.args.len();
-    let mut inputs: Vec<(ArcStr, RegionInputKind, Option<BindId>)> =
-        Vec::with_capacity(n_formal);
+    let mut inputs: LPooled<Vec<(ArcStr, RegionInputKind, Option<BindId>)>> =
+        LPooled::take();
     // The frozen kernel-ABI slot type of each formal, kept for the
     // recursive-self-call ABI check below (#21).
-    let mut formal_kts: Vec<Type> = Vec::with_capacity(n_formal);
+    let mut formal_kts: LPooled<Vec<Type>> = LPooled::take();
     for (i, fa) in typ.args.iter().enumerate() {
         let name = match &fa.kind {
             FnArgKind::Positional { name: Some(n) } => n.clone(),
@@ -1219,7 +1218,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // the body's `Ref(x)` to a formal arg `x` surfaces as "external"
     // here. Exclude the formal-arg ids explicitly so they aren't
     // mistaken for captures.
-    let mut arg_ids: nohash::IntSet<BindId> = nohash::IntSet::default();
+    let mut arg_ids: LPooled<nohash::IntSet<BindId>> = LPooled::take();
     for pat in g.args() {
         pat.ids(&mut |id| {
             arg_ids.insert(id);
@@ -1227,7 +1226,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     }
     let mut refs = Refs::default();
     g.body().refs(&mut refs);
-    let mut external: Vec<BindId> = Vec::new();
+    let mut external: LPooled<Vec<BindId>> = LPooled::take();
     refs.with_external_refs(|id| {
         if !arg_ids.contains(&id) {
             external.push(id);

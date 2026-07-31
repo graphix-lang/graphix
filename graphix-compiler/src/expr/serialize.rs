@@ -30,6 +30,7 @@ use netidx_core::{
     pack::{self, Pack, PackError},
     path::Path,
 };
+use poolshark::local::LPooled;
 use std::cell::RefCell;
 use triomphe::Arc;
 
@@ -264,11 +265,11 @@ pub fn unpack_module(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Arc<[Expr]>> 
     check_magic(&mut bytes)?;
     let _unit = DecodeUnit::new(ori);
     let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
-    let mut v: Vec<Expr> = Vec::with_capacity(n);
+    let mut v: LPooled<Vec<Expr>> = LPooled::take();
     for _ in 0..n {
         v.push(Expr::decode(&mut bytes).map_err(map_err)?);
     }
-    Ok(Arc::from(v))
+    Ok(Arc::from_iter(v.drain(..)))
 }
 
 /// Serialize a module interface (`.gxi`) signature to a packed blob.

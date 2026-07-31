@@ -299,11 +299,11 @@ pub(crate) struct FreeVarInput {
 pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
     subtree: &dyn Update<R, E>,
     ctx: &ExecCtx<R, E>,
-) -> Vec<FreeVarInput> {
+) -> LPooled<Vec<FreeVarInput>> {
     let mut refs = Refs::default();
     subtree.refs(&mut refs);
-    let mut out: Vec<FreeVarInput> = Vec::new();
-    let mut seen: ahash::AHashSet<BindId> = ahash::AHashSet::default();
+    let mut out: LPooled<Vec<FreeVarInput>> = LPooled::take();
+    let mut seen: LPooled<nohash::IntSet<BindId>> = LPooled::take();
     refs.with_external_refs(|id| {
         if !seen.insert(id) {
             return;
@@ -371,7 +371,7 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
 pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
-) -> ahash::AHashSet<BindId> {
+) -> LPooled<nohash::IntSet<BindId>> {
     // A `let` INSIDE a select arm lifts like any other: the node-walk
     // RE-SEEDS it on every arm wake (unselected arms sleep; a re-taken
     // arm updates under `event.init = true`), and the value-position
@@ -380,8 +380,8 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     // `emit_select_value_arm`). Contexts without a state word (tail
     // selects in recursive bodies, callee kernels) refuse the shape at
     // emission and de-fuse (soak jul08g fuzz divergence 6).
-    let mut connect_count: ahash::AHashMap<BindId, usize> = ahash::AHashMap::default();
-    let mut const_lets: ahash::AHashSet<BindId> = ahash::AHashSet::default();
+    let mut connect_count: LPooled<nohash::IntMap<BindId, usize>> = LPooled::take();
+    let mut const_lets: LPooled<nohash::IntSet<BindId>> = LPooled::take();
     for_each_node(node, &mut |n| match n.view() {
         NodeView::Connect(c) => {
             *connect_count.entry(c.id).or_default() += 1;
@@ -415,7 +415,7 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
         _ => {}
     });
     connect_count
-        .into_iter()
+        .drain()
         .filter(|&(t, count)| count == 1 && const_lets.contains(&t))
         .map(|(t, _)| t)
         .collect()
@@ -1133,7 +1133,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
 pub(crate) fn non_scalar_basename_collision(
     inputs: &[FreeVarInput],
 ) -> Option<&arcstr::ArcStr> {
-    let mut names: ahash::AHashSet<&str> = ahash::AHashSet::default();
+    let mut names: LPooled<ahash::AHashSet<&str>> = LPooled::take();
     for fv in inputs {
         if matches!(fv.kind, RegionInputKind::Prim(_)) {
             continue;

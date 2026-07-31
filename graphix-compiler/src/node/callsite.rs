@@ -1250,7 +1250,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Some(ft) => ft.clone(),
             None => return Ok(()),
         };
-        let mut fn_arg_targets: Vec<(usize, Value)> = Vec::new();
+        let mut fn_arg_targets: smallvec::SmallVec<[(usize, Value); 4]> =
+            smallvec::SmallVec::new();
         for (i, farg) in ftype.args.iter().enumerate() {
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
                 continue;
@@ -2270,8 +2271,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             ExprKind::Apply(a) => a,
             _ => bail!("CallSite spec must be ExprKind::Apply"),
         };
-        let mut source_nodes: Vec<&Node<R, E>> =
-            Vec::with_capacity(spec_apply.args.len());
+        let mut source_nodes: smallvec::SmallVec<[&Node<R, E>; 8]> =
+            smallvec::SmallVec::new();
         let mut pos_idx: usize = 0;
         for (label, _) in spec_apply.args.iter() {
             let n = match label {
@@ -2295,7 +2296,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     anyhow!("emit_clif: marshal arg index {call_idx} out of range")
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
         emit_dyncall_node(cx, &info, &arg_nodes)
     }
 }

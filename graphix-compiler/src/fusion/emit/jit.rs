@@ -438,7 +438,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     parent_self_call: Option<&(BindId, LambdaCallInfo)>,
     type_env: &Env,
     registry: &AbstractRegistry,
-    lifted: &ahash::AHashSet<BindId>,
+    lifted: &nohash::IntSet<BindId>,
     // REPLAY-word eligibility for the parent body: `true` for region
     // parents (frames reach their reset through the `FusedKernel`
     // node), `false` for lambda kernels (native cross-kernel entry
@@ -447,7 +447,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
 ) -> Result<WrappedKernel> {
     // Callee bodies never lift (lifts are region-level let-bound
     // counters); only the parent emitter carries the lifted set.
-    let no_lift: ahash::AHashSet<BindId> = ahash::AHashSet::default();
+    let no_lift: nohash::IntSet<BindId> = nohash::IntSet::default();
     let parent = NodeBodyEmitter { root, return_type: &kernel.return_type };
     let parent_spec = BodySpec {
         builtin_apply_sites: Some(apply_sites),
@@ -538,8 +538,11 @@ fn compile_kernel_with_callees_impl(
     emitters: &BTreeMap<usize, BodySource>,
     registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
-    let mut to_define: Vec<(std::sync::Arc<KernelSig>, u32, u32)> = Vec::new();
-    let mut defined: Vec<(usize, u32, u32)> = Vec::new();
+    let mut to_define: poolshark::local::LPooled<
+        Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
+    > = poolshark::local::LPooled::take();
+    let mut defined: poolshark::local::LPooled<Vec<(usize, u32, u32)>> =
+        poolshark::local::LPooled::take();
     let r = compile_kernel_with_callees_inner(
         jit,
         kernel,
@@ -676,7 +679,8 @@ fn compile_kernel_with_callees_inner(
     // `define_kernel_body` imports FuncRefs by walking this list, and
     // funcref indices (fn0, fn1, …) are assigned in import order — a
     // pointer-ordered map here made the numbering ASLR-dependent (#19).
-    let mut funcids: Vec<(usize, (FuncId, Signature))> = Vec::new();
+    let mut funcids: poolshark::local::LPooled<Vec<(usize, (FuncId, Signature))>> =
+        poolshark::local::LPooled::take();
     let parent_entry =
         ensure_declared(jit, kernel, 0, parent_layout, to_define, registry)?;
     funcids.push((parent_ptr, parent_entry.clone()));
@@ -904,8 +908,8 @@ fn define_kernel_body(
         // targets and sibling monomorphizations each resolve to their
         // OWN FuncId. The kernel itself is excluded from sites; a
         // self-recursive body imports its own FuncRef via `self_call`.
-        let needed: ahash::AHashSet<usize> = {
-            let mut s: ahash::AHashSet<usize> = body_emitter
+        let needed: poolshark::local::LPooled<nohash::IntSet<usize>> = {
+            let mut s: poolshark::local::LPooled<nohash::IntSet<usize>> = body_emitter
                 .spec
                 .lambda_call_sites
                 .map(|m| {
@@ -1103,7 +1107,8 @@ fn define_wrapper_body(
         // packer stores the sign/zero-extended Value form — else
         // `I64`). `d.wire_slot` is the param's starting 8-byte slot
         // offset.
-        let mut typed_args = Vec::with_capacity(kernel.abi_param_wire_slots());
+        let mut typed_args: poolshark::local::LPooled<Vec<cranelift_codegen::ir::Value>> =
+            poolshark::local::LPooled::take();
         // The leading cycle-context word(s) (the `event.init` flag) sit
         // at the front of the args buffer, BEFORE the params — load and
         // forward them first so `d.wire_slot` (already offset past them

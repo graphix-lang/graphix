@@ -88,7 +88,8 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // #219: each arg's disc — its TAINT bit propagates into a scalar
     // result and force-bottoms a non-scalar result (folds away when no
     // arg is tainted, the fast path).
-    let mut arg_taint_discs: Vec<ClifValue> = Vec::with_capacity(args.len());
+    let mut arg_taint_discs: smallvec::SmallVec<[ClifValue; 8]> =
+        smallvec::SmallVec::new();
     for (arg_node, t) in args.iter().zip(info.arg_types.iter()) {
         // Compare by runtime SHAPE (`AbiKind`), not exact `Type` —
         // the direct twin of the lowering-side agreement check. The
@@ -232,7 +233,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // a result eval computed over the remaining slots (the interp's
     // gated delivery contributes nothing). Neutralize each tainted
     // disc to a bare STALE for the folds below.
-    let neutral_discs: Vec<ClifValue> = arg_taint_discs
+    let neutral_discs: smallvec::SmallVec<[ClifValue; 8]> = arg_taint_discs
         .iter()
         .map(|d| {
             let t = is_tainted(cx.b, *d);
@@ -564,7 +565,7 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
     }
     // In-loop call site. The chain runs per innermost iteration (this
     // IS the loop body) — the ensures are idempotent after the first.
-    let frames: Vec<(ClifValue, ClifValue, Variable)> = {
+    let frames: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
         let fs = cx.ctx.slot_tables.borrow();
         debug_assert_eq!(
             fs.len(),
@@ -711,8 +712,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             ftype.args.len()
         ));
     }
-    let mut slots: Vec<LambdaCallSlot<R, E>> =
-        Vec::with_capacity(ftype.args.len() + info.captures.len());
+    let mut slots: poolshark::local::LPooled<Vec<LambdaCallSlot<R, E>>> =
+        poolshark::local::LPooled::take();
     let mut pos = 0usize;
     for (i, fa) in ftype.args.iter().enumerate() {
         let node = match &fa.kind {
@@ -737,7 +738,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // (Bottom unifies with any signature type) — gate on the node
     // itself, the caller-side twin of the DynCall shape-agreement
     // check ([`node_is_bottom`]).
-    for s in &slots {
+    for s in &*slots {
         if let LambdaCallSlot::Arg(n, _) = s {
             if node_is_bottom(n) {
                 return Err(anyhow!(
@@ -789,8 +790,9 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             }
         }
     };
-    let mut clif_args: Vec<ClifValue> = Vec::with_capacity(slots.len() * 2 + 1);
-    let mut drops: Vec<CallArgDrop> = Vec::new();
+    let mut clif_args: smallvec::SmallVec<[ClifValue; 24]> =
+        smallvec::SmallVec::with_capacity(slots.len() * 2 + 1);
+    let mut drops: smallvec::SmallVec<[CallArgDrop; 8]> = smallvec::SmallVec::new();
     let ret = &info.kernel.return_type;
     // The callsite NODE's type may promise a 2-word Value where the
     // callee ABI returns its own narrower shape (see

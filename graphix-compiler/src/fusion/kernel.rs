@@ -256,7 +256,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // Drain self.arg_refs (one per positional) so we can move
         // each Ref into the right formal slot. Indexed by
         // BuiltinSlot::Positional(call_idx).
-        let mut positional_refs: Vec<Option<Node<R, E>>> =
+        let mut positional_refs: poolshark::local::LPooled<Vec<Option<Node<R, E>>>> =
             self.arg_refs.drain(..).map(Some).collect();
         for slot in layout {
             match slot {

@@ -1,161 +1,104 @@
 # LPooled audit — 2026-07-31
 
-Survey of temporary-collection allocations that should be pooled (or are
+Survey of temporary-collection allocations that should be pooled (or were
 otherwise wasteful), triggered by the analysis.rs review finding that the
 SCC pass was allocating fresh IntMaps/IntSets per run. Three parallel
 sweeps (compiler node layer + analysis; fusion/typ/expr; rt + hot stdlib
-packages), top tier hand-verified. Items marked ✓ were verified in the
-source; unmarked items are sweep-reported and should be glanced at before
-editing. Delete this file when the worklist is drained.
+packages), top tier hand-verified.
 
-Exclusion rules applied: long-lived struct fields (amortized), foreign-API
-ownership boundaries (cranelift `Signature`/symbol names, tokio/serde/std
-`Command`), bounded `SmallVec`, cold startup/error/debug-gated paths.
+**Status: applied.** Fix-first + tier 1 landed in 54878efe, tier 2 in
+bb26d7fb, tiers 3–4 in the following commit. What remains below is the
+deliberately-skipped list (each with its reason) — delete this file when
+those are either done or rejected.
 
-## Fix-first: not pooling misses, outright bugs/waste
+## Applied (summary)
 
-1. ✓ `expr/parser/mod.rs:76` — `RESERVED` is `pub const LazyLock<AHashSet<&str>>`.
-   A `const` is inlined per use, so every `RESERVED.contains` (`:283` fname,
-   `:307` typname — every identifier/type name parsed, including backtracked
-   attempts) builds and drops the whole ~40-entry set. Neighbor `GRAPHIX_ESC`
-   (`:67`) is correctly `static`. One-word fix: `const` → `static`.
-2. ✓ `fusion/emit/jit.rs:737` — `callee_layouts: BTreeMap<usize, SiteLayout>`
-   rebuilt by scanning ALL of `jit.by_kernel` and cloning every `SiteLayout`,
-   once per callee body defined. Quadratic on the region compile path. Wants
-   hoisting out of the define loop (or borrowing), not pooling.
-3. ✓ `stdlib/graphix-package-sys/src/dir.rs:22` — `blocking_walkdir` returns
-   `LPooled<Vec<DirEntry>>` taken on the `spawn_blocking` thread but drained/
-   dropped on the async worker (`:85`). One-way drain from the blocking-pool
-   threads' pools into the workers' — cross-thread handoff is the `GPooled`
-   case.
-4. ✓ `expr/serialize.rs:184,:198` — drains the already-`LPooled` result of
-   `cell_constraint_pairs()` into a fresh plain `Vec` twice per `FnType`
-   encoded, purely for the `<Vec<_> as Pack>` bound — which `Deref` already
-   satisfies on the pooled value. Actively undoes existing pooling.
-5. `stdlib/graphix-package-core/src/buffer.rs:19` — bytes→string via
-   `String::from_utf8(b.into())`: materializes a Vec copy of the `Bytes`,
-   then the String is copied again into `ArcStr`. `std::str::from_utf8(&b)`
-   + `ArcStr::from` removes both copies, no pool needed. `:38` lossy twin:
-   `into_owned()` allocates even on the all-valid `Cow::Borrowed` branch.
+- **Fix-first:** parser `RESERVED` const→static (rebuilt the reserved-word
+  set per identifier parsed); `emit/jit.rs` callee_layouts hoisted out of
+  the define loop (was a full by_kernel rescan + SiteLayout clones per
+  callee) and maintained incrementally; sys `dir.rs` walkdir results
+  LPooled→GPooled (was a one-way drain from the blocking pool to the
+  workers); `serialize.rs` stopped draining the already-pooled constraint
+  pairs into a fresh Vec twice per FnType; core `buffer.rs` bytes→string
+  copies removed.
+- **Tier 1 (hot):** analysis.rs second half fully pooled (runs per runtime
+  lambda bind), `strongly_connected` returns its sizes histogram instead
+  of `mark_recursion` recomputing it, per-instance self-edge scan replaced
+  with one pass over edges; `discover_lambda_calls` per-body scratch +
+  `CalleeBody.sites`/returns pooled; `genn::apply`/`apply_prototype` take
+  `SmallVec<[Node; 2]>` (the per-new-slot-per-cycle `vec![element]` is
+  gone; ten callers updated); `env.rs` unbind ids; netstate subscription-
+  pump coalescing map; sys `io.rs` read buffers.
+- **Tier 2 (per-parse):** `apply_args`→LPooled (+`Post::Call`), the
+  string-interpolation fold reduced to a three-case match (was rebuilding
+  and discarding an intermediate StringInterpolate with a full argvec
+  clone per part), modexp sig/sandbox lists, typexp empty-params Arc.
+- **Tier 3 (fusion analysis + emit):** the `lifted` set is
+  `LPooled<nohash::IntSet<BindId>>` end-to-end (was AHash + fresh);
+  `collect_region_inputs`/`non_scalar_basename_collision` pooled;
+  `walk_node_for_builtin_calls` scratch (positional SmallVec, labeled
+  LPooled map, layout LPooled→Arc); `build_lambda_kernel`
+  inputs/formal_kts/arg_ids/external pooled; `typ/tvar.rs`'s three
+  `to_add` conjunct-dedup buffers pooled; `kernel.rs` positional_refs;
+  emit-side scratch converted to SmallVec (disc buffers in nodes.rs,
+  call.rs arg/taint/drop lists, select.rs guard dedup + leaves +
+  classify + binds, flow.rs tail-rebind triple + `emit_tail_rebind_jump`
+  signature, body.rs frame snapshots) or LPooled (jit.rs
+  to_define/defined/funcids/needed/typed_args, lower.rs initial_vals,
+  call.rs LambdaCallSlot list, nodes.rs struct-with fields); body.rs
+  slot_names std-SipHash HashSet replaced with a linear scan.
+- **Tier 4 (warm):** serialize unpack_module; `Module::compile_inner`
+  nodes (pooled, drained into the retained `Box<[Node]>`); callsite
+  typecheck1/emit scratch; tcp address strings via `format_compact!`;
+  `set_many` batches are `GPooled` (were SmallVec spilling to a
+  caller-thread Vec freed on the runtime thread).
 
-## Tier 1 — hot-path pooling misses (✓ verified)
+## Remaining — skipped with reasons
 
-- **`analysis.rs` second half** — per RUNTIME DISPATCH, not just compile:
-  `analyze_bound_callee` runs from `CallSite::bind` (callsite.rs:1038) on
-  every lazy lambda bind. The first half (`collect_static_graph`,
-  `strongly_connected`) is now fully pooled; everything after is not:
-  - `:225-231` `collect_resolved_sites`: `seen` IntSet, `sites` Vec (returned,
-    both callers only borrow then drop), `stack` Vec, and `to_descend`
-    allocated INSIDE the worklist loop — one Vec per stack pop.
-  - `:263,:264,:270` `infer_effects`: `bodies`/`self_ids` IntMaps + the `eff`
-    fixpoint IntMap, rebuilt per bind.
-  - `:478` `mark_recursion`: `component_sizes` IntMap — the identical
-    histogram in `strongly_connected` (`:157`) IS pooled; also recomputes
-    what `strongly_connected` already computed (could be returned instead).
-  - `:495` `self_edges` SmallVec rebuilt per instance by filtering ALL edges
-    (O(instances×edges)); only `is_empty` + a `find_map` are consumed — a
-    single pass with two scalars needs no collection at all.
-  - `:593` `positional_arg_order`: Vec → `into_boxed_slice`; pooled-drain
-    idiom applies (per tail site marked).
-- ✓ `fusion/mod.rs:769-770` — `discover_lambda_calls`: `local_sites` IntMap +
-  `enqueue` Vec allocated INSIDE the worklist loop, one pair per body
-  scanned. Surrounding walk state `:764` `worklist`, `:766` `root_sites`,
-  `:757` `callees` are per-attempt scratch too (`:759` `bodies` is a
-  BTreeMap — likely not Poolable, flag only).
-- ✓ `node/collection.rs:416,:421` (+ same shape `:911,:919` FoldSlot) —
-  `vec![element]` / `vec![acc, element]` per NEW SLOT PER CYCLE in the
-  MapQ/FoldQ grow loops. `genn::apply`/`apply_prototype` take
-  `args: Vec<Node>` and consume via `into_iter` (genn.rs:69,82,110) —
-  crate-internal signature, so `LPooled<Vec<_>>` or `SmallVec<[_; 2]>`.
-- ✓ `env.rs:516` — `unbind_scope_subtree`: `ids: Vec<BindId>` per scope
-  inside the loop; its five sibling collections in the same function are
-  already `LPooled`. Smallest diff in the audit.
-- ✓ `stdlib/graphix-package-sys/src/netstate.rs:300` — `last: IntMap<SubId,
-  NEvent>` per batch in the subscription pump; the only unpooled collection
-  in that pump (`out` beside it is `VBATCH.take()`). No await crossing.
-- `stdlib/graphix-package-sys/src/io.rs:33,:68` — `vec![0u8; n]` per read
-  builtin eval, sized to the REQUEST, moved into `Bytes` after truncate.
-  `LPooled<Vec<u8>>` + `Bytes::copy_from_slice(&buf[..got])` recycles the
-  big buffer and right-sizes the payload. Crosses `.await` (fine, flag).
-
-## Tier 2 — per-parse
-
-- `expr/parser/lambdaexp.rs:54,:65` — `apply_args` yields plain
-  `Vec<(Option<ArcStr>, Expr)>` under `attempt()` in the postfix chain
-  (allocates even on backtrack), feeding `Arc::from` at `arithexp.rs:120`.
-  Needs `Post::Call`'s payload type changed (`arithexp.rs:62`). Same file
-  already uses `LPooled<Vec<Arg>>` at `:81/:101`.
-- `expr/parser/interpolateexp.rs:55` — `argvec` scratch plus up to THREE
-  full deep clones at `:64,:73,:88`. The clones look independently
-  removable; per string interpolation parsed.
-- `expr/parser/typexp.rs:392` — empty `Vec` allocated just to make an empty
-  `Arc<[_]>`; `Arc::from_iter([])`. Micro.
-- `expr/parser/modexp.rs:72,:90,:97` — `Vec<SigItem>`/`Vec<ModPath>` →
-  `Arc::from`; cold-ish (mod/sig headers only).
-
-## Tier 3 — per-kernel-emit / per-compile-walk (sweep-reported)
-
-~30 sites in `fusion/emit/`, mostly small `Vec<ClifValue>` disc/arg buffers
-filled then borrowed as slices (pooling is safe — cranelift only borrows):
-
-- `emit/body.rs:206` — std SipHash `HashSet<&str>` per tail-rebind emit for
-  a handful of `contains` checks; worst container choice found. Also
-  `:596,:768` frame-stack snapshots, `:599` `tables` (verify not retained).
-- `emit/call.rs:792,:793,:715,:91,:242,:574` — per call-site/DynCall scratch.
-- `emit/select.rs:298,:310,:683-:766,:774-:775,:999` — guard-feeder dedup +
-  pattern-classify scratch (`:199` already LPooled; rest of file didn't
-  follow).
-- `emit/nodes.rs:575,:819,:865,:942,:1021,:1308` — six disc buffers for
-  `propagate_flags`; `:856` struct-literal sort scratch, `:904` fields
-  cloned out of type deref.
-- `emit/flow.rs:458-460` — three `with_capacity` per self-tail-call emit.
-- `emit/scaffold.rs:188,:1288`; `emit/jit.rs:912,:924,:541,:679,:1103`;
-  `emit/lower.rs:61`; `emit/abi.rs:459` (`JitEnv.locals` — per-emission
-  scratch struct, pooling recycles grown capacity).
-- `fusion/lowering.rs:1222,:1230,:1173,:1176` (build_lambda_kernel scratch),
-  `:310-:320,:391` (builtin-call walk; `:320` layout → `Arc::from`),
-  `:862` (`node_frame` deps — resolve_abstract frames are hot). Also
-  `:448` `arg_types.clone()` — full Vec clone where both destinations are
-  long-lived; the clone itself is the waste.
-- `emit/lower.rs:789` — `declare_helpers` rebuilds a `BTreeMap<&str,
-  FuncRef>` over the whole helper registry per compiled function; a dense
-  array indexed by helper enum kills the map and the string compares.
-- `fusion/mod.rs:383,:384` — `collect_lifted_connect_targets`:
-  AHashMap/AHashSet keyed by `BindId` — double miss, `BindId` is
-  nohash-keyed elsewhere (`lib.rs:490`); also `:306,:305,:1136`.
-- `typ/tvar.rs:429,:516,:601` — `to_add` conjunct-dedup Vec, three identical
-  blocks (alias/freeze/copy), fires per unification cell-merge.
-- `fusion/kernel.rs:259` — `positional_refs` drain-collect scratch.
-
-## Tier 4 — warm / low value
-
-- `expr/serialize.rs:269` (Vec→Arc in unpack_module), `:317`, `:132,:142`.
-- `node/module.rs:369` — `nodes` collect → `Box::from` at `:401`; warm, not
-  cold: `compile_inner` re-runs on dynamic-module source fires.
-- `node/callsite.rs:1253,:2273,:2298` — typecheck1/emit scratch.
-- `stdlib/graphix-package-str/src/lib.rs:731,:749` — `to_lowercase`/
-  `to_uppercase` scratch String → ArcStr (file has the pooled-buffer idiom
-  at `:299,:361`); `:203` replace (needs hand-rolled loop, more code).
-- `stdlib/graphix-package-sys/src/watch.rs:145` — `arcstr::format!` per
-  watched path; MEASURE first (may already build in place).
-- `stdlib/graphix-package-sys/src/tcp.rs:207,:241,:269` — addr `to_string`.
-- `graphix-rt/src/lib.rs:987` — `set_many`'s `SmallVec<[_;4]>` spills to a
-  caller-thread Vec freed on the runtime thread for >4 sets (fuzzer epochs
-  do) → `GPooled<Vec<_>>` if it matters.
-- `node/pattern.rs:354` — escapes into `CallbackParam.binds`; completeness
-  only.
+- `fusion/emit/scaffold.rs:188` (`bind_leaves`) and `:1288`
+  (`elem_leaves`): return values thread into emission structs
+  (`FoldAcc::Composite.leaves`, tuple returns) — the type ripple exceeds
+  the win (per-HOF-emit, small N).
+- `fusion/emit/body.rs` `tables` (state-table entries): NOT a temp — it
+  escapes into `SlotTableFrame.tables` on `ctx.slot_tables`. Confirmed
+  retained; the sweep's doubt was right.
+- `fusion/lowering.rs` `node_frame` deps: lands in `FrameResult`/
+  `MemoEntry` (the memo twin is retained) — field-type split needed.
+- `fusion/lowering.rs` `arg_types` full clone into `FnParam` +
+  `BuiltinCallSiteInfo` (both long-lived): sharing needs an `Arc<[Type]>`
+  field change — worth doing, separately.
+- `fusion/emit/lower.rs:789` `declare_helpers` rebuilds a
+  `BTreeMap<&str, FuncRef>` over the helper registry per compiled
+  function: the fix is a dense array indexed by a helper enum — a
+  refactor, not a pooling change.
+- `fusion/emit/jit.rs` `callee_refs` + discovery `bodies`: `BTreeMap`,
+  not Poolable; ordered iteration is load-bearing (#19 determinism).
+- `str::to_lowercase`/`to_uppercase` (str/lib.rs:731/:749): a pooled
+  `chars().flat_map(char::to_lowercase)` is NOT semantics-preserving —
+  `str::to_lowercase` implements the context-sensitive Greek final-sigma
+  mapping (Σ→ς word-finally) that char-by-char mapping gets wrong.
+  Keeping the owned String; to_upper kept symmetric.
+- `str::replace` (str/lib.rs:203): needs a hand-rolled match loop into a
+  pooled buffer; std only yields owned.
+- `sys/watch.rs:145` `arcstr::format!` per watched path: measure first —
+  it may already build in place.
+- `expr/serialize.rs:132/:142` TVar constraints `to_vec`: the `Pack`
+  impl is on `Vec`; encoding via slice needs a netidx-side change.
+- `expr/serialize.rs:317` unpack_index, `env.rs lookup_matching*`
+  (IDE-only), `node/pattern.rs:354` (escapes into `CallbackParam.binds`):
+  cold or retained.
 
 ## Non-findings — do NOT "fix"
 
-- `ValArray::from_iter` call sites (str/lib.rs etc.): netidx's FromIterator
-  already collects through an internal `LPooled` + `from_iter_exact`
-  (netidx-value/src/array.rs:414).
-- `collect::<Result<Box<[_]>>>` straight into node fields: the allocation is
-  transferred into the long-lived Box, pooling buys nothing.
+- `ValArray::from_iter` call sites (str/lib.rs etc.): netidx's
+  FromIterator already collects through an internal `LPooled` +
+  `from_iter_exact` (netidx-value/src/array.rs:414).
+- `collect::<Result<Box<[_]>>>` straight into node fields: the allocation
+  is transferred into the long-lived Box, pooling buys nothing.
 - Cranelift-owned `Signature { params, returns }`, symbol-name strings,
   `intern_layout(Vec)` — foreign-API ownership.
-- Already clean: the whole runtime cycle path (rt.rs, gx.rs do_cycle/batch
-  fan-out — zero per-cycle misses), array/map packages, `typ/` except
-  tvar.rs, node/lambda.rs tail-dispatch frames, `Refs` (LPooled inside),
-  ide.rs (GPooled), fusion/kernel_abi.rs freeze walk (exemplary),
-  fusion/builder.rs, intern.rs, emit/scalar.rs.
+- Already clean before the audit: the whole runtime cycle path (rt.rs,
+  gx.rs do_cycle/batch fan-out — zero per-cycle misses), array/map
+  packages, `typ/` except tvar.rs, node/lambda.rs tail-dispatch frames,
+  `Refs` (LPooled inside), ide.rs (GPooled), fusion/kernel_abi.rs freeze
+  walk, fusion/builder.rs, intern.rs, emit/scalar.rs.

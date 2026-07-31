@@ -502,10 +502,10 @@ impl<X: GXExt> GX<X> {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
                 ToGX::Set { id, v } => tasks.push((id, v)),
-                ToGX::SetMany { sets } => {
+                ToGX::SetMany { mut sets } => {
                     // One message ⇒ one input batch ⇒ every update
                     // lands in the same cycle (see GXHandle::set_many).
-                    for (id, v) in sets {
+                    for (id, v) in sets.drain(..) {
                         tasks.push((id, v))
                     }
                 }

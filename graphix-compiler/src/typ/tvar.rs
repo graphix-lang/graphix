@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use poolshark::local::LPooled;
 use std::{
     cmp::{Eq, PartialEq},
     collections::hash_map::Entry,
@@ -418,15 +419,15 @@ impl TVar {
         // Constraint dedup PRE-COMPUTED lock-free: the eq walk can
         // re-enter these very cells/tvars through a self-referential
         // conjunct (see `TCell::add_constraint`).
-        let to_add = {
+        let mut to_add = {
             let s_cell = self.read().typ.clone();
             let o_cell = other.read().typ.clone();
             if Arc::ptr_eq(&s_cell, &o_cell) {
-                Vec::new()
+                LPooled::take()
             } else {
                 let mine = s_cell.read().constraints.clone();
                 let theirs = o_cell.read().constraints.clone();
-                let mut to_add: Vec<Type> = Vec::new();
+                let mut to_add: LPooled<Vec<Type>> = LPooled::take();
                 for c in mine {
                     if !theirs.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c)
                     {
@@ -444,7 +445,7 @@ impl TVar {
             if !Arc::ptr_eq(&s.typ, &o.typ) {
                 {
                     let mut oc = o.typ.write();
-                    for c in to_add {
+                    for c in to_add.drain(..) {
                         oc.constraints.push(c);
                     }
                 }
@@ -505,15 +506,15 @@ impl TVar {
             }
         }
         // Lock-free dedup, same discipline as [`Self::alias`].
-        let to_add = {
+        let mut to_add = {
             let s_cell = self.read().typ.clone();
             let o_cell = other.read().typ.clone();
             if Arc::ptr_eq(&s_cell, &o_cell) {
-                Vec::new()
+                LPooled::take()
             } else {
                 let mine = s_cell.read().constraints.clone();
                 let theirs = o_cell.read().constraints.clone();
-                let mut to_add: Vec<Type> = Vec::new();
+                let mut to_add: LPooled<Vec<Type>> = LPooled::take();
                 for c in mine {
                     if !theirs.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c)
                     {
@@ -537,7 +538,7 @@ impl TVar {
             }
             {
                 let mut oc = o.typ.write();
-                for c in to_add {
+                for c in to_add.drain(..) {
                     oc.constraints.push(c);
                 }
             }
@@ -598,7 +599,7 @@ impl TVar {
         // Lock-free dedup against self's existing conjuncts (see
         // `TCell::add_constraint`'s lock discipline).
         let existing = s.typ.read().constraints.clone();
-        let mut to_add: Vec<Type> = Vec::new();
+        let mut to_add: LPooled<Vec<Type>> = LPooled::take();
         for c in ocons {
             if !existing.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c) {
                 to_add.push(c)
@@ -606,7 +607,7 @@ impl TVar {
         }
         let mut sc = s.typ.write();
         sc.typ = typ;
-        for c in to_add {
+        for c in to_add.drain(..) {
             sc.constraints.push(c);
         }
     }

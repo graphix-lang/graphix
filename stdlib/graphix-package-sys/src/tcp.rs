@@ -204,7 +204,9 @@ impl EvalCachedAsync for TcpPeerAddrEv {
             };
             match s.tcp_ref() {
                 Some(tcp) => match tcp.peer_addr() {
-                    Ok(addr) => Value::String(ArcStr::from(addr.to_string().as_str())),
+                    Ok(addr) => Value::String(
+                        compact_str::format_compact!("{addr}").as_str().into(),
+                    ),
                     Err(e) => errf!("TCPError", "peer_addr failed: {e}"),
                 },
                 None => errf!("TCPError", "peer_addr not supported on file streams"),
@@ -238,7 +240,9 @@ impl EvalCachedAsync for TcpLocalAddrEv {
             };
             match s.tcp_ref() {
                 Some(tcp) => match tcp.local_addr() {
-                    Ok(addr) => Value::String(ArcStr::from(addr.to_string().as_str())),
+                    Ok(addr) => Value::String(
+                        compact_str::format_compact!("{addr}").as_str().into(),
+                    ),
                     Err(e) => errf!("TCPError", "local_addr failed: {e}"),
                 },
                 None => errf!("TCPError", "local_addr not supported on file streams"),
@@ -266,7 +270,9 @@ impl EvalCachedAsync for TcpListenerAddrEv {
     fn eval(listener: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match listener.local_addr() {
-                Ok(addr) => Value::String(ArcStr::from(addr.to_string().as_str())),
+                Ok(addr) => {
+                    Value::String(compact_str::format_compact!("{addr}").as_str().into())
+                }
                 Err(e) => errf!("TCPError", "listener_addr failed: {e}"),
             }
         }
