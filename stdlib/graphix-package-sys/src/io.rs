@@ -3,6 +3,7 @@ use bytes::Bytes;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{PBytes, Value};
+use poolshark::local::LPooled;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -30,12 +31,10 @@ impl EvalCachedAsync for IoReadEv {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
             };
-            let mut buf = vec![0u8; n as usize];
+            let mut buf: LPooled<Vec<u8>> = LPooled::take();
+            buf.resize(n as usize, 0);
             match s.read(&mut buf).await {
-                Ok(n) => {
-                    buf.truncate(n);
-                    Value::Bytes(PBytes::new(Bytes::from(buf)))
-                }
+                Ok(n) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf[..n]))),
                 Err(e) => errf!("IOError", "read failed: {e}"),
             }
         }
@@ -65,7 +64,8 @@ impl EvalCachedAsync for IoReadExactEv {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
             };
-            let mut buf = vec![0u8; n as usize];
+            let mut buf: LPooled<Vec<u8>> = LPooled::take();
+            buf.resize(n as usize, 0);
             let mut pos = 0;
             while pos < buf.len() {
                 match s.read(&mut buf[pos..]).await {
@@ -74,8 +74,7 @@ impl EvalCachedAsync for IoReadExactEv {
                     Err(e) => return errf!("IOError", "read_exact failed: {e}"),
                 }
             }
-            buf.truncate(pos);
-            Value::Bytes(PBytes::new(Bytes::from(buf)))
+            Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf[..pos])))
         }
     }
 }

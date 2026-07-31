@@ -180,8 +180,7 @@ impl Pack for FnType {
         // cells let a sandboxed dynamic-module impl cross the wire
         // fact-free — `|x| x + 1.` matched a `fn(i64) -> i64` sig
         // (dynamic_module1, 2026-07-12).
-        let constraints: Vec<(TVar, Type)> =
-            self.cell_constraint_pairs().drain(..).collect();
+        let constraints = self.cell_constraint_pairs();
         self.args.encoded_len()
             + self.vargs.encoded_len()
             + self.rtype.encoded_len()
@@ -194,8 +193,7 @@ impl Pack for FnType {
         self.args.encode(buf)?;
         self.vargs.encode(buf)?;
         self.rtype.encode(buf)?;
-        let constraints: Vec<(TVar, Type)> =
-            self.cell_constraint_pairs().drain(..).collect();
+        let constraints = self.cell_constraint_pairs();
         <Vec<(TVar, Type)> as Pack>::encode(&constraints, buf)?;
         self.throws.encode(buf)?;
         self.explicit_throws.encode(buf)

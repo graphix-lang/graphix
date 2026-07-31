@@ -17,6 +17,7 @@ default = []
 krb5_iov = ["netidx/krb5_iov"]
 
 [dependencies]
+smallvec = { workspace = true }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 bytes = { workspace = true }

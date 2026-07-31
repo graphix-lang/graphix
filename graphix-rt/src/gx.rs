@@ -915,7 +915,7 @@ impl<X: GXExt> GX<X> {
         let argn = lb.typ.args.iter().zip(args.iter());
         let argn = argn
             .map(|(arg, id)| genn::reference(&mut self.ctx, *id, arg.typ.clone(), eid))
-            .collect::<Vec<_>>();
+            .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone());
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
         self.event.init = true;

@@ -73,7 +73,7 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     )
     .unwrap()
 });
-pub const RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
+pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
         "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
         "if", "i8", "u8", "i16", "u16", "u32", "v32", "i32", "z32", "u64", "v64", "i64",

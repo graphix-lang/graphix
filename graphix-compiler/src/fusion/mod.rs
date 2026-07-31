@@ -708,7 +708,7 @@ pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
     /// `NodeBodyEmitter` consumes these so its body emits its nested
     /// cross-kernel calls; empty for a leaf callee (one whose body calls
     /// no other fusable lambda).
-    pub sites: nohash::IntMap<ExprId, LambdaCallInfo>,
+    pub sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
     /// This callee body's OWN sync builtin/cast/qop Apply sites
     /// (`CachedKernel.apply_sites`, mirrored here so the callee's
     /// `NodeBodyEmitter` can emit them). Consumed by Stage 2's
@@ -742,8 +742,8 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     root: &'n Node<R, E>,
     ctx: &mut ExecCtx<R, E>,
 ) -> (
-    nohash::IntMap<ExprId, LambdaCallInfo>,
-    Vec<(usize, std::sync::Arc<KernelSig>)>,
+    LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
+    LPooled<Vec<(usize, std::sync::Arc<KernelSig>)>>,
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
 ) {
     // Identified by kernel IDENTITY (`kernel_key`), like `bodies` —
@@ -754,20 +754,20 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     // layout, and a pointer-ordered map made all of those
     // ASLR-dependent — the compiled shape of the same program differed
     // across processes (#19).
-    let mut callees: Vec<(usize, std::sync::Arc<KernelSig>)> = Vec::new();
+    let mut callees: LPooled<Vec<(usize, std::sync::Arc<KernelSig>)>> = LPooled::take();
     let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
         std::collections::BTreeMap::new();
     // Bodies still to scan; the second field says where the body's
     // discovered sites land — `None` = the root (returned), `Some(ptr)`
     // = that callee's `CalleeBody.sites`. LIFO; scan order is irrelevant
     // (every reachable body is scanned exactly once, gated by `bodies`).
-    let mut worklist: Vec<(&'n Node<R, E>, Option<usize>)> = vec![(root, None)];
-    let mut root_sites: nohash::IntMap<ExprId, LambdaCallInfo> =
-        nohash::IntMap::default();
+    let mut worklist: LPooled<Vec<(&'n Node<R, E>, Option<usize>)>> = LPooled::take();
+    worklist.push((root, None));
+    let mut root_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> = LPooled::take();
     while let Some((body, target)) = worklist.pop() {
-        let mut local_sites: nohash::IntMap<ExprId, LambdaCallInfo> =
-            nohash::IntMap::default();
-        let mut enqueue: Vec<(&'n Node<R, E>, usize)> = Vec::new();
+        let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
+            LPooled::take();
+        let mut enqueue: LPooled<Vec<(&'n Node<R, E>, usize)>> = LPooled::take();
         for_each_emitted_node(body, &mut |n| {
             let NodeView::CallSite(cs) = n.view() else {
                 return;
@@ -828,7 +828,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                     CalleeBody {
                         body: g.body(),
                         self_call,
-                        sites: nohash::IntMap::default(),
+                        sites: LPooled::take(),
                         apply_sites: cached.apply_sites.clone(),
                     },
                 );
@@ -852,7 +852,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                 }
             }
         }
-        worklist.extend(enqueue.into_iter().map(|(body, ptr)| (body, Some(ptr))));
+        worklist.extend(enqueue.drain(..).map(|(body, ptr)| (body, Some(ptr))));
     }
     (root_sites, callees, bodies)
 }

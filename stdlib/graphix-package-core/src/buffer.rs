@@ -16,8 +16,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
-        match String::from_utf8(b.into()) {
-            Ok(s) => Some(Value::String(ArcStr::from(&s))),
+        match std::str::from_utf8(&b) {
+            Ok(s) => Some(Value::String(ArcStr::from(s))),
             Err(e) => Some(errf!("EncodingError", "invalid UTF-8: {e}")),
         }
     }
@@ -35,8 +35,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let b = from.get::<Bytes>(0)?;
-        let s = String::from_utf8_lossy(&b).into_owned();
-        Some(Value::String(ArcStr::from(&s)))
+        Some(Value::String(ArcStr::from(&*String::from_utf8_lossy(&b))))
     }
 }
 

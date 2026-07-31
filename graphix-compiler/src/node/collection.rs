@@ -19,6 +19,7 @@ use immutable_chunkmap::map::Map as CMap;
 use netidx_value::ValArray;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
+use smallvec::smallvec;
 use std::{fmt::Debug, marker::PhantomData};
 use triomphe::Arc;
 
@@ -413,12 +414,18 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
             genn::apply_prototype(
                 function,
                 scope.clone(),
-                vec![element],
+                smallvec![element],
                 callback_type,
                 top_id,
             )
         } else {
-            genn::apply(function, scope.clone(), vec![element], callback_type, top_id)
+            genn::apply(
+                function,
+                scope.clone(),
+                smallvec![element],
+                callback_type,
+                top_id,
+            )
         };
         Self { id, call, value: None, tag: Tag::STALE }
     }
@@ -908,7 +915,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
             genn::apply_prototype(
                 function,
                 scope.clone(),
-                vec![acc, element],
+                smallvec![acc, element],
                 callback_type,
                 top_id,
             )
@@ -916,7 +923,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
             genn::apply(
                 function,
                 scope.clone(),
-                vec![acc, element],
+                smallvec![acc, element],
                 callback_type,
                 top_id,
             )

@@ -28,7 +28,10 @@ use netidx::{
 use netidx_value::Value;
 use nohash::IntMap;
 use parking_lot::Mutex;
-use poolshark::global::{GPooled, Pool};
+use poolshark::{
+    global::{GPooled, Pool},
+    local::LPooled,
+};
 use std::{
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
@@ -297,13 +300,13 @@ impl NetState {
                                     // event.netidx map coalesced —
                                     // then fan out to every registered
                                     // reader.
-                                    let mut last: IntMap<SubId, NEvent> =
-                                        IntMap::default();
+                                    let mut last: LPooled<IntMap<SubId, NEvent>> =
+                                        LPooled::take();
                                     for (sub_id, ev) in batch.drain(..) {
                                         last.insert(sub_id, ev);
                                     }
                                     let routes = routes.lock();
-                                    for (sub_id, ev) in last {
+                                    for (sub_id, ev) in last.drain() {
                                         if let Some(ids) = routes.subs.get(&sub_id) {
                                             for id in ids {
                                                 out.push((*id, translate(ev.clone())));

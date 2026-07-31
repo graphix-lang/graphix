@@ -99,7 +99,11 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
 
 fn strongly_connected<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
-) -> (LPooled<IntMap<LambdaInstanceId, usize>>, LPooled<IntSet<usize>>) {
+) -> (
+    LPooled<IntMap<LambdaInstanceId, usize>>,
+    LPooled<IntSet<usize>>,
+    LPooled<IntMap<usize, usize>>,
+) {
     let mut forward: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
         LPooled::take();
     let mut reverse: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
@@ -169,7 +173,7 @@ fn strongly_connected<R: Rt, E: UserEvent>(
             cyclic.insert(*component);
         }
     }
-    (components, cyclic)
+    (components, cyclic, sizes)
 }
 
 /// Run the analysis over the whole compiled program. `root` is the
@@ -221,14 +225,15 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
 /// deduped by `LambdaId` so recursion terminates.
 fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
     root: &'a Node<R, E>,
-) -> Vec<(&'a GXLambda<R, E>, BindId)> {
-    let mut seen: IntSet<LambdaId> = IntSet::default();
-    let mut sites: Vec<(&'a GXLambda<R, E>, BindId)> = Vec::new();
-    let mut stack: Vec<&'a Node<R, E>> = vec![root];
+) -> LPooled<Vec<(&'a GXLambda<R, E>, BindId)>> {
+    let mut seen: LPooled<IntSet<LambdaId>> = LPooled::take();
+    let mut sites: LPooled<Vec<(&'a GXLambda<R, E>, BindId)>> = LPooled::take();
+    let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+    stack.push(root);
     while let Some(node) = stack.pop() {
         // Collect bodies to descend separately, so the closure doesn't
         // borrow `stack` while the outer loop pops it.
-        let mut to_descend: Vec<&'a Node<R, E>> = Vec::new();
+        let mut to_descend: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
         fusion::for_each_node(node, &mut |n| {
             let NodeView::CallSite(cs) = n.view() else { return };
             let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else { return };
@@ -239,7 +244,7 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
                 to_descend.push(g.body());
             }
         });
-        stack.extend(to_descend);
+        stack.extend(to_descend.drain(..));
     }
     sites
 }
@@ -251,7 +256,7 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
 fn infer_effects<R: Rt, E: UserEvent>(
     sites: &[(&GXLambda<R, E>, BindId)],
     ctx: &ExecCtx<R, E>,
-) -> (IntMap<LambdaId, EffectKind>, IntMap<BindId, LambdaId>) {
+) {
     // Dedup the reachable bodies by LambdaId (a lambda may have many call
     // sites; its body + effect are one).
     //
@@ -260,17 +265,17 @@ fn infer_effects<R: Rt, E: UserEvent>(
     // its self-call is present in `ctx.bind_to_lambda`. Falling through
     // as Async would disable the interpreter tail loop and recurse on the
     // Rust stack instead.
-    let mut bodies: IntMap<LambdaId, &Node<R, E>> = IntMap::default();
-    let mut self_ids: IntMap<BindId, LambdaId> = IntMap::default();
+    let mut bodies: LPooled<IntMap<LambdaId, &Node<R, E>>> = LPooled::take();
+    let mut self_ids: LPooled<IntMap<BindId, LambdaId>> = LPooled::take();
     for (g, sb) in sites {
         bodies.entry(g.id()).or_insert_with(|| g.body());
         self_ids.entry(*sb).or_insert_with(|| g.id());
     }
-    let mut eff: IntMap<LambdaId, EffectKind> =
+    let mut eff: LPooled<IntMap<LambdaId, EffectKind>> =
         bodies.keys().map(|id| (*id, EffectKind::Sync)).collect();
     loop {
         let mut changed = false;
-        for (lid, body) in &bodies {
+        for (lid, body) in &*bodies {
             let e = body_effect(body, &eff, &self_ids, ctx);
             if eff.get(lid).copied() != Some(e) {
                 eff.insert(*lid, e);
@@ -281,12 +286,11 @@ fn infer_effects<R: Rt, E: UserEvent>(
             break;
         }
     }
-    for (lid, e) in &eff {
+    for (lid, e) in &*eff {
         if let Some(d) = lambda_def(ctx, *lid) {
             *d.intrinsic_effect.lock() = *e;
         }
     }
-    (eff, self_ids)
 }
 
 /// Fold the effect over one lambda body. `for_each_node` does not descend
@@ -474,10 +478,18 @@ fn mark_recursion<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &ExecCtx<R, E>,
 ) {
-    let (components, cyclic) = strongly_connected(graph);
-    let mut component_sizes: IntMap<usize, usize> = IntMap::default();
-    for component in components.values().copied() {
-        *component_sizes.entry(component).or_default() += 1;
+    let (components, cyclic, component_sizes) = strongly_connected(graph);
+    let mut self_info: LPooled<IntMap<LambdaInstanceId, Option<BindId>>> =
+        LPooled::take();
+    for edge in graph.edges.iter() {
+        if edge.caller == Some(edge.callee) {
+            let bind = self_info.entry(edge.callee).or_insert(None);
+            if bind.is_none()
+                && let NodeView::Ref(r) = edge.site.fnode().view()
+            {
+                *bind = Some(r.id);
+            }
+        }
     }
     for edge in graph.edges.iter() {
         let recursive = edge.caller.is_some_and(|caller| {
@@ -492,17 +504,8 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         g.set_tail_loop(false);
         let component = components.get(instance).copied();
         let recursive = component.is_some_and(|component| cyclic.contains(&component));
-        let self_edges: SmallVec<[&StaticEdge<'_, R, E>; 2]> = graph
-            .edges
-            .iter()
-            .filter(|edge| edge.caller == Some(*instance) && edge.callee == *instance)
-            .collect();
-        let self_bind =
-            self_edges.iter().find_map(|edge| match edge.site.fnode().view() {
-                NodeView::Ref(r) => Some(r.id),
-                _ => None,
-            });
-        g.set_self_recursive(!self_edges.is_empty());
+        let self_bind = self_info.get(instance).copied().flatten();
+        g.set_self_recursive(self_info.contains_key(instance));
         g.set_self_bind(self_bind);
         let only_self = component
             .and_then(|component| component_sizes.get(&component).copied())
@@ -590,7 +593,7 @@ fn body_has_self_tail_call<R: Rt, E: UserEvent>(
 fn positional_arg_order<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
 ) -> Option<Box<[BindId]>> {
-    let mut order: Vec<BindId> = Vec::new();
+    let mut order: LPooled<Vec<BindId>> = LPooled::take();
     while let Some(a) = cs.args.get(&ArgKey::Positional(order.len())) {
         order.push(a.id);
     }
@@ -598,7 +601,7 @@ fn positional_arg_order<R: Rt, E: UserEvent>(
         // Empty, or some labeled arg present — not a simple positional call.
         return None;
     }
-    Some(order.into_boxed_slice())
+    Some(order.drain(..).collect())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────

@@ -4,9 +4,11 @@ use arcstr::{ArcStr, literal};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::{ValArray, Value};
-use poolshark::local::LPooled;
-use std::result;
+use poolshark::global::{GPooled, Pool};
+use std::{result, sync::LazyLock};
 use walkdir::{DirEntry, WalkDir};
+
+static ENTS: LazyLock<Pool<Vec<DirEntry>>> = LazyLock::new(|| Pool::new(4, 8192));
 
 #[derive(Debug)]
 pub(crate) struct ReadDirArgs {
@@ -19,7 +21,7 @@ pub(crate) struct ReadDirArgs {
     same_filesystem: bool,
 }
 
-fn blocking_walkdir(args: ReadDirArgs) -> Result<LPooled<Vec<DirEntry>>> {
+fn blocking_walkdir(args: ReadDirArgs) -> Result<GPooled<Vec<DirEntry>>> {
     let ReadDirArgs {
         path,
         max_depth,
@@ -36,7 +38,11 @@ fn blocking_walkdir(args: ReadDirArgs) -> Result<LPooled<Vec<DirEntry>>> {
         .follow_links(follow_symlinks)
         .follow_root_links(follow_root_symlink)
         .same_file_system(same_filesystem);
-    rd.into_iter().map(|r| r.map_err(anyhow::Error::from)).collect()
+    let mut ents = ENTS.take();
+    for r in rd {
+        ents.push(r?);
+    }
+    Ok(ents)
 }
 
 #[derive(Debug, Default)]

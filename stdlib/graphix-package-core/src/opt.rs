@@ -285,7 +285,8 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         let (x, xn) = genn::bind(ctx, &scope.lexical, "x", x_typ, top_id);
         let fid = BindId::new();
         let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
-        let inner = genn::apply(fnode, scope.clone(), vec![xn], &ptyp, top_id);
+        let inner =
+            genn::apply(fnode, scope.clone(), smallvec::smallvec![xn], &ptyp, top_id);
         Ok(Self { inner, fid, x })
     }
 
@@ -726,7 +727,8 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         };
         let fid = BindId::new();
         let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
-        let inner = genn::apply(fnode, scope.clone(), vec![], &ptyp, top_id);
+        let inner =
+            genn::apply(fnode, scope.clone(), smallvec::smallvec![], &ptyp, top_id);
         Ok(Self { inner, fid, last_a: None, last_f: None })
     }
 

@@ -14,6 +14,7 @@ use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::sync::atomic::AtomicBool;
 use triomphe::Arc;
 
@@ -69,7 +70,7 @@ pub fn constant<R: Rt, E: UserEvent>(v: Value) -> Node<R, E> {
 pub fn apply<R: Rt, E: UserEvent>(
     fnode: Node<R, E>,
     scope: Scope,
-    args: Vec<Node<R, E>>,
+    args: SmallVec<[Node<R, E>; 2]>,
     typ: &FnType,
     top_id: ExprId,
 ) -> Node<R, E> {
@@ -81,7 +82,7 @@ pub fn apply<R: Rt, E: UserEvent>(
 pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
     fnode: Node<R, E>,
     scope: Scope,
-    args: Vec<Node<R, E>>,
+    args: SmallVec<[Node<R, E>; 2]>,
     typ: &FnType,
     top_id: ExprId,
 ) -> Node<R, E> {
@@ -91,7 +92,7 @@ pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
 fn apply_inner<R: Rt, E: UserEvent>(
     fnode: Node<R, E>,
     scope: Scope,
-    args: Vec<Node<R, E>>,
+    args: SmallVec<[Node<R, E>; 2]>,
     typ: &FnType,
     ftype: Option<FnType>,
     rtype: Type,

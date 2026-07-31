@@ -715,6 +715,16 @@ fn compile_kernel_with_callees_inner(
     // recursive back-edge (self-calls, mutual-recursion cycles) — the
     // call site passes 0 and the callee's null-guards degrade to the
     // no-memory semantics (fresh transient activation).
+    // Already-defined callee layouts, keyed by kernel identity.
+    // Base/layout variants of the same body share one SiteLayout (the
+    // claims are a body property). Seeded from the cache once, then
+    // maintained as the loop records fresh layouts — the reversed
+    // definition order means a caller's callees are already present.
+    let mut callee_layouts: BTreeMap<usize, SiteLayout> = jit
+        .by_kernel
+        .iter()
+        .filter_map(|((p, _, _), e)| e.site_layout.as_ref().map(|l| (*p, l.clone())))
+        .collect();
     for (k, base, layout) in to_define.iter().rev() {
         let ptr = std::sync::Arc::as_ptr(k) as usize;
         // The emitter is keyed by pointer identity (it's the same body
@@ -727,14 +737,6 @@ fn compile_kernel_with_callees_inner(
                 k.fn_name
             )
         })?;
-        // Already-defined callee layouts, keyed by kernel identity.
-        // Base/layout variants of the same body share one SiteLayout
-        // (the claims are a body property), so first-found wins.
-        let callee_layouts: BTreeMap<usize, SiteLayout> = jit
-            .by_kernel
-            .iter()
-            .filter_map(|((p, _, _), e)| e.site_layout.as_ref().map(|l| (*p, l.clone())))
-            .collect();
         let db = define_kernel_body(&mut jit.ctx, k, &funcids, body, &callee_layouts)?;
         defined.push((ptr, *base, *layout));
         if let Some(cached) = jit.by_kernel.get_mut(&(ptr, *base, *layout)) {
@@ -743,6 +745,7 @@ fn compile_kernel_with_callees_inner(
             cached.state_words = db.state_words;
             cached.replay_state_words = db.replay_words;
             cached.slot_table_words = db.slot_table_words;
+            callee_layouts.entry(ptr).or_insert_with(|| db.site_layout.clone());
             cached.site_layout = Some(db.site_layout);
             cached._site_leaves = db.site_leaves;
         }

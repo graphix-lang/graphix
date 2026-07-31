@@ -407,7 +407,8 @@ fn build_wrapper_apply<R: Rt, E: UserEvent>(
 ) -> Result<Box<dyn Apply<R, E>>> {
     let scope = scope.append(&format_compact!("qfn{}", LambdaId::new().inner()));
     let mut arg_bids: Vec<BindId> = Vec::with_capacity(ftyp.args.len());
-    let mut arg_nodes: Vec<Node<R, E>> = Vec::with_capacity(ftyp.args.len());
+    let mut arg_nodes: smallvec::SmallVec<[Node<R, E>; 2]> =
+        smallvec::SmallVec::with_capacity(ftyp.args.len());
     for (i, a) in ftyp.args.iter().enumerate() {
         let (id, n) = genn::bind(
             ctx,

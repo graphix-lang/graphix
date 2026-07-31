@@ -513,9 +513,10 @@ impl Env {
             .collect();
         for s in &*bind_scopes {
             if let Some(defs) = self.binds.get(s) {
-                let ids: Vec<BindId> = defs.into_iter().map(|(_, id)| *id).collect();
+                let ids: LPooled<Vec<BindId>> =
+                    defs.into_iter().map(|(_, id)| *id).collect();
                 removed += ids.len();
-                for id in &ids {
+                for id in &*ids {
                     self.by_id.remove_cow(id);
                 }
             }

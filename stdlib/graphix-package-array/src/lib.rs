@@ -405,7 +405,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
                 let (xid, x) = genn::bind(ctx, &scope.lexical, "x", etyp.clone(), top_id);
                 let pid = BindId::new();
                 let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
-                let pred = genn::apply(fnode, scope, vec![n, x], &mftyp, top_id);
+                let pred =
+                    genn::apply(fnode, scope, smallvec::smallvec![n, x], &mftyp, top_id);
                 Ok(Box::new(Self {
                     queue: VecDeque::new(),
                     buf: smallvec![],

@@ -1348,7 +1348,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
                     t => bail!("expected a function not {t}"),
                 };
                 let fnode = genn::reference(ctx, fid, Type::Fn(ptyp.clone()), top_id);
-                let pred = genn::apply(fnode, scope.clone(), vec![xn], &ptyp, top_id);
+                let pred = genn::apply(
+                    fnode,
+                    scope.clone(),
+                    smallvec::smallvec![xn],
+                    &ptyp,
+                    top_id,
+                );
                 Ok(Box::new(Self { pred, pending: None, fid, x }))
             }
             _ => bail!("expected two arguments"),

@@ -724,7 +724,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
                     top_id,
                 );
                 let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
-                let handler = genn::apply(fnode, scope, vec![xn], &mftyp, top_id);
+                let handler =
+                    genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
                 Ok(Box::new(HttpServe {
                     args: CachedVals::new(from),
                     id,
