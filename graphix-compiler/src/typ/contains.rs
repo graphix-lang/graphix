@@ -32,10 +32,9 @@ pub enum ContainsFlags {
     RigidCheck,
 }
 
-/// True iff binding `t` into the cell would satisfy EVERY conjunct of
 /// The infinite-type rejection wording, shared by the terminal settle
-/// ([`TVar::settle_or_bottom`]) and the discarded-instance scan
-/// ([`FnType::check_finite`]) so both paths reject identically.
+/// ([`TVar::settle_or_bottom`]) and the opaque-mismatch refusal in
+/// [`Type::contains_mismatch`] so both paths reject identically.
 pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: unification requires a type that \
      contains itself (e.g. a function that returns itself); declare a \
      named recursive type and annotate the binding";
@@ -83,6 +82,7 @@ fn type_has_refused_open_cell(t: &Type) -> bool {
     walk(t, &mut LPooled::take())
 }
 
+/// True iff binding `t` into the cell would satisfy EVERY conjunct of
 /// the cell's constraint list. Probe flags: the check itself must not
 /// bind or alias anything.
 fn cell_constraints_ok(
