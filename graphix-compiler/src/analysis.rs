@@ -53,7 +53,7 @@ struct StaticEdge<'a, R: Rt, E: UserEvent> {
 }
 
 struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
-    instances: IntMap<LambdaInstanceId, &'a GXLambda<R, E>>,
+    instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R, E>>>,
     edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
 }
 
@@ -61,9 +61,10 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
     root: &'a Node<R, E>,
     seed: Option<&'a GXLambda<R, E>>,
 ) -> StaticCallGraph<'a, R, E> {
-    let mut instances = IntMap::default();
+    let mut instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R, E>>> =
+        LPooled::take();
     let mut edges: LPooled<Vec<StaticEdge<'a, R, E>>> = LPooled::take();
-    let mut seen = IntSet::default();
+    let mut seen: LPooled<IntSet<LambdaInstanceId>> = LPooled::take();
     let mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>> =
         LPooled::take();
     match seed {
@@ -98,11 +99,11 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
 
 fn strongly_connected<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
-) -> (IntMap<LambdaInstanceId, usize>, IntSet<usize>) {
-    let mut forward: IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>> =
-        IntMap::default();
-    let mut reverse: IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>> =
-        IntMap::default();
+) -> (LPooled<IntMap<LambdaInstanceId, usize>>, LPooled<IntSet<usize>>) {
+    let mut forward: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
+        LPooled::take();
+    let mut reverse: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
+        LPooled::take();
     for id in graph.instances.keys().copied() {
         forward.entry(id).or_default();
         reverse.entry(id).or_default();
@@ -116,7 +117,7 @@ fn strongly_connected<R: Rt, E: UserEvent>(
             reverse.entry(edge.callee).or_default().push(caller);
         }
     }
-    let mut visited = IntSet::default();
+    let mut visited: LPooled<IntSet<LambdaInstanceId>> = LPooled::take();
     let mut order: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
     let mut stack: LPooled<Vec<(LambdaInstanceId, bool)>> = LPooled::take();
     for root in graph.instances.keys().copied() {
@@ -135,7 +136,7 @@ fn strongly_connected<R: Rt, E: UserEvent>(
             }
         }
     }
-    let mut components = IntMap::default();
+    let mut components: LPooled<IntMap<LambdaInstanceId, usize>> = LPooled::take();
     let mut component = 0usize;
     let mut walk: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
     while let Some(root) = order.pop() {
@@ -153,11 +154,11 @@ fn strongly_connected<R: Rt, E: UserEvent>(
         }
         component += 1;
     }
-    let mut sizes: IntMap<usize, usize> = IntMap::default();
+    let mut sizes: LPooled<IntMap<usize, usize>> = LPooled::take();
     for component in components.values().copied() {
         *sizes.entry(component).or_default() += 1;
     }
-    let mut cyclic: IntSet<usize> = sizes
+    let mut cyclic: LPooled<IntSet<usize>> = sizes
         .iter()
         .filter_map(|(component, size)| (*size > 1).then_some(*component))
         .collect();
@@ -487,7 +488,7 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         });
         edge.site.set_recursive_edge(recursive);
     }
-    for (instance, g) in &graph.instances {
+    for (instance, g) in &*graph.instances {
         g.set_tail_loop(false);
         let component = components.get(instance).copied();
         let recursive = component.is_some_and(|component| cyclic.contains(&component));

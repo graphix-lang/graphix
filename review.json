@@ -1,0 +1,3773 @@
+{
+  "version": 1,
+  "repository": "/home/eric/proj/graphix",
+  "files": {
+    ".claude/settings.local.json": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    ".codex": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    ".gitattributes": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    ".github/FUNDING.yml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    ".gitignore": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "AGENTS.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "CHANGELOG.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "CLAUDE.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "LICENSE": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "README.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/book.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/SUMMARY.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/core/block.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/core/connect.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/core/error.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/core/fundamental_types.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/core/let_binds.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/core/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/core/reading_types.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/core/select.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/core/use.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/editor.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/embedding/builtins.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/embedding/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/embedding/rt.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/embedding/shell.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/examples/README.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/button.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/canvas.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/chart.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/chart_3d.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/chart_bar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/chart_candlestick.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/chart_error_bar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/chart_pie.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/chart_styles.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/checkbox.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/clipboard.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/column.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/combo_box.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/container.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/context_menu.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/custom_palette.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/custom_styles.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_calculated.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/examples/gui/data_table_dashboard.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_dummy.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_editable.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_filter_sort.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_scrolling.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_sparkline.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/data_table_virtual.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/grid.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/hello.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/icon.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/icon.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/image.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/keyboard_area.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/mandelbrot.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/markdown.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/menu_bar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/mouse_area.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/pick_list.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/qr_code.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/radio.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/row.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/rule.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/scrollable.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/slider.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/space.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/stack.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/svg.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/table.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/text.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/text_editor.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/text_input.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/themes.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/toggler.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/tooltip.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/gui/vertical_slider.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/net/args.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/net/cli.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/net/sum.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/barchart_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/barchart_colored.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/barchart_grouped.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/block_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/block_dynamic_title.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/block_focus.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/browser_basic.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/examples/tui/browser_commands.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/browser_navigation.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/calendar_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/calendar_events.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/calendar_typed.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/canvas_animated.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/canvas_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/canvas_network.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/canvas_plot.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/chart_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/chart_multi.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/chart_realtime.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/color_palette.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/gauge_basic.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/examples/tui/gauge_resource.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/examples/tui/gauge_threshold.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/layout_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/layout_focus.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/layout_header_footer.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/layout_nested.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/layout_nested_focus.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/linegauge_basic.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/examples/tui/linegauge_colored.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/linegauge_multi.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/list_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/list_interactive.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/list_styled.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/overview_first.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/overview_layout.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/overview_realtime.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/overview_state.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/overview_styling.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/paragraph_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/paragraph_centered.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/paragraph_log_viewer.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/paragraph_scrollable.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/scroll_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/scroll_list.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/scroll_paragraph.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/sparkline_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/sparkline_dashboard.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/sparkline_rolling.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/sparkline_threshold.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/table_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/table_interactive.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/table_realtime.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/table_styled_cells.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/examples/tui/tabs_badge.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/tabs_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/tabs_navigation.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/tabs_styled.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/text_alignment.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/text_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/text_dynamic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/text_status.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/examples/tui/text_styled.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/closures.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/first_class.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/labeled.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/late_binding.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/polymorphism.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/recursion.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/functions/semantics.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/getting_started.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/install.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/intro.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/modules/dynamic.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/modules/implementation.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/modules/interfaces.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/modules/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/packages/creating.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/packages/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/packages/standalone.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/packages/using.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/shell.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/stdlib/args.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/array.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/core.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/db.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/hbs.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/http.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/json.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/list.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/map.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/pack.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/rand.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/re.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sqlite.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/str.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sys.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sys/dirs.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sys/fs.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sys/io.md": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "book/src/stdlib/sys/net.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sys/tcp.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sys/time.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/sys/tls.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/toml.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/stdlib/xls.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/named.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/polymorphic.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/recursive.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/references.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/structs.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/tuples.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/udt/variants.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/button.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/canvas.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/chart.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/checkbox.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/clipboard.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/column.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/combo_box.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/container.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/data_table.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/grid.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/image.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/keyboard_area.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/markdown.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/button.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/canvas.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart_3d.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart_bar.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart_candlestick.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart_error_bars.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart_pie.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/chart_styles.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/checkbox.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/clipboard.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/column.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/combo_box.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/container.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/context_menu.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/custom_palette.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/custom_styles.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/data_table_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/data_table_calculated.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/data_table_dashboard.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/data_table_editable.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/data_table_filter_sort.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/data_table_sparkline.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/data_table_virtual.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/grid.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/hello.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/image.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/keyboard_area.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/markdown.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/menu_bar.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/mouse_area.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/pick_list.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/qr_code.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/radio.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/row.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/rule.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/scrollable.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/slider.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/space.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/stack.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/svg.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/table.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/text.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/text_editor.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/text_input.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/text_input.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/themes.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/toggler.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/tooltip.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/media/vertical_slider.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/menu.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/mouse_area.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/pick_list.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/qr_code.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/radio.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/row.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/scrollable.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/slider.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/space.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/stack.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/table.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/text.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/text_editor.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/text_input.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/theming.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/toggler.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/tooltip.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/gui/types.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/barchart.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/block.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/browser.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/calendar.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/canvas.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/chart.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/gauge.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/input.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/layout.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/linegauge.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/list.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/barchart_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/barchart_colored.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/barchart_grouped.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/block_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/block_dynamic_title.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/block_focus.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/browser_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/browser_navigation.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/browser_navigation.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/calendar_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/calendar_events.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/calendar_typed.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/canvas_animated.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/canvas_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/canvas_network.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/canvas_plot.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/chart_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/chart_multi.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/chart_realtime.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/gauge_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/gauge_resource.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/gauge_threshold.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/layout_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/layout_focus.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/layout_header_footer.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/layout_nested.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/linegauge_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/linegauge_colored.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/linegauge_multi.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/list_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/list_interactive.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/list_styled.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/overview_first.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/paragraph_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/paragraph_centered.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/paragraph_log_viewer.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/paragraph_scrollable.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/scroll_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/scroll_list.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/scroll_paragraph.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/sparkline_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/sparkline_dashboard.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/sparkline_rolling.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/sparkline_threshold.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/table_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/table_interactive.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/table_realtime.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/table_styled_cells.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/tabs_badge.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/tabs_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/tabs_navigation.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/tabs_styled.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/text_alignment.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/text_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/text_dynamic.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/text_status.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/media/tui_output_example.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/overview.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/paragraph.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/scroll.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/sparkline.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/style.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/table.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/tabs.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/src/ui/tui/text.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/theme/README.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "book/theme/graphix-highlight.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "design/queue_fn.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/.nojekyll": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/assets/css/landing.css": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/assets/js/landing.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/.nojekyll": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/404.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ayu-highlight.css": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/ayu-highlight-3fdfc3ac.css"
+    },
+    "docs/book/book.js": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/book-a0b12cfe.js"
+    },
+    "docs/book/clipboard.min.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/core/block.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/connect.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/error.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/fundamental_types.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/let_binds.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/reading_types.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/select.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/core/use.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/css/chrome.css": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/css/chrome-ae938929.css"
+    },
+    "docs/book/css/general.css": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/css/general-2459343d.css"
+    },
+    "docs/book/css/print.css": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/css/print-9e4910d8.css"
+    },
+    "docs/book/css/variables.css": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/css/variables-8adf115d.css"
+    },
+    "docs/book/editor.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/elasticlunr.min.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/embedding/builtins.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/embedding/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/embedding/rt.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/embedding/shell.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/examples/gui/button.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/canvas.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/chart.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/chart_3d.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/chart_bar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/chart_candlestick.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/chart_error_bar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/chart_pie.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/chart_styles.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/checkbox.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/clipboard.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/column.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/combo_box.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/container.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/context_menu.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/custom_palette.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/custom_styles.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_calculated.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/examples/gui/data_table_dashboard.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_dummy.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_editable.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_filter_sort.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_scrolling.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_sparkline.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/data_table_virtual.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/grid.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/hello.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/icon.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/icon.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/image.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/keyboard_area.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/mandelbrot.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/markdown.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/menu_bar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/mouse_area.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/pick_list.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/qr_code.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/radio.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/row.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/rule.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/scrollable.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/slider.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/space.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/stack.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/svg.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/table.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/text.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/text_editor.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/text_input.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/themes.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/toggler.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/tooltip.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/gui/vertical_slider.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/net/args.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/net/cli.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/net/sum.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/barchart_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/barchart_colored.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/barchart_grouped.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/block_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/block_dynamic_title.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/block_focus.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/browser_basic.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/examples/tui/browser_commands.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/browser_navigation.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/calendar_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/calendar_events.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/calendar_typed.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/canvas_animated.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/canvas_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/canvas_network.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/canvas_plot.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/chart_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/chart_multi.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/chart_realtime.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/color_palette.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/gauge_basic.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/examples/tui/gauge_resource.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/examples/tui/gauge_threshold.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/layout_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/layout_focus.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/layout_header_footer.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/layout_nested.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/layout_nested_focus.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/linegauge_basic.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/examples/tui/linegauge_colored.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/linegauge_multi.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/list_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/list_interactive.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/list_styled.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/overview_first.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/overview_layout.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/overview_realtime.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/overview_state.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/overview_styling.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/paragraph_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/paragraph_centered.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/paragraph_log_viewer.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/paragraph_scrollable.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/scroll_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/scroll_list.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/scroll_paragraph.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/sparkline_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/sparkline_dashboard.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/sparkline_rolling.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/sparkline_threshold.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/table_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/table_interactive.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/table_realtime.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/table_styled_cells.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/examples/tui/tabs_badge.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/tabs_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/tabs_navigation.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/tabs_styled.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/text_alignment.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/text_basic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/text_dynamic.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/text_status.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/examples/tui/text_styled.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/favicon.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/favicon.svg": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/OPEN-SANS-LICENSE.txt": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/SOURCE-CODE-PRO-LICENSE.txt": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/fonts.css": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/fonts/fonts-9644e21d.css"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-300.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-300italic.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-600.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-600italic.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-700.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-700italic.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-800.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-800italic.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-italic.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/open-sans-v17-all-charsets-regular.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/fonts/source-code-pro-v11-all-charsets-500.woff2": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/functions/closures.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/functions/first_class.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/functions/labeled.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/functions/late_binding.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/functions/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/functions/polymorphism.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/functions/recursion.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/functions/semantics.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/getting_started.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/highlight.css": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/highlight.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/index.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/install.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/intro.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/mark.min.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/modules/dynamic.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/modules/implementation.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/modules/interfaces.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/modules/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/packages/creating.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/packages/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/packages/standalone.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/packages/using.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/print.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/searcher.js": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c",
+      "reviewed_path": "docs/book/searcher-c2a407aa.js"
+    },
+    "docs/book/searchindex-55785d7d.js": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/shell.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/args.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/array.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/core.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/db.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/hbs.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/http.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/json.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/list.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/map.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/pack.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/rand.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/re.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sqlite.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/str.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys/dirs.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys/fs.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys/io.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys/net.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys/tcp.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys/time.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/sys/tls.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/toml.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/stdlib/xls.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/theme/graphix-highlight.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/toc-885d6cb4.js": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/toc.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/tomorrow-night.css": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/udt/named.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/udt/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/udt/polymorphic.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/udt/recursive.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/udt/references.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/udt/structs.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/udt/tuples.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/udt/variants.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/button.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/canvas.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/chart.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/checkbox.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/clipboard.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/column.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/combo_box.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/container.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/data_table.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/grid.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/image.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/keyboard_area.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/markdown.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/media/button.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/canvas.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart_3d.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart_bar.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart_candlestick.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart_error_bars.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart_pie.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/chart_styles.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/checkbox.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/clipboard.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/column.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/combo_box.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/container.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/context_menu.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/custom_palette.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/custom_styles.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/data_table_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/data_table_calculated.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/data_table_dashboard.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/data_table_editable.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/data_table_filter_sort.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/data_table_sparkline.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/data_table_virtual.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/grid.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/hello.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/image.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/keyboard_area.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/markdown.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/menu_bar.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/mouse_area.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/pick_list.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/qr_code.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/radio.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/row.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/rule.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/scrollable.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/slider.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/space.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/stack.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/svg.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/table.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/text.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/text_editor.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/text_input.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/text_input.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/themes.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/toggler.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/tooltip.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/media/vertical_slider.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/gui/menu.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/mouse_area.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/pick_list.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/qr_code.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/radio.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/row.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/scrollable.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/slider.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/space.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/stack.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/table.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/text.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/text_editor.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/text_input.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/theming.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/toggler.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/tooltip.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/gui/types.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/barchart.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/block.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/browser.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/calendar.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/canvas.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/chart.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/gauge.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/input.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/layout.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/linegauge.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/list.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/media/barchart_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/barchart_colored.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/barchart_grouped.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/block_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/block_dynamic_title.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/block_focus.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/browser_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/browser_navigation.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/browser_navigation.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/calendar_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/calendar_events.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/calendar_typed.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/canvas_animated.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/canvas_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/canvas_network.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/canvas_plot.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/chart_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/chart_multi.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/chart_realtime.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/gauge_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/gauge_resource.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/gauge_threshold.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/layout_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/layout_focus.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/layout_header_footer.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/layout_nested.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/linegauge_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/linegauge_colored.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/linegauge_multi.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/list_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/list_interactive.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/list_styled.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/overview_first.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/paragraph_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/paragraph_centered.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/paragraph_log_viewer.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/paragraph_scrollable.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/scroll_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/scroll_list.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/scroll_paragraph.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/sparkline_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/sparkline_dashboard.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/sparkline_rolling.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/sparkline_threshold.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/table_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/table_interactive.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/table_realtime.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/table_styled_cells.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/tabs_badge.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/tabs_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/tabs_navigation.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/tabs_styled.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/text_alignment.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/text_basic.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/text_dynamic.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/text_status.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/media/tui_output_example.gif": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/book/ui/tui/overview.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/paragraph.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/scroll.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/sparkline.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/style.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/table.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/tabs.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/book/ui/tui/text.html": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "docs/favicon.png": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/favicon.svg": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/graphix-icon.svg": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/graphix-logo-full.svg": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "docs/index.html": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "examples": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-compiler/Cargo.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-compiler/book": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-compiler/proptest-regressions/expr/test.txt": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-compiler/src/env.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/modpath.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/arithexp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/arrayexp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/interpolateexp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/lambdaexp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/modexp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/patternexp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/parser/typexp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/pattern.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/print.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/resolver.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/expr/test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/array.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/bind.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/callsite.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/compiler.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/data.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/error.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/genn.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/lambda.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/map.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/module.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/op.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/pattern.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/node/select.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/cast.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/contains.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/fntyp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/matches.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/normalize.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/print.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/setops.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/tval.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-compiler/src/typ/tvar.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-derive/Cargo.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-derive/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/Cargo.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-lsp/src/diagnostics.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/handlers/completion.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/handlers/definition.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/handlers/diagnostics.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/handlers/document_symbol.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/handlers/hover.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-lsp/src/handlers/mod.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-lsp/src/handlers/references.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/handlers/workspace_symbol.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/position.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/server.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/state.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/uri.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-lsp/src/workspace.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-package/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-package/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-package/src/skel/Cargo.toml.hbs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-package/src/skel/README.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-package/src/skel/deps.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-package/src/skel/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-package/src/skel/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-package/src/skel/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-package/src/test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-rt/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-rt/book": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-rt/src/gx.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-rt/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-rt/src/rt.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-shell/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-shell/book": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-shell/src/AGENTS.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "graphix-shell/src/completion.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-shell/src/deps.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-shell/src/input.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-shell/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-shell/src/lsp_backend.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "graphix-shell/src/main.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "ide/README.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/emacs/graphix-mode.el": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/helix/README.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/helix/install.sh": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/helix/languages.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/helix/queries/highlights.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/helix/queries/indents.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/helix/queries/locals.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/nvim/ftdetect/graphix.lua": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/nvim/graphix.lua": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vim/README.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vim/ftdetect/graphix.vim": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vim/ftplugin/graphix.vim": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vim/syntax/graphix.vim": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vscode/language-configuration.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vscode/package.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vscode/src/extension.ts": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vscode/syntaxes/graphix.tmLanguage.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/vscode/tsconfig.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/.gitignore": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/Cargo.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/README.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/extension.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/languages/graphix/config.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/languages/graphix/highlights.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/languages/graphix/indents.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/languages/graphix/locals.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/editors/zed/src/lib.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/Cargo.toml": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/build.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/grammar.js": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/lib.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/package-lock.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/package.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/queries/highlights.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/queries/indents.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/queries/locals.scm": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/src/grammar.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/src/node-types.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/src/parser.c": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/src/scanner.c": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/src/tree_sitter/alloc.h": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/src/tree_sitter/array.h": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/src/tree_sitter/parser.h": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "ide/tree-sitter-graphix/tree-sitter.json": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "rustfmt.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-args/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-args/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-args/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-args/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-array/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-array/src/graphix/mod.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-array/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-array/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/buffer.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/graphix/buffer.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-core/src/graphix/buffer.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-core/src/graphix/math.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/graphix/math.gxi": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/graphix/mod.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/graphix/mod.gxi": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/graphix/opt.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-core/src/graphix/opt.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-core/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/math.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/opt.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/queuefn.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-core/src/testing.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-db/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-db/src/cursor.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-db/src/encoding.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-db/src/graphix/cursor.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/graphix/cursor.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/graphix/subscription.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/graphix/subscription.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/graphix/txn.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/graphix/txn.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-db/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-db/src/subscribe.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-db/src/tree.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-db/src/txn.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/clipboard.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/convert.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/event_loop.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/graphix/button.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/button.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/canvas.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/canvas.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/chart.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/chart.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/checkbox.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/checkbox.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/clipboard.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/clipboard.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/column.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/column.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/combo_box.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/combo_box.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/container.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/container.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/data_table.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/data_table.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/grid.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/grid.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/image.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/image.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/keyboard_area.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/keyboard_area.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/markdown.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/markdown.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/menu.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/menu.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/mouse_area.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/mouse_area.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/pick_list.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/pick_list.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/progress_bar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/progress_bar.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/qr_code.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/qr_code.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/radio.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/graphix/radio.gxi": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/graphix/row.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/row.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/rule.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/rule.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/scrollable.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/scrollable.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/slider.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/slider.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/space.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/space.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/stack.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/stack.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/style.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/style.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/table.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/table.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/text.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/text.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/text_editor.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/text_editor.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/text_input.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/text_input.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/toggler.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/toggler.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/tooltip.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/tooltip.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/vertical_slider.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/graphix/vertical_slider.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/render.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/test/canvas_test.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/test/chart_test.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/test/clipboard_test.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/test/data_table_test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/test/interaction_test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/test/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/test/widgets_test.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/theme.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/types.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/button.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/canvas.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/chart/dataset.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/chart/draw.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/chart/interact.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/chart/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/chart/plotters_backend.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/chart/ranges.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/chart/types.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/combo_box.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/container.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/context_menu.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/context_menu_widget.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/data_table/events.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/data_table/layout.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/data_table/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/data_table/render.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/data_table/subscriptions.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/data_table/test_access.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/data_table/types.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/grid.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/iced_keyboard_area.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/image.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/widgets/keyboard_area.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/markdown.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/widgets/menu_bar.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/menu_bar_widget.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/mouse_area.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/pick_list.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/progress_bar.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/widgets/qr_code.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/widgets/radio.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/rule.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/widgets/scrollable.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/slider.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/space.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/widgets/stack.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/table.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/text.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/text_editor.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/text_input.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/widgets/toggle.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-gui/src/widgets/tooltip.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-gui/src/window.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-hbs/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-hbs/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-hbs/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-hbs/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-http/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-http/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-http/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-http/src/graphix/rest.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-http/src/graphix/rest.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-http/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-json/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-json/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-json/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-json/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-list/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-list/src/graphix/mod.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-list/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-list/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-map/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-map/src/graphix/mod.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-map/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-map/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-pack/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-pack/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-pack/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-pack/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-rand/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-rand/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-rand/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-rand/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-rand/src/test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-re/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-re/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-re/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-re/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-re/src/test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sqlite/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sqlite/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sqlite/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sqlite/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-str/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-str/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-str/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-str/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/dir.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/dirs_mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/fs.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/graphix/dirs.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/dirs.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/fs.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/fs.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/fs/tempdir.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/fs/tempdir.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/fs/watch.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/fs/watch.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/io.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/graphix/io.gxi": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/graphix/mod.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/graphix/mod.gxi": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/graphix/net.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/net.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/tcp.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/tcp.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/time.gx": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/graphix/time.gxi": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/graphix/tls.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/graphix/tls.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-sys/src/io.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/metadata.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/net.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/tcp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/time.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/tls.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-sys/src/watch.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-toml/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-toml/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-toml/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-toml/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/barchart.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/block.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/calendar.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/canvas.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/chart.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/gauge.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/graphix/barchart.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/barchart.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/block.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/block.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/browser.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/browser.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/calendar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/calendar.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/canvas.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/canvas.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/chart.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/chart.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/gauge.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/gauge.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/input_handler.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/input_handler.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/layout.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/layout.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/line_gauge.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/line_gauge.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/list.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/list.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/paragraph.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/paragraph.gxi": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/graphix/scrollbar.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/scrollbar.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/sparkline.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/sparkline.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/table.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/table.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/tabs.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/tabs.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/text.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/graphix/text.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-tui/src/input_handler.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/layout.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/line_gauge.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/list.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/paragraph.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/scrollbar.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/sparkline.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/table.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/tabs.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/test/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/test/panic_test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/test/widgets_test.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/text.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-tui/src/validate.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-xls/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-package-xls/src/graphix/mod.gx": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-xls/src/graphix/mod.gxi": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-package-xls/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/Cargo.toml": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/certs/ca.key": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/certs/ca.pem": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/certs/gen.sh": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/certs/server.key": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/certs/server.pem": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/src/lang/arrays.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/basics.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/byref.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/datetime.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/errors.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/functions.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/interfaces.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/maps.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/modules.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/select.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/tuples_structs.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/types.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lang/variants.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/args.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/array.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/bitwise.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/buffer.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/core.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/db.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/dirs.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/dir_ops.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/file_handle.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/integration.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/metadata.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/mod.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/read.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/readdir.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/tempdir.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/watch.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/fs/write.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/hbs.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/http.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/json.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/list.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/map.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/math.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/mod.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/net.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/pack.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/sqlite.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/str.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/sys.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/tcp.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/tls.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/toml.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/typecheck.rs": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    },
+    "stdlib/graphix-tests/src/lib_tests/xls.rs": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "todo.md": {
+      "reviewed_at": "2e5dae42fca05c92fa3e03d675db1ae3ee8d0b88"
+    },
+    "vendor.py": {
+      "reviewed_at": "91c6438ffcfe3acd3614db12f9aeb939a1ac596c"
+    }
+  }
+}
