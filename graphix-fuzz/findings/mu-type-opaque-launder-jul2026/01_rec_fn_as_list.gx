@@ -1,0 +1,26 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED as a TYPECHECKER
+// unsoundness; kept as a CompileErr-agree regress pin.
+// Found by soak jul31a fuzz lane (2026-07-31, first find of the round,
+// campaign binary 55df55a2; also reproduces on 73de0cab — pre-existing).
+// Pre-fix: compiled, then interp Trace([]) vs jit Trace([0:[]]) — a Fn
+// value flowing where List<i64> was typed (each backend improvising on
+// a value that contradicts its type; the jul18c ABI-hazard class).
+// root_cause: three deliberate mechanisms composing into an admission.
+// (1) `let rec f = |n, acc| f` forces 'r := fn(..) -> 'r; the occurs
+//     check refuses, leaving 'r open with the non-blocking
+//     cycle_refused mark (jul22e).
+// (2) list::map's tc0 arg check binds the open poisoned cell rhs-ward
+//     to Abstract(list::List) — ordinary HM, poison laundered.
+// (3) tc1 static resolution's instance recheck hits Abstract-vs-Fn,
+//     classified AbstractOpaque -> RESOLVE-DISCARD to dynamic — and
+//     the finite-type rejection (settle_or_bottom) lives only in the
+//     terminal settle of RESOLVED sites, so no check remained. The
+//     flat (unblocked) form was always rejected: its topology let
+//     resolution succeed and reach settle_terminal.
+// FIX (Eric-approved 2026-07-31): contains_mismatch refuses the
+// AbstractOpaque classification when either compared type reaches an
+// open, unconstrained, cycle_refused cell — that failure is the
+// infinite type surfacing at a consumer, not opacity; it now rejects
+// with the same "cannot infer a finite type" error as the settle path.
+// Both modes agree: CompileErr.
+{let l = {let rec f = |n, acc| f; f(f64:0., buffer::to_string)}; list::to_array(list::map(l, |x| x * i64:2))}

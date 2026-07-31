@@ -33,6 +33,56 @@ pub enum ContainsFlags {
 }
 
 /// True iff binding `t` into the cell would satisfy EVERY conjunct of
+/// The infinite-type rejection wording, shared by the terminal settle
+/// ([`TVar::settle_or_bottom`]) and the discarded-instance scan
+/// ([`FnType::check_finite`]) so both paths reject identically.
+pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: unification requires a type that \
+     contains itself (e.g. a function that returns itself); declare a \
+     named recursive type and annotate the binding";
+
+/// Does `t` reach a cell that is open, unconstrained, and
+/// `cycle_refused` — the [`TVar::settle_or_bottom`] rejection predicate
+/// applied without settling? Pure read; descends tvar bindings and
+/// constraints with a cell-identity visited set (μ-adjacent types are
+/// exactly where cycles live).
+fn type_has_refused_open_cell(t: &Type) -> bool {
+    fn walk(t: &Type, visited: &mut LPooled<nohash::IntSet<usize>>) -> bool {
+        match t {
+            Type::TVar(tv) => {
+                if !visited.insert(tv.cell_addr()) {
+                    return false;
+                }
+                let (bound, cons, refused) = {
+                    let g = tv.read();
+                    let cell = g.typ.read();
+                    (cell.typ.clone(), cell.constraints.clone(), cell.cycle_refused)
+                };
+                if bound.is_none() && cons.is_empty() && refused {
+                    return true;
+                }
+                if let Some(b) = &bound
+                    && walk(b, visited)
+                {
+                    return true;
+                }
+                cons.iter().any(|c| walk(c, visited))
+            }
+            Type::Fn(ft) => {
+                ft.args.iter().any(|a| walk(&a.typ, visited))
+                    || ft.vargs.as_ref().is_some_and(|v| walk(v, visited))
+                    || walk(&ft.rtype, visited)
+                    || walk(&ft.throws, visited)
+            }
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found |= walk(c, visited));
+                found
+            }
+        }
+    }
+    walk(t, &mut LPooled::take())
+}
+
 /// the cell's constraint list. Probe flags: the check itself must not
 /// bind or alias anything.
 fn cell_constraints_ok(
@@ -156,12 +206,7 @@ impl crate::typ::TVar {
                 // reads a Fn value's payload bits as a scalar (jul18c).
                 // No finite annotation-free type exists; reject.
                 if cell.cycle_refused {
-                    bail!(
-                        "cannot infer a finite type here: unification \
-                         requires a type that contains itself (e.g. a \
-                         function that returns itself); declare a named \
-                         recursive type and annotate the binding"
-                    )
+                    bail!("{INFINITE_TYPE_MSG}")
                 }
                 drop(cell);
                 if crate::dbgenv::graphix_dbg_bind() {
@@ -382,6 +427,24 @@ impl Type {
     }
 
     fn contains_mismatch(&self, t: &Self, abstract_false: bool) -> anyhow::Error {
+        // An opaque-classified failure where either compared type
+        // carries an open, unconstrained, `cycle_refused` cell is NOT
+        // an opacity artifact — it is the infinite type the occurs
+        // check refused, surfacing at a consumer. The AbstractOpaque
+        // classification would let static resolution DISCARD this
+        // failure to dynamic dispatch, skipping the terminal settle
+        // where [`TVar::settle_or_bottom`]'s finite-type rejection
+        // lives — laundering the μ-type into whatever the first
+        // consumer bound the site's cell to (soak jul31a: a
+        // `let rec f = |n, acc| f` call, block-wrapped, passed as
+        // `list::List`; the flat form was already rejected by
+        // `settle_terminal`). Reject with the same error the settle
+        // path issues.
+        if abstract_false
+            && (type_has_refused_open_cell(self) || type_has_refused_open_cell(t))
+        {
+            return anyhow::anyhow!("{INFINITE_TYPE_MSG}");
+        }
         let e = anyhow::Error::new(TypeMismatch {
             expected: self.clone(),
             actual: t.clone(),
