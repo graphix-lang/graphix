@@ -1,0 +1,107 @@
+// CRASH: child signal: 11 (SIGSEGV) (core dumped) | arith error in in expr let g0 = |v8: string, v9: i64| -> u16 (select (u16:1 -? u16:2) { error as _ => u16:1000, u16 as n => n } * (u16:2 - u16:65535)); | let g1 = |v10: f64| -> i64 (select (i64:-1 +? i64:0) { error as _ => i64:100, i64 as n => n } % i64:0) at line: 2, column: 29 "arithmetic error"
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{ let v0 = &u8:0; let v1 = [v0, v0]; let v2 = mod d0 dynamic { sandbox whitelist [core]; sig { val g0: fn(a0: u8, a1: string) -> string; val g1: fn(a0: i64, a1: i64) -> z32 }; source r'let v2 = (-(i64:2));
+let g0 = |v3: u8, v4: string| -> string v4;
+let g1 = |v5: i64, v6: i64| -> z32 (-((-(z32:-1000))))' }; let v3 = select v2 { error as _ => "hello", null as _ => d0::g0(u8:1, str::concat("graphix", "graphix")) }; let v1: u8 = array::fold([v3, v3, ""], select (u8:1 %? u8:2) { error as _ => u8:255, u8 as n => n }, |v4, v5| (v4 - v4)); let v4 = mod d1 dynamic { sandbox whitelist [core]; sig { val g0: fn(a0: string, a1: i64) -> string }; source r'let v4 = i64:42;
+let g0 = |v5: string, v6: i64| -> string "hello"' }; let v5 = select v4 { error as _ => "xyz", null as _ => d1::g0(v3, (try ((i64:7 *? i64:-100))? catch(e) => i64:42)) }; let v6 = mod d2 dynamic { sandbox whitelist [core]; sig { val g0: fn(a0: i64) -> u32; val g1: fn(a0: u8) -> f64 }; source r'let g0 = |v6: i64| -> u32 array::fold([u32:7, u32:1, u32:4294967295], u32:100000, |v7, v8| v7);
+let g1 = |v7: u8| -> f64 (f64:0.0 * f64:1.0)' }; let v7 = select v6 { error as _ => cast<f64>(u32:7)$, null as _ => d2::g1((u8:2 + v1)) }; let v8 = mod d3 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: string, a1: i64) -> u16; val g1: fn(a0: f64) -> i64 }; source r'let g0 = |v8: string, v9: i64| -> u16 (select (u16:1 -? u16:2) { error as _ => u16:1000, u16 as n => n } * (u16:2 - u16:65535));
+let g1 = |v10: f64| -> i64 (select (i64:-1 +? i64:0) { error as _ => i64:100, i64 as n => n } % i64:0)' }; let v9 = select v8 { error as _ => (-(i64:1)), null as _ => d3::g1((f64:0.0 + f64:0.0)) }; let v5 = |v10: bool, v9: u16, v11: i8| -> f64 ((try ((f64:-1.0 *? f64:2.5))? catch(e) => f64:-1.0) % select (f64:-1.0 -? f64:0.1) { error as _ => v7, f64 as n => n }); let v1 = {"a" => v5((v7 != f64:0.0), (u16:1000 % u16:2), i8:7), "k1" => v5((v7 != f64:0.1), (u16:2 / u16:2), (i8:-100 / i8:100)), "b" => (-((f64:2.5 + v7)))}; let v12 = m2::mk(i64:-1); let v13 = (m2::mk(i64:-1), m2::un(m2::mk(i64:-100))); let v14 = m3::mk((i64:0 - i64:-100)); let v15 = (v14, (v9 % i64:-1)); let v16 = m4::mk(v9); let v17 = m4::k4; let v18 = m5::mk(v15.1); let v29: [u16, null] = { let v19: [bool, null] = select str::len("xyz") { _ if false => null, v19 if (false || false) => false, v19 => (true || true) }; let v20 = select ((-(i64:7)) - i64:42) { _ => ((u8:255 + u8:100) + (u8:100 * u8:255)) }; let v21 = |v22: i64| select v22 { i64:0 => (true || true), _ => error(z64:-1000000) }; let v23 = v21(i64:1)$; let v24: [`A, `Some(Array<string>, f64)] = `A; let v20 = |v25: i8, v26: v64, v27: u16| -> u64 { let v28 = list::fold(list::from_array([v64:1000000, v64:0, v64:0]), v26, |v28, v29| v28); (u64:7 %? (u64:1000000 + u64:1000000))$ }; ((u16:1000 + u16:1000) + (u16:2 *? u16:1000)$) }; let v30 = &"hello"; let v31 = u8:255; let v33 = ((m4::un(v16) + m9::f0({"k2" => i64:1}, [false, true])) - ((v9 * i64:-100) - v17)); let v34: {b: Map<string, bool>, c: bool} = select v3 { "graphix" if m9::k9 => { b: {"k1" => true, "k2" => true}, c: false }, "xyz" => { b: {"a" => false}, c: (m9::k9 && false) }, v34 => { b: {"b" => true, "k2" => true, "k0" => true}, c: true } }; let v3 = 'a: Number |v35: 'a, v36: 'a| -> 'a ((v35 - v35) - v35); let v37: i8 = v3((i8:127 / i8:-1), (i8:0 * i8:1)); let v38: i64 = v3(m9::f0({"k1" => i64:0, "a" => i64:2, "k2" => i64:42}, [true, true]), v17); let v30 = { x: { a: (m7::k7, true, m8::k8), b: {"k1" => f64:2.5, "b" => f64:1.0}, n: (v7 > f64:2.5) } }; let v14: i64 = (try ((m5::f2(u64:7) %? ((m4::k4 +? i64:1)$ * m9::f0({"k1" => i64:-1}, [true, true, false]))))? catch(e) => i64:100); let v9 = |v39: f64, v40: i64| -> z64 { let v41 = ((i16:-1 - i16:-32768) % (i16:32767 / i16:1000)); ((z64:1 / z64:0) * select (z64:1 +? z64:42) { error as _ => z64:-1000000, z64 as n => n }) }; let v42: f64 = v3((select (m3::k3 *? m7::k7) { error as _ => m7::k7, f64 as n => n } * (try ((f64:3.14 %? f64:0.1))? catch(e) => m7::k7)), v1{"k2"}$); let v43 = select i64:100 { i64:-100 => (m7::k7, (f64:1.0 % f64:1.0)), v29 => (f64:-1.0, f64:0.1) }; let v44 = &v31; let v45 = (v44, v31); let v46 = ({"a" => f64:1.0, "k0" => (f64:-1.0 * v7)}, i64:-1); (null, i64:1, true) }
+// file-v1: m0.gxi
+val f0: fn(a0: u8) -> u8;
+// file-v1: m0.gx
+let h0 = |v6: f64| -> f64 f64:2.5;
+let f0 = |v7: u8| select (v7 +? (u8:100 * v7)) { error as _ => (v7 / u8:2), u8 as n => n };
+// file-v1: m1.gxi
+val f0: fn(a0: ({a: string, x: string, y: f32}, Map<string, z32>)) -> u8;
+val f1: fn(a0: &bool, a1: &i64) -> v64;
+// file-v1: m1.gx
+let f0 = |v12: ({a: string, x: string, y: f32}, Map<string, z32>)| -> u8 (m0::f0((u8:100 + u8:0)) + (((u8:255 / u8:0) * (u8:0 - u8:2))));
+let f1 = |v13: &bool, v14: &i64| -> v64 ((v64:7 * v64:1000000) + (v64:1000000 % v64:1));
+// file-v1: m2.gx
+let f0 = |v12: f64, v13: &string| -> v64 (v64:0 - v64:1);
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;
+// file-v1: m3.gxi
+val k3: f64;
+val f0: fn(a0: string, a1: [`B(string, bool), `C([u8, null])]) -> v64;
+val f1: fn(a0: string) -> bool;
+val f2: fn(a0: f64, a1: u8) -> string;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+// file-v1: m3.gx
+let k3: f64 = (-(f64:0.0));
+let f0 = |v14: string, v15: [`B(string, bool), `C([u8, null])]| -> v64 (m1::f1(&(true), &(i64:0)) + ((v64:1000000 % (v64:0 / v64:1000000))));
+let f1 = |v16: string| -> bool array::fold([null, i64:42], true, |v17, v18| v17);
+let f2 = |v17: f64, v18: u8| -> string list::fold(list::from_array([{ b: i64:-100, c: "", y: true }, { b: i64:2, c: "hello", y: false }, { b: i64:7, c: "graphix", y: false }]), "graphix", |v19, v20| "graphix");
+type T = Array<i64>;
+let mk = |x: i64| -> T [x, x];
+let un = |t: T| -> i64 t[0]$;
+// file-v1: m4.gxi
+val k4: i64;
+val f0: fn(a0: i64) -> Array<Map<string, bool>>;
+val f1: fn(a0: [`A((i64, bool, string), Array<f64>), `B(Map<string, f64>), `C]) -> bool;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+// file-v1: m4.gx
+let k4: i64 = i64:-1;
+let h4 = |v16: i64| -> i64 k4;
+let f0 = |v17: i64| -> Array<Map<string, bool>> array::filter([{"k2" => true, "b" => false}, {"k2" => false, "k0" => false}, {"k2" => true, "k0" => false, "k1" => false}], |v18| false);
+let f1 = |v18: [`A((i64, bool, string), Array<f64>), `B(Map<string, f64>), `C]| -> bool true;
+type T = Array<i64>;
+let mk = |x: i64| -> T [x, x];
+let un = |t: T| -> i64 t[0]$;
+// file-v1: m5.gxi
+val f0: fn(a0: [`A, `C([bool, null]), `Nil]) -> i64;
+val f1: fn(a0: i64) -> i64;
+/// generated
+val f2: fn(a0: u64) -> i64;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+// file-v1: m5.gx
+let f0 = |v18: [`A, `C([bool, null]), `Nil]| -> i64 (m4::un(m4::mk(m4::k4)) + (str::len("graphix")));
+let f1 = |v19: i64| -> i64 (-(cast<i64>(z32:0)$));
+let f2 = |v20: u64| ((i64:-100 + i64:1) + (try ((i64:100 /? m4::k4))? catch(e) => m4::k4));
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t;
+// file-v1: m6.gxi
+val f0: fn(a0: (u8, Map<string, u8>, f64)) -> i64;
+val f1: fn(a0: Map<string, [f64, null]>) -> [`A(f64, (f64, string)), `C(i64), `Some(f64, u8)];
+val f2: fn(a0: &i64, a1: u16) -> {n: [f64, null], y: u8};
+// file-v1: m6.gx
+let f0 = |v19: (u8, Map<string, u8>, f64)| (m4::un(m4::mk(i64:42)) + (i64:0));
+let f1 = |v20: Map<string, [f64, null]>| -> [`A(f64, (f64, string)), `C(i64), `Some(f64, u8)] `C(str::len("xyz"));
+let f2 = |v21: &i64, v22: u16| -> {n: [f64, null], y: u8} { n: f64:0.1, y: u8:100 };
+// file-v1: m7.gxi
+val k7: f64;
+val f0: fn(a0: [`Nil((bool, bool, i64)), `Some(i64)], a1: f64) -> bool;
+// file-v1: m7.gx
+let k7: f64 = (-(m3::k3));
+let h7 = |v31: u8| -> u8 u8:2;
+let f0 = |v33: [`Nil((bool, bool, i64)), `Some(i64)], v34: f64| -> bool m4::f1(`B({"k0" => f64:1.0, "k1" => f64:-1.0}));
+// file-v1: m8.gxi
+val k8: string;
+val f0: fn(a0: z64) -> string;
+val f1: fn(a0: bool) -> bool;
+// file-v1: m8.gx
+let k8: string = "hello";
+let f0 = |v31: z64| -> string "hello";
+let f1 = |v33: bool| -> bool (true || str::starts_with(#pfx: "xyz", ""));
+// file-v1: m9.gx
+let k9: bool = str::ends_with(#sfx: "graphix", m8::k8);
+let f0 = |v31: Map<string, i64>, v33: Array<bool>| -> i64 (m4::un(m4::mk(i64:100)) + (str::len(m8::k8)));
+let f1 = |v34: [bool, null]| -> string str::to_lower(m3::f2(m3::k3, u8:100));
+// file-v1: m10.gxi
+val f0: fn(a0: u8) -> string;
+val f1: fn(a0: string, a1: {c: {a: i64, b: string}}) -> string;
+/// generated
+val f2: fn(a0: bool) -> [`A, `C, `Some(bool, {x: u64, y: f64})];
+// file-v1: m10.gx
+let f0 = |v31: u8| m8::f0((z64:1 - z64:-1000000));
+let f1 = |v33: string, v34: {c: {a: i64, b: string}}| -> string "xyz";
+let f2 = |v35: bool| -> [`A, `C, `Some(bool, {x: u64, y: f64})] `Some(v35, { x: u64:1000000, y: m3::k3 });
