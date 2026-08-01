@@ -681,9 +681,33 @@ fn compile_kernel_with_callees_inner(
     // pointer-ordered map here made the numbering ASLR-dependent (#19).
     let mut funcids: poolshark::local::LPooled<Vec<(usize, (FuncId, Signature))>> =
         poolshark::local::LPooled::take();
+    // Already-defined callee layouts, keyed by kernel identity — seeded
+    // from THIS REGION'S OWN cache keys as they are declared (a cache
+    // hit means the body was defined by a prior compile under exactly
+    // the (ptr, base, layout) this region calls), then overwritten by
+    // each fresh define below. NEVER collapse over all of `by_kernel`:
+    // a body re-emitted under a new (base, layout) can claim a
+    // DIFFERENT SiteLayout while an old variant's entry survives, and
+    // a caller sizing state blocks from the stale variant while the
+    // callee's code writes per the fresh one is an out-of-bounds heap
+    // write (the jul31baieka TVar-corruption crash — a whole-cache
+    // seed plus first-found-wins kept exactly that stale layout).
+    let mut callee_layouts: BTreeMap<usize, SiteLayout> = BTreeMap::new();
+    let seed_layout = |jit: &Jit,
+                       callee_layouts: &mut BTreeMap<usize, SiteLayout>,
+                       ptr: usize,
+                       base: u32,
+                       layout: u32| {
+        if let Some(l) =
+            jit.by_kernel.get(&(ptr, base, layout)).and_then(|e| e.site_layout.as_ref())
+        {
+            callee_layouts.insert(ptr, l.clone());
+        }
+    };
     let parent_entry =
         ensure_declared(jit, kernel, 0, parent_layout, to_define, registry)?;
     funcids.push((parent_ptr, parent_entry.clone()));
+    seed_layout(jit, &mut callee_layouts, parent_ptr, 0, parent_layout);
     for (ptr, k) in callees {
         if *ptr == parent_ptr {
             continue;
@@ -692,6 +716,7 @@ fn compile_kernel_with_callees_inner(
         let layout = layout_of(k);
         let entry = ensure_declared(jit, k, base, layout, to_define, registry)?;
         funcids.push((*ptr, entry));
+        seed_layout(jit, &mut callee_layouts, *ptr, base, layout);
     }
     // Phase 2 — define each freshly-declared body. Bodies that came
     // back from the cache already had `define_function` called for
@@ -719,16 +744,6 @@ fn compile_kernel_with_callees_inner(
     // recursive back-edge (self-calls, mutual-recursion cycles) — the
     // call site passes 0 and the callee's null-guards degrade to the
     // no-memory semantics (fresh transient activation).
-    // Already-defined callee layouts, keyed by kernel identity.
-    // Base/layout variants of the same body share one SiteLayout (the
-    // claims are a body property). Seeded from the cache once, then
-    // maintained as the loop records fresh layouts — the reversed
-    // definition order means a caller's callees are already present.
-    let mut callee_layouts: BTreeMap<usize, SiteLayout> = jit
-        .by_kernel
-        .iter()
-        .filter_map(|((p, _, _), e)| e.site_layout.as_ref().map(|l| (*p, l.clone())))
-        .collect();
     for (k, base, layout) in to_define.iter().rev() {
         let ptr = std::sync::Arc::as_ptr(k) as usize;
         // The emitter is keyed by pointer identity (it's the same body
@@ -749,7 +764,7 @@ fn compile_kernel_with_callees_inner(
             cached.state_words = db.state_words;
             cached.replay_state_words = db.replay_words;
             cached.slot_table_words = db.slot_table_words;
-            callee_layouts.entry(ptr).or_insert_with(|| db.site_layout.clone());
+            callee_layouts.insert(ptr, db.site_layout.clone());
             cached.site_layout = Some(db.site_layout);
             cached._site_leaves = db.site_leaves;
         }
