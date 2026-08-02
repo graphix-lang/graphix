@@ -1,0 +1,23 @@
+// aug02 reactive divergence_000000 (2026-08-02): the NON-SCALAR twin of
+// 01 — an Array-typed select merge is the same interior-bottom origin,
+// but the scalar-only cache passed its taint through. Arm switch to the
+// div0 arm taints the merged array; the reader arm v0[1]$ is FRESHLY
+// woken (its own scalar qop cache has no history), so the taint reaches
+// the outer scalar merge which rides r's old value — the ride lands at
+// the WRONG seam. The node-walk rides the ARRAY stream at v0 and
+// recomputes the fresh index against it (interp 7, jit rode 1). Fixed
+// by emit_value_taint_cache: an owned (clean disc, payload) resident in
+// two replay state words, clone-in/drop-replace, substituted | STALE on
+// tainted-with-history; Kernel drops the resident on sleep/reset/Drop.
+// schedule-v1: cap=112 events=896; in0=i64:1; in0=i64:0
+{
+  let v0 = select in0 {
+    i64:0 => [in0, i64:1 / in0],
+    _ => [in0, i64:7]
+  };
+  let r = select in0 {
+    i64:0 => v0[i64:1]$,
+    _ => v0[i64:0]$
+  };
+  r + in0
+}

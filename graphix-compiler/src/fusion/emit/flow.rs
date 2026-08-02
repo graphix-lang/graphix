@@ -19,8 +19,8 @@ use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        emit_scalar_taint_cache, is_fresh, is_tainted, is_untainted, propagate_flags,
-        scalar_disc, taint_if, value_disc,
+        emit_scalar_taint_cache, emit_value_taint_cache, is_fresh, is_tainted,
+        is_untainted, propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{
         BodyCx, emit_kernel_bottom, emit_kernel_return, emit_return_from_node,
@@ -1053,7 +1053,12 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            Ok(CompiledExpr::new(params[0], params[1]))
+            // Interior-bottom exactness, non-scalar twin of the Scalar
+            // arm's cache above: a `$`/`?`-dropped error with prior
+            // success rides the cached value (both qmerge paths are
+            // owned — the placeholder is fresh, the success unwrap
+            // clones a borrowed inner).
+            emit_value_taint_cache(cx, CompiledExpr::new(params[0], params[1]))
         }
         // Value-shape success. The bad path (error) produces a tainted
         // Value::Null placeholder and CONTINUES (interior-bottom v2);
@@ -1112,7 +1117,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            Ok(CompiledExpr::new(params[0], params[1]))
+            // Interior-bottom exactness, owned-value twin of the
+            // Scalar arm's cache (both qmerge paths owned: the Null
+            // placeholder is inert, the success was ensured owned).
+            emit_value_taint_cache(cx, CompiledExpr::new(params[0], params[1]))
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             Err(anyhow!("emit_clif: `?` with unsupported success type {:?}", success_typ))

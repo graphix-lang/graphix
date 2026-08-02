@@ -1,0 +1,19 @@
+// Crafted alongside the aug02 fix (2026-08-02): the qop VALUE-shape
+// exit ([i64, null] success from m{k}$) — a missing key's dropped error
+// tainted the nullable and the downstream select dispatch missed the
+// injection-cycle fire (interp [10];[10];[11], jit [10];[10];[]).
+// emit_value_taint_cache at the Value-shape qmerge rides the last
+// success like the node-walk's consumer Cached.
+// schedule-v1: cap=112 events=896; in0=i64:0; in0=i64:1
+{
+  let m: Map<string, [i64, null]> = {"a" => i64:10};
+  let k = select in0 {
+    i64:0 => "a",
+    _ => "missing"
+  };
+  let v = m{k}$;
+  select v {
+    i64 as n => n + in0,
+    null as _ => i64:-1
+  }
+}

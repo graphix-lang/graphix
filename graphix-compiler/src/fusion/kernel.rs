@@ -944,6 +944,7 @@ impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
                 a.leaf.as_deref(),
             );
         }
+        self.drop_replay_values();
     }
 }
 /// Routing for one incoming runtime arg position: a value-bearing
@@ -1030,6 +1031,27 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
                 a.own_levels as u64,
                 a.leaf.as_deref(),
             );
+        }
+    }
+
+    /// Drop-and-zero the OWNED-value replay pairs
+    /// ([`WrappedKernel::replay_value_pairs`] — the non-scalar
+    /// interior-bottom caches, `emit_value_taint_cache`): each holds a
+    /// (clean disc, payload) `Value` the emitted code cloned in, disc
+    /// 0 = empty. Blind zeroing (the flat replay-word treatment) would
+    /// leak the clone. Called from `sleep`/`reset_replay` (cache
+    /// clearing) and `Drop` (instance death).
+    fn drop_replay_values(&mut self) {
+        for w in self.jit.replay_value_pairs.iter() {
+            let d = std::mem::replace(&mut self.state[*w as usize], 0);
+            let p = std::mem::replace(&mut self.state[*w as usize + 1], 0);
+            if d != 0 {
+                // SAFETY: the words were written by this kernel's own
+                // emitted code as the (clean disc, payload) of an owned
+                // `graphix_value_clone` result — a valid `Value` bit
+                // pattern; the nonzero-disc guard excludes empty.
+                drop(unsafe { TagValue::from_raw(d, p) });
+            }
         }
     }
 
@@ -1671,6 +1693,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
         }
+        self.drop_replay_values();
         self.free_reset_chains();
         // The dyn slots' bound applies sleep like any node-walked
         // callee's would (`CallSite::sleep` sleeps its apply). NOTE:
@@ -1699,6 +1722,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
         }
+        self.drop_replay_values();
         self.free_reset_chains();
         if crate::dbgenv::gxdbg_reset() {
             eprintln!("KERNEL-RESET words={:?}", self.jit.replay_state_words);

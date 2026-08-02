@@ -518,6 +518,28 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Some(off)
     }
 
+    /// [`claim_state_word_replay`](Self::claim_state_word_replay) for
+    /// an OWNED cached `Value`: claims TWO consecutive words — (clean
+    /// disc, payload), disc 0 = empty — registered on the value-pair
+    /// list so the runtime `Kernel` DROPS the held value on
+    /// `sleep`/`reset_replay`/`Drop` instead of blindly zeroing
+    /// ([`emit_value_taint_cache`]). Returns the disc word's byte
+    /// offset (payload at +8). Refused everywhere the scalar replay
+    /// claim is, PLUS inside scaffold loops and callee bodies with no
+    /// state fallback — the per-slot chain and per-call-site block
+    /// free machinery is value-unaware, so those sites keep the
+    /// stateless pass-through (documented residual).
+    pub fn claim_state_word_replay_value(&self) -> Option<i32> {
+        if !self.ctx.replay_enabled {
+            return None;
+        }
+        let off = self.claim_state_word()?;
+        let off2 = self.claim_state_word()?;
+        debug_assert_eq!(off2, off + 8, "value-pair words must be consecutive");
+        self.ctx.state.replay_value_pairs.borrow_mut().push((off / 8) as u32);
+        Some(off)
+    }
+
     /// [`claim_state_word`](Self::claim_state_word) for a claimant
     /// whose word is exact ACROSS loop iterations, waiving the
     /// in-loop refusal: either the observed quantity is

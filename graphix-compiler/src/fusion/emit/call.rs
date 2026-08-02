@@ -21,8 +21,8 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use super::{
     abi::{
         CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, clean_disc,
-        emit_scalar_taint_cache, emit_untainted_i64, is_tainted, propagate_flags,
-        scalar_disc, taint_if, value_disc,
+        emit_scalar_taint_cache, emit_untainted_i64, emit_value_taint_cache, is_tainted,
+        propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     lower::{LowerCtx, SelWord},
@@ -400,12 +400,24 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx.b.seal_block(dmerge);
     let params = cx.b.block_params(dmerge);
     let merged = CompiledExpr::new(params[0], params[1]);
-    // Interior-bottom exactness (scalar returns): a pended dispatch, a
-    // tainted-arg skip, with PRIOR success degrades to STALE + the
-    // cached value — matching the node-walk, where consumers sample
-    // the builtin node's cached last output when it doesn't fire.
+    // Interior-bottom exactness: a pended dispatch, a tainted-arg
+    // skip, with PRIOR success degrades to STALE + the cached value —
+    // matching the node-walk, where consumers sample the builtin
+    // node's cached last output when it doesn't fire. Non-scalar
+    // returns ride through the owned-value twin (both dmerge paths
+    // produce owned pairs: dispatcher results transfer ownership,
+    // placeholders are fresh).
     match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => Ok(emit_scalar_taint_cache(cx, p, merged)),
+        Some(
+            AbiKind::String
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+            | AbiKind::Variant
+            | AbiKind::Nullable
+            | AbiKind::Value,
+        ) => emit_value_taint_cache(cx, merged),
         _ => Ok(merged),
     }
 }

@@ -43,7 +43,7 @@ pub(super) fn compile_into_function(
     body: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
     lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
-) -> Result<(usize, Vec<u32>, Vec<kernel_abi::SiteAnchor>, SiteLayout)> {
+) -> Result<(usize, Vec<u32>, Vec<u32>, Vec<kernel_abi::SiteAnchor>, SiteLayout)> {
     let spec = &body.spec;
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -209,6 +209,7 @@ pub(super) fn compile_into_function(
             enabled: spec.allow_state,
             next: std::cell::Cell::new(kernel.lifted.len()),
             replay: std::cell::RefCell::new(Vec::new()),
+            replay_value_pairs: std::cell::RefCell::new(Vec::new()),
             anchors: std::cell::RefCell::new(Vec::new()),
         },
         replay_enabled: spec.allow_replay_state,
@@ -217,6 +218,7 @@ pub(super) fn compile_into_function(
             enabled: !spec.allow_state,
             next: std::cell::Cell::new(0),
             replay: std::cell::RefCell::new(Vec::new()),
+            replay_value_pairs: std::cell::RefCell::new(Vec::new()),
             anchors: std::cell::RefCell::new(Vec::new()),
         },
         slot_tables: std::cell::RefCell::new(Vec::new()),
@@ -269,6 +271,7 @@ pub(super) fn compile_into_function(
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
     let replay_words = lower.state.replay.borrow().clone();
+    let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();
     let site_layout = SiteLayout {
         words: lower.site.next.get() as u32,
@@ -276,7 +279,13 @@ pub(super) fn compile_into_function(
         replay: lower.site.replay.borrow().clone().into(),
         replay_hdr: lower.site_replay_hdr.get().map(|h| (h / 8) as u32),
     };
-    Ok((lower.state.next.get(), replay_words, slot_table_words, site_layout))
+    Ok((
+        lower.state.next.get(),
+        replay_words,
+        replay_value_pairs,
+        slot_table_words,
+        site_layout,
+    ))
 }
 
 /// Per-kernel storage of the ArcStrs the JIT'd code references via
@@ -441,6 +450,15 @@ pub(super) struct StateChannel {
     /// honor the reset contract registers them for zeroing
     /// ([`BodyCx::claim_site_word_replay`]).
     pub(super) replay: std::cell::RefCell<Vec<u32>>,
+    /// First-word indices of REPLAY claims that hold an OWNED cached
+    /// `Value` pair — (clean disc, payload) in consecutive words, disc
+    /// 0 = empty ([`emit_value_taint_cache`], the non-scalar
+    /// interior-bottom cache). Unlike `replay` words these can't be
+    /// blindly zeroed: the runtime `Kernel` DROPS the held value on
+    /// `sleep`/`reset_replay`/`Drop` before zeroing. `state` channel
+    /// only — the value claim refuses callee bodies and loops (the
+    /// site/chain free machinery is value-unaware).
+    pub(super) replay_value_pairs: std::cell::RefCell<Vec<u32>>,
     /// Words that ANCHOR per-slot state-table chains — a
     /// `Box<Vec<u64>>` raw pointer managed by the
     /// `graphix_slot_state_table` helper, with `own_levels` directory

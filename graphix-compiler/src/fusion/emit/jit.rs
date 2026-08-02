@@ -246,6 +246,13 @@ pub struct WrappedKernel {
     /// iteration cannot bridge a bottom on the next; semantic/config
     /// words (lifted ids, first-call flags, select memory) survive.
     pub replay_state_words: Vec<u32>,
+    /// First-word indices of the ROOT body's OWNED-value replay pairs
+    /// — (clean disc, payload) in consecutive state words, disc 0 =
+    /// empty ([`emit_value_taint_cache`], the non-scalar
+    /// interior-bottom cache). `Kernel::sleep`/`reset_replay` DROP the
+    /// held value then zero (blind zeroing would leak the clone);
+    /// `Kernel::drop` drops without zeroing.
+    pub replay_value_pairs: Vec<u32>,
     /// `(word index, own_levels)` of the ROOT body's per-slot
     /// state-table ANCHORS: each word holds (0 or) a `Box<Vec<u64>>`
     /// raw pointer managed by the `graphix_slot_state_table` helper,
@@ -377,6 +384,8 @@ struct CachedKernel {
     signature: Signature,
     /// See [`WrappedKernel::replay_state_words`]; filled in phase 2.
     replay_state_words: Vec<u32>,
+    /// See [`WrappedKernel::replay_value_pairs`]; filled in phase 2.
+    replay_value_pairs: Vec<u32>,
     /// See [`WrappedKernel::slot_table_words`]; filled in phase 2.
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
     /// The kernel's per-call-site state-block layout ([`SiteLayout`]),
@@ -763,6 +772,7 @@ fn compile_kernel_with_callees_inner(
             cached._values = db.values;
             cached.state_words = db.state_words;
             cached.replay_state_words = db.replay_words;
+            cached.replay_value_pairs = db.replay_value_pairs;
             cached.slot_table_words = db.slot_table_words;
             callee_layouts.insert(ptr, db.site_layout.clone());
             cached.site_layout = Some(db.site_layout);
@@ -788,11 +798,16 @@ fn compile_kernel_with_callees_inner(
     // prior compile) still sizes the runtime buffer correctly. Only
     // the parent's ROOT body may claim (callee claims would alias
     // across call sites), so callees' entries stay 0 by construction.
-    let (state_words, replay_state_words, slot_table_words) = jit
+    let (state_words, replay_state_words, replay_value_pairs, slot_table_words) = jit
         .by_kernel
         .get(&(parent_ptr, 0, parent_layout))
         .map(|e| {
-            (e.state_words, e.replay_state_words.clone(), e.slot_table_words.clone())
+            (
+                e.state_words,
+                e.replay_state_words.clone(),
+                e.replay_value_pairs.clone(),
+                e.slot_table_words.clone(),
+            )
         })
         .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
     Ok(WrappedKernel {
@@ -806,6 +821,7 @@ fn compile_kernel_with_callees_inner(
         dyn_fn_params: kernel.fn_params.iter().cloned().collect(),
         state_words,
         replay_state_words,
+        replay_value_pairs,
         slot_table_words,
     })
 }
@@ -847,6 +863,7 @@ fn ensure_declared(
             _values: KernelValues::empty(),
             state_words: 0,
             replay_state_words: Vec::new(),
+            replay_value_pairs: Vec::new(),
             slot_table_words: Vec::new(),
             site_layout: None,
             _site_leaves: Vec::new(),
@@ -863,6 +880,7 @@ struct DefinedBody {
     values: KernelValues,
     state_words: usize,
     replay_words: Vec<u32>,
+    replay_value_pairs: Vec<u32>,
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
     site_layout: SiteLayout,
     site_leaves: Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
@@ -906,6 +924,7 @@ fn define_kernel_body(
         values,
         state_words,
         replay_words,
+        replay_value_pairs,
         slot_table_words,
         site_layout,
         site_leaves,
@@ -973,18 +992,23 @@ fn define_kernel_body(
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        let (state_words, replay_words, slot_table_words, site_layout) =
-            compile_into_function(
-                &mut builder,
-                kernel,
-                &callee_refs,
-                &helper_refs,
-                &lazy_strings,
-                &lazy_values,
-                body_emitter,
-                callee_layouts,
-                &lazy_site_leaves,
-            )?;
+        let (
+            state_words,
+            replay_words,
+            replay_value_pairs,
+            slot_table_words,
+            site_layout,
+        ) = compile_into_function(
+            &mut builder,
+            kernel,
+            &callee_refs,
+            &helper_refs,
+            &lazy_strings,
+            &lazy_values,
+            body_emitter,
+            callee_layouts,
+            &lazy_site_leaves,
+        )?;
         builder.finalize();
         maybe_dump_clif(&jit.func_ctx.func, &kernel.fn_name);
         // Hand `strings`/`values` back to the caller, which stores
@@ -997,6 +1021,7 @@ fn define_kernel_body(
             KernelValues::empty().with_lazy(lazy_values.into_inner()),
             state_words,
             replay_words,
+            replay_value_pairs,
             slot_table_words,
             site_layout,
             lazy_site_leaves.into_inner(),
@@ -1012,6 +1037,7 @@ fn define_kernel_body(
         values,
         state_words,
         replay_words,
+        replay_value_pairs,
         slot_table_words,
         site_layout,
         site_leaves,

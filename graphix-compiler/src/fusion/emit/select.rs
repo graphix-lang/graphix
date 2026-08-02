@@ -24,8 +24,9 @@ use poolshark::local::LPooled;
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        const_stale_gate, emit_scalar_taint_cache, is_untainted, prim_to_value_disc,
-        propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
+        const_stale_gate, emit_scalar_taint_cache, emit_value_taint_cache, is_untainted,
+        prim_to_value_disc, propagate_flags, propagate_stale, propagate_taint,
+        scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src, node_composite_source,
@@ -40,12 +41,11 @@ use super::{
 };
 
 /// How a `select`'s arms merge into one result — derived from the
-/// select node's frozen result type. Scalar merges thread the disc
-/// (carrying `TAINT`/`STALE`) through the arm phi alongside the payload,
-/// so a tainted arm value propagates its bottom to the merged result.
-/// String/composite merges have no such per-arm channel — a possibly-
-/// bottom scrutinee with one of those result shapes refuses to fuse
-/// instead.
+/// select node's frozen result type. Every shape threads the disc
+/// (carrying `TAINT`/`STALE`) through the arm phi alongside the
+/// payload, so a tainted arm value propagates its bottom to the merged
+/// result, and the merge exit rides its interior-bottom cache
+/// ([`emit_scalar_taint_cache`] / [`emit_value_taint_cache`]).
 #[derive(Clone, Copy)]
 enum SelectMerge {
     Scalar(PrimType),
@@ -441,14 +441,16 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // switched to an arm whose body div0'd — the node-walk's consumer
     // `Cached` rides the stream's last value while the untreated merge
     // taint poisoned the consuming select's dispatch). Ride at the
-    // merge, same contract as every other origin. Non-scalar merge
-    // shapes keep the pass-through (the cache is scalar-only — the
-    // documented stateless residual).
+    // merge, same contract as every other origin; non-scalar shapes
+    // through the owned-value twin (the aug02 reactive divergence —
+    // an Array-typed merge rode at the wrong seam without it).
     let result = CompiledExpr::new(rdisc, rpayload);
-    Ok(match merge_shape {
-        SelectMerge::Scalar(p) => emit_scalar_taint_cache(cx, p, result),
-        _ => result,
-    })
+    match merge_shape {
+        SelectMerge::Scalar(p) => Ok(emit_scalar_taint_cache(cx, p, result)),
+        SelectMerge::Value | SelectMerge::Composite | SelectMerge::String => {
+            emit_value_taint_cache(cx, result)
+        }
+    }
 }
 
 /// The final-arm fail block of a VALUE-position select: reached only

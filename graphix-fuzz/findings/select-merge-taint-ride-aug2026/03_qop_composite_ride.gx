@@ -1,0 +1,16 @@
+// Crafted alongside the aug02 fix (2026-08-02): the qop composite exit
+// is the same interior-bottom origin class — xs[5]$ drops the index
+// error, and pre-fix the tainted placeholder array flowed to the
+// freshly-woken reader arm v[1]$ (no site history) instead of riding
+// the qop's value stream [10,11] like the node-walk's consumer Cached
+// (interp 16, jit 15). emit_value_taint_cache at the composite qmerge.
+// schedule-v1: cap=112 events=896; in0=i64:0; in0=i64:5
+{
+  let xs = [[i64:10, i64:11], [i64:20, i64:21]];
+  let v = xs[in0]$;
+  let r = select in0 {
+    i64:5 => v[i64:1]$,
+    _ => v[i64:0]$
+  };
+  r + in0
+}
