@@ -24,8 +24,8 @@ use poolshark::local::LPooled;
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        const_stale_gate, is_untainted, prim_to_value_disc, propagate_flags,
-        propagate_stale, propagate_taint, scalar_disc, value_disc,
+        const_stale_gate, emit_scalar_taint_cache, is_untainted, prim_to_value_disc,
+        propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src, node_composite_source,
@@ -433,7 +433,22 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         }
         cx.env.truncate(mark);
     }
-    Ok(CompiledExpr::new(rdisc, rpayload))
+    // The select's merged output is an interior-bottom taint ORIGIN like
+    // `%`/`/`/qop/DynCall sites: its producing site changes when the
+    // selection switches, so a newly-taken arm that bottoms has no
+    // op-site history even though the select's VALUE STREAM does (the
+    // aug01b reactive divergence: arm 1 fed `u8:1`, then the scrutinee
+    // switched to an arm whose body div0'd — the node-walk's consumer
+    // `Cached` rides the stream's last value while the untreated merge
+    // taint poisoned the consuming select's dispatch). Ride at the
+    // merge, same contract as every other origin. Non-scalar merge
+    // shapes keep the pass-through (the cache is scalar-only — the
+    // documented stateless residual).
+    let result = CompiledExpr::new(rdisc, rpayload);
+    Ok(match merge_shape {
+        SelectMerge::Scalar(p) => emit_scalar_taint_cache(cx, p, result),
+        _ => result,
+    })
 }
 
 /// The final-arm fail block of a VALUE-position select: reached only
