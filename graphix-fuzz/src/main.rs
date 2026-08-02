@@ -49,7 +49,7 @@ static TIMEOUT_SCALE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("GRAPHIX_FUZZ_TIMEOUT_SCALE")
         .ok()
         .and_then(|s| s.parse().ok())
-        .filter(|n| (1..=100).contains(n))
+        .map(|n: u32| n.clamp(1, 100))
         .unwrap_or(1)
 });
 
