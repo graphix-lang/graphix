@@ -234,7 +234,9 @@ impl Control {
     /// Enter one nested (non-tail) lambda dispatch. `false` = the depth
     /// limit is reached — the caller must NOT dispatch and must produce
     /// bottom instead (the counter is not left incremented). Paired
-    /// with [`depth_pop`](Self::depth_pop) after a `true` return.
+    /// with [`depth_pop`](Self::depth_pop) after a `true` return. Fused
+    /// collection scaffolds enter through this too (one unit per
+    /// non-empty scaffold — every element dispatches at the same depth).
     pub fn depth_push(&self) -> bool {
         let d = self.depth.fetch_add(1, Ordering::Relaxed);
         if d >= self.max_depth.load(Ordering::Relaxed) {
@@ -243,20 +245,6 @@ impl Control {
         } else {
             true
         }
-    }
-
-    /// Enter the callback-dispatch level a fused collection node's
-    /// inlined body runs at — the kernel twin of the node-walk's
-    /// per-element `depth_push` in `GXLambda::update`. One unit covers
-    /// the whole collection dispatch because every element runs at the
-    /// same depth. Increments
-    /// UNCONDITIONALLY (pair with an unconditional
-    /// [`depth_pop`](Self::depth_pop) — no branchy cleanup); `false` =
-    /// the limit is reached and the loop must not run, its result
-    /// tainted (the node-walk's per-element trip observable).
-    pub fn depth_enter(&self) -> bool {
-        let d = self.depth.fetch_add(1, Ordering::Relaxed);
-        d < self.max_depth.load(Ordering::Relaxed)
     }
 
     pub fn depth_pop(&self) {

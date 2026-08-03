@@ -1,0 +1,5 @@
+// Sibling of 01 with the empty source arriving as a captured
+// empty-literal array instead of init(0) — the fold scaffold charges
+// on its INPUT length, so the same off-by-one fires without any inner
+// init loop. Pre-fix: interp 36585, jit empty trace at exactly n=254.
+{let e: Array<i64> = []; let rec f = |n: i64| -> i64 select n {i64:0 => {let xs = array::init(i64:100, |idx: i64| i64:0); array::fold(xs, i64:0, |acc, x| acc + array::fold(e, i64:42, |acc2, x2| acc2 + x2))}, _ => n + f(n - i64:1)}; f(i64:254)}

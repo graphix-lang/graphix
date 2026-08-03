@@ -1,0 +1,16 @@
+// aug02b fuzz divergence_000000 (2026-08-03): interp fires 36585, jit
+// fires NOTHING — a depth-accounting off-by-one between the engines,
+// visible only when total depth lands exactly on the 256 limit. The
+// kernel charged one call-depth unit per collection scaffold
+// UNCONDITIONALLY ("the twin of the node-walk's per-element callback
+// dispatch"), but the node-walk dispatches NO callback over an EMPTY
+// source and charges nothing. Here: 255 recursion frames + the outer
+// fold's callback dispatch = 256 (at limit, OK) in the interp; the
+// kernel's inner fold-over-init(0) added its scaffold unit → 257 →
+// whole-kernel abort → missing fire. n=253 agrees (neither trips) and
+// n=255 agrees (BOTH trip — settled bottom); only n=254 exposes the
+// skew. Fixed: graphix_depth_enter takes the clamped bound and
+// charges nothing at bound 0; a trip no longer leaves a residual
+// increment (mirrors depth_push), so the paired graphix_depth_exit
+// keys on the clamped bound (nonzero ⇔ counted).
+{let rec f = |n: i64| -> i64 select n {i64:0 => {let xs = array::init(i64:100, |idx: i64| i64:0); array::fold(xs, i64:0, |acc, x| acc + {let xs = array::init(i64:0, |idx: i64| idx); array::fold(xs, i64:42, |acc, x| acc + x)})}, _ => n + f(n - i64:1)}; f(i64:254)}

@@ -626,25 +626,49 @@ safe fn graphix_depth_push() -> i8 {
 }
 
 /// The fused HOF-loop twin of [`graphix_depth_push`]: enter the
-/// callback-dispatch level a scaffold loop's inlined body runs at
-/// (`Control::depth_enter`). UNCONDITIONAL increment — pair with an
-/// unconditional `graphix_depth_pop` after the loop closes. 0 = the
+/// callback-dispatch level a scaffold loop's inlined body runs at.
+/// One unit covers the whole scaffold (every element dispatches at
+/// the same depth), and `bound == 0` charges NOTHING — the node-walk
+/// dispatches no callback over an empty source, so an empty scaffold
+/// must not move the shared counter (an off-by-one here shifts the
+/// trip point vs the interp at exactly the depth limit). 0 = the
 /// limit is reached: the loop must be skipped (bound zeroed) and its
-/// result tainted, matching the node-walk's per-element dispatch trip.
-/// The interrupt is not polled here — the loop head polls per
-/// iteration.
-safe fn graphix_depth_enter() -> i8 {
+/// result tainted, matching the node-walk's per-element dispatch
+/// trip; the counter is not left incremented, so "counted" ⇔ the
+/// post-trip bound is nonzero — pair with `graphix_depth_exit` on
+/// that clamped bound. The interrupt is not polled here — the loop
+/// head polls per iteration.
+safe fn graphix_depth_enter(bound: i64) -> i8 {
+    if bound == 0 {
+        return 1;
+    }
     INTERRUPT_PTR.with(|c| {
         let p = c.get();
         if p.is_null() {
             1
         } else {
             // SAFETY: see `graphix_interrupted`.
-            let ok = unsafe { (*p).depth_enter() };
+            let ok = unsafe { (*p).depth_push() };
             if !ok {
                 unsafe { (*p).set_depth_trip() };
             }
             i8::from(ok)
+        }
+    })
+}
+
+/// Exit a [`graphix_depth_enter`] unit. `bound` is the CLAMPED loop
+/// bound the scaffold ran with: zero means the unit was never counted
+/// (empty source, or a trip un-incremented it) and nothing pops.
+safe fn graphix_depth_exit(bound: i64) {
+    if bound == 0 {
+        return;
+    }
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        if !p.is_null() {
+            // SAFETY: see `graphix_interrupted`.
+            unsafe { (*p).depth_pop() }
         }
     })
 }

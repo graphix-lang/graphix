@@ -484,20 +484,25 @@ fn emit_loop_header(
 /// kernel twin of the node-walk's per-element callback dispatch.
 /// Every element dispatches at the same depth, so one enter/pop pair
 /// around the scaffold reproduces the trip point without per-element
-/// cost. On a trip the returned loop bound is zero — the inlined
-/// body, and any charged call sites inside it, must not run — and the
-/// result rides TAINT through `taint` (the node-walk's per-element
-/// dispatch yields bottom, so its HOF never emits; a tainted kernel
-/// result bottoms the same consumers). `graphix_depth_enter`
-/// increments UNCONDITIONALLY so the paired [`emit_depth_unit_exit`]
-/// after the loop never branches. Every loop emitter calls both, once.
+/// cost — and an EMPTY scaffold charges nothing at all, because the
+/// node-walk over an empty source never dispatches a callback (the
+/// aug02b finding: an unconditional charge tripped the kernel one
+/// recursion frame before the interp). On a trip the returned loop
+/// bound is zero — the inlined body, and any charged call sites
+/// inside it, must not run — and the result rides TAINT through
+/// `taint` (the node-walk's per-element dispatch yields bottom, so
+/// its HOF never emits; a tainted kernel result bottoms the same
+/// consumers). A trip leaves the counter un-incremented, so the
+/// returned CLAMPED bound is the pairing key: nonzero ⇔ counted —
+/// pass it to [`emit_depth_unit_exit`]. Every loop emitter calls
+/// both, once.
 fn emit_depth_unit(
     cx: &mut BodyCx,
     taint: &SlotFlags,
     bound: ClifValue,
 ) -> Result<ClifValue> {
     let enter = cx.helper("graphix_depth_enter")?;
-    let call = cx.b.ins().call(enter, &[]);
+    let call = cx.b.ins().call(enter, &[bound]);
     let ok = cx.b.inst_results(call)[0];
     let tripped = cx.b.ins().icmp_imm(IntCC::Equal, ok, 0);
     let stale = cx.b.ins().iconst(types::I64, STALE);
@@ -508,12 +513,13 @@ fn emit_depth_unit(
     Ok(cx.b.ins().select(tripped, zero, bound))
 }
 
-/// Exit the [`emit_depth_unit`] entered before the loop. An interrupt
-/// abort inside the loop skips this pop; the cycle-end `depth_reset`
-/// clears the leak (the cycle is being torn down anyway).
-fn emit_depth_unit_exit(cx: &mut BodyCx) -> Result<()> {
-    let pop = cx.helper("graphix_depth_pop")?;
-    cx.b.ins().call(pop, &[]);
+/// Exit the [`emit_depth_unit`] entered before the loop, keyed on the
+/// clamped bound it returned (zero = never counted, nothing pops). An
+/// interrupt abort inside the loop skips this; the cycle-end
+/// `depth_reset` clears the leak (the cycle is being torn down anyway).
+fn emit_depth_unit_exit(cx: &mut BodyCx, bound: ClifValue) -> Result<()> {
+    let exit = cx.helper("graphix_depth_exit")?;
+    cx.b.ins().call(exit, &[bound]);
     Ok(())
 }
 
@@ -927,7 +933,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, n)?;
     Ok((finalize_buf(cx, buf)?, flags))
 }
 
@@ -976,7 +982,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1066,7 +1072,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1159,7 +1165,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1232,7 +1238,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1535,7 +1541,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, len)?;
     drop_owned_src(cx, &arr)?;
     let payload = cx.b.use_var(acc_var);
     let disc = cx.b.use_var(acc_disc_var);
@@ -1638,7 +1644,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, len)?;
     let disc = cx.b.use_var(result_disc_var);
     let payload = cx.b.use_var(result_payload_var);
     drop_owned_src(cx, &arr)?;
@@ -1721,7 +1727,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
-    emit_depth_unit_exit(cx)?;
+    emit_depth_unit_exit(cx, len)?;
     let disc = cx.b.use_var(result_disc_var);
     let payload = cx.b.use_var(result_payload_var);
     drop_owned_src(cx, &arr)?;
