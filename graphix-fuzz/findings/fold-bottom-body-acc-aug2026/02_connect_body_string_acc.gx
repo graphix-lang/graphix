@@ -1,0 +1,5 @@
+// Sibling of 01 with a STRING accumulator — pre-fix the connect's
+// zero payload would have flowed through the ArcStr ownership seam
+// (ValArray-convention bits as string bits), the shape that proves no
+// single connect-side placeholder could serve every consumer.
+{let a = [i64:0]; array::fold([i64:4, i64:5], "s", |acc, x| a <- [i64:5])}

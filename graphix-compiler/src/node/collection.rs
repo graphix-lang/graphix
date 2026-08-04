@@ -1772,6 +1772,18 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
         }
         _ => None,
     };
+    // The BODY must itself be a value-producing shape, whatever the
+    // signature's acc froze to: a Bottom-typed body (a connect
+    // callback — `|acc, x| a <- [..]`) unifies with any acc type but
+    // emits the shapeless (NULL|TAINT, 0) placeholder, which violated
+    // the owned-acc discipline (aug04 crash_000000: zero ValArray
+    // bits at drop_old; a string acc reads the same 0 as ArcStr
+    // bits). The `node_is_bottom` twin of the source/init gate in
+    // `emit_fold` — refusal keeps the interpreted per-slot fold,
+    // which handles a never-producing body correctly.
+    if emit::node_is_bottom(body) {
+        return Ok(None);
+    }
     let acc_shape = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
         Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
             scaffold::FoldAcc::Scalar(prim)

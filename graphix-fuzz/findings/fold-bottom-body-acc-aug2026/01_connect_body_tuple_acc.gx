@@ -1,0 +1,17 @@
+// aug04 fuzz crash_000000 (2026-08-04): SIGABRT in the JIT —
+// graphix_valarray_drop asserted on ZERO bits inside a nounwind
+// helper. A fold callback whose body is a CONNECT (`|acc, x| a <-
+// [..]`) types as Bottom, which unifies with any acc, so the
+// signature's tuple acc froze to FoldAcc::Composite — but
+// emit_connect_node's value is (NULL|TAINT, 0), a discard-only
+// placeholder that violates the owned-composite discipline: the
+// drop-replace installed payload 0 as the acc and the next
+// iteration's drop_old hit the zero-bits assert. The string-acc twin
+// would have been worse (ValArray-shaped 0 as ArcStr bits) — no one
+// placeholder serves every acc shape, so the fix is refusal: the
+// init/body must THEMSELVES be value-producing shapes (the guard the
+// FoldAcc::Value arm already had, jul17a crash_000002, hoisted over
+// all acc arms). The interpreted per-slot fold handles the
+// never-producing body correctly (fold never fires; both modes
+// agree on silence).
+{let a = [array::find, i64:0, i64:3]; array::fold([i64:4, i64:5], (i64:1, i64:2), |acc, x| a <- [i64:5, i64:6, i64:7, i64:8])}
