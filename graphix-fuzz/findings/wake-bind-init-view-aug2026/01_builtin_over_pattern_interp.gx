@@ -1,0 +1,17 @@
+// aug03 reactive divergence_000000 (2026-08-04): INTERP-side missed
+// becoming-selected fire — the JIT was right. On a guard-flip
+// re-selection the scrutinee produces nothing, and the wake bound the
+// pattern var with Tag::STALE (the 2026-07-18 bind-tag ruling read
+// too broadly): the interpolation "[v0]" produced a STALE "2", the
+// str::len CallSite's any-arg-fired dispatch gate refused, the woken
+// arm's cache stayed empty, and the select emitted NOTHING while the
+// kernel's selection-memory fire produced len("2")=1 (interp 1;2 vs
+// jit 1;1 for v6-v0). Every simpler body shape masked it: bare v0 /
+// bare "[v0]" have no dispatch gate; str::len("hello") has an
+// independently-fired const arg. Fixed: the wake bind is part of the
+// arm's INIT VIEW like the FIRED external seeding beside it — a
+// non-tail becoming-selected wake with no scrutinee production binds
+// FIRED; observable firing still comes from the emission rules; the
+// in-frame tail spine keeps the honest tag (replay-frames v3).
+// schedule-v1: cap=112 events=896; in0=f64:1
+{let v0 = select i64:2 {v0 if (in0 == f64:0.) => i64:0, v0 => str::len("[v0]")}; let v6 = count(in0); (v6 - v0)}

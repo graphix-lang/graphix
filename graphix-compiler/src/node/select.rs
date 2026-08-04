@@ -138,9 +138,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // (Eric's ruling 2026-07-18, tail_jump_fired_plumbing).
         let bind_tag = arg_prod.unwrap_or(Tag::STALE);
         macro_rules! bind {
-            ($i:expr) => {{
+            ($i:expr) => {
+                bind!($i, bind_tag)
+            };
+            ($i:expr, $tag:expr) => {{
                 if let Some(arg) = arg.cached.as_ref() {
-                    arms[$i].0.bind_event(ctx, event, arg, bind_tag);
+                    arms[$i].0.bind_event(ctx, event, arg, $tag);
                 }
             }};
         }
@@ -231,7 +234,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         arms[j].1.node.sleep(ctx);
                     }
                     *selected = Some(i);
-                    bind!(i);
+                    // The wake bind is part of the arm's INIT VIEW,
+                    // exactly like the FIRED external seeding below: on
+                    // a guard-flip re-selection the scrutinee produced
+                    // nothing, but a STALE pattern bind leaves interior
+                    // builtin CallSites undispatched (any-arg-fired
+                    // gate) and the woken body can't evaluate — the
+                    // select then emits nothing where the kernel's
+                    // selection-memory fire produces the arm value
+                    // (aug03 reactive/000000: str::len("[v0]") in the
+                    // woken arm). The observable firing still comes
+                    // from the emission rules alone. The in-frame tail
+                    // spine keeps the scrutinee's honest tag — its
+                    // per-jump re-selections are loop plumbing, not
+                    // wakes (replay-frames v3).
+                    let wake_tag =
+                        if tail { bind_tag } else { arg_prod.unwrap_or(Tag::FIRED) };
+                    bind!(i, wake_tag);
                     // Seed the woken arm's quiet externals from the
                     // runtime cache so it can evaluate (the arm's init
                     // view); already-delivered ids keep their honest
