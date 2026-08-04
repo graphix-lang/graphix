@@ -917,6 +917,24 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     emit_miss: &mut dyn FnMut(&mut BodyCx) -> Result<()>,
 ) -> Result<()> {
     use StructPatternNode;
+    // A TAINTED (missing) scrutinee makes NO selection — the node-walk
+    // runs no ARM BODY at all (`Select::update`'s destructuring-
+    // consumer force). The per-arm taint maskings below only keep the
+    // COMPARES honest: a scalar pattern test over the placeholder
+    // value 0 can still spuriously match, and an unconditional final
+    // arm is taken structurally — either way the arm body ran and its
+    // interior site caches recorded PHANTOM history from evaluations
+    // the interp never performed (aug04b reactive/000000: `100/in0`
+    // computed 100 under the placeholder match, then the genuine first
+    // selection's div0 rode the phantom 100 out as an extra fire).
+    // Every matched path re-checks the scrutinee disc just before the
+    // body and routes a tainted take to this shared miss block instead.
+    // Pattern tests and GUARDS still evaluate — the interp ticks every
+    // arm's guard each cycle even without a selection (the jul19b
+    // select-guard-taint rule), so guard-interior history stays
+    // symmetric.
+    let sdisc = scrut.disc();
+    let miss_bl = cx.b.create_block();
     let n = sel.arms.len();
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
         let is_last = i == n - 1;
@@ -1304,6 +1322,17 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(body_blk);
             cx.b.seal_block(body_blk);
         }
+        {
+            // The tainted-take gate (see the miss-block comment above):
+            // a matched arm under a tainted scrutinee must not run its
+            // body — no selection exists to fire and the body's site
+            // caches must not see the evaluation.
+            let body_ok = cx.b.create_block();
+            let clean = is_untainted(cx.b, sdisc);
+            cx.b.ins().brif(clean, body_ok, &[], miss_bl, &[]);
+            cx.b.switch_to_block(body_ok);
+            cx.b.seal_block(body_ok);
+        }
         emit_arm(cx, body, mark)?;
         match fail {
             Some(f) => {
@@ -1311,9 +1340,9 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 cx.b.seal_block(f);
                 if is_last {
                     // Reached only under a tainted (missing) scrutinee —
-                    // produce a tainted bottom (#219). Dead code for an
-                    // exhaustive non-tainted scrutinee.
-                    emit_miss(cx)?;
+                    // every arm missed. Dead code for an exhaustive
+                    // non-tainted scrutinee.
+                    cx.b.ins().jump(miss_bl, &[]);
                 }
             }
             // An unconditional arm consumed control flow; any
@@ -1322,6 +1351,9 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             None => break,
         }
     }
+    cx.b.switch_to_block(miss_bl);
+    cx.b.seal_block(miss_bl);
+    emit_miss(cx)?;
     Ok(())
 }
 

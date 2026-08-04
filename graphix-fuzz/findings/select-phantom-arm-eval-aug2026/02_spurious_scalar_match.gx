@@ -1,0 +1,7 @@
+// Sibling of 01: a CONDITIONAL arm whose scalar pattern (i64:0)
+// spuriously matches the tainted placeholder value 0 — the per-arm
+// taint maskings only kept compares honest for nullable/variant
+// shapes; a plain scalar test passed and ran the arm body. Same
+// phantom-history mechanism, gated by the same pre-body check.
+// schedule-v1: cap=112 events=896; in0=i64:1; in0=i64:0
+{let v0 = skip(#n: i64:2, in0); let v1: i64 = select v0 {i64:0 => i64:100 / in0, v2 => i64:2}; (v1 + i64:10)}

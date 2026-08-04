@@ -1,0 +1,14 @@
+// aug04b reactive/000000 (2026-08-04): JIT extra-fire with a phantom
+// value. Under a TAINTED (missing) scrutinee the kernel took the
+// unconditional final arm STRUCTURALLY and ran its body: `100/in0`
+// computed a real 100 while the scrutinee (skip's output) had never
+// produced, seeding the div's interior-bottom site cache with history
+// the interp never had (its Select makes NO selection under taint —
+// no arm runs). When the genuine first selection arrived with in0=0,
+// the div0 rode the phantom 100 and the becoming-selected fire
+// published it (jit 101, interp silent). Fixed: every matched path
+// re-checks the scrutinee disc just before the ARM BODY and routes a
+// tainted take to the shared miss block; pattern tests and guards
+// still evaluate (the interp ticks all guards every cycle — jul19b).
+// schedule-v1: cap=112 events=896; in0=i64:1; in0=i64:0
+{let v0 = skip(#n: i64:2, in0); let v1: i64 = select v0 {v1 => i64:100 / in0}; (v1 + i64:1)}

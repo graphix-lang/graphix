@@ -1,0 +1,10 @@
+// Symmetry guard for the 01/02 fix: GUARDS must keep evaluating under
+// a tainted scrutinee — the interp ticks every arm's guard each cycle
+// even with no selection (the jul19b select-guard-taint rule), so
+// guard-interior site caches legitimately accumulate history on both
+// backends (here the guard's 100/in0 succeeds at in0=1, bottoms at
+// in0=0, and BOTH engines ride the guard's true). A whole-chain taint
+// gate (the first fix draft) would starve the kernel guard's cache
+// and flip the selection.
+// schedule-v1: cap=112 events=896; in0=i64:1; in0=i64:0
+{let v0 = skip(#n: i64:2, in0); let v1: i64 = select v0 {v2 if ((i64:100 / in0) > i64:50) => i64:1, v2 => i64:2}; (v1 + i64:10)}
