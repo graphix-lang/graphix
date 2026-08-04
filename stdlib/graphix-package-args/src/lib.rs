@@ -281,6 +281,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         // The fired latch is once-per-instance semantics (the same
         // class as `once`'s flag), not replay memory.
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.fired = false;
+    }
 }
 
 graphix_derive::defpackage! {

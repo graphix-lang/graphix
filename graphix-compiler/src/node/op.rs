@@ -146,6 +146,11 @@ macro_rules! compare_op {
                 self.rhs.reset_replay(ctx)
             }
 
+            fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.reset_fresh(ctx);
+                self.rhs.reset_fresh(ctx)
+            }
+
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
@@ -321,6 +326,11 @@ macro_rules! bool_op {
                 self.rhs.reset_replay(ctx)
             }
 
+            fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.reset_fresh(ctx);
+                self.rhs.reset_fresh(ctx)
+            }
+
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
                 wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
@@ -428,6 +438,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         self.n.reset_replay(ctx);
     }
 
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_fresh(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         let bt = Type::Primitive(Typ::Bool.into());
@@ -527,6 +541,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.reset_replay(ctx);
+    }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_fresh(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -907,6 +925,11 @@ macro_rules! arith_op {
             fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
                 self.lhs.reset_replay(ctx);
                 self.rhs.reset_replay(ctx);
+            }
+
+            fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.lhs.reset_fresh(ctx);
+                self.rhs.reset_fresh(ctx);
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

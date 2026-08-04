@@ -488,6 +488,13 @@ macro_rules! escape_fn {
                 // survives.
                 self.args.clear()
             }
+
+            fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                // the escape gates the val-only production path, so a
+                // fresh state must drop it (unlike reset_replay)
+                self.escape = None;
+                self.args.clear();
+            }
         }
     };
 }

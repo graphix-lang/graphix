@@ -94,6 +94,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -179,6 +181,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
             n.reset_replay(ctx)
         }
         self.handler.reset_replay(ctx);
+    }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        for n in self.nodes.iter_mut() {
+            n.reset_fresh(ctx)
+        }
+        self.handler.reset_fresh(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -345,6 +354,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.reset_replay(ctx);
     }
 
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_fresh(ctx);
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         fn fix_echain_typ<R: Rt, E: UserEvent>(
             ctx: &ExecCtx<R, E>,
@@ -506,6 +519,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.reset_replay(ctx);
+    }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_fresh(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

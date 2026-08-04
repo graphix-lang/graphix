@@ -911,6 +911,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         ctx.rt.cached_mut().remove(&self.x);
         self.handler.reset_replay(ctx);
     }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // restart subset: the running server (abort), the queued
+        // requests (waiting repliers), and the ready flag coupled to
+        // them are external liveness
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.handler.reset_fresh(ctx);
+    }
 }
 
 graphix_derive::defpackage! {

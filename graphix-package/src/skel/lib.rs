@@ -46,6 +46,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Default)]

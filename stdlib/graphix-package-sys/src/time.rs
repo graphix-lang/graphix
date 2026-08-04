@@ -89,6 +89,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // restart subset: an in-flight timer (id) is external liveness
+        self.args.clear()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -256,6 +261,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // restart subset: an in-flight timer (id) is external liveness
+        self.args.clear();
+        self.timeout = None;
+        self.repeat = Repeat::No;
+    }
 }
 
 #[derive(Debug)]
@@ -297,6 +309,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! time_fn {

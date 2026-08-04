@@ -238,6 +238,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.node.reset_replay(ctx);
     }
 
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.node.reset_fresh(ctx);
+    }
+
     fn typ(&self) -> &Type {
         &self.typ
     }
@@ -367,6 +371,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -475,6 +481,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.child.reset_replay(ctx);
     }
 
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.child.reset_fresh(ctx);
+    }
+
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -576,6 +586,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.child.reset_replay(ctx);
+    }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // `id` is a lazily-established wake registration, not a value
+        // cache — registration lifetime belongs to `delete`.
+        self.child.reset_fresh(ctx);
     }
 
     fn spec(&self) -> &Expr {

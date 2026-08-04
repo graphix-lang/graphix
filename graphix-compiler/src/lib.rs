@@ -694,6 +694,21 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// default impl** — every builtin must classify its own state.
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>);
 
+    /// Return this Apply to the state a fresh `init()` would produce —
+    /// the `Apply`-side twin of [`Update::reset_fresh`] (see its doc
+    /// for the pool contract). For a builtin: cached args and
+    /// `last_result` clear (as `reset_replay`), AND accumulators/flags
+    /// re-initialize (`count`'s tally → 0, `once`'s fired → false —
+    /// their just-inited values); pure derived memos may survive. Only
+    /// STATELESS builtins can appear on the pool path (the transient
+    /// gate), so an Async builtin holding EXTERNAL liveness (a spawned
+    /// task, a subscription, a channel) that cannot be reconstructed
+    /// without its init args implements the restart subset instead —
+    /// counters/flags to their init values, liveness untouched — and
+    /// is unreachable here by construction. MUST NOT touch wake
+    /// registrations. **Required, no default impl.**
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>);
+
     /// Emit this call site into the open JIT kernel as CLIF (the
     /// builtin-owned half of distributed emission — see
     /// [`Update::emit_clif`]). The contract:
@@ -908,6 +923,27 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// a defaulted no-op on a node with an operand cache is a silent
     /// wrong-answer bug. Impls recurse into children like `sleep`.
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>);
+
+    /// Return this node to the state a FRESH COMPILE would produce —
+    /// the transient-instance pool's reuse contract
+    /// (design/interp_lazy_bind_cost.md, Phase A1). Strictly stronger
+    /// than [`reset_replay`](Update::reset_replay) and different from
+    /// `sleep`: EVERYTHING observable clears — replay caches AND the
+    /// state those contracts deliberately keep (select's `selected`,
+    /// `Cached` residents, builtin accumulators, collection slots).
+    /// Pure derived memos (a compiled `Regex`, a typecheck-derived
+    /// cast type) may survive — a memo is unobservable by definition.
+    /// MUST NOT touch wake registrations (`ref_var`/`unref_var`) —
+    /// the instance stays registered while pooled; registration
+    /// lifetime belongs to `delete`. Called only on transient-gated
+    /// bodies (Sync, STATELESS builtins, no connect/ByRef), but every
+    /// impl must be sound unconditionally. **Required, no default
+    /// impl**: the fresh-vs-derived classification is a per-node
+    /// decision the compiler must force — a defaulted no-op on a node
+    /// with semantic state is a silent stale-state bug (the
+    /// sleep-preserves-caches minefield, reversed). Impls recurse
+    /// into children like `sleep`.
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>);
 
     /// Return a typed view of this node for compile-time analysis.
     /// **Required, no default impl** — every `Update` impl picks a
@@ -1546,6 +1582,17 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// O(depth) instances instead of one per dynamic call (the full
     /// call TREE — fib(28) retained 1M instances / 9.6GB).
     pub(crate) active_lambdas: nohash::IntMap<LambdaId, u32>,
+    /// Freelist of RESET transient instances per def
+    /// (design/interp_lazy_bind_cost.md, Phase A1). The park pushes
+    /// (`reset_fresh` first) instead of deleting; `CallSite::bind`'s
+    /// transient path pops instead of recompiling — `let rec` is
+    /// monomorphic-recursive, so all of one def's instances in one
+    /// recursion are type-identical and instances read their args
+    /// through the SITE's `arg_refs`, making them site-portable. The
+    /// per-def cap bounds idle memory (overflow deletes as before);
+    /// entries purge when the defining `Lambda` node dies.
+    pub(crate) transient_pool:
+        nohash::IntMap<LambdaId, smallvec::SmallVec<[Box<dyn Apply<R, E>>; 2]>>,
     /// True while a parked-transient rebind's PRIME evaluation is on the
     /// Rust call stack (`CallSite::update`'s prime-then-replay arm). The
     /// park block gates on it: instances bound DURING the prime stay
@@ -1638,6 +1685,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             active_lambdas: nohash::IntMap::default(),
+            transient_pool: nohash::IntMap::default(),
             transient_prime: false,
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
@@ -1719,6 +1767,33 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let v = self.lambdawrap.wrap(def);
         self.lambda_defs.insert(id, v.clone());
         v
+    }
+
+    /// Stash a RESET transient instance on its def's freelist. Returns
+    /// the instance back on pool overflow — the caller must `delete` it
+    /// (the pre-pool behavior); a `None` return means the pool took it.
+    pub(crate) fn push_transient(
+        &mut self,
+        id: LambdaId,
+        apply: Box<dyn Apply<R, E>>,
+    ) -> Option<Box<dyn Apply<R, E>>> {
+        // Aligned with DEFAULT_MAX_CALL_DEPTH: pool residency peaks
+        // near the recursion's max depth (the unwind pushes what the
+        // re-descent pops), and a smaller cap thrashes — cap 8 left
+        // fib(25) recompiling ~1.7% of its 220k binds at the
+        // unwind/re-descend oscillation.
+        const TRANSIENT_POOL_CAP: usize = 256;
+        let pool = self.transient_pool.entry(id).or_default();
+        if pool.len() >= TRANSIENT_POOL_CAP {
+            Some(apply)
+        } else {
+            pool.push(apply);
+            None
+        }
+    }
+
+    pub(crate) fn pop_transient(&mut self, id: LambdaId) -> Option<Box<dyn Apply<R, E>>> {
+        self.transient_pool.get_mut(&id).and_then(|v| v.pop())
     }
 
     fn tag(&mut self, s: &ArcStr) -> ArcStr {

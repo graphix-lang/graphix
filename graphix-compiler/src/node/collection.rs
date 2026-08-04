@@ -826,6 +826,21 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         }
     }
 
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // A fresh compile has ZERO slots — the per-slot subgraphs are
+        // runtime-materialized substructure, deleted wholesale (their
+        // registrations die with them; the instance's own structural
+        // refs are untouched).
+        self.base.source.reset_fresh(ctx);
+        self.base.prototype.reset_fresh(ctx);
+        self.current = T::Collection::default();
+        self.operation = T::default();
+        for slot in self.slots.iter_mut() {
+            slot.delete(ctx);
+        }
+        self.slots.clear();
+    }
+
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::MapQ(&self.base)
     }
@@ -1285,6 +1300,20 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             slot.tag = Tag::STALE;
             slot.call.reset_replay(ctx);
         }
+    }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // A fresh compile has ZERO slots — runtime-materialized
+        // substructure deletes wholesale (see MapQ::reset_fresh).
+        self.base.source.reset_fresh(ctx);
+        self.base.init.reset_fresh(ctx);
+        self.base.prototype.reset_fresh(ctx);
+        self.init = None;
+        self.source_present = false;
+        for slot in self.slots.iter_mut() {
+            slot.delete(ctx);
+        }
+        self.slots.clear();
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

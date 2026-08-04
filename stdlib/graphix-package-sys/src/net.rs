@@ -161,6 +161,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // restart subset: dv (the subscription or its queued writes)
+        // is external liveness
+        self.args.clear()
+    }
 }
 
 impl Write {
@@ -302,6 +308,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        // restart subset: cur (the live subscription) is external
+        // liveness
+        self.args.clear()
+    }
 }
 
 #[derive(Debug)]
@@ -428,6 +440,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 macro_rules! list {
@@ -514,6 +530,12 @@ macro_rules! list {
             }
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                self.args.clear()
+            }
+
+            fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+                // restart subset: current records the live list
+                // registration
                 self.args.clear()
             }
         }
@@ -725,6 +747,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         ctx.rt.cached_mut().remove(&self.pid);
         ctx.rt.cached_mut().remove(&self.x);
         self.on_write.reset_replay(ctx);
+    }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // restart subset: current (the live publication) is external
+        // liveness
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.on_write.reset_fresh(ctx);
     }
 }
 
@@ -1109,5 +1140,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         ctx.rt.cached_mut().remove(&self.pid);
         ctx.rt.cached_mut().remove(&self.x);
         self.f.reset_replay(ctx);
+    }
+
+    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // restart subset: current (the live proc), the queued calls
+        // (waiting repliers), and the ready flag coupled to them are
+        // external liveness
+        self.args.clear();
+        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_mut().remove(&self.x);
+        self.f.reset_fresh(ctx);
     }
 }

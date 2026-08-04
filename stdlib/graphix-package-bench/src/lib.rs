@@ -81,6 +81,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
         // The cached args are replay memory; there is no other state.
         self.args.clear()
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 pub mod auto_iterate;

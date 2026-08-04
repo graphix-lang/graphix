@@ -75,6 +75,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         // not node state.
         self.args.clear()
     }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.args.clear()
+    }
 }
 
 #[derive(Debug)]
@@ -114,6 +118,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -158,6 +164,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // Scratch buffer only — drained every update, nothing replays.
+        self.0.clear()
+    }
+
+    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.0.clear()
     }
 }

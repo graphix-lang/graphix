@@ -44,22 +44,49 @@ Collection slots (design/collection_intrinsics.md) each own a live
 CallSite whose first dispatch lazily binds its own instance of the
 shared callback def — per-slot compile at collection construction.
 
-## Phase A1 — recursion: retain the instance at the park (FIRST)
+## Phase A1 — recursion: pool the parked instances per def (FIRST)
 
-Transient activations of one call site have strictly sequential
-lifetimes: the instance dies on dispatch return (park), and the SAME
-site re-binds on the next call. So the park keeps a depth-1 cache per
-site: instead of `delete`, the instance is RESET and stashed on the
-site (`Callee::TransientParked` gains the instance beside `def` +
-`ext_refs`); the next bind reuses it — formal redelivery + the existing
-prime/replay contract — skipping compile/tc0/tc1/analyze entirely.
+> **Design correction (2026-08-04, pre-implementation):** the first
+> draft stashed the instance on its own site (`TransientParked` gains
+> the instance). That RESURRECTS THE MEMORY BOMB transient parking
+> exists to kill: a retained instance's body CONTAINS its children's
+> parked sites, so per-site stashes retain the full dynamic call tree
+> — fib(28) = 1M instances = 9.6GB again. The correct shape is the
+> per-`LambdaDef` POOL transient_recursion.md sketched all along:
+> each instance pushes ITSELF at park, so the tree flattens into a
+> small shared freelist (fib's sequential sibling calls: pool
+> steady-state ≈ 1-2 entries, ~depth compiles total, ~18k reuses).
 
-**Why this is first: it is remap-free.** The reused instance keeps its
-own BindIds because it IS the same instance — none of `clone_rebind`'s
-failure modes (remap aliasing, env mutation, under-typechecked
-templates, clone↔delete accounting) can exist. Blast radius is only
-transient-gated bodies (Sync, STATELESS builtins, no connect/ByRef),
-and it kills the fib class alone.
+The pool: `ExecCtx.transient_pool: Map<LambdaId, Vec<Apply>>`, small
+per-def cap (overflow deletes as today; the cap bounds idle memory
+and idle wake-interest). At park: `reset_fresh` the instance and push
+it — everything else about the park is UNCHANGED (the ext_refs
+takeover, `TransientParked { def, ext_refs }`, the prime-deferral).
+At `bind()`: when the def is active on the dispatch stack (the
+existing transient pre-condition) and the pool has an instance for
+`f.id`, install it directly — skipping `setup_dynamic_bind`
+(compile + typecheck0), `typecheck1`, and `analyze_bound_callee`.
+Soundness of cross-site reuse: `let rec` is MONOMORPHIC-recursive, so
+all instances of one def in one recursion are type-identical, and
+`arg_refs` are Ref nodes over the SITE's own arg ids (built by
+`prepare_bind`, passed to the instance per update) — instances are
+site-portable by construction. A parked site's existing `arg_refs`
+remain valid (they never reference instance formals); a descent
+site's first bind builds them via `prepare_bind` as today (cheap —
+Ref construction; defaults still compile per site).
+
+**Why this is first: it is remap-free.** The reused instance keeps
+its own BindIds because it IS the same instance — none of
+`clone_rebind`'s failure modes (remap aliasing, env mutation,
+under-typechecked templates, clone↔delete accounting) can exist.
+Blast radius is only transient-gated bodies (Sync, STATELESS builtins,
+no connect/ByRef), and it kills the fib class alone. Pool lifecycle:
+entries purge (delete) when the def dies (the `lambda_defs` removal
+hook) and at context teardown; pooled instances keep their wake
+registrations while idle (unref-on-push would double-unref at the
+eventual delete), so a capture event can wake the top spuriously —
+bounded by the cap, and the parked sites' quiet-cycle check already
+handles content-free wakes.
 
 The reset is the new work. It is neither `sleep` (preserves value
 caches per the sleep-is-pause ruling) nor `reset_replay` (clears replay
