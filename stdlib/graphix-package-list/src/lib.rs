@@ -533,8 +533,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         // Delivery rides set_var (async); the wake registration is
         // sleep's business, never reset_replay's.
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -608,11 +606,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // The queue and trigger debt are semantic buffering (async
         // delivery) — sleep's clearing is the arm-rewake restart.
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.triggered = 0;
-        self.queue.clear();
     }
 }
 

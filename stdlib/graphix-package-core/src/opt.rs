@@ -346,12 +346,6 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.inner.reset_replay(ctx);
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
-        self.inner.reset_fresh(ctx);
-    }
-
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.cached_mut().remove(&self.fid);
         ctx.rt.cached_mut().remove(&self.x);
@@ -428,10 +422,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.s.reset_fresh(ctx);
-    }
 }
 
 // ── flat_map ───────────────────────────────────────────────────────
@@ -493,10 +483,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.s.reset_fresh(ctx);
     }
 }
 
@@ -585,11 +571,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         self.pending = None;
         self.s.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.pending = None;
-        self.s.reset_fresh(ctx);
-    }
 }
 
 // ── is_some_and ────────────────────────────────────────────────────
@@ -652,10 +633,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.s.reset_fresh(ctx);
-    }
 }
 
 // ── is_none_or ─────────────────────────────────────────────────────
@@ -717,10 +694,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.s.reset_fresh(ctx);
     }
 }
 
@@ -798,13 +771,6 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         self.last_f = None;
         ctx.rt.cached_mut().remove(&self.fid);
         self.inner.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.last_a = None;
-        self.last_f = None;
-        ctx.rt.cached_mut().remove(&self.fid);
-        self.inner.reset_fresh(ctx);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -895,10 +861,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.s.reset_fresh(ctx);
-    }
 }
 
 #[derive(Debug)]
@@ -971,9 +933,5 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.s.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.s.reset_fresh(ctx);
     }
 }

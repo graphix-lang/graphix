@@ -508,12 +508,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         // hof_const_body_prev_len pin). `t`'s own state (a tally, a
         // memo) is the builtin's semantics and also survives.
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.cached.clear();
-        self.last_result = None;
-        self.last_out = Tag::FIRED;
-    }
 }
 
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
@@ -659,13 +653,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         // in-flight semantics; the arg cache feeds re-evaluation on
         // completion. Async builtins never sit inside a sync frame.
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // restart subset: `running` tracks an in-flight spawned task
-        // (external liveness) and stays coupled to it
-        self.cached.clear();
-        self.queued.clear();
-    }
 }
 
 // ── Core builtins ──────────────────────────────────────────────────
@@ -706,8 +693,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -746,8 +731,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -782,8 +765,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -843,10 +824,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         // The fired flag is SEMANTIC (once per subscription lifetime,
         // not once per frame) — sleep's reset is the arm-rewake
         // restart semantics, which a frame reset must not replicate.
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.val = false
     }
 }
 
@@ -912,10 +889,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         // The countdown is semantic (take/skip across the node's
         // lifetime); only sleep's arm-rewake restarts it.
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.n = None
-    }
 }
 
 #[derive(Debug)]
@@ -979,10 +952,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // The countdown is semantic (take/skip across the node's
         // lifetime); only sleep's arm-rewake restarts it.
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.n = None
     }
 }
 
@@ -1470,13 +1439,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         self.pending = None;
         self.pred.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
-        self.pending = None;
-        self.pred.reset_fresh(ctx);
-    }
 }
 
 #[derive(Debug)]
@@ -1544,11 +1506,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // The queue and trigger debt are semantic buffering; delivery
         // rides set_var (async, so never inside a sync frame anyway).
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.triggered = 0;
-        self.queue.clear();
     }
 }
 
@@ -1619,11 +1576,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // hold's held value and trigger debt ARE its contract (sample
         // semantics) — not replay memory.
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.triggered = 0;
-        self.current = None;
     }
 }
 
@@ -1703,10 +1655,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
-    }
 }
 
 #[derive(Debug)]
@@ -1807,14 +1755,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         // in-flight timer's emission (async — never inside a sync
         // frame).
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // restart subset: an in-flight timer (tid) is external
-        // liveness and stays
-        self.wait = Duration::ZERO;
-        self.last = None;
-        self.args.clear();
-    }
 }
 
 #[derive(Debug)]
@@ -1868,10 +1808,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // The tally is the canonical semantic-state example — it
         // accumulates across frames in both backends.
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.count = 0
     }
 }
 
@@ -1963,10 +1899,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         // The held value is uniq's CONTRACT (dedup across time), not
         // replay memory.
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.0 = None
-    }
 }
 
 #[derive(Debug)]
@@ -2014,8 +1946,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Never {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2132,10 +2062,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.dest = LogDest::Stderr
-    }
-
     fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -2200,10 +2126,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.dest = LogDest::Stdout
-    }
 }
 
 macro_rules! printfn {
@@ -2272,10 +2194,6 @@ macro_rules! printfn {
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-            fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                self.dest = LogDest::Stdout
-            }
         }
     };
 }

@@ -512,16 +512,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         ctx.rt.cached_mut().remove(&self.xid);
         self.pred.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.nid);
-        ctx.rt.cached_mut().remove(&self.pid);
-        ctx.rt.cached_mut().remove(&self.xid);
-        self.queue.clear();
-        self.buf.clear();
-        self.ready = true;
-        self.pred.reset_fresh(ctx);
-    }
 }
 
 #[derive(Debug)]
@@ -578,8 +568,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         // Delivery rides set_var (async); the only state is the wake
         // registration, which reset_replay never touches.
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -653,11 +641,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // The queue and trigger debt are semantic buffering; delivery
         // rides set_var (async, so never inside a sync frame anyway).
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.triggered = 0;
-        self.queue.clear();
     }
 }
 

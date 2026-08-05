@@ -152,13 +152,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         }
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.inner.reset_fresh(ctx);
-        for feeder in self.feeders.iter_mut() {
-            feeder.reset_fresh(ctx);
-        }
-    }
-
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }

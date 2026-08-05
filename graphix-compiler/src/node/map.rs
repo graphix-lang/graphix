@@ -124,11 +124,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.vals.iter_mut().for_each(|n| n.reset_replay(ctx))
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.keys.iter_mut().for_each(|n| n.reset_fresh(ctx));
-        self.vals.iter_mut().for_each(|n| n.reset_fresh(ctx))
-    }
-
     fn refs(&self, refs: &mut Refs) {
         self.keys.iter().for_each(|n| n.node.refs(refs));
         self.vals.iter().for_each(|n| n.node.refs(refs))
@@ -281,11 +276,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.source.reset_replay(ctx);
         self.key.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_fresh(ctx);
-        self.key.reset_fresh(ctx);
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

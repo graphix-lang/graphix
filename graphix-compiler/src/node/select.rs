@@ -368,22 +368,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // Unlike reset_replay, the SELECTION clears: a fresh compile
-        // has none, and the next dispatch's selection fires through
-        // the ordinary becoming-selected path exactly as a fresh
-        // instance's first would.
-        let Self { selected, arg, arms, typ: _, spec: _, tail_position: _ } = self;
-        *selected = None;
-        arg.reset_fresh(ctx);
-        for (pat, arg) in arms {
-            arg.reset_fresh(ctx);
-            if let Some(n) = &mut pat.guard {
-                n.reset_fresh(ctx)
-            }
-        }
-    }
-
     fn refs(&self, refs: &mut Refs) {
         let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
         arg.node.refs(refs);

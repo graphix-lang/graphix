@@ -241,11 +241,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.i.reset_replay(ctx);
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_fresh(ctx);
-        self.i.reset_fresh(ctx);
-    }
-
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::ArrayRef(self)
     }
@@ -417,16 +412,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_fresh(ctx);
-        if let Some(start) = &mut self.start {
-            start.reset_fresh(ctx);
-        }
-        if let Some(end) = &mut self.end {
-            end.reset_fresh(ctx);
-        }
-    }
-
     fn typ(&self) -> &Type {
         &self.typ
     }
@@ -538,10 +523,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_fresh(ctx))
     }
 
     fn refs(&self, refs: &mut Refs) {

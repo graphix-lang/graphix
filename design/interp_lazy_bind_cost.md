@@ -44,78 +44,46 @@ Collection slots (design/collection_intrinsics.md) each own a live
 CallSite whose first dispatch lazily binds its own instance of the
 shared callback def — per-slot compile at collection construction.
 
-## Phase A1 — recursion: pool the parked instances per def (FIRST)
+## Phase A1 — BUILT (abd4339a, 2026-08-04) then REMOVED (2026-08-05,
+## Eric's ruling)
 
-> **Design correction (2026-08-04, pre-implementation):** the first
-> draft stashed the instance on its own site (`TransientParked` gains
-> the instance). That RESURRECTS THE MEMORY BOMB transient parking
-> exists to kill: a retained instance's body CONTAINS its children's
-> parked sites, so per-site stashes retain the full dynamic call tree
-> — fib(28) = 1M instances = 9.6GB again. The correct shape is the
-> per-`LambdaDef` POOL transient_recursion.md sketched all along:
-> each instance pushes ITSELF at park, so the tree flattens into a
-> small shared freelist (fib's sequential sibling calls: pool
-> steady-state ≈ 1-2 entries, ~depth compiles total, ~18k reuses).
+A1 was built as a per-`LambdaDef` transient instance POOL (the
+per-site stash drafted first would have retained the full call tree —
+the 9.6GB bomb — so instances pushed themselves to a shared per-def
+freelist, cap 256), with a required `reset_fresh` method on
+`Update`/`Apply` (~140 impls) restoring fresh-compile state at the
+park. It delivered its numbers (fib(25) 220k binds → 24 compiles,
+symbolic bench 63x) and survived gates and one soak round.
 
-The pool: `ExecCtx.transient_pool: Map<LambdaId, Vec<Apply>>`, small
-per-def cap (overflow deletes as today; the cap bounds idle memory
-and idle wake-interest). At park: `reset_fresh` the instance and push
-it — everything else about the park is UNCHANGED (the ext_refs
-takeover, `TransientParked { def, ext_refs }`, the prime-deferral).
-At `bind()`: when the def is active on the dispatch stack (the
-existing transient pre-condition) and the pool has an instance for
-`f.id`, install it directly — skipping `setup_dynamic_bind`
-(compile + typecheck0), `typecheck1`, and `analyze_bound_callee`.
-Soundness of cross-site reuse: `let rec` is MONOMORPHIC-recursive, so
-all instances of one def in one recursion are type-identical, and
-`arg_refs` are Ref nodes over the SITE's own arg ids (built by
-`prepare_bind`, passed to the instance per update) — instances are
-site-portable by construction. A parked site's existing `arg_refs`
-remain valid (they never reference instance formals); a descent
-site's first bind builds them via `prepare_bind` as today (cheap —
-Ref construction; defaults still compile per site).
+**Removed a day later.** The aug05a soak (katana) found a settled
+depth-trip bottom RE-IGNITING under pool reuse: a growing-argument
+non-tail recursion (`f(n + f(n-1))`) that pre-A1 settled in 513
+dispatches (one trip, 0.08s) churned 2.9M shallow re-trips under the
+pool. Root category: A1's soundness argument ("reset-to-fresh =
+delete-and-reinit minus the allocator") missed that delete-and-reinit
+also provided **id sterility** — a fresh compile mints fresh BindIds,
+so a rebound instance was sterile w.r.t. every id-keyed channel
+OUTSIDE the body (`rt.cached`, wake registrations, event residue).
+`reset_fresh` cannot restore sterility; identity is what the pool
+preserves. The depth-trip settle protocol was load-bearing on it
+(tainted productions never enter `rt.cached`, so parked sites could
+only re-arm from genuinely new deliveries; id reuse laundered clean
+previous-life values back in). The final mechanism link (why the
+era-identical wake check + prime + replay settle fresh but redescend
+pooled) was never fully established — two candidate channels were
+disproven — and Eric ruled the machinery out rather than deeper in:
+interp performance on recursion doesn't matter enough (the soak
+profile below shows the fleet is compiler-dominated; the user-facing
+win was real but narrow). `reset_fresh` went with it (its only
+caller). Pinned: findings/depth-trip-settle-aug2026/ guards the
+settle behavior itself.
 
-**Why this is first: it is remap-free.** The reused instance keeps
-its own BindIds because it IS the same instance — none of
-`clone_rebind`'s failure modes (remap aliasing, env mutation,
-under-typechecked templates, clone↔delete accounting) can exist.
-Blast radius is only transient-gated bodies (Sync, STATELESS builtins,
-no connect/ByRef), and it kills the fib class alone. Pool lifecycle:
-entries purge (delete) when the def dies (the `lambda_defs` removal
-hook) and at context teardown; pooled instances keep their wake
-registrations while idle (unref-on-push would double-unref at the
-eventual delete), so a capture event can wake the top spuriously —
-bounded by the cap, and the parked sites' quiet-cycle check already
-handles content-free wakes.
-
-The reset is the new work. It is neither `sleep` (preserves value
-caches per the sleep-is-pause ruling) nor `reset_replay` (clears replay
-caches, deliberately KEEPS `selected` and async-builtin state): a
-reused instance must be indistinguishable from a **fresh compile** —
-`selected = None`, empty `Cached` residents, empty `CachedArgs` slots,
-cleared collection slot state. The transient gate already proves the
-body holds nothing else, which is what makes "reset to fresh"
-well-defined at all — the gate's guarantee is precisely that
-delete-and-reinit is unobservable, and reset-to-fresh is
-delete-and-reinit minus the allocator.
-
-Mechanics: a required `reset_fresh` method on `Update`/`Apply` (the
-reset_replay pattern — no default, the compiler forces the per-node
-decision; most impls are `reset_replay` + clear-the-semantic-residue).
-Wake registrations are NOT touched (the park's ext_refs takeover
-already owns them). The stashed instance dies with the site
-(`CallSite::delete` path unchanged) or when the def dies.
-
-Expected: fib-class subjects ~10-20x (bind 50µs → reset walk ~2-3µs);
-the entry instance (retained, non-transient) is untouched; non-Sync
-recursion untouched.
-
-Risks: a `reset_fresh` impl that misses a state kind = a stale-state
-bug — the misfiling minefield sleep-preserves-caches mapped, in
-reverse. Mitigations: required-method (every node author decides
-explicitly), the transient gate bounding what state can exist at all,
-the regress corpus (heavy recursion/select/taint pins), a dedicated
-soak round before anything lands on top.
+Lesson recorded for any future instance-reuse design (including the
+gated Phase C): **reset-to-fresh ≠ fresh identity.** Any reuse
+mechanism must either re-mint identity (clone_rebind's remap, with
+its own graveyard) or prove every id-keyed runtime channel taint/
+staleness-correct under reuse — the body-purity gate alone is not
+sufficient.
 
 ## The actual-soak profile (post-A1, 2026-08-04)
 

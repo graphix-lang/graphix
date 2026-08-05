@@ -61,10 +61,6 @@ macro_rules! dirs_builtin {
             }
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-            fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                self.fired = false;
-            }
         }
     };
 }

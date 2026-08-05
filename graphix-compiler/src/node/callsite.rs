@@ -933,48 +933,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         event: &mut Event<E>,
         set: &mut Vec<BindId>,
     ) -> Result<()> {
-        let parked_same_def =
-            matches!(&self.callee, Callee::TransientParked { def, .. } if def == &fv);
         self.release_parked(ctx);
         let _bind_span = crate::perfdbg::span(&crate::perfdbg::BIND_NS);
         if crate::perfdbg::enabled() {
             crate::perfdbg::BIND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        // Pool fast path (design/interp_lazy_bind_cost.md, A1): a
-        // recursive unfold whose def has a pooled RESET instance skips
-        // compile/typecheck0/typecheck1/analysis entirely — `let rec`
-        // is monomorphic-recursive, so the instance is type-identical
-        // to what the pipeline would rebuild, and its per-callsite
-        // elaboration facts were derived on the FIRST bind of this
-        // recursion (pool empty then → slow path). `arg_refs` survive
-        // a same-def park (they reference only the site's own arg
-        // ids); a first bind at this site — or any site with compiled
-        // DEFAULT args, which today's park/rebind recompiles per wake
-        // (their state restarts) — rebuilds via `prepare_bind`.
-        if ctx.active_lambdas.contains_key(&f.id)
-            && let Some(apply) = ctx.pop_transient(f.id)
-        {
-            if crate::perfdbg::enabled() {
-                crate::perfdbg::POOL_HITS
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            let has_defaults = self.args.values().any(|a| a.is_default);
-            if self.arg_refs.is_empty() || !parked_same_def || has_defaults {
-                self.prepare_bind(ctx, &scope, flags, f, |ctx, refs| {
-                    refs.with_external_refs(|id| {
-                        if let Some(v) = ctx.rt.cached().get(&id) {
-                            if let Entry::Vacant(e) = event.variables.entry(id) {
-                                e.insert(TagValue::fired(v.clone()));
-                                set.push(id);
-                            }
-                        }
-                    });
-                })?;
-            }
-            self.gate_tainted_args = false;
-            self.callee = Callee::DynamicBound { def: fv, apply, transient: true };
-            self.prime_args(ctx, event, set);
-            return Ok(());
         }
         let setup_span = crate::perfdbg::span(&crate::perfdbg::SETUP_NS);
         // Build arg_refs + InitFn + typecheck. The closure primes
@@ -1096,27 +1058,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 *transient = true;
             }
         }
-        self.prime_args(ctx, event, set);
-        if restored_def {
-            ctx.lambda_defs.remove(&f.id);
-        }
-        Ok(())
-    }
-
-    /// Ensure all arg values are available for a fresh bind's init
-    /// cycle. Defaults need to be updated for the first time (with
-    /// init=true since Constant only fires on init); existing args may
-    /// not have changed this cycle but their cached values must be
-    /// visible to the newly bound function body. Runs at the tail of
-    /// BOTH bind paths — the pool fast path skipping it starved the
-    /// reused instance's formals and the prime evaluated a dead body
-    /// (the transient-prime-park pin regression).
-    fn prime_args(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-        set: &mut Vec<BindId>,
-    ) {
+        // Ensure all arg values are available for the init cycle.
+        // Defaults need to be updated for the first time (with init=true
+        // since Constant only fires on init); existing args may not have
+        // changed this cycle but their cached values must be visible to
+        // the newly bound function body.
         let prev_init = mem::replace(&mut event.init, true);
         for arg in self.args.values_mut() {
             if arg.is_default {
@@ -1136,6 +1082,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         }
         event.init = prev_init;
+        if restored_def {
+            ctx.lambda_defs.remove(&f.id);
+        }
+        Ok(())
     }
 
     /// Pre-bind this CallSite to a statically known `LambdaDef` at
@@ -1779,21 +1729,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             for id in ext.iter() {
                 ctx.rt.ref_var(*id, self.top_id);
             }
-            // Reset the instance to fresh-compile state and stash it
-            // on the def's freelist instead of deleting — the next
-            // transient bind of this def (a sibling call, a re-fire)
-            // reuses it and skips the whole compile pipeline
-            // (design/interp_lazy_bind_cost.md, Phase A1). Overflow
-            // deletes as before.
             let del_span = crate::perfdbg::span(&crate::perfdbg::DELETE_NS);
-            let def_id = def
-                .downcast_ref::<LambdaDef<R, E>>()
-                .expect("transient def must be a lambda")
-                .id;
-            apply.reset_fresh(ctx);
-            if let Some(mut apply) = ctx.push_transient(def_id, apply) {
-                apply.delete(ctx);
-            }
+            apply.delete(ctx);
             drop(del_span);
             self.callee =
                 Callee::TransientParked { def, ext_refs: ext.drain(..).collect() };
@@ -1864,35 +1801,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         for n in &mut self.arg_refs {
             n.reset_replay(ctx);
-        }
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // An interior BOUND callee RECURSES rather than tearing back
-        // to DynamicUnbound: its def is what a fresh bind would
-        // resolve (the dispatch's def-change check re-binds if the
-        // fnode ever delivers a different lambda), so a reset instance
-        // is indistinguishable from a fresh one — and the pool's
-        // compile-skip stays transitive. Static callees re-prime
-        // (a fresh instance's tc1 prebind starts with first_update).
-        // ALL published arg values clear, invariant ones included —
-        // a fresh site has published nothing, and the rebind's init
-        // view re-fires closed args.
-        if let Callee::Static { first_update, .. } = &mut self.callee {
-            *first_update = true;
-        }
-        if let Some(f) = self.callee.apply_mut() {
-            f.reset_fresh(ctx)
-        }
-        self.fnode.reset_fresh(ctx);
-        for arg in self.args.values_mut() {
-            ctx.rt.cached_mut().remove(&arg.id);
-            if let Some(ref mut n) = arg.node {
-                n.reset_fresh(ctx);
-            }
-        }
-        for n in &mut self.arg_refs {
-            n.reset_fresh(ctx);
         }
     }
 

@@ -118,10 +118,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_fresh(ctx))
-    }
-
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
@@ -315,13 +311,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter_mut().for_each(|r| r.n.reset_replay(ctx))
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.current = None;
-        self.current_tag = Tag::FIRED;
-        self.source.reset_fresh(ctx);
-        self.replace.iter_mut().for_each(|r| r.n.reset_fresh(ctx))
-    }
-
     fn refs(&self, refs: &mut Refs) {
         self.source.refs(refs);
         self.replace.iter().for_each(|r| r.n.node.refs(refs))
@@ -483,10 +472,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.source.reset_replay(ctx)
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_fresh(ctx)
-    }
-
     fn typ(&self) -> &Type {
         &self.typ
     }
@@ -627,10 +612,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_fresh(ctx))
-    }
-
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
@@ -755,10 +736,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_fresh(ctx))
-    }
-
     fn refs(&self, refs: &mut Refs) {
         self.n.iter().for_each(|n| n.node.refs(refs))
     }
@@ -873,10 +850,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.source.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_fresh(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

@@ -145,12 +145,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         // pred's internal caches are replay memory.
         self.pred.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // `state` is shared with the owning QueueFn — a fresh wrapper
-        // init shares it too, so only the pred re-inits here
-        self.pred.reset_fresh(ctx);
-    }
 }
 
 /// The `queuefn` builtin. Constructs a wrapper LambdaDef the first time `f`
@@ -399,20 +393,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // The queue is semantic buffering (async delivery) — sleep's
         // clearing is the arm-rewake restart, not a frame reset.
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // restart subset: fid's registration and the live wrappers
-        // sharing `state` are external liveness; ftyp is a typecheck
-        // memo
-        {
-            let mut s = self.state.lock();
-            s.queue.clear();
-            s.pop_count = 1;
-            s.count_ref = None;
-            s.last_written_depth = 0;
-        }
-        self.lambda = None;
     }
 }
 

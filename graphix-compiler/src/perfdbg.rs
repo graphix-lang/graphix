@@ -11,7 +11,6 @@ use std::{
 };
 
 pub static BIND_CALLS: AtomicU64 = AtomicU64::new(0);
-pub static POOL_HITS: AtomicU64 = AtomicU64::new(0);
 pub static BIND_NS: AtomicU64 = AtomicU64::new(0);
 pub static SETUP_NS: AtomicU64 = AtomicU64::new(0);
 pub static TC1_NS: AtomicU64 = AtomicU64::new(0);
@@ -58,11 +57,10 @@ fn dumper() {
         if sum != last {
             last = sum;
             eprintln!(
-                "PERF binds={} pool_hits={} bind_ms={} setup_ms={} tc1_ms={} \
-                 analyze_ms={} tbo_ms={} primes={} prime_ms={} replay_ms={} \
-                 clone_entries={} delete_ms={} refs_ms={}",
+                "PERF binds={} bind_ms={} setup_ms={} tc1_ms={} analyze_ms={} \
+                 tbo_ms={} primes={} prime_ms={} replay_ms={} clone_entries={} \
+                 delete_ms={} refs_ms={}",
                 BIND_CALLS.load(Relaxed),
-                POOL_HITS.load(Relaxed),
                 BIND_NS.load(Relaxed) / 1_000_000,
                 SETUP_NS.load(Relaxed) / 1_000_000,
                 TC1_NS.load(Relaxed) / 1_000_000,

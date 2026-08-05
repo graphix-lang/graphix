@@ -164,8 +164,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         // Delivery rides set_var (async); the only state is the wake
         // registration, which reset_replay never touches.
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -241,11 +239,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // The queue and trigger debt are semantic buffering; delivery
         // rides set_var (async, so never inside a sync frame anyway).
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.queue.clear();
-        self.triggered = 0;
     }
 }
 

@@ -327,11 +327,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.poll_interval = None;
-        self.batch_size = None;
-    }
 }
 
 // ── WatchApply ───────────────────────────────────────────────────
@@ -420,12 +415,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.interest = None;
-        self.path = None;
-        self.watcher_val = None;
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.interest = None;
         self.path = None;
         self.watcher_val = None;
@@ -557,11 +546,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         self.cached.clear()
     }
 
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // restart subset: bind_ids are wake registrations
-        self.cached.clear()
-    }
-
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in &self.bind_ids {
             ctx.rt.unref_var(*bid, self.top_id);
@@ -629,11 +613,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.cached.clear()
-    }
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // restart subset: bind_ids are wake registrations
         self.cached.clear()
     }
 

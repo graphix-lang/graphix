@@ -71,8 +71,4 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
         // The cached args are replay memory; there is no other state.
         self.args.clear()
     }
-
-    fn reset_fresh(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {
-        self.args.clear()
-    }
 }

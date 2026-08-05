@@ -161,8 +161,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
@@ -224,10 +222,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_fresh(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -362,18 +356,6 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
         }
         self.node.reset_replay(ctx)
     }
-
-    /// The fresh-compile twin of [`Self::reset_replay`]
-    /// ([`Update::reset_fresh`]): the resident clears UNCONDITIONALLY —
-    /// an invariant subtree's value survives frames, but a fresh
-    /// compile holds nothing until its first init view refills it (the
-    /// pool rebind's priming dispatch). The `invariant` memo is
-    /// derived and survives.
-    pub fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.cached = None;
-        self.tag = Tag::FIRED;
-        self.node.reset_fresh(ctx)
-    }
 }
 
 #[derive(Debug)]
@@ -441,8 +423,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn typ(&self) -> &Type {
         &Type::Bottom
@@ -516,8 +496,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn typ(&self) -> &Type {
         &Type::Bottom
@@ -595,8 +573,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn refs(&self, _refs: &mut Refs) {}
 
@@ -695,12 +671,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         for n in &mut self.children {
             n.reset_replay(ctx)
-        }
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for n in &mut self.children {
-            n.reset_fresh(ctx)
         }
     }
 
@@ -858,12 +828,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for n in &mut self.args {
-            n.reset_fresh(ctx);
-        }
-    }
-
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a.node, a.node.typecheck0(ctx))?;
@@ -978,10 +942,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.node.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.node.reset_fresh(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -1116,11 +1076,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.reset_replay(ctx);
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.target_id = None;
-        self.rhs.reset_fresh(ctx);
-    }
-
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
         let bind = match ctx.env.by_id.get(&self.src_id) {
@@ -1206,10 +1161,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.reset_replay(ctx);
     }
 
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_fresh(ctx);
-    }
-
     fn refs(&self, refs: &mut Refs) {
         self.n.refs(refs)
     }
@@ -1292,10 +1243,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_fresh(ctx))
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1408,12 +1355,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // held value survives a frame reset. Children still reset.
         self.arg.node.reset_replay(ctx);
         self.trigger.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.triggered = 0;
-        self.arg.reset_fresh(ctx);
-        self.trigger.reset_fresh(ctx);
     }
 
     fn spec(&self) -> &Expr {

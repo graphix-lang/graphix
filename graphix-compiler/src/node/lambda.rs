@@ -843,17 +843,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
         self.body.reset_replay(ctx);
     }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for pat in self.args.iter() {
-            pat.ids(&mut |id| {
-                ctx.rt.cached_mut().remove(&id);
-            });
-        }
-        self.last_out = Tag::FIRED;
-        self.prev_looped = false;
-        self.body.reset_fresh(ctx);
-    }
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -1082,10 +1071,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         // here would silently leave the wrapped builtin's arg caches
         // replaying across frames.
         self.apply.reset_replay(ctx);
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.apply.reset_fresh(ctx);
     }
 }
 
@@ -1430,19 +1415,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // correctly skips ids with no live def.
         if let Some(def) = self.def.downcast_ref::<LambdaDef<R, E>>() {
             ctx.lambda_defs.remove(&def.id);
-            if let Some(mut pool) = ctx.transient_pool.remove(&def.id) {
-                for mut apply in pool.drain(..) {
-                    apply.delete(ctx);
-                }
-            }
         }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn typ(&self) -> &Type {
         &self.typ

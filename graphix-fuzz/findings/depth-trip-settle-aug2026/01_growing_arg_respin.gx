@@ -1,0 +1,12 @@
+// Depth-trip settle guard (aug05a katana divergence_000000): a
+// growing-argument non-tail recursion must SETTLE at the call-depth
+// guard in O(depth) — one trip, the delivered tainted bottom rides the
+// unwind, every outer call misses on the tainted scrutinee. Under the
+// A1 transient pool (abd4339a, REMOVED 851b3a12+) the settle re-ignited:
+// spuriously-rebound parked sites primed clean-FIRED args and
+// redescended — 2.9M shallow re-trips / >8x timeout where pre-pool
+// settled in 513 dispatches. Root category: instance-id reuse broke the
+// settle protocol's id-sterility assumption (reset-to-fresh ≠ fresh
+// identity — design/interp_lazy_bind_cost.md, A1 post-mortem). This pin
+// times out, loudly, if any future reuse mechanism breaks the settle.
+{let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => i64:1, m => i64:0 + f(n + f(n - i64:1))}; let v = f(i64:8); false}

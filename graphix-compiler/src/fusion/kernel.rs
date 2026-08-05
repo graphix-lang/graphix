@@ -464,22 +464,6 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         }
     }
 
-    /// [`Update::reset_fresh`] for the slot: the bound applies are
-    /// runtime-materialized (a fresh splice binds on first dispatch)
-    /// and delete wholesale; the structural arg refs reset in place.
-    pub fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some((_, mut apply)) = self.current.take() {
-            apply.delete(ctx);
-        }
-        for (_, mut inst) in self.instances.drain(..) {
-            inst.apply.delete(ctx);
-        }
-        for n in &mut self.arg_refs {
-            n.reset_fresh(ctx);
-        }
-        self.fired = false;
-    }
-
     pub fn dispatch(
         &mut self,
         lambda_value: &Value,
@@ -748,8 +732,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_fresh(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 // ─── DynCall dispatch for JIT'd kernels ──────────────────────────
@@ -1744,23 +1726,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         self.free_reset_chains();
         if crate::dbgenv::gxdbg_reset() {
             eprintln!("KERNEL-RESET words={:?}", self.jit.replay_state_words);
-        }
-    }
-
-    fn reset_fresh(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // UNREACHABLE via the transient pool by construction: pooled
-        // instances come from runtime lazy binds, which never fuse
-        // (`InitFn` builds a plain `GXLambda`; fusion runs at compile
-        // time only — design/transient_recursion.md). Implemented as
-        // the strongest reset the kernel's word accounting supports:
-        // replay memory clears (as reset_replay) and the dyn slots'
-        // interpreted callees reset transitively. Select-memory and
-        // per-instance config words are the region's persistent
-        // identity and are not separable from config here — if fused
-        // artifacts ever become poolable this needs a word-class map.
-        self.reset_replay(ctx);
-        for slot in self.dyn_slots.iter_mut() {
-            slot.reset_fresh(ctx);
         }
     }
 
