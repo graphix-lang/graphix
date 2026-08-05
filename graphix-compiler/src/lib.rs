@@ -1793,6 +1793,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 
     pub(crate) fn pop_transient(&mut self, id: LambdaId) -> Option<Box<dyn Apply<R, E>>> {
+        if std::env::var_os("GRAPHIX_DISABLE_POOL").is_some() {
+            return None;
+        }
         self.transient_pool.get_mut(&id).and_then(|v| v.pop())
     }
 
