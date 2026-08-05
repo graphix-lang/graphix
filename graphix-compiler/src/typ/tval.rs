@@ -210,27 +210,31 @@ impl<'a> TVal<'a> {
             }
             (Type::Variant(_, _), Value::String(s)) => write!(f, "`{s}"),
             (Type::Variant(_, _), v) => fmt_naked(f, v),
-            // Member selection prefers the first INFORMATIVE match: a
-            // type-blind member — an unbound tvar, `Any`, or `⊥` (a
-            // `never()` arm's cell terminal-settles to ⊥ and rides the
-            // select union) — matches ANY value (`is_a` answers true),
-            // so a naive first-match walk picked it over a concrete
-            // sibling and printed the whole subtree naked. Worse, HOW
-            // such a cell settles is MODE-dependent (fusion's binding
-            // checks bind cells the plain typecheck leaves open/⊥), so
-            // a union carrying a never-arm cell rendered its tuple
-            // elements `(...)` under jit and `[...]` under interp
-            // (jul19f divergence_000000, pinned
-            // tval-union-blind-print-jul2026). The type-blind-member
-            // fallback keeps the old behavior when nothing informative
-            // matches.
+            // Member selection prefers the first STRICT match — a walk
+            // where the type-blind leaves (unbound tvar, `Any`, `⊥`)
+            // match NOTHING. A `never()` arm's cell terminal-settles
+            // to ⊥ and rides the select union, and blind leaves answer
+            // plain `is_a` true for any value, so a first-match walk
+            // picked the blind member over its concrete sibling and
+            // printed the subtree naked (tuples rendered as arrays).
+            // Worse, HOW such a cell settles is MODE-dependent
+            // (fusion's binding checks bind cells the plain typecheck
+            // leaves open/⊥), so the same value rendered `(...)` under
+            // jit and `[...]` under interp (jul19f divergence_000000,
+            // pinned tval-union-blind-print-jul2026). The original fix
+            // tested informativeness only at the member's TOP level,
+            // which missed a cell nested inside an otherwise-concrete
+            // member — `Array<Array<[i64, ⊥]>>` claimed a tuple-typed
+            // value through its interior ⊥ (aug04f divergence_000000,
+            // pinned in the same family) — so the test is now the
+            // recursive `IsAFlags::Strict` walk. The plain-`is_a`
+            // fallback keeps the old behavior when no member matches
+            // strictly.
             (Type::Set(ts), v) => {
-                let informative = ts.iter().find(|t| {
-                    t.with_deref(|dt| {
-                        !matches!(dt, None | Some(Type::Bottom | Type::Any))
-                    }) && t.is_a(&self.env, v)
-                });
-                match informative.or_else(|| ts.iter().find(|t| t.is_a(&self.env, v))) {
+                let strict = ts
+                    .iter()
+                    .find(|t| t.is_a_with(&self.env, IsAFlags::Strict.into(), v));
+                match strict.or_else(|| ts.iter().find(|t| t.is_a(&self.env, v))) {
                     None => fmt_naked(f, v),
                     Some(t) => Self { typ: t, env: self.env, v }.fmt_int(f, hist),
                 }

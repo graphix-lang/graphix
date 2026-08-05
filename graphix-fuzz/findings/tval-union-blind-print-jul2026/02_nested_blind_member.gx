@@ -1,0 +1,12 @@
+// TVal union-member selection through a NESTED blind leaf (aug04f
+// divergence_000000, hand-minimized): the jul19f fix tested
+// informativeness only at the member's TOP level, but a dead arm
+// whose array::group source carries never() types as
+// Array<Array<[i64, ⊥]>> — informative at the top, blind inside —
+// and plain is_a lets the interior ⊥ claim the f64 tuple element, so
+// interp picked the array member (rendered [[7, 42]]) while fusion's
+// binding checks settled the cell so jit picked the tuple member
+// (rendered [(7, 42)], the type-faithful form). Fix: the first
+// selection pass is the recursive IsAFlags::Strict walk (blind
+// leaves match nothing at any depth); plain-is_a fallback unchanged.
+{let out = select [i64:0, (i64:7, f64:42.)] {[x, tl..] => tl, _ => array::group([i64:1, i64:2, never()], |n, _| true)}; "[out]"}

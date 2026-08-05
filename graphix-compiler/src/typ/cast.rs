@@ -29,6 +29,17 @@ pub enum IsAFlags {
     /// diagnostic, whose unbounded Debug dump then overflowed the
     /// stack — jul17a crash_000003).
     MatchAbstract,
+    /// When set, the type-blind leaves — `Any`, `⊥`, and an unbound
+    /// tvar — match NOTHING instead of everything. `is_a` answers
+    /// "could v inhabit this type"; the blind leaves answer true for
+    /// any value, which is right for dispatch but wrong for a walk
+    /// asking "does this type DESCRIBE v" — the `TVal` printer's
+    /// union-member selection uses this to prefer members whose every
+    /// leaf positively matched, so a `never()` arm's ⊥-settled cell
+    /// can't claim a value no matter how deeply it is nested (the
+    /// top-level-only informative test missed `Array<Array<[i64, ⊥]>>`
+    /// — aug04f divergence_000000).
+    Strict,
 }
 
 impl Type {
@@ -300,7 +311,7 @@ impl Type {
             },
             Type::Primitive(t) => t.contains(Typ::get(&v)),
             Type::Abstract { .. } => flags.contains(IsAFlags::MatchAbstract),
-            Type::Any => true,
+            Type::Any => !flags.contains(IsAFlags::Strict),
             Type::Array(et) => match v {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
                 _ => false,
@@ -361,14 +372,14 @@ impl Type {
                 _ => false,
             },
             Type::TVar(tv) => match &tv.read().typ.read().typ {
-                None => true,
+                None => !flags.contains(IsAFlags::Strict),
                 Some(t) => t.is_a_int(env, hist, flags, v),
             },
             Type::Fn(_) => match v {
                 Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => true,
                 _ => false,
             },
-            Type::Bottom => true,
+            Type::Bottom => !flags.contains(IsAFlags::Strict),
             Type::Set(ts) => ts.iter().any(|t| t.is_a_int(env, hist, flags, v)),
         }
     }
