@@ -797,21 +797,46 @@ pub enum BatchVerdict {
     Other,
 }
 
-/// Whether a program may run in a batch child. Conservative: Exact
-/// tier only (async IO can wedge or slow the SHARED runtime, and its
-/// tiers get settle grace rounds the batch doesn't do), and no
-/// aux-file sections (their module names are program-chosen and could
-/// collide across subjects in the shared VFS).
-pub fn batch_eligible(code: &str) -> bool {
-    if oracle_tier(code) != OracleTier::Exact {
-        return false;
-    }
-    match schedule::Schedule::parse(code) {
+/// Which batch a program may ride in. Batching pays only for
+/// COMPUTE-BOUND subjects: a batch runs its subjects sequentially
+/// against the shared runtime pair, so wait-bound subjects (sys::/
+/// http:: — timers, IO, sockets) serialize waits that the per-subject
+/// process pool overlaps across `par` children, and batching them
+/// measured NET SLOWER (16.7s vs 11.6s on the 2000-subject seed-991
+/// campaign) despite a zero observed hang rate. So: `Pure` =
+/// Exact-tier; `Async` = value-nondeterministic but WAITLESS (rand::
+/// — Excluded tier, runs for shape/crash coverage only); everything
+/// touching sys::/http:: — and aux-file programs (program-chosen
+/// module names could collide in the shared VFS) — stays on the
+/// individual path. Pure and Async batch SEPARATELY, never mixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchClass {
+    Pure,
+    Async,
+    Never,
+}
+
+pub fn batch_class(code: &str) -> BatchClass {
+    let clean_files = match schedule::Schedule::parse(code) {
         Ok((_, body)) => match files::split(body) {
             Ok((_, files)) => files.is_empty(),
             Err(_) => false,
         },
         Err(_) => false,
+    };
+    // GRAPHIX_FUZZ_BATCH_SYS=1 admits sys::/http:: subjects to async
+    // batches (EXPERIMENT lever — the wait-serialization measurement;
+    // sys::net always stays individual, it blocks by design).
+    let sys_ok = std::env::var_os("GRAPHIX_FUZZ_BATCH_SYS").is_some();
+    if !clean_files
+        || code.contains("sys::net")
+        || (!sys_ok && (code.contains("sys::") || code.contains("http::")))
+    {
+        return BatchClass::Never;
+    }
+    match oracle_tier(code) {
+        OracleTier::Exact => BatchClass::Pure,
+        OracleTier::FinalValues | OracleTier::Excluded => BatchClass::Async,
     }
 }
 
@@ -859,10 +884,11 @@ pub async fn run_batch(
         Err(_) => return,
     };
     for (i, code) in progs.iter().enumerate() {
-        if !batch_eligible(code) {
+        if batch_class(code) == BatchClass::Never {
             report(i, BatchVerdict::Other);
             continue;
         }
+        let tier = oracle_tier(code);
         let (sched, body) = match schedule::Schedule::parse(code) {
             Ok(x) => x,
             Err(_) => {
@@ -897,14 +923,22 @@ pub async fn run_batch(
         };
         swap_i.set(VfsResolver::new(table()));
         swap_j.set(VfsResolver::new(table()));
+        // The subject's OWN tier drives both runs — FinalValues gets
+        // its settle grace rounds exactly as the individual path does.
         let (interp, jit) = tokio::join!(
-            drive(&ctx_i, &mut rx_i, &sched, "", &modname, OracleTier::Exact, timeout),
-            drive(&ctx_j, &mut rx_j, &sched, "", &modname, OracleTier::Exact, timeout),
+            drive(&ctx_i, &mut rx_i, &sched, "", &modname, tier, timeout),
+            drive(&ctx_j, &mut rx_j, &sched, "", &modname, tier, timeout),
         );
         let poisoned = matches!(interp, Outcome::Timeout | Outcome::RuntimeErr(_))
             || matches!(jit, Outcome::Timeout | Outcome::RuntimeErr(_));
-        let verdict = if !poisoned && interp.agrees_with_at(&jit, OracleTier::Exact) {
-            let ran = matches!(&interp, Outcome::Trace(_))
+        // Excluded tier: no value comparison is sound (the individual
+        // path returns agree-without-ran unconditionally); the subject
+        // ran for shape/crash coverage, which is all it is for.
+        let agreed = !poisoned
+            && (tier == OracleTier::Excluded || interp.agrees_with_at(&jit, tier));
+        let verdict = if agreed {
+            let ran = tier != OracleTier::Excluded
+                && matches!(&interp, Outcome::Trace(_))
                 && matches!(&jit, Outcome::Trace(_));
             BatchVerdict::Agree { ran }
         } else {
@@ -920,7 +954,7 @@ pub async fn run_batch(
     let _ = tokio::time::timeout(grace, ctx_j.shutdown()).await;
 }
 
-/// Batch size for the campaign pool's batch children. 1 disables
+/// Batch size for the campaign pool's PURE batch children. 1 disables
 /// batching (every subject gets its own child, the pre-batching
 /// behavior).
 fn batch_size() -> usize {
@@ -928,6 +962,19 @@ fn batch_size() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16)
+        .max(1)
+}
+
+/// Batch size for ASYNC (FinalValues/Excluded) batch children —
+/// smaller than the pure size to bound the poison blast radius (a
+/// Timeout aborts the batch and dumps its tail on the individual
+/// path; async subjects are the likelier timeouts, though a measured
+/// 100-sample of the live stream had none).
+fn batch_size_async() -> usize {
+    std::env::var("GRAPHIX_FUZZ_BATCH_ASYNC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8)
         .max(1)
 }
 
@@ -2228,19 +2275,27 @@ async fn run_pool(
     let mut minims: JoinSet<()> = JoinSet::new();
     let mut launched = 0usize;
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
+    let bsize_async = if isolate { batch_size_async() } else { 1 };
     // Spawn ONE child's worth of work: batch-eligible programs
-    // accumulate (across calls, via `pending`) into a `check-batch`
-    // child of `bsize` subjects; an ineligible program spawns alone,
-    // exactly the pre-batching behavior. Pulls from `next_prog` until
-    // something spawns or `iters` runs out (a leftover partial batch
-    // flushes then, so finite runs never strand subjects).
+    // accumulate (across calls, via the per-class `pending` buffers)
+    // into a `check-batch` child — pure (Exact) and async
+    // (FinalValues/Excluded) subjects batch SEPARATELY so a slow
+    // async subject can never dump pure subjects onto the individual
+    // fallback; a `Never`-class program spawns alone, exactly the
+    // pre-batching behavior. Pulls from `next_prog` until something
+    // spawns or `iters` runs out (leftover partial batches flush
+    // then, so finite runs never strand subjects).
     let mut spawn_next = |checks: &mut JoinSet<Vec<(String, PoolResult)>>,
                           pending: &mut Vec<String>,
+                          pending_async: &mut Vec<String>,
                           launched: &mut usize| {
         loop {
             if !want(*launched) {
                 if !pending.is_empty() {
                     let batch = std::mem::take(pending);
+                    checks.spawn(async move { batch_isolated(batch, timeout).await });
+                } else if !pending_async.is_empty() {
+                    let batch = std::mem::take(pending_async);
                     checks.spawn(async move { batch_isolated(batch, timeout).await });
                 }
                 return;
@@ -2264,25 +2319,31 @@ async fn run_pool(
                 });
                 return;
             }
-            if bsize > 1 && batch_eligible(&prog) {
-                pending.push(prog);
-                if pending.len() >= bsize {
-                    let batch = std::mem::take(pending);
-                    checks.spawn(async move { batch_isolated(batch, timeout).await });
+            let (buf, cap) = match batch_class(&prog) {
+                BatchClass::Pure if bsize > 1 => (&mut *pending, bsize),
+                BatchClass::Async if bsize_async > 1 => {
+                    (&mut *pending_async, bsize_async)
+                }
+                _ => {
+                    checks.spawn(async move {
+                        vec![(prog.clone(), check_isolated(&prog, timeout).await)]
+                    });
                     return;
                 }
-            } else {
-                checks.spawn(async move {
-                    vec![(prog.clone(), check_isolated(&prog, timeout).await)]
-                });
+            };
+            buf.push(prog);
+            if buf.len() >= cap {
+                let batch = std::mem::take(buf);
+                checks.spawn(async move { batch_isolated(batch, timeout).await });
                 return;
             }
         }
     };
     let mut pending: Vec<String> = Vec::new();
+    let mut pending_async: Vec<String> = Vec::new();
     while want(launched) && checks.len() < par {
         let before = checks.len();
-        spawn_next(&mut checks, &mut pending, &mut launched);
+        spawn_next(&mut checks, &mut pending, &mut pending_async, &mut launched);
         if checks.len() == before {
             break;
         }
@@ -2298,7 +2359,7 @@ async fn run_pool(
                 // worker slot, and after `par` leaks the pool drained and
                 // a `forever` campaign exited "done" (soak jul04 item 6:
                 // the fuzz campaign bled out nine times overnight).
-                spawn_next(&mut checks, &mut pending, &mut launched);
+                spawn_next(&mut checks, &mut pending, &mut pending_async, &mut launched);
                 if let Ok(results) = res {
                     for (prog, res) in results {
                     stats.run += 1;
