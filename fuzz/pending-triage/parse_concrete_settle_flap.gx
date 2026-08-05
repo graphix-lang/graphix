@@ -1,0 +1,27 @@
+// PARKED 2026-08-05 (aug04d2 fuzz/000000): NONDETERMINISTIC COMPILE
+// ACCEPTANCE — ~20% of fresh processes CompileErr ("str::parse
+// requires a concrete return type"), ~80% compile and run (parse
+// errors at runtime, ?-propagates, empty trace). Either MODE can be
+// the failing one; 40-50-run hammers reproduce on abd4339a AND
+// 0a0014eb (pre-existing, NOT A1). Two stacked causes established
+// with GXDBG_PARSE + GXDBG_RESOLVE:
+// (1) SEED: per-process stdlib module compile ORDER varies (async
+//     ModuleResolver load completion order) — B2L-INS traces show
+//     the bytes module's members registering in different sequence,
+//     shifting every downstream BindId/TVar mint (ids differ 1752 vs
+//     1764 across runs). Harmless alone; detcheck's counter
+//     normalization is blind to it by design.
+// (2) AMPLIFIER (the real defect): the parse call site's return
+//     settle is ORDER-SENSITIVE — cast_typ resolves Some(Array(⊥))
+//     under one unification order and stays None under another; the
+//     None lands on resolve_static's LOUD tc1 path → CompileErr,
+//     while runs that leave the site to the lazy bind swallow the
+//     same failure (SWALLOWED-LAZY-TC1) and proceed. Note
+//     Array(Bottom) as an ACCEPTED cast target is itself suspect
+//     (the jul14b extract_cast_type ⊥-member family, shaped as
+//     Array-of-⊥ which that fix's net misses).
+// Deterministic-correct outcome TBD (Eric): likely compile-reject
+// (unconstrained parse return), which would also want the settle
+// made order-independent and/or module load order made
+// deterministic. No wrong VALUES ever produced — acceptance only.
+array::window(#n: i64:1, str::parse("notanumber")?, never())
