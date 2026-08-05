@@ -952,15 +952,22 @@ impl Type {
     pub(crate) fn unbind_open_tvars(&self) {
         match self {
             Type::TVar(tv) => {
-                // Bottom/Any are VACUOUS facts (`constrain_known`
-                // skips them too): an inferred `throws := ⊥` means
-                // only "this body observed nothing" — the declared
-                // signature's 'e must stay a variable.
+                // Bottom is a VACUOUS fact (`constrain_known` skips
+                // it too): an inferred `throws := ⊥` means only "this
+                // body observed nothing" — the declared signature's
+                // 'e must stay a variable. Any is NOT vacuous: a cell
+                // bound to Any records genuine dataflow (e.g. an
+                // Any-typed select arm unioned into the result —
+                // normalize collapses [Any, T] to Any), and unbinding
+                // it let the per-site re-inference NARROW the return
+                // to whatever the site context wanted (i64 from an
+                // array-literal sibling) while the body delivers
+                // arrays — the kernel then scalar-marshalled a real
+                // Array into 0 (aug05c ryouko divergence_000000,
+                // pinned any-return-narrowing-aug2026).
                 let bound = tv.read().typ.read().typ.clone();
                 if let Some(t) = bound
-                    && (t == Type::Bottom
-                        || t == Type::Any
-                        || t.resolve_tvars().has_unbound())
+                    && (t == Type::Bottom || t.resolve_tvars().has_unbound())
                 {
                     tv.unbind()
                 }

@@ -1,0 +1,15 @@
+// Any-return per-site narrowing (aug05c ryouko divergence_000000,
+// hand-minimized): a select with an Any-annotated let-bodied arm
+// returns [Any, Array<i64>], which normalize correctly collapses to
+// Any — but unbind_open_tvars treated an Any-bound cell as a VACUOUS
+// def-gate fact and unbound it, so each call site's re-inference
+// NARROWED the return to whatever its context wanted. Here the array
+// literal's sibling elements bound it to i64, the fused map loop
+// trusted a: Array<i64> and scalar-marshalled the real [1,2,4] array
+// element into i64:0 (interp mapped [false,true,true], jit
+// [false,false,true]; identity map showed the corrupt element
+// directly). Fix: Any is NOT vacuous in unbind_open_tvars — a cell
+// bound to Any records genuine dataflow; concrete use of an
+// Any-returning call now requires a cast, and the map honestly
+// refuses to fuse over the Any-carrying element union.
+{let a = [i64:0, {let f = |n| select n {i64:0 => let trigs: Any = i64:9, _ => [i64:1, i64:2, i64:4]}; f(i64:3)}, i64:4]; array::map(a, |x| x > i64:3)}
