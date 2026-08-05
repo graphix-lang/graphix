@@ -99,7 +99,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
 #[derive(Debug)]
 pub struct TryCatch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
-    pub typ: Type,
     pub nodes: LPooled<Vec<Node<R, E>>>,
     pub handler: Node<R, E>,
 }
@@ -143,9 +142,10 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), &inner_scope, top_id))
             .collect::<Result<LPooled<Vec<_>>>>()?;
-        let typ =
-            nodes.last().ok_or_else(|| anyhow!("empty try catch block"))?.typ().clone();
-        Ok(Box::new(Self { spec, typ, nodes, handler }))
+        if nodes.is_empty() {
+            bail!("empty try catch block")
+        }
+        Ok(Box::new(Self { spec, nodes, handler }))
     }
 }
 
@@ -201,7 +201,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &self.typ
+        // DELEGATE, never snapshot: `new()` used to clone the last
+        // try-body node's type AT CONSTRUCTION, but a select body
+        // REPLACES its typ field during typecheck0 (the arm union),
+        // so the snapshot held the select's ORPHANED pre-typecheck
+        // cell — unbound forever, and `contains` then bound it to
+        // whatever the use site wanted (`i64 + try select {…struct
+        // arms…} catch(e) => i64:42` typechecked, reaching the
+        // "unreachable from typed code" Value-level broadcast add —
+        // aug05g hz0 divergence_000000). The jul08o nested-select
+        // orphan and the Sample snapshot were this same disease;
+        // reading the child live is the cure that can't go stale.
+        self.nodes.last().expect("non-empty try block").typ()
     }
 
     fn refs(&self, refs: &mut Refs) {

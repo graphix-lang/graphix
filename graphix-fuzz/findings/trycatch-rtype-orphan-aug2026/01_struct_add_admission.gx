@@ -1,0 +1,15 @@
+// TryCatch rtype orphan (aug05g hz0 divergence_000000, hand-reduced):
+// TryCatch::new snapshotted the last try-body node's type at
+// CONSTRUCTION, but a select body REPLACES its typ field during
+// typecheck0 (the arm union), so the snapshot held the select's
+// orphaned pre-typecheck tvar cell — unbound forever, and
+// contains(Number, orphan) bound it at the use site, admitting
+// i64 + struct through the try/catch wrapper (the bare select and the
+// explicit union annotation both rejected correctly). The interp then
+// reached the Value-level broadcast add ruled unreachable-from-typed-
+// code (nested "can't add error types" garbage); the jit produced
+// nothing. Third instance of the orphan-snapshot family (jul08o
+// nested-select, the Sample snapshot). Fix: TryCatch::typ() DELEGATES
+// live to the last try-body node — this program must CompileErr-agree
+// in both modes.
+{let s = try select i64:100 {i64:42 => { b: f64:1., y: i64:2 }, _ => { b: f64:0., y: i64:42 }} catch(e) => i64:42; i64:0 + s}
