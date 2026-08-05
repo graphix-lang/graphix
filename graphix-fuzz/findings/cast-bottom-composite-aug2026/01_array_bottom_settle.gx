@@ -1,0 +1,15 @@
+// aug04d2 fuzz/000000 (2026-08-05): NONDETERMINISTIC COMPILE
+// ACCEPTANCE — ~20% of fresh processes rejected this program
+// ("str::parse requires a concrete return type"), ~80% accepted and
+// ran it. The unconstrained parse return settled as Array<⊥> under
+// one per-process unification order (accepted by extract_cast_type's
+// Set-only ⊥ walk) and stayed open under another (rejected). Eric's
+// ruling: COMPILE-REJECT, no question — ⊥ anywhere in a cast target
+// is a settle artifact (the jul14b family, nested in a composite
+// constructor where the ⊥-member net didn't reach). Fixed: the
+// contains_bottom walk descends Array/Tuple/Struct/Variant/Map/Error/
+// ByRef. Both modes now reject deterministically (CompileErr-agree).
+// The SEED nondeterminism (async module-load order shifting all
+// id/tvar minting) and the settle order-sensitivity remain latent —
+// tracked in fuzz/pending-triage/parse_concrete_settle_flap.gx.
+array::window(#n: i64:1, str::parse("notanumber")?, never())

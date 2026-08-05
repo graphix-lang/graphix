@@ -70,9 +70,15 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     // `[[⊥, Error<ParseError>], Error<ParseError>]` — the ⊥ one level
     // inside a set MEMBER, which the one-level check accepted; the
     // fused parse then cast through the garbage union while the
-    // interp's runtime slot instance erred). Depth-capped against
-    // pathological recursive unions; recursion only descends Sets, so
-    // ordinary recursive types (variant members) terminate naturally.
+    // interp's runtime slot instance erred). The artifact also nests
+    // inside COMPOSITE constructors: an unconstrained parse return
+    // settled as `Array<⊥>` under one unification order and stayed
+    // open under another, turning compile acceptance into a
+    // per-process coin flip (aug04d2 divergence_000000 — the Set-only
+    // walk accepted the Array form; Eric's ruling: compile-reject, no
+    // question). ⊥ anywhere in a cast target is a settle artifact for
+    // the same reason a ⊥ member is — no surface syntax can name it.
+    // Depth-capped against pathological recursive shapes.
     fn contains_bottom(t: &Type, depth: u32) -> bool {
         if depth > 64 {
             return false;
@@ -80,7 +86,18 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
         let t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
         match t {
             Type::Bottom => true,
-            Type::Set(els) => els.iter().any(|e| contains_bottom(e, depth + 1)),
+            Type::Set(els) | Type::Tuple(els) | Type::Variant(_, els) => {
+                els.iter().any(|e| contains_bottom(e, depth + 1))
+            }
+            Type::Array(e) | Type::Error(e) | Type::ByRef(e) => {
+                contains_bottom(&e, depth + 1)
+            }
+            Type::Struct(fields) => {
+                fields.iter().any(|(_, e)| contains_bottom(e, depth + 1))
+            }
+            Type::Map { key, value } => {
+                contains_bottom(&key, depth + 1) || contains_bottom(&value, depth + 1)
+            }
             _ => false,
         }
     }

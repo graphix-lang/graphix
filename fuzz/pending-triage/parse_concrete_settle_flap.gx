@@ -1,4 +1,12 @@
-// PARKED 2026-08-05 (aug04d2 fuzz/000000): NONDETERMINISTIC COMPILE
+// ACCEPTANCE FIXED 2026-08-05 (Eric's ruling: compile-reject):
+// extract_cast_type's contains_bottom now descends composite
+// constructors, so both modes reject deterministically (pinned in
+// findings/cast-bottom-composite-aug2026/). STILL OPEN here: the
+// SEED (async module-load order varies per process, shifting all
+// id/tvar minting) and the settle ORDER-SENSITIVITY (Array<⊥> vs
+// open depending on unification order) — latent typechecker
+// determinism work.
+// ORIGINAL ANALYSIS (2026-08-05, aug04d2 fuzz/000000): NONDETERMINISTIC COMPILE
 // ACCEPTANCE — ~20% of fresh processes CompileErr ("str::parse
 // requires a concrete return type"), ~80% compile and run (parse
 // errors at runtime, ?-propagates, empty trace). Either MODE can be
