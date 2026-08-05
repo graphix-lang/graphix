@@ -1812,6 +1812,17 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
             None => PoolResult::Agree { ran: false },
         },
         _ => {
+            // A SIGTERM death is the campaign STOP's own kill signal
+            // reaching a mid-flight child — a teardown artifact, not a
+            // finding (aug04eaieka reactive/crash_000000: the aug04e →
+            // aug04f redeploy's stop recorded itself as a crash).
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if out.status.signal() == Some(15) {
+                    return PoolResult::Agree { ran: false };
+                }
+            }
             // Include the child's last stderr lines — the std
             // stack-overflow handler / panic hook message is the triage
             // signal that distinguishes "node-walk overflow (known
