@@ -883,6 +883,7 @@ pub async fn run_batch(
         Ok(c) => c,
         Err(_) => return,
     };
+    let mut consecutive_poison = 0u32;
     for (i, code) in progs.iter().enumerate() {
         if batch_class(code) == BatchClass::Never {
             report(i, BatchVerdict::Other);
@@ -945,8 +946,72 @@ pub async fn run_batch(
             BatchVerdict::Other
         };
         report(i, verdict);
+        // A Timeout/RuntimeErr leaves the shared runtime SUSPECT, but
+        // usually RECOVERED (interrupt is a one-shot flag the guards
+        // consume; the interp being slow on a heavy subject is the
+        // common case, a wedged evaluator the rare one). Aborting the
+        // whole batch on every timeout made the poison blast radius
+        // scale with K (the K=32/64 regression) and capped useful
+        // batch sizes; instead PROBE the pair with a trivial subject
+        // on a short budget — responsive → keep going, wedged → stop
+        // (unreported subjects fall back to individual runs).
         if poisoned {
-            break;
+            // Three poisons in a row = the runtime answers probes but
+            // can't finish real subjects anymore — stop feeding it.
+            consecutive_poison += 1;
+            if consecutive_poison >= 3 {
+                break;
+            }
+            // Give the interrupted evaluator a beat to finish
+            // unwinding before probing: an interrupt breaks the loop
+            // COOPERATIVELY, so a deep settle (a runaway-recursion
+            // subject) can legitimately churn for seconds after the
+            // drive returns Timeout — a 2s probe declared a merely-
+            // slow unwind dead and dumped a 1000-batch's whole tail
+            // (subject 715 of the first K=1000 measurement AGREEs
+            // individually).
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let probe_name = format!("p{i}");
+            let probe_src = ArcStr::from("let result = i64:0");
+            let table = || {
+                AHashMap::from_iter([(
+                    Path::from(format!("/{probe_name}.gx")),
+                    graphix_compiler::expr::VfsEntry::from(probe_src.clone()),
+                )])
+            };
+            swap_i.set(VfsResolver::new(table()));
+            swap_j.set(VfsResolver::new(table()));
+            let probe_sched = schedule::Schedule::parse("i64:0")
+                .expect("trivial probe parses")
+                .0;
+            let budget = Duration::from_secs(10);
+            let (pi, pj) = tokio::join!(
+                drive(
+                    &ctx_i,
+                    &mut rx_i,
+                    &probe_sched,
+                    "",
+                    &probe_name,
+                    OracleTier::Exact,
+                    budget
+                ),
+                drive(
+                    &ctx_j,
+                    &mut rx_j,
+                    &probe_sched,
+                    "",
+                    &probe_name,
+                    OracleTier::Exact,
+                    budget
+                ),
+            );
+            let healthy = matches!(pi, Outcome::Trace(_))
+                && matches!(pj, Outcome::Trace(_));
+            if !healthy {
+                break;
+            }
+        } else {
+            consecutive_poison = 0;
         }
     }
     let grace = Duration::from_secs(2);
@@ -956,25 +1021,28 @@ pub async fn run_batch(
 
 /// Batch size for the campaign pool's PURE batch children. 1 disables
 /// batching (every subject gets its own child, the pre-batching
-/// behavior).
+/// behavior). Default 64: the amortization curve is ~flat past here
+/// (7.2ms/subject at 16 → 5.6 at 64) while batch-child spawn churn
+/// drops 4x vs 16; larger starves the mutation ring's agreement
+/// feedback (par×K subjects in flight bred from stale ring state —
+/// K=1000 measured novel shapes down 19%) and coarsens pool
+/// granularity in finite gates.
 fn batch_size() -> usize {
     std::env::var("GRAPHIX_FUZZ_BATCH")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(16)
+        .unwrap_or(64)
         .max(1)
 }
 
-/// Batch size for ASYNC (FinalValues/Excluded) batch children —
-/// smaller than the pure size to bound the poison blast radius (a
-/// Timeout aborts the batch and dumps its tail on the individual
-/// path; async subjects are the likelier timeouts, though a measured
-/// 100-sample of the live stream had none).
+/// Batch size for ASYNC (waitless rand::) batch children — half the
+/// pure size (the class is a smaller share of the stream, so bigger
+/// batches would just add fill latency).
 fn batch_size_async() -> usize {
     std::env::var("GRAPHIX_FUZZ_BATCH_ASYNC")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(8)
+        .unwrap_or(32)
         .max(1)
 }
 
@@ -990,6 +1058,67 @@ async fn batch_isolated(
     progs: Vec<String>,
     timeout: Duration,
 ) -> Vec<(String, PoolResult)> {
+    let n = progs.len();
+    let mut resolved: Vec<Option<PoolResult>> = (0..n).map(|_| None).collect();
+    let mut individual: Vec<usize> = Vec::new();
+    let mut remaining: Vec<usize> = (0..n).collect();
+    // RE-BATCH after a clean abort: a wedged subject (an infinite
+    // reactive loop leaves the runtime never-idle — no probe budget
+    // recovers it) is reported `O` before the child stops, so the
+    // unreported tail rides a FRESH child at the cost of one more
+    // stdlib init (~250ms) instead of a tail's worth of individual
+    // re-runs — this is what makes large K safe. An UNCLEAN exit
+    // (crash/stall-kill) still discards the round's verdicts and
+    // sends everything remaining down the individual path: a crashed
+    // child's memory was suspect for the whole round, and the crasher
+    // needs individual derivation anyway. A clean round that reports
+    // NOTHING (e.g. runtime init failure) also falls back — no
+    // progress means no third try.
+    loop {
+        let batch: Vec<String> =
+            remaining.iter().map(|&i| progs[i].clone()).collect();
+        let (clean, verdicts) = run_batch_child(&batch, timeout).await;
+        if !clean || verdicts.is_empty() {
+            individual.extend(remaining.drain(..));
+            break;
+        }
+        let mut still: Vec<usize> = Vec::new();
+        for (pos, &orig) in remaining.iter().enumerate() {
+            match verdicts.get(&pos) {
+                Some(BatchVerdict::Agree { ran }) => {
+                    resolved[orig] = Some(PoolResult::Agree { ran: *ran })
+                }
+                Some(BatchVerdict::Other) => individual.push(orig),
+                None => still.push(orig),
+            }
+        }
+        remaining = still;
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    for &i in &individual {
+        resolved[i] = Some(check_isolated(&progs[i], timeout).await);
+    }
+    progs
+        .into_iter()
+        .zip(resolved)
+        .map(|(prog, res)| {
+            let res = res.unwrap_or(PoolResult::Agree { ran: false });
+            (prog, res)
+        })
+        .collect()
+}
+
+/// Spawn one `check-batch` child over `progs`, returning (clean-exit,
+/// per-index verdicts). Verdicts come back through a FILE inside the
+/// parent-owned sandbox (stdout is corruptible by the programs under
+/// test — the check-one lesson), flushed per subject so a mid-batch
+/// death leaves the completed prefix on record.
+async fn run_batch_child(
+    progs: &[String],
+    timeout: Duration,
+) -> (bool, AHashMap<usize, BatchVerdict>) {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(child_exe());
     let sandbox = sandbox_cwd(&mut cmd);
@@ -1011,22 +1140,37 @@ async fn batch_isolated(
     if let Some(mut stdin) = child.stdin.take() {
         // Length-prefixed framing: programs are arbitrary text.
         let mut buf = format!("{}\n", progs.len());
-        for p in &progs {
+        for p in progs {
             buf.push_str(&format!("{}\n", p.len()));
             buf.push_str(p);
         }
         let _ = stdin.write_all(buf.as_bytes()).await;
     }
-    // Per-subject worst case is one concurrent interp+jit pair at the
-    // lane budget (the batch child has no escalation ladder), plus the
-    // one-time double stdlib init.
-    let deadline = Duration::from_secs(90)
-        + (timeout + Duration::from_secs(5)) * progs.len() as u32;
-    let clean = match tokio::time::timeout(deadline, child.wait()).await {
-        Ok(Ok(status)) => status.code() == Some(0),
-        Ok(Err(_)) => false,
-        // Future dropped → kill_on_drop reaps the child.
-        Err(_) => false,
+    // PROGRESS-based deadline: a healthy batch child flushes a verdict
+    // line per subject, so "the verdict file stopped growing" is the
+    // wedge signal — a K-proportional wall would make large K (the
+    // whole point: startup and fork/exec churn amortize toward zero)
+    // either unsafe or absurdly slack. The stall budget covers the
+    // one-time double stdlib init, the slowest legitimate subject
+    // (one concurrent interp+jit pair at the lane budget — no
+    // escalation ladder in the child), and the post-timeout health
+    // probe.
+    let stall = timeout * 4 + Duration::from_secs(90);
+    let mut last_len = 0u64;
+    let clean = loop {
+        tokio::select! {
+            r = child.wait() => break matches!(r, Ok(s) if s.code() == Some(0)),
+            _ = tokio::time::sleep(stall) => {
+                let len = std::fs::metadata(&verdict_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if len == last_len {
+                    let _ = child.kill().await;
+                    break false;
+                }
+                last_len = len;
+            }
+        }
     };
     let mut verdicts: AHashMap<usize, BatchVerdict> = AHashMap::new();
     if let Ok(s) = std::fs::read_to_string(&verdict_path) {
@@ -1044,20 +1188,7 @@ async fn batch_isolated(
             }
         }
     }
-    let mut out = Vec::with_capacity(progs.len());
-    for (i, prog) in progs.into_iter().enumerate() {
-        let v = if clean { verdicts.get(&i).copied() } else { None };
-        match v {
-            Some(BatchVerdict::Agree { ran }) => {
-                out.push((prog, PoolResult::Agree { ran }))
-            }
-            Some(BatchVerdict::Other) | None => {
-                let res = check_isolated(&prog, timeout).await;
-                out.push((prog, res));
-            }
-        }
-    }
-    out
+    (clean, verdicts)
 }
 
 /// Coarse "same bug" key: the bisection class + the interp/jit outcome
