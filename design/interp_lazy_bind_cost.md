@@ -117,6 +117,63 @@ explicitly), the transient gate bounding what state can exist at all,
 the regress corpus (heavy recursion/select/taint pins), a dedicated
 soak round before anything lands on top.
 
+## The actual-soak profile (post-A1, 2026-08-04)
+
+Recorded on LIVE aug04f lanes on ryouko (perf on the running fuzz and
+generate workers, ~660k samples each, frame-pointer build of
+c3be4170+A1). This answers "did we profile the soak or just example
+programs" — and the answer redirects the fleet-throughput question
+away from this doc's interp levers:
+
+| bucket                  | fuzz lane | gen lane |
+|-------------------------|-----------|----------|
+| typecheck+types         | ~25%      | ~24%     |
+| fusion+JIT compile      | ~9%       | ~19%     |
+| compile (Expr→Node)     | ~5%       | ~5%      |
+| parse (combine)         | ~3%       | ~3%      |
+| env chunkmap (by_id)    | ~6.4%     | ~6.6%    |
+| interp-exec             | ~11%      | ~2.4%    |
+| allocator (mimalloc)    | ~7%       | ~7%      |
+| pool take/drop residue  | ~6.5%     | ~6.5%    |
+
+The profile is FLAT (top symbol 2.7%) and compile-dominated: the top
+two symbols in BOTH lanes are `Type::scope_refs_int` (2.4-2.7%) and
+`normalize_int` (1.7-1.9%) — the per-subject STDLIB typecheck, run in
+a fresh child per subject, in both engines. Direct measurement: a
+trivial subject (`i64:1`) and a 1KB corpus subject both cost ~60-120ms
+through the campaign binary — the subject's own work is noise against
+the child constant. Fleet throughput ≈ cores / constant.
+
+What this says about the phases here:
+
+- **A1 verified in the real workload**: the pre-A1 bind pipeline
+  (`RefHist::new`, `contains_dispatch`, `would_cycle_seen`) is GONE
+  from the top of the profile. Interp-exec residue is dispatch +
+  delivery churn (`CallSite::update` 2.3%, `GXLambda::update` 1.9%,
+  `LPooled<HashMap<BindId,TagValue>>` take/drop ~2.8%, `Value::clone`
+  1.1%, `ref_var` 0.7%) — exactly Phase B's target list, at ~11% of
+  the fuzz lane and ~2% of the gen lane.
+- **Phase B is a user-facing lever, not a fleet lever.** It stays on
+  the docket for the fold class, but even zeroing interp-exec buys the
+  fleet <11%.
+- **The fleet levers are elsewhere** (recorded here, owned elsewhere):
+  1. HARNESS subject batching — K subjects per child amortizes the
+     ~80ms constant K-fold. detcheck must stay per-process (fresh
+     ASLR is the point); fuzz/gen lanes need crash attribution
+     (re-run a failed batch singly). The single biggest throughput
+     multiplier available.
+  2. Stdlib compile cost — `scope_refs_int` (re-scoping walk that
+     re-mints TVar cells and rebuilds Ref params per use site) +
+     `normalize_int` + `collect_tvars`/`resolve_tvars_seen` ≈ 8%,
+     plus the `env.by_id` chunkmap `bind_variable`/`Bind` clone COW
+     churn ≈ 6.5%, plus combine's `easy::Error` eq/merge
+     accumulation ≈ 1.3% on trusted (stdlib) sources. These also cut
+     REAL user compile latency — typechecker-must-be-instant adjacent.
+  3. gen lane only: fusion+JIT compile is ~19% (`ResolveCx::node_frame`
+     1.5%, cranelift verifier+regalloc ~1.1%) — generated programs
+     skew whole-program-fusable. The cranelift verifier could be
+     disabled outside debug builds if we ever want the ~0.6%.
+
 ## Phase B — collection dispatch micro-costs (re-measure after A1)
 
 The per-element residue beyond the bind (fold50k perf): formal inserts
