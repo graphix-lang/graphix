@@ -299,6 +299,7 @@ pub async fn run_program_with_stats(
         &mut rx,
         &sched,
         &files::mod_decls(&files),
+        "test",
         oracle_tier(code),
         timeout,
     )
@@ -331,6 +332,7 @@ async fn drive(
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     sched: &schedule::Schedule,
     mods: &str,
+    modname: &str,
     tier: OracleTier,
     timeout: Duration,
 ) -> Outcome {
@@ -433,7 +435,7 @@ async fn drive(
     // Injected-input decls sit at the compile text's TOP LEVEL (the D4
     // contract; see `schedule::Schedule::decls`), before the module
     // wrap, where `compile_ref_by_name` can reach them from root.
-    let text = format!("{}{mods}{{ mod test; test::result }}", sched.decls());
+    let text = format!("{}{mods}{{ mod {modname}; {modname}::result }}", sched.decls());
     let compiled = bounded!(
         ctx.rt.compile(ArcStr::from(text)),
         Ok(c) => c,
@@ -735,6 +737,280 @@ pub async fn check_classified(
         return (None, false);
     }
     (Some(Divergence { code: code.to_string(), interp, jit, tier }), false)
+}
+
+/// A module resolver whose target can be swapped between compiles —
+/// the batch child's bridge between ONE warmed runtime (stdlib
+/// compiled once at init) and a fresh per-subject module source.
+/// `resolve` delegates to whatever resolver was `set` last; the
+/// runtime holds this wrapper for its whole life, so each subject's
+/// unique `/t<i>.gx` becomes visible without re-initing the context.
+#[derive(Debug)]
+struct SwapResolver(std::sync::Mutex<graphix_compiler::expr::ResolverRef>);
+
+impl SwapResolver {
+    fn arc(initial: graphix_compiler::expr::ResolverRef) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(SwapResolver(std::sync::Mutex::new(initial)))
+    }
+
+    fn set(&self, r: graphix_compiler::expr::ResolverRef) {
+        *self.0.lock().unwrap() = r;
+    }
+}
+
+impl graphix_compiler::expr::ModuleResolver for SwapResolver {
+    fn resolve<'a>(
+        &'a self,
+        scope: &'a graphix_compiler::expr::ModPath,
+        parent: &'a triomphe::Arc<graphix_compiler::expr::Origin>,
+        name: &'a Path,
+        errors: &'a mut Vec<anyhow::Error>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = graphix_compiler::expr::Resolution>
+                + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            // Clone the target out and DROP the guard before awaiting.
+            let r = self.0.lock().unwrap().clone();
+            r.resolve(scope, parent, name, errors).await
+        })
+    }
+}
+
+/// Per-subject verdict from a batch child. Only AGREEMENT is ever
+/// trusted from a batch — anything else re-runs through the individual
+/// `check_isolated` gold path, so every FINDING still derives from a
+/// fresh single-subject process (batches only fast-path the ~100%
+/// agree case, amortizing the per-subject stdlib compile).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchVerdict {
+    Agree {
+        /// Both outcomes were runtime traces — the ring-admission bar.
+        ran: bool,
+    },
+    /// Not a clean agreement (divergence-shaped, timeout, wedged
+    /// runtime, ineligible subject) — the parent re-runs individually.
+    Other,
+}
+
+/// Whether a program may run in a batch child. Conservative: Exact
+/// tier only (async IO can wedge or slow the SHARED runtime, and its
+/// tiers get settle grace rounds the batch doesn't do), and no
+/// aux-file sections (their module names are program-chosen and could
+/// collide across subjects in the shared VFS).
+pub fn batch_eligible(code: &str) -> bool {
+    if oracle_tier(code) != OracleTier::Exact {
+        return false;
+    }
+    match schedule::Schedule::parse(code) {
+        Ok((_, body)) => match files::split(body) {
+            Ok((_, files)) => files.is_empty(),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// The `check-batch` child body: run `progs` sequentially against ONE
+/// warmed runtime pair — the stdlib compiles once per mode instead of
+/// once per subject, which is the fleet-throughput constant (the
+/// actual-soak profile: a trivial subject and a real one both cost the
+/// same ~80ms child, ~all of it stdlib typecheck). `report` is called
+/// after each subject so a mid-batch death leaves the completed prefix
+/// on record. A Timeout/RuntimeErr in either mode leaves the shared
+/// runtime SUSPECT: that subject reports `Other` and the batch stops —
+/// unreported subjects fall back to individual runs in the parent.
+pub async fn run_batch(
+    progs: &[String],
+    timeout: Duration,
+    mut report: impl FnMut(usize, BatchVerdict),
+) {
+    let (tx_i, mut rx_i) = mpsc::channel(64);
+    let (tx_j, mut rx_j) = mpsc::channel(64);
+    let empty = || VfsResolver::new(AHashMap::new());
+    let swap_i = SwapResolver::arc(empty());
+    let swap_j = SwapResolver::arc(empty());
+    let ctx_i = match init_with_flags_and_setup(
+        tx_i,
+        REGISTER,
+        vec![swap_i.clone()],
+        Mode::Interp.flags(),
+        |_| {},
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let ctx_j = match init_with_flags_and_setup(
+        tx_j,
+        REGISTER,
+        vec![swap_j.clone()],
+        Mode::Jit.flags(),
+        |_| {},
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    for (i, code) in progs.iter().enumerate() {
+        if !batch_eligible(code) {
+            report(i, BatchVerdict::Other);
+            continue;
+        }
+        let (sched, body) = match schedule::Schedule::parse(code) {
+            Ok(x) => x,
+            Err(_) => {
+                report(i, BatchVerdict::Other);
+                continue;
+            }
+        };
+        let (body, files) = match files::split(body) {
+            Ok(x) => x,
+            Err(_) => {
+                report(i, BatchVerdict::Other);
+                continue;
+            }
+        };
+        if !files.is_empty() {
+            report(i, BatchVerdict::Other);
+            continue;
+        }
+        // Subject-unique module name: fresh module, fresh BindIds,
+        // fresh everything — no cache aliasing between subjects. The
+        // previous subject's graph was deleted when its `drive`
+        // returned (`CompRes` handles delete their exprs on drop, and
+        // ToGX messages are FIFO, so the delete lands before this
+        // subject's TraceStart).
+        let modname = format!("t{i}");
+        let wrapped = ArcStr::from(format!("let result = {body}"));
+        let table = || {
+            AHashMap::from_iter([(
+                Path::from(format!("/{modname}.gx")),
+                graphix_compiler::expr::VfsEntry::from(wrapped.clone()),
+            )])
+        };
+        swap_i.set(VfsResolver::new(table()));
+        swap_j.set(VfsResolver::new(table()));
+        let (interp, jit) = tokio::join!(
+            drive(&ctx_i, &mut rx_i, &sched, "", &modname, OracleTier::Exact, timeout),
+            drive(&ctx_j, &mut rx_j, &sched, "", &modname, OracleTier::Exact, timeout),
+        );
+        let poisoned = matches!(interp, Outcome::Timeout | Outcome::RuntimeErr(_))
+            || matches!(jit, Outcome::Timeout | Outcome::RuntimeErr(_));
+        let verdict = if !poisoned && interp.agrees_with_at(&jit, OracleTier::Exact) {
+            let ran = matches!(&interp, Outcome::Trace(_))
+                && matches!(&jit, Outcome::Trace(_));
+            BatchVerdict::Agree { ran }
+        } else {
+            BatchVerdict::Other
+        };
+        report(i, verdict);
+        if poisoned {
+            break;
+        }
+    }
+    let grace = Duration::from_secs(2);
+    let _ = tokio::time::timeout(grace, ctx_i.shutdown()).await;
+    let _ = tokio::time::timeout(grace, ctx_j.shutdown()).await;
+}
+
+/// Batch size for the campaign pool's batch children. 1 disables
+/// batching (every subject gets its own child, the pre-batching
+/// behavior).
+fn batch_size() -> usize {
+    std::env::var("GRAPHIX_FUZZ_BATCH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(16)
+        .max(1)
+}
+
+/// Run a batch of eligible programs through ONE `check-batch` child.
+/// Verdicts come back through a FILE inside the parent-owned sandbox
+/// (stdout is corruptible by the programs under test — the check-one
+/// lesson). A missing or non-Agree verdict — and every subject, on a
+/// child that died or exited unclean — falls back to the individual
+/// [`check_isolated`] path: batches only ever fast-path agreement, so
+/// every finding is still derived by a fresh single-subject process
+/// with the full escalation/nondeterminism ladder.
+async fn batch_isolated(
+    progs: Vec<String>,
+    timeout: Duration,
+) -> Vec<(String, PoolResult)> {
+    use tokio::io::AsyncWriteExt;
+    let mut cmd = tokio::process::Command::new(child_exe());
+    let sandbox = sandbox_cwd(&mut cmd);
+    let verdict_path = sandbox.path().join("verdicts");
+    cmd.arg("check-batch")
+        .arg(&verdict_path)
+        .env("TOKIO_WORKER_THREADS", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
+            std::process::exit(2)
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        // Length-prefixed framing: programs are arbitrary text.
+        let mut buf = format!("{}\n", progs.len());
+        for p in &progs {
+            buf.push_str(&format!("{}\n", p.len()));
+            buf.push_str(p);
+        }
+        let _ = stdin.write_all(buf.as_bytes()).await;
+    }
+    // Per-subject worst case is one concurrent interp+jit pair at the
+    // lane budget (the batch child has no escalation ladder), plus the
+    // one-time double stdlib init.
+    let deadline = Duration::from_secs(90)
+        + (timeout + Duration::from_secs(5)) * progs.len() as u32;
+    let clean = match tokio::time::timeout(deadline, child.wait()).await {
+        Ok(Ok(status)) => status.code() == Some(0),
+        Ok(Err(_)) => false,
+        // Future dropped → kill_on_drop reaps the child.
+        Err(_) => false,
+    };
+    let mut verdicts: AHashMap<usize, BatchVerdict> = AHashMap::new();
+    if let Ok(s) = std::fs::read_to_string(&verdict_path) {
+        for line in s.lines() {
+            let mut it = line.split_whitespace();
+            if let (Some(i), Some(v)) = (it.next(), it.next())
+                && let Ok(i) = i.parse::<usize>()
+            {
+                let v = match v {
+                    "A" => BatchVerdict::Agree { ran: false },
+                    "R" => BatchVerdict::Agree { ran: true },
+                    _ => BatchVerdict::Other,
+                };
+                verdicts.insert(i, v);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(progs.len());
+    for (i, prog) in progs.into_iter().enumerate() {
+        let v = if clean { verdicts.get(&i).copied() } else { None };
+        match v {
+            Some(BatchVerdict::Agree { ran }) => {
+                out.push((prog, PoolResult::Agree { ran }))
+            }
+            Some(BatchVerdict::Other) | None => {
+                let res = check_isolated(&prog, timeout).await;
+                out.push((prog, res));
+            }
+        }
+    }
+    out
 }
 
 /// Coarse "same bug" key: the bisection class + the interp/jit outcome
@@ -1945,35 +2221,71 @@ async fn run_pool(
     use tokio::task::JoinSet;
     let par = parallelism();
     let isolate = std::env::var_os("GRAPHIX_FUZZ_INPROC").is_none();
+    let bsize = if isolate { batch_size() } else { 1 };
     let mut stats = FuzzStats::default();
     let mut breakage = BreakageWindow::new();
-    let mut checks: JoinSet<(String, PoolResult)> = JoinSet::new();
+    let mut checks: JoinSet<Vec<(String, PoolResult)>> = JoinSet::new();
     let mut minims: JoinSet<()> = JoinSet::new();
     let mut launched = 0usize;
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
-    let spawn_check = |checks: &mut JoinSet<_>, prog: String| {
-        // Crash forensics: with GRAPHIX_FUZZ_ECHO set, print each
-        // program as it dispatches. Mostly superseded by isolation
-        // (a crasher now records itself), but kept for debugging the
-        // DRIVER process itself.
-        if std::env::var_os("GRAPHIX_FUZZ_ECHO").is_some() {
-            eprintln!("FUZZPROG\t{}", prog.replace('\n', "\\n"));
-        }
-        checks.spawn(async move {
-            let res = if isolate {
-                check_isolated(&prog, timeout).await
-            } else {
-                match check_classified(&prog, timeout).await {
-                    (Some(d), _) => PoolResult::Diverge(d),
-                    (None, ran) => PoolResult::Agree { ran },
+    // Spawn ONE child's worth of work: batch-eligible programs
+    // accumulate (across calls, via `pending`) into a `check-batch`
+    // child of `bsize` subjects; an ineligible program spawns alone,
+    // exactly the pre-batching behavior. Pulls from `next_prog` until
+    // something spawns or `iters` runs out (a leftover partial batch
+    // flushes then, so finite runs never strand subjects).
+    let mut spawn_next = |checks: &mut JoinSet<Vec<(String, PoolResult)>>,
+                          pending: &mut Vec<String>,
+                          launched: &mut usize| {
+        loop {
+            if !want(*launched) {
+                if !pending.is_empty() {
+                    let batch = std::mem::take(pending);
+                    checks.spawn(async move { batch_isolated(batch, timeout).await });
                 }
-            };
-            (prog, res)
-        });
+                return;
+            }
+            let prog = next_prog();
+            *launched += 1;
+            // Crash forensics: with GRAPHIX_FUZZ_ECHO set, print each
+            // program as it dispatches. Mostly superseded by isolation
+            // (a crasher now records itself), but kept for debugging
+            // the DRIVER process itself.
+            if std::env::var_os("GRAPHIX_FUZZ_ECHO").is_some() {
+                eprintln!("FUZZPROG\t{}", prog.replace('\n', "\\n"));
+            }
+            if !isolate {
+                checks.spawn(async move {
+                    let res = match check_classified(&prog, timeout).await {
+                        (Some(d), _) => PoolResult::Diverge(d),
+                        (None, ran) => PoolResult::Agree { ran },
+                    };
+                    vec![(prog, res)]
+                });
+                return;
+            }
+            if bsize > 1 && batch_eligible(&prog) {
+                pending.push(prog);
+                if pending.len() >= bsize {
+                    let batch = std::mem::take(pending);
+                    checks.spawn(async move { batch_isolated(batch, timeout).await });
+                    return;
+                }
+            } else {
+                checks.spawn(async move {
+                    vec![(prog.clone(), check_isolated(&prog, timeout).await)]
+                });
+                return;
+            }
+        }
     };
+    let mut pending: Vec<String> = Vec::new();
     while want(launched) && checks.len() < par {
-        spawn_check(&mut checks, next_prog());
-        launched += 1;
+        let before = checks.len();
+        spawn_next(&mut checks, &mut pending, &mut launched);
+        if checks.len() == before {
+            break;
+        }
     }
     loop {
         tokio::select! {
@@ -1986,11 +2298,9 @@ async fn run_pool(
                 // worker slot, and after `par` leaks the pool drained and
                 // a `forever` campaign exited "done" (soak jul04 item 6:
                 // the fuzz campaign bled out nine times overnight).
-                if want(launched) {
-                    spawn_check(&mut checks, next_prog());
-                    launched += 1;
-                }
-                if let Ok((prog, res)) = res {
+                spawn_next(&mut checks, &mut pending, &mut launched);
+                if let Ok(results) = res {
+                    for (prog, res) in results {
                     stats.run += 1;
                     if stats.run % 1000 == 0 {
                         eprintln!(
@@ -2078,6 +2388,7 @@ async fn run_pool(
                             BreakageWindow::LEN,
                         );
                         std::process::exit(2);
+                    }
                     }
                 }
             }

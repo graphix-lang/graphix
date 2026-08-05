@@ -125,11 +125,20 @@ What this says about the phases here:
   the docket for the fold class, but even zeroing interp-exec buys the
   fleet <11%.
 - **The fleet levers are elsewhere** (recorded here, owned elsewhere):
-  1. HARNESS subject batching — K subjects per child amortizes the
-     ~80ms constant K-fold. detcheck must stay per-process (fresh
-     ASLR is the point); fuzz/gen lanes need crash attribution
-     (re-run a failed batch singly). The single biggest throughput
-     multiplier available.
+  1. HARNESS subject batching — **BUILT 2026-08-05** (`check-batch`,
+     Eric-approved shared-instance model): one warmed runtime pair per
+     child runs K=16 Exact-tier subjects sequentially (subject-unique
+     module names; `CompRes` drop deletes each subject's graph; a
+     `SwapResolver` swaps the per-subject VFS into the long-lived
+     ctx). Only AGREEMENT is trusted from a batch — any other
+     verdict, a poisoned batch (Timeout/RuntimeErr wedges the shared
+     runtime → abort + withhold the tail), or a dead child falls back
+     to the individual `check_isolated` gold path, so every finding
+     still derives from a fresh single-subject process with the full
+     escalation ladder. Measured: 2.6-3.9x fleet throughput (261
+     subjects/s at PAR=24 on ryouko); K=32/64 are WORSE (poisoned-
+     batch blast radius), K=16 is the default (`GRAPHIX_FUZZ_BATCH`,
+     1 disables). detcheck/selfcheck/minimize stay per-process.
   2. Stdlib compile cost — `scope_refs_int` (re-scoping walk that
      re-mints TVar cells and rebuilds Ref params per use site) +
      `normalize_int` + `collect_tvars`/`resolve_tvars_seen` ≈ 8%,

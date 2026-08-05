@@ -116,6 +116,29 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
+/// Parse `check-batch`'s stdin framing: `{n}\n` then, per subject,
+/// `{byte_len}\n{bytes}`. Length-prefixed because programs are
+/// arbitrary text (delimiters are corruptible).
+fn parse_batch_frames(input: &str) -> Result<Vec<String>> {
+    let mut progs = Vec::new();
+    let (head, mut rest) = input
+        .split_once('\n')
+        .ok_or_else(|| anyhow::anyhow!("check-batch: empty stdin"))?;
+    let n: usize = head.trim().parse()?;
+    for _ in 0..n {
+        let (len, tail) = rest
+            .split_once('\n')
+            .ok_or_else(|| anyhow::anyhow!("check-batch: truncated frame header"))?;
+        let len: usize = len.trim().parse()?;
+        if tail.len() < len {
+            anyhow::bail!("check-batch: truncated frame body");
+        }
+        progs.push(tail[..len].to_string());
+        rest = &tail[len..];
+    }
+    Ok(progs)
+}
+
 /// Read a whole program from stdin (the `check-one` / `minimize-one`
 /// isolated-worker input channel).
 fn read_stdin() -> Result<String> {
@@ -150,8 +173,8 @@ async fn main() -> Result<()> {
     let sandbox_cwd = std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none()
         && match args.get(1).map(String::as_str) {
             Some(
-                "check-one" | "detcheck-one" | "selfcheck-one" | "minimize-one"
-                | "gen-check" | "regress",
+                "check-one" | "check-batch" | "detcheck-one" | "selfcheck-one"
+                | "minimize-one" | "gen-check" | "regress",
             ) => true,
             Some("check" | "run") => {
                 if let Some(f) = args.get_mut(2) {
@@ -486,6 +509,35 @@ async fn main() -> Result<()> {
             if !flaps.is_empty() {
                 std::process::exit(1);
             }
+        }
+        // Hidden: the batch worker (length-prefixed programs on stdin;
+        // per-subject verdicts appended + flushed to the FILE named by
+        // the extra argument — stdout is corruptible by the programs
+        // under test, and incremental flushing means a mid-batch death
+        // leaves the completed prefix on record for the parent's
+        // individual-re-run fallback). One warmed runtime pair serves
+        // the whole batch — the per-subject stdlib-compile constant is
+        // the fleet throughput bound (design/interp_lazy_bind_cost.md,
+        // the actual-soak profile).
+        Some("check-batch") => {
+            use std::io::Write;
+            let verdict_path = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("check-batch requires a verdict path"))?;
+            let input = read_stdin()?;
+            let progs = parse_batch_frames(&input)?;
+            let mut out = std::fs::File::create(&verdict_path)?;
+            graphix_fuzz::run_batch(&progs, campaign_timeout(), |i, v| {
+                let tag = match v {
+                    graphix_fuzz::BatchVerdict::Agree { ran: true } => "R",
+                    graphix_fuzz::BatchVerdict::Agree { ran: false } => "A",
+                    graphix_fuzz::BatchVerdict::Other => "O",
+                };
+                let _ = writeln!(out, "{i} {tag}");
+                let _ = out.flush();
+            })
+            .await;
         }
         Some("check-one") => {
             let code = read_stdin()?;
