@@ -330,57 +330,56 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
-    // Fold this scrutinee's firing into the kernel's tail-firing
-    // accumulator (see `LowerCtx::tail_scrut_stale`): the arms
-    // terminate individually, so the return path is where the
-    // scrutinee's control-dependence firing gets applied. band keeps
-    // a cleared (fired) bit cleared across loop iterations.
-    {
+    // TAIL-SPINE selects only (`tail_position` — the dispatch select
+    // of a tail-recursive loop): fold this scrutinee's firing into the
+    // kernel's tail-firing accumulator (see `LowerCtx::tail_scrut_stale`).
+    // The loop bound is a CONTROL dependence of the result — a re-call
+    // with a fired bound produces its value through the iteration
+    // count even when the data chain into the base arm is all-stale
+    // (`|n, acc| select n {0 => acc, _ => g(n-1, acc+cap)}` — the
+    // const-seeded acc), so without the fold the new value is LOST,
+    // not merely quiet. A NON-spine return-position select has no
+    // iteration structure — its control dependence is fully captured
+    // by final-selection change (below), and folding its scrutinee
+    // would resurrect the pre-strict-rule ride (`|n| select n {...}`
+    // firing per same-value call where `|n| {let x = select n {...};
+    // x}` does not — the refactor asymmetry, Eric 2026-08-06). band
+    // keeps a cleared (fired) bit cleared across loop iterations.
+    if sel.tail_position.load(std::sync::atomic::Ordering::Relaxed) {
         let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
         let ss = cx.b.ins().band_imm(scrut.disc(), STALE);
         let n = cx.b.ins().band(cur, ss);
         cx.b.def_var(cx.ctx.tail.scrut_stale, n);
     }
-    // GUARDED tail selects need SELECTION MEMORY (jul17c capture-
-    // dispatch pin): a guard reading a non-entry input (a capture) can
-    // flip the selection while the scrutinee stays quiet, and the
-    // scrutinee fold above can never see it — the node-walk fires the
-    // becoming-selected arm from its persistent `selected` memory.
-    // Same feeder rule as the value-position emitter: guards reading
-    // only pattern binds change selection only when the scrutinee
-    // fires (already folded), so they claim nothing (the recursion-hot
-    // guardless/bind-guard shapes stay word-free). The word records
+    // EVERY tail-emitter select needs SELECTION MEMORY (the strict
+    // select rule): the select fires iff its FINAL selection changed
+    // vs the previous invocation's (the becoming-selected fire — a
+    // scrutinee landing on a different base arm, or a guard capture
+    // flipping the selection, jul17c capture-dispatch pin) or the
+    // taken arm's own production fired. The word records
     // TERMINATING-arm indices only (`tail_sel_path` — recorded at
-    // `emit_kernel_return`), so the compare is final selection vs the
-    // previous invocation's final selection.
-    let has_feeder_guard = sel.arms.iter().any(|(pat, _)| {
-        pat.guard.as_ref().is_some_and(|g| {
-            let mut refs = crate::Refs::default();
-            g.node.refs(&mut refs);
-            let mut found = false;
-            refs.with_external_refs(|id| {
-                if cx.env.lookup_by_id(id).is_some() {
-                    found = true;
-                }
-            });
-            found
-        })
-    });
-    let sel_word: Option<SelWord> = if has_feeder_guard {
-        match cx.claim_state_word() {
-            Some(off) => {
-                let sp = cx.state_ptr();
-                Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
-            }
-            None => cx.claim_site_word().map(|off| {
-                let base = cx.site_ptr();
-                let addr = cx.b.ins().iadd_imm(base, off as i64);
-                SelWord::Guarded { base, addr }
-            }),
+    // `emit_kernel_return`), so loop-pass oscillation through jump
+    // arms is invisible and the compare is final vs final. No word
+    // available → de-fuse (the rule is unrepresentable without
+    // memory).
+    let sel_word: Option<SelWord> = match cx.claim_state_word() {
+        Some(off) => {
+            let sp = cx.state_ptr();
+            Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
         }
-    } else {
-        None
+        None => cx.claim_site_word().map(|off| {
+            let base = cx.site_ptr();
+            let addr = cx.b.ins().iadd_imm(base, off as i64);
+            SelWord::Guarded { base, addr }
+        }),
     };
+    let Some(sel_word) = sel_word else {
+        return Err(anyhow!(
+            "emit_clif: no selection memory available for a tail select \
+             (the strict select rule needs a state word) — de-fuse"
+        ));
+    };
+    let sel_word = Some(sel_word);
     // Tail position: a missing (tainted) scrutinee RETURNS the tainted
     // placeholder early — a value-level bottom. In a callee it rides
     // back in-band in the returned disc and bottoms only the call's

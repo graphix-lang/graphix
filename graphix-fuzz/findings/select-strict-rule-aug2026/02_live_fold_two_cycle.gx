@@ -1,0 +1,7 @@
+// Strict-rule positive control: live const callback. Epoch 1 =
+// [0:2 1:7] (becoming-selected over empty v0, then the resize fires
+// the fold); epoch 2 = [1:7] ONLY — no offset-0 emission (the old
+// semantics rode/recomputed at the injection cycle in both modes; the
+// strict rule is quiet until the resize actually fires the arm body).
+// schedule-v1: cap=80 events=640; in0=i64:1
+{let v0: Array<i64> = []; v0 <- in0 ~ array::push(v0, in0); let v11: i64 = select in0 {v11 => array::fold(v0, i64:2, |a, x| i64:7)}; v11}

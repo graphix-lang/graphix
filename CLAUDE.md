@@ -546,6 +546,32 @@ enforces it):**
   `builtin-taint-gate-jul2026` + `dyncall-partial-args-jul2026` (the
   latter also fixed `array::window` to require ALL its args — its
   eval produced `[]` at `#n: 0` with the val slot absent).
+- **THE STRICT SELECT RULE** (Eric's ruling 2026-08-06): a select
+  emits iff its SELECTION CHANGES (becoming-selected emits the new
+  arm's current value FIRED) or the TAKEN ARM's body produces — a
+  scrutinee or guard re-fire that changes neither is QUIET. Uniform in
+  EVERY position (`|n| select ...` ≡ `|n| {let x = select ...; x}`);
+  select-as-sampler (`select t { _ => v }`) is dead, `~` is the
+  sampling construct. The interp's same-arm ride re-emit and the
+  kernel's scrutinee-disc/guard-feeder folds at value merges are gone;
+  every fused select claims selection memory (state word / per-slot
+  chain / site word — none available de-fuses). Calls stay
+  dependence-driven per replay-frames v3 — organic tags ARE the
+  dependence tracking (`|n| i64:7` fires once; a body reading its
+  formal fires per delivery) — and the TAIL-SPINE scrutinee fold
+  survives, scoped to `tail_position` only: a loop bound is a CONTROL
+  dependence (iteration count) whose new value is otherwise LOST, not
+  merely quiet (`|n, acc| select n {0 => acc, _ => g(n-1, acc+cap)}`).
+  Under this rule SELECTION IS OBSERVABLE MEMORY: transient parks
+  harvest+reseed a `SelSnap` snapshot (callsite.rs — the prime
+  otherwise eats becoming-selected transitions and re-fired recursion
+  starves), and the kernel's null-site-block back-edge reads QUIET,
+  not becoming-selected. KNOWN GAPS (documented in code): interior
+  recursive activations have no per-activation selection memory in
+  kernels (a change onto a const arm misses its fire — needs a design
+  item), and MapQ/FoldQ live slot subgraphs aren't in the park
+  snapshot. Pinned by `select-strict-rule-aug2026/` +
+  `rec_same_arg_refire_quiet` / `rec_transient_pure_refire` fixtures.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel caches survive an arm's sleep — `Cached` residents,
   `CachedArgs` arg slots, `StructWith.current`, collection slot

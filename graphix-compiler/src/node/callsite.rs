@@ -266,8 +266,16 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// the deleted instance's external refs (captures): a retained
     /// instance is reactively LIVE to its captures, so a capture firing
     /// must also trigger the re-bind (the JIT twin: captures are kernel
-    /// inputs).
-    TransientParked { def: Value, ext_refs: Box<[BindId]> },
+    /// inputs). `sels` is the instance's SELECTION SNAPSHOT
+    /// ([`snap_selects`]): under the strict select rule the selection
+    /// is observable semantic memory (becoming-selected fires,
+    /// same-selection is quiet), so parking must preserve it — the
+    /// re-bind seeds it back after the prime so the replay sees the
+    /// retained twin's transitions instead of the prime's
+    /// already-moved state (which starved every re-fired recursion:
+    /// the prime ate the becoming-selected fires on the discarded
+    /// clone and the replay found a settled body).
+    TransientParked { def: Value, ext_refs: Box<[BindId]>, sels: Box<[SelSnap]> },
     /// Pre-bound at compile time by [`CallSite::try_static_resolve`]:
     /// `fnode` provably resolves to one `LambdaDef`, so the per-cycle
     /// identity check + lazy bind is skipped (`fnode.update()` still runs
@@ -276,6 +284,69 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// lifetime; `first_update` primes the body's external refs
     /// exactly once.
     Static { apply: Box<dyn Apply<R, E>>, resolved_ftype: FnType, first_update: bool },
+}
+
+/// One entry in a transient park's selection snapshot — the pre-order
+/// [`fusion::for_each_node`] walk of an instance body, one entry per
+/// `Select` (its `selected`) and one per `CallSite` (the callee
+/// instance's own snapshot, recursively; parked callees contribute
+/// their stored snapshot). The walk order is deterministic (CallSite
+/// args are visited in `ArgKey` order) and the re-bound body is
+/// structurally identical (same `LambdaDef`), so positional alignment
+/// between harvest and seed is exact; a shape mismatch at a callee
+/// (unbound where the snapshot has one, or vice versa) just skips —
+/// fresh-selection semantics. KNOWN GAP: collection-intrinsic
+/// (MapQ/FoldQ) per-slot runtime CallSites live outside the node walk,
+/// so selects inside live slot subgraphs aren't snapshotted — a
+/// transient body containing a collection HOF whose callback holds a
+/// select re-fires those selects fresh.
+#[derive(Debug, Clone)]
+pub(crate) enum SelSnap {
+    Sel(Option<usize>),
+    Callee(Box<[SelSnap]>),
+    NoCallee,
+}
+
+/// Harvest the selection snapshot of an instance body (park side).
+pub(crate) fn snap_selects<R: Rt, E: UserEvent>(body: &Node<R, E>) -> Box<[SelSnap]> {
+    let mut out: Vec<SelSnap> = Vec::new();
+    fusion::for_each_node(body, &mut |n| match n.view() {
+        NodeView::Select(s) => out.push(SelSnap::Sel(s.selected.get())),
+        NodeView::CallSite(cs) => out.push(match cs.parked_sels() {
+            Some(sels) => SelSnap::Callee(sels.to_vec().into_boxed_slice()),
+            None => match cs.resolved_apply() {
+                Some(ApplyView::Lambda(l)) => SelSnap::Callee(snap_selects(l.body())),
+                Some(ApplyView::BuiltIn) | None => SelSnap::NoCallee,
+            },
+        }),
+        _ => (),
+    });
+    out.into_boxed_slice()
+}
+
+/// Seed a harvested selection snapshot into a freshly re-bound (and
+/// primed) instance body (re-bind side). Runs between the prime and
+/// the replay: the replay then derives becoming-selected fires from
+/// the RETAINED twin's selections, not the prime's.
+pub(crate) fn seed_selects<R: Rt, E: UserEvent>(body: &Node<R, E>, snap: &[SelSnap]) {
+    let mut idx = 0usize;
+    fusion::for_each_node(body, &mut |n| match n.view() {
+        NodeView::Select(s) => {
+            if let Some(SelSnap::Sel(v)) = snap.get(idx) {
+                s.selected.set(*v);
+            }
+            idx += 1;
+        }
+        NodeView::CallSite(cs) => {
+            if let (Some(SelSnap::Callee(sub)), Some(ApplyView::Lambda(l))) =
+                (snap.get(idx), cs.resolved_apply())
+            {
+                seed_selects(l.body(), sub);
+            }
+            idx += 1;
+        }
+        _ => (),
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -554,6 +625,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// user lambda's body. See [`ApplyView`] for the variants.
     pub fn resolved_apply(&self) -> Option<ApplyView<'_, R, E>> {
         self.callee.apply().map(|a| a.view())
+    }
+
+    /// The parked callee's selection snapshot, when this site is
+    /// [`Callee::TransientParked`] (see [`SelSnap`]).
+    pub(crate) fn parked_sels(&self) -> Option<&[SelSnap]> {
+        match &self.callee {
+            Callee::TransientParked { sels, .. } => Some(sels),
+            _ => None,
+        }
     }
 
     /// The resolved callee as a raw `&dyn Apply`.
@@ -1533,8 +1613,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // priming deliveries (bind's fired formal/external backfills)
         // begin — the replay below withdraws them.
         let mut rebound_parked: Option<usize> = None;
+        let mut parked_sels: Option<Box<[SelSnap]>> = None;
         let bound = match &self.callee {
-            Callee::TransientParked { def, ext_refs } => {
+            Callee::TransientParked { def, ext_refs, sels } => {
                 let wake = event.init
                     || arg_fired
                     || ext_refs.iter().any(|id| {
@@ -1547,6 +1628,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         .expect("parked def must be a lambda");
                     let scope = self.scope.clone();
                     rebound_parked = Some(set.len());
+                    parked_sels = Some(sels.clone());
                     self.bind(ctx, scope, self.flags, fv.clone(), lb, event, &mut set)
                         .expect("failed to re-bind parked lambda");
                     true
@@ -1637,12 +1719,34 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 for id in &set[prime_start..] {
                     event.variables.remove(id);
                 }
+                // Seed the parked twin's SELECTIONS over the primed
+                // chain (see [`SelSnap`]): the prime re-derived every
+                // selection from current values on the discarded
+                // clone, eating the becoming-selected transitions the
+                // strict select rule fires on. With the previous
+                // epoch's selections restored, the replay's re-match
+                // fires exactly where the retained twin would have.
+                if let Some(sels) = parked_sels.as_ref() {
+                    if let ApplyView::Lambda(l) = f.view() {
+                        seed_selects(l.body(), sels);
+                    }
+                }
                 let replay_span = crate::perfdbg::span(&crate::perfdbg::REPLAY_NS);
                 let res = f.update(ctx, &mut self.arg_refs, event);
                 drop(replay_span);
                 res.map(|v| TagValue::tagged(v, f.out_tag()))
             }
             Some(f) => {
+                // A parked rebind reached on a REAL init view (no
+                // prime needed — the init view is the semantics): seed
+                // the parked twin's selections before the dispatch so
+                // selection transitions derive from the previous
+                // epoch, same as the prime-then-replay path.
+                if let Some(sels) = parked_sels.as_ref() {
+                    if let ApplyView::Lambda(l) = f.view() {
+                        seed_selects(l.body(), sels);
+                    }
+                }
                 let init = mem::replace(&mut event.init, true);
                 let mut refs = Refs::default();
                 f.refs(&mut refs);
@@ -1729,11 +1833,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             for id in ext.iter() {
                 ctx.rt.ref_var(*id, self.top_id);
             }
+            // Harvest the instance's selection snapshot before the
+            // delete — selection memory is observable under the strict
+            // select rule and must survive the park (see [`SelSnap`]).
+            let sels = match apply.view() {
+                ApplyView::Lambda(l) => snap_selects(l.body()),
+                ApplyView::BuiltIn => Box::default(),
+            };
             let del_span = crate::perfdbg::span(&crate::perfdbg::DELETE_NS);
             apply.delete(ctx);
             drop(del_span);
             self.callee =
-                Callee::TransientParked { def, ext_refs: ext.drain(..).collect() };
+                Callee::TransientParked { def, ext_refs: ext.drain(..).collect(), sels };
         }
         for id in set.drain(..) {
             event.variables.remove(&id);

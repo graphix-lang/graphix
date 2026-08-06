@@ -1,0 +1,6 @@
+// Fixed by the strict select rule (Eric's ruling 2026-08-06; was
+// fuzz/pending-triage/filter_select_qop_pacing.gx — the interp's v1
+// lagged one cycle behind the jit through filter -> select-wildcard
+// -> index-with-$; the interp's same-arm ride was the lag).
+// schedule-v1: cap=144 events=1152; in0=i64:1 in1=i64:1
+{let v1: i64 = {let v0: Array<i64> = array::filter([in0, in0], |v0| true); select in0 {_ => v0[i64:-1]$}}; let v2: bool = true; let v3 = i64:0; v3 <- in1 ~ (v3 + in1); ((v3 - v1) * in0)}

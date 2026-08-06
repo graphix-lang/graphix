@@ -1,0 +1,6 @@
+// Strict-rule twin of 00 without the lambda call: the select+fold
+// with a permanently-starved callback capture. Both modes [0:2]; [].
+// Pre-rule this AGREED only by accident (the inline try-catch local
+// blocked the select's fusion, so both sides interpreted and rode).
+// schedule-v1: cap=80 events=640; in0=i64:1
+{let v0: Array<i64> = []; v0 <- in0 ~ array::push(v0, in0); let v10 = (try (error(true))? catch(e) => i64:7); let v11: i64 = select in0 {v11 => array::fold(v0, i64:2, |a, x| v10)}; v11}

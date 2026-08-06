@@ -19,9 +19,38 @@ use std::{collections::hash_map::Entry, sync::atomic::Ordering};
 
 atomic_id!(SelectId);
 
+/// The persistent selection (`Option<usize>` — which arm is selected),
+/// stored as an `AtomicUsize` (`usize::MAX` = none) so it can be
+/// written through `&self` (the `Sync` bound on `Update`; same pattern
+/// as `tail_position`). Semantic state, not a replay cache: it
+/// survives sleep, `reset_replay`, and — via the transient-park
+/// selection snapshot ([`crate::node::callsite::SelSnap`]) — park and
+/// re-bind. Under the strict select rule the selection IS observable
+/// (becoming-selected fires), so any machinery that rebuilds a node
+/// tree must preserve it.
+#[derive(Debug)]
+pub(crate) struct SelCell(std::sync::atomic::AtomicUsize);
+
+impl SelCell {
+    fn new() -> Self {
+        Self(std::sync::atomic::AtomicUsize::new(usize::MAX))
+    }
+
+    pub(crate) fn get(&self) -> Option<usize> {
+        match self.0.load(Ordering::Relaxed) {
+            usize::MAX => None,
+            i => Some(i),
+        }
+    }
+
+    pub(crate) fn set(&self, v: Option<usize>) {
+        self.0.store(v.unwrap_or(usize::MAX), Ordering::Relaxed)
+    }
+}
+
 #[derive(Debug)]
 pub struct Select<R: Rt, E: UserEvent> {
-    pub(super) selected: Option<usize>,
+    pub(crate) selected: SelCell,
     pub arg: Cached<R, E>,
     pub arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
     pub typ: Type,
@@ -33,10 +62,14 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// ARM's organic tag alone: the scrutinee is the loop variable,
     /// and its per-iteration firing (jump rebinds deliver FIRED) is
     /// loop plumbing, not an observable event — the interp twin of
-    /// the kernel's `emit_body_tail` no-scrutinee-fold rule. Value-
-    /// position selects keep the normal fold (result fires iff the
-    /// arm production or the consumed scrutinee fired — the #178
-    /// disc algebra).
+    /// the kernel's `emit_body_tail` no-scrutinee-fold rule.
+    /// Value-position selects follow the same organic-tag emission
+    /// since the strict select rule (Eric's ruling 2026-08-06: emit
+    /// iff the selection changes or the taken arm's body produces);
+    /// what remains tail-specific is the becoming-selected path — a
+    /// tail re-selection is loop mechanics and rides the arm's tag,
+    /// a value-position re-selection fires — and the dispatch-level
+    /// `tail_scrut_fired` fold.
     pub(crate) tail_position: std::sync::atomic::AtomicBool,
 }
 
@@ -56,7 +89,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             typ,
             arg: Cached::new(arg),
             arms,
-            selected: None,
+            selected: SelCell::new(),
             tail_position: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -96,7 +129,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             typ,
             arg,
             arms,
-            selected: None,
+            selected: SelCell::new(),
             tail_position: std::sync::atomic::AtomicBool::new(false),
         }))
     }
@@ -177,7 +210,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             eprintln!(
                 "SELECT upd init={} arg_up={arg_up} pat_up={pat_up} sel={:?} vars={}",
                 event.init,
-                selected,
+                selected.get(),
                 event.variables.len()
             );
         }
@@ -191,25 +224,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // the normal fold applies.
         let tail = tail_position.load(Ordering::Relaxed) && ctx.frame_depth > 0;
         // An arm result's tag: tainted if the arm's resident value is a
-        // placeholder; else fired iff the arm production fired, or the
-        // scrutinee production fired and was consumed (the #178 disc
-        // algebra fold — suppressed on the in-frame tail spine); else
-        // stale (the value channel).
+        // placeholder; else fired iff the arm production fired; else
+        // stale (the value channel). The scrutinee's firing does NOT
+        // fold in (the strict select rule, Eric's ruling 2026-08-06: a
+        // select emits iff the selection changes or the taken arm's
+        // body produces — a scrutinee re-fire that changes neither is
+        // quiet; the old #178 scrutinee fold was the ride re-emit).
+        // When the body consumes the scrutinee its binds deliver the
+        // scrutinee's tag, so consumption fires organically.
         macro_rules! emit {
             ($i:expr, $prod:expr) => {{
                 let i = $i;
                 if arms[i].1.tag.is_tainted() {
                     Some(TagValue::tainted(Value::Null))
                 } else {
-                    let fired =
-                        $prod.is_some_and(|t: Tag| t.is_fired()) || (arg_fired && !tail);
+                    let fired = $prod.is_some_and(|t: Tag| t.is_fired());
                     let tag = if fired { Tag::FIRED } else { Tag::STALE };
                     arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
                 }
             }};
         }
         if !arg_up && !pat_up {
-            self.selected.and_then(|i| match arms[i].1.update(ctx, event) {
+            self.selected.get().and_then(|i| match arms[i].1.update(ctx, event) {
                 None => None,
                 prod => emit!(i, prod),
             })
@@ -220,20 +256,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     if pat.is_match(&ctx.env, v) { Some(i) } else { None }
                 }),
             };
-            match (sel, *selected) {
+            match (sel, selected.get()) {
                 (Some(i), Some(j)) if i == j => {
+                    if crate::dbgenv::graphix_dbg_select() {
+                        eprintln!("SELECT same-arm i={i} arg={:?}", arg.cached.as_ref());
+                    }
                     if arg_up {
                         bind!(i);
                     }
                     let prod = arms[i].1.update(ctx, event);
-                    if prod.is_some() || arg_up { emit!(i, prod) } else { None }
+                    if prod.is_some() { emit!(i, prod) } else { None }
                 }
                 (Some(i), Some(_) | None) => {
                     let mut set: LPooled<Vec<BindId>> = LPooled::take();
-                    if let Some(j) = *selected {
+                    if let Some(j) = selected.get() {
                         arms[j].1.node.sleep(ctx);
                     }
-                    *selected = Some(i);
+                    selected.set(Some(i));
                     // The wake bind is part of the arm's INIT VIEW,
                     // exactly like the FIRED external seeding below: on
                     // a guard-flip re-selection the scrutinee produced
@@ -313,7 +352,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
                 (None, Some(j)) => {
                     arms[j].1.node.sleep(ctx);
-                    *selected = None;
+                    selected.set(None);
                     None
                 }
                 (None, None) => None,

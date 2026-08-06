@@ -1336,22 +1336,45 @@ run!(rec_transient_stateful_retained, REC_TRANSIENT_STATEFUL_RETAINED, |v: Resul
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Pure non-tail recursion re-fired repeatedly: each fire re-binds the
-// parked instances and recomputes the same value — the park/re-bind
-// cycle must be idempotent for a pure body. Collects [55, 55, 55].
+// Pure non-tail recursion re-fired with CHANGING args: each fire
+// re-binds the parked instances and recomputes — the park/re-bind
+// cycle must be idempotent for a pure body, and the distinct values
+// prove genuine recomputation. Collects [fib(8), fib(9), fib(10)] =
+// [21, 34, 55].
 const REC_TRANSIENT_PURE_REFIRE: &str = r#"
 {
   let go = 0;
   go <- select go { n if n < 2 => n + 1, _ => never() };
   let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, i64:1 => i64:1, _ => f(n - i64:1) + f(n - i64:2)};
-  array::group(f(go ~ i64:10), |n, _| n == 3)
+  array::group(f(go + i64:8), |n, _| n == 3)
 }
 "#;
 
 run!(rec_transient_pure_refire, REC_TRANSIENT_PURE_REFIRE, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => {
-        matches!(&a[..], [Value::I64(55), Value::I64(55), Value::I64(55)])
+        matches!(&a[..], [Value::I64(21), Value::I64(34), Value::I64(55)])
     }
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// THE STRICT SELECT RULE at the call boundary (Eric's ruling
+// 2026-08-06): a non-tail recursion re-fired with the SAME argument
+// value is QUIET — the dispatch select's selection doesn't change and
+// no arm body input fires, so the call produces once, exactly like
+// `|n| i64:7` re-called. (A tail-recursive SPINE differs: its result
+// control-depends on the loop bound through the iteration count, so
+// the spine's scrutinee fold fires it — see `tail_scrut_stale`.)
+const REC_SAME_ARG_REFIRE_QUIET: &str = r#"
+{
+  let go = 0;
+  go <- select go { n if n < 2 => n + 1, _ => never() };
+  let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, i64:1 => i64:1, _ => f(n - i64:1) + f(n - i64:2)};
+  count(f(go ~ i64:10))
+}
+"#;
+
+run!(rec_same_arg_refire_quiet, REC_SAME_ARG_REFIRE_QUIET, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 

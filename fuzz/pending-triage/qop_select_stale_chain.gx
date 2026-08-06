@@ -1,18 +1,20 @@
-// PENDING TRIAGE (aug05khz1 reactive divergence_000000, 2026-08-06 ~05:00): jit's v8 chain STALE
-// across epochs — jit trace ascends smoothly on count(in1) alone while interp's jumps with in0
-// (jit misses v8 recomputes on in0 fires; missing-recompute direction, values fire each epoch).
-// Shape: guarded-select+connect counter, checked-op -? with $, select over list::find result,
-// count. Pacing family — probe-first daylight triage with the other parked classes.
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(-42)), (1, I64(-42))], capped: false }, Epoch { events: [(0, I64(-41))], capped: false }, Epoch { events: [(0, I64(-29))], capped: false }, Epoch { events: [(0, I64(-40))], capped: false }, Epoch { events: [(0, I64(-43))], capped: false }, Epoch { events: [(0, I64(-34))], capped: false }, Epoch { events: [(0, I64(-31))], capped: false }, Epoch { events: [(0, I64(-32))], capped: false }] })
-// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(-42)), (1, I64(-42))], capped: false }, Epoch { events: [(0, I64(-42))], capped: false }, Epoch { events: [(0, I64(-41))], capped: false }, Epoch { events: [(0, I64(-41))], capped: false }, Epoch { events: [(0, I64(-40))], capped: false }, Epoch { events: [(0, I64(-39))], capped: false }, Epoch { events: [(0, I64(-38))], capped: false }, Epoch { events: [(0, I64(-37))], capped: false }] })
-// mutant: // schedule-v1: cap=176 events=1408; in0=i64:1; in0=i64:12 in1=f64:-1; in0=i64:1; in0=i64:-3 in1=f64:1.5; in0=i64:5 in1=f64:10.25; in0=i64:7 in1=f64:-1; in0=i64:5 in1=f64:10.25\n{ let v0 = i64:0; select v0 { v1 if v1 < i64:1 => v0 <- (v1 ~ v0) + i64:1, _ => never() }; let v3: u8 = { let v2: Map<string, Array<string>> = select in0 { v2 if true => {"b" => ["", "xyz"], "k0" => ["", "", "a"], "k2" => ["a", ""]}, _ if (in1 >= in1) => {"a" => ["a"], "k1" => ["hello"]}, v2 => {"k0" => ["xyz", "hello"]} }; (u8:0 * u8:1) }; let v8: i64 = { let v4: i64 = ((cast<i64>(v3)$ * cast<i64>(v3)$) * ((v0 % i64:100) * (in0 + in0))); let v5: [i64, null] = list::find(list::from_array([in0, i64:100, i64:100]), |v5| (v0 <= v0)); let v6 = "xyz"; let v7: (string, u8, u8) = (array::fold(["hello"], "xyz", |v7, v8| v8), u8:1, ((u8:100 * u8:100) * (u8:255 + u8:255))); (i64:42 - ((in0 - i64:1) -? select v5 { null as _ => i64:100, i64 as n => n })$) }; let v9 = f64:0.0; v9 <- in1 ~ (v9 + in1); let v10 = count(in1); (v10 - v8) }
-// minimized:
+// PENDING TRIAGE — the qop/select stale-chain family, TWO witnesses,
+// one root suspected (both: epoch-2 off-by-one, jit reading a stale
+// operand where the interp reads fresh; shape: ~ + try/? into catch +
+// checked op with ?/$ + select over list::find result). NOT fixed by
+// the strict select rule (2026-08-06): the rule narrowed member 2
+// from varying values (-2,3,-5) to a single epoch-2 skew and member 1
+// from a smooth-ascent trace to the same epoch-2 skew, but the skew
+// itself survives. CAUTION: member 1's earlier "AGREE" re-check ran
+// the RICH schedule from a mutant comment line the harness picked up
+// — verify with the minimized schedules below. Related open:
+// dynmod_reload_value_skew.gx.
+//
+// MEMBER 1 (aug05khz1 reactive divergence_000000): post-strict-rule
+// interp [0:-42 1:-42]; [0:-40] vs jit [0:-42 1:-42]; [0:-41].
 // schedule-v1: cap=176 events=1408; in0=i64:1 in1=f64:1
 {let v0 = i64:0; select v0 {v1 if v1 < i64:1 => v0 <- (v1 ~ v0) + i64:1, _ => never()}; let v3: u8 = {let v2: Map<string, Array<string>> = select in0 {v2 if true => {"b" => ["", "xyz"], "k0" => ["", "", "a"], "k2" => ["a", ""]}, _ if (in1 >= in1) => {"a" => ["a"], "k1" => ["hello"]}, v2 => {"k0" => ["xyz", "hello"]}}; (u8:0 * u8:1)}; let v8: i64 = {let v4: i64 = ((cast<i64>(v3)$ * cast<i64>(v3)$) * ((v0 % i64:100) * (in0 + in0))); let v5: [i64, null] = list::find(list::from_array([in0, i64:100, i64:100]), |v5| (v0 <= v0)); let v6 = "xyz"; let v7: (string, u8, u8) = (array::fold(["hello"], "xyz", |v7, v8| v8), u8:1, ((u8:100 * u8:100) * (u8:255 + u8:255))); (i64:42 - ((in0 - i64:1) -? select v5 {null as _ => i64:100, i64 as n => n})$)}; let v9 = f64:0.; v9 <- in1 ~ (v9 + in1); let v10 = count(in1); (v10 - v8)}
-// FAMILY MEMBER 2 (aug05k ryouko reactive divergence_000000, ~06:00): interp constant 0 every
-// epoch ((v2-v1)-v2 with consistent values); jit varies (-2,3,-5) = stale/fresh mix. Shape:
-// ~ + try/? into catch + checked +? + select over list::find result. The family's recurring
-// elements: list::find/select-over-result, checked ops through ?/catch, ~. One root suspected.
+// MEMBER 2 (aug05k ryouko reactive divergence_000000): post-strict-
+// rule interp [0:0]; [0:0] vs jit [0:0]; [0:-1].
 // schedule-v1: cap=112 events=896; in0=i64:1
 // {let v1: i64 = {let v0: [i64, null] = list::find(list::from_array([in0, i64:0, i64:0]), |v0| true); select in0 {v1 if (f64:-1. > f64:-1.) => i64:100, i64:0 => in0, v1 => (select v0 {null as _ => v1, i64 as n => n} - str::len(""))}}; let v2 = in0 ~ ((try ((v1 +? in0))? catch(e) => (in0 % v1))); ((v2 - v1) - v2)}
