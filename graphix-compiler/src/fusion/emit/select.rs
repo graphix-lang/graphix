@@ -445,39 +445,12 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // through the owned-value twin (the aug02 reactive divergence —
     // an Array-typed merge rode at the wrong seam without it).
     let result = CompiledExpr::new(rdisc, rpayload);
-    let cached = match merge_shape {
-        SelectMerge::Scalar(p) => emit_scalar_taint_cache(cx, p, result),
+    match merge_shape {
+        SelectMerge::Scalar(p) => Ok(emit_scalar_taint_cache(cx, p, result)),
         SelectMerge::Value | SelectMerge::Composite | SelectMerge::String => {
-            emit_value_taint_cache(cx, result)?
+            emit_value_taint_cache(cx, result)
         }
-    };
-    // A FIRED scrutinee re-fires the selected arm's output — the
-    // node-walk re-emits the arm's ridden value on every scrutinee
-    // delivery (probed both pattern kinds, const arms: one emission
-    // per injection epoch, both modes). The cache substitution above
-    // rebuilds its disc as `clean | STALE` ("didn't fire"), which is
-    // right for a ride triggered by OTHER inputs but swallowed the
-    // scrutinee-driven re-fire at the output freshness gate: a
-    // binding-arm select over a fold whose callback capture never
-    // fired rode the cached value STALE and the kernel emitted
-    // nothing where the interp re-fired it (aug05h ryouko reactive
-    // divergence_000000). AND the scrutinee's STALE into the final
-    // disc — idempotent on the normal path (arm discs already fold
-    // the scrutinee) — EXCEPT when the result is TAINTED (no-history
-    // pass-through): clearing STALE there would break the TAINT ⟹
-    // STALE invariant, and a tainted output forces None regardless.
-    let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
-    let is_taint = cx.b.ins().band_imm(cached.disc, TAINT);
-    let taint_ne = cx.b.ins().icmp_imm(IntCC::NotEqual, is_taint, 0);
-    let stale_c = cx.b.ins().iconst(types::I64, STALE);
-    let zero = cx.b.ins().iconst(types::I64, 0);
-    let taint_stale = cx.b.ins().select(taint_ne, stale_c, zero);
-    let keep_stale = cx.b.ins().bor(scrut_stale, taint_stale);
-    let cached_stale = cx.b.ins().band_imm(cached.disc, STALE);
-    let out_stale = cx.b.ins().band(cached_stale, keep_stale);
-    let cleared = cx.b.ins().band_imm(cached.disc, !STALE);
-    let disc = cx.b.ins().bor(cleared, out_stale);
-    Ok(CompiledExpr::new(disc, cached.payload))
+    }
 }
 
 /// The final-arm fail block of a VALUE-position select: reached only
