@@ -743,6 +743,21 @@ destructured/`<-`-retarget shapes the index can't know — flagged for review.
 (2) builtin-bodied lambdas' `intrinsic_effect` is read from `BuiltinFacts`,
 not constructed `Sync`.
 
+**JIT memory lifecycle (settled with Eric, 2026-08-06):** one JITModule +
+one contiguous 256MB arena reservation per ExecCtx (colocation is
+correctness: cross-kernel calls are ±2GiB PC-relative). Individual
+kernels are NEVER freed within a live ctx — no per-function dealloc in
+cranelift, and kernel addresses are baked into other kernels' call
+relocations — so recompile loops (dynmod hot-reload, long REPLs)
+accumulate dead kernels; exhaustion is a clean "jit memory region
+exhausted" de-fuse (perf cliff, never wrong). Reclamation granularity
+is THE ExecCtx: dropping it unmaps the whole arena (ArenaMemoryProvider
+owns the mapping) — the embedder contract for daemons using graphix as
+a plugin system, and the LSP's per-check `reset_jit_for_check` is the
+same pattern. If a real deployment ever hits the cliff, the designed
+fix is generational modules (needs fn-pointer liveness across the
+cross-kernel call graph) — post-release, documented limitation.
+
 **Kernel ABI:** kind-grouped params — scalars, then array/tuple/struct pointers,
 then string, then 2-word variant/nullable/value — derived from a single source
 (`fusion/kernel_abi.rs`: `KernelSig::abi_params`/`AbiParamKind`). Any region width
