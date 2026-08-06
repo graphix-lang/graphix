@@ -231,10 +231,30 @@ impl<'a> TVal<'a> {
             // fallback keeps the old behavior when no member matches
             // strictly.
             (Type::Set(ts), v) => {
+                // The plain fallback runs in two tiers: STRUCTURED
+                // members first, then members that are themselves a
+                // bare blind leaf (an unbound tvar / Any / ⊥). A
+                // never()-fed arm union retains the arm's orphan
+                // unbound cell as a member, and bare tvars sort first
+                // in the set — picking one rendered the value NAKED in
+                // the interp while the fused pipeline's settled union
+                // (no orphan) rendered typed (aug06d hz0
+                // divergence_000000: Array<List<Any>> through a
+                // never()-armed select printed `[["Cons", 42, "Nil"]]`
+                // vs `` [`Cons(42, `Nil)] `` — pinned in
+                // tval-union-blind-print-jul2026).
+                let blind = |t: &Type| {
+                    t.with_deref(|t| {
+                        matches!(t, None | Some(Type::Any) | Some(Type::Bottom))
+                    })
+                };
                 let strict = ts
                     .iter()
                     .find(|t| t.is_a_with(&self.env, IsAFlags::Strict.into(), v));
-                match strict.or_else(|| ts.iter().find(|t| t.is_a(&self.env, v))) {
+                let pick = strict
+                    .or_else(|| ts.iter().find(|t| !blind(t) && t.is_a(&self.env, v)))
+                    .or_else(|| ts.iter().find(|t| t.is_a(&self.env, v)));
+                match pick {
                     None => fmt_naked(f, v),
                     Some(t) => Self { typ: t, env: self.env, v }.fmt_int(f, hist),
                 }

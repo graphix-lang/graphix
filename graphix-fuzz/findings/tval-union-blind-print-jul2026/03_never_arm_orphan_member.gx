@@ -1,0 +1,10 @@
+// Member 3 (aug06dhz0 fuzz divergence_000000, 2026-08-06,
+// PRE-EXISTING — deterministic on e5a2e1bd too): the interp-side arm
+// union of a never()-armed select RETAINS the never arm's orphan
+// unbound cell as a set member; bare tvars sort first, the strict
+// pass rejects every member (the structured member has Any leaves =
+// blind under Strict), and the old single-tier plain fallback picked
+// the orphan -> NAKED render, while the fused pipeline's settled
+// union (no orphan) rendered typed. Fixed: the plain fallback runs
+// structured members before bare-blind ones (tval.rs Set arm).
+{let a = [i64:0, ("foo", f64:42.)]; let out = select a {[x, tl..] => {type List<'a> = [`Cons('a, List<'a>), `Nil]; let l: List<Any> = `Cons(i64:42, `Cons(i64:3, `Nil)); l}, _ => never()}; "[array::group(out, |i, x| true)]"}
