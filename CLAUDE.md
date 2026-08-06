@@ -743,20 +743,24 @@ destructured/`<-`-retarget shapes the index can't know — flagged for review.
 (2) builtin-bodied lambdas' `intrinsic_effect` is read from `BuiltinFacts`,
 not constructed `Sync`.
 
-**JIT memory lifecycle (settled with Eric, 2026-08-06):** one JITModule +
-one contiguous 256MB arena reservation per ExecCtx (colocation is
-correctness: cross-kernel calls are ±2GiB PC-relative). Individual
-kernels are NEVER freed within a live ctx — no per-function dealloc in
-cranelift, and kernel addresses are baked into other kernels' call
-relocations — so recompile loops (dynmod hot-reload, long REPLs)
-accumulate dead kernels; exhaustion is a clean "jit memory region
-exhausted" de-fuse (perf cliff, never wrong). Reclamation granularity
-is THE ExecCtx: dropping it unmaps the whole arena (ArenaMemoryProvider
-owns the mapping) — the embedder contract for daemons using graphix as
-a plugin system, and the LSP's per-check `reset_jit_for_check` is the
-same pattern. If a real deployment ever hits the cliff, the designed
-fix is generational modules (needs fn-pointer liveness across the
-cross-kernel call graph) — post-release, documented limitation.
+**JIT memory lifecycle (settled with Eric 2026-08-06; GENERATIONAL
+since 1d1bf215):** one active JITModule + 256MB arena per ExecCtx
+(colocation is correctness: cross-kernel calls are ±2GiB PC-relative).
+Individual kernels are never freed within a generation, but exhaustion
+is no longer a perf cliff: the active Jit RETIRES whole into
+`FusionCtx::retired_jits` (kernels stay mapped and executing) and the
+region build retries once in a fresh module. Soundness: direct
+kernel→kernel calls exist only WITHIN a region build, so "a region
+builds atomically in one generation; generations never link" — a
+post-rotation region recompiles its transitive callees into the fresh
+module's empty by_kernel cache. Recompile-heavy sessions (dynmod
+hot-reload, long REPL/plugin) accumulate one resident arena per
+rotation — warn-once log per rotation + pollable
+`FusionStats::jit_generations`; the reclamation unit is the ExecCtx
+(drop frees every generation; `reset_jit_for_check` ditto — the
+embedder contract for plugin daemons). `GRAPHIX_JIT_ARENA` (bytes)
+shrinks the arena so the differential gates exercise rotation
+(regress at 65536 forces it corpus-wide).
 
 **Kernel ABI:** kind-grouped params — scalars, then array/tuple/struct pointers,
 then string, then 2-word variant/nullable/value — derived from a single source
