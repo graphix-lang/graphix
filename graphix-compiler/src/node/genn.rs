@@ -8,7 +8,6 @@ use crate::{
     expr::{ApplyExpr, ExprId, ExprKind, ModPath, Origin},
     typ::{FnType, Type},
 };
-use ahash::AHashMap;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
@@ -108,7 +107,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
     })
     .to_expr_nopos();
     let mut positional = 0;
-    let args: AHashMap<ArgKey, Arg<R, E>> = args
+    let args: crate::node::callsite::ArgMap<R, E> = args
         .into_iter()
         .zip(typ.args.iter())
         .map(|(node, farg)| {

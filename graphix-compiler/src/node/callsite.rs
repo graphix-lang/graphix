@@ -16,6 +16,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
+use indexmap::IndexMap;
 use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -78,6 +79,18 @@ pub(crate) enum ArgKey {
     Positional(usize),
     Named(ArcStr),
 }
+
+/// The call's argument nodes, keyed for signature lookups but
+/// ITERATING IN SOURCE ORDER (IndexMap, insertion-ordered). Source
+/// order is load-bearing at runtime: the compiler threads the args as
+/// a sequential scope chain (a `let` in one argument is in scope for
+/// the arguments to its right — a forward reference is a compile
+/// error), so `update` must evaluate them left to right for the
+/// bind's same-cycle delivery to reach its sibling readers. The old
+/// AHashMap iterated in per-process seeded hash order, making that
+/// delivery a coin flip (`skip(#n: let x = [...], array::iter(x))`
+/// starved in ~half of processes — the aug06 settle-flap witness 2).
+pub(crate) type ArgMap<R, E> = IndexMap<ArgKey, Arg<R, E>, ahash::RandomState>;
 
 #[derive(Debug)]
 pub(crate) struct Arg<R: Rt, E: UserEvent> {
@@ -215,8 +228,8 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
     args: &TArc<[(Option<ArcStr>, Expr)]>,
-) -> Result<AHashMap<ArgKey, Arg<R, E>>> {
-    let mut res = AHashMap::default();
+) -> Result<ArgMap<R, E>> {
+    let mut res = ArgMap::default();
     let mut pos = 0;
     for (name, expr) in args.iter() {
         let node = Some(compile(ctx, flags, expr.clone(), scope, top_id)?);
@@ -226,8 +239,10 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
                 pos += 1;
             }
             Some(k) => match res.entry(ArgKey::Named(k.clone())) {
-                Entry::Occupied(_) => bail!("duplicate named argument {k}"),
-                Entry::Vacant(e) => {
+                indexmap::map::Entry::Occupied(_) => {
+                    bail!("duplicate named argument {k}")
+                }
+                indexmap::map::Entry::Vacant(e) => {
                     e.insert(Arg::new(BindId::new(), node, false));
                 }
             },
@@ -503,7 +518,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) ftype: Option<FnType>,
     pub(super) rtype: Type,
     pub(crate) fnode: Node<R, E>,
-    pub(crate) args: AHashMap<ArgKey, Arg<R, E>>,
+    pub(crate) args: ArgMap<R, E>,
     pub(super) arg_refs: Vec<Node<R, E>>,
     /// The callee — static/dynamic-bound/unbound. See [`Callee`]. Replaces
     /// the former `function` + `statically_resolved` + `first_static_update`
