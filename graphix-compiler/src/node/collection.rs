@@ -440,6 +440,20 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
 trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     type Collection: MapCollection;
 
+    /// `true` iff `finish` reads the SOURCE ELEMENTS as part of the
+    /// RESULT (filter, find — the callback is only a predicate and the
+    /// elements pass through beside it). The result then genuinely
+    /// depends on the elements, so a same-length source refresh with
+    /// quiet callback slots must still fire the production (the strict
+    /// dependence rule, 2026-08-06: `filter([in0, 0], |_| true)` lost
+    /// in0's update — the interp's cached result went stale while the
+    /// fused loop recomputed fresh values under a quiet disc, and any
+    /// init-view reader saw the two sides disagree). Callback-driven
+    /// kinds (map, filter_map, flat_map, find_map, init, the folds)
+    /// stay quiet: their results flow entirely through callback
+    /// productions, which fire when the callback consumes what fired.
+    const PASS_THROUGH: bool = false;
+
     fn finish(
         &mut self,
         slots: &[Slot<R, E>],
@@ -714,7 +728,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     event.variables.insert(slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
-                if resized {
+                if resized || T::PASS_THROUGH {
                     production = merge_tag(production, tag);
                 }
                 if self.slots.is_empty() {
@@ -1917,6 +1931,8 @@ struct ArrayFilter;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilter {
     type Collection = ValArray;
 
+    const PASS_THROUGH: bool = true;
+
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ValArray) -> Option<Value> {
         Some(Value::Array(ValArray::from_iter(
             slots.iter().zip(source.iter()).filter_map(|(slot, value)| {
@@ -1995,6 +2011,8 @@ struct ArrayFind;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFind {
     type Collection = ValArray;
+
+    const PASS_THROUGH: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ValArray) -> Option<Value> {
         Some(
@@ -2124,6 +2142,8 @@ struct ListFilter;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilter {
     type Collection = ListCollection;
 
+    const PASS_THROUGH: bool = true;
+
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ListCollection) -> Option<Value> {
         Some(list::from_iter(slots.iter().zip(source.values()).filter_map(
             |(slot, value)| {
@@ -2204,6 +2224,8 @@ struct ListFind;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFind {
     type Collection = ListCollection;
+
+    const PASS_THROUGH: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ListCollection) -> Option<Value> {
         Some(
@@ -2319,6 +2341,8 @@ struct MapFilter;
 
 impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilter {
     type Collection = ValueMap;
+
+    const PASS_THROUGH: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ValueMap) -> Option<Value> {
         Some(Value::Map(CMap::from_iter(

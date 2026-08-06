@@ -1,0 +1,5 @@
+// The aug05khz1 stale-chain member 1 (was pending-triage): jit's v8
+// chain ascended on count(in1) alone while interp's jumped with in0
+// — list::find's pass-through staleness at the chain's head.
+// schedule-v1: cap=176 events=1408; in0=i64:1 in1=f64:1
+{let v0 = i64:0; select v0 {v1 if v1 < i64:1 => v0 <- (v1 ~ v0) + i64:1, _ => never()}; let v3: u8 = {let v2: Map<string, Array<string>> = select in0 {v2 if true => {"b" => ["", "xyz"], "k0" => ["", "", "a"], "k2" => ["a", ""]}, _ if (in1 >= in1) => {"a" => ["a"], "k1" => ["hello"]}, v2 => {"k0" => ["xyz", "hello"]}}; (u8:0 * u8:1)}; let v8: i64 = {let v4: i64 = ((cast<i64>(v3)$ * cast<i64>(v3)$) * ((v0 % i64:100) * (in0 + in0))); let v5: [i64, null] = list::find(list::from_array([in0, i64:100, i64:100]), |v5| (v0 <= v0)); let v6 = "xyz"; let v7: (string, u8, u8) = (array::fold(["hello"], "xyz", |v7, v8| v8), u8:1, ((u8:100 * u8:100) * (u8:255 + u8:255))); (i64:42 - ((in0 - i64:1) -? select v5 {null as _ => i64:100, i64 as n => n})$)}; let v9 = f64:0.; v9 <- in1 ~ (v9 + in1); let v10 = count(in1); (v10 - v8)}

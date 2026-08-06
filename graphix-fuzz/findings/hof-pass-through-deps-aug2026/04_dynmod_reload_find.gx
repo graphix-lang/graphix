@@ -1,0 +1,6 @@
+// The aug05j "dynmod reload value skew" (was pending-triage): the
+// dynamic-module reload was a red herring — the skew was
+// array::find([v2, 7], ...) holding v2's PRE-RELOAD value in its
+// stale cached result while the kernel recomputed with the fresh v2.
+// schedule-v1: cap=80 events=640; in0=i64:1
+{let v0 = ["let f = |v0: i64| -> i64 (v0 - i64:0)", "let f = |v1: i64| -> i64 (i64:42 * i64:0); let q = f(i64:1) * i64:5; let z = array::len(\[q, q + i64:1, f(i64:1 + i64:2)\]); let w = q + z"]; let v1 = mod dr0 dynamic { sandbox whitelist [ core ]; sig { val f: fn(x: i64) -> i64 }; source v0[in0 % i64:2]$ }; let v2 = select v1 {error as _ => i64:-1, null as _ => (i64:0 /? i64:2)$}; let v5: i64 = {let v3: u8 = (u8:1 * (u8:100 *? cast<u8>(v64:1)$)$); let v4: [i64, null] = array::find([v2, i64:7], |v4| (true || true)); ((in0 + select v4 {null as _ => i64:7, i64 as n => n}) + i64:7)}; let v6 = i64:0; v6 <- in0 ~ (v6 + in0); ((v6 + v5) * v2)}

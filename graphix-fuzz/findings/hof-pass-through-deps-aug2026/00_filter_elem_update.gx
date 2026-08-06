@@ -1,0 +1,13 @@
+// THE STRICT DEPENDENCE RULE for pass-through collection HOFs
+// (2026-08-06, fell out of the strict-select-rule arc): filter and
+// find results READ THE SOURCE ELEMENTS — the callback is only a
+// predicate — so a same-length source refresh with quiet callback
+// slots must still fire the production. The interp's MapQ fired only
+// on RESIZE (cached result went stale on element updates) while the
+// fused loop recomputed fresh values under a quiet disc; init-view
+// readers (select arm wakes) then saw the two sides disagree.
+// Fixed: MapFn::PASS_THROUGH (interp) + SlotFlags::pass_through
+// (kernel exact rule fires on any source fire) on Array/List/Map
+// filter+find. Both modes: [0:[0,0]]; [0:[1,0]].
+// schedule-v1: cap=112 events=896; in0=i64:1
+{let v0: Array<i64> = array::filter([in0, i64:0], |v0| true); v0}

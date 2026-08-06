@@ -1,0 +1,6 @@
+// find + select-over-result: the shape every stale-chain family
+// witness shared. The becoming-selected read of the woken arm rode
+// find's STALE cached result while the kernel read fresh. Both
+// modes now: [0:0]; [0:1].
+// schedule-v1: cap=112 events=896; in0=i64:1
+{let v0: [i64, null] = array::find([in0, i64:0, i64:0], |v0| true); select in0 {i64:0 => in0, v1 => select v0 {null as _ => i64:9, i64 as n => n}}}

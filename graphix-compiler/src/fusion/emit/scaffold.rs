@@ -634,6 +634,14 @@ pub struct SlotFlags {
     len: Option<ClifValue>,
     result_is_firing: bool,
     src_invariant: bool,
+    /// PASS-THROUGH kinds (filter, find — the kernel twin of
+    /// `MapFn::PASS_THROUGH`): the result reads the source ELEMENTS
+    /// beside the callback verdicts, so a same-length source refresh
+    /// with quiet slots still fires (the strict dependence rule,
+    /// 2026-08-06 — without it the fused loop recomputed fresh values
+    /// under a quiet disc while the node-walk's cache went stale, and
+    /// init-view readers saw the two sides disagree).
+    pass_through: bool,
     /// The collection callsite this loop lowers ([`BodyCx::
     /// collection_site`], captured at loop start) — the key a NESTED
     /// loop's prev-length word was chained under in the enclosing
@@ -656,6 +664,7 @@ impl SlotFlags {
             len: None,
             result_is_firing: false,
             src_invariant: false,
+            pass_through: false,
             site_id: cx.collection_site(),
         }
     }
@@ -666,6 +675,10 @@ impl SlotFlags {
 
     pub fn result_is_firing(&mut self) {
         self.result_is_firing = true;
+    }
+
+    pub fn set_pass_through(&mut self) {
+        self.pass_through = true;
     }
 
     /// Record the source's element count for `apply`'s empty-source
@@ -841,6 +854,11 @@ impl SlotFlags {
         let src_empty = cx.b.ins().band(src_fired, empty);
         let fires = cx.b.ins().bor(resized, slot_fired);
         let fires = cx.b.ins().bor(fires, src_empty);
+        // Pass-through kinds fire on ANY source fire — the elements
+        // are part of the result (`conservative_stale` already
+        // includes the source term, so only the exact rule needs it).
+        let fires =
+            if self.pass_through { cx.b.ins().bor(fires, src_fired) } else { fires };
         let quiet = cx.b.ins().iconst(types::I64, STALE);
         let zero = cx.b.ins().iconst(types::I64, 0);
         cx.b.ins().select(fires, zero, quiet)
@@ -999,6 +1017,7 @@ where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
     let mut flags = SlotFlags::new(cx);
+    flags.set_pass_through();
     let owns_drop = !matches!(
         kernel_abi::abi_kind(cx.registry(), elem.typ),
         Some(AbiKind::Scalar(_))
@@ -1559,6 +1578,7 @@ where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
     let mut flags = SlotFlags::new(cx);
+    flags.set_pass_through();
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     flags.set_len(len);
