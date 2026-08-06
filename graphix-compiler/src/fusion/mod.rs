@@ -124,6 +124,13 @@ pub struct FusionStats {
     /// Per-failure source identity and compile error. Compile-time only;
     /// bounded by program size.
     pub failed: Vec<FusionFailure>,
+    /// JIT module ROTATIONS this context has performed (see
+    /// `FusionCtx::retired_jits`): each is one retired ~256MB arena
+    /// still resident (dead kernels stay mapped; live kernels from old
+    /// generations keep executing). Embedders running recompile-heavy
+    /// workloads (hot-reloading dynamic modules, long plugin sessions)
+    /// can poll this and recycle the ExecCtx to reclaim everything.
+    pub jit_generations: usize,
     /// Region-root ExprIds that successfully fused. Lets a consumer
     /// (e.g. the `#[native]` reporter) tell a STRUCTURAL `failed` entry —
     /// a `let`/block whose region attempt failed but whose VALUE fused in
@@ -172,6 +179,19 @@ pub struct FusionCtx {
     /// [`emit::compile_kernel_with_callees_direct`] (parent + callees
     /// declared/defined together → direct CLIF cross-kernel calls).
     pub jit: parking_lot::Mutex<emit::Jit>,
+    /// RETIRED JIT generations (the generational rotation, 2026-08-06,
+    /// Eric's design): when the active module's arena exhausts during
+    /// a region build, the whole `Jit` — module, arena, caches, and
+    /// every lifetime anchor its kernels bake pointers into — moves
+    /// here and a fresh one takes its place; the failed region build
+    /// retries once against the fresh module. Old kernels keep
+    /// executing from retired arenas (their spliced nodes hold the fn
+    /// pointers); GENERATIONS NEVER LINK — every direct kernel call is
+    /// intra-region and a region builds atomically within one
+    /// generation, so a post-rotation region recompiles its whole
+    /// transitive callee set. Freed only by ExecCtx drop /
+    /// [`Self::reset_jit_for_check`].
+    pub retired_jits: parking_lot::Mutex<Vec<emit::Jit>>,
     /// On-demand monomorphized lambda-kernel cache, keyed by
     /// `(LambdaId, Arc<FnType>)`. Populated by `build_lambda_kernel`:
     /// derive the signature once, reuse it for every later call to the
@@ -233,6 +253,7 @@ impl FusionCtx {
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             jit: parking_lot::Mutex::new(emit::Jit::new()?),
+            retired_jits: parking_lot::Mutex::new(Vec::new()),
             kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             building: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
@@ -263,6 +284,7 @@ impl FusionCtx {
     /// kernels: it frees their compiled code.
     pub fn reset_jit_for_check(&self) -> anyhow::Result<()> {
         *self.jit.lock() = emit::Jit::new()?;
+        self.retired_jits.lock().clear();
         Ok(())
     }
 }
@@ -1020,22 +1042,66 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // body is emitted by `emit_clif` recursion from the root. Any Err
     // (a node that doesn't emit) discards the half-built function —
     // the subtree node-walks.
-    let wrapped = match emit::compile_kernel_with_callees_direct(
-        &mut ctx.fusion.jit.lock(),
-        &kernel,
-        &lambda_callees,
-        node,
-        &discovery.apply_sites,
-        &lambda_sites,
-        &callee_bodies,
-        None,
-        &ctx.env,
-        &ctx.fusion.abstract_registry,
-        &lifted,
-        // Region parent: frames reach its replay reset through the
-        // FusedKernel node, so replay words are honored here.
-        true,
-    ) {
+    let mut build = |ctx: &mut ExecCtx<R, E>| {
+        emit::compile_kernel_with_callees_direct(
+            &mut ctx.fusion.jit.lock(),
+            &kernel,
+            &lambda_callees,
+            node,
+            &discovery.apply_sites,
+            &lambda_sites,
+            &callee_bodies,
+            None,
+            &ctx.env,
+            &ctx.fusion.abstract_registry,
+            &lifted,
+            // Region parent: frames reach its replay reset through the
+            // FusedKernel node, so replay words are honored here.
+            true,
+        )
+    };
+    let mut result = build(ctx);
+    // GENERATIONAL ROTATION (Eric's design, 2026-08-06): an exhausted
+    // arena retires the whole active `Jit` (its kernels stay mapped
+    // and executing — spliced nodes hold the fn pointers) and the
+    // region build retries ONCE against a fresh module. A region
+    // builds atomically within one generation and generations never
+    // link (every direct kernel call is intra-region; the retry
+    // recompiles the whole transitive callee set into the fresh
+    // module's empty cache), so no cross-module relocation can exist.
+    // Half-emitted functions in the retired module are unreachable
+    // garbage in an arena nothing touches again. A second exhaustion
+    // (a single region larger than the arena) de-fuses normally.
+    if let Err(e) = &result {
+        if format!("{e:#}").contains("memory region exhausted") {
+            match emit::Jit::new() {
+                Ok(fresh) => {
+                    let old = std::mem::replace(&mut *ctx.fusion.jit.lock(), fresh);
+                    ctx.fusion.retired_jits.lock().push(old);
+                    ctx.fusion.stats.jit_generations += 1;
+                    log::warn!(
+                        "JIT code arena exhausted: retired generation {} (its \
+                         kernels stay resident and running) and retrying this \
+                         region in a fresh module. Recompile-heavy sessions \
+                         (hot-reloading dynamic modules, long REPL/plugin \
+                         sessions) accumulate one resident ~256MB arena per \
+                         rotation — recycle the runtime/ExecCtx to reclaim \
+                         them all.",
+                        ctx.fusion.stats.jit_generations
+                    );
+                    result = build(ctx);
+                }
+                Err(e2) => {
+                    log::warn!(
+                        "JIT code arena exhausted and a fresh module could \
+                         not be created ({e2:#}) — the region will run \
+                         interpreted"
+                    );
+                }
+            }
+        }
+    }
+    let wrapped = match result {
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");

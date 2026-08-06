@@ -679,8 +679,8 @@ async fn main() -> Result<()> {
                         // fusing modes have anything to say.
                         if !matches!(mode, Mode::Interp) {
                             println!(
-                                "  fusion: attempted={} fused={}",
-                                stats.attempted, stats.fused
+                                "  fusion: attempted={} fused={} jit_generations={}",
+                                stats.attempted, stats.fused, stats.jit_generations
                             );
                             for failure in &stats.failed {
                                 println!("  failed {:?}: {}", failure.id, failure.reason);

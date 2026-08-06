@@ -93,9 +93,18 @@ impl JitCtx {
         // page-by-page as kernels are emitted — and exhausting it is a
         // clean error ("jit memory region exhausted") that de-fuses the
         // region onto the node-walk rather than a crash.
+        // Overridable for testing the GENERATIONAL rotation path
+        // (`GRAPHIX_JIT_ARENA` in bytes): a tiny arena forces
+        // rotations constantly, so the whole differential corpus
+        // exercises the retire-and-retry seam instead of trusting it.
         const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
+        static ARENA_SIZE: std::sync::LazyLock<usize> =
+            std::sync::LazyLock::new(|| match std::env::var("GRAPHIX_JIT_ARENA") {
+                Ok(v) => v.parse().unwrap_or(JIT_ARENA_RESERVE),
+                Err(_) => JIT_ARENA_RESERVE,
+            });
         builder.memory_provider(Box::new(
-            cranelift_jit::ArenaMemoryProvider::new_with_size(JIT_ARENA_RESERVE)
+            cranelift_jit::ArenaMemoryProvider::new_with_size(*ARENA_SIZE)
                 .map_err(|e| anyhow!("jit arena reservation failed: {e}"))?,
         ));
         // Make the emit_helpers entry points resolvable from JIT'd
