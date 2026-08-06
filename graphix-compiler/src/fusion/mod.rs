@@ -535,12 +535,7 @@ pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
                 rec!(&body.node)
             }
         }
-        NodeView::TryCatch(t) => {
-            for n in t.nodes.iter() {
-                rec!(n)
-            }
-            rec!(&t.handler)
-        }
+        NodeView::Catch(c) => rec!(&c.handler),
         NodeView::Qop(q) => rec!(&q.n),
         NodeView::OrNever(o) => rec!(&o.n),
         NodeView::ExplicitParens(p) => rec!(&p.n),

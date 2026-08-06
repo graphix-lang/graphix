@@ -1442,7 +1442,8 @@ async fn clone_trycatch_catch_capture() -> Result<()> {
     assert_i64s(
         &clone_map(
             "let res = never(); \
-             try (0 /? 0)? catch(e) => res <- (x + k); \
+             catch(e) res <- (x + k); \
+             (0 /? 0)?; \
              res",
         )
         .await?,
@@ -1450,11 +1451,11 @@ async fn clone_trycatch_catch_capture() -> Result<()> {
     )
 }
 
-/// TryCatch whose TRY body captures `k` and does NOT error (no `?`
-/// propagates), so the try value `x / k` is returned every slot.
+/// A covered block whose body captures `k` and does NOT error (no `?`
+/// propagates), so the block value `x / k` is returned every slot.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_trycatch_try_capture() -> Result<()> {
-    assert_i64s(&clone_map("try (x / k) catch(e) => -1").await?, &[0, 0, 1, 1])
+    assert_i64s(&clone_map("{ catch(e) -1; x / k }").await?, &[0, 0, 1, 1])
 }
 
 /// Sample `x ~ k`: emit `k`'s current value when the element `x` fires.

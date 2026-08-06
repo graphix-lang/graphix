@@ -75,7 +75,7 @@ You can use `?` to propagate, `$` to swallow, or `select` to match on the result
 ```graphix
 〉(0 /? 0)?
 -: i64
-// throws ArithError to nearest try/catch
+// throws ArithError to the nearest installed catch
 
 〉(0 /? 0)$
 -: i64

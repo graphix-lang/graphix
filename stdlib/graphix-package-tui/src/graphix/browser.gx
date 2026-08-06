@@ -53,7 +53,7 @@ let browser = |
         }
     };
     let content_widths: Array<i64> = [];
-    let get_width = |i| try any(content_widths[i]?, i ~ 0) catch(e) => never(e);
+    let get_width = |i| { catch(e) never(e); any(content_widths[i]?, i ~ 0) };
     let { total: _, cols: visible_columns, widths }:
         { total: i64, cols: Array<string>, widths: Array<Constraint> } = {
         let name_width = max(4, get_width(0));

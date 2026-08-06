@@ -5,7 +5,7 @@ use super::{
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     data::{Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-    error::{Qop, TryCatch},
+    error::Qop,
     lambda::Lambda,
     module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
@@ -174,8 +174,12 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
         ExprKind::OrNever(e) => {
             OrNever::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
-        ExprKind::TryCatch(tc) => {
-            TryCatch::new(ctx, flags, spec.clone(), scope, top_id, tc)
+        ExprKind::Catch(_) => {
+            bail!(
+                "catch is only valid in statement position (a direct child of \
+                 a block or module body) at {}",
+                spec.pos
+            )
         }
         ExprKind::ByRef(e) => ByRef::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),

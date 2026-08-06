@@ -258,11 +258,10 @@ pub struct LambdaExpr {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
-pub struct TryCatchExpr {
+pub struct CatchExpr {
     pub bind: ArcStr,
     pub constraint: Option<Type>,
     pub handler: Arc<Expr>,
-    pub exprs: Arc<[Expr]>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -324,7 +323,7 @@ pub enum ExprKind {
     Select(SelectExpr),
     Qop(Arc<Expr>),
     OrNever(Arc<Expr>),
-    TryCatch(Arc<TryCatchExpr>),
+    Catch(Arc<CatchExpr>),
     ByRef(Arc<Expr>),
     Deref(Arc<Expr>),
     Neg(Arc<Expr>),
@@ -707,10 +706,7 @@ impl Expr {
                     e.fold(init, f)
                 })
             }
-            ExprKind::TryCatch(tc) => {
-                let init = tc.exprs.iter().fold(init, |init, e| e.fold(init, f));
-                tc.handler.fold(init, f)
-            }
+            ExprKind::Catch(c) => c.handler.fold(init, f),
             ExprKind::Qop(e)
             | ExprKind::OrNever(e)
             | ExprKind::ByRef(e)

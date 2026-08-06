@@ -11,4 +11,4 @@
 // starved fold arm (v10 never emits: the try-catch value channel is
 // the try block's last expr) never re-fires.
 // schedule-v1: cap=80 events=640; in0=i64:1
-{let v0: Array<i64> = []; v0 <- in0 ~ array::push(v0, in0); let v8 = |v9: i64| select v9 {i64:0 => (i64:1 + v9), _ => error(true)}; let v10 = (try (v8(i64:1))? catch(e) => (-(in0))); let v11: i64 = select in0 {v11 => array::fold(v0, i64:2, |v12, x| v10)}; v11}
+{let v0: Array<i64> = []; v0 <- in0 ~ array::push(v0, in0); let v8 = |v9: i64| select v9 {i64:0 => (i64:1 + v9), _ => error(true)}; let v10 = { catch(e) (-(in0)); (v8(i64:1))? }; let v11: i64 = select in0 {v11 => array::fold(v0, i64:2, |v12, x| v10)}; v11}

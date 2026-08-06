@@ -1214,7 +1214,12 @@ pub enum FnSource {
     /// kernel (next cycle), so there's no read-after-write hazard.
     /// `Kernel::new` constructs a `QopDeliverApply` carrying the handler
     /// BindId + the `?`'s spec (for the error's position/origin).
-    QopDeliver { handler_id: crate::BindId, spec: crate::expr::Expr },
+    QopDeliver {
+        handler_id: crate::BindId,
+        handler_top: crate::expr::ExprId,
+        own_top: crate::expr::ExprId,
+        spec: crate::expr::Expr,
+    },
 }
 
 /// Per-formal-arg routing for a [`FnSource::Builtin`] slot —

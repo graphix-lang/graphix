@@ -47,3 +47,28 @@ no longer misleading, the challange is that we must track catch installations
 by scope, we can't just depend on all relevant expressions being contained
 within them. I think we can probably do this in the ExecCtx, it will be more
 complex than the current implementation, but the payoff is worth it.
+
+## BUILT (2026-08-06)
+
+Implemented as designed, with the ordering/scoping mechanics settled during
+planning (see the commit for details):
+
+- `catch(e) expr` / `catch(e: T) expr`, no arrow; type Bottom; statement
+  position only (direct child of a block/module body, or a REPL input —
+  files are wrapped in one synthetic Do so file toplevel is block position).
+  `try` stays reserved and errors with a pointer to the new form.
+- A catch opens an IMPLICIT NESTED SCOPE: subsequent siblings compile with
+  the dynamic path extended by a `c<id>` segment (lexical path unchanged —
+  post-catch exports stay visible), reproducing the old nested-try path
+  discipline for all three lookup clocks (Qop compile, callsite typecheck,
+  late instance binds). Same-block second catch = shadowing; handler
+  rethrow resolves to the predecessor (handlers compile before their own
+  registration).
+- Blocks/module bodies run catches LAST, INNERMOST FIRST, in update and
+  both typecheck passes — the try-era handler-after-body order that makes
+  same-cycle Vacant-insert delivery (including inner-handler rethrow) land.
+- The `catch(e: T)` constraint (parsed-but-dead under try) is now checked
+  against the accumulated error union at typecheck1.
+- env.catch carries (BindId, top); cross-top deliveries (REPL: catch in an
+  earlier input) take the `set_var` next-cycle path. The shell threads a
+  session scope so a toplevel catch covers later inputs.

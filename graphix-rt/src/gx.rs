@@ -149,6 +149,7 @@ fn is_output_kind(kind: &ExprKind) -> bool {
         | ExprKind::Use { .. }
         | ExprKind::Connect { .. }
         | ExprKind::Module { .. }
+        | ExprKind::Catch { .. }
         | ExprKind::TypeDef { .. } => false,
         _ => true,
     }
@@ -239,6 +240,12 @@ pub(super) struct GX<X: GXExt> {
     cycle: u64,
     /// Active trace recording, if any. See [`GXHandle::trace_start`].
     trace: Option<TraceState>,
+    /// The SESSION scope for statement-at-a-time compiles (REPL inputs
+    /// and `compile_root`): a top-level `catch(e) expr` advances it
+    /// (`compile_stmt`), so later inputs compile under the catch's
+    /// coverage segment — the cross-input twin of a catch statement in
+    /// a block. File loads (`wrap_file_in_do`) don't touch it.
+    scope: Scope,
 }
 
 impl<X: GXExt> GX<X> {
@@ -274,6 +281,7 @@ impl<X: GXExt> GX<X> {
             result_watch: None,
             cycle: 0,
             trace: None,
+            scope: Scope::root(),
         };
         let st = Instant::now();
         if let Some(root) = cfg.root {
@@ -625,14 +633,19 @@ impl<X: GXExt> GX<X> {
             self.ctx.bind_to_lambda.remove(id);
         }
         self.ctx.unstable_bindings.clear();
-        let mut nodes = exprs
-            .iter()
-            .map(|e| {
-                compile(&mut self.ctx, flags, &scope, e.clone())
-                    .with_context(|| format!("compiling root expression {e}"))
-            })
-            .collect::<Result<LPooled<Vec<_>>>>()
+        let mut nodes: LPooled<Vec<_>> = LPooled::take();
+        for e in exprs.iter() {
+            let (n, advanced) = graphix_compiler::compile_stmt(
+                &mut self.ctx,
+                flags,
+                &self.scope,
+                e.clone(),
+            )
+            .with_context(|| format!("compiling root expression {e}"))
             .with_context(|| ori.clone())?;
+            self.scope = advanced;
+            nodes.push(n);
+        }
         for (e, n) in exprs.iter().zip(nodes.drain(..)) {
             self.ctx.rt.updated.insert(e.id, true);
             self.nodes.insert(e.id, n);
@@ -671,11 +684,18 @@ impl<X: GXExt> GX<X> {
             self.ctx.bind_to_lambda.remove(id);
         }
         self.ctx.unstable_bindings.clear();
-        let mut nodes = exprs
-            .iter()
-            .map(|e| compile(&mut self.ctx, self.flags, &scope, e.clone()))
-            .collect::<Result<LPooled<Vec<_>>>>()
+        let mut nodes: LPooled<Vec<_>> = LPooled::take();
+        for e in exprs.iter() {
+            let (n, advanced) = graphix_compiler::compile_stmt(
+                &mut self.ctx,
+                self.flags,
+                &self.scope,
+                e.clone(),
+            )
             .with_context(|| ori.clone())?;
+            self.scope = advanced;
+            nodes.push(n);
+        }
         let comp_exprs = exprs
             .iter()
             .zip(nodes.drain(..))
@@ -818,11 +838,20 @@ impl<X: GXExt> GX<X> {
                 self.ctx.bind_to_lambda.remove(id);
             }
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
+            let mut scope = scope;
             for e in exprs.iter() {
-                let res = compile(&mut self.ctx, self.flags, &scope, e.clone())
-                    .with_context(|| ori.clone());
+                let res = graphix_compiler::compile_stmt(
+                    &mut self.ctx,
+                    self.flags,
+                    &scope,
+                    e.clone(),
+                )
+                .with_context(|| ori.clone());
                 match res {
-                    Ok(n) => nodes.push(n),
+                    Ok((n, advanced)) => {
+                        scope = advanced;
+                        nodes.push(n);
+                    }
                     Err(e) => {
                         for mut n in nodes.drain(..) {
                             n.delete(&mut self.ctx);

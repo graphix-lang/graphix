@@ -336,11 +336,16 @@ fn node_effect<R: Rt, E: UserEvent>(
     match n.view() {
         NodeView::CallSite(cs) => callee_effect(cs, eff, self_ids, ctx),
         // Genuinely cross-cycle: a sample (`~`) or `any` delivers on a
-        // later cycle than its trigger; a TryCatch's catch handler reads
-        // an error variable a cycle after the `?` writes it; a fused
-        // kernel may pend. These stay async.
+        // later cycle than its trigger; a catch handler reads an error
+        // variable a cycle after the `?` writes it; a fused kernel may
+        // pend. These stay async. The Catch classification is also
+        // LOAD-BEARING for tail gating: a self-call after a catch is a
+        // tail LEAF, and only this Async classification (through the
+        // lambda_is_sync gate) keeps catch-covered recursion off the
+        // tail-loop machinery — do not refine it without a design pass
+        // on the handler/loop interplay.
         NodeView::Sample(_)
-        | NodeView::TryCatch(_)
+        | NodeView::Catch(_)
         | NodeView::Any(_)
         | NodeView::FusedKernel(_) => EffectKind::Async,
         // Variable WRITES (`connect`, a handler-ful `?`'s error delivery)

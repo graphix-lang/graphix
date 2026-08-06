@@ -2117,7 +2117,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         if let Some(t) = ftype.throws.with_deref(|t| t.cloned()) {
             match ctx.env.lookup_catch(&self.scope.dynamic) {
-                Ok(id) => {
+                Ok((id, _)) => {
                     if let Some(bind) = ctx.env.by_id.get(&id)
                         && let Type::TVar(tv) = &bind.typ
                     {

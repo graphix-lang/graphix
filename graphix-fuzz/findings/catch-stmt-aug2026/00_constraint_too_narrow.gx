@@ -1,0 +1,10 @@
+// catch(e: T) is a CHECKED contract since the catch redesign
+// (2026-08-06; the annotation was parsed-but-dead under try/catch):
+// the declared type must contain the union of every error the
+// covered region can throw. An index error is coverable here, the
+// annotation only admits ArithError -> compile-reject, both modes.
+{
+    let a = [1, 2, 3];
+    catch(e: Error<ErrChain<`ArithError(string)>>) never(e);
+    a[10]?
+}

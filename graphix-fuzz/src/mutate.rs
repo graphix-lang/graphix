@@ -18,7 +18,7 @@
 
 use graphix_compiler::expr::{
     ApplyExpr, BindExpr, Expr, ExprKind, SelectExpr, StructExpr, StructWithExpr,
-    StructurePattern, TryCatchExpr, parser::parse_one,
+    CatchExpr, StructurePattern, parser::parse_one,
 };
 use netidx::utils::Either;
 use netidx_value::Value;
@@ -136,12 +136,7 @@ fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
                 f(body);
             }
         }
-        TryCatch(tc) => {
-            for c in tc.exprs.iter() {
-                f(c);
-            }
-            f(&tc.handler);
-        }
+        Catch(c) => f(&c.handler),
         Lambda(l) => {
             if let Either::Left(body) = &l.body {
                 f(body);
@@ -282,11 +277,10 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
                 .collect::<Vec<_>>()
                 .into(),
         }),
-        TryCatch(tc) => TryCatch(Arc::new(TryCatchExpr {
-            bind: tc.bind.clone(),
-            constraint: tc.constraint.clone(),
-            exprs: aslice(tc.exprs.iter().map(|c| r!(c)).collect()),
-            handler: ra!(&tc.handler),
+        Catch(c) => Catch(Arc::new(CatchExpr {
+            bind: c.bind.clone(),
+            constraint: c.constraint.clone(),
+            handler: ra!(&c.handler),
         })),
         Lambda(l) => {
             let mut nl = (**l).clone();

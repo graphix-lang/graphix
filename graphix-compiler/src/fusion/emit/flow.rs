@@ -73,6 +73,10 @@ fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
         // the fuzzer's cross-module vocabulary, 2026-07-08). The
         // node-walk runs the "dead" statement and delivers.
         NodeView::Module(_) => ok = false,
+        // A catch INSTALLATION is never dead: eliminating it from a
+        // fused block would silently drop the handler while covered
+        // `?`s keep delivering to its variable.
+        NodeView::Catch(_) => ok = false,
         NodeView::Qop(q) => {
             if q.id.is_some() {
                 ok = false

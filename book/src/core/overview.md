@@ -48,10 +48,10 @@ The compiler checks your select expressions exhaustively—if you forget a case,
 
 ## Error Handling: Exceptions, Done Right
 
-Graphix has first-class error handling with try/catch and the `?` operator. Errors are just values with the special `Error<'a>` type, and they're tracked through the type system.
+Graphix has first-class error handling with scoped `catch` handlers and the `?` operator. Errors are just values with the special `Error<'a>` type, and they're tracked through the type system.
 
 **[Error Handling](./error.md)** explains:
-- How `?` throws errors to the nearest try/catch in dynamic scope
+- How `?` throws errors to the nearest installed `catch` in dynamic scope
 - How error types are checked at compile time—you can't forget to handle an error type
 - How the `$` operator silently swallows errors (use with caution!)
 - How error chains track the full context of where errors originated
@@ -67,6 +67,6 @@ These constructs combine to create the Graphix programming model:
 3. You use **select** to handle different cases and make decisions
 4. You use **connect** to update bindings when events occur
 5. The **type system** ensures everything is safe and correct
-6. **Errors** propagate cleanly through try/catch
+6. **Errors** propagate cleanly to installed `catch` handlers
 
 The result is a language where you describe relationships between values, and the runtime automatically maintains those relationships as things change. A temperature value updates, and the Fahrenheit conversion updates automatically. A timer fires, and your counter increments. A network subscription delivers new data, and your UI reflects it instantly.

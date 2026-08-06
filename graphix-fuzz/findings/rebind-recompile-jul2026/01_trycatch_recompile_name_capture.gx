@@ -22,4 +22,4 @@
 // called this hazard "acceptable because env-managing nodes are rare
 // inside per-slot templates" — this program is the counterexample.
 // minimized:
-{let x = array::fold([f64:-1.], "hello", |v7, v6| v7); let v6: u8 = u8:100; array::fold([u8:1], u8:255, |a, b| (try ((v6 /? u8:1))? catch(e) => u8:0))}
+{let x = array::fold([f64:-1.], "hello", |v7, v6| v7); let v6: u8 = u8:100; array::fold([u8:1], u8:255, |a, b| { catch(e) u8:0; ((v6 /? u8:1))? })}

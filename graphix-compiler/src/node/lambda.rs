@@ -1464,7 +1464,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 ori: Arc::new(Origin::default()),
             },
         );
-        let prev_catch = ctx.env.catch.insert_cow(def.scope.dynamic.clone(), faux_id);
+        let prev_catch =
+            ctx.env.catch.insert_cow(def.scope.dynamic.clone(), (faux_id, ExprId::new()));
         // DECLARED (named) signature tvars are RIGID for the DURATION
         // of this def gate: the body must be well-typed for ARBITRARY
         // 'a, so a concrete body type can't bind (and thereby escape)

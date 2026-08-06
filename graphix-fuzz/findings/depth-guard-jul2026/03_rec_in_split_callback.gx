@@ -14,4 +14,4 @@
 // collect_resolved_sites descends `callee_apply().
 // for_each_hof_callback_body` (analysis.rs); marks flow analysis_pred →
 // fused_template → per-slot clones via clone_rebind.
-{let v0 = array::fold([i64:-1], i64:255, |v1, v0| {let rec v2 = |v3: i64, v4: i64| -> i64 select v3 {i64:0 => v4, _ => v2(v3 - i64:1, v4 + v3)}; (v2(i64:256, i64:0) * i64:0) + (try ((v0 /? i64:-1))? catch(e) => i64:42)}); [i64:7 + v0]}
+{let v0 = array::fold([i64:-1], i64:255, |v1, v0| {let rec v2 = |v3: i64, v4: i64| -> i64 select v3 {i64:0 => v4, _ => v2(v3 - i64:1, v4 + v3)}; (v2(i64:256, i64:0) * i64:0) + { catch(e) i64:42; ((v0 /? i64:-1))? }}); [i64:7 + v0]}

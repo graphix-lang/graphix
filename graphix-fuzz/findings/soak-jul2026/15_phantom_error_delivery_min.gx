@@ -7,6 +7,8 @@
   let a = [i64:0, i64:1];
   let err0: i64 = never();
   let err1: i64 = never();
-  try try (a[i64:-9223372036854775808]? /? a[i64:0]?)? catch(e) => select e.0.error {`ArithError(_) => err1 <- i64:111, _ => err0 <- i64:222} catch(e) => err0 <- i64:333;
+  catch(e) err0 <- i64:333;
+  catch(e) select e.0.error {`ArithError(_) => err1 <- i64:111, _ => err0 <- i64:222};
+  (a[i64:-9223372036854775808]? /? a[i64:0]?)?;
   [err0, err1]
 }

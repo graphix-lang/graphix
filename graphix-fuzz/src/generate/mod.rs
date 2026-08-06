@@ -79,6 +79,12 @@ pub struct GenCfg {
     /// merging an ok arm with `error(...)` as a lambda's return — the
     /// soak-jul06c B5 shape) plus a consumed call.
     pub p_error_lambda: f64,
+    /// A statement slot emits a `catch(e) <handler>` INSTALLATION
+    /// covering the rest of the block, with later slots biased toward
+    /// `?`-bearing expressions (2026-08-06, the catch redesign — the
+    /// handler writes a pre-declared error accumulator so coverage,
+    /// same-cycle delivery, and the strict select rule all interact).
+    pub p_catch: f64,
     /// A statement slot emits a MODULE — wrapper file sections
     /// (`m{i}.gx` + usually `m{i}.gxi`) whose public lambdas enter the
     /// callable vocabulary as `m{i}::f`.
@@ -129,6 +135,7 @@ impl Default for GenCfg {
             p_lambda_shadow_template: 0.05,
             p_variant: 0.08,
             p_error_lambda: 0.06,
+            p_catch: 0.07,
             p_module: 0.12,
             p_abstract: 0.4,
             p_bare_module: 0.2,
@@ -416,6 +423,16 @@ fn gen_slots(
             stmts.extend(funcs::gen_rec_lambda(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_error_lambda) {
             stmts.extend(funcs::gen_error_arm_lambda(ctx, rng, cfg, stats));
+        } else if chance(rng, cfg.p_catch) {
+            let n = stmts.len();
+            let acc = format!("cerr{n}");
+            stmts.push(format!("let {acc}: Error<Any> = never()"));
+            let handler = if rng.below(2) == 0 {
+                format!("{acc} <- e")
+            } else {
+                format!("{{ let m = e; {acc} <- m }}")
+            };
+            stmts.push(format!("catch(e) {handler}"));
         } else if chance(rng, cfg.p_lambda_shadow_template) {
             stmts.extend(funcs::gen_shadowed_lambda_template(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_bare) {

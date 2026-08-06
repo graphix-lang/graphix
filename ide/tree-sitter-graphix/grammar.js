@@ -119,7 +119,7 @@ module.exports = grammar({
       $.use,
       $.type_def,
       $.let_binding,
-      $.try_catch,
+      $.catch_stmt,
       $.lambda,
       $.connect,
       $._arithmetic_expression,
@@ -135,7 +135,7 @@ module.exports = grammar({
       $.let_binding,
       $.connect,
       $.lambda,
-      $.try_catch,
+      $.catch_stmt,
       $._arithmetic_expression,
       $.by_ref,
       $.deref,
@@ -543,17 +543,15 @@ module.exports = grammar({
       optional(seq('=', $._expression)),
     )),
 
-    // Try-catch - low precedence so handler captures full expression
-    try_catch: $ => prec.right(-1, seq(
-      'try',
-      $._expression,
-      repeat(seq(';', $._expression)),
+    // Catch statement (installs an error handler covering the rest of
+    // the enclosing block) - low precedence so the handler captures
+    // the full expression
+    catch_stmt: $ => prec.right(-1, seq(
       'catch',
       '(',
       field('binding', $.identifier),
       optional(seq(':', $._type)),
       ')',
-      '=>',
       field('handler', $._expression),
     )),
 

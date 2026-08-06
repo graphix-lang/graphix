@@ -782,7 +782,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     MapQ(&'a node::collection::MapQBase<R, E>),
     FoldQ(&'a node::collection::FoldQBase<R, E>),
     Select(&'a node::select::Select<R, E>),
-    TryCatch(&'a node::error::TryCatch<R, E>),
+    Catch(&'a node::error::Catch<R, E>),
     Qop(&'a node::error::Qop<R, E>),
     OrNever(&'a node::error::OrNever<R, E>),
     ExplicitParens(&'a node::ExplicitParens<R, E>),
@@ -1788,6 +1788,24 @@ pub fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<Node<R, E>> {
+    compile_stmt(ctx, flags, scope, spec).map(|(n, _)| n)
+}
+
+/// [`compile`] for statement-list drivers that compile top-level
+/// expressions ONE AT A TIME (the shell REPL, `compile_root`, the
+/// checker) instead of through a file's synthetic `Do` wrap: a
+/// top-level `catch(e) expr` is legal here — it is statement position
+/// — and ADVANCES the scope for the statements that follow, exactly
+/// like a catch child inside a block. Thread the returned scope into
+/// the next statement's compile (and, for a live session, persist it)
+/// or later statements silently escape the catch's coverage. For
+/// every other expression kind the scope is returned unchanged.
+pub fn compile_stmt<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    spec: Expr,
+) -> Result<(Node<R, E>, Scope)> {
     // Fusion runs whenever the program typechecks — including in check/lsp
     // runtimes, which it makes safe two ways: (1) fusion's emit path never
     // panics; on any malformed input it returns Err and de-fuses to the
@@ -1803,7 +1821,16 @@ pub fn compile<R: Rt, E: UserEvent>(
     ctx.fusion.top_id = Some(top_id);
     let env = ctx.env.clone();
     let st = Instant::now();
-    let mut node = match compiler::compile(ctx, flags, spec, scope, top_id) {
+    let compiled = match &spec.kind {
+        expr::ExprKind::Catch(c) => {
+            let c = c.clone();
+            node::error::Catch::compile(ctx, flags, spec, scope, top_id, &c)
+        }
+        _ => {
+            compiler::compile(ctx, flags, spec, scope, top_id).map(|n| (n, scope.clone()))
+        }
+    };
+    let (mut node, out_scope) = match compiled {
         Ok(n) => n,
         Err(e) => {
             ctx.env = env;
@@ -1845,7 +1872,7 @@ pub fn compile<R: Rt, E: UserEvent>(
         ctx.env = env;
         return Err(e);
     }
-    Ok(node)
+    Ok((node, out_scope))
 }
 
 /// Walk the post-fusion graph and run each registered attribute's check on the

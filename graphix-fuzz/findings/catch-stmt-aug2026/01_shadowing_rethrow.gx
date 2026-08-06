@@ -1,0 +1,19 @@
+// Same-block catch shadowing + rethrow-to-predecessor: catch2 covers
+// the ?s below it; its handler rethrows non-arith errors with `e?`,
+// which resolves to catch1 (handlers compile before their own
+// registration) and must be seen the SAME cycle (catches update
+// innermost first). Trace: arith at cycle 1 (err1), index rethrown
+// through both handlers at cycle 2 (err0).
+{
+    let a = [i64:0, i64:1];
+    let err0: Error<Any> = never();
+    let err1: Error<Any> = never();
+    catch(e) err0 <- e;
+    catch(e) select (e.0).error {
+        `ArithError(_) => err1 <- e,
+        _ => e?
+    };
+    (a[i64:1]? /? a[i64:0]?)?;
+    a[i64:5]?;
+    (is_err(err0), is_err(err1))
+}

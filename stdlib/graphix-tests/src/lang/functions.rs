@@ -1269,7 +1269,7 @@ const REC_IN_SPLIT_CALLBACK: &str = r#"
 {
   let v0 = array::fold([i64:-1], i64:255, |acc, x| {
     let rec lp = |n: i64, a: i64| -> i64 select n {i64:0 => a, _ => lp(n - i64:1, a + n)};
-    (lp(i64:500, i64:0) * i64:0) + (try ((x /? i64:-1))? catch(e) => i64:42)
+    (lp(i64:500, i64:0) * i64:0) + { catch(e) i64:42; ((x /? i64:-1))? }
   });
   [i64:7 + v0]
 }

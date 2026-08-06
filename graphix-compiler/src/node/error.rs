@@ -67,6 +67,8 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
 #[derive(Debug)]
 pub(crate) struct QopDeliverApply {
     pub(crate) handler_id: BindId,
+    pub(crate) handler_top: ExprId,
+    pub(crate) own_top: ExprId,
     pub(crate) spec: Expr,
 }
 
@@ -81,6 +83,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
         if let Value::Error(e) = v {
             let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
             let v = Value::Error(e.into());
+            if self.handler_top != self.own_top {
+                ctx.rt.set_var(self.handler_id, v);
+                return Some(Value::Null);
+            }
             match event.variables.entry(self.handler_id) {
                 Entry::Vacant(slot) => {
                     slot.insert(TagValue::fired(v));
@@ -97,24 +103,39 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
 }
 
 #[derive(Debug)]
-pub struct TryCatch<R: Rt, E: UserEvent> {
+pub struct Catch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
-    pub nodes: LPooled<Vec<Node<R, E>>>,
     pub handler: Node<R, E>,
+    constraint: Option<Type>,
+    bind_id: BindId,
+    typ: Type,
 }
 
-impl<R: Rt, E: UserEvent> TryCatch<R, E> {
-    pub(crate) fn new(
+impl<R: Rt, E: UserEvent> Catch<R, E> {
+    /// Compile a `catch(e) expr` statement. Only reachable from the
+    /// statement-position dispatch in [`super::compile_block_children`]
+    /// (blocks/module bodies) and the toplevel entry — the generic
+    /// `compiler.rs` arm rejects other positions. Returns the node and
+    /// the ADVANCED scope: subsequent siblings compile with the
+    /// dynamic path extended by this catch's `c<id>` segment, so all
+    /// three lookup clocks (Qop compile, CallSite typecheck, lambda
+    /// instance bind — including LATE runtime binds) resolve coverage
+    /// by path depth exactly like nested `try` blocks did. The lexical
+    /// path is NOT extended: exports/typedefs/mods after a catch stay
+    /// visible to the outside world (external resolution walks up,
+    /// never down). Segment names derive from the spec's ExprId (the
+    /// `do{id}` precedent), so a transient re-bind of a callee with an
+    /// interior catch overwrites its registration instead of leaking a
+    /// fresh key per rebind.
+    pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
-        tc: &Arc<expr::TryCatchExpr>,
-    ) -> Result<Node<R, E>> {
-        let inner_name = format_compact!("tc{}", BindId::new().inner());
-        let inner_scope = scope.append(inner_name.as_str());
-        let catch_name = format_compact!("ca{}", BindId::new().inner());
+        c: &Arc<expr::CatchExpr>,
+    ) -> Result<(Node<R, E>, Scope)> {
+        let catch_name = format_compact!("ca{}", spec.id.inner());
         let catch_scope = scope.append(catch_name.as_str());
         let typ = Type::empty_tvar();
         match &typ {
@@ -125,74 +146,85 @@ impl<R: Rt, E: UserEvent> TryCatch<R, E> {
             }
             _ => unreachable!(),
         }
-        let id = ctx
+        let bind_id = ctx
             .env
-            .bind_variable(
-                &catch_scope.lexical,
-                &tc.bind,
-                typ,
-                spec.pos,
-                spec.ori.clone(),
-            )
+            .bind_variable(&catch_scope.lexical, &c.bind, typ, spec.pos, spec.ori.clone())
             .id;
-        let handler = compile(ctx, flags, (*tc.handler).clone(), &catch_scope, top_id)?;
-        ctx.env.catch.insert_cow(inner_scope.dynamic.clone(), id);
-        let nodes = tc
-            .exprs
-            .iter()
-            .map(|e| compile(ctx, flags, e.clone(), &inner_scope, top_id))
-            .collect::<Result<LPooled<Vec<_>>>>()?;
-        if nodes.is_empty() {
-            bail!("empty try catch block")
-        }
-        Ok(Box::new(Self { spec, nodes, handler }))
+        // The handler compiles BEFORE this catch registers, so a
+        // rethrowing `?` inside it resolves to a predecessor catch in
+        // the same block or an outer one — never to itself.
+        let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
+        let covered = Scope {
+            lexical: scope.lexical.clone(),
+            dynamic: ModPath(
+                scope.dynamic.append(&format_compact!("c{}", spec.id.inner())),
+            ),
+        };
+        ctx.env.catch.insert_cow(covered.dynamic.clone(), (bind_id, top_id));
+        let node = Box::new(Self {
+            spec,
+            handler,
+            constraint: c.constraint.clone(),
+            bind_id,
+            typ: Type::Bottom,
+        });
+        Ok((node, covered))
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
+impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        let res = self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
+        // The handler is a live reactive expression; its value channel
+        // is discarded — a catch installation never produces. The
+        // owning block updates catches AFTER its other children
+        // (innermost first), so a same-cycle Vacant-insert delivery
+        // from a covered `?` — or from an inner handler's rethrow — is
+        // seen this cycle (the try-era handler-after-body order).
         let _ = self.handler.update(ctx, event);
-        res
+        None
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for n in self.nodes.iter_mut() {
-            n.delete(ctx);
-        }
         self.handler.delete(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for n in self.nodes.iter_mut() {
-            n.sleep(ctx)
-        }
         self.handler.sleep(ctx);
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for n in self.nodes.iter_mut() {
-            n.reset_replay(ctx)
-        }
         self.handler.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in self.nodes.iter_mut() {
-            wrap!(n, n.typecheck0(ctx))?
-        }
         wrap!(self.handler, self.handler.typecheck0(ctx))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in self.nodes.iter_mut() {
-            wrap!(n, n.typecheck1(ctx))?
-        }
         wrap!(self.handler, self.handler.typecheck1(ctx))?;
+        // The declared constraint is a contract on what the handler
+        // can receive: by now every covered `?` (Qop tc0) and call
+        // site (CallSite tc0 throws-union) has accumulated into the
+        // bind's cell — the owning block runs catches after its other
+        // children in both passes. Runtime-bound instances accumulate
+        // MORE later (their interior `?`s re-union at bind-time tc0),
+        // but soundly within this check: a call site's compile-time
+        // `ftype.throws` union supersets what its instances add,
+        // because interior `?`s feed the callee's declared/inferred
+        // throws through the def gate.
+        if let Some(t) = &self.constraint {
+            let bind = ctx
+                .env
+                .by_id
+                .get(&self.bind_id)
+                .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
+            let accumulated = bind.typ.clone();
+            wrap!(self, t.check_contains(&ctx.env, &accumulated))?;
+        }
         Ok(())
     }
 
@@ -201,43 +233,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        // DELEGATE, never snapshot: `new()` used to clone the last
-        // try-body node's type AT CONSTRUCTION, but a select body
-        // REPLACES its typ field during typecheck0 (the arm union),
-        // so the snapshot held the select's ORPHANED pre-typecheck
-        // cell — unbound forever, and `contains` then bound it to
-        // whatever the use site wanted (`i64 + try select {…struct
-        // arms…} catch(e) => i64:42` typechecked, reaching the
-        // "unreachable from typed code" Value-level broadcast add —
-        // aug05g hz0 divergence_000000). The jul08o nested-select
-        // orphan and the Sample snapshot were this same disease;
-        // reading the child live is the cure that can't go stale.
-        self.nodes.last().expect("non-empty try block").typ()
+        &self.typ
     }
 
     fn refs(&self, refs: &mut Refs) {
-        for n in self.nodes.iter() {
-            n.refs(refs);
-        }
         self.handler.refs(refs);
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::TryCatch(self)
+        NodeView::Catch(self)
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // The TryCatch itself is a fusion boundary (no `emit_clif`): the
-        // catch handler reads the error variable a handler-ful `?` writes,
-        // and that read is necessarily a separate kernel (next cycle). But
-        // its CHILDREN fuse — each try-body statement and the catch handler
-        // fuse their own maximal subtrees. Without this recursion the whole
-        // try body node-walks, so wrapping a hot loop in `try`/`catch`
-        // would kill its fusion (the `?` inside fuses via the QopDeliver
-        // site once the body is reached).
-        for n in self.nodes.iter_mut() {
-            crate::fusion::fuse(n, ctx)?;
-        }
+        // A catch is a fusion boundary (no `emit_clif`): the handler
+        // reads the error variable a handler-ful `?` writes, and that
+        // read is necessarily a separate kernel. The handler's own
+        // subtrees fuse.
         crate::fusion::fuse(&mut self.handler, ctx)?;
         Ok(None)
     }
@@ -247,7 +258,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TryCatch<R, E> {
 pub struct Qop<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
-    pub id: Option<BindId>,
+    /// The resolved handler: its error-variable bind and the TOP the
+    /// handler node lives under. A same-top delivery uses the
+    /// same-cycle Vacant-insert; a CROSS-top delivery (REPL: catch
+    /// installed by an earlier input) must go through `rt.set_var` —
+    /// the insert only reaches nodes that update later in the same
+    /// cycle, and cross-top ordering is not ours to assume.
+    pub id: Option<(BindId, ExprId)>,
+    pub(crate) top_id: ExprId,
     pub n: Node<R, E>,
 }
 
@@ -281,7 +299,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             o => o,
         };
         let typ = Type::empty_tvar();
-        Ok(Box::new(Self { spec, typ, id, n }))
+        Ok(Box::new(Self { spec, typ, id, top_id, n }))
     }
 }
 
@@ -299,14 +317,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         let (v, tag) = tv.into_parts();
         match v {
             Value::Error(e) => match self.id {
-                Some(id) => {
+                Some((id, handler_top)) => {
                     let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
                     let v = Value::Error(e.into());
-                    match event.variables.entry(id) {
-                        Entry::Vacant(slot) => {
-                            slot.insert(TagValue::fired(v));
+                    if handler_top != self.top_id {
+                        ctx.rt.set_var(id, v)
+                    } else {
+                        match event.variables.entry(id) {
+                            Entry::Vacant(slot) => {
+                                slot.insert(TagValue::fired(v));
+                            }
+                            Entry::Occupied(_) => ctx.rt.set_var(id, v),
                         }
-                        Entry::Occupied(_) => ctx.rt.set_var(id, v),
                     }
                     None
                 }
@@ -407,7 +429,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         let err = Type::Primitive(Typ::Error.into());
         let rtyp = self.n.typ().diff(&ctx.env, &err)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
-        if let Some(id) = self.id {
+        if let Some((id, _)) = self.id {
             let etyp = self.n.typ().diff(&ctx.env, &rtyp)?;
             let etyp = wrap!(self, fix_echain_typ(&ctx, &etyp))?;
             let bind = ctx.env.by_id.get(&id).ok_or_else(|| anyhow!("BUG: catch"))?;

@@ -5,4 +5,4 @@
 // promises a function, and the caller CallSite's downcast panicked — killing the
 // runtime. Fixed by deriving the wrapper type from the runtime f value's own
 // LambdaDef when resolved never arrived (queuefn.rs).
-array::map([(i64:0, i64:1), ("y", i64:2)], |(s, n)| "[s][s][try (i64:0 /? i64:0)? catch(e) => select e.0.error {`ArithError(s) => {let depth = i64:0; let qf = queuefn(#count: &depth, #trigger: never(), |x: i64| -> i64 x * i64:10); qf(i64:1); qf(i64:2); qf(i64:3); array::group(depth, |n, _| n == i64:3)}}]")
+array::map([(i64:0, i64:1), ("y", i64:2)], |(s, n)| "[s][s][{ catch(e) select e.0.error {`ArithError(s) => {let depth = i64:0; let qf = queuefn(#count: &depth, #trigger: never(), |x: i64| -> i64 x * i64:10); qf(i64:1); qf(i64:2); qf(i64:3); array::group(depth, |n, _| n == i64:3)}}; (i64:0 /? i64:0)? }]")

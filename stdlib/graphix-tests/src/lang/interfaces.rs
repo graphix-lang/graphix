@@ -707,20 +707,22 @@ run!(
 // =============================================================================
 
 // Abstract type as error payload in throws clause. Fuses now: the
-// try body fuses (TryCatch::fuse descends) and the handler-ful `?` in
-// `try inner::risky(42)` delivers in-kernel (variable-write-in-kernel).
+// the covered call fuses (block statements fuse around the catch) and
+// the handler-ful `?` delivers in-kernel (variable-write-in-kernel).
 run!(
     abstract_type_in_throws,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
         mod inner;
-        let result = try inner::risky(42)
-            catch(e) => {
+        let result = {
+            catch(e) {
                 let chain = e.0;
                 select chain.error {
                     `CustomError(_) => 0
                 }
-            }
+            };
+            inner::risky(42)
+        }
     "#,
     "/test/inner.gxi" => r#"
         type ErrPayload;
@@ -733,21 +735,24 @@ run!(
 
 // Abstract type used with a function that has throws clause.
 // Fuses now (Stage 2): `get_value` is a transitive callee whose body holds a
-// handler-ful `?` (`a[0]?`, caught by the outer `try`) — a qop-deliver DynCall.
-// That DynCall is delivered through the region-wide combined `dyn_slots` table
-// (the callee's slot offset by its base), so the whole `try ... catch` fuses.
+// handler-ful `?` (`a[0]?`, caught by the enclosing catch) — a qop-deliver
+// DynCall. That DynCall is delivered through the region-wide combined
+// `dyn_slots` table (the callee's slot offset by its base), so the whole
+// covered block fuses.
 run!(
     abstract_type_with_throws_clause,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
     "/test.gx" => r#"
         mod inner;
-        let result = try inner::get_value(inner::make(1))
-            catch(e) => {
+        let result = {
+            catch(e) {
                 let chain = e.0;
                 select chain.error {
                     `ArrayIndexError(_) => -1
                 }
-            }
+            };
+            inner::get_value(inner::make(1))
+        }
     "#,
     "/test/inner.gxi" => r#"
         type T;

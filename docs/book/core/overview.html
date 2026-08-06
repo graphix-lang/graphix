@@ -185,10 +185,10 @@ count &lt;- timer ~ (count + 1)
 </ul>
 <p>The compiler checks your select expressions exhaustively—if you forget a case, it won't compile. If you match a case that can never happen, it won't compile. This eliminates entire classes of bugs.</p>
 <h2 id="error-handling-exceptions-done-right"><a class="header" href="#error-handling-exceptions-done-right">Error Handling: Exceptions, Done Right</a></h2>
-<p>Graphix has first-class error handling with try/catch and the <code>?</code> operator. Errors are just values with the special <code>Error&lt;'a&gt;</code> type, and they're tracked through the type system.</p>
+<p>Graphix has first-class error handling with scoped <code>catch</code> handlers and the <code>?</code> operator. Errors are just values with the special <code>Error&lt;'a&gt;</code> type, and they're tracked through the type system.</p>
 <p><strong><a href="./error.html">Error Handling</a></strong> explains:</p>
 <ul>
-<li>How <code>?</code> throws errors to the nearest try/catch in dynamic scope</li>
+<li>How <code>?</code> throws errors to the nearest installed <code>catch</code> in dynamic scope</li>
 <li>How error types are checked at compile time—you can't forget to handle an error type</li>
 <li>How the <code>$</code> operator silently swallows errors (use with caution!)</li>
 <li>How error chains track the full context of where errors originated</li>
@@ -202,7 +202,7 @@ count &lt;- timer ~ (count + 1)
 <li>You use <strong>select</strong> to handle different cases and make decisions</li>
 <li>You use <strong>connect</strong> to update bindings when events occur</li>
 <li>The <strong>type system</strong> ensures everything is safe and correct</li>
-<li><strong>Errors</strong> propagate cleanly through try/catch</li>
+<li><strong>Errors</strong> propagate cleanly to installed <code>catch</code> handlers</li>
 </ol>
 <p>The result is a language where you describe relationships between values, and the runtime automatically maintains those relationships as things change. A temperature value updates, and the Fahrenheit conversion updates automatically. A timer fires, and your counter increments. A network subscription delivers new data, and your UI reflects it instantly.</p>
 

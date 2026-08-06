@@ -1,10 +1,10 @@
 use crate::{
     PrintFlag,
     expr::{
-        ApplyExpr, BindExpr, CouldNotResolve, Expr, ExprId, ExprKind, LambdaExpr,
-        ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem, SigKind, Source,
-        StructExpr, StructWithExpr, StructurePattern, TryCatchExpr, TypeDefExpr, parser,
-        read_to_arcstr, serialize,
+        ApplyExpr, BindExpr, CatchExpr, CouldNotResolve, Expr, ExprId, ExprKind,
+        LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem,
+        SigKind, Source, StructExpr, StructWithExpr, StructurePattern, TypeDefExpr,
+        parser, read_to_arcstr, serialize,
     },
     format_with_flags,
 };
@@ -942,18 +942,13 @@ impl Expr {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::OrNever(Arc::new(e)))
             }),
-            ExprKind::TryCatch(tc) => Box::pin(async move {
-                let exprs = try_join_all(tc.exprs.iter().map(|e| async {
-                    e.resolve_modules_int(&scope, &prepend, resolvers).await
-                }))
-                .await?;
+            ExprKind::Catch(c) => Box::pin(async move {
                 let handler =
-                    tc.handler.resolve_modules_int(scope, prepend, resolvers).await?;
-                expr!(ExprKind::TryCatch(Arc::new(TryCatchExpr {
-                    bind: tc.bind.clone(),
-                    constraint: tc.constraint.clone(),
+                    c.handler.resolve_modules_int(scope, prepend, resolvers).await?;
+                expr!(ExprKind::Catch(Arc::new(CatchExpr {
+                    bind: c.bind.clone(),
+                    constraint: c.constraint.clone(),
                     handler: Arc::new(handler),
-                    exprs: Arc::from_iter(exprs),
                 })))
             }),
             ExprKind::ByRef(e) => Box::pin(async move {

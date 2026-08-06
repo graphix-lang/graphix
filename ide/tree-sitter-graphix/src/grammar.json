@@ -107,7 +107,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "try_catch"
+          "name": "catch_stmt"
         },
         {
           "type": "SYMBOL",
@@ -164,7 +164,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "try_catch"
+          "name": "catch_stmt"
         },
         {
           "type": "SYMBOL",
@@ -3102,36 +3102,12 @@
         ]
       }
     },
-    "try_catch": {
+    "catch_stmt": {
       "type": "PREC_RIGHT",
       "value": -1,
       "content": {
         "type": "SEQ",
         "members": [
-          {
-            "type": "STRING",
-            "value": "try"
-          },
-          {
-            "type": "SYMBOL",
-            "name": "_expression"
-          },
-          {
-            "type": "REPEAT",
-            "content": {
-              "type": "SEQ",
-              "members": [
-                {
-                  "type": "STRING",
-                  "value": ";"
-                },
-                {
-                  "type": "SYMBOL",
-                  "name": "_expression"
-                }
-              ]
-            }
-          },
           {
             "type": "STRING",
             "value": "catch"
@@ -3172,10 +3148,6 @@
           {
             "type": "STRING",
             "value": ")"
-          },
-          {
-            "type": "STRING",
-            "value": "=>"
           },
           {
             "type": "FIELD",
@@ -5426,5 +5398,6 @@
   "inline": [
     "_expression_inner"
   ],
-  "supertypes": []
+  "supertypes": [],
+  "reserved": {}
 }

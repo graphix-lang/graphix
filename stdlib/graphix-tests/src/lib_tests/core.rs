@@ -5,10 +5,9 @@ use netidx::subscriber::Value;
 const IS_ERR: &str = r#"
 {
   let errors: Error<Any> = never();
-  try
-    let a = [42, 43, 44];
-    let y = a[0]? + a[3]?
-  catch(e) => errors <- e;
+  catch(e) errors <- e;
+  let a = [42, 43, 44];
+  let y = a[0]? + a[3]?;
   is_err(errors)
 }
 "#;

@@ -1,6 +1,6 @@
 use crate::{
     BindId, Scope,
-    expr::{ModPath, Origin, Sandbox},
+    expr::{ExprId, ModPath, Origin, Sandbox},
     ide::{
         Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite,
@@ -82,7 +82,10 @@ pub struct Env {
     pub used: Map<ModPath, Arc<Vec<ModPath>>>,
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
-    pub catch: Map<ModPath, BindId>,
+    /// Installed catch handlers by DYNAMIC scope path: the handler's
+    /// error-variable bind and the TOP the handler node lives under
+    /// (cross-top deliveries must take the `set_var` path).
+    pub catch: Map<ModPath, (BindId, ExprId)>,
     /// Append-only mirror of every `(scope, name) → BindId` ever
     /// created via `bind_variable`. Used by IDE tooling for cursor
     /// → scope completion: it exposes lambda parameters and other
@@ -357,8 +360,9 @@ impl Env {
         })
     }
 
-    /// lookup the bind id of the nearest catch handler in this scope
-    pub fn lookup_catch(&self, scope: &ModPath) -> Result<BindId> {
+    /// lookup the nearest catch handler in this scope: the handler's
+    /// error-variable bind id and its top
+    pub fn lookup_catch(&self, scope: &ModPath) -> Result<(BindId, ExprId)> {
         match Path::dirnames(&scope.0).rev().find_map(|scope| self.catch.get(scope)) {
             Some(id) => Ok(*id),
             None => bail!("there is no catch visible in {scope}"),

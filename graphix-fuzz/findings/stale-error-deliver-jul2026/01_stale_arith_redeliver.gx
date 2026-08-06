@@ -13,4 +13,4 @@
 // epoch-3 ghost). The node-walk's `Qop::update` runs only when its
 // inner returns `Some`: a no-fire cycle delivers nothing. Fix: the
 // deliver gate requires FRESH (is_err && !TAINT && !STALE).
-{let a = [i64:0]; let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let s = i64:0; s <- i64:6; try (a[s]? /? i64:0)? catch(e) => err0 <- e; err0}
+{let a = [i64:0]; let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let s = i64:0; s <- i64:6; catch(e) err0 <- e; (a[s]? /? i64:0)?; err0}

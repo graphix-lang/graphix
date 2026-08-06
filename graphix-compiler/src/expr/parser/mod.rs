@@ -1,7 +1,7 @@
 use crate::{
     expr::{
-        Attr, BindExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin, ParserContext,
-        Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr, TryCatchExpr,
+        Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
+        ParserContext, Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr,
         set_origin,
     },
     typ::{FnType, Type},
@@ -705,38 +705,43 @@ where
         )
 }
 
-fn try_catch<I>() -> impl Parser<I, Output = Expr>
+fn catch_stmt<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
     (
-        position().skip(attempt(string("try").skip(space()))),
-        sep_by1_tok(expr(), semisep(), attempt(string("catch"))),
-        spstring("catch").with(between(
+        position().skip(attempt(string("catch").skip(not_prefix()))),
+        between(
             sptoken('('),
             sptoken(')'),
             (spfname(), spaces().with(optional(token(':').with(typ())))),
-        )),
-        spstring("=>").with(expr()),
+        ),
+        expr(),
     )
-        .map(
-            |(pos, mut exprs, (bind, constraint), handler): (
-                _,
-                LPooled<Vec<Expr>>,
-                _,
-                _,
-            )| {
-                ExprKind::TryCatch(Arc::new(TryCatchExpr {
-                    bind,
-                    constraint,
-                    exprs: Arc::from_iter(exprs.drain(..)),
-                    handler: Arc::new(handler),
-                }))
-                .to_expr(pos)
-            },
-        )
+        .map(|(pos, (bind, constraint), handler)| {
+            ExprKind::Catch(Arc::new(CatchExpr {
+                bind,
+                constraint,
+                handler: Arc::new(handler),
+            }))
+            .to_expr(pos)
+        })
+}
+
+/// try/catch was removed from the language (2026-08-06,
+/// design/catch.md); `try` stays reserved so old code gets a
+/// direction instead of a confusing generic parse failure.
+fn try_removed<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(string("try").skip(space())).then(|_| {
+        unexpected_any("try/catch was removed; install a handler with `catch(e) expr` covering the rest of its enclosing block")
+    })
 }
 
 fn byref<I>() -> impl Parser<I, Output = Expr>
@@ -768,7 +773,8 @@ parser! {
             choice((
                 module(),
                 use_module(),
-                try_catch(),
+                catch_stmt(),
+                try_removed(),
                 typedef(),
                 letbind(),
                 attempt(lambda()),

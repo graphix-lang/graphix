@@ -350,10 +350,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
             kids.push(&n.trigger);
             kids.push(&n.arg.node);
         }
-        V::TryCatch(n) => {
-            kids.extend(n.nodes.iter());
-            kids.push(&n.handler);
-        }
+        V::Catch(n) => kids.push(&n.handler),
         V::ByRef(n) => kids.push(&n.child),
         V::Deref(n) => kids.push(&n.child),
         // Producers.
@@ -445,7 +442,7 @@ pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> ArcStr {
         NodeView::TypeCast(_) => literal!("TypeCast"),
         NodeView::Qop(_) => literal!("Qop"),
         NodeView::OrNever(_) => literal!("OrNever"),
-        NodeView::TryCatch(_) => literal!("TryCatch"),
+        NodeView::Catch(_) => literal!("Catch"),
         _ => literal!("Other"),
     }
 }

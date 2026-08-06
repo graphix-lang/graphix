@@ -480,15 +480,21 @@ counter <- clock ~ counter + 1 // increment on each tick
 // create and propagate
 error(`NotFound("missing"))?
 
-// try-catch
-// try-catch always evaluates to the last expression in try
-// even if there is an error
-try {
+// catch statement: INSTALLS an error handler (type bottom, never
+// produces) covering the REST of its enclosing block. Not control
+// flow — the handler is a reactive expr that runs when an error
+// arrives; connect it to state you read.
+{
+  catch(e) handle(e);
   risky_op()?;
   another_op()?
-} catch(e) => handle(e)
+}
 
-// ? propagates to nearest catch (or warns if no surrounding try/catch)
+// catch(e: T) expr checks T against the union of coverable errors.
+// A second catch in a block shadows the first below it; a handler's
+// own ? rethrows to the PREVIOUS catch (or the next one out).
+
+// ? propagates to the nearest installed catch (or warns if none)
 // $ logs locally and drops (produces no value this cycle) on error;
 //   on non-error, returns the LHS unchanged.
 // Both yield the bare element type on success (Error<_> stripped).

@@ -609,7 +609,8 @@ mod test {
         assert!(ctr * 100 / N >= 10, "counters in only {ctr}/{N}");
         assert!(run * 100 / N >= 1, "runaways in only {run}/{N}");
         assert!(run * 100 / N <= 15, "runaways in {run}/{N} — too hot");
-        // 15% -> 12%: same composition-arm dilution retune as above.
-        assert!(slept * 100 / N >= 12, "slept-arm selects in only {slept}/{N}");
+        // 15% -> 12% -> 10%: same composition-arm dilution retunes (the
+        // 2026-08-06 catch-statement arm funds its 7% the same way).
+        assert!(slept * 100 / N >= 10, "slept-arm selects in only {slept}/{N}");
     }
 }

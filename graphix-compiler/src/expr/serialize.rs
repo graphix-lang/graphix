@@ -372,7 +372,7 @@ mod test {
         rt("m{\"key\"}");
         rt("let f = |x| x + 1");
         rt("// a comment\n#[native]\n(1 + 2)");
-        rt("try x? catch(e) => 0");
+        rt("{ catch(e) 0; x? }");
         rt("let r = &v");
         rt("x <- x + 1");
         rt("*r <- 5");

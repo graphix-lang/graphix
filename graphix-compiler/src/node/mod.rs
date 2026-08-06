@@ -607,6 +607,16 @@ pub struct Block<R: Rt, E: UserEvent> {
     pub(crate) module: bool,
     pub(crate) spec: Expr,
     pub(crate) children: Box<[Node<R, E>]>,
+    /// Indices of `catch(e) expr` children, in syntactic order.
+    /// Children stay physically in syntactic order (typ() and the
+    /// tail-leaf walk read children.last()), but update/typecheck run
+    /// the two-phase order: non-catch children first (the covered
+    /// region), then catches in REVERSE syntactic order — the
+    /// nested-try equivalence runs inner handlers first, and an inner
+    /// handler's rethrow delivers to its predecessor by same-cycle
+    /// Vacant-insert, which the predecessor only sees if it updates
+    /// after (forward order would silently LOSE the rethrown error).
+    pub(crate) catches: Box<[usize]>,
     /// Module scope at the block's declaration point. For
     /// `Block { module: true }` this is the *containing* scope —
     /// the inner module's scope is `scope.append(name)`. For
@@ -627,7 +637,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         spec: Expr,
         scope: Scope,
     ) -> Node<R, E> {
-        Box::new(Self { module, spec, children, scope })
+        Box::new(Self { module, spec, children, catches: Box::default(), scope })
     }
 
     pub(crate) fn compile(
@@ -639,11 +649,42 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         module: bool,
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R, E>> {
-        let result: Result<Box<[Node<R, E>]>> =
-            exprs.iter().map(|e| compile(ctx, flags, e.clone(), scope, top_id)).collect();
-        let children = result?;
-        Ok(Box::new(Self { module, spec, children, scope: scope.clone() }))
+        let (children, catches) =
+            compile_block_children(ctx, flags, scope, top_id, exprs.iter())?;
+        Ok(Box::new(Self { module, spec, children, catches, scope: scope.clone() }))
     }
+}
+
+/// Compile a statement list with catch-statement support: each
+/// `catch(e) expr` child compiles through [`error::Catch::compile`],
+/// which registers its handler and ADVANCES the dynamic scope for all
+/// subsequent siblings (the implicit nested scope — coverage by path
+/// depth, exactly the old nested-try discipline). Returns the children
+/// in syntactic order plus the catch indices. Shared by
+/// [`Block::compile`] and the sig-bearing module body compile.
+pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    top_id: ExprId,
+    exprs: impl Iterator<Item = &'a Expr>,
+) -> Result<(Box<[Node<R, E>]>, Box<[usize]>)> {
+    let mut scope = scope.clone();
+    let mut children: LPooled<Vec<Node<R, E>>> = LPooled::take();
+    let mut catches: LPooled<Vec<usize>> = LPooled::take();
+    for (i, e) in exprs.enumerate() {
+        match &e.kind {
+            ExprKind::Catch(c) => {
+                let (node, advanced) =
+                    error::Catch::compile(ctx, flags, e.clone(), &scope, top_id, c)?;
+                scope = advanced;
+                catches.push(i);
+                children.push(node);
+            }
+            _ => children.push(compile(ctx, flags, e.clone(), &scope, top_id)?),
+        }
+    }
+    Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
@@ -652,7 +693,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<TagValue> {
-        let res = self.children.iter_mut().fold(None, |_, n| n.update(ctx, event));
+        if self.catches.is_empty() {
+            let res = self.children.iter_mut().fold(None, |_, n| n.update(ctx, event));
+            return if self.module { None } else { res };
+        }
+        // Two-phase order (see `catches`): covered children first —
+        // the block's value is the last SYNTACTIC child's production
+        // (None if that child is a catch: an installation never
+        // produces) — then catches, innermost first.
+        let last = self.children.len() - 1;
+        let mut res = None;
+        let mut catch = self.catches.iter().copied().peekable();
+        for (i, n) in self.children.iter_mut().enumerate() {
+            if catch.peek() == Some(&i) {
+                catch.next();
+                continue;
+            }
+            let r = n.update(ctx, event);
+            if i == last {
+                res = r;
+            }
+        }
+        for i in self.catches.iter().rev() {
+            let _ = self.children[*i].update(ctx, event);
+        }
         if self.module { None } else { res }
     }
 
@@ -685,7 +749,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in &mut self.children {
+        // Catches typecheck AFTER the covered children in each pass
+        // (innermost first): a handler's check must see the complete
+        // error-type accumulation — Qop tc0 unions and callsite
+        // throws-unions from every covered sibling, including inner
+        // handlers' rethrow contributions.
+        let mut catch = self.catches.iter().copied().peekable();
+        for (i, n) in self.children.iter_mut().enumerate() {
+            if catch.peek() == Some(&i) {
+                catch.next();
+                continue;
+            }
+            if self.module {
+                wrap!(n, n.typecheck0(ctx)).with_context(|| self.spec.ori.clone())?
+            } else {
+                wrap!(n, n.typecheck0(ctx))?
+            }
+        }
+        for i in self.catches.iter().rev() {
+            let n = &mut self.children[*i];
             if self.module {
                 wrap!(n, n.typecheck0(ctx)).with_context(|| self.spec.ori.clone())?
             } else {
@@ -696,7 +778,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in &mut self.children {
+        let mut catch = self.catches.iter().copied().peekable();
+        for (i, n) in self.children.iter_mut().enumerate() {
+            if catch.peek() == Some(&i) {
+                catch.next();
+                continue;
+            }
+            if self.module {
+                wrap!(n, n.typecheck1(ctx)).with_context(|| self.spec.ori.clone())?
+            } else {
+                wrap!(n, n.typecheck1(ctx))?
+            }
+        }
+        for i in self.catches.iter().rev() {
+            let n = &mut self.children[*i];
             if self.module {
                 wrap!(n, n.typecheck1(ctx)).with_context(|| self.spec.ori.clone())?
             } else {

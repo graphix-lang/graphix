@@ -387,7 +387,7 @@ pub(super) fn gen_typed(
         GenType::Num(n) => {
             // Checked arithmetic, consumed by one of the three legal
             // forms: `$` (error -> bottom), a type-match select with an
-            // error arm, or `?` under try/catch.
+            // error arm, or `?` under a catch statement.
             if rng.below(8) == 0 {
                 let op = pick(rng, &["+?", "-?", "*?", "/?", "%?"]);
                 let a = gen_typed(ctx, rng, ty, d);
@@ -399,7 +399,7 @@ pub(super) fn gen_typed(
                         "select ({a} {op} {b}) {{ error as _ => {dflt}, {} as n => n }}",
                         ty.render()
                     ),
-                    _ => format!("(try (({a} {op} {b}))? catch(e) => {dflt})"),
+                    _ => format!("{{ catch(e) {dflt}; (({a} {op} {b}))? }}"),
                 };
             }
             // Unary minus (a real `Neg` node, exercising `ineg`/`fneg`). Only

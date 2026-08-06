@@ -787,10 +787,10 @@ and builtin/cast/qop calls inside lambda bodies.
 
 The **correct-None denominator** (principled, never a gap): async/streaming
 builtins (timers, IO, netidx, `never`, `queue`, `once`/`take`/`skip`), cross-cycle
-nodes (`~`, `Any`, `TryCatch`'s catch-read), and non-register-encodable types
+nodes (`~`, `Any`, `Catch`'s handler-read), and non-register-encodable types
 (`decimal`, `Fn`, `Ref`, recursive `List`/ADTs — no fixed ABI layout — and unbound
 TVars). Note that fusion recursion (`Update::fuse`) descends only through
-Module/Block/Bind/CallSite/TryCatch/Lambda — a sync expression under `~`, `<-`,
+Module/Block/Bind/CallSite/Catch/Lambda — a sync expression under `~`, `<-`,
 `select`, or an operator fuses only as part of an enclosing block/bind region
 that fuses as a whole, so `clock ~ (a + b)` leaves the `a + b` node-walking
 unless it is hoisted into its own `let` (accepted current design, 2026-07-02).

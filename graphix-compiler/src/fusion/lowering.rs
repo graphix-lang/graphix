@@ -162,7 +162,7 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
-    let Some(handler_id) = q.id else { return };
+    let Some((handler_id, handler_top)) = q.id else { return };
     let reg = &ctx.fusion.abstract_registry;
     let Some(inner_typ) = freeze_for_abi_normalized(reg, q.n.typ()) else { return };
     if kernel_abi::nullable_inner(reg, &inner_typ).is_none() {
@@ -175,7 +175,12 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
     let fn_index = out.fn_params.len() as u32;
     out.fn_params.push(FnParam {
         name: arcstr::literal!("<qop_deliver>"),
-        source: FnSource::QopDeliver { handler_id, spec: q.spec.clone() },
+        source: FnSource::QopDeliver {
+            handler_id,
+            handler_top,
+            own_top: q.top_id,
+            spec: q.spec.clone(),
+        },
         arg_types: vec![inner_typ.clone()],
         return_type: inner_typ.clone(),
     });

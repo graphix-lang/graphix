@@ -12,4 +12,4 @@
 // nested-select, the Sample snapshot). Fix: TryCatch::typ() DELEGATES
 // live to the last try-body node — this program must CompileErr-agree
 // in both modes.
-{let s = try select i64:100 {i64:42 => { b: f64:1., y: i64:2 }, _ => { b: f64:0., y: i64:42 }} catch(e) => i64:42; i64:0 + s}
+{let s = { catch(e) i64:42; select i64:100 {i64:42 => { b: f64:1., y: i64:2 }, _ => { b: f64:0., y: i64:42 }} }; i64:0 + s}

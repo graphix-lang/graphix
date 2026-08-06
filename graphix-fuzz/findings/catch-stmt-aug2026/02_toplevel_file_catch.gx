@@ -1,0 +1,7 @@
+// A toplevel catch in a FILE covers the statements below it (files
+// wrap in one synthetic Do, so file toplevel IS block position).
+let a = [i64:1];
+let tag = "";
+catch(e) tag <- "caught";
+a[9]?;
+select tag { "" => never(""), t => t }

@@ -485,18 +485,18 @@ macro_rules! qop {
     };
 }
 
-macro_rules! try_catch {
+macro_rules! catch_stmt {
     ($inner:expr) => {
-        (random_fname(), option::of(typexp()), $inner, collection::vec($inner, (1, 10)))
-            .prop_map(|(bind, constraint, handler, exprs)| {
-                ExprKind::TryCatch(Arc::new(TryCatchExpr {
+        (random_fname(), option::of(typexp()), $inner).prop_map(
+            |(bind, constraint, handler)| {
+                ExprKind::Catch(Arc::new(CatchExpr {
                     bind,
                     constraint,
-                    exprs: Arc::from_iter(exprs),
                     handler: Arc::new(handler),
                 }))
                 .to_expr_nopos()
-            })
+            },
+        )
     };
 }
 
@@ -540,7 +540,10 @@ macro_rules! any {
 macro_rules! do_block {
     ($inner:expr) => {
         (
-            collection::vec(prop_oneof![typedef(), usestmt(), $inner], (2, 10)),
+            collection::vec(
+                prop_oneof![typedef(), usestmt(), catch_stmt!($inner.clone()), $inner],
+                (2, 10),
+            ),
             any::<bool>(),
         )
             .prop_map(|(e, nop)| {
@@ -1016,7 +1019,6 @@ fn expr() -> impl Strategy<Value = Expr> {
             tupleref!(inner.clone()),
             any!(inner.clone()),
             apply!(inner.clone(), false),
-            try_catch!(inner.clone()),
             typecast!(inner.clone()),
             do_block!(inner.clone()),
             lambda!(inner.clone()),
@@ -1468,16 +1470,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => dbg!(dbg!(d0 == d1) && dbg!(name0 == name1) && dbg!(check(value0, value1))),
         (ExprKind::Qop(e0), ExprKind::Qop(e1)) => check(e0, e1),
         (ExprKind::OrNever(e0), ExprKind::OrNever(e1)) => check(e0, e1),
-        (ExprKind::TryCatch(tc0), ExprKind::TryCatch(tc1)) => {
-            let TryCatchExpr { bind: b0, constraint: c0, handler: h0, exprs: e0 } =
-                &**tc0;
-            let TryCatchExpr { bind: b1, constraint: c1, handler: h1, exprs: e1 } =
-                &**tc1;
-            b0 == b1
-                && check_type_opt(c0, c1)
-                && check(h0, h1)
-                && e0.len() == e1.len()
-                && e0.iter().zip(e1.iter()).all(|(e0, e1)| check(e0, e1))
+        (ExprKind::Catch(c0), ExprKind::Catch(c1)) => {
+            let CatchExpr { bind: b0, constraint: c0, handler: h0 } = &**c0;
+            let CatchExpr { bind: b1, constraint: c1, handler: h1 } = &**c1;
+            b0 == b1 && check_type_opt(c0, c1) && check(h0, h1)
         }
         (ExprKind::Ref { name: name0 }, ExprKind::Ref { name: name1 }) => {
             dbg!(name0 == name1)

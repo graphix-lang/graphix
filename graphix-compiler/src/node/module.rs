@@ -280,6 +280,8 @@ pub struct Module<R: Rt, E: UserEvent> {
     pub(crate) scope: Scope,
     proxy: IntMap<BindId, BindId>,
     pub(crate) nodes: Box<[Node<R, E>]>,
+    /// catch-statement indices in `nodes` (see `Block::catches`).
+    pub(crate) catches: Box<[usize]>,
     top_id: ExprId,
 }
 
@@ -314,6 +316,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             scope: scope.clone(),
             proxy: IntMap::default(),
             nodes: Box::new([]),
+            catches: Box::new([]),
             top_id,
         }))
     }
@@ -341,6 +344,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             scope: scope.clone(),
             proxy: IntMap::default(),
             nodes: Box::new([]),
+            catches: Box::new([]),
             top_id,
         };
         t.compile_inner(ctx, &exprs)
@@ -363,17 +367,32 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
         ctx.builtins_allowed = self.dynamic_sig_env.is_none();
         let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
-            let mut nodes = exprs
-                .iter()
-                .map(|e| compile(ctx, self.flags, e.clone(), &self.scope, self.top_id))
-                .collect::<Result<poolshark::local::LPooled<Vec<_>>>>()?;
-            for n in nodes.iter_mut() {
+            let (mut nodes, catches) = crate::node::compile_block_children(
+                ctx,
+                self.flags,
+                &self.scope,
+                self.top_id,
+                exprs.iter(),
+            )
+            .map(|(n, c)| (Vec::from(n), c))?;
+            // Two-phase tc0, catches last innermost-first (see
+            // `Block::typecheck0`).
+            let mut catch = catches.iter().copied().peekable();
+            for (i, n) in nodes.iter_mut().enumerate() {
+                if catch.peek() == Some(&i) {
+                    catch.next();
+                    continue;
+                }
                 n.typecheck0(ctx)?
             }
-            Ok(nodes)
+            for i in catches.iter().rev() {
+                nodes[*i].typecheck0(ctx)?
+            }
+            Ok((nodes, catches))
         });
         ctx.builtins_allowed = true;
-        let mut nodes = nodes?;
+        let (mut nodes, catches) = nodes?;
+        self.catches = catches;
         let private_env = self.env.clone();
         match &mut self.dynamic_sig_env {
             None => check_sig(
@@ -488,7 +507,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 event.variables.insert(*inner_id, tv);
             }
         }
-        self.nodes.iter_mut().fold(None, |_, n| n.update(ctx, event));
+        {
+            // Two-phase order, catches last innermost-first (see
+            // `Block::update`); a module discards productions, so no
+            // value capture is needed.
+            let mut catch = self.catches.iter().copied().peekable();
+            for (i, n) in self.nodes.iter_mut().enumerate() {
+                if catch.peek() == Some(&i) {
+                    catch.next();
+                    continue;
+                }
+                let _ = n.update(ctx, event);
+            }
+            for i in self.catches.iter().rev() {
+                let _ = self.nodes[*i].update(ctx, event);
+            }
+        }
         event.init = init;
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(tv) = event.variables.remove(inner_id) {
@@ -588,9 +622,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         // static resolution folded into `CallSite::typecheck1` (which the
         // deleted `static_resolve` pass used to reach via its own walk).
         // The restored env is required: `finalize_lambda` reads `ctx.env`.
-        let Self { env, nodes, .. } = self;
+        let Self { env, nodes, catches, .. } = self;
         ctx.with_restored_mut(env, |ctx| {
-            for n in nodes.iter_mut() {
+            let mut catch = catches.iter().copied().peekable();
+            for (i, n) in nodes.iter_mut().enumerate() {
+                if catch.peek() == Some(&i) {
+                    catch.next();
+                    continue;
+                }
+                wrap!(n, n.typecheck1(ctx))?;
+            }
+            for i in catches.iter().rev() {
+                let n = &mut nodes[*i];
                 wrap!(n, n.typecheck1(ctx))?;
             }
             Ok(())

@@ -150,7 +150,7 @@ enum SlotRecipe<R: Rt, E: UserEvent> {
     Lambda,
     Builtin { init: crate::BuiltInInitFn<R, E>, typ: FnType },
     Cast { target: crate::typ::Type },
-    QopDeliver { handler_id: BindId, spec: Expr },
+    QopDeliver { handler_id: BindId, handler_top: ExprId, own_top: ExprId, spec: Expr },
 }
 
 unsafe impl<R: Rt, E: UserEvent> Send for DynCallSlot<R, E> {}
@@ -409,14 +409,28 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// carrying the catch handler's BindId + the `?`'s spec. The single
     /// `arg_refs[0]` from `DynCallSlot::new` reads the side-channeled
     /// error value the kernel marshals on the qop's error path.
-    pub fn pre_bind_qop_deliver(&mut self, handler_id: BindId, spec: Expr) {
+    /// `own_top` is the ORIGINAL `?`'s compile-time top (`Qop.top_id`),
+    /// NOT this slot's `top_id` — the slot is constructed with the
+    /// region's interior source id (see the `FusedKernel::new` call in
+    /// `fusion::try_fuse`), which never equals any registration top;
+    /// comparing it forced every fused delivery onto the next-cycle
+    /// `set_var` path (caught by the stale-error-deliver pin's trace).
+    pub fn pre_bind_qop_deliver(
+        &mut self,
+        handler_id: BindId,
+        handler_top: ExprId,
+        own_top: ExprId,
+        spec: Expr,
+    ) {
         let apply: Box<dyn Apply<R, E>> = Box::new(crate::node::error::QopDeliverApply {
             handler_id,
+            handler_top,
+            own_top,
             spec: spec.clone(),
         });
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
-        self.recipe = SlotRecipe::QopDeliver { handler_id, spec };
+        self.recipe = SlotRecipe::QopDeliver { handler_id, handler_top, own_top, spec };
         self.pre_bound = true;
     }
 
@@ -669,9 +683,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                 target: target.clone(),
                 _p: std::marker::PhantomData,
             })),
-            SlotRecipe::QopDeliver { handler_id, spec } => {
+            SlotRecipe::QopDeliver { handler_id, handler_top, own_top, spec } => {
                 Some(Box::new(crate::node::error::QopDeliverApply {
                     handler_id: *handler_id,
+                    handler_top: *handler_top,
+                    own_top: *own_top,
                     spec: spec.clone(),
                 }))
             }
@@ -1183,8 +1199,15 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             if let FnSource::Cast { target } = &fp.source {
                 self.dyn_slots[fn_idx].pre_bind_cast(target.clone());
             }
-            if let FnSource::QopDeliver { handler_id, spec } = &fp.source {
-                self.dyn_slots[fn_idx].pre_bind_qop_deliver(*handler_id, spec.clone());
+            if let FnSource::QopDeliver { handler_id, handler_top, own_top, spec } =
+                &fp.source
+            {
+                self.dyn_slots[fn_idx].pre_bind_qop_deliver(
+                    *handler_id,
+                    *handler_top,
+                    *own_top,
+                    spec.clone(),
+                );
             }
         }
         Ok(())
