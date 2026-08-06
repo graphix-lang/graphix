@@ -33,14 +33,13 @@
 // made order-independent and/or module load order made
 // deterministic. No wrong VALUES ever produced — acceptance only.
 array::window(#n: i64:1, str::parse("notanumber")?, never())
-// WITNESS 2 (aug06ahz0 fuzz divergence_000000, 2026-08-06 — but
-// PRE-EXISTING: 10/40 diverging on bed980f6 AND 6a56662c alike):
-// RUNTIME-VALUE manifestation of the same per-process settle seed.
-// Direction FLIPS run-to-run (interp [3:[1,2,3]] vs jit [] and the
-// reverse, ~25%) — mode-uncorrelated, per-PROCESS: the odd labeled
-// arg `#n: let x = [i64:1,...]` (an Array where skip's count goes)
-// settles differently per module-load order; one settle passes the
-// elements through (group emits [1,2,3]), the other starves the
-// chain (empty trace). Same root as the compile flap above: async
-// module-load order feeding an order-sensitive settle.
-// array::group(skip(#n: let x = [i64:1, i64:2, i64:3], array::iter(x)), |n, _| n == i64:3)
+// WITNESS 2 RESOLVED (2026-08-06, 9f2adab2): the runtime-value flap
+// was NOT the settle — CallSite.args was an AHashMap iterated by
+// update(), so arg-subtree evaluation order was a per-process ahash
+// coin flip; `skip(#n: let x = [1,2,3], array::iter(x))` starved
+// when the reader ran before the bind. Args now evaluate in source
+// order (IndexMap; pin arg-order-scope-chain-aug2026/00). STILL OPEN
+// HERE: only the original compile-time settle sensitivity above —
+// per-process module-load order shifting the parse-return settle
+// (acceptance is deterministic since the cast-bottom fix; the settle
+// order-dependence itself remains latent, unlocated).

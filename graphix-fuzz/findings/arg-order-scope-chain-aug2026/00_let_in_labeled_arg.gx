@@ -1,0 +1,12 @@
+// CallSite args are a sequential SCOPE CHAIN and must evaluate in
+// SOURCE ORDER (fixed 2026-08-06): the args map was an AHashMap
+// iterated by update(), so whether the #n subtree's `let x` bind ran
+// before the sibling reader `array::iter(x)` was a per-process ahash
+// coin flip — ~half of processes silently starved (the bind's
+// same-cycle delivery landed after the reader's update; never
+// redelivered), the rest emitted [1,2,3]. Args are now an
+// insertion-ordered IndexMap (insertion = source order).
+// TRIPWIRE NOTE: on a broken binary this pin only trips when the two
+// contexts' coins land differently (~40%) — a flap here is ALWAYS
+// this class, rerun to confirm rather than dismissing as noise.
+array::group(skip(#n: let x = [i64:1, i64:2, i64:3], array::iter(x)), |n, _| n == i64:3)
