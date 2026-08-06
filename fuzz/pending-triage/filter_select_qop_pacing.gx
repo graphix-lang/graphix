@@ -1,0 +1,17 @@
+// PENDING TRIAGE (aug05j ryouko reactive divergence_000001, 2026-08-06
+// ~00:45, deterministic 3/3 on bed980f6). VALUE-PACING divergence:
+// on the injection epoch the interp's v1 lags one cycle behind the
+// jit's — interp rel-0 event (v3-v1)*in0 computes with the OLD v1,
+// the jit with the FRESH one (interp [0:0, 1:1], jit [0:-1, 1:0] on
+// the minimized single-epoch schedule). Which side matches the
+// intended same-cycle dataflow through filter -> select-wildcard ->
+// index-with-$ is EXACTLY the firing-semantics territory where the
+// 6fcd6c1e same-night fix flooded — triage with probe-first
+// discipline (sb1/sb2-style minimal interp probes for each link of
+// the chain BEFORE any kernel theory), ideally with Eric. Second
+// same-night find: fuzz/pending-triage/dynmod_reload_value_skew.gx
+// (dynamic-module reload + off-by-one value skew, likely unrelated
+// class).
+// minimized:
+// schedule-v1: cap=144 events=1152; in0=i64:1 in1=i64:1
+{let v1: i64 = {let v0: Array<i64> = array::filter([in0, in0], |v0| true); select in0 {_ => v0[i64:-1]$}}; let v2: bool = true; let v3 = i64:0; v3 <- in1 ~ (v3 + in1); ((v3 - v1) * in0)}
