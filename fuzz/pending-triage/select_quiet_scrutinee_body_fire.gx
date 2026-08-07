@@ -1,0 +1,41 @@
+// PARKED 2026-08-07 (aug06ghz0 reactive divergence_000000, repro 3/3
+// local, pre-existing on 9d951807 — not from the lit-leaf fix).
+// KNOWN OPEN kernel missing-fire — dedup future findings against this.
+//
+// CLASS: quiet-scrutinee body-driven fire. Epoch 1: v0 grows, the
+// fold re-runs and BOTTOMS (u8 0/0 div0) so scrutinee v2 delivers
+// nothing (tainted in the kernel); the select's standing selection is
+// `_`, whose body `in0` fires on its own dep (the injection). THE
+// STRICT SELECT RULE says: selection unchanged + taken arm's body
+// produces => EMIT. The interp does (probe t23: injecting in0=7 in a
+// later epoch emits the FRESH 7 — body production, not a ride; probe
+// t24: a CONST arm body stays quiet both modes — rule symmetric).
+// The kernel's phantom-arm-eval gate (0a0014eb) routes EVERY
+// tainted-scrutinee take to the miss block — right when NO selection
+// was ever made (the aug04b phantom class it fixed), wrong when a
+// selection STANDS: it conflates never-selected with
+// selected-but-quiet. jit swallows the fire (interp [0:0];[0:0],
+// jit [0:0];[]).
+//
+// FIX SHAPE (probed, not yet implemented — firing-semantics surgery,
+// daylight + Eric per the aug05i lesson): under a tainted scrutinee,
+// arm choice must come from the SELECTION STATE WORD, not the
+// placeholder-matched pattern chain. Sketch: per-arm tainted-take
+// gates and the final all-missed fail edge route to a shared
+// mem-dispatch block that switches on the selection word — remembered
+// arm i => jump to arm i's BODY ENTRY (binds bound from the
+// placeholder via the totalized helpers, inheriting scrutinee taint
+// per #219: a bind-consuming body taints and silences — the value-
+// ride residual, safe direction; an independent-dep body produces =
+// this witness); no memory => miss (preserves 0a0014eb). Constraints:
+// the pattern chain must still run first on the tainted path (guards
+// up to the placeholder match must tick — 03_guard_ride_symmetry);
+// arm body entries need bind emission moved into a block reachable
+// from both paths, reading only function-entry SSA — arms with
+// NESTED-pattern Elem binds read staged interior pointers that don't
+// dominate mem-dispatch and must fall to miss (documented residual).
+// A guard-flip re-selection on a quiet-scrutinee cycle is a SEPARATE
+// path (wake machinery, aug03 class) and is not touched by this.
+//
+// schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
+{let v0: Array<i64> = []; v0 <- in0 ~ array::push(v0, i64:0); let v3: i64 = {let v2: u8 = array::fold(v0, u8:0, |a, x| (a / a)); select v2 {_ => in0}}; v3}
