@@ -919,15 +919,21 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
 /// a TVar bound AFTER the union was built: a `never()` arm's fresh
 /// TVar gets bound by a downstream consumer's unification (e.g. to
 /// `Array<f64>`), leaving `Set([TVar→Array<TVar→f64>, Array<f64>])` —
-/// structurally unequal members. The third rung snapshots every bound
-/// TVar to its binding first, so the merge collapses the set. Each
-/// rung runs only when the previous fails, so the common path pays
-/// nothing and no rung rewrites TVar bindings (`resolve_tvars`
-/// deep-clones).
+/// structurally unequal members. `resolve_tvars` snapshots every
+/// bound TVar to its binding first, so the merge collapses the set.
+///
+/// The retry MUST normalize a deep CLONE, never `t` itself:
+/// `TVar::normalize_int` writes the normalized binding back into the
+/// shared cell, so normalizing the original rewrites the program's
+/// static types as a side effect of merely ATTEMPTING fusion —
+/// `--check` diagnostics and every `typ()` reader then differ between
+/// modes on programs where nothing fuses
+/// (fusion-mutates-tvars-aug2026; the old middle rung
+/// `freeze_for_abi(reg, &t.normalize())` did exactly that).
+/// `resolve_tvars()` deep-clones, so the write-back lands in the
+/// throwaway copy.
 pub fn freeze_for_abi_normalized(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
-    freeze_for_abi(reg, t)
-        .or_else(|| freeze_for_abi(reg, &t.normalize()))
-        .or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
+    freeze_for_abi(reg, t).or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
 }
 
 /// Normalizes ALL THREE option-shaped forms that collapse to
