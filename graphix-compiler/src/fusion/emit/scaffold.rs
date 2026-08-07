@@ -892,7 +892,7 @@ pub fn emit_init_loop<'a, 'f, 'c, F>(
     out_src: CompositeSource,
     sel_sites: &[ExprId],
     mut body: F,
-) -> Result<(ClifValue, SlotFlags)>
+) -> Result<(ClifValue, SlotFlags, ClifValue)>
 where
     F: FnMut(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
@@ -904,6 +904,23 @@ where
     let n = cx.b.ins().select(is_negative, zero, n_widened);
     let max = cx.b.ins().iconst(types::I64, crate::node::MAX_ARRAY_INIT_LEN);
     let oversize = cx.b.ins().icmp(IntCC::SignedGreaterThan, n, max);
+    // An over-limit count IS bottom (the interp's MapQ forces taint
+    // and keeps its retained slots), but the count's own disc is
+    // CLEAN, so every validity channel keyed on the source's taint
+    // read the cycle as a real resize-to-0: the prev-length word
+    // recorded the clamped 0 (a phantom resize fire two cycles later
+    // — init-over-limit-aug2026/01) and the slot tables truncated and
+    // freed every per-slot word the interp retains. Force the taint
+    // into the count's disc: `exact_stale` then keeps its stored
+    // length, the slot chains read invalid (no truncate), and the
+    // caller's firing wrap sees the source tainted. The clamped-0
+    // loop bound stays (the interp's retained-slot walk on the
+    // oversize cycle delivers no elements; slot-interior deps missing
+    // their tick that cycle is the documented interior-state
+    // residual).
+    let forced_bits = cx.b.ins().iconst(types::I64, TAINT | STALE);
+    let forced_disc = cx.b.ins().bor(n_disc, forced_bits);
+    let n_disc = cx.b.ins().select(oversize, forced_disc, n_disc);
     let stale = cx.b.ins().iconst(types::I64, STALE);
     let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
     let disc = cx.b.ins().select(oversize, tainted, stale);
@@ -952,7 +969,7 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     emit_depth_unit_exit(cx, n)?;
-    Ok((finalize_buf(cx, buf)?, flags))
+    Ok((finalize_buf(cx, buf)?, flags, n_disc))
 }
 
 pub fn emit_map_loop<'a, 'f, 'c, F>(

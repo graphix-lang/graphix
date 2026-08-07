@@ -735,6 +735,15 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     let value = self.operation.finish(&self.slots, &self.current)?;
                     return Some(TagValue::tagged(value, tag));
                 }
+            } else {
+                // An unselectable source (init's over-limit count, a
+                // wrong-shaped collection Value) IS bottom, exactly as
+                // the comment above says — this previously fell
+                // through untainted and the retained slots emitted at
+                // the old length (init-over-limit-aug2026). The slots
+                // stay retained: bottom is "no value this cycle",
+                // never a reset.
+                forced_taint = true;
             }
         }
 
@@ -1119,6 +1128,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     ctx.rt.cached_mut().insert(slot.element_id, value.clone());
                     event.variables.insert(slot.element_id, TagValue::tagged(value, tag));
                 }
+            } else {
+                // An unselectable source IS bottom (see MapQ's twin —
+                // init-over-limit-aug2026); slots stay retained.
+                forced_taint = true;
             }
         }
 
@@ -1462,7 +1475,7 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
     let count = source.emit_clif(cx)?;
     let source_invariant = emit::node_loop_invariant_ref(cx, source);
     let output_source = emit::node_composite_source(body);
-    let (ptr, flags) = scaffold::emit_init_loop(
+    let (ptr, flags, count_disc) = scaffold::emit_init_loop(
         cx,
         count.payload,
         count.disc,
@@ -1475,6 +1488,10 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
         |cx| body.emit_clif(cx),
     )?;
     let result = flavor.emit_result(cx, ptr)?;
+    // The oversize-forced disc (init-over-limit-aug2026): the firing
+    // wrap must see an over-limit count as a TAINTED source, exactly
+    // like `exact_stale` and the slot chains inside the loop.
+    let count = CompiledExpr::new(count_disc, count.payload);
     Ok(Some(finish_loop_result(cx, result, flags, &count, source_invariant)))
 }
 
