@@ -778,7 +778,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SprintfEv {
                 }
                 match netidx_value::printf(&mut self.buf, fmt, &self.args) {
                     Ok(_) => Some(Value::String(ArcStr::from(&self.buf))),
-                    Err(e) => Some(Value::error(ArcStr::from(e.to_string()))),
+                    Err(e) => Some(errf!(literal!("FormatError"), "{e}")),
                 }
             }
             _ => None,

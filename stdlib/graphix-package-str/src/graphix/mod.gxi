@@ -93,7 +93,7 @@ val to_lower: fn(s: string) -> string;
 val to_upper: fn(s: string) -> string;
 
 /// C style sprintf, implements most C standard format args
-val sprintf: fn(fmt: string, @args: Any) -> string;
+val sprintf: fn(fmt: string, @args: Any) -> Result<string, `FormatError(string)>;
 
 /// return the length of the string in bytes
 val len: fn(s: string) -> i64;

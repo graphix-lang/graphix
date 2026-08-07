@@ -370,6 +370,11 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                 cx.b.ins().brif(nz, drop_bl, &[], cont_bl, &[]);
                 cx.b.switch_to_block(drop_bl);
                 cx.b.seal_block(drop_bl);
+                // nz ⟺ the shape-mismatch path (pend's sentinel is
+                // (0,0)) — make the value loss LOUD before dropping
+                // (sprintf-error-return-shape-aug2026).
+                let warn_h = cx.helper("graphix_shape_mismatch_warn")?;
+                cx.b.ins().call(warn_h, &[raw0]);
                 let val_drop = cx.helper("graphix_value_drop")?;
                 cx.b.ins().call(val_drop, &[raw0, raw1]);
                 cx.b.ins().jump(cont_bl, &[]);

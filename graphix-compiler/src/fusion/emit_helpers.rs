@@ -567,6 +567,20 @@ safe fn graphix_dyncall_pending_take_clear() -> u8 {
 /// at the qop-unwrap error branch — same pending signal as
 /// the dispatcher uses, just driven by a kernel-internal check
 /// instead of a `dispatch` return.
+/// The dyncall return-shape mismatch path was SILENT: the emitted
+/// check drops the wrong-shaped Value and substitutes a tainted
+/// placeholder, so a stdlib builtin whose eval violates its declared
+/// return type (sprintf-error-return-shape-aug2026) — or a genuine
+/// compiler bug — silently lost a value. Called on that branch to
+/// make the loss attributable.
+safe fn graphix_shape_mismatch_warn(got_disc: u64) {
+    log::warn!(
+        "fused call returned a Value whose shape (disc {got_disc:#x}) doesn't \
+         match its declared return type — dropped as bottom (a stdlib builtin \
+         violating its declared type, or a compiler bug)"
+    );
+}
+
 safe fn graphix_dyncall_set_pending() {
     DYNCALL_PENDING.with(|c| c.set(true))
 }
