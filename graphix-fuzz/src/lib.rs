@@ -515,6 +515,21 @@ pub enum OracleTier {
 /// netidx needs sequenced publish/subscribe contracts in the harness —
 /// the dynamic-modules work).
 pub fn oracle_tier(code: &str) -> OracleTier {
+    // Markers match CODE ONLY — comment lines are stripped first. The
+    // scan used to cover the whole wrapper text, so a finding header
+    // that merely NAMED an excluded API silently un-gated its own pin
+    // (`check` reported AGREE on live divergences; three corpus pins
+    // were affected — oracle-tier-comment-scan-aug2026). Trailing
+    // comments on code lines are kept: over-exclusion is the safe
+    // direction.
+    let mut stripped = String::with_capacity(code.len());
+    for l in code.lines() {
+        if !l.trim_start().starts_with("//") {
+            stripped.push_str(l);
+            stripped.push('\n');
+        }
+    }
+    let code = stripped.as_str();
     // Value-nondeterministic sources: random values, wall-clock time
     // (timers deliver it, `now()` returns it), generated temp paths,
     // netidx registration timing, OS-assigned socket addresses
@@ -981,9 +996,8 @@ pub async fn run_batch(
             };
             swap_i.set(VfsResolver::new(table()));
             swap_j.set(VfsResolver::new(table()));
-            let probe_sched = schedule::Schedule::parse("i64:0")
-                .expect("trivial probe parses")
-                .0;
+            let probe_sched =
+                schedule::Schedule::parse("i64:0").expect("trivial probe parses").0;
             let budget = Duration::from_secs(10);
             let (pi, pj) = tokio::join!(
                 drive(
@@ -1005,8 +1019,8 @@ pub async fn run_batch(
                     budget
                 ),
             );
-            let healthy = matches!(pi, Outcome::Trace(_))
-                && matches!(pj, Outcome::Trace(_));
+            let healthy =
+                matches!(pi, Outcome::Trace(_)) && matches!(pj, Outcome::Trace(_));
             if !healthy {
                 break;
             }
@@ -1075,8 +1089,7 @@ async fn batch_isolated(
     // NOTHING (e.g. runtime init failure) also falls back — no
     // progress means no third try.
     loop {
-        let batch: Vec<String> =
-            remaining.iter().map(|&i| progs[i].clone()).collect();
+        let batch: Vec<String> = remaining.iter().map(|&i| progs[i].clone()).collect();
         let (clean, verdicts) = run_batch_child(&batch, timeout).await;
         if !clean || verdicts.is_empty() {
             individual.extend(remaining.drain(..));
