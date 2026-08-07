@@ -588,6 +588,45 @@ enforces it):**
   snapshot. Pinned by `select-strict-rule-aug2026/` +
   `select-quiet-scrutinee-aug2026/` +
   `rec_same_arg_refire_quiet` / `rec_transient_pure_refire` fixtures.
+- **The 2026-08-07 review arc** (Opus multi-agent review, 726eeb1c —
+  18 finding dirs; 14 classes fixed same day, `f438e1bd..369fa71c`):
+  (1) GUARDS tick per-invocation via a PROLOGUE in `emit_select_arms`
+  (the interp ticks every arm's guard every cycle; lazy chain
+  evaluation desynced their operand caches — guard-shortcircuit).
+  Binds install taint-masked by the arm's own pattern cond; guard
+  discs never fold into the result. SCHEDULE-FREE guards (pure
+  never-bottom fns of the arm's own binds — cmp/logic/wrapping-arith
+  over binds+consts, `guard_schedule_free`) stay lazy in the chain:
+  observably equivalent, and the blanket prologue cost symbolic +58%.
+  (2) A fused DynCall delivers non-fired args as `TagValue::stale`
+  (a STALE mask beside the taint mask) — never absence (all-const-arg
+  builtins must keep producing) and never `fired` (rand
+  re-randomized, `now` resampled per invocation). TAG-BLIND builtins
+  (`printfn!`, `now` — gate on `Some(_)` not `triggers()`) remain the
+  open ruling.
+  (3) The VALUE taint cache's no-storage path REFUSES (de-fuse) per
+  the storage law, EXCEPT tail-position producers (body tail-leaf
+  ids in `LowerCtx::tail_leaves`): a tail result's ride belongs to
+  the caller, so pass-through is exact there. Cost: 13 fixtures
+  interpret (dyncall chains, string HOFs, `str::split` family —
+  `FuseExpect::None` + ASPIRE comments); the ASPIRE value residents
+  restore them.
+  (4) `abi_kind`'s option/result collapse was the root of TWO bugs:
+  select type predicates over `[T, Error<E>]` lower as a POSITIVE
+  disc test (`nullable_error_marked`), and the qop scalar arm routes
+  owned errors through `emit_qop_error_disposal` (the leak).
+  (5) Variant tag tests enforce representation AND arity; kernel
+  cache keys include the instance body's CATCH COVERAGE (`__covN`
+  symbol variants); sig-less modules refuse emission (structure, not
+  computation); `freeze_for_abi_normalized` never normalizes shared
+  tvar cells (mode-identical `--check`, gated by
+  `check_mode_parity`); narrow index/slice bounds widen; over-limit
+  `array::init` is bottom-with-retained-state on BOTH engines;
+  `str::sprintf` declares `Result<string, `FormatError(string)>` and
+  shape mismatches warn loudly. AWAITING ERIC: the two
+  `fuzz/pending-ruling/` classes (tail-zero-iteration-fire,
+  rec-prev-looped-arming — node-walk drops the event) + the
+  tag-blind builtin gate.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel caches survive an arm's sleep — `Cached` residents,
   `CachedArgs` arg slots, `StructWith.current`, collection slot
