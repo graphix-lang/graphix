@@ -467,7 +467,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         // (next cycle), so there's no read-after-write hazard. A
         // handler-LESS `?` (`id: None`) passes `None` — its error path is
         // the bottom the kernel produces with no delivery.
-        emit_qop_node(cx, &self.n, &self.typ, self.id.map(|_| self.spec.id))
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, self.id.map(|_| self.spec.id))
     }
 }
 
@@ -566,6 +566,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `$` never has a catch handler (log + drop on error) — no delivery.
-        emit_qop_node(cx, &self.n, &self.typ, None)
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, None)
     }
 }

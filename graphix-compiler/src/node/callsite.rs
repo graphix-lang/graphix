@@ -2423,6 +2423,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 })
             })
             .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
-        emit_dyncall_node(cx, &info, &arg_nodes)
+        emit_dyncall_node(cx, self.spec.id, &info, &arg_nodes)
     }
 }

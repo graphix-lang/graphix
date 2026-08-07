@@ -75,6 +75,7 @@ fn emit_dyncall_site_word(cx: &mut BodyCx) -> ClifValue {
 /// whole-kernel abort (item 28).
 pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
+    spec_id: crate::expr::ExprId,
     info: &BuiltinCallSiteInfo,
     args: &[&Node<R, E>],
 ) -> Result<CompiledExpr> {
@@ -442,7 +443,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             | AbiKind::Variant
             | AbiKind::Nullable
             | AbiKind::Value,
-        ) => emit_value_taint_cache(cx, merged),
+        ) => {
+            let tail = cx.ctx.tail_leaves.borrow().contains(&spec_id.inner());
+            emit_value_taint_cache(cx, merged, tail)
+        }
         _ => Ok(merged),
     }
 }

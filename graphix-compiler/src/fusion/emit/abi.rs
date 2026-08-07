@@ -372,8 +372,17 @@ fn emit_taint_cache_at(
 pub(super) fn emit_value_taint_cache(
     cx: &mut BodyCx,
     cv: CompiledExpr,
+    tail: bool,
 ) -> Result<CompiledExpr> {
     let Some(off) = cx.claim_state_word_replay_value() else {
+        // A TAIL-position producer's ride belongs to the CALLER: on a
+        // bottom the callee produces nothing and the caller's cached
+        // consumer rides — the interp's own structure — so the
+        // pass-through is EXACT there, not a divergence. Interior
+        // positions refuse (Eric's bar).
+        if tail {
+            return Ok(cv);
+        }
         return Err(anyhow!("emit_clif: value taint cache has no storage channel here"));
     };
     let off_pay = off + 8;

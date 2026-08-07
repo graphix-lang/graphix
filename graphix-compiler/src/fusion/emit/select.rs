@@ -485,7 +485,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     match merge_shape {
         SelectMerge::Scalar(p) => Ok(emit_scalar_taint_cache(cx, p, result)),
         SelectMerge::Value | SelectMerge::Composite | SelectMerge::String => {
-            emit_value_taint_cache(cx, result)
+            let tail = cx.ctx.tail_leaves.borrow().contains(&sel.spec.id.inner());
+            emit_value_taint_cache(cx, result, tail)
         }
     }
 }

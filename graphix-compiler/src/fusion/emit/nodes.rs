@@ -488,7 +488,7 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    emit_dyncall_node(cx, &info, &[inner])
+    emit_dyncall_node(cx, expr_id, &info, &[inner])
 }
 
 /// `connect` (`x <- expr`) fused: compute the RHS and write the reactive

@@ -213,6 +213,7 @@ pub(super) fn compile_into_function(
             anchors: std::cell::RefCell::new(Vec::new()),
         },
         replay_enabled: spec.allow_replay_state,
+        tail_leaves: std::cell::RefCell::new(body.hook.tail_leaves()),
         site: StateChannel {
             ptr: site_ptr,
             enabled: !spec.allow_state,
@@ -533,6 +534,9 @@ pub(crate) struct LowerCtx<'a> {
     /// contract (jul10h 000009: a caller's native map loop bridged
     /// element 1's success into element 2's div0).
     pub(super) replay_enabled: bool,
+    /// The body root's tail-leaf ExprIds — see
+    /// `BodyEmitter::tail_leaves`.
+    pub(crate) tail_leaves: std::cell::RefCell<nohash::IntSet<u64>>,
     /// The per-CALL-SITE state channel (wire slot 2) — a CALLEE body's
     /// instance memory, supplied by each caller. See [`StateChannel`].
     pub(super) site: StateChannel,

@@ -863,6 +863,7 @@ fn emit_qop_error_disposal(
 
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
+    spec_id: ExprId,
     inner: &Node<R, E>,
     result_typ: &Type,
     handler_site: Option<ExprId>,
@@ -1084,7 +1085,11 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // success rides the cached value (both qmerge paths are
             // owned — the placeholder is fresh, the success unwrap
             // clones a borrowed inner).
-            emit_value_taint_cache(cx, CompiledExpr::new(params[0], params[1]))
+            emit_value_taint_cache(
+                cx,
+                CompiledExpr::new(params[0], params[1]),
+                cx.ctx.tail_leaves.borrow().contains(&spec_id.inner()),
+            )
         }
         // Value-shape success. The bad path (error) produces a tainted
         // Value::Null placeholder and CONTINUES (interior-bottom v2);
@@ -1146,7 +1151,11 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // Interior-bottom exactness, owned-value twin of the
             // Scalar arm's cache (both qmerge paths owned: the Null
             // placeholder is inert, the success was ensured owned).
-            emit_value_taint_cache(cx, CompiledExpr::new(params[0], params[1]))
+            emit_value_taint_cache(
+                cx,
+                CompiledExpr::new(params[0], params[1]),
+                cx.ctx.tail_leaves.borrow().contains(&spec_id.inner()),
+            )
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             Err(anyhow!("emit_clif: `?` with unsupported success type {:?}", success_typ))
