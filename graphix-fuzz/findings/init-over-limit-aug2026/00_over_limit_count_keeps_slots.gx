@@ -1,0 +1,64 @@
+// An OVER-LIMIT `array::init` count (> MAX_ARRAY_INIT_LEN = 16777216)
+// means two different things to the two backends, and they disagree in
+// BOTH directions (see 01 for the opposite-sign twin).
+//
+// interp (graphix-compiler/src/node/collection.rs):
+//   `IndexRange::select` (~370) logs and returns None for an over-limit
+//   count. In `MapQ::update` (~700) `forced_taint` is set ONLY when the
+//   source tag `is_tainted()`; an unselectable-but-untainted source
+//   falls out of the `else if let Some(source) = ...select(value)`
+//   branch entirely — no resize, no per-element delivery, `production`
+//   stays None and `self.current` keeps the PREVIOUS IndexRange. The
+//   slot walk then runs over the RETAINED slots, so a callback whose own
+//   input fired still produces and the collection emits at the old
+//   length. (The code comment right there declares the opposite intent:
+//   "an unselectable value (init's over-limit count) is bottom".)
+//
+// kernel (fusion/emit/scaffold.rs `emit_init_loop` ~884-918):
+//   `oversize` folds TAINT|STALE into the SlotFlags taint channel and
+//   clamps the length to 0, so the whole loop result is tainted and the
+//   kernel emits bottom.
+//
+// Epoch 1 delivers count=1, in1=1 -> both [1]. Epoch 2 delivers
+// count=20000000 (over limit) with in1=2:
+//   interp: [2]   (retained one slot, callback re-fired from in1)
+//   jit:    <no emission>
+//
+// Fix — make BOTH sides mean "bottom, and keep the retained state".
+//
+// (a) interp: set `forced_taint = true` when `T::Collection::select`
+// returns None, which is what its own comment already says. This widens
+// beyond over-limit init only to shapes unconstructible from typed code
+// (a wrong-shaped collection Value; a malformed cons chain behind the
+// abstract `List` API), and negative counts are unaffected —
+// `IndexRange::select` returns `Some(Self(n.max(0)))`.
+//
+// (b) kernel: NOT a one-line "don't clamp". The clamped `n` at
+// scaffold.rs:912 feeds four distinct channels and each needs its own
+// treatment:
+//   - `flags.set_len(n)` (:913) — the prev-length word. Don't write it.
+//   - `open_slot_tables(sel_sites, n, n_disc, i_var)` (:918) — the
+//     per-slot chains. `graphix_slot_state_table` TRUNCATES and frees
+//     every entry past `len` when `valid != 0`, and an over-limit count
+//     is a perfectly clean I64 so `valid` stays set: with the clamp it
+//     FREES every per-slot selection word, prev-len word and cache pair
+//     of that loop, while the interp retains its slots and their
+//     `SelCell`/`Cached` state — the next cycle's per-slot selects then
+//     all read "becoming selected" and fire where the interp is quiet
+//     (the select-slot-memory / prevlen-word class). OR `oversize` into
+//     the invalidity so `valid = 0` goes down the chain.
+//   - the LOOP BOUND, and `emit_depth_unit`/`emit_depth_unit_exit`
+//     (:914, :951) — the interp still runs its slot walk over the
+//     RETAINED slots (the walk is outside the source `if`) and charges
+//     call depth per retained slot, so a kernel bound of 0 charges 0
+//     and re-arms the empty-scaffold-depth-charge-aug2026 off-by-one.
+//     Run the oversize iteration at the RETAINED length (load the
+//     prev-len word before `set_len` and `select(oversize, prev, n)`),
+//     and use the same bound for both depth calls.
+//   `flags.fold(cx, TAINT|STALE)` (:909) already supplies the "taint the
+//   result" half and needs no change.
+//
+// Fixing only (a) leaves 01 diverging and fixing only (b) leaves this
+// one diverging — the two halves are one change.
+// schedule-v1: cap=96 events=768; in0=i64:1 in1=i64:1; in0=i64:20000000 in1=i64:2
+array::init(in0, |i| in1)

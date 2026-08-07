@@ -1,0 +1,87 @@
+// A fused DynCall delivers EVERY non-taint-masked argument as FIRED, so
+// a builtin whose semantics gate on argument PRODUCTION re-runs its
+// effect on every kernel invocation. The node-walk runs it once.
+//
+// NOT ORACLE-VISIBLE — the values agree, only stdout differs, and the
+// trace oracle records only the result value. `graphix-fuzz check`
+// reports AGREE on this program while the bug is live. Reproduce by hand:
+//
+//   timeout 25 graphix --no-fusion 00_const_arg_effect_refires.gx
+//     A 0 1 2 3 4 5           <- ONE "A"
+//   timeout 25 graphix 00_const_arg_effect_refires.gx
+//     A A A A A A 0 1 2 3 4 5 <- one "A" per kernel invocation
+//
+// `--fusion-stats` shows the `{println("A"); n}` block fused.
+//
+// Mechanism. `println`'s Apply prints inside `if let Some(v) =
+// from[1].update(..)` (stdlib/graphix-package-core/src/lib.rs, the
+// `printfn!` macro) — the ordinary reactive rule that an output fires
+// only when an input that feeds it fired. The message here is a string
+// LITERAL: it fires once at init and is STALE forever after, so the
+// node-walk prints once. In the kernel, `DynCallSlot::dispatch`
+// (fusion/kernel.rs ~line 549) writes every unmasked arg as
+// `TagValue::fired(v.clone())`, so the synthesized arg `Ref` produces
+// every dispatch and the builtin prints every time. The deliberate
+// comment above that insert ("FIRED: the kernel already decided this
+// call happens — the delivery is the call's argument event") is exactly
+// the assumption that breaks: the kernel decides the CALL happens, but
+// the node-walk decides per ARGUMENT whether it produced.
+//
+// The taint channel already has the right shape one bit over: a
+// TAINT-masked slot is delivered as ABSENCE precisely so "the callee's
+// cached slot keeps its previous state and eval decides what a missing
+// arg means". STALE needs the same treatment.
+//
+// Fix — TWO parts, and the obvious one-liner is WRONG.
+//
+// (1) The seam. Emit a STALE mask beside the taint mask in
+// `emit_dyncall_args` (fusion/emit/call.rs ~201, where `taint_mask` is
+// folded from `is_tainted(disc)` only — the STALE bit of the same disc
+// is already in hand) and have `dispatch` deliver those slots as
+// `TagValue::stale(v.clone())`. NOT as absence: STALE means "present,
+// didn't fire", and skipping the insert makes an ALL-STALE dispatch
+// produce nothing at all (`Ref::update` -> None, `CachedVals::
+// update_full` -> None, `CachedArgs::update` -> None, `graphix_dyncall`
+// pends, the call site converts pend to TAINT), so every builtin whose
+// arguments are all constants would bottom after its first invocation.
+// Live fixtures that would break: `REC_TRANSIENT_STATELESS_BUILTIN`
+// (functions.rs, FuseExpect::Jit) and this shape, which agrees today —
+//   { let n = 0; select n { x if x < 3 => n <- (x ~ n) + 1, _ => never() };
+//     let rec f = |k: i64| -> i64
+//       select k { i64:0 => str::len("abc"), _ => f(k - i64:1) + array::len([k]) };
+//     f(n + i64:2) }                       -> 5, 6, 7, 8 in BOTH modes.
+// `TagValue::stale` fixes 01 exactly: `CachedVals::update_diff` sets
+// `up[i] = tag.triggers()`, so a stale string arg gives `up ==
+// [true, false]` and `str::escape`'s `([_, true], ..)` arm misses —
+// the interp's single emission. It also stops `CachedArgs` re-running
+// `eval` (its stale arm surfaces `last_result`) while keeping the value
+// channel alive.
+//
+// (2) The print family needs a second, separate change, because
+// `printfn!` is TAG-BLIND: it prints on `from[1].update(..)` returning
+// `Some(_)`, and `Ref::update` returns `Some` for a stale delivery too.
+// So part (1) alone leaves THIS program diverging. The gate has to
+// become `tv.tag().triggers()`. That is a node-walk-side change with
+// its own observable consequence — the interp today re-prints once per
+// FRAMED pass of a recursive body, on a stale constant — so it wants
+// Eric's ruling. It is the only place that can distinguish "the value
+// is present and unchanged" from "the value arrived".
+//
+// Scope. For a builtin that computes from ALL its args the value
+// channel is unaffected — the extra production never escapes, because
+// the kernel's output disc correctly keeps the STALE bit
+// (`count`/`sum`/`uniq`/`once` over a constant-arg builtin inside a
+// fused region all AGREE). Two classes DO diverge:
+//   - builtins with a per-invocation EFFECT (`print`, `println`, `dbg`)
+//     — this program;
+//   - builtins that gate production on a SPECIFIC arg's firing via
+//     `update_diff` (`str::escape`, `str::unescape`) — see 01, which is
+//     value-visible and therefore oracle-gateable.
+// That the first class is invisible to a value-trace oracle is why this
+// survived the soak, and it argues for an effect-aware oracle.
+{
+  let n = 0;
+  select n { x if x < 5 => n <- (x ~ n) + 1, _ => never() };
+  let r = { println("A"); n };
+  r
+}

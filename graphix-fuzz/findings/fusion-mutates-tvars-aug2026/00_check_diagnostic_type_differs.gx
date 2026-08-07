@@ -1,0 +1,78 @@
+// COMPILE-MODE SKEW, and the root cause of at least one user-visible
+// behavior difference: merely ATTEMPTING fusion permanently REWRITES the
+// program's static types, because `Type::normalize()` mutates shared
+// type-variable cells and the fusion pass calls it on every region root
+// it classifies.
+//
+// Witness — a pure `--check` run, no runtime, no kernels:
+//
+//   timeout 20 graphix -n --check --no-fusion 00_check_diagnostic_type_differs.gx
+//     type mismatch string does not contain '_6070: [i64, '_6068: _]
+//   timeout 20 graphix -n --check 00_check_diagnostic_type_differs.gx
+//     type mismatch string does not contain '_9158: i64
+//
+// Same program, same compiler, one flag documented as performance-only,
+// and `v`'s reported type is a union in one mode and `i64` in the other.
+//
+// AND NOTHING FUSES. `--fusion-stats` on the non-erroring twin
+// (`let v = select 1 { 1 => i64:1, _ => never() }; v`) reports
+// `0 of 3 attempted regions fused, 3 blocked`, and `#[native]` on the
+// select FAILS the JIT compile. The rewrite happens during the fusion
+// pass's region-root type CLASSIFICATION, so the skew is not confined to
+// programs that fuse — every program compiled with fusion on is exposed.
+//
+// The chain, all verified in-tree:
+//  1. fusion/kernel_abi.rs ~901 `freeze_for_abi_normalized`:
+//         freeze_for_abi(reg, t)
+//           .or_else(|| freeze_for_abi(reg, &t.normalize()))          <- rung 2
+//           .or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
+//     Its own doc comment (~899) asserts "no rung rewrites TVar bindings
+//     (`resolve_tvars` deep-clones)". True of rung 3, FALSE of rung 2:
+//     rung 2 normalizes the ORIGINAL type.
+//  2. typ/tvar.rs ~619 `TVar::normalize_int` clones the binding out,
+//     normalizes it, and WRITES IT BACK into the shared cell
+//     (`self.read().typ.write().typ = Some(n)`) — the doc there says so
+//     outright: "normalizes its binding IN PLACE inside the shared cell".
+//  3. What gets rewritten here: a select with a `never()` arm has rtype
+//     `Set([i64, TVar_never])`, built at select typecheck0 BEFORE
+//     `CallSite::typecheck1` terminal-settles `TVar_never := Bottom`, so
+//     the Set is left un-collapsed. `normalize`'s merge derefs the bound
+//     TVar and `flatten_set_tracked` drops `Bottom` and collapses the
+//     one-member set — `i64` — which step 2 then stores back into the
+//     cell every consumer of that node's type shares.
+//  4. Callers: `freeze_region_return` (fusion/mod.rs ~1221) and the
+//     region input/return classification reached from `try_fuse` for
+//     EVERY attempted region, including ones that fail. `compile_stmt`
+//     runs the fusion pass only when `ctx.fusion.enabled`, so a
+//     node-walk-only compile never performs the rewrite.
+//
+// Everything downstream that reads a compiled node's `typ()` is exposed:
+// compile diagnostics (this witness), the REPL's type readout, the
+// shell's `TVal` renderer, and package `is_custom` display-backend hooks
+// — which is exactly fusion-flips-display-backend-aug2026, whose
+// `TUITYP.contains(env, &e.typ)` flips because `e.typ` itself changed.
+// Treat that finding as a CONSEQUENCE of this one.
+//
+// Fix (smallest first):
+//  (a) Delete rung 2 and let rung 3 do the work:
+//        freeze_for_abi(reg, t).or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
+//      `resolve_tvars()` deep-clones, so the subsequent `normalize()`
+//      writes back only into the throwaway copy. Rung 2 is a cheaper
+//      path whose result rung 3 subsumes; the cost is one extra deep
+//      clone on the rare non-directly-freezable type.
+//  (b) If rung 2's cheapness matters, add a non-mutating
+//      `Type::normalize_pure()` (same walk, no write-back at
+//      tvar.rs:633) and use it from every `fusion/` classifier. The
+//      write-back is a typechecker memoization; fusion has no business
+//      persisting it.
+// Either way fix the now-false invariant comment at kernel_abi.rs ~899,
+// and add a gate: assert the compiler's reported type for this program
+// is identical (modulo tvar numbering) with and without
+// `CFlag::FusionDisabled`. The value-trace oracle structurally cannot
+// see this class.
+//
+// NOT ORACLE-VISIBLE as written (it is a --check diagnostic, and both
+// modes reject). Run the two `--check` commands above.
+let v = select 1 { 1 => i64:1, _ => never() };
+let w: string = v;
+w

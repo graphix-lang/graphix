@@ -1,0 +1,81 @@
+// SEVERE — a signature-less module whose LAST STATEMENT IS AN
+// EXPRESSION loses every export under fusion. The module's bindings
+// never reach the variable channel, so every outside reference is dead:
+//
+//   interp: 41
+//   jit:    CompileErr (in the oracle's module form) / silently NO
+//           OUTPUT AT ALL (running the two-file form on the plain
+//           binary — no error, no value, the program just never
+//           produces)
+//
+// Trigger is exactly the trailing statement KIND, verified by
+// substitution — with `let c = i64:41` as the module's last statement
+// both modes print 41; with ANY trailing expression (`i64:0`, `c`,
+// `c + i64:1`) the jit goes dead. Two-file form on the plain binary:
+//
+//   m9.gx:    let c = i64:41;
+//             i64:0
+//   main.gx:  mod m9;
+//             m9::c
+//   graphix --no-fusion main.gx  -> 41
+//   graphix main.gx              -> (nothing)
+//
+// MECHANISM — a signature-less module is not a `Module` node at all.
+// `ModuleKind::Resolved { sig: None }` (node/compiler.rs ~119-131)
+// compiles it to `Block { module: true }`. Two independent consequences,
+// both confirmed:
+//
+//  (1) DEAD-ELIMINATED. `stmt_subtree_effect_free`
+//      (fusion/emit/flow.rs ~57-89) has an explicit
+//      `NodeView::Module(_) => ok = false` arm whose comment says a
+//      `mod` statement is never dead because it publishes its binds
+//      into the persistent env. A sig-less module is a Block, so it
+//      falls to the `_ => {}` arm, is classified effect-free, and
+//      `emit_block_node`'s dead-statement elimination drops it whole.
+//      Witness (two files):
+//        m.gx:    let c = i64:5
+//        main.gx: mod m;
+//                 m::c <- m::c + i64:1;
+//                 m::c
+//      --no-fusion prints 5 6 7 8 ...; fusion prints NOTHING, ever, and
+//      `--fusion-stats` reports `1 of 1 attempted regions fused,
+//      0 blocked`.
+//
+//  (2) BLOCK-SCOPED. When the module statement DOES survive (it
+//      contains a Connect, so it is not effect-free), it is emitted by
+//      the ordinary do-block emitter, which takes `cx.env.mark()` at
+//      entry and `truncate(mark)` at exit — so every binding the module
+//      introduced is popped when the `mod` statement ends, and the
+//      outer read falls back to the connect-target LIFT's entry param.
+//      Witness (two files):
+//        m.gx:    let c = i64:5;
+//                 c <- c + i64:1
+//        main.gx: mod m;
+//                 m::c
+//      --no-fusion prints 5 6 7 8 ...; fusion prints 6 7 8 9 ... — the
+//      whole stream is shifted by one and the SEED value 5 is never
+//      produced. A silent off-by-one in a module's exported stream.
+//
+// This program is the third face: no connect at all, so the module's
+// binding just never reaches the variable channel.
+//
+// Fix: a `mod` statement must not be treated as an ordinary block.
+//  - `stmt_subtree_effect_free` must key on "is a module statement",
+//    not on `NodeView::Module` — a `Block { module: true }` is one too.
+//  - The module's bindings must not be env-popped at the end of the
+//    statement, and a bind referenced from OUTSIDE the region must
+//    PUBLISH rather than stay an SSA local (the same escape analysis
+//    that already treats a lifted connect target as external).
+//  - Keeping the per-statement structure `Module::fuse` intends (~647,
+//    "a module is structure, not computation") for the sig-less case
+//    would achieve all of this at once.
+//
+// NOTE (corpus hygiene): this is a MULTI-FILE wrapper (`// file-v1:`
+// sections, see graphix-fuzz/src/files.rs). In the oracle form the jit
+// side is a COMPILE error, so the oracle reports the divergence; the
+// two-file plain-binary form above is the one that shows the silent
+// death, which is what a user would actually experience.
+m9::c
+// file-v1: m9.gx
+let c = i64:41;
+i64:0

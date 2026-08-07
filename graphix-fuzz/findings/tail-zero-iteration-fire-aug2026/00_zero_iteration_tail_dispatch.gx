@@ -1,0 +1,57 @@
+// The residual leg of tail-scrut-fire-jul2026: a tail-recursive
+// dispatch that takes the BASE arm immediately (zero iterations, never
+// loops, never framed).
+//
+// Documented rule (stdlib/graphix-tests/src/lang/functions.rs, the
+// REC_SAME_ARG_REFIRE_QUIET header): "A tail-recursive SPINE differs:
+// its result control-depends on the loop bound through the iteration
+// count, so the spine's scrutinee fold fires it — see tail_scrut_stale."
+// So a re-delivered scrutinee on a tail spine FIRES even when the value
+// is unchanged and the base arm's body is a constant.
+//
+// kernel — unconditional: fusion/emit/flow.rs:352-356 bands the
+//   scrutinee's STALE bit into `cx.ctx.tail.scrut_stale` for ANY select
+//   with `tail_position`, and every `emit_kernel_return`
+//   (emit/body.rs:1229) folds it into the result disc. Zero back-edge
+//   traversals included — so the second delivery of n=0 re-fires 7.
+// interp — gated: node/select.rs:163 SETS the twin
+//   (`ctx.tail_scrut_fired = true`) at any frame depth, but the ONLY
+//   place it is APPLIED is node/lambda.rs:648-671, inside
+//   `Some(tv) if (reentered || framed) && !tv.is_tainted()`. A dispatch
+//   that never looped (reentered = false) and wasn't framed
+//   (prev_looped = false) takes the `res => res` arm and keeps the
+//   body's ORGANIC tag. With a CONST base arm the constant fires once
+//   ever, so the second delivery is STALE and the interp drops the fire.
+//
+//   epoch 0 (in0 default 0): both emit 7
+//   epoch 1 (in0 injected 0): interp <nothing>, jit 7
+//
+// Fix — NARROWLY. Add ONLY the `ctx.tail_scrut_fired -> FIRED` upgrade
+// to the non-framed arm, still requiring `entry` (a dispatch nothing
+// genuinely triggered must not emit; here the entry DID fire — the
+// scrutinee delivery IS the entry), and leave the `res => res`
+// fallthrough otherwise intact. Do NOT read this as "apply the whole
+// `(reentered || framed)` derivation everywhere": `entry` is
+// `entry_fired || externals_triggered(&self.body, event)`, and
+// `externals_triggered` only sees ids present in `event.variables`, so
+// it cannot see body-internal production (a lifted connect target
+// written inside the body, a retained `count`/`hold`, an arm's own
+// accumulator). Applying the `!entry -> stale` downgrade on ordinary
+// unframed dispatches would silence exactly those genuine fires, which
+// the organic tag carries today.
+//
+// The narrow change moves the interp ONTO the kernel, whose fold is
+// already unconditional per invocation, and an adversarial pass over
+// the corpus found no fixture it flips (tailloop-overfire-jul2026/01,
+// tailloop-firing-jul2026/02, frame-state-cross-cycle-jul2026/00 and
+// /01 all stay green; REC_SAME_ARG_REFIRE_QUIET is out of scope — its
+// `f` is non-tail, and its header already carves out the tail spine).
+//
+// Direction note: this is one of the two members of this batch where the
+// NODE-WALK is the side that fails the written rule, so the fix belongs
+// on the canonical side. Worth Eric's confirmation before it lands —
+// the alternative reading ("zero iterations means no loop bound to
+// control-depend on, so the kernel should stay quiet") would need
+// per-dispatch iteration-count memory in the kernel.
+// schedule-v1: cap=8 events=64; in0=i64:0
+{let rec f = |n: i64| -> i64 select n {i64:0 => i64:7, _ => f(n - i64:1)}; f(in0)}

@@ -1,0 +1,35 @@
+// Fourth face of 00's class — the argument TYPE, and the one with a
+// language-level consequence: a fused `println` renders an ABSTRACT
+// type through its EXPANDED private representation.
+//
+//   timeout 25 graphix --no-fusion 03_abstract_repr_leak.gx
+//     ["Cons", 1, "Nil"]        <- naked Value form (the abstract type
+//                                  has no structural view outside its
+//                                  module, so the printer falls back)
+//   timeout 25 graphix 03_abstract_repr_leak.gx
+//     `Cons(1, `Nil)            <- the module's PRIVATE variant shape
+//
+// `Print::update` renders with `TVal { env, typ: &from[1].typ(), v }`
+// (graphix-package-core/src/lib.rs ~2175) — the ARGUMENT NODE's type. In
+// a kernel `from[1]` is the synthetic `Ref` that `DynCallSlot::new`
+// (fusion/kernel.rs ~182) built from the slot's FROZEN ABI type, and
+// freezing resolves abstracts to their concrete bodies
+// (`resolve_abstract`/`freeze_for_abi`). So the printer is handed the
+// expansion that `type List;` exists to hide.
+//
+// Ordinary shapes agree — tuple, struct, variant, narrow int, nullable
+// all render identically in both modes (checked), and so does the same
+// value through string INTERPOLATION (`"[list::from_array([1])]"`),
+// which reads the source node's type rather than a DynCall arg's. Only
+// a direct call of a rendering builtin on an abstract-typed value
+// diverges.
+//
+// NOT ORACLE-VISIBLE (stdout only; the traced value here is 0).
+//
+// Fix: the synthetic arg Refs must carry the call site's DECLARED
+// argument types, not the ABI-frozen ones. The frozen type is a
+// marshalling detail — it belongs to the CLIF signature, not to the
+// builtin's view of its arguments. (This is the same repair surface as
+// 00/01/02: build `DynCallSlot`'s arg Refs from the emitted argument
+// nodes' spec + declared type, and typecheck the Apply.)
+{ println(list::from_array([i64:1])); i64:0 }

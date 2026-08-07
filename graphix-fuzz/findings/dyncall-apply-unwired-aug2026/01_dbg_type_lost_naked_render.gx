@@ -1,0 +1,38 @@
+// Second face of 00's class — the TYPE, not the spec. A fused DynCall's
+// inner builtin Apply never receives `typecheck0`, so any builtin that
+// caches its resolved type there is left with whatever `init` set.
+//
+// `Dbg` holds `typ: Type` initialized to `Type::Bottom`
+// (graphix-package-core/src/lib.rs ~2010) and fills it in
+// `typecheck0`: `self.typ = from[1].typ().clone()` (~2065). It renders
+// through `TVal { env, typ: &self.typ, v }`, the TYPED printer. With the
+// type left at Bottom the printer falls back to the naked Value form:
+//
+//   timeout 25 graphix --no-fusion 01_dbg_type_lost_naked_render.gx 2>&1 >/dev/null
+//     line: 4, column: 17 dbg((n, "a")): (0, "a")      <- tuple
+//   timeout 25 graphix 01_dbg_type_lost_naked_render.gx 2>&1 >/dev/null
+//     line: 1, column: 1 dbg(null): [0, "a"]           <- raw array
+//
+// A tuple renders as an array; the same loss makes structs, variants and
+// maps print as their untyped representations, which for an ABSTRACT
+// type means a fused `dbg` can print a representation the module
+// deliberately hides.
+//
+// `grep -rn "typecheck0\|typecheck1" graphix-compiler/src/fusion/kernel.rs`
+// returns NOTHING — no inner Apply is ever typechecked. `Log` keeps a
+// `scope` field with the same lifecycle and is worth checking under the
+// same fix.
+//
+// Fix: run the builtin's `typecheck0` (and `typecheck1` with the
+// resolved FnType, which the emitter already has — it is what
+// `sig_from_inputs` was built from) when `DynCallSlot` initializes the
+// Apply, right after `(lambda_def.init)(..)` / `init(..)` at
+// kernel.rs ~350. The synthetic arg `Ref`s already carry the correct
+// types, so `from[i].typ()` answers correctly once 00's spec fix or even
+// just the existing Refs are in place.
+{
+  let n = 0;
+  select n { x if x < 2 => n <- (x ~ n) + 1, _ => never() };
+  let r = { dbg((n, "a")); n };
+  r
+}

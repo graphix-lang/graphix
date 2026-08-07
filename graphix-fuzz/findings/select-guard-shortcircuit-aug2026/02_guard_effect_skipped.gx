@@ -1,0 +1,29 @@
+// The EFFECT face of 00's root cause, and the reason the fuzzer could
+// never find this class: the divergence is in stdout, which the trace
+// oracle does not record. NOT ORACLE-VISIBLE — `graphix-fuzz check`
+// reports AGREE on this program even while the bug is live (the values
+// agree; only the guard's side effects differ). Reproduce by hand:
+//
+//   timeout 25 graphix --no-fusion 01_guard_effect_skipped.gx
+//     G0 G1 G2 G3 G4 G5     <- arm 2's guard runs EVERY cycle
+//   timeout 25 graphix 01_guard_effect_skipped.gx
+//     G1 G3 G5              <- only cycles where arm 1's guard failed
+//
+// (the trailing `1 2 1 2 1 2` result lines are identical in both modes.)
+//
+// This also violates the emit contract in design/distributed_jit.md
+// ("effects de-fuse, never silently skip"): the println inside the guard
+// did not stop the select from fusing, and then half its executions were
+// dropped. Whichever fix 00 takes (an unconditional guard prologue ahead
+// of the if-chain), it must cover the effect too: a guard subtree
+// containing an effect must be emitted unconditionally or de-fuse the
+// whole select.
+{
+  let n = 0;
+  select n { x if x < 5 => n <- (x ~ n) + 1, _ => never() };
+  select n {
+    x if x % 2 == 0 => 1,
+    x if { println("G[x]"); true } => 2,
+    _ => 3
+  }
+}

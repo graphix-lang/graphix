@@ -1,0 +1,48 @@
+// The VALUE-VISIBLE face of 00's root cause, and the one the oracle can
+// gate: a Sync builtin whose `update` gates production on a SPECIFIC
+// argument's firing.
+//
+//   interp: "a\\/b"                                  (one emission)
+//   jit:    "a\\/b", "a/\\b", "a/\\b", "a/\\b"        (four)
+//
+// `str::escape` / `str::unescape` (stdlib/graphix-package-str/src/lib.rs,
+// the `escape_fn!` macro ~423-495) call `self.args.update_diff(&mut up,
+// ..)` and then produce ONLY when the STRING argument fired:
+//     match (up, &self.escape, &self.args.0[1]) {
+//         ([_, true], Some(esc), Some(Value::String(s))) => Some(..),
+//         (_, _, _) => None,
+//     }
+// A change to `#esc` alone recompiles the memoized escaper and produces
+// nothing. Here the string argument is a literal — it fires once at init
+// — so the node-walk emits exactly once, while `e` changes underneath.
+//
+// The fused DynCall delivers every unmasked arg as `TagValue::fired`
+// (fusion/kernel.rs `DynCallSlot::dispatch` ~549), so `up == [true,
+// true]` on every dispatch: the builtin re-produces each time, with the
+// LATEST escaper — three extra emissions carrying a value the node-walk
+// never produced.
+//
+// This member is fixed by part (1) of 00's fix alone — deliver a
+// stale-but-untainted slot as `TagValue::stale(v)` (NOT as absence; see
+// 00 for why absence bottoms every all-constant-arg builtin), which
+// makes `update_diff` report `up == [true, false]` and this arm miss,
+// exactly as the interp does. It also
+// shows the blast radius is wider than the print family: ANY Sync
+// builtin using per-arg `update_diff` gating diverges. A sweep of
+// `grep -rn update_diff stdlib/` finds `str::escape`/`str::unescape`
+// (Sync — these), plus users in core (throttle) and the net/time/http
+// packages, which are Async and never fuse. New Sync builtins written
+// in that style would silently join this class.
+//
+// (Do not name the net/time packages in this header verbatim —
+// `oracle_tier` scans the WHOLE FILE TEXT, comments included, so the
+// mention alone would exclude this pin from the oracle. See
+// oracle-tier-comment-scan-aug2026.)
+{
+  let t = i64:0;
+  t <- select t { n if n < 2 => t ~ n + 1, _ => never() };
+  let e: str::Escape = { escape: "/\\", escape_char: "\\", tr: [] };
+  e <- t ~ { escape: "b\\", escape_char: "\\", tr: [] };
+  let f = |esc: str::Escape, x: string| str::escape(#esc: esc, x);
+  f(e, "a/b")
+}

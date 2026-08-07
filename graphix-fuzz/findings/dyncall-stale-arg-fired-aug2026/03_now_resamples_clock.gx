@@ -1,0 +1,35 @@
+// Same root as 00/02, on the wall clock: `sys::time::now(trigger)`
+// SAMPLES when its trigger fires. In a fused kernel it resamples on
+// every invocation, so fused code sees a clock advancing without its
+// trigger.
+//
+//   timeout 25 graphix --no-fusion 03_now_resamples_clock.gx
+//     @(0, 2026-08-07 18:57:40.301053784 UTC)
+//     @(1, 2026-08-07 18:57:40.301053784 UTC)
+//     @(2, 2026-08-07 18:57:40.301053784 UTC)   <- ONE sample, held
+//   timeout 25 graphix 03_now_resamples_clock.gx
+//     @(0, 2026-08-07 18:58:05.355107480 UTC)
+//     @(1, 2026-08-07 18:58:05.355155872 UTC)
+//     @(2, 2026-08-07 18:58:05.355162803 UTC)   <- three samples
+//
+// This one has teeth beyond "a different number": a `now(trigger)`
+// whose trigger is a stable configuration value is the idiom for
+// stamping a value with the time of an EVENT. Under fusion the stamp
+// silently becomes "the time this kernel last ran", which is a
+// different quantity, and every derived duration is wrong.
+//
+// Like 02 this is invisible to the soak — `oracle_tier` excludes any
+// program mentioning `sys::time` from value comparison.
+//
+// Fix: 00's part (1). `now` gates on its trigger producing; a stale
+// trigger delivered as `TagValue::stale` stops the resample.
+{
+  let n = 0;
+  select n { x if x < 2 => n <- (x ~ n) + 1, _ => never() };
+  let trig = i64:1;
+  let r =
+  #[native]
+  { let t = sys::time::now(trig); (n, t) };
+  println("@[r]");
+  i64:0
+}

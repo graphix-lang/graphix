@@ -1,0 +1,24 @@
+// Second leg of 00's class: here the jit's guard HAS history, just
+// STALER history — it was evaluated on the cycles where arm 1 missed and
+// skipped on the cycles where arm 1 matched, so its operand cache lags
+// the interp's by one selection.
+//
+// Arm 2's guard is `(10*x - 35) / (x - 5) > 0`. Arm 1 matches on even x,
+// so the jit skips arm 2's guard on every even epoch. At x = 5 the
+// division is by zero and the `>` node rides its cached LHS:
+//   interp: last evaluated at x=4 ->  5 / -1 = -5 -> false -> `_`   -> 300
+//   jit:    last evaluated at x=3 -> -5 / -2 =  2 -> true  -> arm 2 -> 200
+// Epochs 1,2,3,4,5:
+//   interp 100, 200, 100, 200, 100, 300
+//   jit    100, 200, 100, 200, 100, 200
+//
+// Kept alongside 00 because it pins the DIFFERENT-history leg: a fix
+// that merely primes a never-evaluated guard (giving it an init value)
+// would repair 00 and leave this one diverging. Only unconditional
+// per-cycle guard evaluation fixes both.
+// schedule-v1: cap=96 events=768; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:4; in0=i64:5
+select in0 {
+  x if x % i64:2 == i64:0 => i64:100,
+  x if ((i64:10 * x - i64:35) / (x - i64:5)) > i64:0 => i64:200,
+  _ => i64:300
+}

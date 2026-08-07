@@ -1,0 +1,75 @@
+// THE CLASS: a fused select evaluates guards LAZILY — the emitted
+// if-chain reaches arm k's guard only when arms 0..k-1 all missed —
+// while the node-walk ticks EVERY arm's guard EVERY cycle,
+// unconditionally, before any matching happens (node/select.rs:191,
+// `for (pat, _) in arms.iter_mut() { ... pat_up |= pat.update(..) }`,
+// whose comment records the jul19b select-guard-taint-jul2026 fix:
+// "guards are live nodes that must see every cycle, ESPECIALLY init").
+//
+// A guard is NOT a pure function of this cycle's scrutinee: it is a
+// subgraph with its own operand caches. Skipping an evaluation changes
+// what those caches hold on a LATER cycle, and the two backends then
+// select DIFFERENT ARMS.
+//
+// This member is the simplest leg — the jit's guard has NO history at
+// all. Epoch 0 (in0=0): arm 1's literal pattern matches, so the jit
+// never evaluates arm 2's guard; the interp does (100 / (1-0) = 100).
+// Epoch 1 (in0=1): arm 1 misses, and arm 2's guard divides by zero, so
+// the `>` node rides its cached operand on both backends —
+//   interp: cache = 100        -> guard true  -> arm 2 -> 2
+//   jit:    cache never filled -> no match    -> arm 3 -> 3
+//
+// Fix — and note the trap. There are TWO lazinesses in the emitted
+// chain today (fusion/emit/select.rs ~1359-1371, where the guard is
+// emitted inside the `matched` block): arm k's guard runs only if
+// (a) every earlier arm missed, and (b) arm k's OWN pattern matched.
+// ONLY (a) is the bug. (b) must stay: in the node-walk a non-matching
+// pattern binds NOTHING (`StructPatternNode::bind` is length/tag
+// guarded and falls to `_ => ()`), so the guard's `Ref`s find no entry,
+// produce nothing, and the guard's interior nodes RIDE their caches. A
+// kernel has no "absent local" — a hoisted bind reads a TOTALIZED
+// DEFAULT (`unwrap_or_default` in the valarray getters,
+// `T::default()` in `variant_payload_read`), and default-0 is not
+// "rides previous", so hoisting past (b) would seed guard caches with
+// evaluations the interp never performed — select-phantom-arm-eval's
+// mechanism in mirror image. A live fixture at risk:
+//   let a: Array<i64> = [1, 2, 3];
+//   #[native] select a { [x,y] if x > y => 10, [p,q,s] if p < q => 20, _ => 30 }
+// fuses (`#[native]` passes) and gives 20 in both modes; arm 0's guard
+// must not be evaluated on out-of-range reads.
+//
+// So: hoist each guard out of the FALL-THROUGH CHAIN only — evaluate
+// every arm's guard once per invocation regardless of earlier arms'
+// outcomes, but keep each guard downstream of ITS OWN arm's pattern
+// condition (equivalently, taint-mask that arm's binds with its own
+// pcond so a shape mismatch delivers taint and the guard's ops
+// bottom-and-ride, the kernel's representation of "bind not
+// delivered"). All three legs pinned here have `_`/bind-all guarded
+// arms whose pattern always matches, so they are fixed by this.
+//
+// Four constraints the implementation must honour:
+//   - Do NOT fold the prologue guards' discs into the result. The
+//     strict select rule deleted the guard-feeder fold; re-introducing
+//     a guard-disc merge re-breaks select-strict-rule-aug2026/00 and
+//     select-quiet-scrutinee-aug2026/03.
+//   - Keep the guards downstream of `emit_scrut_ride` and UPSTREAM of
+//     the tainted-take gate — select-phantom-arm-eval-aug2026/03 pins
+//     that guards keep evaluating under a tainted scrutinee.
+//   - Guard-local env truncation must be per-guard (today one `mark`
+//     covers guard + body); `JitEnv::truncate` emits no drops, so a
+//     guard with owned locals must de-fuse rather than leak.
+//   - The effect leg (02) is NOT covered by the prologue alone: a guard
+//     subtree containing an effect must be emitted unconditionally or
+//     de-fuse the whole select, per the emit contract.
+// A guard subtree containing an EFFECT (see 02) must be emitted
+// unconditionally or de-fuse the whole select, per the emit contract
+// "effects de-fuse, never silently skip".
+// schedule-v1: cap=112 events=896; in0=i64:0; in0=i64:1
+{
+  let r = select in0 {
+    0 => 1,
+    _ if (100 / (1 - in0)) > 0 => 2,
+    _ => 3
+  };
+  r
+}

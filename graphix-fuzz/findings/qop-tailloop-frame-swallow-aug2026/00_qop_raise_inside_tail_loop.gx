@@ -1,0 +1,65 @@
+// A `?` that raises INSIDE a tail-loop iteration: the node-walk's
+// handler delivery is swallowed by the frame-private variables map, so
+// the catch handler never runs. The JIT delivers it.
+//
+//   interp: (0, 10)              — n stays 0 forever
+//   jit:    (0, 10) then (1, 10) — the handler fires, n becomes 1
+//
+// The loop is `go(2, 0)`: iteration i=2 evaluates `10 /? (2-1)` = 10
+// (fine) and iteration i=1 evaluates `10 /? 0`, which raises. Both
+// backends agree on the RESULT (10 — the raise bottoms that iteration's
+// contribution), and disagree only about whether the handler saw the
+// error.
+//
+// Handler-independent confirmation (rules out `count`):
+//   let tag = "none";
+//   catch(e) tag <- e ~ "caught";
+//   let rec go = |i: i64, acc: i64| -> i64 select i {
+//     i64:0 => acc,
+//     _ => go(i - i64:1, acc + (i64:10 /? (i - i64:1))?)
+//   };
+//   let r = go(i64:2, i64:0);
+//   println("tag=[tag] r=[r]")
+// --no-fusion prints `tag=none r=10`; fusion prints `tag=none r=10`
+// then `tag=caught r=1`.
+//
+// Mechanism (node-walk side). A re-entered tail pass runs against a
+// PRIVATE variables map — the evaluation FRAME (node/lambda.rs ~480-520,
+// design/replay_frames.md): "the body run against a PRIVATE variables
+// map ... under a forced init view". `Qop::update`'s handler path
+// delivers the error by WRITING the catch handler's variable into
+// `event.variables`. Inside a frame that write lands in the frame's
+// private map, which is discarded when the pass ends, so the delivery
+// never reaches the real event and the handler is never woken. The
+// kernel has no frame — a tail loop is a rebind-and-jump inside one
+// invocation — so its QopDeliver writes the real variable.
+//
+// This is the same family as frame-state-cross-cycle-jul2026 ("frame
+// state cannot survive across cycles" — Eric's ruling 2026-07-16), but
+// the opposite direction: here something that must ESCAPE the frame
+// (an error delivery to a handler OUTSIDE the lambda) is trapped by it.
+//
+// Fix: a handler delivery is not frame state — it is an outward-bound
+// event, like a `<-` to a binding outside the lambda. The frame's
+// private map must not capture writes to ids that are not frame-local:
+// when the qop's `handler_id` is not in the frame's seeded set, write it
+// through to the real `event.variables` (the same distinction
+// `seed_externals` already draws when it seeds the frame from the
+// runtime cache). Worth checking whether ordinary `<-` to an outside
+// binding from inside a tail loop has the same hole — the connect
+// target is a variable write with exactly the same shape.
+//
+// Direction note: the NODE-WALK is the side that loses the event here.
+// The kernel's behavior matches the documented semantics (the handler
+// covers the `?`, so it should receive the error), so this likely wants
+// a fix on the canonical side — worth Eric's confirmation.
+{
+  let n = i64:0;
+  catch(e) n <- count(e);
+  let rec go = |i: i64, acc: i64| -> i64 select i {
+    i64:0 => acc,
+    _ => go(i - i64:1, acc + (i64:10 /? (i - i64:1))?)
+  };
+  let r = go(i64:2, i64:0);
+  (n, r)
+}

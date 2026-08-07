@@ -1,0 +1,47 @@
+// A VALUE-shaped interior bottom inside a fused CALLEE body does not
+// ride its cached value — it passes the taint through and bottoms the
+// whole call, where the node-walk's operand cache rides and produces.
+//
+//   epoch 1 (in0 = 2):  both "ab2"
+//   epoch 2 (in0 = -1): str::sub's negative #len errors, `$` drops it,
+//                       so `s` bottoms.
+//     interp: "ab-1"   — s rides its cached "ab", the interpolation
+//                        recomputes with the fresh x
+//     jit:    <nothing>
+//
+// Root cause. `emit_value_taint_cache` (fusion/emit/abi.rs:367) is the
+// value-shaped twin of the scalar interior-bottom cache. Its first line
+// is
+//     let Some(off) = cx.claim_state_word_replay_value() else { return Ok(cv) };
+// (abi.rs:371) — a silent PASS-THROUGH when no storage word is
+// available. `claim_state_word_replay_value` (emit/body.rs:532) goes
+// through `claim_state_word`, which refuses inside a callee body
+// ("Callee bodies still refuse (one word can't hold per-call-site
+// memory)", body.rs ~550). So inside a callee the taint flows on
+// unridden and the call bottoms.
+//
+// The two sibling emitters CONTRADICT EACH OTHER in their own doc
+// comments, and only one of them matches the ruling:
+//   emit_value_taint_cache_borrowed (abi.rs:473) — "None = no storage
+//     channel (scaffold loops, callee bodies ...); the caller de-fuses:
+//     a pass-through there is a known divergence, not a residual", and
+//     it returns `Ok(None)`.
+//   emit_value_taint_cache (abi.rs:367, this one) — "Stateless fallback
+//     (scaffold loops, callee bodies, lambda kernels ...): the unwrapped
+//     result, a documented residual", and it returns `Ok(cv)`.
+// The borrowed twin's language is the one recorded in CLAUDE.md under
+// THE SCRUTINEE RIDE: "NO storage → DE-FUSE, never pass through (a
+// pass-through is a known divergence — Eric's bar 2026-08-07)". The
+// owned emitter predates that bar and was never brought up to it; this
+// program is the witness that its "residual" is observable.
+//
+// Fix (smallest, matches the stated bar): make the no-storage path
+// REFUSE — `return Err(anyhow!("emit_clif: value taint cache has no
+// storage channel here"))` — so the enclosing region de-fuses and the
+// node-walk runs it. That costs fusion coverage for value-shaped
+// interior bottoms inside callees, which is the documented ASPIRE item
+// (value residents in site blocks / slot chains); the real repair is to
+// give callee bodies a per-call-site value cache in the site block, the
+// same channel the scalar cache already uses there.
+// schedule-v1: cap=64 events=512; in0=i64:2; in0=i64:-1
+{ let f = |x: i64| -> string { let s = str::sub(#start: i64:0, #len: x, "abc")$; "[s][x]" }; f(in0) }

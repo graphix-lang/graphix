@@ -1,0 +1,9 @@
+// CONTROL for 00 — the same program with the module's last statement a
+// `let` instead of an expression. Both modes emit 41. Kept in the corpus
+// so a future "fix" that simply stops modules fusing at all is visible
+// as a change here (this variant must keep fusing its Bind regions), and
+// so the trigger stays pinned to the trailing-statement KIND rather than
+// to modules in general.
+m9::c
+// file-v1: m9.gx
+let c = i64:41

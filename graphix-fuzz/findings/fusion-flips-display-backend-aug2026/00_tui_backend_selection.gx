@@ -1,0 +1,54 @@
+// Turning fusion on changes which DISPLAY BACKEND the shell picks for a
+// program — a user-visible behavior difference that has nothing to do
+// with the program's values.
+//
+//   timeout 15 graphix --no-fusion 00_tui_backend_selection.gx
+//     R
+//     ^[[?1049l                       <- alternate-screen switch: the
+//     thread 'tokio-runtime-worker' panicked at ratatui-0.30.0/src/init.rs:299:
+//     failed to initialize terminal: Os { code: 6, ... }     ratatui TUI backend was selected
+//   timeout 15 graphix 00_tui_backend_selection.gx
+//     R                                <- plain output, no TUI
+//
+// (Under a real tty the --no-fusion run takes over the screen; in a pipe
+// it panics initializing the terminal. Either way the two modes run the
+// program through different display machinery.)
+//
+// Root cause. `graphix-package-tui`'s `defpackage! { is_custom: ... }`
+// (stdlib/graphix-package-tui/src/lib.rs ~590) claims the program for
+// the ratatui backend when `TUITYP.contains(env, &e.typ)` holds for the
+// top-level compiled expression's type, excluding only `Type::Bottom`
+// and `Type::Any`. This program's type is left UNSETTLED (println's
+// declared return plus the select arm union), and `contains` against an
+// unsettled type BINDS the free tvar and answers true. With fusion on,
+// the top-level node is a fused kernel whose type is already settled, so
+// the same test answers false.
+//
+// ROOT CAUSE FOUND — see fusion-mutates-tvars-aug2026: the fusion
+// pass's region-root type classification calls `Type::normalize()`,
+// which REWRITES shared TVar cells in place, so `e.typ` genuinely is a
+// different type under fusion (here the `[i64, never-tvar]` union
+// collapses to `i64`). This finding is the user-visible consequence;
+// that one is the mechanism.
+//
+// Two things to fix, and they are separable:
+//   1. `is_custom` must not decide on a test that can BIND type
+//      variables — an unsettled program type should never be claimed by
+//      a display backend. Use a non-binding check (the `IsAFlags::Strict`
+//      view, as the TVal printer's member selection now does) or require
+//      the type to be settled first.
+//   2. More importantly for this corpus: compiling with fusion should
+//      not change what `e.typ` says. That it does is a compile-mode skew
+//      worth confirming independently — if a fused top-level region
+//      settles types the node-walk leaves open, other consumers of
+//      `e.typ` (the LSP, `--check`, package `is_custom` hooks) see
+//      different answers depending on a flag that is supposed to be
+//      performance-only.
+//
+// NOT ORACLE-VISIBLE — the fuzz harness has no display backend, so both
+// modes trace the same value. The witness is the shell.
+let sink = select 1 {
+  1 => println("R"),
+  _ => never()
+};
+sink

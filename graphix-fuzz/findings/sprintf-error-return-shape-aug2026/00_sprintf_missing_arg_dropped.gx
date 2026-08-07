@@ -1,0 +1,53 @@
+// `str::sprintf` is declared `-> string` but returns a bare
+// `Value::error(..)` when the format fails, and the two engines handle
+// the type violation differently: the node-walk passes the off-type
+// value through, the fused DynCall's return-shape check drops it.
+//
+//   interp: error:"MissingArg"
+//   jit:    <nothing at all>
+//
+// Reachable from any format-string mistake — a missing argument (this
+// program), a bad conversion (`str::sprintf("%s", i64:1)` ->
+// error:"BadArgType"), or an unknown verb. A WELL-TYPED call agrees in
+// both modes (`str::sprintf("%d", i64:1)` -> "1"), so the divergence is
+// confined to the error path. It also survives being consumed: with
+// `{ let e = str::sprintf("%d"); let r = { let s = "<[e]>"; s }; r }`
+// the interp emits `<error:"MissingArg">` and the jit emits nothing.
+//
+// Chain, all verified in-tree:
+// - stdlib/graphix-package-str/src/graphix/mod.gx:32 declares
+//   `|fmt: string, @args: Any| -> string 'str_sprintf`.
+// - stdlib/graphix-package-str/src/lib.rs ~792 returns
+//   `Some(Value::error(ArcStr::from(e.to_string())))` on a printf
+//   failure. It is the only bare-`-> string` builtin in the tree that
+//   can produce a non-String Value; every other fallible str function
+//   (sub/escape/unescape/splitn/parse) is declared as a Result union,
+//   whose Nullable ABI carries an error through a kernel unmolested.
+// - The node-walk has no shape check, so the Error flows on through the
+//   string-typed binding and is observable (`is_err(a)` is true).
+// - fusion/emit/call.rs ~321-345 sets `expected_disc = STRING` for a
+//   String return and branches a non-matching disc into the pend block,
+//   where the returned Value is DROPPED and replaced with a tainted
+//   empty-ArcStr placeholder — the kernel then forces bottom. The
+//   cross-region path does the same (fusion/kernel.rs ~1540-1552:
+//   `mismatch(v)` substitutes a tainted empty ArcStr).
+//
+// Fix belongs in the stdlib, not the emitter — the emitter's check is
+// what stops an Error payload word being adopted as ArcStr bits (that
+// UB is exactly qop-bare-error-jul2026 and
+// result-union-nullable-abi-aug2026). Declare the honest type:
+//   let sprintf = |fmt: string, @args: Any| -> [string, Error<`FormatError(string)>]
+// and tag the error with `errf!(literal!("FormatError"), "{e}")`,
+// matching the other fallible str builtins. Both engines then agree and
+// `?`/`$`/select can handle it.
+//
+// Worth taking at the same time: make the return-shape mismatch LOUD.
+// call.rs's own comment calls a wrong-shaped dispatcher return "a
+// compiler bug", yet it is reachable today from a stdlib signature bug
+// and is completely silent. Log once, or refuse to fuse at discovery
+// time when a Sync builtin's declared return is String/Array — at
+// minimum this class should not silently lose a value. A sweep for
+// other `EvalCached::eval` bodies returning `Value::error` under a
+// non-union declared return type is warranted; this one was found by
+// reading, not by the oracle.
+str::sprintf("%d")

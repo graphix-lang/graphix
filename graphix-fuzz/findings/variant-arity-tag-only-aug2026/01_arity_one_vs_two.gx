@@ -1,0 +1,7 @@
+// The arity-1-vs-arity-2 leg of 00: same tag, both arms carry payloads,
+// so a fix that merely special-cased "arity 0 vs arity > 0" would leave
+// this one diverging.
+//
+//   interp: 3    (`A(1, 2)` matches the arity-2 arm, 1 + 2)
+//   jit:    1    (the arity-1 arm's tag test passes first, p = 1)
+{ let x: [`A(i64), `A(i64, i64)] = `A(i64:1, i64:2); select x { `A(p) => p, `A(p, q) => p + q } }

@@ -1,0 +1,40 @@
+// The VALUE face of 00's root cause on a builtin whose whole contract
+// is "produce a NEW value when my trigger fires": `rand::rand(#clock:)`
+// re-randomizes on every kernel invocation.
+//
+//   timeout 25 graphix --no-fusion 02_rand_rerandomizes.gx
+//     @(0, 0.8166830996508063)
+//     @(1, 0.8166830996508063)
+//     @(2, 0.8166830996508063)     <- one draw; the clock fired once
+//   timeout 25 graphix 02_rand_rerandomizes.gx
+//     @(0, 0.487298200960367)
+//     @(1, 0.19918404981093718)
+//     @(2, 0.21927524227341944)    <- a fresh draw per invocation
+//
+// `#[native]` above the block passes, so the region really is compiled.
+// `rand::pick(a)` and `rand::shuffle(a)` behave identically — the interp
+// returns the same element/permutation on every cycle, the kernel a new
+// one each time.
+//
+// WHY THE SOAK COULD NEVER SEE THIS: `oracle_tier`
+// (graphix-fuzz/src/lib.rs:517) excludes any program mentioning
+// `rand::` from value comparison, as value-nondeterministic. The
+// exclusion is right about the VALUES and wrong about the FIRING — the
+// number of productions is perfectly deterministic and diverges here.
+// Worth considering for the harness: for an Excluded program, still
+// compare the per-epoch production COUNTS.
+//
+// Fix: 00's part (1) — deliver stale-but-untainted DynCall args as
+// `TagValue::stale(v)` instead of `TagValue::fired(v)`. `rand` gates on
+// its clock argument producing, so a stale clock stops the redraw and
+// the kernel matches the node-walk.
+{
+  let n = 0;
+  select n { x if x < 2 => n <- (x ~ n) + 1, _ => never() };
+  let clock = i64:1;
+  let r =
+  #[native]
+  { let p: f64 = rand::rand(#clock: clock); (n, p) };
+  println("@[r]");
+  i64:0
+}

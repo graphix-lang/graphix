@@ -1,0 +1,16 @@
+// The non-binding face of 00: an IGNORING type predicate over a result
+// union still takes the success arm on an error. No pointer escapes
+// here — just a silently wrong branch, which is the shape most user
+// code will hit (`select x { string as s => ..., _ => handle_error }`).
+//
+//   interp: "z"   (correct — the value is an error, not a string)
+//   jit:    "S"
+//
+// Same divergence with `datetime` and `i64` predicates:
+//   { let a: [datetime, Error<`E>] = error(`E); select a { datetime as _ => "D", _ => "z" } }
+//   { let a: [i64, Error<`E>] = error(`E); select a { i64 as _ => i64:1, _ => i64:-1 } }
+//
+// Kept beside 00 because it pins the CONDITION independently of the
+// bind: a fix that only hardened `SelectArmBind::NullableScalar` (so no
+// pointer is read) would still take the wrong arm here.
+{ let a: [string, Error<`E>] = error(`E); select a { string as _ => "S", _ => "z" } }

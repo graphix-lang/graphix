@@ -1,0 +1,63 @@
+// THE CLASS: a fused DynCall's inner builtin `Apply` is NOT wired like a
+// real call site. `DynCallSlot::new` (fusion/kernel.rs ~182) synthesizes
+// its argument nodes with `Expr::default()` specs and ABI-FROZEN types,
+// `init` receives the SLOT's scope rather than the call site's
+// (kernel.rs:350), and the Apply never receives `typecheck0`/`typecheck1`
+// at all (`grep -n "typecheck0" fusion/kernel.rs` returns nothing). Any
+// builtin that reads its argument nodes' spec or type, its own scope, or
+// state derived in `typecheck0` therefore behaves differently inside a
+// kernel. Four confirmed faces:
+//   00 (this file) SPEC  — dbg prints `line: 1, column: 1 dbg(null)`
+//   01             TYPE  — dbg renders naked: `[1, "a"]` not `(1, "a")`
+//   02             SCOPE — log prints `: 42` not `core::fn30: 42`
+//   03             TYPE  — println leaks an abstract type's private
+//                          representation (`` `Cons(1, `Nil) ``)
+// All four are stdout/stderr only, hence invisible to the value-trace
+// oracle — the same blind spot as dyncall-stale-arg-fired-aug2026.
+//
+// `dbg` prints its argument's SOURCE EXPRESSION and POSITION alongside
+// the value ("print it along with the position of the expression" —
+// core's mod.gxi). Inside a fused kernel both are lost, and every fused
+// dbg in a program prints as `line: 1, column: 1 dbg(null)` — several
+// dbg sites become indistinguishable, which is the whole point of the
+// builtin.
+//
+// NOT ORACLE-VISIBLE — the traced value is identical; only the stderr
+// annotation differs. Reproduce by hand:
+//
+//   timeout 25 graphix --no-fusion 00_dbg_spec_lost.gx 2>&1 >/dev/null
+//     line: 4, column: 17 dbg(n * i64:10): 0
+//     line: 4, column: 17 dbg(n * i64:10): 10
+//     line: 4, column: 17 dbg(n * i64:10): 20
+//   timeout 25 graphix 00_dbg_spec_lost.gx 2>&1 >/dev/null
+//     line: 1, column: 1 dbg(null): 0
+//     line: 1, column: 1 dbg(null): 10
+//     line: 1, column: 1 dbg(null): 20
+//
+// (the effect COUNT agrees here — the argument fires every cycle — so
+// this isolates the annotation from dyncall-stale-arg-fired-aug2026.)
+//
+// Root cause. `Dbg::init` keeps `spec: from[1].spec().clone()` and
+// prints `self.spec.pos` / `self.spec`
+// (graphix-package-core/src/lib.rs ~2010, ~2033). It is the only
+// builtin in the tree that reads an ARGUMENT NODE's spec
+// (`grep -rn 'from\[[0-9]\]\.spec()' stdlib/ graphix-compiler/` finds
+// exactly this one). A fused call does not hand the builtin the real
+// argument nodes: `DynCallSlot::new` (fusion/kernel.rs ~182) synthesizes
+// one `Ref` per callee argument with `Expr::default()` as its spec, and
+// those synthetic Refs are the `from[]` slice passed to the builtin's
+// `init` (kernel.rs ~350). `Expr::default()` renders as `null` at 1:1.
+//
+// Fix: carry the real argument specs into the slot. `DynCallSlot::new`
+// is constructed from the call's emitted argument nodes, so their
+// `Arc<Expr>` specs are in hand — thread them through (a
+// `Vec<Arc<Expr>>` beside `bind_ids`) and give each synthesized `Ref`
+// its argument's spec instead of `Expr::default()`. One Arc clone per
+// argument at kernel BUILD time, nothing per dispatch, and a strictly
+// better default for any future builtin that reports source context.
+{
+  let n = 0;
+  select n { x if x < 2 => n <- (x ~ n) + 1, _ => never() };
+  let r = { dbg(n * 10); n };
+  r
+}

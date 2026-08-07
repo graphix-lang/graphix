@@ -1,0 +1,47 @@
+// A lambda compiled to ONE shared kernel ignores per-call-site catch
+// COVERAGE: once an earlier call site of the lambda was uncovered, a
+// later call site that IS covered silently drops its error delivery, so
+// the handler never runs.
+//
+//   interp: 0 then 1   (the covered `f(0)` delivers; n becomes 1)
+//   jit:    0          (the handler never fires)
+//
+// `catch` opens an implicit nested scope: statements AFTER it compile
+// with the dynamic path extended by `c<spec.id>`, and coverage is
+// resolved by path depth (commit 2d24d1b4). So the two `f(i64:0)` call
+// sites here have genuinely different coverage — the first is
+// uncovered, the second is covered by the catch between them. In the
+// node-walk each call site instantiates its own body, so each `?` node
+// resolves its own handler. The fused lambda is compiled ONCE and its
+// interior `?` carries a single `handler_site`, decided by whichever
+// call site drove the kernel build — the uncovered one. The covered
+// site then reuses that kernel and its error goes nowhere.
+//
+// Handler-independent confirmation (rules out `count`'s own firing):
+//   let tag = "none";
+//   let f = |i: i64| -> i64 (i64:1 /? i)?;
+//   let z = f(i64:0);
+//   catch(e) tag <- e ~ "caught";
+//   let y = f(i64:0);
+//   println("tag=[tag]")
+// prints `tag=caught` under --no-fusion and `tag=none` with fusion.
+//
+// Fix: coverage is part of a call site's identity, so it must key the
+// kernel. Either (a) include the resolved `handler_site` (or its
+// absence) in the kernel identity used by `discover_lambda_calls` /
+// `known_fns`, so two call sites with different coverage compile two
+// kernels — the same lesson as the #206 / audit-jul2026 name-collision
+// fixes, where resolution had to key on more than the name; or (b) pass
+// the handler site IN as a hidden kernel parameter (the DynCall
+// QopDeliver site is already looked up per dispatch, so the plumbing
+// exists) and let the callee deliver to the caller's handler. (a) is
+// the smaller change and matches how per-callsite elaboration already
+// works elsewhere; (b) avoids duplicating kernels.
+{
+  let n = i64:0;
+  let f = |i: i64| -> i64 (i64:1 /? i)?;
+  let z = f(i64:0);
+  catch(e) n <- count(e);
+  let y = f(i64:0);
+  n
+}

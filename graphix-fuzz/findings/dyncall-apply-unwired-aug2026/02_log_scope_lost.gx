@@ -1,0 +1,23 @@
+// Third face of 00's class — the SCOPE. `log` prefixes its output with
+// the lexical scope it was initialized in:
+//     println!("{}: {}", self.scope.lexical, tv)
+// (graphix-package-core/src/lib.rs ~2112), where `scope` is
+// `scope.clone()` from its `init` parameter (~2093). Inside a fused
+// kernel the prefix is EMPTY, because `DynCallSlot` passes its own
+// `self.scope` (fusion/kernel.rs:350,
+// `init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id)`)
+// rather than the call site's lexical scope.
+//
+// NOT ORACLE-VISIBLE (stdout only). By hand:
+//
+//   timeout 25 graphix --no-fusion 02_log_scope_lost.gx
+//     core::fn30: 42
+//     0
+//   timeout 25 graphix 02_log_scope_lost.gx
+//     : 42
+//     0
+//
+// Fix: give `DynCallSlot` the emitting call site's `Scope` (the emitter
+// has it — it is the scope the CallSite node was compiled under) and
+// pass that to `init`. Same one-time cost as 00's spec threading.
+{ log(i64:42); i64:0 }

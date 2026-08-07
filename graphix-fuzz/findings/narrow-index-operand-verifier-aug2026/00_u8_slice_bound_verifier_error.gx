@@ -1,0 +1,43 @@
+// NOT A DIVERGENCE — values agree in both modes. A CODEGEN DEFECT
+// worth fixing: a narrow-int slice bound or bytes index makes cranelift
+// reject the whole enclosing kernel with a VERIFIER error, so an
+// arbitrarily large region silently falls back to the node-walk.
+//
+//   graphix --fusion-stats 00_u8_slice_bound_verifier_error.gx
+//     [2, 3]
+//     fusion: 2 of 8 attempted regions fused, 6 blocked
+//       1x define_function (shared body): Compilation error: Verifier errors:
+//          - inst10 (v17, v18 = call fn4(v14, v9, v6, v15, v16)):
+//            arg 2 (v6) has type i8, expected i64
+//
+// The same program with an `i64:1` bound fuses cleanly, and a bytes
+// twin (`let i = u8:1; b[i]`) produces the identical verifier error.
+//
+// Root cause: two sites hand a narrow operand's CLIF payload straight to
+// a helper whose signature declares i64.
+//   - fusion/emit/nodes.rs:1241 — `graphix_bytes_index(v: TagValue, i: i64)`
+//     (emit_helpers.rs:960) called as
+//     `call(helper, &[bcv.disc, bcv.payload, idx_cv.payload])`.
+//   - fusion/emit/nodes.rs:1333 — `graphix_array_slice(src, start: i64,
+//     end: i64, flags: i64)` (emit_helpers.rs:982) receiving
+//     `Ok(cv.payload)` from the `emit_bound` closure.
+// Both already know the operand's PrimType, so they can widen.
+//
+// Fix: widen at both call sites — `widen_to_i64(cx.b, payload, prim)`,
+// the helper the init-loop's count already uses
+// (emit/scaffold.rs ~902) — signed-extending signed prims and
+// zero-extending unsigned ones. Two one-line changes.
+//
+// Worth noting beyond the coverage loss: a cranelift VERIFIER error is
+// not a clean de-fuse. It surfaces as a `define_function` failure that
+// discards a whole shared body, so a single narrow index anywhere in a
+// region takes the entire region (and its transitive callees) down with
+// it. A grep for other unwidened helper operands is warranted — the two
+// found here were both in index/slice bound positions.
+let result = {
+  let a = [i64:1, i64:2, i64:3];
+  let i = u8:1;
+  let s = a[i..];
+  s
+};
+println("[result]")

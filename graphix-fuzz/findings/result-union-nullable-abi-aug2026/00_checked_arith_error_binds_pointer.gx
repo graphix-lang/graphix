@@ -1,0 +1,57 @@
+// SEVERE — a select TYPE PREDICATE over a RESULT union `[T, Error<E>]`
+// takes the SUCCESS arm on an error, and a BINDING predicate then reads
+// the error Value's payload word as the scalar: the ValError heap
+// pointer is bound as an i64 and escapes into user code. The value is
+// ASLR-varying, so it is also nondeterministic:
+//
+//   interp: -1                       (the error is not an i64 -> `_`)
+//   jit:    2221861311680  /  4134999890208  /  5358322063968  ...
+//
+// No annotations and no exotic types are needed: `/?` on a zero divisor
+// is the ordinary way to reach this. Other reachable shapes (all
+// verified): an explicitly annotated `let a: [i64, Error<`E>] =
+// error(`E)`, a lambda parameter typed `[i64, Error<`E>]`, a struct
+// field holding a checked-arith result, and `+?`/`-?`/`*?`/`%?`.
+//
+// Root cause. `abi_kind` maps BOTH the option shape `[T, null]` AND the
+// result shape `[T, Error<E>]` to `AbiKind::Nullable`
+// (fusion/kernel_abi.rs ~430: "option (`[T, null]`) and result
+// (`[T, Error]`) both classify as Nullable"), and
+// `option_result_success` hands back the success member T for both. The
+// select emitter then lowers a scalar type predicate over a Nullable
+// scrutinee as `clean_disc != value_disc::NULL`
+// (fusion/emit/select.rs ~1032-1053), justified by the comment
+// "`[T, null]` runtime value is T or null, so "is a T" ≡ "is not null"".
+// That equivalence holds ONLY for the option shape. In a result union
+// the non-success runtime value is an ERROR, whose disc is not NULL, so
+// the test answers "is a T" for an error — and the matching bind path
+// (`SelectArmBind::NullableScalar`, ~1103/1289) reinterprets the error's
+// payload word as the predicate's prim.
+//
+// Fix: the emitter must not treat the two shapes alike. `abi_kind`
+// already distinguishes them internally (`option_result_success` tries
+// the NULL marker first, then the Error marker), so expose which marker
+// a Nullable carries — e.g. `AbiKind::Nullable { error_marker: bool }`
+// or a `nullable_marker(reg, typ)` query — and for an error-marked
+// union lower the predicate as a POSITIVE discriminant test against the
+// success prim's disc (`clean_disc == disc_of(prim)`) rather than
+// `!= NULL`. The same query must gate `SelectArmBind::NullableScalar`,
+// and the null-predicate arm (~1004-1020) should refuse an error-marked
+// union rather than compare against NULL. Refusing to lower (de-fuse)
+// error-marked unions would also be sound and is the smaller change.
+//
+// LINEAGE — this is the residual of the June fix. select-jun2026/01
+// (#200) fixed the same emitter treating `i64 as _` over a Nullable as
+// TRIVIALLY TRUE, "fixed by emitting an explicit `!IsNull(scrut)`
+// condition". That condition is exactly the `disc != NULL` test here: it
+// made the OPTION shape sound and left the RESULT shape unsound, because
+// `abi_kind` had already collapsed the two shapes into one kind. The
+// June pin uses `array::find` (a genuine `[T, null]`), so it cannot
+// catch this.
+//
+// Related payload-leak siblings, both distinct: qop-bare-error-jul2026
+// (a bare `Error<T>` inner leaking through `$`) and rec-union-abi-jul2026
+// (a union-typed recursive parameter fused at the init call's type).
+// Neither covers the select type-predicate path, which is reachable
+// without `$` and without recursion.
+{ let a = i64:0; let x = i64:1 /? a; select x { i64 as n => n, _ => i64:-1 } }

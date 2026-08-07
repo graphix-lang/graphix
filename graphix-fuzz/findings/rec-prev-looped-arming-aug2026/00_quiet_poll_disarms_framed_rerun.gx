@@ -1,0 +1,66 @@
+// The residual leg of frame-state-cross-cycle-jul2026/01: a QUIET POLL
+// between two dispatches disarms the interp's framed re-derivation, so a
+// later capture fire never re-runs the recursive body.
+//
+// `GXLambda::update` (graphix-compiler/src/node/lambda.rs) arms the
+// framed re-derivation with
+//     let framed = self.prev_looped && !event.init
+//                  && (entry_fired || externals_triggered(&self.body, event));   (~516)
+// and then assigns
+//     self.prev_looped = reentered;                                              (~623)
+// unconditionally, on EVERY dispatch. `prev_looped` is documented (~487)
+// as a statement about BODY STATE — "its innermost frame left the body's
+// node state mid-recursion" — but the assignment is unconditional, so a
+// dispatch with nothing authoritative to say about that state still
+// overwrites it. (Careful, and this matters for the fix: a quiet poll
+// DOES run the body — the `if !reentered && !framed { self.body.update(..) }`
+// pass executes on every dispatch — it just runs incrementally over the
+// leftover state. It can even LOOP, if the tail select re-selects the
+// recursive arm, and then the current assignment is correct.)
+//
+// epoch 0 (defaults): f(1, 0) loops once -> 0. prev_looped = true.
+// epoch 1 (in0 = 1): in0 fires, so the enclosing region re-evaluates and
+//   f is POLLED — but f's args are constants and its capture in1 did not
+//   fire, so nothing triggers it: reentered = false, and prev_looped is
+//   silently reset to false. Value 0 + 1 = 1 in both modes.
+// epoch 2 (in1 = 2): the capture fires. The kernel's params are formals
+//   ++ captures, so the kernel re-derives the whole body and emits
+//   acc = in1 = 2, + in0 = 1 -> 3. The interp is not framed (prev_looped
+//   was cleared in epoch 1), the retained tail-select arm leaves the
+//   recursive arm asleep, and it emits nothing.
+//     interp: 0, 1, <nothing>
+//     jit:    0, 1, 3
+//
+// The control proves it is the intervening quiet poll and nothing else —
+// drop in0 so no quiet dispatch happens and both modes agree, both fire:
+//   // schedule-v1: cap=96 events=768; in1=i64:1; in1=i64:2
+//   { let rec f = |n, acc| select n { 0 => acc, _ => f(n - 1, in1) }; f(1, 0) }
+//   interp = jit = 0, 1, 2
+//
+// Fix: leave `prev_looped` alone on a dispatch that is not authoritative
+// about it — a pass that ran incrementally over leftover state and did
+// not itself loop:
+//     if reentered || entry_fired || externals_triggered(..) || event.init {
+//         self.prev_looped = reentered;
+//     }
+// The `reentered` disjunct is load-bearing: a quiet poll that DOES loop
+// must still record itself.
+//
+// Caveat for whoever lands it: this WIDENS the framed population, and
+// `framed` is not free — it calls `self.body.reset_replay(ctx)` and runs
+// the pass against a private seeded map under a forced init view.
+// `reset_replay` discards interior-bottom ride history, which is
+// load-bearing for taint-cache-callee-jul2026,
+// inloop-bottom-cache-jul2026 and select-merge-taint-ride-aug2026 (a
+// `100/x` that bottoms rides its operand cache unframed and bottoms
+// framed). It does NOT discard the selection (that is semantic state,
+// re-seeded across parks by `SelSnap`), so the strict-select pins should
+// hold — but the whole taint-ride corpus plus select-quiet-scrutinee
+// must be re-run before this lands.
+//
+// Direction note: as with tail-zero-iteration-fire-aug2026, the
+// NODE-WALK is the side that drops the event here; the kernel matches
+// the documented replay-frames v3 rule that a capture fire re-runs the
+// body. Worth Eric's confirmation before it lands.
+// schedule-v1: cap=96 events=768; in0=i64:1; in1=i64:2
+{ let rec f = |n, acc| select n { 0 => acc, _ => f(n - 1, in1) }; f(1, 0) + in0 }

@@ -1,0 +1,29 @@
+// The opposite-sign twin of 00, and the reason the fix has to be on
+// both sides: the kernel's over-limit CLAMP also clobbers its length
+// memory, so the divergence outlives the over-limit cycle.
+//
+// `emit_init_loop` (fusion/emit/scaffold.rs ~912) does
+// `let n = select(oversize, zero, n)` and then feeds that CLAMPED n to
+// `flags.set_len(n)` (~913) and `open_slot_tables(sel_sites, n, ...)`
+// (~918) — so the per-instance prev-length word records 0 for the
+// over-limit cycle. The interp, which never entered its resize branch at
+// all (00), still remembers length 1.
+//
+// Epoch 1: count=1 -> both emit [0].
+// Epoch 2: count=16777217 (one over the limit) -> both quiet.
+// Epoch 3: count=1 again.
+//   interp: retained length is still 1, the source length is 1, so
+//           nothing resized and the const callback body is quiet -> NO
+//           emission (correct under the kernel's own documented firing
+//           rule: fire iff resized OR a slot fired OR the source fired
+//           empty).
+//   jit:    prev-length word says 0, so 0 -> 1 reads as a RESIZE and it
+//           fires [0] — a phantom fire caused purely by the clamp
+//           having overwritten the length memory two cycles earlier.
+//
+// Fix: see 00 — the kernel must leave length/prev-length/slot state
+// untouched on an over-limit count (taint the result only), and the
+// interp must force taint so the over-limit cycle is bottom on both
+// sides.
+// schedule-v1: cap=32 events=256; in0=i64:1; in0=i64:16777217; in0=i64:1
+array::init(in0, |i| i64:0)

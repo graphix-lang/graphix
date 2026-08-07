@@ -1,0 +1,75 @@
+// A MEMORY LEAK in the fused handler-less `?`/`$` path with a SCALAR
+// success type: the owned error Value is created every cycle and never
+// dropped. Values agree in both modes — this is a JIT-only defect, and
+// in a long-running reactive program (what graphix is for) it is
+// unbounded.
+//
+// Measured with `awk '/VmRSS/{print $2}' /proc/$pid/status` at +5s and
+// +95s on an otherwise idle sample (1 ms timer, as written here):
+//
+//   this program, fusion ON     52044 -> 63140 kB   (+11.1 MB / 90 s)
+//   this program, --no-fusion   45884 -> 48468 kB   (+2.6  MB / 90 s)
+//   CONTROL (divisor never 0, so no error is ever built), fusion ON
+//                               53060 -> 55684 kB   (+2.6  MB / 90 s)
+//
+// At a 0.1 ms tick the same three runs give +12.9 / +2.9 / +2.9 MB per
+// 60 s, and the leak stays LINEAR at 180 s (+39.3 MB fused vs +8.7 MB
+// interpreted). Two further controls at 0.1 ms, both at baseline:
+// installing a `catch(e) n <- count(e)` so the deliver CONSUMES the
+// error, and using `?` instead of `$` with a handler. Handler-less `?`
+// leaks identically to handler-less `$`.
+//
+// The leak appears iff (a) fusion is on, (b) an error is actually
+// produced, and (c) no handler consumes it.
+//
+// SEPARATE OBSERVATION, not this bug and not a divergence: the ~2.6
+// MB/90s baseline is the TIMER, not the counter and not the error — a
+// bare `let clk = sys::time::timer(duration:0.0001s, true); clk` grows
+// +2.7 MB/60s interpreted and +2.8 MB/60s fused, and dropping the tick
+// rate by 10x drops it proportionally. Something on the timer/tick path
+// retains per-tick memory in BOTH engines. Worth its own look; it is
+// subtracted from every number above.
+//
+// Root cause — a false assumption, stated in the code. In
+// `emit_qop_node` (fusion/emit/flow.rs ~924) the scalar-success arm is
+// commented:
+//     // The error Value isn't dropped
+//     // here: a scalar `Nullable` inner is a by-value scalar (no heap).
+// That holds for the OPTION shape `[T, null]`, where the non-success
+// case is a by-value null. It is false for the RESULT shape
+// `[T, Error<E>]` — which `abi_kind` also calls Nullable — because an
+// error is a heap-allocated boxed `ValError` (here carrying the
+// "arithmetic error" string). The composite/string/value arms of the
+// same function do it correctly, through `emit_qop_error_disposal`
+// (flow.rs:824), whose doc spells out the discipline: "With a catch
+// handler ... the deliver CONSUMES an owned error ... Handler-less:
+// drop the owned error". Only the scalar arm skips it — its comment
+// calls this "the scalar arm keeps its simpler no-drop two-block form".
+//
+// Fix: give the scalar arm the same disposal. It already computes
+// `deliverable`, `clean` and `payload` and knows `inner_owned` (it
+// computes exactly that for the handler-ful deliver a few lines above),
+// so the change is to call `emit_qop_error_disposal(cx, handler_site,
+// &cv, deliverable, clean, payload, inner_owned)` instead of the
+// bare-deliver block, dropping the owned error on the no-deliver and
+// handler-less paths. The existing double-free guards apply unchanged
+// (a Borrowed inner is owned by its env slot and dropped by
+// `emit_pending_cleanup`).
+//
+// SIBLING: result-union-nullable-abi-aug2026 is the same false
+// assumption — "a Nullable's non-success case is a by-value null" — in
+// the select type-predicate lowering, where it produces a wrong arm and
+// a leaked pointer instead of a leaked allocation. Both trace back to
+// `abi_kind` collapsing `[T, null]` and `[T, Error<E>]` into one kind.
+//
+// NOT ORACLE-VISIBLE and NOT CORPUS-SAFE as a value pin: this program
+// runs forever by design (a 1 ms timer) and is a MANUAL witness. Run it
+// with the RSS recipe above; do not expect `graphix-fuzz check` to say
+// anything useful about it (it also names `sys::time`, which
+// `oracle_tier` excludes — correctly, here).
+let clk = sys::time::timer(duration:0.001s, true);
+let x = i64:0;
+x <- clk ~ (x + i64:1);
+let d = (i64:10 /? (x - x))$;
+let s = d + i64:1;
+s
