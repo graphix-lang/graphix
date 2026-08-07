@@ -1237,8 +1237,12 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         // The helper consumes the bytes operand — owned.
         let bcv = emit_owned_value_operand_node(cx, source)?;
         let idx_cv = idx.emit_clif(cx)?;
+        // Widen a narrow index to the helper's declared i64 — the raw
+        // payload made cranelift's verifier reject the whole kernel
+        // (narrow-index-operand-verifier-aug2026).
+        let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_bytes_index")?;
-        let call = cx.b.ins().call(helper, &[bcv.disc, bcv.payload, idx_cv.payload]);
+        let call = cx.b.ins().call(helper, &[bcv.disc, bcv.payload, idx_i64]);
         let (rdisc, rpay) = {
             let r = cx.b.inst_results(call);
             (r[0], r[1])
@@ -1319,18 +1323,21 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         match n {
             None => Ok(cx.b.ins().iconst(types::I64, 0)),
             Some(n) => {
-                if !kernel_abi::scalar_prim(cx.registry(), n.typ())
-                    .is_some_and(|p| p.is_integer())
-                {
+                let Some(p) = kernel_abi::scalar_prim(cx.registry(), n.typ())
+                    .filter(|p| p.is_integer())
+                else {
                     return Err(anyhow!(
                         "emit_clif: slice bound of non-integer type {:?}",
                         n.typ()
                     ));
-                }
+                };
                 *flags |= flag;
                 let cv = n.emit_clif(cx)?;
                 taint.push(cv.disc);
-                Ok(cv.payload)
+                // Widen a narrow bound to the helper's declared i64 —
+                // the raw payload made cranelift's verifier reject the
+                // whole kernel (narrow-index-operand-verifier-aug2026).
+                widen_to_i64(cx.b, cv.payload, p)
             }
         }
     };
