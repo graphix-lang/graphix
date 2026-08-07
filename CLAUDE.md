@@ -566,11 +566,27 @@ enforces it):**
   harvest+reseed a `SelSnap` snapshot (callsite.rs — the prime
   otherwise eats becoming-selected transitions and re-fired recursion
   starves), and the kernel's null-site-block back-edge reads QUIET,
-  not becoming-selected. KNOWN GAPS (documented in code): interior
+  not becoming-selected. **THE SCRUTINEE RIDE** (Eric's ruling
+  2026-08-07, aug06ghz0): the standing selection lives on against the
+  select's CACHED scrutinee when a delivery bottoms upstream — the
+  taken arm's body fires on its own deps, guard-dep fires RE-MATCH
+  against the cached value (a flip re-selects and fires
+  becoming-selected), and pattern binds RIDE it. Kernel:
+  `emit_scrut_ride` (select.rs) — the input twin of the merge taint
+  cache — substitutes the cached scrutinee (disc|STALE) at the
+  boundary on tainted-with-history; no-history taint still misses
+  (the aug04b phantom rule). Value/composite residents ride at
+  region root only (borrow-substituting value cache); NO storage →
+  DE-FUSE, never pass through (a pass-through is a known divergence —
+  Eric's bar 2026-08-07). ASPIRE: value residents in site blocks /
+  slot chains (value-aware free machinery) to restore instance-kernel
+  fusion for value-shaped scrutinees (`hof_nullable_map`).
+  KNOWN GAPS (documented in code): interior
   recursive activations have no per-activation selection memory in
   kernels (a change onto a const arm misses its fire — needs a design
   item), and MapQ/FoldQ live slot subgraphs aren't in the park
   snapshot. Pinned by `select-strict-rule-aug2026/` +
+  `select-quiet-scrutinee-aug2026/` +
   `rec_same_arg_refire_quiet` / `rec_transient_pure_refire` fixtures.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel caches survive an arm's sleep — `Cached` residents,
