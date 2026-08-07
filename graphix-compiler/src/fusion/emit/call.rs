@@ -205,6 +205,25 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let bit = cx.b.ins().ishl_imm(t64, i as i64);
         taint_mask = cx.b.ins().bor(taint_mask, bit);
     }
+    // The STALE twin (dyncall-stale-arg-fired-aug2026): bit `i` set =
+    // the arg is present but did not fire this cycle. The dispatcher
+    // delivers those slots as `TagValue::stale`, so builtins whose
+    // production gates on argument FIRING (`update_diff`, `CachedArgs`'
+    // eval re-run, the print family's per-arg update) see the
+    // node-walk's per-argument truth — a fused `rand`/`now` no longer
+    // re-runs its effect on every kernel invocation. Delivered as
+    // STALE, never as absence: an all-constant-arg builtin must keep
+    // producing its cached value (an absent delivery would pend the
+    // dispatch and bottom it after the first invocation). Like the
+    // taint fold, each bit is const for a proven-fresh arg.
+    let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
+    for (i, d) in arg_taint_discs.iter().enumerate() {
+        let s = cx.b.ins().band_imm(*d, STALE);
+        let sb = cx.b.ins().icmp_imm(IntCC::NotEqual, s, 0);
+        let s64 = cx.b.ins().uextend(types::I64, sb);
+        let bit = cx.b.ins().ishl_imm(s64, i as i64);
+        stale_mask = cx.b.ins().bor(stale_mask, bit);
+    }
     // IN-LOOP init-run exactness (katana jul21a, fold-acc-taint-jul2026):
     // one scaffold-loop DynCall site serves EVERY collection position,
     // so its cached slot state crosses position boundaries the
@@ -251,7 +270,8 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     let site_word = emit_dyncall_site_word(cx);
     // The buf's in-flight cover ends here: the dispatcher consumes it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    let call = cx.b.ins().call(dyncall, &[fn_idx_val, buf, taint_mask, site_word]);
+    let call =
+        cx.b.ins().call(dyncall, &[fn_idx_val, buf, taint_mask, stale_mask, site_word]);
     // Unified Value ABI: `graphix_dyncall` returns the result's
     // genuine (disc, payload) Value pair for every return type; the
     // decode below adapts per the static shape.

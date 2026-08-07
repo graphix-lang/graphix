@@ -485,6 +485,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         event: &mut crate::Event<E>,
         args: &[Value],
         taint_mask: u64,
+        stale_mask: u64,
         site_id: u64,
     ) -> Option<Value> {
         debug_assert_eq!(args.len(), self.bind_ids.len(), "DynCall arity");
@@ -536,31 +537,13 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
             None
         };
-        // Side-channel: stash each arg Value at its BindId so the
-        // arg_refs `Ref` nodes read it inside `apply.update`. FIRED:
-        // the kernel already decided this call happens — the delivery
-        // is the call's argument event. A TAINT-masked slot (the arg
-        // bottomed this cycle) delivers ABSENCE instead — no write, so
-        // the callee's cached slot keeps its previous state and eval
-        // decides what a missing arg means, exactly the node-walk seam
-        // where a bottomed arg is silence (Eric's ruling 2026-07-20,
-        // dyncall-partial-args-jul2026; the buf's placeholder Value at
-        // that position drops with the buf).
-        let mut set: poolshark::local::LPooled<Vec<BindId>> =
-            poolshark::local::LPooled::take();
-        for (i, v) in args.iter().enumerate() {
-            if taint_mask & (1u64 << i) != 0 {
-                continue;
-            }
-            let id = self.bind_ids[i];
-            event.variables.insert(id, crate::TagValue::fired(v.clone()));
-            set.push(id);
-        }
         // First dispatch of a fresh inner Apply = its init cycle:
         // labeled-default Nodes (Constants / default exprs) only
         // produce on `event.init`, and the outer cycle may be long
         // past init (an async-fed region's first fire). Force the
-        // init view for this one update, then restore.
+        // init view for this one update, then restore. Resolved
+        // BEFORE the arg delivery below because `first` also selects
+        // the delivery tag.
         let (apply, fired) = match inst_idx {
             None => {
                 let cur = self.current.as_mut().unwrap();
@@ -573,6 +556,38 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         };
         let first = !*fired;
         *fired = true;
+        // Side-channel: stash each arg Value at its BindId so the
+        // arg_refs `Ref` nodes read it inside `apply.update`. The
+        // delivery TAG is the arg's own per-cycle truth, not the
+        // call's: a TAINT-masked slot (the arg bottomed this cycle)
+        // delivers ABSENCE — no write, so the callee's cached slot
+        // keeps its previous state and eval decides what a missing
+        // arg means (Eric's ruling 2026-07-20,
+        // dyncall-partial-args-jul2026; the buf's placeholder Value
+        // at that position drops with the buf) — and a STALE-masked
+        // slot delivers `TagValue::stale`: present, didn't fire, so
+        // production rules that gate on argument FIRING (update_diff,
+        // CachedArgs' eval re-run) see the node-walk's per-argument
+        // truth instead of a phantom fire per kernel invocation
+        // (dyncall-stale-arg-fired-aug2026). On the FIRST dispatch
+        // the init view makes everything an arrival (the interp's
+        // fresh Apply sees its args arrive at init), so stale is
+        // honored only after.
+        let mut set: poolshark::local::LPooled<Vec<BindId>> =
+            poolshark::local::LPooled::take();
+        for (i, v) in args.iter().enumerate() {
+            if taint_mask & (1u64 << i) != 0 {
+                continue;
+            }
+            let id = self.bind_ids[i];
+            let tv = if !first && stale_mask & (1u64 << i) != 0 {
+                crate::TagValue::stale(v.clone())
+            } else {
+                crate::TagValue::fired(v.clone())
+            };
+            event.variables.insert(id, tv);
+            set.push(id);
+        }
         let saved_init = event.init;
         if first {
             event.init = true;
@@ -793,6 +808,7 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     fn_index: u32,
     args: *mut poolshark::local::LPooled<Vec<Value>>,
     taint_mask: u64,
+    stale_mask: u64,
     site_word: *mut u64,
 ) -> DynCallRet {
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
@@ -827,7 +843,8 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     };
     let slot = &mut slots[fn_index as usize];
     let lambda_v = &fn_arg_values[fn_index as usize];
-    match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, site_id) {
+    match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id)
+    {
         Some(v) => {
             // Unified Value ABI: hand back the Value's two `repr(u64)`
             // words for EVERY return type — the call site adapts per

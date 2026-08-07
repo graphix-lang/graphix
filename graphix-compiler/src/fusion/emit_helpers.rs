@@ -703,6 +703,15 @@ safe fn graphix_depth_pop() {
 /// the buf. Lambda-callee dispatch sites pass 0 (formals poison via
 /// their own protocol, unchanged).
 ///
+/// `stale_mask`: bit `i` set = arg slot `i` is present but did NOT
+/// fire this cycle (its disc carries STALE). The dispatcher delivers
+/// those slots as `TagValue::stale`, so a builtin whose production
+/// gates on argument FIRING (`printfn!`'s per-arg update, `str::
+/// escape`'s `update_diff`, `CachedArgs`' eval re-run) sees the
+/// node-walk's per-argument truth instead of a phantom fire per
+/// kernel invocation (dyncall-stale-arg-fired-aug2026: `rand`
+/// re-randomized and `now` resampled the clock on every invocation).
+///
 /// `site_word`: address of the emission site's claimed SITE-IDENTITY
 /// word (dyncall-site-identity-jul2026 — the dispatcher mints an id
 /// into it and keys a per-site inner Apply on the value, so one
@@ -715,6 +724,7 @@ unsafe fn graphix_dyncall(
     fn_index: u32,
     args: *mut LPooled<Vec<Value>>,
     taint_mask: u64,
+    stale_mask: u64,
     site_word: *mut u64,
 ) -> DynCallRet {
     let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
@@ -727,7 +737,7 @@ unsafe fn graphix_dyncall(
     }
     unsafe {
         let h = &*handle;
-        (h.dispatch)(h.state, fn_index, args, taint_mask, site_word)
+        (h.dispatch)(h.state, fn_index, args, taint_mask, stale_mask, site_word)
     }
 }
 
@@ -1734,18 +1744,20 @@ pub struct DynCallRet {
 #[repr(C)]
 pub struct DynDispatchHandle {
     /// Function pointer to a monomorphized `dispatch_typed::<R, E>`.
-    /// Takes `(state, fn_index, args, taint_mask, site_word)` and
-    /// returns the result as a [`DynCallRet`] Value pair (unified
-    /// Value ABI). Returns `(0, 0)` and sets `DYNCALL_PENDING` if the
-    /// inner Apply returned None. `taint_mask` bit `i` set = deliver
-    /// arg slot `i` as ABSENCE; `site_word` is the emission site's
-    /// identity-word address, null for the key-0 bucket (see
-    /// `graphix_dyncall`).
+    /// Takes `(state, fn_index, args, taint_mask, stale_mask,
+    /// site_word)` and returns the result as a [`DynCallRet`] Value
+    /// pair (unified Value ABI). Returns `(0, 0)` and sets
+    /// `DYNCALL_PENDING` if the inner Apply returned None.
+    /// `taint_mask` bit `i` set = deliver arg slot `i` as ABSENCE;
+    /// `stale_mask` bit `i` set = deliver it as `TagValue::stale`;
+    /// `site_word` is the emission site's identity-word address, null
+    /// for the key-0 bucket (see `graphix_dyncall`).
     pub dispatch: unsafe extern "C" fn(
         state: *mut u8,
         fn_index: u32,
         args: *mut LPooled<Vec<Value>>,
         taint_mask: u64,
+        stale_mask: u64,
         site_word: *mut u64,
     ) -> DynCallRet,
     /// Function pointer to a monomorphized `set_var_typed::<R, E>`. A
