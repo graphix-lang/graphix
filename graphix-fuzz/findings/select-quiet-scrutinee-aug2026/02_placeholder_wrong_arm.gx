@@ -1,0 +1,18 @@
+// The shape that killed chain-walk gating designs: under a tainted
+// scrutinee the PLACEHOLDER (0) matches `u8:0 => -1`, but the
+// standing selection is `_` (v2 settled u8:1 via the fold init
+// before the div0 epochs) — whose pattern also rejects the
+// placeholder. With the scrutinee ride the chain re-matches on the
+// CACHED value (1): `u8:0` correctly fails, `_` correctly takes, and
+// the fresh in0 emits. Any design that walks patterns over the
+// placeholder can't reach the right arm here.
+// schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
+{
+	let v0: Array<i64> = [];
+	v0 <- in0 ~ array::push(v0, i64:0);
+	let v3: i64 = {
+		let v2: u8 = array::fold(v0, u8:1, |a, x| (a / (a - a)));
+		select v2 { u8:0 => i64:-1, _ => in0 }
+	};
+	v3
+}

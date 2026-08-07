@@ -1,0 +1,21 @@
+// Guard-flip RE-MATCH against the cached scrutinee (probe t26): on
+// epoch 2 the guard's dep flips true while the scrutinee stays quiet
+// (fold div0). The interp re-matches the CACHED v2 (still 0) with
+// the CURRENT guard → re-selects arm 0 → becoming-selected fire of
+// 100. With the scrutinee ride this is just the record step working:
+// the substituted scrutinee is valid, the re-match lands on a
+// different arm, woke = 1, the arm's current value emits FIRED.
+// Epoch 1 (guard dep fires false, no flip, quiet scrutinee) must
+// stay QUIET in both modes — same-selection re-match is woke = 0.
+// schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
+{
+	let g = false;
+	g <- in0 ~ (in0 > 5);
+	let v0: Array<i64> = [];
+	v0 <- in0 ~ array::push(v0, i64:0);
+	let v3: i64 = {
+		let v2: u8 = array::fold(v0, u8:0, |a, x| (a / a));
+		select v2 { u8:0 if g => i64:100, _ => i64:-1 }
+	};
+	v3
+}

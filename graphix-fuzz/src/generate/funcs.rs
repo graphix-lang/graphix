@@ -284,7 +284,7 @@ pub(super) fn gen_error_arm_lambda(
         "let {f} = |{n}: i64| select {n} {{ i64:0 => {ok}, _ => error({payload}) }}"
     );
     // Call so the ok arm or the ERROR arm is taken, then consume the
-    // union with `$`, an error-arm select, or `?` under try.
+    // union with `$`, an error-arm select, or `?` under a catch.
     let arg = if rng.below(2) == 0 { "i64:0" } else { "i64:1" };
     let dflt = exprs::gen_typed(ctx, rng, &ret, 1);
     let consume = match rng.below(3) {
@@ -293,7 +293,7 @@ pub(super) fn gen_error_arm_lambda(
             "select {f}({arg}) {{ error as _ => {dflt}, {} as x => x }}",
             ret.render()
         ),
-        _ => format!("(try ({f}({arg}))? catch(e) => {dflt})"),
+        _ => format!("{{ catch(e) {dflt}; ({f}({arg}))? }}"),
     };
     let call = ctx.fresh();
     let stmts = vec![lam, format!("let {call} = {consume}")];

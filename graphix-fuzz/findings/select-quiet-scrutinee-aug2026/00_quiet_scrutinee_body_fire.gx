@@ -1,0 +1,25 @@
+// Quiet-scrutinee body-driven fire (aug06ghz0 reactive, Eric's
+// ruling 2026-08-07): selection is OBSERVABLE MEMORY — a STANDING
+// selection whose scrutinee delivers nothing this cycle (the fold
+// div0-bottoms, so v2 is tainted in the kernel) still fires when the
+// taken arm's body fires on its own deps. Epoch 1 injects in0=0 and
+// epoch 2 injects in0=7: the select must emit the FRESH values (0
+// then 7 — body production, not a ride). Pre-fix the phantom-arm
+// gate (0a0014eb) routed every tainted-scrutinee take to miss —
+// conflating never-selected with selected-but-quiet — and the jit
+// swallowed both fires. Fixed by THE SCRUTINEE RIDE (emit_scrut_ride,
+// the input twin of the merge taint cache): a tainted delivery with
+// history substitutes the CACHED scrutinee (disc | STALE) at the
+// select boundary, so the ordinary chain re-matches on real values
+// and the taken arm's body runs; no history still routes to miss
+// (the aug04b phantom rule preserved).
+// schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
+{
+	let v0: Array<i64> = [];
+	v0 <- in0 ~ array::push(v0, i64:0);
+	let v3: i64 = {
+		let v2: u8 = array::fold(v0, u8:0, |a, x| (a / a));
+		select v2 { _ => in0 }
+	};
+	v3
+}

@@ -23,9 +23,10 @@ use poolshark::local::LPooled;
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        const_stale_gate, emit_scalar_taint_cache, emit_value_taint_cache, is_untainted,
-        prim_to_value_disc, propagate_flags, propagate_stale, propagate_taint,
-        scalar_disc, value_disc,
+        const_stale_gate, emit_scalar_taint_cache, emit_scalar_taint_cache_claimed,
+        emit_value_taint_cache, emit_value_taint_cache_borrowed, is_tainted,
+        is_untainted, prim_to_value_disc, propagate_flags, propagate_stale,
+        propagate_taint, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src, node_composite_source,
@@ -215,6 +216,85 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
     ids
 }
 
+/// THE SCRUTINEE RIDE (Eric's ruling 2026-08-07): the select's
+/// scrutinee is a taint-cache position like the merge on the output
+/// side — the interp's Select holds its scrutinee in a `Cached` slot,
+/// and on cycles where the scrutinee produces nothing (an interior
+/// bottom upstream) the standing selection lives on against that
+/// CACHED value: guard-dep fires RE-MATCH against it (probe t26 —
+/// a guard flip re-selects and fires becoming-selected), pattern
+/// binds RIDE it (probe t27 — the body recomputes cached-bind ⊕
+/// fresh-dep), and the taken arm's body fires on its own deps
+/// (aug06ghz0). Substituting the cached scrutinee (disc | STALE) at
+/// the boundary makes the WHOLE chain reproduce all of that with no
+/// special dispatch: pattern tests run on real values, the record
+/// step sees a valid scrutinee (a same-arm re-match is woke = 0 —
+/// quiet; a guard-flip re-match records and fires), and STALE rides
+/// into the binds so bodies fire only from their own inputs. A
+/// no-history taint passes through to the per-arm gates → miss (the
+/// aug04b phantom-arm rule: no selection was ever made). No storage
+/// channel → de-fuse: a pass-through here is a KNOWN divergence, not
+/// a documented residual (Eric's bar 2026-08-07).
+fn emit_scrut_ride(cx: &mut BodyCx, scrut: SelectScrut) -> Result<SelectScrut> {
+    match scrut {
+        SelectScrut::Scalar { disc, value, prim } => {
+            let cv =
+                emit_scalar_taint_cache_claimed(cx, prim, CompiledExpr::new(disc, value))
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: no scrutinee-ride storage for a scalar \
+                     scrutinee — de-fuse"
+                        )
+                    })?;
+            Ok(SelectScrut::Scalar { disc: cv.disc, value: cv.payload, prim })
+        }
+        SelectScrut::Value { disc, payload } => {
+            let cv =
+                emit_value_taint_cache_borrowed(cx, CompiledExpr::new(disc, payload))?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: no scrutinee-ride storage for a \
+                             value-shaped scrutinee — de-fuse"
+                        )
+                    })?;
+            Ok(SelectScrut::Value { disc: cv.disc, payload: cv.payload })
+        }
+        SelectScrut::Composite { disc, ptr } => {
+            let cv = emit_value_taint_cache_borrowed(cx, CompiledExpr::new(disc, ptr))?
+                .ok_or_else(|| {
+                anyhow!(
+                    "emit_clif: no scrutinee-ride storage for a composite \
+                         scrutinee — de-fuse"
+                )
+            })?;
+            Ok(SelectScrut::Composite { disc: cv.disc, ptr: cv.payload })
+        }
+        // Opaque scrutinees (string / composite with only Ignore/guard
+        // arms) carry no chain-readable value — only the DISC drives
+        // the gates and the record step, so the resident is the last
+        // CLEAN disc in one replay word (0 = none).
+        SelectScrut::Opaque { disc } => {
+            let Some(off) = cx.claim_state_word_replay() else {
+                return Err(anyhow!(
+                    "emit_clif: no scrutinee-ride storage for an opaque \
+                     scrutinee — de-fuse"
+                ));
+            };
+            let sp = cx.state_ptr();
+            let tainted = is_tainted(cx.b, disc);
+            let cur = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+            let clean = clean_disc(cx.b, disc);
+            let new = cx.b.ins().select(tainted, cur, clean);
+            cx.b.ins().store(MemFlags::trusted(), new, sp, off);
+            let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cur, 0);
+            let use_cache = cx.b.ins().band(tainted, have);
+            let sub = cx.b.ins().bor_imm(cur, STALE);
+            let d = cx.b.ins().select(use_cache, sub, disc);
+            Ok(SelectScrut::Opaque { disc: d })
+        }
+    }
+}
+
 pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
@@ -242,6 +322,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     };
     let (scrut, scrut_kind, scrut_typ, scrut_drop) =
         classify_select_scrutinee(cx, sel, true)?;
+    let scrut = emit_scrut_ride(cx, scrut)?;
     // Every merge shape phis (disc, payload) — the scrutinee's taint
     // rides the disc into every arm result, so there's no separate
     // validity phi and no possibly-bottom-scrutinee gate (#219).

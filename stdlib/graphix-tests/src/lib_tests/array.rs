@@ -1143,18 +1143,21 @@ run!(hof_str_used_twice, HOF_STR_USED_TWICE, |v: Result<&Value>| {
 
 // Value-shape (Nullable) ELEMENT read path: bind_elem's Value arm +
 // drop_owned_elem exercised on the node-walk. The BODY here `select`s over
-// the owned value element, which hits the owned-value-scrutinee de-fuse
-// P4: the callback's per-site instance body (the select over the
-// nullable element) fuses and runs as its own kernel — upgraded from
-// None (the old owned-scrutinee gate applied to the deleted map
-// scaffold, not to the instance region).
+// the owned value element. Back to None since the SCRUTINEE RIDE
+// (2026-08-07): a fused select's scrutinee must claim a cached
+// resident (the quiet-delivery re-match/bind-ride semantics are
+// unrepresentable without one), and value-shaped residents have no
+// storage channel in a lambda-kernel instance body — de-fuse.
+// ASPIRE: value residents in site blocks / slot chains (needs
+// value-aware free machinery) would restore the instance-kernel
+// fusion this had between P4 and the ride.
 const HOF_NULLABLE_MAP: &str = r#"
 array::map([1, null], |v| select v { i64 as n => n, null as _ => i64:0 })
 "#;
 run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 2]>()),
     Ok(Ok([1, 0]))
-); graphix_package_core::testing::FuseExpect::Jit);
+); graphix_package_core::testing::FuseExpect::None);
 
 // Value-shape (variant) ELEMENT in a filter whose predicate is a `==`
 // (ValueEq, fuses) rather than a select — so the value-element read + the

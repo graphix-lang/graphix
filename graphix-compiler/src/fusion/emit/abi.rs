@@ -228,6 +228,20 @@ pub(super) fn emit_scalar_taint_cache(
     prim: PrimType,
     cv: CompiledExpr,
 ) -> CompiledExpr {
+    emit_scalar_taint_cache_claimed(cx, prim, cv).unwrap_or(cv)
+}
+
+/// [`emit_scalar_taint_cache`] with the claim outcome surfaced: `None`
+/// when no storage channel is available (callee-body loops, unclaimed
+/// contexts) and the result would have passed through unwrapped.
+/// Consumers for whom the ride is REQUIRED semantics (the select
+/// scrutinee — a silent pass-through there is a known divergence, not
+/// a documented residual) de-fuse on `None`.
+pub(super) fn emit_scalar_taint_cache_claimed(
+    cx: &mut BodyCx,
+    prim: PrimType,
+    cv: CompiledExpr,
+) -> Option<CompiledExpr> {
     // IN-LOOP sites: per-slot (value, ok) pairs via a reset-registered
     // slot chain ([`BodyCx::claim_slot_cache_words`]) — one word pair
     // per slot ordinal, so slot i−1's success can't bridge slot i's
@@ -238,9 +252,9 @@ pub(super) fn emit_scalar_taint_cache(
     if cx.ctx.loop_depth.get() > 0 {
         if let Some(addr) = cx.claim_slot_cache_words() {
             let one = cx.b.ins().iconst(types::I64, 1);
-            return emit_taint_cache_at(cx, prim, cv, addr, 0, 8, one);
+            return Some(emit_taint_cache_at(cx, prim, cv, addr, 0, 8, one));
         }
-        return cv;
+        return None;
     }
     // REPLAY words: `Kernel::reset_replay` zeroes them (ok = 0 = "no
     // history"), so iteration i−1's success can't bridge iteration
@@ -252,12 +266,12 @@ pub(super) fn emit_scalar_taint_cache(
     {
         let sp = cx.state_ptr();
         let one = cx.b.ins().iconst(types::I64, 1);
-        return emit_taint_cache_at(cx, prim, cv, sp, off_val, off_ok, one);
+        return Some(emit_taint_cache_at(cx, prim, cv, sp, off_val, off_ok, one));
     }
     let (Some((off_val, hdr)), Some((off_ok, _))) =
         (cx.claim_site_word_replay(), cx.claim_site_word_replay())
     else {
-        return cv;
+        return None;
     };
     // The site block base is 0 on a recursive back-edge — branch
     // around the cache (the fresh-transient no-memory semantics).
@@ -290,7 +304,7 @@ pub(super) fn emit_scalar_taint_cache(
     cx.b.switch_to_block(merge);
     let disc = cx.b.block_params(merge)[0];
     let value = cx.b.block_params(merge)[1];
-    CompiledExpr::new(disc, value)
+    Some(CompiledExpr::new(disc, value))
 }
 
 /// The taint-cache load/store/substitute body against two words at
@@ -432,6 +446,86 @@ pub(super) fn emit_value_taint_cache(
     cx.b.seal_block(merge);
     let params = cx.b.block_params(merge);
     Ok(CompiledExpr::new(params[0], params[1]))
+}
+
+/// [`emit_value_taint_cache`] for a BORROWED read position — the
+/// select SCRUTINEE ride (the input twin of the merge cache above,
+/// Eric's ruling 2026-08-07: selection is observable memory, and the
+/// interp re-matches guards and rides pattern binds against the
+/// select's CACHED scrutinee, so the kernel must present the cached
+/// value to the whole chain on a quiet delivery). Differences from the
+/// owned-origin form:
+///
+/// - the incoming value is NOT consumed: on the tainted path nothing
+///   is dropped (the chain's source — an env slot or the classify
+///   vars — still owns it), and on the untainted path the resident
+///   refresh CLONES it while the original rides on;
+/// - the substitute is a BORROW of the resident (no clone): the
+///   resident is stable for the rest of the invocation (its only
+///   writer is this boundary, already passed), and the chain reads
+///   scrutinees without consuming them — pattern tests, binds, and
+///   guard reads all borrow. Handing out an owned clone here would
+///   leak (the chain emits no scrutinee drop on the borrowed path).
+///
+/// `None` = no storage channel (scaffold loops, callee bodies — the
+/// chain/site free machinery is value-unaware); the caller de-fuses:
+/// a pass-through there is a known divergence, not a residual.
+pub(super) fn emit_value_taint_cache_borrowed(
+    cx: &mut BodyCx,
+    cv: CompiledExpr,
+) -> Result<Option<CompiledExpr>> {
+    let Some(off) = cx.claim_state_word_replay_value() else {
+        return Ok(None);
+    };
+    let off_pay = off + 8;
+    let sp = cx.state_ptr();
+    let tainted = is_tainted(cx.b, cv.disc);
+    let cdisc = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+    let cpay = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off_pay);
+    let merge = cx.b.create_block();
+    cx.b.append_block_param(merge, types::I64);
+    cx.b.append_block_param(merge, types::I64);
+    let taint_bl = cx.b.create_block();
+    let store_bl = cx.b.create_block();
+    cx.b.ins().brif(tainted, taint_bl, &[], store_bl, &[]);
+    // Untainted: refresh — drop the old resident (if any), move a
+    // clone of the result in, pass the original through untouched.
+    cx.b.switch_to_block(store_bl);
+    cx.b.seal_block(store_bl);
+    {
+        let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cdisc, 0);
+        let drop_bl = cx.b.create_block();
+        let cont_bl = cx.b.create_block();
+        cx.b.ins().brif(have, drop_bl, &[], cont_bl, &[]);
+        cx.b.switch_to_block(drop_bl);
+        cx.b.seal_block(drop_bl);
+        let val_drop = cx.helper("graphix_value_drop")?;
+        cx.b.ins().call(val_drop, &[cdisc, cpay]);
+        cx.b.ins().jump(cont_bl, &[]);
+        cx.b.switch_to_block(cont_bl);
+        cx.b.seal_block(cont_bl);
+    }
+    let clone = cx.helper("graphix_value_clone")?;
+    let call = cx.b.ins().call(clone, &[cv.disc, cv.payload]);
+    let cloned_pay = cx.b.inst_results(call)[1];
+    let clean = clean_disc(cx.b, cv.disc);
+    cx.b.ins().store(MemFlags::trusted(), clean, sp, off);
+    cx.b.ins().store(MemFlags::trusted(), cloned_pay, sp, off_pay);
+    cx.b.ins().jump(merge, &[BlockArg::Value(cv.disc), BlockArg::Value(cv.payload)]);
+    // Tainted: substitute a borrow of the resident if there is one
+    // (disc | STALE — didn't-fire-this-cycle), else pass the taint
+    // through to the phantom-arm gates (no history = no selection).
+    cx.b.switch_to_block(taint_bl);
+    cx.b.seal_block(taint_bl);
+    let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cdisc, 0);
+    let sub_disc = cx.b.ins().bor_imm(cdisc, STALE);
+    let d = cx.b.ins().select(have, sub_disc, cv.disc);
+    let p = cx.b.ins().select(have, cpay, cv.payload);
+    cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(p)]);
+    cx.b.switch_to_block(merge);
+    cx.b.seal_block(merge);
+    let params = cx.b.block_params(merge);
+    Ok(Some(CompiledExpr::new(params[0], params[1])))
 }
 
 /// True (I8 bool) iff the disc's [`TAINT`] bit is set.

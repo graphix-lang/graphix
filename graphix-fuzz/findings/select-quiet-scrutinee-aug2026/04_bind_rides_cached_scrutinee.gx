@@ -1,0 +1,17 @@
+// Pattern binds RIDE the cached scrutinee (probe t27): v2 delivers 2
+// once (the fold init on the empty source), selecting `n => n + in0`;
+// every later fold run div0-bottoms, so the scrutinee is quiet while
+// in0 keeps firing. The interp's bind n rides 2 and the body
+// recomputes with the fresh dep: epochs emit 2, 2, 9 (= 2 + 7). With
+// the scrutinee ride the bind extracts from the substituted cached
+// value and inherits its STALE — the body fires only from in0.
+// schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
+{
+	let v0: Array<i64> = [];
+	v0 <- in0 ~ array::push(v0, i64:0);
+	let v3: i64 = {
+		let v2: u8 = array::fold(v0, u8:2, |a, x| (a / (a - a)));
+		select v2 { n => (cast<i64>(n)$ + in0) }
+	};
+	v3
+}
