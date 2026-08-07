@@ -1012,6 +1012,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         smallvec::smallvec![None; n];
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
+        // A schedule-free guard needs no prologue slot: its value at
+        // consultation is a pure function of the binds the match just
+        // delivered, so lazy chain evaluation is observably
+        // equivalent to the per-cycle tick — and free when the arm
+        // isn't reached (symbolic's hot `x == 0.0` guards; the
+        // unconditional prologue cost the bench +58%).
+        if guard_schedule_free(pat, &g.node) {
+            continue;
+        }
         let gmark = cx.env.mark();
         let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
         let pcond = if composite_structural_arm(pat, scrut) {
@@ -1108,13 +1117,22 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         cx.b.seal_block(matched);
         let mark = cx.env.mark();
         install_arm_binds(cx, &binds, scrut, None)?;
-        if pat.guard.is_some() {
-            // The guard's VALUE was computed by the prologue above
-            // (the interp ticks every guard every cycle; the prologue
-            // is that tick) — the chain only consumes the precomputed
-            // result. A bottom guard (tainted disc) means the arm
-            // does NOT match.
-            let eff = guard_vals[i].expect("guarded arm without a prologue value");
+        if let Some(g) = &pat.guard {
+            // A bottom guard (tainted disc) means the arm does NOT
+            // match.
+            let eff = match guard_vals[i] {
+                // Prologue-computed: a guard with interior state, a
+                // possible bottom, or an external read must tick every
+                // invocation (select-guard-shortcircuit-aug2026).
+                Some(eff) => eff,
+                // Schedule-free (see the prologue's classifier): emit
+                // lazily with the matched binds in scope.
+                None => {
+                    let gcv = g.node.emit_clif(cx)?;
+                    let valid = is_untainted(cx.b, gcv.disc);
+                    cx.b.ins().band(gcv.payload, valid)
+                }
+            };
             let body_blk = cx.b.create_block();
             cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
             cx.b.switch_to_block(body_blk);
@@ -1153,6 +1171,50 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     cx.b.seal_block(miss_bl);
     emit_miss(cx)?;
     Ok(())
+}
+
+/// True when an arm's guard is a SCHEDULE-FREE function of its own
+/// binds: pure ops that can never bottom (comparisons, logicals, NOT,
+/// wrapping +/-/*/neg — no div/mod/checked arith, no indexing, no
+/// calls, nothing stateful) over this arm's pattern binds and
+/// constants only. Such a guard's value at consultation is a pure
+/// function of the binds the match just delivered — there is no
+/// interior state to desync, no effect to drop, and no bottom to ride
+/// — so lazy chain evaluation is observably equivalent to the
+/// interp's per-cycle tick and the guard skips the prologue
+/// (select-guard-shortcircuit-aug2026 requires the prologue only
+/// outside this set; the blanket prologue cost symbolic's hot
+/// `x == 0.0` guards +58%).
+fn guard_schedule_free<R: Rt, E: UserEvent>(
+    pat: &PatternNode<R, E>,
+    guard: &Node<R, E>,
+) -> bool {
+    let mut bind_ids: smallvec::SmallVec<[BindId; 8]> = smallvec::SmallVec::new();
+    pat.structure_predicate.ids(&mut |id| bind_ids.push(id));
+    let mut ok = true;
+    fusion::for_each_node(guard, &mut |n| match n.view() {
+        NodeView::Constant(_) | NodeView::ExplicitParens(_) => {}
+        NodeView::Ref(r) => {
+            if !bind_ids.contains(&r.id) {
+                ok = false;
+            }
+        }
+        NodeView::Eq(_)
+        | NodeView::Ne(_)
+        | NodeView::Lt(_)
+        | NodeView::Gt(_)
+        | NodeView::Lte(_)
+        | NodeView::Gte(_)
+        | NodeView::And(_)
+        | NodeView::Or(_)
+        | NodeView::Not(_)
+        | NodeView::Neg(_)
+        | NodeView::Add(_)
+        | NodeView::Sub(_)
+        | NodeView::Mul(_) => {}
+        _ => ok = false,
+    });
+    ok
 }
 
 /// True when `pat` is a composite structural pattern over a composite
