@@ -816,9 +816,10 @@ fn type_may_error(t: &Type) -> bool {
     }
 }
 
-/// The `?`/`$` bad path's deliver-or-drop (shared verbatim by the
-/// composite/string and value-shape arms; the scalar arm keeps its
-/// simpler no-drop two-block form). With a catch handler, branch on
+/// The `?`/`$` bad path's deliver-or-drop (shared by the
+/// composite/string, value-shape, AND scalar arms — the scalar arm
+/// reaches it under its own `is_err` branch, since its success path
+/// is branchless). With a catch handler, branch on
 /// `deliverable` (a REAL, untainted error): the deliver CONSUMES an
 /// owned error (or clones a borrowed one), so it REPLACES the drop —
 /// delivering and dropping an owned error would double-free. A
@@ -928,26 +929,42 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     let fresh = is_fresh(cx.b, disc);
     let deliverable = cx.b.ins().band(is_err, fresh);
     match kernel_abi::abi_kind(cx.registry(), &success_typ) {
-        // Prim success — BRANCHLESS per-value taint. The payload word
-        // holds the success bits when !is_err; on the error path the
-        // bits are garbage but the disc's TAINT means they're never
-        // used (forced at the output). The error Value isn't dropped
-        // here: a scalar `Nullable` inner is a by-value scalar (no
-        // heap). #219: the inner's own taint also flows through.
+        // Prim success — per-value taint, branchless on the SUCCESS
+        // path. The payload word holds the success bits when !is_err;
+        // on the error path the bits are garbage but the disc's TAINT
+        // means they're never used (forced at the output). The
+        // success case is a by-value scalar (no heap) — but the ERROR
+        // case is a heap-boxed ValError even when the success type is
+        // scalar (`[T, Error<E>]` classifies Nullable like the option
+        // shape, whose non-success IS by-value null — the same false
+        // assumption as result-union-nullable-abi), so an owned error
+        // must go through the shared deliver-or-drop or it leaks once
+        // per cycle, unbounded in a reactive program
+        // (qop-scalar-error-leak-aug2026: +11MB/90s on a 1ms timer).
+        // #219: the inner's own taint also flows through.
         Some(AbiKind::Scalar(p)) => {
-            // Handler-ful `?` (a `?` caught by an enclosing `try`): on the
-            // error path, deliver the error to the catch handler's
-            // variable before bottoming (mirrors `Qop::update`'s handler
-            // path). The catch handler reading that variable is a separate
-            // kernel (next cycle), so no read-after-write hazard.
-            if let Some(site) = handler_site {
-                let deliver_block = cx.b.create_block();
+            let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
+            if inner_owned || handler_site.is_some() {
+                // On the structural-error path (phantoms included —
+                // an owned tainted error is still an allocation),
+                // deliver to the catch handler's variable (mirrors
+                // `Qop::update`'s handler path; the handler reading
+                // it is a separate kernel next cycle, so no
+                // read-after-write hazard) or drop the owned error.
+                let err_block = cx.b.create_block();
                 let after = cx.b.create_block();
-                cx.b.ins().brif(deliverable, deliver_block, &[], after, &[]);
-                cx.b.switch_to_block(deliver_block);
-                cx.b.seal_block(deliver_block);
-                let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
-                emit_qop_deliver(cx, site, &cv, inner_owned)?;
+                cx.b.ins().brif(is_err, err_block, &[], after, &[]);
+                cx.b.switch_to_block(err_block);
+                cx.b.seal_block(err_block);
+                emit_qop_error_disposal(
+                    cx,
+                    handler_site,
+                    &cv,
+                    deliverable,
+                    clean,
+                    payload,
+                    inner_owned,
+                )?;
                 cx.b.ins().jump(after, &[]);
                 cx.b.switch_to_block(after);
                 cx.b.seal_block(after);
