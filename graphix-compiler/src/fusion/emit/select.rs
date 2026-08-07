@@ -1007,6 +1007,19 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                         SelectScrut::Value { disc, .. }
                             if matches!(scrut_kind, AbiKind::Nullable) =>
                         {
+                            // Only the OPTION shape has a null member; a
+                            // result union's non-success value is an
+                            // error, so a null predicate over it is a
+                            // shape confusion — refuse
+                            // (result-union-nullable-abi-aug2026).
+                            if kernel_abi::nullable_error_marked(&scrut_typ)
+                                != Some(false)
+                            {
+                                return Err(anyhow!(
+                                    "emit_clif: null predicate over a \
+                                     result union {scrut_typ:?}"
+                                ));
+                            }
                             // Mask taint before the structural compare —
                             // a tainted disc is not a clean tag (#219).
                             let cd = clean_disc(cx.b, disc);
@@ -1041,16 +1054,53 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                                     kernel_abi::scalar_prim(cx.registry(), t)
                                 }) == PrimType::from_typ(pt) =>
                         {
-                            // `[T, null]` runtime value is T or null,
-                            // so "is a T" ≡ "is not null" — tested,
-                            // not assumed (order-sound). Mask taint
-                            // before the structural compare (#219).
+                            // Mask taint before the structural compare —
+                            // a tainted disc is not a clean tag (#219).
                             let cd = clean_disc(cx.b, disc);
-                            Some(cx.b.ins().icmp_imm(
-                                IntCC::NotEqual,
-                                cd,
-                                value_disc::NULL,
-                            ))
+                            match kernel_abi::nullable_error_marked(&scrut_typ) {
+                                // `[T, null]` runtime value is T or null,
+                                // so "is a T" ≡ "is not null" — tested,
+                                // not assumed (order-sound).
+                                Some(false) => Some(cx.b.ins().icmp_imm(
+                                    IntCC::NotEqual,
+                                    cd,
+                                    value_disc::NULL,
+                                )),
+                                // `[T, Error<E>]`'s non-success value is
+                                // an ERROR whose disc is not NULL, so
+                                // "is a T" must be the POSITIVE test
+                                // against T's own disc — `!= NULL` takes
+                                // the success arm on an error and the
+                                // bind reads the error's payload word as
+                                // the scalar
+                                // (result-union-nullable-abi-aug2026).
+                                Some(true) => match PrimType::from_typ(pt) {
+                                    Some(prim) => {
+                                        let td = scalar_disc(cx.b, prim);
+                                        Some(cx.b.ins().icmp(IntCC::Equal, cd, td))
+                                    }
+                                    None if pt == netidx_value::Typ::String => {
+                                        Some(cx.b.ins().icmp_imm(
+                                            IntCC::Equal,
+                                            cd,
+                                            value_disc::STRING,
+                                        ))
+                                    }
+                                    None => {
+                                        return Err(anyhow!(
+                                            "emit_clif: non-register type \
+                                             predicate {pred:?} over a result \
+                                             union not lowerable"
+                                        ));
+                                    }
+                                },
+                                None => {
+                                    return Err(anyhow!(
+                                        "emit_clif: Nullable scrutinee \
+                                         {scrut_typ:?} has no marker shape"
+                                    ));
+                                }
+                            }
                         }
                         _ => {
                             return Err(anyhow!(
@@ -1100,6 +1150,23 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                             "emit_clif: nullable scrutinee bind predicate is not scalar"
                         ));
                     };
+                    // Over a result union the payload read is only safe
+                    // under the explicit predicate's POSITIVE disc test
+                    // (tcond above); an inferred-predicate bind has no
+                    // test, so refuse rather than read an error's
+                    // payload word as the scalar
+                    // (result-union-nullable-abi-aug2026). The option
+                    // shape stays bind-by-arm-order sound: a preceding
+                    // arm must have consumed the null member for the
+                    // inferred predicate to narrow to a scalar.
+                    if !pat.explicit_type_predicate
+                        && kernel_abi::nullable_error_marked(&scrut_typ) != Some(false)
+                    {
+                        return Err(anyhow!(
+                            "emit_clif: untested bind over a result union \
+                             {scrut_typ:?} not lowerable"
+                        ));
+                    }
                     binds.push(SelectArmBind::NullableScalar { id: *id, prim });
                     None
                 }

@@ -494,6 +494,33 @@ fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
     }
 }
 
+/// Which marker a [`AbiKind::Nullable`]-classified shape carries:
+/// `Some(false)` for the option forms (`[T, null]` and the collapsed
+/// `T | null` primitive — the non-success runtime value is NULL),
+/// `Some(true)` for the result form (`[T, Error<E>]` — the non-success
+/// runtime value is an ERROR, whose disc is NOT null), `None` for a
+/// non-Nullable shape. Lowering must not conflate the two: "is a T"
+/// over an option is `disc != NULL`, but over a result it must be a
+/// POSITIVE test against T's own disc, or the success arm swallows
+/// errors and a binding predicate reads the error's payload word as
+/// the scalar (findings/result-union-nullable-abi-aug2026).
+pub fn nullable_error_marked(t: &Type) -> Option<bool> {
+    // Clone out of the deref guard before matching (see `abi_kind`'s
+    // lock-discipline note).
+    let resolved = t.with_deref(|r| r.cloned())?;
+    match &resolved {
+        Type::Primitive(p) if p.contains(Typ::Null) && p.iter().count() == 2 => {
+            Some(false)
+        }
+        Type::Set(members) => {
+            option_result_success(members)?;
+            let is_null = |m: &Type| is_single_prim(m, Typ::Null);
+            Some(!is_null(&members[0]) && !is_null(&members[1]))
+        }
+        _ => None,
+    }
+}
+
 /// One type EXPANSION on the path from the root, for cycle detection
 /// during concretization: the identity of a resolved abstract or named
 /// (`Type::Ref`) type. Structural nesting (array/tuple/struct) is NOT an
