@@ -779,6 +779,12 @@ const CAST_CALLBACK_PER_SLOT: &str = r#"
   array::map([true, false, true], |b| cast<i64>(b))
 "#;
 
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
@@ -786,7 +792,7 @@ run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FLATTEN: &str = r#"
   array::flatten([[1, 2, 3], [4, 5], [6]])
@@ -1086,10 +1092,16 @@ run!(hof_str_map_len, HOF_STR_MAP_LEN, |v: Result<&Value>| matches!(
 // String element AND String output — the element is dropped, the upper
 // String is pushed.
 const HOF_STR_MAP_UPPER: &str = r#"array::map(["hi", "yo"], |s| str::to_upper(s))"#;
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(hof_str_map_upper, HOF_STR_MAP_UPPER, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
         Ok(Ok([a, b])) if &*a == "HI" && &*b == "YO")
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // filter MOVES the kept string element into the output; drops the rest.
 const HOF_STR_FILTER: &str = r#"array::filter(["a", "bb", "ccc"], |s| str::len(s) > 1)"#;
@@ -1278,10 +1290,16 @@ run!(hof_leaf_string_twice, HOF_LEAF_STRING_TWICE, |v: Result<&Value>| {
 const HOF_LEAF_NULLABLE: &str = r#"
 array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => v, false => null })
 "#;
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 1]>()),
     Ok(Ok([20]))
-));
+); graphix_package_core::testing::FuseExpect::None);
 
 // COMPOSITE-returning callbacks through the per-slot template kernel
 // (soak jul05 items 5/10/13). The callback's declared rtype

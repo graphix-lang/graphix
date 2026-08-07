@@ -496,10 +496,16 @@ const TRANSITIVE_CALLEE_DYNCALL: &str = r#"
 }
 "#;
 
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(transitive_callee_dyncall, TRANSITIVE_CALLEE_DYNCALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Stage 2 — the DynCall sits two callee levels deep (g -> h -> cast). The
 // combined table carries both callees' slots; each body bakes its own base.
@@ -512,10 +518,16 @@ const TRANSITIVE_DYNCALL_CHAIN: &str = r#"
 }
 "#;
 
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(transitive_dyncall_chain, TRANSITIVE_DYNCALL_CHAIN, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Stage 2 SOUNDNESS — the cross-region cache-key witness. The function-valued
 // `let g` node-walks, splitting the block into SEPARATE regions that each call
@@ -550,10 +562,16 @@ const RECURSIVE_CALLEE_DYNCALL: &str = r#"
 }
 "#;
 
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(recursive_callee_dyncall, RECURSIVE_CALLEE_DYNCALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH0: &str = r#"
 {
@@ -1510,11 +1528,17 @@ const TAIL_ARG_BOTTOM_RIDES_CACHE: &str = r#"
 }
 "#;
 
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(
     tail_arg_bottom_rides_cache,
     TAIL_ARG_BOTTOM_RIDES_CACHE,
     |v: Result<&Value>| { matches!(v, Ok(Value::F64(x)) if *x == 0.0) };
-    graphix_package_core::testing::FuseExpect::Jit
+    graphix_package_core::testing::FuseExpect::None
 );
 
 // A bare-Array arg node under a VALUE-shaped signature slot

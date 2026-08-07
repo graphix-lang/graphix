@@ -42,10 +42,16 @@ const CHECKED_DIV0: &str = r#"
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // catch with array index errors still works
 const CATCH1: &str = r#"

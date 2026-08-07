@@ -413,10 +413,16 @@ const FOLD_ARRAY_ACC: &str = r#"
 }
 "#;
 
+// INTERPRETS since the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
+// composite producer in a callee body or loop has no taint-cache
+// storage channel and refuses rather than pass a bottom through
+// unridden. ASPIRE: value residents in slot chains / site blocks
+// restore this.
 run!(fold_array_acc, FOLD_ARRAY_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(4)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ASPIRE: Jit — the callback takes the STRING acc as a formal, and
 // the For loop's cross-kernel call can't marshal string args yet
