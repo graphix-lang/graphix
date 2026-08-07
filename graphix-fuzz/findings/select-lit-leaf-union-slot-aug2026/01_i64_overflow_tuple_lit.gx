@@ -1,0 +1,4 @@
+// Signed-family twin of 00 (pins must span prim families — jul16e):
+// checked i64 add overflow yields the ArithError value, whose
+// placeholder-0 read matched the `i64:0` literal leaf pre-fix.
+select (2, i64:9223372036854775807 +? i64:1) { (2, i64:0) => true, _ => false }

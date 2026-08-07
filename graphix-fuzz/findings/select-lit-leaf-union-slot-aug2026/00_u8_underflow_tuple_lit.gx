@@ -1,0 +1,9 @@
+// A literal pattern leaf over a UNION-typed tuple slot: the kernel's
+// typed element read is total (a slot whose value isn't of the
+// pattern's prim family reads as the placeholder 0), so the checked
+// op's ArithError value in slot 2 compared EQUAL to the `u8:0`
+// literal and the jit took the arm the interp refused (aug06f
+// divergence_000000, ryouko). Fixed by requiring the leaf's STATIC
+// type to freeze to the literal's prim family — union leaves de-fuse
+// like Bind leaves. interp/jit must both fall to `_` => false.
+select (2, u8:0 -? u8:1) { (2, u8:0) => true, _ => false }

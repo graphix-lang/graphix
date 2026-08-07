@@ -762,6 +762,21 @@ fn emit_composite_pattern_cond(
                 let prim = kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
                     anyhow!("emit_clif: non-scalar literal pattern leaf {v:?}")
                 })?;
+                // The typed element read is total: a slot whose VALUE
+                // isn't of `prim`'s family reads as the placeholder 0,
+                // which a `0`-literal pattern then MATCHES. Only the
+                // slot's static type proves the read faithful — a
+                // union-typed leaf (`[u8, Error<..>]` from a checked
+                // op) must de-fuse like a Bind leaf (aug06f
+                // divergence_000000: `(2, u8:0 -? u8:1)` matched
+                // `(2, u8:0)` on underflow).
+                if kernel_abi::scalar_prim(cx.registry(), &leaf.typ) != Some(prim) {
+                    return Err(anyhow!(
+                        "emit_clif: literal pattern leaf prim {prim:?} doesn't \
+                         match the leaf's static type {:?}",
+                        leaf.typ
+                    ));
+                }
                 lit_leaves.push((leaf.idx, prim, v));
             }
             sub @ (StructPatternNode::Slice { .. }
