@@ -810,6 +810,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        if self.module {
+            // A signature-less `mod` statement compiles to
+            // `Block { module: true }` but is still a MODULE: its binds
+            // publish into the persistent env for readers outside any
+            // region. Swallowed into a parent region they become SSA
+            // locals popped at the statement's end, and the exported
+            // stream dies or loses its seed
+            // (modstmt-fused-no-publish-aug2026). Refuse; the parent
+            // de-fuses and `fuse` recurses per child — the same
+            // structure `Module::fuse` gives sig-bearing modules.
+            bail!("emit_clif: module statement is structure, not computation")
+        }
         emit_block_node(cx, &self.children)
     }
 

@@ -73,6 +73,12 @@ fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
         // the fuzzer's cross-module vocabulary, 2026-07-08). The
         // node-walk runs the "dead" statement and delivers.
         NodeView::Module(_) => ok = false,
+        // A signature-less module is `Block { module: true }`, not a
+        // `Module` node — the SAME publisher, so the same rule
+        // (modstmt-fused-no-publish-aug2026: dead-elim dropped the
+        // statement whole and its exports starved every outside
+        // reader).
+        NodeView::Block(b) if b.module => ok = false,
         // A catch INSTALLATION is never dead: eliminating it from a
         // fused block would silently drop the handler while covered
         // `?`s keep delivering to its variable.
