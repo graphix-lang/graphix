@@ -193,14 +193,18 @@ pub struct FusionCtx {
     /// [`Self::reset_jit_for_check`].
     pub retired_jits: parking_lot::Mutex<Vec<emit::Jit>>,
     /// On-demand monomorphized lambda-kernel cache, keyed by
-    /// `(LambdaId, Arc<FnType>)`. Populated by `build_lambda_kernel`:
-    /// derive the signature once, reuse it for every later call to the
-    /// same (lambda definition, monomorphization). The cached
-    /// `Arc<KernelSig>` IS the compiled-callable handle — the JIT's
-    /// `by_kernel` cache keys on its pointer identity.
+    /// `(LambdaId, Arc<FnType>, catch coverage)`. Populated by
+    /// `build_lambda_kernel`: derive the signature once, reuse it for
+    /// every later call to the same (lambda definition,
+    /// monomorphization, coverage). Coverage is part of a call site's
+    /// identity — each instance body's `?` handlers resolved against
+    /// that site's dynamic scope, and the kernel bakes them
+    /// (catch-callsite-coverage-aug2026). The cached `Arc<KernelSig>`
+    /// IS the compiled-callable handle — the JIT's `by_kernel` cache
+    /// keys on its pointer identity.
     pub kernels: parking_lot::Mutex<
         std::collections::BTreeMap<
-            (LambdaId, std::sync::Arc<FnType>),
+            (LambdaId, std::sync::Arc<FnType>, lowering::QopCoverage),
             lowering::CachedKernel,
         >,
     >,

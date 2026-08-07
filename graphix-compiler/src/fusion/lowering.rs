@@ -1100,6 +1100,30 @@ fn resolve_abstract_node<'a>(
 /// `kernel_name` becomes the built `CachedKernel.fn_name`; a cache hit
 /// returns the first builder's name. `GXLambda` carries its analyzed
 /// self-binding and recursion facts.
+/// The catch-coverage fingerprint of a lambda instance's body: each
+/// interior `?`/`$` site's resolved handler bind in deterministic
+/// node-visit order (`u64::MAX` = handler-less). Part of the kernel
+/// cache key — a kernel bakes its instance's handler ids into its
+/// qop-deliver sites, so two call sites with different coverage need
+/// two kernels (catch-callsite-coverage-aug2026).
+pub(crate) type QopCoverage = smallvec::SmallVec<[u64; 4]>;
+
+fn qop_coverage<R: Rt, E: UserEvent>(body: &Node<R, E>) -> QopCoverage {
+    let mut cov = QopCoverage::new();
+    crate::fusion::for_each_node(body, &mut |n| {
+        if let NodeView::Qop(q) = n.view() {
+            match q.id {
+                Some((bind, top)) => {
+                    cov.push(bind.inner());
+                    cov.push(top.inner());
+                }
+                None => cov.push(u64::MAX),
+            }
+        }
+    });
+    cov
+}
+
 pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     site_ftype: &FnType,
@@ -1107,20 +1131,47 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     ec: &mut ExecCtx<R, E>,
 ) -> Option<CachedKernel> {
     let self_bind = g.self_bind();
-    // Cache key: (LambdaId, the CALL SITE's resolved FnType).
-    // `resolve_tvars` deep-clones, dereffing every TVar to its bound
-    // concrete type, so monomorphizations agree across syntactically-
-    // distinct but structurally-equivalent FnTypes. The key must be the
-    // SITE's type, not `g.typ()`: the lambda instance's FnType shares
-    // TVar cells with the lambda def, and when one polymorphic lambda
-    // is called at two monomorphizations the first site's unification
+    // Cache key: (LambdaId, the CALL SITE's resolved FnType, the
+    // instance body's CATCH COVERAGE). `resolve_tvars` deep-clones,
+    // dereffing every TVar to its bound concrete type, so
+    // monomorphizations agree across syntactically-distinct but
+    // structurally-equivalent FnTypes. The key must be the SITE's
+    // type, not `g.typ()`: the lambda instance's FnType shares TVar
+    // cells with the lambda def, and when one polymorphic lambda is
+    // called at two monomorphizations the first site's unification
     // wins those cells — a later site's `g.typ()` reports the FIRST
-    // monomorphization (audit-jul2026/02).
+    // monomorphization (audit-jul2026/02). Coverage is part of a call
+    // site's identity too: each instance body's `?` nodes resolved
+    // their handler against THAT site's dynamic scope, and a kernel
+    // bakes those handler ids into its qop-deliver sites — two sites
+    // with different coverage sharing one kernel silently dropped the
+    // covered site's error delivery
+    // (catch-callsite-coverage-aug2026).
     let resolved_typ = std::sync::Arc::new(site_ftype.resolve_tvars());
-    let key = (g.id(), resolved_typ);
+    let coverage = qop_coverage(g.body());
+    let key = (g.id(), resolved_typ, coverage);
     if let Some(cached) = ec.fusion.kernels.lock().get(&key).cloned() {
         return Some(cached);
     }
+    // A coverage VARIANT needs its own SYMBOL: kernel names are
+    // module-wide in the JIT, and a second definition under the same
+    // name fails the region build (a spurious whole-region de-fuse).
+    // The suffix counts existing same-(lambda, mono) entries —
+    // deterministic in compile order, so the compiled shape stays
+    // process-stable (#19 detcheck).
+    let variant = {
+        let kernels = ec.fusion.kernels.lock();
+        kernels
+            .range((key.0, key.1.clone(), QopCoverage::new())..)
+            .take_while(|((id, ft, _), _)| *id == key.0 && *ft == key.1)
+            .count()
+    };
+    let kernel_name: ArcStr = if variant == 0 {
+        kernel_name.clone()
+    } else {
+        compact_str::format_compact!("{kernel_name}__cov{variant}").as_str().into()
+    };
+    let kernel_name = &kernel_name;
     // The kernel is BUILT from `g` — its body's node types are what
     // emission reads — so if the instance disagrees with the site
     // (the shared-cell corruption above), building would emit a kernel
