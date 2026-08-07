@@ -2725,14 +2725,20 @@ mod tests {
                 let reason = &failure.reason;
                 // Structural recurse noise, not coverage gaps: the
                 // attempt-then-recurse protocol logs the ancestor
-                // wrappers ("node does not emit CLIF"), a
-                // function-valued let can never emit by design (the
-                // binding node-walks while its call sites fuse), and a
-                // lambda call site with fn-typed args dispatches by
-                // node-walk while its monomorphic instance body fuses
-                // (the `fused > 0` assert above sees that kernel).
+                // wrappers ("node does not emit CLIF"), a `mod`
+                // statement is structure whose region attempt always
+                // refuses (modstmt-fused-no-publish-aug2026 — its
+                // CHILDREN fuse per statement; the harness wrap is
+                // `{ mod test; test::result }`, so every probe logs
+                // one), a function-valued let can never emit by design
+                // (the binding node-walks while its call sites fuse),
+                // and a lambda call site with fn-typed args dispatches
+                // by node-walk while its monomorphic instance body
+                // fuses (the `fused > 0` assert above sees that
+                // kernel).
                 assert!(
                     reason.contains("node does not emit CLIF")
+                        || reason.contains("module statement is structure")
                         || reason.contains("function-valued let")
                         || reason.contains("not discovered"),
                     "expected `{code}` to fuse cleanly under the JIT \
@@ -3028,8 +3034,13 @@ mod tests {
              array::map(a, |p| p.0 + p.1) }",
         )
         .await;
-        // scalar → Nullable out (select body, Value-shape push)
-        agree_fused_clean(
+        // scalar → Nullable out (select body, Value-shape push).
+        // INTERPRETS since the value-taint-cache storage law
+        // (callee-value-taint-passthrough-aug2026): the select's
+        // Value-shaped merge inside a loop body has no storage channel
+        // and refuses rather than pass taint through. ASPIRE: value
+        // residents in slot chains / site blocks restore this.
+        agree(
             "{ let a = [i64:1, i64:2]; \
              array::map(a, |x| select x { i64:1 => i64:10, _ => null }) }",
         )
