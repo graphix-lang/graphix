@@ -9,7 +9,12 @@ use crate::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
     },
-    node::{Cached, op::CmpOp, pattern::StructPatternNode, select::Select},
+    node::{
+        Cached,
+        op::CmpOp,
+        pattern::{PatternNode, StructPatternNode},
+        select::Select,
+    },
     typ::Type,
 };
 use anyhow::{Result, anyhow};
@@ -963,7 +968,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // bottom; tail position sets pending and exits.
     emit_miss: &mut dyn FnMut(&mut BodyCx) -> Result<()>,
 ) -> Result<()> {
-    use StructPatternNode;
     // A TAINTED (missing) scrutinee makes NO selection — the node-walk
     // runs no ARM BODY at all (`Select::update`'s destructuring-
     // consumer force). The per-arm taint maskings below only keep the
@@ -983,325 +987,89 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     let sdisc = scrut.disc();
     let miss_bl = cx.b.create_block();
     let n = sel.arms.len();
-    for (i, (pat, body)) in sel.arms.iter().enumerate() {
-        let is_last = i == n - 1;
-        // Type-predicate condition. The node-walk tests the predicate
-        // only when it's explicit (`PatternNode::is_match`); an
-        // inferred predicate imposes no runtime test.
-        let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
-            None
+    // THE GUARD PROLOGUE (select-guard-shortcircuit-aug2026): the
+    // node-walk ticks EVERY arm's guard EVERY cycle, unconditionally,
+    // before any matching happens (`Select::update` — guards are live
+    // subgraphs with their own operand caches, and a skipped
+    // evaluation desyncs them from the interp's). The take chain
+    // below evaluates lazily, so every guard is evaluated HERE, once
+    // per invocation, and the chain consumes the precomputed value.
+    // Each guard stays downstream of its OWN arm's pattern condition
+    // in the DATA sense: the pattern's binds are installed with discs
+    // taint-masked by the arm's condition, so a shape mismatch
+    // delivers bottom and the guard's interior ops ride their caches
+    // — the kernel's representation of the interp's "non-matching
+    // pattern binds nothing". The guard discs are NOT folded into the
+    // select result (the strict select rule deleted the guard-feeder
+    // fold), and the prologue sits downstream of `emit_scrut_ride`
+    // and upstream of the tainted-take gate, so guards keep
+    // evaluating under a tainted scrutinee
+    // (select-phantom-arm-eval-aug2026/03). Guard-interior owned
+    // locals rely on the guard expression's own emission discipline,
+    // exactly as before the hoist; the prologue's own installs are
+    // all scalar.
+    let mut guard_vals: smallvec::SmallVec<[Option<ClifValue>; 8]> =
+        smallvec::smallvec![None; n];
+    for (i, (pat, _)) in sel.arms.iter().enumerate() {
+        let Some(g) = &pat.guard else { continue };
+        let gmark = cx.env.mark();
+        let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
+        let pcond = if composite_structural_arm(pat, scrut) {
+            // Value form of the staged composite condition: merge the
+            // staged fail edges into one i8 result.
+            let fail_bl = cx.b.create_block();
+            let done = cx.b.create_block();
+            cx.b.append_block_param(done, types::I8);
+            let (tcond, scond) = emit_arm_cond(
+                cx,
+                pat,
+                scrut,
+                scrut_kind,
+                scrut_typ,
+                Some(fail_bl),
+                &mut binds,
+            )?;
+            debug_assert!(tcond.is_none());
+            let c = scond.expect("composite arm without a structure condition");
+            cx.b.ins().jump(done, &[c.into()]);
+            cx.b.switch_to_block(fail_bl);
+            cx.b.seal_block(fail_bl);
+            let z = cx.b.ins().iconst(types::I8, 0);
+            cx.b.ins().jump(done, &[z.into()]);
+            cx.b.switch_to_block(done);
+            cx.b.seal_block(done);
+            Some(cx.b.block_params(done)[0])
         } else {
-            let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "emit_clif: select type predicate {:?} doesn't \
-                         freeze concrete",
-                        pat.type_predicate
-                    )
-                })?;
-            match &pred {
-                Type::Primitive(p)
-                    if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
-                {
-                    match scrut {
-                        SelectScrut::Value { disc, .. }
-                            if matches!(scrut_kind, AbiKind::Nullable) =>
-                        {
-                            // Only the OPTION shape has a null member; a
-                            // result union's non-success value is an
-                            // error, so a null predicate over it is a
-                            // shape confusion — refuse
-                            // (result-union-nullable-abi-aug2026).
-                            if kernel_abi::nullable_error_marked(&scrut_typ)
-                                != Some(false)
-                            {
-                                return Err(anyhow!(
-                                    "emit_clif: null predicate over a \
-                                     result union {scrut_typ:?}"
-                                ));
-                            }
-                            // Mask taint before the structural compare —
-                            // a tainted disc is not a clean tag (#219).
-                            let cd = clean_disc(cx.b, disc);
-                            Some(cx.b.ins().icmp_imm(IntCC::Equal, cd, value_disc::NULL))
-                        }
-                        _ => {
-                            return Err(anyhow!(
-                                "emit_clif: null predicate over non-\
-                                 Nullable scrutinee {scrut_typ:?}"
-                            ));
-                        }
-                    }
-                }
-                Type::Primitive(p)
-                    if !p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
-                {
-                    let pt = p.iter().next().unwrap();
-                    match scrut {
-                        SelectScrut::Scalar { prim, .. }
-                            if PrimType::from_typ(pt) == Some(prim) =>
-                        {
-                            None
-                        }
-                        SelectScrut::Value { disc, .. }
-                            if matches!(scrut_kind, AbiKind::Nullable)
-                                && kernel_abi::nullable_inner(
-                                    cx.registry(),
-                                    &scrut_typ,
-                                )
-                                .as_ref()
-                                .and_then(|t| {
-                                    kernel_abi::scalar_prim(cx.registry(), t)
-                                }) == PrimType::from_typ(pt) =>
-                        {
-                            // Mask taint before the structural compare —
-                            // a tainted disc is not a clean tag (#219).
-                            let cd = clean_disc(cx.b, disc);
-                            match kernel_abi::nullable_error_marked(&scrut_typ) {
-                                // `[T, null]` runtime value is T or null,
-                                // so "is a T" ≡ "is not null" — tested,
-                                // not assumed (order-sound).
-                                Some(false) => Some(cx.b.ins().icmp_imm(
-                                    IntCC::NotEqual,
-                                    cd,
-                                    value_disc::NULL,
-                                )),
-                                // `[T, Error<E>]`'s non-success value is
-                                // an ERROR whose disc is not NULL, so
-                                // "is a T" must be the POSITIVE test
-                                // against T's own disc — `!= NULL` takes
-                                // the success arm on an error and the
-                                // bind reads the error's payload word as
-                                // the scalar
-                                // (result-union-nullable-abi-aug2026).
-                                Some(true) => match PrimType::from_typ(pt) {
-                                    Some(prim) => {
-                                        let td = scalar_disc(cx.b, prim);
-                                        Some(cx.b.ins().icmp(IntCC::Equal, cd, td))
-                                    }
-                                    None if pt == netidx_value::Typ::String => {
-                                        Some(cx.b.ins().icmp_imm(
-                                            IntCC::Equal,
-                                            cd,
-                                            value_disc::STRING,
-                                        ))
-                                    }
-                                    None => {
-                                        return Err(anyhow!(
-                                            "emit_clif: non-register type \
-                                             predicate {pred:?} over a result \
-                                             union not lowerable"
-                                        ));
-                                    }
-                                },
-                                None => {
-                                    return Err(anyhow!(
-                                        "emit_clif: Nullable scrutinee \
-                                         {scrut_typ:?} has no marker shape"
-                                    ));
-                                }
-                            }
-                        }
-                        _ => {
-                            return Err(anyhow!(
-                                "emit_clif: type predicate {pred:?} over \
-                                 scrutinee {scrut_typ:?} not lowerable"
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "emit_clif: type predicate {pred:?} not lowerable"
-                    ));
-                }
+            let (tcond, scond) =
+                emit_arm_cond(cx, pat, scrut, scrut_kind, scrut_typ, None, &mut binds)?;
+            match (tcond, scond) {
+                (None, None) => None,
+                (Some(c), None) | (None, Some(c)) => Some(c),
+                (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
             }
         };
+        install_arm_binds(cx, &binds, scrut, pcond)?;
+        let gcv = g.node.emit_clif(cx)?;
+        let valid = is_untainted(cx.b, gcv.disc);
+        let eff = cx.b.ins().band(gcv.payload, valid);
+        cx.env.truncate(gmark);
+        guard_vals[i] = Some(eff);
+    }
+    for (i, (pat, body)) in sel.arms.iter().enumerate() {
+        let is_last = i == n - 1;
         // A composite structural pattern (tuple/struct/slice) stages its
         // condition across blocks (length branch, then literal-leaf
         // tests), so its fail edge must exist BEFORE the condition is
         // emitted — pre-create it (block creation order is free).
-        let composite_structural = matches!(
-            &pat.structure_predicate,
-            StructPatternNode::Slice { .. }
-                | StructPatternNode::SlicePrefix { .. }
-                | StructPatternNode::SliceSuffix { .. }
-                | StructPatternNode::Struct { .. }
-        ) && matches!(scrut, SelectScrut::Composite { .. });
-        let early_fail =
-            if composite_structural { Some(cx.b.create_block()) } else { None };
+        let early_fail = if composite_structural_arm(pat, scrut) {
+            Some(cx.b.create_block())
+        } else {
+            None
+        };
         // Structure condition + the binds to install once matched.
         let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
-        let scond: Option<ClifValue> = match &pat.structure_predicate {
-            StructPatternNode::Ignore => None,
-            StructPatternNode::Bind(id) => match scrut {
-                SelectScrut::Scalar { .. } => {
-                    binds.push(SelectArmBind::Scrut(*id));
-                    None
-                }
-                SelectScrut::Value { .. } if matches!(scrut_kind, AbiKind::Nullable) => {
-                    let pred =
-                        kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate);
-                    let Some(prim) = pred
-                        .as_ref()
-                        .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-                    else {
-                        return Err(anyhow!(
-                            "emit_clif: nullable scrutinee bind predicate is not scalar"
-                        ));
-                    };
-                    // Over a result union the payload read is only safe
-                    // under the explicit predicate's POSITIVE disc test
-                    // (tcond above); an inferred-predicate bind has no
-                    // test, so refuse rather than read an error's
-                    // payload word as the scalar
-                    // (result-union-nullable-abi-aug2026). The option
-                    // shape stays bind-by-arm-order sound: a preceding
-                    // arm must have consumed the null member for the
-                    // inferred predicate to narrow to a scalar.
-                    if !pat.explicit_type_predicate
-                        && kernel_abi::nullable_error_marked(&scrut_typ) != Some(false)
-                    {
-                        return Err(anyhow!(
-                            "emit_clif: untested bind over a result union \
-                             {scrut_typ:?} not lowerable"
-                        ));
-                    }
-                    binds.push(SelectArmBind::NullableScalar { id: *id, prim });
-                    None
-                }
-                SelectScrut::Value { .. }
-                | SelectScrut::Composite { .. }
-                | SelectScrut::Opaque { .. } => {
-                    return Err(anyhow!(
-                        "emit_clif: non-scalar scrutinee bind pattern not \
-                         yet lowerable"
-                    ));
-                }
-            },
-            StructPatternNode::Literal(v) => {
-                let lit_prim = kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
-                    anyhow!("emit_clif: non-scalar literal pattern {v:?}")
-                })?;
-                match scrut {
-                    SelectScrut::Scalar { value, prim, .. } if prim == lit_prim => {
-                        let lit = compile_const(cx.b, v, lit_prim)?;
-                        Some(compile_cmp(cx.b, CmpOp::Eq, lit_prim, value, lit))
-                    }
-                    _ => {
-                        return Err(anyhow!(
-                            "emit_clif: literal pattern prim {lit_prim:?} \
-                             doesn't match scrutinee {scrut_typ:?}"
-                        ));
-                    }
-                }
-            }
-            StructPatternNode::Variant { tag, all, binds: pbinds } => {
-                if all.is_some() {
-                    return Err(anyhow!(
-                        "emit_clif: whole-variant @ binding not lowerable"
-                    ));
-                }
-                let (disc, payload) = match scrut {
-                    SelectScrut::Value { disc, payload }
-                        if matches!(scrut_kind, AbiKind::Variant) =>
-                    {
-                        (disc, payload)
-                    }
-                    _ => {
-                        return Err(anyhow!(
-                            "emit_clif: variant pattern over non-variant \
-                             scrutinee {scrut_typ:?}"
-                        ));
-                    }
-                };
-                // Payload types come from the arm's own (frozen)
-                // type predicate — `Variant(tag, elts)` for exactly
-                // this arm.
-                let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "emit_clif: variant pattern predicate {:?} \
-                             doesn't freeze concrete",
-                            pat.type_predicate
-                        )
-                    })?;
-                let elts = match &pred {
-                    Type::Variant(ptag, elts)
-                        if ptag == tag && elts.len() == pbinds.len() =>
-                    {
-                        elts
-                    }
-                    _ => {
-                        return Err(anyhow!(
-                            "emit_clif: variant pattern `{tag}` doesn't \
-                             match its predicate {pred:?}"
-                        ));
-                    }
-                };
-                for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
-                    match sub {
-                        StructPatternNode::Bind(id) => {
-                            let prim = kernel_abi::scalar_prim(cx.registry(), elt)
-                                .ok_or_else(|| {
-                                    anyhow!(
-                                        "emit_clif: non-scalar variant \
-                                         payload {elt:?}"
-                                    )
-                                })?;
-                            binds.push(SelectArmBind::Payload { id: *id, idx, prim });
-                        }
-                        StructPatternNode::Ignore => {}
-                        StructPatternNode::Literal(_)
-                        | StructPatternNode::Slice { .. }
-                        | StructPatternNode::SlicePrefix { .. }
-                        | StructPatternNode::SliceSuffix { .. }
-                        | StructPatternNode::Struct { .. }
-                        | StructPatternNode::Variant { .. } => {
-                            return Err(anyhow!(
-                                "emit_clif: nested variant payload \
-                                 pattern not lowerable"
-                            ));
-                        }
-                    }
-                }
-                let tag_ptr = cx.interned_str(tag);
-                let helper = cx.helper("graphix_variant_tag_eq")?;
-                // The helper enforces representation AND arity, not just
-                // the tag — same-tag arms at different arities are
-                // distinct cases (variant-arity-tag-only-aug2026).
-                let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
-                let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr, arity]);
-                Some(cx.b.inst_results(call)[0])
-            }
-            p @ (StructPatternNode::Slice { .. }
-            | StructPatternNode::SlicePrefix { .. }
-            | StructPatternNode::SliceSuffix { .. }
-            | StructPatternNode::Struct { .. }) => match scrut {
-                SelectScrut::Composite { ptr, .. } => {
-                    if tcond.is_some() {
-                        return Err(anyhow!(
-                            "emit_clif: explicit type predicate on a \
-                             structural composite pattern not lowerable"
-                        ));
-                    }
-                    Some(emit_composite_pattern_cond(
-                        cx,
-                        ptr,
-                        scrut_typ,
-                        p,
-                        early_fail.unwrap(),
-                        &mut binds,
-                    )?)
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "emit_clif: slice/tuple/struct select pattern over a \
-                         non-composite scrutinee not lowerable"
-                    ));
-                }
-            },
-        };
+        let (tcond, scond) =
+            emit_arm_cond(cx, pat, scrut, scrut_kind, scrut_typ, early_fail, &mut binds)?;
         let pcond = match (tcond, scond) {
             (None, None) => None,
             (Some(c), None) | (None, Some(c)) => Some(c),
@@ -1339,101 +1107,14 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(matched);
         cx.b.seal_block(matched);
         let mark = cx.env.mark();
-        for bind in &binds {
-            match bind {
-                SelectArmBind::Scrut(id) => {
-                    let SelectScrut::Scalar { disc, value, prim } = scrut else {
-                        return Err(anyhow!(
-                            "emit_clif: scrutinee bind without a scalar \
-                             scrutinee"
-                        ));
-                    };
-                    let name: ArcStr =
-                        compact_str::format_compact!("__pat{}", id.inner())
-                            .as_str()
-                            .into();
-                    // The bound local carries the scrutinee's taint in its
-                    // disc (#219).
-                    bind_local(cx, name, disc, value, LocalKind::Scalar(prim), Some(*id));
-                }
-                SelectArmBind::NullableScalar { id, prim } => {
-                    let SelectScrut::Value { disc, payload } = scrut else {
-                        return Err(anyhow!(
-                            "emit_clif: nullable scalar bind without a value scrutinee"
-                        ));
-                    };
-                    let name: ArcStr =
-                        compact_str::format_compact!("__pat{}", id.inner())
-                            .as_str()
-                            .into();
-                    let value = cast_u64_to_prim(cx.b, payload, *prim);
-                    let base = scalar_disc(cx.b, *prim);
-                    let bound_disc = propagate_flags(cx.b, base, &[disc]);
-                    bind_local(
-                        cx,
-                        name,
-                        bound_disc,
-                        value,
-                        LocalKind::Scalar(*prim),
-                        Some(*id),
-                    );
-                }
-                SelectArmBind::Payload { id, idx, prim } => {
-                    let SelectScrut::Value { disc, payload } = scrut else {
-                        return Err(anyhow!(
-                            "emit_clif: payload bind without a variant \
-                             scrutinee"
-                        ));
-                    };
-                    let helper = cx.helper(variant_payload_helper(*prim)?)?;
-                    let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                    // Clean the scrutinee disc for the payload read; the
-                    // payload inherits the variant's taint.
-                    let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
-                    let v = cx.b.inst_results(call)[0];
-                    let name: ArcStr =
-                        compact_str::format_compact!("__pat{}", id.inner())
-                            .as_str()
-                            .into();
-                    // The bound payload fires iff its variant scrutinee
-                    // fired — inherit the scrutinee's STALE (and taint), so
-                    // an arm body reading it stays faithful.
-                    let base = scalar_disc(cx.b, *prim);
-                    let pdisc = propagate_flags(cx.b, base, &[disc]);
-                    bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
-                }
-                SelectArmBind::Elem { id, idx, prim, ptr } => {
-                    let SelectScrut::Composite { disc, .. } = scrut else {
-                        return Err(anyhow!(
-                            "emit_clif: element bind without a composite \
-                             scrutinee"
-                        ));
-                    };
-                    // Safe here: the arm's length tests (the structure
-                    // condition stages guarding this matched region) proved
-                    // the element exists — a tainted scrutinee's empty
-                    // placeholder failed them.
-                    let v = read_scrut_elem(cx, *ptr, *idx, *prim)?;
-                    let name: ArcStr =
-                        compact_str::format_compact!("__pat{}", id.inner())
-                            .as_str()
-                            .into();
-                    // The bound leaf fires iff its composite scrutinee
-                    // fired — inherit the scrutinee's STALE (and taint).
-                    let base = scalar_disc(cx.b, *prim);
-                    let pdisc = propagate_flags(cx.b, base, &[disc]);
-                    bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
-                }
-            }
-        }
-        if let Some(g) = &pat.guard {
-            // Canonical guard semantics: evaluated only after the
-            // pattern matched, with the binds in scope; a bottom guard
-            // (`valid` = 0) means the arm does NOT match.
-            let gcv = g.node.emit_clif(cx)?;
-            // A bottom guard (tainted disc) means the arm does NOT match.
-            let valid = is_untainted(cx.b, gcv.disc);
-            let eff = cx.b.ins().band(gcv.payload, valid);
+        install_arm_binds(cx, &binds, scrut, None)?;
+        if pat.guard.is_some() {
+            // The guard's VALUE was computed by the prologue above
+            // (the interp ticks every guard every cycle; the prologue
+            // is that tick) — the chain only consumes the precomputed
+            // result. A bottom guard (tainted disc) means the arm
+            // does NOT match.
+            let eff = guard_vals[i].expect("guarded arm without a prologue value");
             let body_blk = cx.b.create_block();
             cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
             cx.b.switch_to_block(body_blk);
@@ -1471,6 +1152,453 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     cx.b.switch_to_block(miss_bl);
     cx.b.seal_block(miss_bl);
     emit_miss(cx)?;
+    Ok(())
+}
+
+/// True when `pat` is a composite structural pattern over a composite
+/// scrutinee — the shape whose condition STAGES across blocks (length
+/// branch, then literal-leaf tests) and therefore needs a pre-created
+/// fail edge before [`emit_arm_cond`] runs.
+fn composite_structural_arm<R: Rt, E: UserEvent>(
+    pat: &PatternNode<R, E>,
+    scrut: SelectScrut,
+) -> bool {
+    matches!(
+        &pat.structure_predicate,
+        StructPatternNode::Slice { .. }
+            | StructPatternNode::SlicePrefix { .. }
+            | StructPatternNode::SliceSuffix { .. }
+            | StructPatternNode::Struct { .. }
+    ) && matches!(scrut, SelectScrut::Composite { .. })
+}
+
+/// Emit arm `pat`'s pattern condition against `scrut`: the type
+/// predicate (`tcond`) and the structure condition (`scond`),
+/// populating `binds` with the pattern's bind list. Composite
+/// structural patterns stage their condition across blocks with fail
+/// edges into `early_fail` (pre-created by the caller when
+/// [`composite_structural_arm`] holds). Shared by the guard prologue
+/// (value form) and the take chain (control form) in
+/// [`emit_select_arms`].
+fn emit_arm_cond<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    pat: &PatternNode<R, E>,
+    scrut: SelectScrut,
+    scrut_kind: AbiKind,
+    scrut_typ: &Type,
+    early_fail: Option<Block>,
+    binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
+) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
+    // Type-predicate condition. The node-walk tests the predicate
+    // only when it's explicit (`PatternNode::is_match`); an
+    // inferred predicate imposes no runtime test.
+    let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
+        None
+    } else {
+        let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
+            .ok_or_else(|| {
+                anyhow!(
+                    "emit_clif: select type predicate {:?} doesn't \
+                         freeze concrete",
+                    pat.type_predicate
+                )
+            })?;
+        match &pred {
+            Type::Primitive(p)
+                if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
+            {
+                match scrut {
+                    SelectScrut::Value { disc, .. }
+                        if matches!(scrut_kind, AbiKind::Nullable) =>
+                    {
+                        // Only the OPTION shape has a null member; a
+                        // result union's non-success value is an
+                        // error, so a null predicate over it is a
+                        // shape confusion — refuse
+                        // (result-union-nullable-abi-aug2026).
+                        if kernel_abi::nullable_error_marked(&scrut_typ) != Some(false) {
+                            return Err(anyhow!(
+                                "emit_clif: null predicate over a \
+                                     result union {scrut_typ:?}"
+                            ));
+                        }
+                        // Mask taint before the structural compare —
+                        // a tainted disc is not a clean tag (#219).
+                        let cd = clean_disc(cx.b, disc);
+                        Some(cx.b.ins().icmp_imm(IntCC::Equal, cd, value_disc::NULL))
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "emit_clif: null predicate over non-\
+                                 Nullable scrutinee {scrut_typ:?}"
+                        ));
+                    }
+                }
+            }
+            Type::Primitive(p)
+                if !p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
+            {
+                let pt = p.iter().next().unwrap();
+                match scrut {
+                    SelectScrut::Scalar { prim, .. }
+                        if PrimType::from_typ(pt) == Some(prim) =>
+                    {
+                        None
+                    }
+                    SelectScrut::Value { disc, .. }
+                        if matches!(scrut_kind, AbiKind::Nullable)
+                            && kernel_abi::nullable_inner(cx.registry(), &scrut_typ)
+                                .as_ref()
+                                .and_then(|t| {
+                                    kernel_abi::scalar_prim(cx.registry(), t)
+                                })
+                                == PrimType::from_typ(pt) =>
+                    {
+                        // Mask taint before the structural compare —
+                        // a tainted disc is not a clean tag (#219).
+                        let cd = clean_disc(cx.b, disc);
+                        match kernel_abi::nullable_error_marked(&scrut_typ) {
+                            // `[T, null]` runtime value is T or null,
+                            // so "is a T" ≡ "is not null" — tested,
+                            // not assumed (order-sound).
+                            Some(false) => Some(cx.b.ins().icmp_imm(
+                                IntCC::NotEqual,
+                                cd,
+                                value_disc::NULL,
+                            )),
+                            // `[T, Error<E>]`'s non-success value is
+                            // an ERROR whose disc is not NULL, so
+                            // "is a T" must be the POSITIVE test
+                            // against T's own disc — `!= NULL` takes
+                            // the success arm on an error and the
+                            // bind reads the error's payload word as
+                            // the scalar
+                            // (result-union-nullable-abi-aug2026).
+                            Some(true) => match PrimType::from_typ(pt) {
+                                Some(prim) => {
+                                    let td = scalar_disc(cx.b, prim);
+                                    Some(cx.b.ins().icmp(IntCC::Equal, cd, td))
+                                }
+                                None if pt == netidx_value::Typ::String => {
+                                    Some(cx.b.ins().icmp_imm(
+                                        IntCC::Equal,
+                                        cd,
+                                        value_disc::STRING,
+                                    ))
+                                }
+                                None => {
+                                    return Err(anyhow!(
+                                        "emit_clif: non-register type \
+                                             predicate {pred:?} over a result \
+                                             union not lowerable"
+                                    ));
+                                }
+                            },
+                            None => {
+                                return Err(anyhow!(
+                                    "emit_clif: Nullable scrutinee \
+                                         {scrut_typ:?} has no marker shape"
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "emit_clif: type predicate {pred:?} over \
+                                 scrutinee {scrut_typ:?} not lowerable"
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(anyhow!("emit_clif: type predicate {pred:?} not lowerable"));
+            }
+        }
+    };
+    let scond: Option<ClifValue> = match &pat.structure_predicate {
+        StructPatternNode::Ignore => None,
+        StructPatternNode::Bind(id) => match scrut {
+            SelectScrut::Scalar { .. } => {
+                binds.push(SelectArmBind::Scrut(*id));
+                None
+            }
+            SelectScrut::Value { .. } if matches!(scrut_kind, AbiKind::Nullable) => {
+                let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate);
+                let Some(prim) = pred
+                    .as_ref()
+                    .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
+                else {
+                    return Err(anyhow!(
+                        "emit_clif: nullable scrutinee bind predicate is not scalar"
+                    ));
+                };
+                // Over a result union the payload read is only safe
+                // under the explicit predicate's POSITIVE disc test
+                // (tcond above); an inferred-predicate bind has no
+                // test, so refuse rather than read an error's
+                // payload word as the scalar
+                // (result-union-nullable-abi-aug2026). The option
+                // shape stays bind-by-arm-order sound: a preceding
+                // arm must have consumed the null member for the
+                // inferred predicate to narrow to a scalar.
+                if !pat.explicit_type_predicate
+                    && kernel_abi::nullable_error_marked(&scrut_typ) != Some(false)
+                {
+                    return Err(anyhow!(
+                        "emit_clif: untested bind over a result union \
+                             {scrut_typ:?} not lowerable"
+                    ));
+                }
+                binds.push(SelectArmBind::NullableScalar { id: *id, prim });
+                None
+            }
+            SelectScrut::Value { .. }
+            | SelectScrut::Composite { .. }
+            | SelectScrut::Opaque { .. } => {
+                return Err(anyhow!(
+                    "emit_clif: non-scalar scrutinee bind pattern not \
+                         yet lowerable"
+                ));
+            }
+        },
+        StructPatternNode::Literal(v) => {
+            let lit_prim = kernel_abi::scalar_prim_of_value(v)
+                .ok_or_else(|| anyhow!("emit_clif: non-scalar literal pattern {v:?}"))?;
+            match scrut {
+                SelectScrut::Scalar { value, prim, .. } if prim == lit_prim => {
+                    let lit = compile_const(cx.b, v, lit_prim)?;
+                    Some(compile_cmp(cx.b, CmpOp::Eq, lit_prim, value, lit))
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "emit_clif: literal pattern prim {lit_prim:?} \
+                             doesn't match scrutinee {scrut_typ:?}"
+                    ));
+                }
+            }
+        }
+        StructPatternNode::Variant { tag, all, binds: pbinds } => {
+            if all.is_some() {
+                return Err(anyhow!("emit_clif: whole-variant @ binding not lowerable"));
+            }
+            let (disc, payload) = match scrut {
+                SelectScrut::Value { disc, payload }
+                    if matches!(scrut_kind, AbiKind::Variant) =>
+                {
+                    (disc, payload)
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "emit_clif: variant pattern over non-variant \
+                             scrutinee {scrut_typ:?}"
+                    ));
+                }
+            };
+            // Payload types come from the arm's own (frozen)
+            // type predicate — `Variant(tag, elts)` for exactly
+            // this arm.
+            let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "emit_clif: variant pattern predicate {:?} \
+                             doesn't freeze concrete",
+                        pat.type_predicate
+                    )
+                })?;
+            let elts = match &pred {
+                Type::Variant(ptag, elts)
+                    if ptag == tag && elts.len() == pbinds.len() =>
+                {
+                    elts
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "emit_clif: variant pattern `{tag}` doesn't \
+                             match its predicate {pred:?}"
+                    ));
+                }
+            };
+            for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
+                match sub {
+                    StructPatternNode::Bind(id) => {
+                        let prim = kernel_abi::scalar_prim(cx.registry(), elt)
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "emit_clif: non-scalar variant \
+                                         payload {elt:?}"
+                                )
+                            })?;
+                        binds.push(SelectArmBind::Payload { id: *id, idx, prim });
+                    }
+                    StructPatternNode::Ignore => {}
+                    StructPatternNode::Literal(_)
+                    | StructPatternNode::Slice { .. }
+                    | StructPatternNode::SlicePrefix { .. }
+                    | StructPatternNode::SliceSuffix { .. }
+                    | StructPatternNode::Struct { .. }
+                    | StructPatternNode::Variant { .. } => {
+                        return Err(anyhow!(
+                            "emit_clif: nested variant payload \
+                                 pattern not lowerable"
+                        ));
+                    }
+                }
+            }
+            let tag_ptr = cx.interned_str(tag);
+            let helper = cx.helper("graphix_variant_tag_eq")?;
+            // The helper enforces representation AND arity, not just
+            // the tag — same-tag arms at different arities are
+            // distinct cases (variant-arity-tag-only-aug2026).
+            let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
+            let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr, arity]);
+            Some(cx.b.inst_results(call)[0])
+        }
+        p @ (StructPatternNode::Slice { .. }
+        | StructPatternNode::SlicePrefix { .. }
+        | StructPatternNode::SliceSuffix { .. }
+        | StructPatternNode::Struct { .. }) => match scrut {
+            SelectScrut::Composite { ptr, .. } => {
+                if tcond.is_some() {
+                    return Err(anyhow!(
+                        "emit_clif: explicit type predicate on a \
+                             structural composite pattern not lowerable"
+                    ));
+                }
+                Some(emit_composite_pattern_cond(
+                    cx,
+                    ptr,
+                    scrut_typ,
+                    p,
+                    early_fail.unwrap(),
+                    binds,
+                )?)
+            }
+            _ => {
+                return Err(anyhow!(
+                    "emit_clif: slice/tuple/struct select pattern over a \
+                         non-composite scrutinee not lowerable"
+                ));
+            }
+        },
+    };
+    Ok((tcond, scond))
+}
+
+/// OR `TAINT|STALE` into `disc` when `cond` is false: the pattern did
+/// not match, so the interp delivered NOTHING to this bind — the
+/// kernel's representation of that absence is a poisoned disc (#219),
+/// under which a guard's interior ops bottom and ride their caches.
+/// `None` = the caller already branched on the condition (or the
+/// pattern always matches) — no masking.
+fn mask_unmatched(
+    cx: &mut BodyCx,
+    disc: ClifValue,
+    cond: Option<ClifValue>,
+) -> ClifValue {
+    match cond {
+        None => disc,
+        Some(c) => {
+            let t = cx.b.ins().iconst(types::I64, TAINT | STALE);
+            let z = cx.b.ins().iconst(types::I64, 0);
+            let m = cx.b.ins().select(c, z, t);
+            cx.b.ins().bor(disc, m)
+        }
+    }
+}
+
+/// Install an arm's `binds` (all register scalars) into the env.
+/// `mask` is the arm's pattern condition when the caller has NOT
+/// branched on it (the guard prologue); the take chain installs
+/// inside the matched block and passes `None`.
+fn install_arm_binds(
+    cx: &mut BodyCx,
+    binds: &smallvec::SmallVec<[SelectArmBind; 8]>,
+    scrut: SelectScrut,
+    mask: Option<ClifValue>,
+) -> Result<()> {
+    for bind in binds {
+        match bind {
+            SelectArmBind::Scrut(id) => {
+                let SelectScrut::Scalar { disc, value, prim } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: scrutinee bind without a scalar \
+                             scrutinee"
+                    ));
+                };
+                let name: ArcStr =
+                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+                // The bound local carries the scrutinee's taint in its
+                // disc (#219).
+                let disc = mask_unmatched(cx, disc, mask);
+                bind_local(cx, name, disc, value, LocalKind::Scalar(prim), Some(*id));
+            }
+            SelectArmBind::NullableScalar { id, prim } => {
+                let SelectScrut::Value { disc, payload } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: nullable scalar bind without a value scrutinee"
+                    ));
+                };
+                let name: ArcStr =
+                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+                let value = cast_u64_to_prim(cx.b, payload, *prim);
+                let base = scalar_disc(cx.b, *prim);
+                let bound_disc = propagate_flags(cx.b, base, &[disc]);
+                let bound_disc = mask_unmatched(cx, bound_disc, mask);
+                bind_local(
+                    cx,
+                    name,
+                    bound_disc,
+                    value,
+                    LocalKind::Scalar(*prim),
+                    Some(*id),
+                );
+            }
+            SelectArmBind::Payload { id, idx, prim } => {
+                let SelectScrut::Value { disc, payload } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: payload bind without a variant \
+                             scrutinee"
+                    ));
+                };
+                let helper = cx.helper(variant_payload_helper(*prim)?)?;
+                let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
+                // Clean the scrutinee disc for the payload read; the
+                // payload inherits the variant's taint.
+                let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
+                let v = cx.b.inst_results(call)[0];
+                let name: ArcStr =
+                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+                // The bound payload fires iff its variant scrutinee
+                // fired — inherit the scrutinee's STALE (and taint), so
+                // an arm body reading it stays faithful.
+                let base = scalar_disc(cx.b, *prim);
+                let pdisc = propagate_flags(cx.b, base, &[disc]);
+                let pdisc = mask_unmatched(cx, pdisc, mask);
+                bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
+            }
+            SelectArmBind::Elem { id, idx, prim, ptr } => {
+                let SelectScrut::Composite { disc, .. } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: element bind without a composite \
+                             scrutinee"
+                    ));
+                };
+                // Safe here: the arm's length tests (the structure
+                // condition stages guarding this matched region) proved
+                // the element exists — a tainted scrutinee's empty
+                // placeholder failed them.
+                let v = read_scrut_elem(cx, *ptr, *idx, *prim)?;
+                let name: ArcStr =
+                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+                // The bound leaf fires iff its composite scrutinee
+                // fired — inherit the scrutinee's STALE (and taint).
+                let base = scalar_disc(cx.b, *prim);
+                let pdisc = propagate_flags(cx.b, base, &[disc]);
+                let pdisc = mask_unmatched(cx, pdisc, mask);
+                bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
+            }
+        }
+    }
     Ok(())
 }
 
