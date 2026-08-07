@@ -1008,13 +1008,25 @@ safe fn graphix_value_is_null(v: TagValue) -> u8 {
 /// bytes / two registers); we `mem::forget` after the borrowed read
 /// so the caller's bits stay valid — variant locals are dropped at
 /// scope exit via the dedicated drop helper.
-safe fn graphix_variant_tag_eq(v: TagValue, expected: *const arcstr::ArcStr) -> u8 {
+safe fn graphix_variant_tag_eq(
+    v: TagValue,
+    expected: *const arcstr::ArcStr,
+    arity: usize,
+) -> u8 {
+    // Mirrors `StructurePattern::is_match` (node/pattern.rs): the
+    // pattern's ARITY selects the representation — a 0-payload variant
+    // is `Value::String(tag)`, an n-payload one is `Value::Array` of
+    // n + 1 with the tag at slot 0. Tag alone is NOT a discriminator:
+    // `[`A, `A(i64)]` is a legal union whose arms differ only by arity
+    // (variant-arity-tag-only-aug2026).
     let r = v.with_value(|v| {
         let exp = unsafe { &*expected };
         match v {
-            Value::String(s) => (s.as_str() == exp.as_str()) as u8,
+            Value::String(s) => (arity == 0 && s.as_str() == exp.as_str()) as u8,
             Value::Array(a) => match a.get(0) {
-                Some(Value::String(tag)) => (tag.as_str() == exp.as_str()) as u8,
+                Some(Value::String(tag)) => (arity > 0
+                    && a.len() == arity + 1
+                    && tag.as_str() == exp.as_str()) as u8,
                 _ => 0,
             },
             _ => 0,

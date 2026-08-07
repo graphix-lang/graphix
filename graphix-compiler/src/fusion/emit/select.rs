@@ -1267,8 +1267,11 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
                 let tag_ptr = cx.interned_str(tag);
                 let helper = cx.helper("graphix_variant_tag_eq")?;
-                // Mask taint — the helper reads the disc as a clean tag.
-                let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr]);
+                // The helper enforces representation AND arity, not just
+                // the tag — same-tag arms at different arities are
+                // distinct cases (variant-arity-tag-only-aug2026).
+                let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
+                let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr, arity]);
                 Some(cx.b.inst_results(call)[0])
             }
             p @ (StructPatternNode::Slice { .. }
