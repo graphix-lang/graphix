@@ -1,0 +1,19 @@
+// The reactive escalation of 00, and the worst face of the class: the
+// wrongly-taken arm is a CONSTANT, so its selection never changes, so
+// the strict select rule makes the whole select QUIET — the kernel stops
+// emitting entirely rather than merely emitting the wrong number.
+//
+//   interp: -1, 1, -1, 3        (a value per epoch, as expected)
+//   jit:    -1, <nothing>, <nothing>, <nothing>
+//
+// Epoch 0 delivers in0 = 0 -> `` `A `` -> both take the bare arm -> -1.
+// From then on in0 is nonzero, so `x` is `` `A(n) ``: the interp switches
+// to the payload arm and emits n, while the kernel's tag-only test keeps
+// selecting the bare arm, whose value is the same constant -1 it already
+// emitted — no selection change, no body production, silence forever.
+//
+// A wrong value degrading into a DEAD STREAM is the shape that matters
+// for a reactive language: a UI bound to this select simply stops
+// updating.
+// schedule-v1: cap=96 events=768; in0=i64:1; in0=i64:0; in0=i64:3
+{ let x = select in0 { i64:0 => `A, n => `A(n) }; select x { `A => i64:-1, `A(n) => n } }

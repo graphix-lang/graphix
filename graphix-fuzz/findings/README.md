@@ -192,11 +192,18 @@ claims no rung rewrites TVar bindings; that is false of rung 2.
 
 ## variant-arity-tag-only-aug2026 — WRONG VALUE
 
-A fused variant pattern tests only the TAG, so two arms with the same tag
-at different arities are indistinguishable: `[`A, `A(i64)]` holding
-`` `A(7) `` gives 7 interpreted and -1 fused, with the missing payload
-slots read as 0. The node-walk checks (tag, arity). Same family as
-select-lit-leaf-union-slot-aug2026 — when the kernel cannot distinguish
+A fused variant pattern tests only the TAG (`graphix_variant_tag_eq`
+accepts either representation and never checks the payload count), so
+two arms with the same tag at different arities compile to the SAME
+condition and the first one wins: `[`A, `A(i64)]` holding `` `A(7) ``
+gives 7 interpreted and -1 fused, with the missing payload slots read as
+0. The node-walk checks (representation, arity, tag). No annotation is
+needed — the union arises from ordinary inference — and the typechecker
+requires both arms, so neither is dead. 02 is the reactive escalation
+and the worst face: the wrongly-taken arm is a constant, so its
+selection never changes, so the strict select rule makes the kernel go
+SILENT — a wrong value degrading into a dead stream. Same family as
+select-lit-leaf-union-slot-aug2026: when the kernel cannot distinguish
 two arms it must de-fuse, not guess.
 
 ## dyncall-apply-unwired-aug2026 — ORACLE-BLIND, four faces

@@ -15,22 +15,46 @@
 // region) and prints 7 / -1. The wrapper form below is the oracle pin.
 //
 // The union `[`A, `A(i64)]` is legal and typechecks — a variant's
-// identity is (tag, arity), and the node-walk's `StructPatternNode`
-// checks both (its variant arm is length-guarded and falls to `_ => ()`
-// on a mismatch, which is why the interp reaches the second arm). The
-// emitter's tag-equality test drops the arity half.
+// identity is (tag, arity), and the typechecker keeps the two cases
+// separate (it merges same-tag/same-ARITY cases payload-wise, so
+// `[`A(i64), `A(f64)]` collapses to `` `A([i64,f64]) `` but these do
+// not). Both arms are live: dropping either is a compile error (03).
 //
-// Same shape at other arities — see 01.
+// ROOT CAUSE, exact. The node-walk's `StructurePattern::is_match`
+// (node/pattern.rs ~574-588) discriminates on the runtime
+// REPRESENTATION and the payload ARITY: a 0-bind pattern requires
+// `Value::String(s) && s == tag`; an n-bind pattern requires
+// `Value::Array(a) && a.len() == binds.len() + 1 && a[0] == tag`. The
+// fused lowering (fusion/emit/select.rs ~1200) reduces the whole test
+// to one call to `graphix_variant_tag_eq`, which
+// (fusion/emit_helpers.rs ~1011-1025) accepts EITHER representation and
+// compares only the tag — no length check. The emitter's only
+// structural guard is `elts.len() == pbinds.len()` against the arm's
+// OWN frozen predicate, which says nothing about the runtime value. So
+// both arms compile to the SAME condition (a CLIF dump shows two
+// `call fn123(v12, v13, <same interned tag ptr>)` sites) and the first
+// one textually wins.
 //
-// Fix: the emitted variant condition must test the payload COUNT as well
-// as the tag — the value carries its arity (a variant is a tagged array
-// whose length is 1 + arity), and the arm knows the arity it expects, so
-// the condition is one extra integer compare against the payload
-// length. Every payload READ downstream of that condition is then sound;
-// today an arity-0 arm can be taken for an arity-2 value and a
-// `variant_payload_read` returns `T::default()` for the missing slots
-// (totalized since crash-triage-jul2026, so it is a wrong value rather
-// than UB — but it is silently wrong).
+// Other faces: 01 (arity 1 vs 2), 02 (the reactive escalation — the
+// kernel goes SILENT), 03 (no annotation needed; survives a cross-kernel
+// call).
+//
+// Fix: pass the expected payload count into `graphix_variant_tag_eq`
+// (one extra argument at its single call site, fusion/emit/select.rs
+// ~1200) and have the helper enforce representation AND arity — `n == 0`
+// requires `Value::String(s) && s == tag`; `n > 0` requires
+// `Value::Array(a) && a.len() == n + 1 && a[0] == tag`. It costs nothing
+// when tags are distinct, and it also hardens the `variant_payload_read`s
+// downstream, which today rely on the tag test for their index being in
+// range. A sound minimal alternative: DE-FUSE the select when
+// `kernel_abi::variant_cases(scrut_typ)` contains a duplicated tag — the
+// tag alone is a complete discriminator exactly when all tags are
+// distinct, which is the common case.
+//
+// A wrongly-taken arm binds slots the value doesn't have;
+// `variant_payload_read` is totalized (crash-triage-jul2026) so those
+// read as 0 — a wrong value, deterministic, not a pointer leak (three
+// runs, identical).
 //
 // Related: select-lit-leaf-union-slot-aug2026 is the same shape of bug
 // one level down (a literal leaf over a union-typed slot, fixed by

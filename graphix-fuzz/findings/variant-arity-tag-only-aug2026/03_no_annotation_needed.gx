@@ -1,0 +1,16 @@
+// No type annotation is needed to reach 00's class — the same-tag,
+// different-arity union arises from ordinary inference over two select
+// arms. This closes the "you had to write a weird type" escape:
+//
+//   interp: 7    jit: -1
+//
+// The union also survives a cross-kernel call:
+//   { let g = |v: [`A, `A(i64)]| -> i64 select v { `A => i64:-1, `A(n) => n };
+//     g(`A(i64:7)) }   ->  interp 7, jit -1
+//
+// And the typechecker PROVES both arms are live: dropping either one is
+// a compile error ("missing match cases ... `A does not contain
+// [`A, `A(i64)]"). So the typechecker requires two arms and marks
+// neither dead, while the emitter discriminates them with a test that
+// can only see one of the two things that distinguish them.
+{ let b = false; let x = select b { true => `A, false => `A(i64:7) }; select x { `A => i64:-1, `A(n) => n } }
