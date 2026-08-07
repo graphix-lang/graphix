@@ -3,7 +3,7 @@
 //! binding, ownership kinds, scope truncation).
 
 use crate::{BindId, Node, Rt, UserEvent, fusion::kernel_abi::PrimType};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     BlockArg, InstBuilder, MemFlags, Type as ClifType, Value as ClifValue,
@@ -361,15 +361,20 @@ fn emit_taint_cache_at(
 /// node-walk. A no-history taint passes through and gates at the
 /// output as before. The runtime `Kernel` drops the resident on
 /// `sleep`/`reset_replay`/`Drop` ([`WrappedKernel::replay_value_pairs`]).
-/// Stateless fallback (scaffold loops, callee bodies, lambda kernels
-/// — the chain/site free machinery is value-unaware): the unwrapped
-/// result, a documented residual.
+/// No storage channel (scaffold loops, callee bodies, lambda kernels
+/// — the chain/site free machinery is value-unaware): REFUSE, so the
+/// enclosing region de-fuses and the node-walk's operand cache rides
+/// (Eric's bar 2026-08-07: no storage → de-fuse, never pass through —
+/// the old unwrapped-result "residual" was an observable missing-fire,
+/// callee-value-taint-passthrough-aug2026). The repair that restores
+/// this coverage is the ASPIRE item: value residents in site blocks /
+/// slot chains.
 pub(super) fn emit_value_taint_cache(
     cx: &mut BodyCx,
     cv: CompiledExpr,
 ) -> Result<CompiledExpr> {
     let Some(off) = cx.claim_state_word_replay_value() else {
-        return Ok(cv);
+        return Err(anyhow!("emit_clif: value taint cache has no storage channel here"));
     };
     let off_pay = off + 8;
     let sp = cx.state_ptr();
