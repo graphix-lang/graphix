@@ -1491,6 +1491,55 @@ pub fn regression_corpus_len() -> usize {
     corpus::REGRESSION_CORPUS.len()
 }
 
+/// The checked-in fusion-coverage manifest (fuzzer gap 6): one
+/// `fused_count<TAB>name` line per corpus program, embedded at build.
+/// `fusecheck` diffs live counts against it so a silent de-fusion
+/// regression (a verifier error discarding a shared body, an
+/// over-broad emission refusal) fails LOUD instead of quietly
+/// node-walking — narrow-index-operand-verifier hid exactly this way,
+/// and the value-cache storage law cost 13 fixtures before any signal
+/// existed. `fusecheck --bless` rewrites the file (then rebuild to
+/// embed).
+pub static FUSECHECK_MANIFEST: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fusecheck.manifest"));
+
+/// Fused-region count per corpus program, in corpus order. Runs Jit
+/// only (the interp side has no kernels); counts are compile-time
+/// facts, deterministic per detcheck.
+pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, u64)> {
+    use tokio::task::JoinSet;
+    let par = parallelism();
+    let entries = corpus::REGRESSION_CORPUS;
+    let mut set: JoinSet<(usize, u64)> = JoinSet::new();
+    let mut next = 0usize;
+    let spawn_one = |set: &mut JoinSet<_>, i: usize| {
+        let prog = entries[i].1.to_string();
+        set.spawn(async move {
+            let (_, stats) = run_program_with_stats(&prog, Mode::Jit, timeout).await;
+            (i, stats.fused as u64)
+        });
+    };
+    while next < entries.len() && set.len() < par {
+        spawn_one(&mut set, next);
+        next += 1;
+    }
+    let mut counts: Vec<Option<u64>> = vec![None; entries.len()];
+    while let Some(res) = set.join_next().await {
+        if let Ok((i, c)) = res {
+            counts[i] = Some(c);
+        }
+        if next < entries.len() {
+            spawn_one(&mut set, next);
+            next += 1;
+        }
+    }
+    entries
+        .iter()
+        .zip(counts)
+        .map(|((name, _), c)| (name.to_string(), c.unwrap_or(0)))
+        .collect()
+}
+
 /// The oracle-soundness gate: before any interp-vs-jit TRACE finding
 /// is trusted, the trace must be shown deterministic PER MODE — same
 /// program, same mode, twice → identical traces. Otherwise a flaky

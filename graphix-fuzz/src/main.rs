@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
         && match args.get(1).map(String::as_str) {
             Some(
                 "check-one" | "check-batch" | "detcheck-one" | "selfcheck-one"
-                | "minimize-one" | "gen-check" | "regress",
+                | "minimize-one" | "gen-check" | "regress" | "fusecheck",
             ) => true,
             Some("check" | "run") => {
                 if let Some(f) = args.get_mut(2) {
@@ -238,6 +238,9 @@ async fn main() -> Result<()> {
             }
             _ => false,
         };
+    // Captured BEFORE the sandbox chdir: file outputs that belong in
+    // the invoking directory (fusecheck --bless) resolve against it.
+    let orig_cwd = std::env::current_dir()?;
     let cwd_guard = if sandbox_cwd {
         let d = tempfile::tempdir()?;
         std::env::set_current_dir(d.path())?;
@@ -368,6 +371,67 @@ async fn main() -> Result<()> {
             if n > 0 {
                 drop(cwd_guard);
                 std::process::exit(1);
+            }
+        }
+        Some("fusecheck") => {
+            // Fusion-coverage manifest gate (fuzzer gap 6): per-corpus
+            // fused-region counts vs the checked-in manifest — a
+            // silent de-fusion regression fails LOUD. Manual/CI gate;
+            // run from the repo root. `--bless` rewrites the manifest
+            // (rebuild afterward — the compare reads the EMBEDDED
+            // copy).
+            let bless = args.iter().any(|a| a == "--bless");
+            let counts = graphix_fuzz::run_fusecheck(regress_timeout()).await;
+            if bless {
+                let mut out = String::new();
+                for (n, c) in &counts {
+                    out.push_str(&format!("{c}\t{n}\n"));
+                }
+                let path = orig_cwd.join("graphix-fuzz/fusecheck.manifest");
+                std::fs::write(&path, out).unwrap_or_else(|e| {
+                    panic!("writing {} (run from the repo root): {e}", path.display())
+                });
+                println!(
+                    "fusecheck: blessed {} entries — rebuild to embed",
+                    counts.len()
+                );
+            } else {
+                let mut recorded: std::collections::BTreeMap<&str, u64> =
+                    std::collections::BTreeMap::new();
+                for l in graphix_fuzz::FUSECHECK_MANIFEST.lines() {
+                    if let Some((c, n)) = l.split_once('\t') {
+                        if let Ok(c) = c.parse() {
+                            recorded.insert(n, c);
+                        }
+                    }
+                }
+                let mut bad = 0usize;
+                for (n, c) in &counts {
+                    match recorded.remove(n.as_str()) {
+                        Some(r) if r == *c => {}
+                        Some(r) => {
+                            bad += 1;
+                            let dir = if *c < r { "LOST" } else { "gained" };
+                            println!("  {dir} fusion: {n}: {r} -> {c}");
+                        }
+                        None => {
+                            bad += 1;
+                            println!("  unrecorded: {n} ({c} fused) — bless to record");
+                        }
+                    }
+                }
+                for (n, r) in recorded {
+                    bad += 1;
+                    println!("  stale manifest row: {n} ({r}) — bless to drop");
+                }
+                println!(
+                    "fusecheck: {} programs, {bad} mismatches",
+                    counts.len()
+                );
+                if bad > 0 {
+                    drop(cwd_guard);
+                    std::process::exit(1);
+                }
             }
         }
         Some("reactive-check") => {
