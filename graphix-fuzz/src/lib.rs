@@ -135,9 +135,7 @@ impl Outcome {
             // --check diagnostic skew invisible to kind-only
             // comparison (fuzzer gap 4). RuntimeErr messages stay
             // kind-only — they are mode-dependent by design.
-            (CompileErr(a), CompileErr(b)) => {
-                normalize_diag(a) == normalize_diag(b)
-            }
+            (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
             (Timeout, Timeout) => true,
             // Both-non-productive: one side wedged (a pure runaway

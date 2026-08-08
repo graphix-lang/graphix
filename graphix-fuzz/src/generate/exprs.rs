@@ -627,9 +627,7 @@ fn try_map_builtin(
                     Some(format!("map::insert({m}, \"{k}\", {v})"))
                 }
                 1 => Some(format!("map::remove({m}, \"{k}\")")),
-                _ => Some(format!(
-                    "map::filter({m}, |kv| str::len(kv.0) > i64:1)"
-                )),
+                _ => Some(format!("map::filter({m}, |kv| str::len(kv.0) > i64:1)")),
             }
         }
         _ => None,
@@ -656,10 +654,7 @@ fn try_str_builtin(
             // 2026-08-07). Patterns from a VALID pool plus one
             // malformed (the `$`-consumed ReError path).
             if rng.below(4) == 0 {
-                let pat = pick(
-                    rng,
-                    &["a+", "[a-z]+", "x|y", "^g", "[0-9]", "(("],
-                );
+                let pat = pick(rng, &["a+", "[a-z]+", "x|y", "^g", "[0-9]", "(("]);
                 let s = gen_typed(ctx, rng, &GenType::Str, d);
                 // Raw string: `[...]` in a plain literal is
                 // INTERPOLATION.
