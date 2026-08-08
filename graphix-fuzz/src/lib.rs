@@ -88,6 +88,26 @@ pub enum Outcome {
     Timeout,
 }
 
+/// Strip tvar numbers (`'_6070` -> `'_N`) so fresh-counter drift
+/// between two independent compiles neither hides nor fakes a
+/// diagnostic difference (the same normalization as graphix-shell's
+/// check_mode_parity gate).
+fn normalize_diag(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if c == '\'' && chars.peek() == Some(&'_') {
+            out.push(chars.next().unwrap());
+            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                chars.next();
+            }
+            out.push('N');
+        }
+    }
+    out
+}
+
 impl Outcome {
     /// The trace of a pure synchronous program producing `v` once at
     /// init — offset 0, single epoch. Test convenience.
@@ -109,7 +129,15 @@ impl Outcome {
         use Outcome::*;
         match (self, other) {
             (Trace(a), Trace(b)) => a.agrees_with(b),
-            (CompileErr(_), CompileErr(_)) => true,
+            // Both-reject is agreement only if they reject
+            // IDENTICALLY (modulo tvar numbering — fresh-counter
+            // drift between two compiles): fusion-mutates-tvars was a
+            // --check diagnostic skew invisible to kind-only
+            // comparison (fuzzer gap 4). RuntimeErr messages stay
+            // kind-only — they are mode-dependent by design.
+            (CompileErr(a), CompileErr(b)) => {
+                normalize_diag(a) == normalize_diag(b)
+            }
             (RuntimeErr(_), RuntimeErr(_)) => true,
             (Timeout, Timeout) => true,
             // Both-non-productive: one side wedged (a pure runaway
