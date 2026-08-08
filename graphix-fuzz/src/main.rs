@@ -104,7 +104,11 @@ fn render(o: &Outcome) -> String {
                     }
                 })
                 .collect();
-            format!("Trace({})", epochs.join("; "))
+            if t.stdout.is_empty() {
+                format!("Trace({})", epochs.join("; "))
+            } else {
+                format!("Trace({}; stdout=[{}])", epochs.join("; "), t.stdout.join(" | "))
+            }
         }
         Outcome::CompileErr(e) => format!("CompileErr({})", first_line(e)),
         Outcome::RuntimeErr(e) => format!("RuntimeErr({})", first_line(e)),

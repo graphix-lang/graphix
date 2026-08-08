@@ -94,6 +94,7 @@ impl Outcome {
     pub fn single(v: Value) -> Outcome {
         Outcome::Trace(trace::Trace {
             epochs: vec![trace::Epoch { events: vec![(0, v)], capped: false }],
+            stdout: Vec::new(),
         })
     }
 
@@ -276,12 +277,20 @@ pub async fn run_program_with_stats(
         );
     }
     let resolver = VfsResolver::new(tbl);
+    // The stdout oracle's per-runtime capture: the print family
+    // (`print`/`println`/`dbg`) writes here instead of the process
+    // streams, so two modes running concurrently in one process keep
+    // separate output (`PrintSink`, graphix-package-core).
+    let sink = graphix_package_core::PrintSink::default();
+    let seeded = sink.clone();
     let ctx = match init_with_flags_and_setup(
         tx,
         REGISTER,
         vec![resolver],
         mode.flags(),
-        |_| {},
+        move |ctx| {
+            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded;
+        },
     )
     .await
     {
@@ -293,17 +302,23 @@ pub async fn run_program_with_stats(
             );
         }
     };
+    let tier = oracle_tier(code);
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let outcome = drive(
-        &ctx,
-        &mut rx,
-        &sched,
-        &files::mod_decls(&files),
-        "test",
-        oracle_tier(code),
-        timeout,
-    )
-    .await;
+    let mut outcome =
+        drive(&ctx, &mut rx, &sched, &files::mod_decls(&files), "test", tier, timeout)
+            .await;
+    // Attach the captured print output — Exact tier only (effect
+    // emissions are as deterministic as the values there; FinalValues
+    // pacing legitimately varies fire counts). Sorted: within-cycle
+    // emission order is an evaluation-order artifact, the multiset is
+    // the semantics.
+    if tier == OracleTier::Exact
+        && let Outcome::Trace(t) = &mut outcome
+    {
+        let mut lines: Vec<String> = sink.take().lines().map(|l| l.to_string()).collect();
+        lines.sort_unstable();
+        t.stdout = lines;
+    }
     // A Timeout means the evaluator may be WEDGED in sync code (a
     // runaway native loop, a huge node-walk loop) — a wedged runtime
     // never answers another request, so an un-timeouted await here

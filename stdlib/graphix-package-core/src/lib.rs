@@ -113,6 +113,23 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
 #[derive(Default)]
 pub struct ProgramArgs(pub Vec<ArcStr>);
 
+/// Print-capture sink, seeded into `ctx.libstate` by harnesses (the
+/// differential fuzzer's stdout oracle). When present, the print
+/// family's (`print`/`println`/`dbg`) Stdout AND Stderr destinations
+/// append here instead of the process streams — per-runtime capture
+/// that stays correct when two modes run concurrently in one process.
+/// Log destinations are unaffected. Each emission appends exactly the
+/// bytes the process stream would have received.
+#[derive(Debug, Default, Clone)]
+pub struct PrintSink(pub triomphe::Arc<parking_lot::Mutex<String>>);
+
+impl PrintSink {
+    /// Take the captured text, leaving the sink empty.
+    pub fn take(&self) -> String {
+        std::mem::take(&mut *self.0.lock())
+    }
+}
+
 // ── Shared macros ──────────────────────────────────────────────────
 
 /// Implement `netidx_core::pack::Pack` as a non-serializable stub.
@@ -2028,15 +2045,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         }
         from[1].update(ctx, event).map(|v| {
             let v = v.value();
+            let sink = match self.dest {
+                LogDest::Stdout | LogDest::Stderr => {
+                    ctx.libstate.get::<PrintSink>().cloned()
+                }
+                LogDest::Log(_) => None,
+            };
             let tv = TVal { env: &ctx.env, typ: &self.typ, v: &v };
-            match self.dest {
-                LogDest::Stderr => {
+            match (self.dest, sink) {
+                // Captured (the harness stdout oracle).
+                (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
+                    use std::fmt::Write;
+                    let mut out = sink.0.lock();
+                    writeln!(out, "{} dbg({}): {}", self.spec.pos, self.spec, tv).unwrap()
+                }
+                (LogDest::Stderr, None) => {
                     eprintln!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
                 }
-                LogDest::Stdout => {
+                (LogDest::Stdout, None) => {
                     println!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
                 }
-                LogDest::Log(level) => match level {
+                (LogDest::Log(level), _) => match level {
                     Level::Trace => {
                         log::trace!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
                     }
@@ -2129,7 +2158,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
 }
 
 macro_rules! printfn {
-    ($type:ident, $name:literal, $print:ident, $eprint:ident) => {
+    ($type:ident, $name:literal, $print:ident, $eprint:ident, $suffix:literal) => {
         #[derive(Debug)]
         struct $type {
             dest: LogDest,
@@ -2176,10 +2205,24 @@ macro_rules! printfn {
                         ),
                     }
                     .unwrap();
-                    match self.dest {
-                        LogDest::Stdout => $print!("{}", self.buf),
-                        LogDest::Stderr => $eprint!("{}", self.buf),
-                        LogDest::Log(lvl) => match lvl {
+                    let sink = match self.dest {
+                        LogDest::Stdout | LogDest::Stderr => {
+                            ctx.libstate.get::<PrintSink>().cloned()
+                        }
+                        LogDest::Log(_) => None,
+                    };
+                    match (self.dest, sink) {
+                        // Captured (the harness stdout oracle) — the
+                        // sink receives exactly the bytes the process
+                        // stream would have.
+                        (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
+                            let mut out = sink.0.lock();
+                            out.push_str(&self.buf);
+                            out.push_str($suffix);
+                        }
+                        (LogDest::Stdout, None) => $print!("{}", self.buf),
+                        (LogDest::Stderr, None) => $eprint!("{}", self.buf),
+                        (LogDest::Log(lvl), _) => match lvl {
                             Level::Trace => log::trace!("{}", self.buf),
                             Level::Debug => log::debug!("{}", self.buf),
                             Level::Info => log::info!("{}", self.buf),
@@ -2198,8 +2241,8 @@ macro_rules! printfn {
     };
 }
 
-printfn!(Print, "core_print", print, eprint);
-printfn!(Println, "core_println", println, eprintln);
+printfn!(Print, "core_print", print, eprint, "");
+printfn!(Println, "core_println", println, eprintln, "\n");
 
 // ── Package registration ───────────────────────────────────────────
 

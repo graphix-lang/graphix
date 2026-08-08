@@ -140,11 +140,25 @@ impl Epoch {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trace {
     pub epochs: Vec<Epoch>,
+    /// SORTED multiset of the run's captured print-family output
+    /// lines (the stdout oracle — fuzzer gap 1, 2026-08-07). Filled
+    /// by the harness after the run, Exact tier only: effect
+    /// emissions are as deterministic as the values there, while
+    /// FinalValues pacing legitimately varies fire counts. Sorted
+    /// because within-cycle emission ORDER is an evaluation-order
+    /// artifact the backends need not share; the multiset is the
+    /// semantics. Rides `PartialEq`, so `agrees_with` (Exact) compares
+    /// it and `agrees_final` (which never derives equality except
+    /// through the capped fallback) does not.
+    pub stdout: Vec<String>,
 }
 
 impl Trace {
     pub fn from_segments(segs: &[TraceSegment], eid: ExprId) -> Self {
-        Trace { epochs: segs.iter().map(|s| Epoch::from_segment(s, eid)).collect() }
+        Trace {
+            epochs: segs.iter().map(|s| Epoch::from_segment(s, eid)).collect(),
+            stdout: Vec::new(),
+        }
     }
 
     /// Structural equality. `Value`'s own equality is graphix's total
@@ -220,6 +234,9 @@ impl Trace {
         if self.epochs.len() != other.epochs.len() {
             return Some(TraceDiff::EpochCount);
         }
+        if self.stdout != other.stdout {
+            return Some(TraceDiff::Stdout);
+        }
         None
     }
 }
@@ -245,6 +262,10 @@ pub enum TraceDiff {
     /// Final-tier only: the epoch whose SETTLED value differs (see
     /// [`Trace::first_final_difference`]).
     FinalValue(usize),
+    /// Values and pacing agree but the captured print-family output
+    /// differs — an effect fired in one mode and not the other (the
+    /// stdout oracle).
+    Stdout,
 }
 
 #[cfg(test)]
@@ -260,6 +281,7 @@ mod tests {
                     capped: false,
                 })
                 .collect(),
+            stdout: Vec::new(),
         }
     }
 
