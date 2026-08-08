@@ -8,9 +8,29 @@
 //   kernel compared a WRONG VALUE (placeholder?), it didn't refuse.
 // Fn is supposed to be correct-None (no ABI layout — the freeze
 // should reject the element type and keep the map interpreted).
-// Root-cause question: which seam let the [i64, fn] union element
-// freeze/classify? Then either fix the freeze hole (de-fuse) or the
-// value compare.
+// ROOT-CAUSED 2026-08-08 ~09:00: the CLIF dump shows a raw
+// `icmp sgt v29, 3` — the map's ELEMENT TYPE froze to PLAIN i64: the
+// typechecker DROPPED the fn-typed member from the `[i64, fn]`
+// element union. Reduced witness (diverges [f,t,f] vs [f,f,f]):
+//   { let rec f = |n, acc| { type T = {bar: i64};
+//       let x = { bar: i64:0 };
+//       let g = |{bar: bar, ..}: T| array::iter; g(x) };
+//     let a = [i64:0, f(i64:0, buffer::to_string), i64:-100];
+//     array::map(a, |x| x > i64:3) }
+// Without the DESTRUCTURE-PATTERN inner lambda the same shape AGREES
+// (de-fuses properly), so the drop happens on the rec-knot +
+// destructure tvar path — almost certainly the documented
+// `union_identical` hazard (CLAUDE.md: two distinct UNBOUND cells
+// compare equal, and a union that collapses on that verdict DROPS the
+// discarded cell's future binding — here the fn type landed in the
+// discarded cell). Downstream both engines act on the lie
+// differently: the kernel's totalized read_slot_i64 sees a
+// wrong-family disc -> placeholder 0 -> false; the interp compares
+// the REAL runtime values -> fn > 3 -> true.
+// FIX LIVES IN THE TYPECHECKER (union collapse / settle) — Eric's
+// territory; queued with the ruling bundle rather than reworked
+// unilaterally. A kernel-side band-aid (elem-read disc-family guard a
+// la select-lit-leaf e9e169ff) would mask the type unsoundness.
 // bisect: fusion/JIT bug (interp != jit)
 // interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 5 }, slice: [Bool(false), Bool(false), Bool(true), Bool(false), Bool(false)] }) })))))], capped: false }], stdout: [] })
 // jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 5 }, slice: [Bool(false), Bool(false), Bool(false), Bool(false), Bool(false)] }) })))))], capped: false }], stdout: [] })
