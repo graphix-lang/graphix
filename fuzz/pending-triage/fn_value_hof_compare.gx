@@ -1,0 +1,19 @@
+// PENDING TRIAGE (aug08c katana fuzz/000000, 2026-08-08 ~08:45):
+// LATENT PRE-EXISTING class (diverges on pre-arc 0174c8a2 too — not
+// a regression from the aug07 fix arcs). A FUNCTION VALUE flows as an
+// array element (a rec lambda returns `array::iter`, the builtin fn
+// value) into a fused `array::map(a, |x| x > i64:3)`:
+//   interp element 2: fn > 3 = TRUE (Value total order)
+//   jit    element 2: FALSE — and PRODUCED, not bottomed, so the
+//   kernel compared a WRONG VALUE (placeholder?), it didn't refuse.
+// Fn is supposed to be correct-None (no ABI layout — the freeze
+// should reject the element type and keep the map interpreted).
+// Root-cause question: which seam let the [i64, fn] union element
+// freeze/classify? Then either fix the freeze hole (de-fuse) or the
+// value compare.
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 5 }, slice: [Bool(false), Bool(false), Bool(true), Bool(false), Bool(false)] }) })))))], capped: false }], stdout: [] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 5 }, slice: [Bool(false), Bool(false), Bool(false), Bool(false), Bool(false)] }) })))))], capped: false }], stdout: [] })
+// mutant: {let a = [i64:0, i64:0, {let rec f = |n, acc| {type T = {bar: i64, baz: f64, foo: Array<f64>}; let x = { bar: i64:42, baz: f64:84., foo: [f64:1., f64:2., f64:4.3, f64:55.23] }; let f = |{bar: bar, ..}: T| array::iter; f(x)}; f(i64:0, buffer::to_string)}, i64:-100, i64:0]; array::map(a, |x| x > i64:3)}
+// minimized:
+{let a = [i64:0, i64:0, {let rec f = |n, acc| {type T = {bar: i64, baz: f64, foo: Array<f64>}; let x = { bar: i64:0, baz: f64:84., foo: [f64:1., f64:2., f64:4.3, f64:55.23] }; let f = |{bar: bar, ..}: T| array::iter; f(x)}; f(i64:0, buffer::to_string)}, i64:-100, i64:0]; array::map(a, |x| x > i64:3)}
