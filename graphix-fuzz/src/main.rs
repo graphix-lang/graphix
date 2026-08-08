@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
         && match args.get(1).map(String::as_str) {
             Some(
                 "check-one" | "check-batch" | "detcheck-one" | "selfcheck-one"
-                | "minimize-one" | "gen-check" | "regress" | "fusecheck",
+                | "minimize-one" | "gen-check" | "regress" | "fusecheck" | "leakcheck",
             ) => true,
             Some("check" | "run") => {
                 if let Some(f) = args.get_mut(2) {
@@ -373,6 +373,65 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some("leakcheck") => {
+            // RSS leak lane (fuzzer gap 5): run each embedded
+            // long-running witness under BOTH modes on the given
+            // graphix shell binary, sample VmRSS at 5s and 5+secs,
+            // and require the fused slope within headroom of the
+            // interp slope. qop-scalar-error-leak (+11MB/90s) is the
+            // class this exists for — invisible to every value
+            // oracle. Manual/CI gate; Linux only (/proc).
+            let bin = args.get(2).cloned().unwrap_or_else(|| {
+                eprintln!("usage: graphix-fuzz leakcheck <graphix-bin> [secs]");
+                std::process::exit(2)
+            });
+            let secs: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(60);
+            let mut bad = 0usize;
+            for (name, prog) in LEAK_WITNESSES {
+                let dir = tempfile::tempdir()?;
+                let f = dir.path().join("w.gx");
+                std::fs::write(&f, prog)?;
+                let mut slopes = [0f64; 2];
+                for (i, mode_args) in [&["--no-fusion"][..], &[][..]].iter().enumerate() {
+                    let mut child = std::process::Command::new(&bin)
+                        .args(*mode_args)
+                        .arg(&f)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()?;
+                    let pid = child.id();
+                    std::thread::sleep(Duration::from_secs(5));
+                    let a = vm_rss_kb(pid);
+                    std::thread::sleep(Duration::from_secs(secs));
+                    let b = vm_rss_kb(pid);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let (Some(a), Some(b)) = (a, b) else {
+                        eprintln!("  {name}: child died early — skipping");
+                        continue;
+                    };
+                    slopes[i] = (b as f64 - a as f64) / secs as f64;
+                }
+                let [interp, jit] = slopes;
+                // Headroom: the pin's leak was ~+120 kB/s over a
+                // ~30 kB/s shared timer baseline; 50 kB/s of slack
+                // rides load noise without hiding a real leak at
+                // 60s (3MB vs 7MB delta).
+                let ok = jit <= interp + 50.0;
+                if !ok {
+                    bad += 1;
+                }
+                println!(
+                    "  {name}: interp {interp:.1} kB/s, jit {jit:.1} kB/s{}",
+                    if ok { "" } else { "  <-- LEAK" }
+                );
+            }
+            println!("leakcheck: {} witnesses, {bad} leaks", LEAK_WITNESSES.len());
+            if bad > 0 {
+                drop(cwd_guard);
+                std::process::exit(1);
+            }
+        }
         Some("fusecheck") => {
             // Fusion-coverage manifest gate (fuzzer gap 6): per-corpus
             // fused-region counts vs the checked-in manifest — a
@@ -424,10 +483,7 @@ async fn main() -> Result<()> {
                     bad += 1;
                     println!("  stale manifest row: {n} ({r}) — bless to drop");
                 }
-                println!(
-                    "fusecheck: {} programs, {bad} mismatches",
-                    counts.len()
-                );
+                println!("fusecheck: {} programs, {bad} mismatches", counts.len());
                 if bad > 0 {
                     drop(cwd_guard);
                     std::process::exit(1);
@@ -473,10 +529,7 @@ async fn main() -> Result<()> {
                 std::collections::BTreeMap::new();
             while let Some(res) = set.join_next().await {
                 if let Ok((i, out)) = res {
-                    if !matches!(
-                        out,
-                        Outcome::CompileErr(_) | Outcome::RuntimeErr(_)
-                    ) {
+                    if !matches!(out, Outcome::CompileErr(_) | Outcome::RuntimeErr(_)) {
                         ok[i] = true;
                     }
                     match out {
@@ -840,3 +893,53 @@ async fn main() -> Result<()> {
     }
     Ok(())
 }
+
+/// `VmRSS` of `pid` in kB (Linux `/proc`).
+fn vm_rss_kb(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find(|l| l.starts_with("VmRSS:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+/// Long-running leak witnesses for `leakcheck` — reactive programs a
+/// value oracle can never leak-check. Each pairs with the finding
+/// that motivated it; the control rows keep the gate honest (a shared
+/// baseline drift fails nothing).
+const LEAK_WITNESSES: &[(&str, &str)] = &[
+    (
+        // qop-scalar-error-leak-aug2026: the fused handler-less `$`
+        // minted an owned ArithError every tick and never dropped it.
+        "qop-scalar-error",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let d = (i64:10 /? (x - x))$;\n\
+         let s = d + i64:1;\n\
+         s\n",
+    ),
+    (
+        // Control: same shape, divisor never 0 — no error is minted.
+        "qop-scalar-control",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let d = (i64:10 /? (x - x + i64:1))$;\n\
+         let s = d + i64:1;\n\
+         s\n",
+    ),
+    (
+        // String-churn steady state: a fresh owned ArcStr per tick
+        // through a fused DynCall result — the owned-result drop
+        // discipline under sustained fire.
+        "string-churn",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         str::to_upper(\"[x]abc\")\n",
+    ),
+];
