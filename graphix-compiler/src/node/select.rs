@@ -189,6 +189,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // through to the first unguarded arm (jul19b survivor,
         // select-guard-taint-jul2026).
         for (pat, _) in arms.iter_mut() {
+            // `arg_up` gates the BIND, not the tick — `pat.update`
+            // below is unconditional, so the guard runs every cycle
+            // regardless. Binding only on a production is correct and
+            // deliberate: `bind_event` writes `ctx.rt.cached_mut()` as
+            // well as the transient event entry, and the guard's own
+            // `Cached` operands hold the bound leaves, so on a quiet
+            // cycle the guard still evaluates against the arg it saw
+            // when the scrutinee last fired — combineLatest, not
+            // starvation. Re-binding every cycle instead would be a
+            // phantom event to anything that reads presence as firing;
+            // it is safe today only because `bind_tag` is STALE.
             let bind_guard = arg_up && !tainted && pat.guard.is_some();
             if bind_guard {
                 if let Some(arg) = arg.cached.as_ref() {
@@ -208,9 +219,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
         if crate::dbgenv::graphix_dbg_select() {
             eprintln!(
-                "SELECT upd init={} arg_up={arg_up} pat_up={pat_up} sel={:?} vars={}",
+                "SELECT[{}] upd init={} fd={} arg_up={arg_up} pat_up={pat_up} sel={:?} argc={:?} vars={}",
+                self.spec.pos,
                 event.init,
+                ctx.frame_depth,
                 selected.get(),
+                arg.cached.as_ref(),
                 event.variables.len()
             );
         }
@@ -259,7 +273,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             match (sel, selected.get()) {
                 (Some(i), Some(j)) if i == j => {
                     if crate::dbgenv::graphix_dbg_select() {
-                        eprintln!("SELECT same-arm i={i} arg={:?}", arg.cached.as_ref());
+                        eprintln!(
+                            "SELECT[{}] same-arm i={i} arg={:?}",
+                            self.spec.pos,
+                            arg.cached.as_ref()
+                        );
                     }
                     if arg_up {
                         bind!(i);
@@ -268,6 +286,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     if prod.is_some() { emit!(i, prod) } else { None }
                 }
                 (Some(i), Some(_) | None) => {
+                    if crate::dbgenv::graphix_dbg_select() {
+                        eprintln!(
+                            "SELECT[{}] BECOMING-SELECTED {:?} -> {i} fd={} init={}",
+                            self.spec.pos,
+                            selected.get(),
+                            ctx.frame_depth,
+                            event.init
+                        );
+                    }
                     let mut set: LPooled<Vec<BindId>> = LPooled::take();
                     if let Some(j) = selected.get() {
                         arms[j].1.node.sleep(ctx);
