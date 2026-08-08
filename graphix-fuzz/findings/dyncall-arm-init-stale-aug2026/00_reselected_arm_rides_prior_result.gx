@@ -1,0 +1,23 @@
+// The stale-mask/ARM-INIT interaction (aug08b ryouko
+// reactive/000000, the stale mask's SECOND regression after
+// dyncall-loop-stale-ride): a BECOMING-SELECTED arm updates under the
+// interp's init view — everything re-delivers as an ARRIVAL and
+// CachedArgs re-evals — but the kernel's stale mask read the RAW
+// input discs, so the re-selected arm's first dispatch delivered its
+// quiet inputs as STALE and the site surfaced its LAST RESULT from a
+// previous selection (a list::to_array returned the pre-deselection
+// array; the interp re-eval'd fresh).
+//
+// Reduced witness (probe p2):
+//   { let v0 = select i64:0 { _ if in0 => list::to_array(list::map(
+//       list::from_array(["a", "a"]), |x| in1)), in0 => [i64:0, i64:1] };
+//     v0[i64:-1]$ }
+//   epochs in0=t; in0=f in1=1; in0=t  ->  interp 1,0,1,1  jit 1,0,1,0
+//
+// Fix: the emitted stale mask is SUPPRESSED under the EFFECTIVE INIT
+// view (kernel init | becoming-selected — `init_flag` carries the arm
+// override, the same authority the in-loop taint force uses), so
+// arm-init dispatches deliver everything fired and eval runs, exactly
+// the interp's fresh-arm arrival semantics.
+// schedule-v1: cap=208 events=1664; in0=bool:true; in0=bool:false in1=i64:1; in0=bool:true
+{let v1: i64 = {let v0 = select i64:0 {_ if in0 => list::to_array(list::map(list::from_array(["a", "a"]), |v0| in1)), in0 => [i64:0, (i64:-100 - i64:7)]}; select in0 {v1 if (f64:3.14 >= f64:2.5) => v0[i64:-1]$, in1 => cast<i64>((-(z64:-1)))$}}; let v2 = i64:0; v2 <- in0 ~ (select in0 {true => v2 + i64:1, false => v2}); ((v2 + v2) * v1)}

@@ -238,7 +238,21 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             let bit = cx.b.ins().ishl_imm(s64, i as i64);
             stale_mask = cx.b.ins().bor(stale_mask, bit);
         }
-        stale_mask
+        // Suppress the mask under the EFFECTIVE INIT view (kernel
+        // init OR a becoming-selected arm — `init_flag` reflects the
+        // arm override, same authority as the loop taint force): the
+        // interp's newly-woken arm updates with event.init=true, so
+        // EVERYTHING re-delivers as an ARRIVAL and eval runs — but
+        // the raw input discs still read STALE. Masking them stale
+        // made the arm's first re-selected dispatch ride the site's
+        // last result from a previous selection (aug08b ryouko
+        // reactive/000000: a re-selected arm's list::to_array
+        // surfaced its pre-deselection array while the interp's
+        // arm-init re-eval'd fresh).
+        let init = cx.init_flag();
+        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        cx.b.ins().select(init_b, zero, stale_mask)
     };
     // IN-LOOP init-run exactness (katana jul21a, fold-acc-taint-jul2026):
     // one scaffold-loop DynCall site serves EVERY collection position,
