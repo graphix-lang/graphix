@@ -120,6 +120,54 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
+/// Per-FEATURE compile rates for gen-check/reactive-check: bucket the
+/// sample by source markers (v1 — substring buckets, not generator-rule
+/// attribution) and report each bucket's compile rate. The aggregate
+/// rate hides a dead arm when the arm is a few percent of output — the
+/// try/catch migration left the error-lambda arm emitting deleted
+/// syntax for WEEKS behind a healthy-looking 99% (fuzzer gap 2,
+/// 2026-08-07). A 0%% row is a dead arm; an "absent" row is an arm
+/// that stopped firing at all.
+fn feature_report(progs: &[String], ok: &[bool]) {
+    const FEATURES: &[(&str, &str)] = &[
+        ("catch", "catch("),
+        ("qop-catch", ")?"),
+        ("qop-dollar", "$"),
+        ("select", "select "),
+        ("guard", " if "),
+        ("rec", "let rec"),
+        ("array-hof", "array::"),
+        ("map-hof", "map::"),
+        ("list-hof", "list::"),
+        ("str", "str::"),
+        ("re", "re::"),
+        ("variant", "`"),
+        ("connect", "<-"),
+        ("cast", "cast<"),
+        ("refs", "&"),
+        ("modules", "mod "),
+        ("files", "file-v1"),
+        ("reactive", "schedule-v1"),
+    ];
+    println!("  per-feature compile rates:");
+    for (name, pat) in FEATURES {
+        let idx: Vec<usize> = progs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.contains(pat))
+            .map(|(i, _)| i)
+            .collect();
+        if idx.is_empty() {
+            println!("    {name:>12}: absent from sample  <-- arm not firing?");
+            continue;
+        }
+        let c = idx.iter().filter(|&&i| ok[i]).count();
+        let pct = c as f64 * 100.0 / idx.len() as f64;
+        let mark = if c == 0 { "  <-- DEAD ARM" } else { "" };
+        println!("    {name:>12}: {c}/{} ({pct:.1}%){mark}", idx.len());
+    }
+}
+
 /// Parse `check-batch`'s stdin framing: `{n}\n` then, per subject,
 /// `{byte_len}\n{bytes}`. Length-prefixed because programs are
 /// arbitrary text (delimiters are corruptible).
@@ -257,9 +305,13 @@ async fn main() -> Result<()> {
             // print mangles multi-line programs (dynmod raw strings),
             // so byte-exact repro needs the file.
             let dump_dir = std::env::var_os("GRAPHIX_FUZZ_DUMP_REJECTS");
+            let mut ok = vec![false; progs.len()];
             while let Some(res) = set.join_next().await {
                 match res {
-                    Ok((_, None)) => compiled += 1,
+                    Ok((i, None)) => {
+                        compiled += 1;
+                        ok[i] = true;
+                    }
                     Ok((i, Some(err))) => {
                         if let Some(dir) = &dump_dir {
                             let p = std::path::Path::new(dir)
@@ -299,6 +351,7 @@ async fn main() -> Result<()> {
                 "gen-check: seed={seed}: {compiled}/{n} compiled ({:.1}%)",
                 compiled as f64 * 100.0 / n as f64
             );
+            feature_report(&progs, &ok);
             let mut buckets: Vec<(usize, String, String)> =
                 rejects.into_iter().map(|(k, (c, ex))| (c, k, ex)).collect();
             buckets.sort_by(|a, b| b.0.cmp(&a.0));
@@ -351,10 +404,17 @@ async fn main() -> Result<()> {
                 next += 1;
             }
             let (mut compiled, mut quiesced, mut advanced, mut wedged) = (0, 0, 0, 0);
+            let mut ok = vec![false; progs.len()];
             let mut rejects: std::collections::BTreeMap<String, usize> =
                 std::collections::BTreeMap::new();
             while let Some(res) = set.join_next().await {
-                if let Ok((_, out)) = res {
+                if let Ok((i, out)) = res {
+                    if !matches!(
+                        out,
+                        Outcome::CompileErr(_) | Outcome::RuntimeErr(_)
+                    ) {
+                        ok[i] = true;
+                    }
                     match out {
                         Outcome::CompileErr(e) => {
                             let mut key = e
@@ -406,6 +466,7 @@ async fn main() -> Result<()> {
                 pct(quiesced),
                 pct(advanced),
             );
+            feature_report(&progs, &ok);
             let mut buckets: Vec<(usize, String)> =
                 rejects.into_iter().map(|(k, c)| (c, k)).collect();
             buckets.sort_by(|a, b| b.0.cmp(&a.0));
