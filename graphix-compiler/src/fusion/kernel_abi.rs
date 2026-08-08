@@ -1179,6 +1179,22 @@ pub struct FnParam {
     /// dispatcher and JIT codegen branch on the kind to pick the
     /// right encode/decode path.
     pub return_type: Type,
+    /// The call site's real argument EXPRESSIONS, parallel to
+    /// `arg_types`. The slot's synthetic arg `Ref`s carry these specs
+    /// so a builtin that reports source context (`dbg`) sees the
+    /// genuine expression and position instead of `Expr::default()`'s
+    /// `null` at 1:1 (dyncall-apply-unwired-aug2026). Empty = unknown.
+    pub arg_specs: Vec<crate::expr::Expr>,
+    /// The real (resolved, UNFROZEN) argument types, parallel to
+    /// `arg_types` — the synthetic `Ref`s carry these so type-driven
+    /// rendering (`dbg`'s `TVal`) sees the typechecker's view (a
+    /// tuple, not the frozen ABI array). `arg_types` remains the
+    /// marshal authority. Empty = fall back to `arg_types`.
+    pub arg_orig_types: Vec<Type>,
+    /// The CALL SITE's scope — `init`'s scope argument for pre-bound
+    /// builtins (`log` reports its module path from it). `None` =
+    /// the slot owner's scope.
+    pub scope: Option<crate::Scope>,
 }
 
 /// How a [`FnParam`]'s callable is sourced at dispatch time.

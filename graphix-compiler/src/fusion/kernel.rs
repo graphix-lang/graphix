@@ -172,16 +172,28 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     pub fn new(fn_param: &kernel_abi::FnParam, scope: Scope, top_id: ExprId) -> Self {
         let mut bind_ids = Vec::with_capacity(fn_param.arg_types.len());
         let mut arg_refs: Vec<Node<R, E>> = Vec::with_capacity(fn_param.arg_types.len());
-        for arg_kty in &fn_param.arg_types {
+        for (i, arg_kty) in fn_param.arg_types.iter().enumerate() {
             let id = BindId::new();
             bind_ids.push(id);
             // Ref reads `event.variables[id]` (or falls back to
-            // `ctx.cached[id]`) on each `update`. `typ` is the
-            // FnParam's declared (frozen) netidx `Type`, used directly.
-            let typ = arg_kty.clone();
-            let node = Ref::new::<R, E>(id, typ, top_id, Expr::default());
+            // `ctx.cached[id]`) on each `update`. The Ref carries the
+            // call site's REAL spec and resolved (unfrozen) type when
+            // the FnParam recorded them — a builtin that reports
+            // source context or renders by type (`dbg`) then behaves
+            // like a real call site (dyncall-apply-unwired-aug2026);
+            // the frozen `arg_types` stays the marshal authority.
+            let typ = fn_param
+                .arg_orig_types
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| arg_kty.clone());
+            let spec = fn_param.arg_specs.get(i).cloned().unwrap_or_default();
+            let node = Ref::new::<R, E>(id, typ, top_id, spec);
             arg_refs.push(node);
         }
+        // The CALL SITE's scope when recorded — `log` reports its
+        // module path from `init`'s scope argument.
+        let scope = fn_param.scope.clone().unwrap_or(scope);
         Self {
             bind_ids,
             arg_refs,
@@ -347,7 +359,13 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
         }
         self.arg_refs = new_arg_refs;
-        let apply = init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id)?;
+        let mut apply =
+            init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id)?;
+        // The interp's CallSite runs typecheck0 on a fresh Apply
+        // before its first update; mirror it so type-derived builtin
+        // state (`dbg`'s rendered type, set in its typecheck0) exists
+        // in the pre-bound slot too (dyncall-apply-unwired-aug2026).
+        apply.typecheck0(ctx, &mut self.arg_refs)?;
         // Use the slot's own address as a stable sentinel pointer —
         // dispatch checks `pre_bound` first and never reads this.
         let sentinel = self as *const Self as *const u8;
@@ -692,7 +710,15 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                 .ok()
             }
             SlotRecipe::Builtin { init, typ } => {
-                init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id).ok()
+                let mut apply =
+                    init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id)
+                        .ok()?;
+                // Mirror the interp CallSite's fresh-Apply typecheck0
+                // (see `pre_bind_builtin`): type-derived builtin state
+                // (`dbg`'s rendered type) must exist in per-site
+                // instances too (dyncall-apply-unwired-aug2026).
+                apply.typecheck0(ctx, &mut self.arg_refs).ok()?;
+                Some(apply)
             }
             SlotRecipe::Cast { target } => Some(Box::new(CastApply {
                 target: target.clone(),

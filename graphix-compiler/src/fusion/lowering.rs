@@ -183,6 +183,9 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
         },
         arg_types: vec![inner_typ.clone()],
         return_type: inner_typ.clone(),
+        arg_specs: vec![q.n.spec().clone()],
+        arg_orig_types: vec![q.n.typ().clone()],
+        scope: None,
     });
     out.apply_sites.insert(
         q.spec.id,
@@ -232,6 +235,9 @@ fn try_register_cast<R: Rt, E: UserEvent>(
         source: FnSource::Cast { target: tc.target.clone() },
         arg_types: vec![arg_frozen.clone()],
         return_type: ret_frozen.clone(),
+        arg_specs: vec![tc.n.spec().clone()],
+        arg_orig_types: vec![source.clone()],
+        scope: None,
     });
     out.apply_sites.insert(
         tc.spec.id,
@@ -324,6 +330,11 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     }
     let mut layout: LPooled<Vec<BuiltinSlot>> = LPooled::take();
     let mut arg_types: Vec<Type> = Vec::new();
+    // Parallel to `arg_types`: the real arg exprs and their resolved
+    // (unfrozen) types, for the slot's synthetic Refs
+    // (dyncall-apply-unwired-aug2026).
+    let mut arg_specs: Vec<crate::expr::Expr> = Vec::new();
+    let mut arg_orig_types: Vec<Type> = Vec::new();
     let mut marshal_arg_indices: Vec<usize> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
@@ -351,6 +362,12 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 let slot_idx = arg_types.len();
                 layout.push(BuiltinSlot::Positional(slot_idx));
                 arg_types.push(kt);
+                arg_specs.push(
+                    cs.arg_positional(pos_idx)
+                        .map(|n| n.spec().clone())
+                        .unwrap_or_default(),
+                );
+                arg_orig_types.push(arg_typ);
                 marshal_arg_indices.push(*call_idx);
             }
             FnArgKind::Labeled { name, has_default } => {
@@ -369,6 +386,10 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     let slot_idx = arg_types.len();
                     layout.push(BuiltinSlot::Positional(slot_idx));
                     arg_types.push(kt);
+                    arg_specs.push(
+                        cs.arg_named(name).map(|n| n.spec().clone()).unwrap_or_default(),
+                    );
+                    arg_orig_types.push(arg_typ);
                     marshal_arg_indices.push(call_idx);
                 } else if *has_default {
                     let default = info.argspec.iter().find_map(|src| {
@@ -418,6 +439,10 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 None => return,
             };
             arg_types.push(kt);
+            arg_specs.push(
+                cs.arg_positional(pos_idx).map(|n| n.spec().clone()).unwrap_or_default(),
+            );
+            arg_orig_types.push(arg_typ);
             marshal_arg_indices.push(*call_idx);
         }
     }
@@ -454,6 +479,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         },
         arg_types: arg_types.clone(),
         return_type: return_type.clone(),
+        arg_specs,
+        arg_orig_types,
+        scope: Some(cs.scope().clone()),
     });
     out.apply_sites.insert(
         apply_id,
