@@ -411,6 +411,19 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
             ));
         }
     }
+    // Same-tag ARITY case: a variant's identity is (tag, arity), so
+    // `` [`A, `A(i64)] `` is a legal union whose cases differ only by
+    // payload count — the shape the kernel's tag-only test was blind
+    // to (variant-arity-tag-only-aug2026; the distinct-tag-only draw
+    // could never mint it).
+    if rng.below(8) == 0 {
+        let (t, args) = tags[rng.below(tags.len())].clone();
+        let mut arity = args.len();
+        while arity == args.len() {
+            arity = rng.below(3);
+        }
+        tags.push((t, (0..arity).map(|_| random_type(rng, depth)).collect()));
+    }
     tags.sort_by(|a, b| a.0.cmp(&b.0));
     GenType::Variant(tags)
 }

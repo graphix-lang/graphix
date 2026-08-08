@@ -90,6 +90,14 @@ fn try_accessor(
                         _ => "-4",
                     };
                     cands.push(format!("{name}[{idx}]$"));
+                    // Narrow-int index — the widen seam
+                    // (narrow-index-operand-verifier-aug2026: a raw
+                    // narrow payload failed cranelift's verifier and
+                    // silently de-fused whole regions).
+                    if rng.below(8) == 0 {
+                        let nt = pick(rng, &["u8", "i16", "u32"]);
+                        cands.push(format!("{name}[{nt}:1]$"));
+                    }
                 }
                 // Element deref over an array of refs (ref arrays are
                 // built 2 long, so 0/-1 always hit).
@@ -100,6 +108,11 @@ fn try_accessor(
                 if ty == t {
                     let slice = if rng.below(2) == 0 { "..1" } else { "1.." };
                     cands.push(format!("{name}[{slice}]$"));
+                    // Narrow-int slice bound (the other verifier leg).
+                    if rng.below(8) == 0 {
+                        let nt = pick(rng, &["u8", "i16", "u32"]);
+                        cands.push(format!("{name}[{nt}:1..]$"));
+                    }
                 }
             }
             GenType::Map(v) => {
@@ -274,7 +287,16 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
             _ => {
-                let n = 1 + rng.below(4);
+                // Occasionally an OVER-LIMIT count (> MAX_ARRAY_INIT_LEN
+                // = 16777216): bottom-with-retained-state on both
+                // engines, fast to evaluate
+                // (init-over-limit-aug2026 — small counts never reach
+                // the limit seam).
+                let n = if rng.below(24) == 0 {
+                    pick(rng, &["16777217", "99999999"]).to_string()
+                } else {
+                    (1 + rng.below(4)).to_string()
+                };
                 let mut inner = ctx.clone();
                 let binder = callback_binder(&mut inner, rng, &I64, &[]);
                 let body = gen_typed(&inner, rng, e, d.min(2));
@@ -383,6 +405,11 @@ pub(super) fn gen_typed(
             return b;
         }
     }
+    if rng.below(10) == 0 {
+        if let Some(b) = try_map_builtin(ctx, rng, ty, d) {
+            return b;
+        }
+    }
     match ty {
         GenType::Num(n) => {
             // Checked arithmetic, consumed by one of the three legal
@@ -393,10 +420,21 @@ pub(super) fn gen_typed(
                 let a = gen_typed(ctx, rng, ty, d);
                 let b = gen_typed(ctx, rng, ty, d);
                 let dflt = gen_typed(ctx, rng, ty, d);
-                return match rng.below(3) {
+                return match rng.below(4) {
                     0 => format!("({a} {op} {b})$"),
                     1 => format!(
                         "select ({a} {op} {b}) {{ error as _ => {dflt}, {} as n => n }}",
+                        ty.render()
+                    ),
+                    // The bare-wildcard form: success consumed by a
+                    // TYPE PREDICATE, the error member by `_`. The
+                    // explicit `error as _` arm above DE-FUSES the
+                    // select (error predicates aren't lowerable), so
+                    // only this form reaches the kernel's result-union
+                    // predicate lowering — the shape that hid
+                    // result-union-nullable-abi-aug2026 for weeks.
+                    2 => format!(
+                        "select ({a} {op} {b}) {{ {} as n => n, _ => {dflt} }}",
                         ty.render()
                     ),
                     _ => format!("{{ catch(e) {dflt}; (({a} {op} {b}))? }}"),
@@ -563,6 +601,41 @@ pub(super) fn gen_typed(
     }
 }
 
+/// A `map::` builtin call producing `ty` — the map package was
+/// entirely outside the vocabulary until the gap-2 per-feature report
+/// flagged it absent (2026-08-07). Keys come from the shared pool so
+/// gets/removes mostly hit.
+fn try_map_builtin(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    ty: &GenType,
+    depth: usize,
+) -> Option<String> {
+    let d = depth.min(1);
+    match ty {
+        GenType::Num(NumTy::I64) => {
+            let elem = types::scalar_type(rng);
+            let m = gen_typed(ctx, rng, &GenType::Map(Box::new(elem)), d);
+            Some(format!("map::len({m})"))
+        }
+        GenType::Map(e) => {
+            let m = gen_typed(ctx, rng, ty, d);
+            let k = types::KEYS[rng.below(types::KEYS.len())];
+            match rng.below(3) {
+                0 => {
+                    let v = gen_typed(ctx, rng, e, d);
+                    Some(format!("map::insert({m}, \"{k}\", {v})"))
+                }
+                1 => Some(format!("map::remove({m}, \"{k}\")")),
+                _ => Some(format!(
+                    "map::filter({m}, |kv| str::len(kv.0) > i64:1)"
+                )),
+            }
+        }
+        _ => None,
+    }
+}
+
 /// A `str::` builtin call producing `ty`: length, predicates with
 /// labeled args, and string transforms (the labeled-arg + DynCall
 /// surface).
@@ -578,6 +651,20 @@ fn try_str_builtin(
             Some(format!("str::len({})", gen_typed(ctx, rng, &GenType::Str, d)))
         }
         GenType::Bool => {
+            // Sometimes a regex match instead — the re:: package was
+            // entirely outside the vocabulary (gap-2 report,
+            // 2026-08-07). Patterns from a VALID pool plus one
+            // malformed (the `$`-consumed ReError path).
+            if rng.below(4) == 0 {
+                let pat = pick(
+                    rng,
+                    &["a+", "[a-z]+", "x|y", "^g", "[0-9]", "(("],
+                );
+                let s = gen_typed(ctx, rng, &GenType::Str, d);
+                // Raw string: `[...]` in a plain literal is
+                // INTERPOLATION.
+                return Some(format!("re::is_match(#pat: r'{pat}', {s})$"));
+            }
             let (f, lbl) =
                 [("contains", "part"), ("starts_with", "pfx"), ("ends_with", "sfx")]
                     [rng.below(3)];
@@ -585,7 +672,21 @@ fn try_str_builtin(
             let s = gen_typed(ctx, rng, &GenType::Str, d);
             Some(format!("str::{f}(#{lbl}: {needle}, {s})"))
         }
-        GenType::Str => match rng.below(5) {
+        GenType::Str => match rng.below(6) {
+            // sprintf — valid AND malformed formats (missing arg,
+            // unknown verb); the Result return is `$`-consumed either
+            // way (sprintf-error-return-shape-aug2026: generated
+            // formats were previously always well-formed, so the
+            // error path was unreachable).
+            5 => Some(match rng.below(4) {
+                0 => format!("str::sprintf(\"%d\", i64:{})$", rng.below(100)),
+                1 => format!(
+                    "str::sprintf(\"%s\", {})$",
+                    types::literal(rng, &GenType::Str)
+                ),
+                2 => "str::sprintf(\"%d\")$".to_string(),
+                _ => "str::sprintf(\"%q\", i64:1)$".to_string(),
+            }),
             0 => {
                 let f = pick(rng, &["to_upper", "to_lower", "trim"]);
                 Some(format!("str::{f}({})", gen_typed(ctx, rng, &GenType::Str, d)))
@@ -623,6 +724,11 @@ fn try_str_builtin(
                 Some(format!("str::join(#sep: {sep}, {arr})"))
             }
         },
+        GenType::Array(e) if **e == GenType::Str => {
+            let pat = pick(rng, &["a", ",", "[0-9]"]);
+            let src = gen_typed(ctx, rng, &GenType::Str, d);
+            Some(format!("re::split(#pat: r'{pat}', {src})$"))
+        }
         _ => None,
     }
 }

@@ -277,6 +277,15 @@ pub(super) fn gen_module(
     for (fname, fty) in public {
         ctx.push(format!("{mname}::{fname}"), fty);
     }
+    // Trailing EXPRESSION statement — the module shape whose fused
+    // dead-elim/env-pop silently killed exports
+    // (modstmt-fused-no-publish-aug2026: generated module bodies
+    // always ended in a `let`, so the trigger was unreachable).
+    if chance(rng, 0.15) {
+        let t = types::scalar_type(rng);
+        let e = exprs::gen_typed(&inner, rng, &t, 1);
+        gx.push_str(&format!("{e}\n"));
+    }
     let mut files = vec![(format!("{mname}.gx"), gx.trim_end().to_string())];
     if has_gxi {
         files.insert(0, (format!("{mname}.gxi"), gxi.trim_end().to_string()));
