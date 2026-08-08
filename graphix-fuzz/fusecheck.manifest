@@ -57,6 +57,7 @@
 0	dyncall-jun2026/01_pending_string_dyncall_drop.gx
 0	dyncall-jun2026/02_dead_pend_discard_position.gx
 2	dyncall-layout-jul2026/01_shared_callee_stale_layout.gx
+14	dyncall-loop-stale-ride-aug2026/00_map_filter_refire_rides_shared_cache.gx
 1	dyncall-partial-args-jul2026/00_window_bottom_val.gx
 1	dyncall-partial-args-jul2026/01_window_scalar_bottom_val.gx
 1	dyncall-pending-taint-jul2026/01_pad_guard_unconsumed_bind.gx

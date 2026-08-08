@@ -217,14 +217,29 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // producing its cached value (an absent delivery would pend the
     // dispatch and bottom it after the first invocation). Like the
     // taint fold, each bit is const for a proven-fresh arg.
-    let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
-    for (i, d) in arg_taint_discs.iter().enumerate() {
-        let s = cx.b.ins().band_imm(*d, STALE);
-        let sb = cx.b.ins().icmp_imm(IntCC::NotEqual, s, 0);
-        let s64 = cx.b.ins().uextend(types::I64, sb);
-        let bit = cx.b.ins().ishl_imm(s64, i as i64);
-        stale_mask = cx.b.ins().bor(stale_mask, bit);
-    }
+    // SCAFFOLD-LOOP sites keep FIRED delivery (mask 0): they are the
+    // shared key-0 bucket — ONE inner Apply serves every collection
+    // position — and a stale delivery there makes every slot's
+    // CachedArgs surface the SHARED cache's last result instead of
+    // re-evaluating with its own position's args (aug08a hz1
+    // generate/000000: a fused map::filter kept every element on a
+    // refire because each slot's predicate rode the LAST slot's
+    // `true`). Fired per-slot re-eval is the interp-equal pre-mask
+    // behavior for position-varying args; the per-slot identity chain
+    // remains the documented follow-up.
+    let stale_mask = if cx.ctx.loop_depth.get() > 0 {
+        cx.b.ins().iconst(types::I64, 0)
+    } else {
+        let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
+        for (i, d) in arg_taint_discs.iter().enumerate() {
+            let s = cx.b.ins().band_imm(*d, STALE);
+            let sb = cx.b.ins().icmp_imm(IntCC::NotEqual, s, 0);
+            let s64 = cx.b.ins().uextend(types::I64, sb);
+            let bit = cx.b.ins().ishl_imm(s64, i as i64);
+            stale_mask = cx.b.ins().bor(stale_mask, bit);
+        }
+        stale_mask
+    };
     // IN-LOOP init-run exactness (katana jul21a, fold-acc-taint-jul2026):
     // one scaffold-loop DynCall site serves EVERY collection position,
     // so its cached slot state crosses position boundaries the

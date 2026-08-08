@@ -1,0 +1,32 @@
+// The stale-mask/scaffold-loop interaction (aug08a hz1
+// generate/000000, found ~2h into the stronger-oracle round): a fused
+// collection HOF's DynCall sites are the SHARED key-0 bucket — one
+// inner Apply serves every position — and 9d042cbc's stale-arg
+// delivery let every slot's CachedArgs surface the SHARED cache's
+// last result instead of re-evaluating with its own position's args.
+// On the `*v8 <- i64:1` refire the tail select's map::filter arm kept
+// EVERY element: each slot's `str::len(kv.0) > 1` predicate rode the
+// last slot's `true`.
+//
+//   interp epoch events: [-5, {k1}] then [1, {k1}]        (filtered)
+//   jit (pre-fix):       [-5, {k1}] then [1, {b, k1}]     (unfiltered)
+//
+// Fix: scaffold-loop sites (loop_depth > 0) force the STALE mask to
+// zero — fired per-slot re-eval, the interp-equal pre-mask behavior
+// for position-varying args (same scoping as the taint mask's
+// init-run force; the per-slot identity chain remains the documented
+// follow-up in design/collection_intrinsics.md).
+{m0::mk(i64:1); let v0 = |v1: u8| -> u8 (v1 - u8:2); let v2 = |v3: u8| -> u8 (v0(v3) * u8:2); let v0 = u8:2; let v4 = v2(v2(v0)); let v4: i64 = (i64:7 - str::len("[i64:-100]-graphix")); let v5 = m1::mk(i64:0); let v6: {b: Map<string, [i8, null]>, c: string, y: string} = { b: {"a" => i8:7, "k1" => i8:-128, "k2" => i8:1}, c: "a", y: "a" }; let v7: u8 = select (cast<i64>(i16:1000)$ + cast<i64>(z32:7)$) {_ if (false || true) => (v2(v0) % (v0 / v0)), v7 => (cast<u8>(z32:1)$ % v0)}; let v8 = [u8:2, u8:100]; let v11 = |v0: bool, v9: string, v10: u8| -> i8 ((i8:100 * i8:-100) / select (i8:-128 -? i8:-128) {i8 as n => n, _ => i8:0}); let cerr11: Error<Any> = never(); catch(e) cerr11 <- e; let v12 = |v13: i64| select v13 {i64:0 => (i64:1 / v4), _ => error(u64:18446744073709551615)}; let v14 = select v12(i64:1) {error as _ => i64:2, i64 as x => x}; let v2 = {"k1" => {"k1" => (v4 -? i64:2)$, "k2" => i64:-1, "k0" => m0::f0(v32:4294967295)}, "b" => {"k2" => i64:2, "k1" => i64:-1, "b" => i64:100}}; let v8 = &v4; *v8 <- i64:1; let v15: bool = array::fold([false, true], true, |v15, v11| v11); let v16: [u16, null] = ((u16:1000 - u16:2) % (u16:1000 - u16:2)); let v17: [f64, null] = select v4 {v17 if false => null, v17 => f64:2.5}; let v18: [`C(bool), `Nil(bool, Array<z64>), `Some(Map<string, f64>)] = `Some({"a" => select (f64:2.5 -? f64:-1.) {f64 as n => n, _ => f64:2.5}}); let v21 = |v19: string, v20: i32| -> string v6.c; let rec v22 = |v23: i64| -> i64 select v23 {v24 if v24 <= i64:0 => str::len("xyz"), v24 => v22(v24 - i64:1)}; let v25 = v22(i64:10); let v11: [i64, null] = i64:42; let v28 = |v26: bool, v27: u8| -> u8 u8:0; let v29 = (f64:1. * array::fold([i64:0, i64:1, i64:1], f64:0.1, |v29, v30| f64:3.14)); let v30 = &v29; select v4 {i64:42 if (i16:1 == i16:32767) => (v25, {"k0" => ("xyz", false)}), v31 if (i8:-128 < i8:100) => (v31, map::filter({"k1" => ("hello", false), "b" => ("", false)}, |kv| str::len(kv.0) > i64:1)), v31 => (i64:2, {"k1" => ("graphix", true), "a" => ("xyz", false)})}}
+// file-v1: m0.gx
+let f0 = |v0: v32| -> i64 cast<i64>(u8:255)$;
+let f1 = |v1: bool, v2: f64| (v2 / (v2 % v2));
+type T = (i64, i64);
+let mk = |x: i64| -> T (x, x + i64:1);
+let un = |t: T| -> i64 t.0;
+// file-v1: m1.gx
+let h1 = |v5: v64| -> v64 array::fold([v64:0, v64:1000000, v64:1000000], v64:1, |v0, v6| v64:7);
+let f0 = |v6: bool, v7: i64| -> [u8, null] null;
+type T = Array<i64>;
+let mk = |x: i64| -> T [x, x];
+let un = |t: T| -> i64 t[0]$;
+v64:1000000
