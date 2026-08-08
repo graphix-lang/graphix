@@ -154,6 +154,7 @@
 2	quiesce-verdict-jul2026/01_ref_echo_const_result.gx
 2	rebind-recompile-jul2026/01_trycatch_recompile_name_capture.gx
 0	rec-rtype-unchecked-jul2026/01_rec_rtype_error_arm.gx
+0	rec-rtype-writeback-aug2026/00_fn_value_reads_as_i64.gx
 0	rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx
 0	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx

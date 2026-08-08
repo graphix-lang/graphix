@@ -1,13 +1,9 @@
-// PENDING TRIAGE (aug08c katana fuzz/000000, 2026-08-08 ~08:45):
-// LATENT PRE-EXISTING class (diverges on pre-arc 0174c8a2 too — not
-// a regression from the aug07 fix arcs). A FUNCTION VALUE flows as an
-// array element (a rec lambda returns `array::iter`, the builtin fn
-// value) into a fused `array::map(a, |x| x > i64:3)`:
-//   interp element 2: fn > 3 = TRUE (Value total order)
-//   jit    element 2: FALSE — and PRODUCED, not bottomed, so the
-//   kernel compared a WRONG VALUE (placeholder?), it didn't refuse.
-// Fn is supposed to be correct-None (no ABI layout — the freeze
-// should reject the element type and keep the map interpreted).
+// FIXED by the rtype write-back (setup_static_bind unifies the
+// instance's settled rtype into the site's LIVE rtype cell; abstract
+// returns retry through privatize_type and skip when still opaque).
+// Both engines now read the elem union [i64, fn]: the map de-fuses
+// and the comparison runs on real values in both modes.
+// Originally: aug08c katana fuzz/000000, 2026-08-08.
 // ROOT-CAUSED 2026-08-08 (v2 — the union_identical guess was WRONG):
 // a REC def's call-site rtype cell is SEVERED from the body's
 // inferred return. Reduction matrix (all verified):

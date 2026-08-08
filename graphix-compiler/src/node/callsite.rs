@@ -1003,6 +1003,58 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             BindMode::Static { instance: &instance_ftype, site: &site_ftype },
         )?;
         let instance_ftype = apply.typ().as_ref().clone();
+        // RETURN write-back: unify the instance's settled rtype into
+        // the site's LIVE rtype cell. `site_ftype` above is a
+        // `resolve_tvars` DEEP CLONE, so the instance re-drive binds
+        // its inferred return into snapshot cells only — a site rtype
+        // cell that is UNBOUND here (a REC def's gate defers body
+        // inference past tc0, so no def-gate settle preceded the
+        // site's freshen) would stay orphaned, and a later tc1
+        // constraint could bind it to anything unchecked (the fn
+        // value that read as Array<i64> —
+        // fuzz/pending-triage/fn_value_hof_compare.gx). `contains`
+        // binds an unbound site cell to the instance's truth; a bound
+        // cell gets the conflict check (the t7 "i64 does not contain
+        // fn" shape). Non-rec defs settled at the def gate, so this
+        // is a consistency no-op for them; ⊥ (never) unifies without
+        // binding per the open-cell rule.
+        if let Some(site_ft) = self.ftype.as_ref() {
+            match site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype) {
+                Ok(()) => {}
+                // A privatized instance rtype (abstract return —
+                // `List`) fails against the site's public view; retry
+                // both sides through the callee def's scope (the
+                // check_instance_type bridge). Still-opaque after the
+                // retry: SKIP the write-back rather than propagate —
+                // an AbstractOpaque escaping here would make
+                // `try_static_resolve` discard the whole static
+                // resolution (a de-fuse; fusecheck caught
+                // list_init_max_wedge losing its region), and skipping
+                // is exactly the pre-write-back state for that site.
+                Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
+                    let site_r = crate::fusion::lowering::privatize_type(
+                        &ctx.fusion.abstract_registry,
+                        &site_ft.rtype,
+                        &f.env,
+                        &f.scope.lexical,
+                    );
+                    let inst_r = crate::fusion::lowering::privatize_type(
+                        &ctx.fusion.abstract_registry,
+                        &instance_ftype.rtype,
+                        &f.env,
+                        &f.scope.lexical,
+                    );
+                    match site_r.check_contains(&ctx.env, &inst_r) {
+                        Ok(()) => {}
+                        Err(e)
+                            if e.downcast_ref::<crate::typ::AbstractOpaque>()
+                                .is_some() => {}
+                        Err(e) => return wrap!(self.fnode, Err(e)),
+                    }
+                }
+                Err(e) => return wrap!(self.fnode, Err(e)),
+            }
+        }
         Ok((apply, instance_ftype))
     }
 
