@@ -1,0 +1,35 @@
+// A silent FUSION LOSS, not a value divergence — `check` reports AGREE
+// on this program in both the broken and fixed states, because the
+// node-walk is the fallback and it is correct. It is here as a
+// de-fusion pin: `fusecheck` is the gate that would have caught it.
+//
+// `emit_qop_deliver` (fusion/emit/flow.rs) emits the error-delivery
+// DynCall for a handler-ful `?` — one covered by an enclosing `catch`.
+// Commit 9d042cbc (2026-08-07, "fused DynCall: deliver non-fired args
+// as TagValue::stale") grew `graphix_dyncall` from four parameters to
+// five by adding `stale_mask`, and updated `emit/call.rs`,
+// `emit_helpers.rs` and `kernel.rs` — but not `flow.rs`, the only
+// other call site. `git show --stat 9d042cbc` shows the three files.
+//
+// Cranelift's verifier caught it, which is the good news and also why
+// it hid for a month: it rejects the ENTIRE function, so the symptom
+// is that the region node-walks, visible only under --fusion-stats:
+//
+//   define_function (shared body): Compilation error: Verifier errors:
+//   - inst25 (v30, v31 = call fn11(v27, v25, v28, v29)):
+//     mismatched argument count for `...`: got 4, expected 5
+//
+// Fixed by passing the explicit `stale0` (0 — the single error arg was
+// already gated on `deliverable`, so it delivers FIRED). Hardened by
+// `BodyCx::call_helper`, which looks the helper up and debug-asserts
+// the argument count against its registered wire signature, so an
+// arity mismatch panics a test instead of quietly costing fusion.
+// Pinned on the value side by the `qop_handler_deliver` run! fixture
+// (stdlib/graphix-tests/src/lang/errors.rs), which asserts
+// FuseExpect::Jit and therefore fails outright in the broken state.
+{
+  let caught = i64:0;
+  catch(e) caught <- e ~ i64:1;
+  let a = [i64:10, i64:20];
+  a[i64:0]? + i64:100
+}

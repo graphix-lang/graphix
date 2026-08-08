@@ -39,19 +39,19 @@ const CHECKED_DIV0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// Fuses again. It stopped on 2026-08-07 and the loss was misattributed
+// here to the value-taint-cache storage law
+// (callee-value-taint-passthrough-aug2026) — plausible, since that
+// landed the same day, but wrong. The real cause was an arity defect in
+// `emit_qop_deliver`: this is a handler-ful `?`, so it emits the
+// error-delivery DynCall, and 9d042cbc had grown `graphix_dyncall` to
+// five parameters without updating that call site. Cranelift's verifier
+// rejected the function and the region node-walked. See
+// findings/qop-deliver-dyncall-arity-aug2026.
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // catch with array index errors still works
 const CATCH1: &str = r#"
@@ -274,6 +274,32 @@ const DYNCALL_PENDING_HOF_SLOT: &str = r#"
 
 run!(dyncall_pending_hof_slot, DYNCALL_PENDING_HOF_SLOT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(9)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A handler-ful `?` — one covered by an enclosing `catch` — in a
+// fusable region. The `?` succeeds here; what matters is that the
+// error-delivery DynCall (`FnSource::QopDeliver`) is EMITTED, which it
+// is unconditionally whenever a handler is in scope.
+//
+// This shape had no coverage, and it silently stopped fusing on
+// 2026-08-07: 9d042cbc grew `graphix_dyncall` to five parameters
+// (adding `stale_mask`) and updated `emit/call.rs` but not
+// `emit_qop_deliver`, so cranelift's verifier rejected the whole
+// function — "mismatched argument count: got 4, expected 5" — and the
+// region node-walked. A verifier rejection is invisible without
+// `--fusion-stats`, which is why a month passed; `BodyCx::call_helper`
+// now debug-asserts the arity so the class panics a test instead.
+const QOP_HANDLER_DELIVER: &str = r#"
+{
+  let caught = i64:0;
+  catch(e) caught <- e ~ i64:1;
+  let a = [i64:10, i64:20];
+  a[i64:0]? + i64:100
+}
+"#;
+
+run!(qop_handler_deliver, QOP_HANDLER_DELIVER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(110)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // A lambda whose select merges a scalar arm with an error arm, called

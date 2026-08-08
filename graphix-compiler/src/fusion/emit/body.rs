@@ -17,7 +17,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, InstBuilder, MemFlags, Value as ClifValue,
+    Block, BlockArg, FuncRef, Inst, InstBuilder, MemFlags, Value as ClifValue,
     condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
@@ -478,6 +478,27 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// FuncRef for a registered `emit_helpers` runtime helper.
     pub fn helper(&self, name: &str) -> Result<FuncRef> {
         self.ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing helper {name}"))
+    }
+
+    /// Look up a helper and call it, asserting the argument count
+    /// against its registered wire signature.
+    ///
+    /// Prefer this over `helper()` + `ins().call()`. Cranelift's
+    /// verifier does catch a mismatch, but it rejects the whole
+    /// function, so the only symptom is that the region silently
+    /// node-walks — invisible without `--fusion-stats`. Passing a
+    /// helper the wrong number of arguments is a bug in emit code, not
+    /// a fusion outcome, so it should fail the test suite, not the
+    /// coverage manifest.
+    pub fn call_helper(&mut self, name: &str, args: &[ClifValue]) -> Result<Inst> {
+        let f = self.helper(name)?;
+        debug_assert_eq!(
+            self.ctx.helper_refs.arity.get(name).copied(),
+            Some(args.len()),
+            "helper `{name}` called with {} args",
+            args.len()
+        );
+        Ok(self.b.ins().call(f, args))
     }
 
     /// The EFFECTIVE `event.init` flag (`I64`, nonzero on an init

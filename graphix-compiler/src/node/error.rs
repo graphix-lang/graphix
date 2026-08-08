@@ -322,6 +322,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     let v = Value::Error(e.into());
                     if handler_top != self.top_id {
                         ctx.rt.set_var(id, v)
+                    } else if ctx.frame_depth > 0 {
+                        // Inside an evaluation frame `event.variables`
+                        // is the frame's PRIVATE map, which is
+                        // discarded when the pass ends — a handler
+                        // delivery written there never reaches the
+                        // handler. It is outward-bound, so park it for
+                        // the frame driver to deliver once the frames
+                        // unwind (`ExecCtx::frame_outbox`).
+                        ctx.frame_outbox.push((id, v));
                     } else {
                         match event.variables.entry(id) {
                             Entry::Vacant(slot) => {

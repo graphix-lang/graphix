@@ -720,6 +720,15 @@ pub(super) fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
 #[derive(Default)]
 pub(super) struct HelperRefs {
     pub(super) refs: BTreeMap<&'static str, FuncRef>,
+    /// Wire-slot count per helper — the sum of each Rust parameter's
+    /// `AbiTy` slots, i.e. exactly how many `ClifValue`s a call must
+    /// pass. Read only by [`BodyCx::call_helper`]'s debug assert:
+    /// cranelift's verifier catches an arity mismatch, but only as a
+    /// *compilation failure of the whole function*, which surfaces as
+    /// a silent de-fuse. `emit_qop_deliver` shipped one for a month
+    /// that way (9d042cbc grew `graphix_dyncall` to 5 params and
+    /// updated only `emit/call.rs`).
+    pub(super) arity: BTreeMap<&'static str, usize>,
 }
 
 impl HelperRefs {
@@ -734,19 +743,23 @@ impl HelperRefs {
 /// current function.
 pub(super) struct HelperFuncIds {
     pub(super) ids: BTreeMap<&'static str, FuncId>,
+    /// See [`HelperRefs::arity`].
+    pub(super) arity: BTreeMap<&'static str, usize>,
 }
 
 impl HelperFuncIds {
     pub(super) fn new(module: &mut JITModule) -> Result<Self> {
         let mut ids = BTreeMap::new();
+        let mut arity = BTreeMap::new();
         for h in all_helpers() {
             let sig = helper_signature(module, &h);
             let fid = module
                 .declare_function(h.name, Linkage::Import, &sig)
                 .with_context(|| format!("declare_function for helper `{}`", h.name))?;
             ids.insert(h.name, fid);
+            arity.insert(h.name, h.params.iter().map(|p| p.len()).sum());
         }
-        Ok(Self { ids })
+        Ok(Self { ids, arity })
     }
 }
 
@@ -815,5 +828,5 @@ pub(super) fn declare_helpers(
         let fref = module.declare_func_in_func(*fid, func);
         refs.insert(*name, fref);
     }
-    HelperRefs { refs }
+    HelperRefs { refs, arity: ids.arity.clone() }
 }

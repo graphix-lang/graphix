@@ -22,10 +22,10 @@
 1	cast-wire-jul2026/00_let_bound_cast.gx
 1	cast-wire-jul2026/01_narrow_cast_qop.gx
 1	cast-wire-jul2026/02_narrow_cast_saturation.gx
-2	catch-callsite-coverage-aug2026/00_shared_kernel_ignores_coverage.gx
+3	catch-callsite-coverage-aug2026/00_shared_kernel_ignores_coverage.gx
 0	catch-stmt-aug2026/00_constraint_too_narrow.gx
-2	catch-stmt-aug2026/01_shadowing_rethrow.gx
-2	catch-stmt-aug2026/02_toplevel_file_catch.gx
+4	catch-stmt-aug2026/01_shadowing_rethrow.gx
+3	catch-stmt-aug2026/02_toplevel_file_catch.gx
 1	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
 0	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
 1	composite-qop-jun2026/01_composite_success_qop_segv.gx
@@ -148,9 +148,10 @@
 3	prevlen-word-jul2026/01_nested_ragged_resize.gx
 1	prevlen-word-jul2026/02_callee_in_loop_prevlen.gx
 0	qop-bare-error-jul2026/01_bare_error_dollar_garbage.gx
+3	qop-deliver-dyncall-arity-aug2026/00_handler_ful_qop_defuses.gx
 2	qop-nested-union-jul2026/01_string_union_elem_index_qop.gx
 3	qop-scalar-error-leak-aug2026/00_handler_less_qop_leaks.gx
-2	qop-tailloop-frame-swallow-aug2026/00_qop_raise_inside_tail_loop.gx
+3	qop-tailloop-frame-swallow-aug2026/00_qop_raise_inside_tail_loop.gx
 2	quiesce-verdict-jul2026/01_ref_echo_const_result.gx
 2	rebind-recompile-jul2026/01_trycatch_recompile_name_capture.gx
 0	rec-rtype-unchecked-jul2026/01_rec_rtype_error_arm.gx
@@ -205,8 +206,8 @@
 3	soak-jul2026/11_fold_slot_taint_recovery.gx
 1	soak-jul2026/12_fold_body_div0_recovery.gx
 0	soak-jul2026/13_marshal_shape_mismatch_survives.gx
-2	soak-jul2026/14_phantom_error_delivery.gx
-2	soak-jul2026/15_phantom_error_delivery_min.gx
+4	soak-jul2026/14_phantom_error_delivery.gx
+3	soak-jul2026/15_phantom_error_delivery_min.gx
 1	soak-jul2026/16_sample_clone_wake_root.gx
 0	soak-jul2026/17_sample_clone_wake_root_min.gx
 1	soak-jul2026/18_value_qop_live_chain.gx
@@ -243,7 +244,7 @@
 1	source-e-jun2026/09_i64_10_i64_0.gx
 1	source-e-jun2026/10_let_words_alpha_beta_first_words_0.gx
 1	sprintf-error-return-shape-aug2026/00_sprintf_missing_arg_dropped.gx
-2	stale-error-deliver-jul2026/01_stale_arith_redeliver.gx
+3	stale-error-deliver-jul2026/01_stale_arith_redeliver.gx
 2	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
 0	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx

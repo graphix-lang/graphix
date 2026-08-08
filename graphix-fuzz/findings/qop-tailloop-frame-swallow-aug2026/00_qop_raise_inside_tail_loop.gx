@@ -1,3 +1,22 @@
+// FIXED 2026-08-08 on the NODE-WALK side, as the direction note below
+// predicted: a handler delivery is an outward-bound event, so
+// `Qop::update` now parks it in `ExecCtx::frame_outbox` when
+// `frame_depth > 0` and `GXLambda::update` drains it into the real
+// `event.variables` once the frames unwind (nested frames bubble one
+// level per unwind). Both engines now emit (0, 10) then (1, 10).
+//
+// Note on how this hid: 9d042cbc's message claims it made this program
+// AGREE. It did — but by accident and for the wrong reason. That same
+// commit grew `graphix_dyncall` to five parameters without updating
+// `emit_qop_deliver`, so cranelift rejected the function and this
+// region stopped fusing; both engines then node-walked and agreed on
+// the swallowed handler. Fixing the arity
+// (findings/qop-deliver-dyncall-arity-aug2026) re-exposed the real bug
+// immediately, which is the argument for `fusecheck`: a de-fusion that
+// silences a divergence reads exactly like a fix.
+//
+// ── original report ──────────────────────────────────────────────────
+//
 // A `?` that raises INSIDE a tail-loop iteration: the node-walk's
 // handler delivery is swallowed by the frame-private variables map, so
 // the catch handler never runs. The JIT delivers it.

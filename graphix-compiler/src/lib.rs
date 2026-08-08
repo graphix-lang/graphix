@@ -1597,6 +1597,19 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// dispatch saves/resets it on entry and applies it in the
     /// result-tag derivation (`node/lambda.rs`).
     pub(crate) tail_scrut_fired: bool,
+    /// Variable deliveries raised inside an evaluation frame that must
+    /// ESCAPE it. A frame runs the body against a PRIVATE
+    /// `event.variables` map, which is the point — an interior publish
+    /// dies with the pass. But an error delivery to a `catch` handler
+    /// is outward-bound, like a `<-` to a binding outside the lambda,
+    /// and the private map swallowed it, so the handler never ran
+    /// (`findings/qop-tailloop-frame-swallow-aug2026`; the kernel has
+    /// no frame, so its QopDeliver wrote the real variable and the two
+    /// engines disagreed). `Qop::update` parks the delivery here
+    /// instead; `GXLambda::update` drains it into the real map once the
+    /// frames unwind. Nested frames bubble: the drain only runs at
+    /// `frame_depth == 0`.
+    pub(crate) frame_outbox: Vec<(BindId, Value)>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1644,6 +1657,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             frame_depth: 0,
             frame_init: false,
             tail_scrut_fired: false,
+            frame_outbox: Vec::new(),
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

@@ -765,19 +765,20 @@ fn emit_qop_deliver(
     };
     let push = cx.helper(push_name)?;
     cx.b.ins().call(push, &[buf, clean, cv.payload]);
-    let dyncall = cx.helper("graphix_dyncall")?;
     // Region-wide slot index: the site's local fn_index plus this body's
     // base offset into the combined `dyn_slots` table.
     let region_idx = info.fn_index + cx.fn_index_offset();
     let fn_idx = cx.b.ins().iconst(types::I32, region_idx as i64);
     // QopDeliverApply returns Value::Null; the pair is discarded.
     // Taint mask 0: the single error arg was gated on `deliverable`
-    // (real, untainted) before this emits. Site word 0:
-    // `QopDeliverApply` is stateless by construction (handler_id and
+    // (real, untainted) before this emits. Stale mask 0: same gate —
+    // the arg is a genuine production, so it delivers FIRED. Site word
+    // 0: `QopDeliverApply` is stateless by construction (handler_id and
     // spec are per-slot config), so site identity buys nothing.
     let mask0 = cx.b.ins().iconst(types::I64, 0);
+    let stale0 = cx.b.ins().iconst(types::I64, 0);
     let site0 = cx.b.ins().iconst(types::I64, 0);
-    cx.b.ins().call(dyncall, &[fn_idx, buf, mask0, site0]);
+    cx.call_helper("graphix_dyncall", &[fn_idx, buf, mask0, stale0, site0])?;
     // `QopDeliverApply::update` structurally returns `Some(Null)` (the
     // marshalled arg is always present), but every dyncall site clears
     // the pending flag so it can only ever mean "genuine abort".

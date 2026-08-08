@@ -557,6 +557,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     ctx.frame_init = prev_fi;
                     event.init = prev;
                     mem::swap(&mut event.variables, &mut *frame);
+                    // Deliver anything the pass raised that must escape
+                    // the frame (a `catch` handler's error — see
+                    // `ExecCtx::frame_outbox`). `event.variables` is
+                    // the outer map again here; at depth 0 that is the
+                    // real event, so nested frames bubble outward one
+                    // level per unwind instead of landing in an
+                    // intermediate private map that would swallow them
+                    // just the same.
+                    if ctx.frame_depth == 0 && !ctx.frame_outbox.is_empty() {
+                        for (id, v) in mem::take(&mut ctx.frame_outbox) {
+                            match event.variables.entry(id) {
+                                MapEntry::Vacant(slot) => {
+                                    slot.insert(TagValue::fired(v));
+                                }
+                                MapEntry::Occupied(_) => ctx.rt.set_var(id, v),
+                            }
+                        }
+                    }
                     res
                 };
                 let mine = matches!(
