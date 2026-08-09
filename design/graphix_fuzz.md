@@ -359,6 +359,44 @@ key** — prevents reduction "succeeding" by turning bug A into bug B (a differe
 B becomes its own seed). Budget-cap (~2000 oracle calls / 60s); ship the
 fixpoint reached. Accept partial minima — a 40-node reproducer beats 200 lines.
 
+### 6.1 What is built (2026-08-09)
+
+The v1 reducer was operator-poor and, more damagingly, restarted its whole
+scan on the first accepted reduction — so on a big finding the budget went
+entirely into re-testing the head. On the aug08d fire-gate witness (6157 bytes)
+200 checks bought exactly ONE reduction. Three changes:
+
+- **Statement drop** (`mutate::statements` / `drop_statement`). Generated
+  programs are long runs of interdependent `let`s; the only thing hoist and
+  constant-collapse can do to such a run is replace the block with one of its
+  statements, a candidate that essentially never survives. Dropping one
+  statement at a time walks the run down instead. Each drop is keyed by the
+  STATEMENT's preorder index, NOT the block's — that is what lets a whole round
+  of them apply together, since statements are disjoint where N edits keyed at
+  the shared block would all claim the same subtree.
+- **Rounds, not restarts** (`shrink`). One scan tries every reduction
+  widest-extent-first, skips anything inside an already-accepted extent (so the
+  accepted set is pairwise disjoint by construction), and applies them all at
+  once. Each was verified alone, so the composite nearly always holds; when it
+  doesn't, halving recovers a prefix, and a single reduction needs no re-check —
+  a round that found anything always makes progress.
+- **Module section internals** (`mutate::parse_items` / `render_items`). Phase
+  1.5 can only drop a section WHOLE, so a divergence that genuinely needs
+  `m0::f` kept every unrelated binding in `m0.gx` with it. A section is an item
+  SEQUENCE, so it shrinks as a `Do` and renders back bare. Body and sections
+  cycle with an equal slice of the remaining budget per lap: a body that could
+  absorb the whole budget must not starve the sections, which are most of a
+  multi-file finding's bytes once the body is down.
+
+Budgets are oracle checks: `CAMPAIGN_MINIMIZE_BUDGET` (80) buys a legible
+reproducer per finding, and `graphix-fuzz minimize <file> [budget]` defaults to
+4000 because the last bytes cost the most checks. Progress goes to stderr,
+which the campaign's `minimize-one` child has null'd — interactive-only by
+construction.
+
+Still unbuilt from the operator list above: inline-let, drop-select-arm,
+shrink-collections, numeric-shrink-toward-boundary.
+
 ## 7. Triage, dedup, and closing the loop
 
 **Dedup before minimizing** (minimization is the expensive step; a fuzzer

@@ -29,7 +29,10 @@ pub mod trace;
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use graphix_compiler::{CFlag, FusionStats, expr::VfsResolver};
+use graphix_compiler::{
+    CFlag, FusionStats,
+    expr::{Expr, VfsResolver},
+};
 use graphix_package::Package;
 use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
 use graphix_rt::{GXEvent, NoExt};
@@ -1273,10 +1276,11 @@ fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
 /// injections within an epoch, simplify literals toward 0/1. Caps stay
 /// FIXED (they're the trace budgets both modes ran under; changing
 /// them mid-minimize changes what "the same bug" means). Then the body
-/// shrinks by subtree hoist / constant replacement, keeping any
-/// reduction that still parses and reproduces the SAME divergence
-/// bucket. Returns the minimized wrapper and the number of oracle
-/// checks spent (capped by `budget`). Accepts partial minima.
+/// — and then each `.gx` section's own item sequence — shrinks by
+/// [`shrink`], keeping any reduction that still parses and reproduces
+/// the SAME divergence bucket. Returns the minimized wrapper and the
+/// number of oracle checks spent (capped by `budget`). Accepts partial
+/// minima.
 pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, usize) {
     let d0 = match check(code, timeout).await {
         Some(d) => d,
@@ -1311,59 +1315,231 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
         }
         break;
     }
-    // Phase 1.5 — file-section reductions: drop each module's section
-    // pair, then each interface alone (no .gxi = everything public —
-    // the divergence often survives the simpler layout).
-    'files: while calls < budget && !files.is_empty() {
-        let body_text = current.to_string();
-        for cand in file_reductions(&files) {
-            if calls >= budget {
-                break 'files;
-            }
-            calls += 1;
-            let text = sched.render(&files::render(&body_text, &cand));
-            if let Some(d) = check(&text, timeout).await {
-                if bucket(&d) == target {
+    // Phase 2 — whole-section drops, then the body AST, then each
+    // remaining `.gx` section's own item sequence, LAPPED until nothing
+    // moves. The three feed each other: a whole-section drop only
+    // succeeds once the body stops referring to it, a section's
+    // internals only matter for a section that survives, and a body
+    // reduction can strand a whole module. A section is an item
+    // sequence, so it shrinks as a `Do` (`mutate::parse_items`) and
+    // renders back bare; interfaces are left to the whole-drop pass
+    // (`.gxi` is a different grammar).
+    //
+    // Each subject gets an equal slice of the remaining budget per lap:
+    // a body that could absorb the entire budget must not starve the
+    // sections, which are most of a multi-file finding's bytes once the
+    // body is down.
+    while calls < budget {
+        let before = sched.render(&files::render(&current.to_string(), &files));
+        // Drop each module's section pair, then each interface alone
+        // (no .gxi = everything public — the divergence often survives
+        // the simpler layout).
+        'files: while calls < budget && !files.is_empty() {
+            let body_text = current.to_string();
+            for cand in file_reductions(&files) {
+                if calls >= budget {
+                    break 'files;
+                }
+                calls += 1;
+                let text = sched.render(&files::render(&body_text, &cand));
+                if let Some(d) = check(&text, timeout).await
+                    && bucket(&d) == target
+                {
                     files = cand;
                     continue 'files; // restart from the smaller file set
                 }
             }
-        }
-        break;
-    }
-    // Phase 2 — body AST HDD, every candidate re-wrapped in the
-    // (now minimal) schedule + file set.
-    loop {
-        let n = mutate::node_count(&current);
-        let cur_text = current.to_string();
-        let mut reduced = false;
-        'scan: for t in 0..n {
-            for repl in mutate::reductions(&current, t) {
-                if calls >= budget {
-                    break 'scan;
-                }
-                let cand = mutate::replace(&current, t, &repl).to_string();
-                if cand == cur_text || mutate::parse(&cand).is_none() {
-                    continue;
-                }
-                calls += 1;
-                let text = sched.render(&files::render(&cand, &files));
-                if let Some(d) = check(&text, timeout).await {
-                    if bucket(&d) == target {
-                        if let Some(e) = mutate::parse(&cand) {
-                            current = e;
-                            reduced = true;
-                            break 'scan; // restart on the smaller program
-                        }
-                    }
-                }
-            }
-        }
-        if !reduced || calls >= budget {
             break;
+        }
+        let sections: Vec<usize> =
+            (0..files.len()).filter(|&i| files[i].0.ends_with(".gx")).collect();
+        let lap = ((budget - calls) / (1 + sections.len())).max(1);
+        let cap = budget.min(calls + lap);
+        current = {
+            let files = &files;
+            let sched = &sched;
+            shrink(
+                current,
+                &|e| {
+                    let body = e.to_string();
+                    mutate::parse(&body)?;
+                    Some(sched.render(&files::render(&body, files)))
+                },
+                &target,
+                timeout,
+                &mut calls,
+                cap,
+            )
+            .await
+        };
+        for &i in &sections {
+            let Some(items) = mutate::parse_items(&files[i].1) else {
+                continue;
+            };
+            let cap = budget.min(calls + lap);
+            let reduced = {
+                let sched = &sched;
+                let files = &files;
+                let body = current.to_string();
+                shrink(
+                    items,
+                    &|e| {
+                        let text = mutate::render_items(e);
+                        mutate::parse_items(&text)?;
+                        let mut fs = files.to_vec();
+                        fs[i].1 = text;
+                        Some(sched.render(&files::render(&body, &fs)))
+                    },
+                    &target,
+                    timeout,
+                    &mut calls,
+                    cap,
+                )
+                .await
+            };
+            files[i].1 = mutate::render_items(&reduced);
+        }
+        if sched.render(&files::render(&current.to_string(), &files)) == before {
+            break; // every subject is at a fixpoint
         }
     }
     (sched.render(&files::render(&current.to_string(), &files)), calls)
+}
+
+/// One reduction of an AST: either replace a node, or drop a statement
+/// from a block. `at`/`pos` say where to apply it; `start`/`end` are the
+/// preorder extent it consumes, which is how independent reductions are
+/// told apart — for a drop that is the STATEMENT's extent, not the
+/// block's, so the drops found in one scan are disjoint and compose.
+struct Op {
+    start: usize,
+    end: usize,
+    at: usize,
+    pos: usize,
+    repl: Option<Expr>,
+}
+
+impl Op {
+    fn apply(&self, prog: &Expr) -> Expr {
+        match &self.repl {
+            Some(r) => mutate::replace(prog, self.at, r),
+            None => mutate::drop_statement(prog, self.at, self.pos),
+        }
+    }
+}
+
+/// Apply a round's reductions. Descending `(at, pos)`, so each one acts
+/// at a coordinate no earlier one has shifted: the ops are pairwise
+/// disjoint, and dropping a later statement leaves earlier positions in
+/// the same block untouched.
+fn apply_ops(prog: &Expr, ops: &[Op]) -> Expr {
+    let mut order: Vec<&Op> = ops.iter().collect();
+    order.sort_by_key(|o| std::cmp::Reverse((o.at, o.pos)));
+    let mut out = prog.clone();
+    for o in order {
+        out = o.apply(&out);
+    }
+    out
+}
+
+/// Every reduction to try against `prog`, widest extent first: each
+/// block statement dropped, and each node replaced by a child or a
+/// constant.
+fn ops(prog: &Expr) -> Vec<Op> {
+    let sizes = mutate::sizes(prog);
+    let mut out: Vec<Op> = mutate::statements(prog)
+        .into_iter()
+        .map(|(at, pos, stmt)| Op {
+            start: stmt,
+            end: stmt + sizes[stmt],
+            at,
+            pos,
+            repl: None,
+        })
+        .collect();
+    for (at, repls) in mutate::reductions_all(prog).into_iter().enumerate() {
+        for repl in repls {
+            out.push(Op { start: at, end: at + sizes[at], at, pos: 0, repl: Some(repl) });
+        }
+    }
+    // Drops before replacements, each widest-first. Widest-first alone
+    // spends a small budget on the least likely candidates: collapsing
+    // a near-root subtree to a literal has to typecheck in context and
+    // almost never survives, while dropping a statement just removes
+    // one — on generated programs that is where the yield is, and the
+    // campaign's budget only stretches to the head of this list.
+    out.sort_by_key(|o| (o.repl.is_some(), std::cmp::Reverse(o.end - o.start)));
+    out
+}
+
+/// Hierarchical delta-debugging on one AST, to a fixpoint or the
+/// budget. `build` renders a candidate to the full program text it must
+/// be checked as (`None` if the candidate is malformed).
+///
+/// The round structure is what makes the budget go anywhere. A scan
+/// tries every reduction and keeps EVERY one that works, then applies
+/// them all at once; the old reducer restarted the scan on the first
+/// success, so a big program spent its whole budget re-testing its
+/// head. Reductions are tried widest-extent-first and anything inside
+/// an accepted extent is skipped, so the accepted set is pairwise
+/// disjoint by construction — and since each was verified alone, the
+/// composite almost always holds. When it doesn't, halving recovers a
+/// prefix; a single op needs no re-check, so a round that found
+/// anything always makes progress.
+async fn shrink(
+    mut current: Expr,
+    build: &impl Fn(&Expr) -> Option<String>,
+    target: &(&'static str, u8, u8, Option<trace::TraceDiff>),
+    timeout: Duration,
+    calls: &mut usize,
+    budget: usize,
+) -> Expr {
+    // A candidate must render SHORTER than what it replaces, not merely
+    // differently. Several reductions are identities on some nodes
+    // (replacing `i64:0` by the constant `i64:0`, dropping a statement
+    // from a node that isn't a block), and an identity reproduces the
+    // divergence by definition — so without this the scan "succeeds"
+    // forever on a program it never changes. Strictness also makes
+    // termination obvious: every accepted round strictly shrinks.
+    let hits = async |e: &Expr, cur: usize, calls: &mut usize| match build(e) {
+        Some(text) if text.len() < cur => {
+            *calls += 1;
+            check(&text, timeout).await.is_some_and(|d| bucket(&d) == *target)
+        }
+        _ => false,
+    };
+    while *calls < budget {
+        let Some(cur) = build(&current).map(|t| t.len()) else { break };
+        let mut kept: Vec<Op> = Vec::new();
+        for op in ops(&current) {
+            if *calls >= budget {
+                break;
+            }
+            if kept.iter().any(|k| op.start < k.end && k.start < op.end) {
+                continue; // overlaps an accepted reduction
+            }
+            if hits(&op.apply(&current), cur, calls).await {
+                kept.push(op);
+            }
+        }
+        if kept.is_empty() {
+            break;
+        }
+        // Widest-first already, so halving keeps the best reductions.
+        while kept.len() > 1 && !hits(&apply_ops(&current, &kept), cur, calls).await {
+            kept.truncate(kept.len() / 2);
+        }
+        current = apply_ops(&current, &kept);
+        // Progress to stderr: a big finding is minutes of silence
+        // otherwise. The campaign's `minimize-one` child runs with
+        // stderr null, so this is interactive-only by construction.
+        eprintln!(
+            "  minimize: {} checks, {} bytes",
+            calls,
+            build(&current).map_or(0, |t| t.len())
+        );
+    }
+    current
 }
 
 /// The file-section shrink candidates for one greedy round, most
@@ -2397,6 +2573,12 @@ async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
     }
 }
 
+/// Oracle-check budget for the CAMPAIGN's minimizer. Interactive
+/// `graphix-fuzz minimize` takes its own (much larger) budget: a soak
+/// records thousands of findings and pays this per finding, so it buys
+/// a legible reproducer, not a minimal one.
+pub const CAMPAIGN_MINIMIZE_BUDGET: usize = 80;
+
 /// Minimize a diverging program in a CHILD process (`graphix-fuzz
 /// minimize-one <out-path>`: program on stdin, the reduced program
 /// written to `<out-path>` — NOT stdout, which the programs the
@@ -2425,10 +2607,11 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(prog.as_bytes()).await;
     }
-    // Worst case the 80-check budget is all bottom programs sleeping the
+    // Worst case the whole budget is bottom programs sleeping the
     // per-mode timeout — bound it generously, the minims pool is
     // concurrent and a kill falls back to the unminimized mutant.
-    let deadline = timeout * 2 * 80 + Duration::from_secs(60);
+    let deadline =
+        timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60);
     let ok = matches!(
         tokio::time::timeout(deadline, child.wait_with_output()).await,
         Ok(Ok(out)) if out.status.success()
@@ -2659,7 +2842,7 @@ async fn run_pool(
                                         .await
                                         .unwrap_or_else(|| prog.clone())
                                 } else {
-                                    minimize(&prog, timeout, 80).await.0
+                                    minimize(&prog, timeout, CAMPAIGN_MINIMIZE_BUDGET).await.0
                                 };
                                 if corpus.record(&d, &prog, &min) {
                                     println!("DIVERGENCE — {}", d.bisect());

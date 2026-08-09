@@ -17,8 +17,9 @@
 //! Determinism: a seeded xorshift RNG, so any run replays from its seed.
 
 use graphix_compiler::expr::{
-    ApplyExpr, BindExpr, Expr, ExprKind, SelectExpr, StructExpr, StructWithExpr,
-    CatchExpr, StructurePattern, parser::parse_one,
+    ApplyExpr, BindExpr, CatchExpr, Expr, ExprKind, Origin, SelectExpr, StructExpr,
+    StructWithExpr, StructurePattern,
+    parser::{self, parse_one},
 };
 use netidx::utils::Either;
 use netidx_value::Value;
@@ -722,9 +723,50 @@ pub fn parse(s: &str) -> Option<Expr> {
     parse_one(s).ok()
 }
 
+/// Parse a top-level item SEQUENCE — a `.gx` module section, which is
+/// a run of statements rather than the single expression `parse` takes.
+/// Returned as a `Do` so one set of reduction machinery serves both;
+/// render it back with [`render_items`], not `to_string`.
+pub fn parse_items(s: &str) -> Option<Expr> {
+    let items = parser::parse(Origin::from_str(s)).ok()?;
+    let pos = items.first()?.pos;
+    Some(Expr::new(ExprKind::Do { exprs: items }, pos))
+}
+
+/// Render a [`parse_items`] `Do` back to module-section text: the items
+/// bare and semicolon-separated, NOT wrapped in the block braces
+/// `to_string` would emit.
+pub fn render_items(e: &Expr) -> String {
+    match &e.kind {
+        ExprKind::Do { exprs } => {
+            exprs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(";\n")
+        }
+        _ => e.to_string(),
+    }
+}
+
 /// Total node count (preorder), so a reduction target can be chosen.
 pub fn node_count(e: &Expr) -> usize {
     count(e)
+}
+
+/// Preorder subtree sizes: `sizes(e)[i]` is the node count rooted at
+/// preorder index `i`, so `i..i + sizes[i]` is that node's extent. The
+/// reducer needs it to tell INDEPENDENT targets apart — two reductions
+/// compose only if neither sits inside the other.
+pub fn sizes(e: &Expr) -> Vec<usize> {
+    let mut out = Vec::new();
+    size_at(e, &mut out);
+    out
+}
+
+fn size_at(e: &Expr, out: &mut Vec<usize>) -> usize {
+    let here = out.len();
+    out.push(0);
+    let mut n = 1;
+    for_each_child(e, &mut |c| n += size_at(c, out));
+    out[here] = n;
+    n
 }
 
 /// Replace the node at preorder index `target` with `repl`.
@@ -733,23 +775,156 @@ pub fn replace(prog: &Expr, target: usize, repl: &Expr) -> Expr {
     replace_at(prog, target, &mut ctr, repl)
 }
 
-/// Candidate reductions for the node at preorder index `target`:
-/// each of its direct children (hoist a sub-expression up), plus a few
-/// minimal constants (collapse a whole computation to a literal). The
+/// Candidate replacements for EVERY preorder target, in one walk —
+/// `out[i]` is the list for the node at index `i`: each of its direct
+/// children (hoist a sub-expression up), plus a few minimal constants
+/// (collapse a whole computation to a literal). Type-blind — the
 /// reducer keeps any candidate that still parses, still typechecks, and
-/// reproduces the same divergence — so these are type-blind here and the
-/// oracle filters them.
-pub fn reductions(prog: &Expr, target: usize) -> Vec<Expr> {
+/// reproduces the same divergence, so the oracle filters them.
+pub fn reductions_all(prog: &Expr) -> Vec<Vec<Expr>> {
     let mut nodes = Vec::new();
     collect_preorder(prog, &mut nodes);
-    if target >= nodes.len() {
-        return Vec::new();
-    }
-    let node = &nodes[target];
+    nodes
+        .iter()
+        .map(|node| {
+            let mut out = Vec::new();
+            for_each_child(node, &mut |c| out.push(c.clone()));
+            for v in [Value::I64(0), Value::F64(0.0), Value::Bool(true), Value::Null] {
+                out.push(Expr::new(ExprKind::Constant(v), node.pos));
+            }
+            out
+        })
+        .collect()
+}
+
+/// Every droppable block statement: `(block's preorder index, position
+/// in the block, the statement's OWN preorder index)`. Blocks with one
+/// statement are skipped — dropping it empties the block.
+///
+/// The statement drop is the operator that does the work on generated
+/// programs. They are long runs of interdependent `let`s, and the only
+/// thing [`reductions_all`] can do to such a run is hoist one child of
+/// the block, collapsing the whole run to a single statement — a
+/// candidate that essentially never survives. Dropping one statement at
+/// a time walks the run down instead. Keying each drop by the
+/// STATEMENT's index (not the block's) is what lets a whole round of
+/// them apply at once: statements are disjoint, so N drops found in one
+/// scan compose, where N edits keyed at the shared block would all
+/// claim the same subtree.
+pub fn statements(e: &Expr) -> Vec<(usize, usize, usize)> {
     let mut out = Vec::new();
-    for_each_child(node, &mut |c| out.push(c.clone()));
-    for v in [Value::I64(0), Value::F64(0.0), Value::Bool(true), Value::Null] {
-        out.push(Expr::new(ExprKind::Constant(v), node.pos));
-    }
+    let mut ctr = 0;
+    statements_at(e, &mut ctr, &mut out);
     out
+}
+
+fn statements_at(e: &Expr, ctr: &mut usize, out: &mut Vec<(usize, usize, usize)>) {
+    let here = *ctr;
+    *ctr += 1;
+    if let ExprKind::Do { exprs } = &e.kind
+        && exprs.len() >= 2
+    {
+        // `for_each_child` visits a block's statements in order, so
+        // their preorder indices run consecutively from `here + 1`.
+        let mut idx = here + 1;
+        for (pos, c) in exprs.iter().enumerate() {
+            out.push((here, pos, idx));
+            idx += count(c);
+        }
+    }
+    for_each_child(e, &mut |c| statements_at(c, ctr, out));
+}
+
+/// Drop the statement at `pos` from the block at preorder index `at`.
+/// Returns `prog` unchanged if that node isn't a block (the caller's
+/// parse check still guards a drop that empties one).
+pub fn drop_statement(prog: &Expr, at: usize, pos: usize) -> Expr {
+    let mut nodes = Vec::new();
+    collect_preorder(prog, &mut nodes);
+    let Some(ExprKind::Do { exprs }) = nodes.get(at).map(|e| &e.kind) else {
+        return prog.clone();
+    };
+    let kept: Vec<Expr> = exprs
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| *k != pos)
+        .map(|(_, e)| e.clone())
+        .collect();
+    let block = Expr::new(ExprKind::Do { exprs: aslice(kept) }, nodes[at].pos);
+    replace(prog, at, &block)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    const PROG: &str =
+        "{let a = i64:1; let b = {let c = i64:2; c + a}; let d = [a, b]; a + b}";
+
+    fn preorder(e: &Expr) -> Vec<Expr> {
+        let mut v = Vec::new();
+        collect_preorder(e, &mut v);
+        v
+    }
+
+    /// The reducer's whole disjointness argument rests on `sizes[i]`
+    /// being the extent of node `i` in the SAME preorder `replace` and
+    /// `statements` index by — a drift here silently composes
+    /// overlapping reductions.
+    #[test]
+    fn sizes_are_preorder_extents() {
+        let e = parse(PROG).unwrap();
+        let nodes = preorder(&e);
+        let sz = sizes(&e);
+        assert_eq!(sz.len(), nodes.len());
+        for (i, n) in nodes.iter().enumerate() {
+            let sub = preorder(n);
+            assert_eq!(sz[i], sub.len(), "size at {i}");
+            for (k, s) in sub.iter().enumerate() {
+                assert_eq!(s.to_string(), nodes[i + k].to_string(), "extent {i}+{k}");
+            }
+        }
+    }
+
+    #[test]
+    fn statement_targets_agree_with_drops() {
+        let e = parse(PROG).unwrap();
+        let nodes = preorder(&e);
+        let stmts = statements(&e);
+        assert_eq!(stmts.len(), 4 + 2); // outer block, inner block
+        for (block, pos, stmt) in stmts {
+            let ExprKind::Do { exprs } = &nodes[block].kind else {
+                panic!("statement {stmt}'s block {block} is not a block")
+            };
+            assert_eq!(exprs[pos].to_string(), nodes[stmt].to_string());
+            let mut want: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
+            want.remove(pos);
+            // Dropping a statement can't move its own block: the
+            // block's children come after it in preorder.
+            let after = preorder(&drop_statement(&e, block, pos));
+            let ExprKind::Do { exprs } = &after[block].kind else { panic!() };
+            let got: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn items_round_trip() {
+        let src = "let a: i64 = i64:1;\nlet b = |x: i64| -> i64 x + a;\nb(a)";
+        let e = parse_items(src).unwrap();
+        assert!(matches!(&e.kind, ExprKind::Do { exprs } if exprs.len() == 3));
+        assert!(parse_items(&render_items(&e)).is_some());
+        // A section is rendered BARE — block braces would not be a
+        // module file, and the section text is spliced back verbatim.
+        assert!(!render_items(&e).starts_with('{'));
+        let dropped = render_items(&drop_statement(&e, 0, 1));
+        assert!(!dropped.contains("|x: i64|"));
+        assert!(parse_items(&dropped).is_some());
+    }
+
+    #[test]
+    fn reductions_cover_every_node() {
+        let e = parse(PROG).unwrap();
+        assert_eq!(reductions_all(&e).len(), node_count(&e));
+    }
 }

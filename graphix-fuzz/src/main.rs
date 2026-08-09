@@ -9,8 +9,8 @@
 
 use anyhow::{Result, bail};
 use graphix_fuzz::{
-    Corpus, Mode, Outcome, check, fuzz, generate_campaign, minimize,
-    regression_corpus_len, run_regression,
+    CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, Outcome, check, fuzz, generate_campaign,
+    minimize, regression_corpus_len, run_regression,
 };
 use std::{
     sync::{Arc, LazyLock},
@@ -764,7 +764,8 @@ async fn main() -> Result<()> {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("minimize-one requires an output path"))?;
             let code = read_stdin()?;
-            let (min, _) = minimize(code.trim(), campaign_timeout(), 80).await;
+            let (min, _) =
+                minimize(code.trim(), campaign_timeout(), CAMPAIGN_MINIMIZE_BUDGET).await;
             std::fs::write(&out_path, min)?;
         }
         Some(cmd @ ("generate" | "fuzz")) => {
@@ -830,10 +831,15 @@ async fn main() -> Result<()> {
         Some("minimize") => {
             let path = match args.get(2) {
                 Some(p) => p,
-                None => bail!("usage: graphix-fuzz minimize <file>"),
+                None => bail!("usage: graphix-fuzz minimize <file> [budget]"),
             };
+            // The budget is oracle CHECKS, and a big finding wants a big
+            // one: reduction is greedy per round, so the last bytes cost
+            // the most checks. Interactive, so the default is generous
+            // (the campaign's `minimize-one` keeps its own tight budget).
+            let budget = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4000);
             let code = std::fs::read_to_string(path)?;
-            let (min, calls) = minimize(code.trim(), timeout(), 200).await;
+            let (min, calls) = minimize(code.trim(), timeout(), budget).await;
             match check(&min, timeout()).await {
                 None => println!("no divergence to minimize (program agrees)"),
                 Some(d) => {
