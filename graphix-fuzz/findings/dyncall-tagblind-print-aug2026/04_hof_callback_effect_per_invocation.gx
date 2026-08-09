@@ -1,0 +1,31 @@
+// FIXED 2026-08-08 — 00's class inside a collection loop, where it
+// multiplied: a callback's effect ran PER ELEMENT PER INVOCATION while
+// the loop's value channel correctly stayed quiet.
+//
+//   interp: @P1 @P2 @R(0, 2) @R(1, 2) @R(2, 2) @R(3, 2)
+//   jit:    @P1 @P2 @R(0, 2) @P1 @P2 @R(1, 2) @P1 @P2 @R(2, 2) ...
+//
+// The source array is CONSTANT, so its slots fire once at init and the
+// node-walk's per-position callback runs once each. The value channel
+// agreed perfectly in both modes — @R is identical — which is what made
+// this pure effect divergence, 4x here and unbounded in a long-running
+// program, and invisible to a value-only oracle.
+//
+// The in-loop half needed care. Delivery inside a scaffold loop stays
+// all-fired: those sites are the shared key-0 bucket, one inner Apply
+// serving every position, and a stale delivery there makes each slot
+// ride the previous slot's cached result. So the FIRE GATE is computed
+// from the raw per-iteration arg discs instead, which decouples it from
+// the delivery masks. It needs no separate "did the source fire" term:
+// `elem_disc` already folds the loop source's STALE bit onto every
+// bound element, so an argument derived from the element carries it.
+{
+  let n = 0;
+  select n { x if x < 3 => n <- (x ~ n) + 1, _ => never() };
+  let a = [i64:1, i64:2];
+  let r =
+  #[native]
+  { let m = array::map(a, |x| { println("@P[x]"); x * i64:2 }); (n, array::len(m)) };
+  println("@R[r]");
+  i64:0
+}

@@ -20,7 +20,7 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, clean_disc,
+        CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
         emit_scalar_taint_cache, emit_untainted_i64, emit_value_taint_cache, is_tainted,
         propagate_flags, scalar_disc, taint_if, value_disc,
     },
@@ -298,10 +298,65 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
     let site_word = emit_dyncall_site_word(cx);
+    // THE FIRE GATE. Call the builtin only if some argument actually
+    // fired, or the invocation is an init view. A builtin whose
+    // arguments have not changed cannot produce a new value, and
+    // calling it anyway is what made a fused region re-run
+    // per-invocation effects the node-walk runs once
+    // (dyncall-tagblind-print-aug2026). Gated off, the dispatcher takes
+    // the pending path below and the site rides its cached result
+    // through the taint cache — the ride already exists, so this adds
+    // no state.
+    //
+    // Computed from the RAW arg discs, which decouples it from the
+    // delivery masks: in a scaffold loop those are force-0'd so every
+    // slot re-evaluates with its own position's args (aug08a), but the
+    // gate still reads the honest per-iteration discs. It needs no
+    // separate "did the source fire" term either — `elem_disc` already
+    // folds the loop source's STALE bit onto every bound element, so an
+    // arg derived from the element carries it.
+    //
+    // `init_flag()` is the EFFECTIVE init (kernel init or a
+    // becoming-selected arm's override), which is also what covers
+    // every first-reach case: a site first evaluated at kernel init, in
+    // a newly woken arm, or in a callee whose first-ever call forces
+    // its init flag. That is why no separate "have I ever produced"
+    // term is needed to keep the ride honest.
+    let mut any_fired = cx.b.ins().iconst(types::I64, 0);
+    for d in arg_taint_discs.iter() {
+        let nf = cx.b.ins().band_imm(*d, TAINT | STALE);
+        let f = cx.b.ins().icmp_imm(IntCC::Equal, nf, 0);
+        let f = cx.b.ins().uextend(types::I64, f);
+        any_fired = cx.b.ins().bor(any_fired, f);
+    }
+    // Inside a scaffold loop, the SOURCE's firing is part of the gate.
+    // `elem_disc` folds the source's STALE bit onto every bound
+    // element, so a site whose args derive from the element already
+    // carries it — but a site that ignores the element does not, and a
+    // fresh position has no cached result to ride. `str::len("abc")` in
+    // a callback over a late-arriving array is the witness: its only
+    // argument is a constant, stale by the time the array shows up, so
+    // an args-only gate skipped the call and the element bottomed.
+    // A constant source never fires, so this does not resurrect the
+    // per-invocation effect the gate exists to stop.
+    let loop_src = (cx.ctx.loop_depth.get() > 0)
+        .then(|| cx.ctx.slot_tables.borrow().last().map(|f| f.src_disc))
+        .flatten();
+    if let Some(src) = loop_src {
+        let nf = cx.b.ins().band_imm(src, TAINT | STALE);
+        let f = cx.b.ins().icmp_imm(IntCC::Equal, nf, 0);
+        let f = cx.b.ins().uextend(types::I64, f);
+        any_fired = cx.b.ins().bor(any_fired, f);
+    }
+    let init = cx.init_flag();
+    let init_nz = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+    let init_nz = cx.b.ins().uextend(types::I64, init_nz);
+    let gate = cx.b.ins().bor(any_fired, init_nz);
     // The buf's in-flight cover ends here: the dispatcher consumes it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
     let call =
-        cx.b.ins().call(dyncall, &[fn_idx_val, buf, taint_mask, stale_mask, site_word]);
+        cx.b.ins()
+            .call(dyncall, &[fn_idx_val, buf, taint_mask, stale_mask, site_word, gate]);
     // Unified Value ABI: `graphix_dyncall` returns the result's
     // genuine (disc, payload) Value pair for every return type; the
     // decode below adapts per the static shape.

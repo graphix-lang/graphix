@@ -54,4 +54,10 @@
 // control-depend on, so the kernel should stay quiet") would need
 // per-dispatch iteration-count memory in the kernel.
 // schedule-v1: cap=8 events=64; in0=i64:0
-{let rec f = |n: i64| -> i64 select n {i64:0 => i64:7, _ => f(n - i64:1)}; f(in0)}
+{
+	let rec f = |n: i64| -> i64 select n {
+		i64:0 => i64:7,
+		_ => f(n - i64:1)
+	};
+	f(in0)
+}

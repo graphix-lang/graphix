@@ -1,0 +1,35 @@
+// The NODE-WALK half of the ruling, and the only witness for it: the
+// print family gated on `is_some()` rather than on the tag.
+//
+// `f` is re-invoked every cycle (its argument expression depends on
+// `n`, which updates), and each invocation runs three loop iterations.
+// Inside an evaluation frame a constant re-delivers STALE on every
+// pass, so reading presence printed three T per cycle. The fused twin
+// printed per invocation for the same reason one level over. Both were
+// tag-blindness, on both engines.
+//
+//   before:  T T T | T T T | T T T | T T T
+//   after:   T T T | (quiet) | (quiet) | (quiet)
+//
+// Ruled 2026-08-08: a print is an effect and the effect belongs to the
+// message ARRIVING. A message that is entirely constant arrives once,
+// so it prints once — the three at init are the init invocation's
+// three activations. Interpolate anything that fires and it prints per
+// update, which is the case just below.
+//
+// The cost is real and was weighed: a constant-message print inside a
+// loop can read as though the compiler hoisted it out of the
+// recursion. The alternative — firing constants per tail-loop
+// iteration — would have meant making the kernel's invocation-uniform
+// `const_stale_gate` iteration-aware, and the two engines have to
+// agree either way.
+{
+  let n = 0;
+  select n { x if x < 3 => n <- (x ~ n) + 1, _ => never() };
+  let rec loop = |k: i64, acc: i64| -> i64
+    select k { i64:0 => acc, _ => { println("T"); loop(k - i64:1, acc + i64:1) } };
+  let r = loop((n - n) + i64:3, i64:0);
+  let s = loop((n - n) + i64:2, n);
+  println("R[r] S[s]");
+  i64:0
+}

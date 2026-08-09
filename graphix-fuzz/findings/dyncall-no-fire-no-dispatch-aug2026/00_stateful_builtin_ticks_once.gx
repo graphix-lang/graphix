@@ -1,0 +1,14 @@
+// The fire gate's positive pin: a builtin is called only when an
+// argument fired (or the invocation is an init view). `count` carries
+// per-invocation state, so calling it with everything masked would
+// still tick it — which is why delivering nothing is not enough and
+// the gate has to suppress the CALL.
+//
+// The counted expression is a constant, so it arrives once and the
+// count stays 1 no matter how many times the kernel is re-invoked.
+{
+  let n = 0;
+  select n { x if x < 4 => n <- (x ~ n) + 1, _ => never() };
+  let c = count(str::len("abc"));
+  (n, c)
+}

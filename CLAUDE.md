@@ -598,12 +598,9 @@ enforces it):**
   never-bottom fns of the arm's own binds — cmp/logic/wrapping-arith
   over binds+consts, `guard_schedule_free`) stay lazy in the chain:
   observably equivalent, and the blanket prologue cost symbolic +58%.
-  (2) A fused DynCall delivers non-fired args as `TagValue::stale`
-  (a STALE mask beside the taint mask) — never absence (all-const-arg
-  builtins must keep producing) and never `fired` (rand
-  re-randomized, `now` resampled per invocation). TAG-BLIND builtins
-  (`printfn!`, `now` — gate on `Some(_)` not `triggers()`) remain the
-  open ruling.
+  (2) SETTLED 2026-08-08 — see "DynCall fire gate" below. A fused
+  DynCall delivers non-fired args as ABSENCE and does not CALL at all
+  when nothing fired; the print family gates on the tag.
   (3) The VALUE taint cache's no-storage path REFUSES (de-fuse) per
   the storage law, EXCEPT tail-position producers (body tail-leaf
   ids in `LowerCtx::tail_leaves`): a tail result's ride belongs to
@@ -625,8 +622,40 @@ enforces it):**
   `str::sprintf` declares `Result<string, `FormatError(string)>` and
   shape mismatches warn loudly. AWAITING ERIC: the two
   `fuzz/pending-ruling/` classes (tail-zero-iteration-fire,
-  rec-prev-looped-arming — node-walk drops the event) + the
-  tag-blind builtin gate.
+  rec-prev-looped-arming — node-walk drops the event).
+- **The DynCall fire gate** (Eric's ruling 2026-08-08, closing
+  `dyncall-tagblind-print-aug2026`): a fused DynCall delivers a
+  non-fired arg as ABSENCE — same as a taint-masked one, since an
+  argument that didn't fire is not an argument event and the node-walk
+  never manufactures one — and, when NOTHING fired, does not call the
+  builtin at all. `graphix_dyncall` carries a `dispatch` word; 0 frees
+  the args and takes the pending path so the site rides its cached
+  result through the existing taint cache (no new state). Delivering
+  nothing is insufficient on its own: the call still advances the
+  builtin's state and burns the inner Apply's one forced-init view.
+  The gate is `any_arg_fired | init_flag()`, computed from the RAW arg
+  discs so it stays decoupled from the delivery masks — in a scaffold
+  loop those are force-0'd for per-position re-eval (aug08a) while the
+  gate reads honest per-iteration discs — plus, in a loop, the SOURCE
+  disc: `elem_disc` folds the source's STALE bit onto bound elements,
+  but a site ignoring the element (`str::len("abc")` in a callback)
+  doesn't carry it and a fresh position has no result to ride. The two
+  masks stay distinct because `first` treats them differently (a stale
+  slot arrives under the forced init view; a bottomed one never does).
+  NODE-WALK side, the same rule: the print family gates on the TAG,
+  not on presence — a print is an effect and the effect belongs to the
+  message ARRIVING. Consequence, ruled: a print whose message is
+  entirely constant, inside a recursive body, prints ONCE rather than
+  per call; interpolate anything that fires and it prints per update.
+  Pinned by `dyncall-tagblind-print-aug2026/` +
+  `dyncall-no-fire-no-dispatch-aug2026/`.
+  NOT DONE (rejected 2026-08-08 after building it): removing
+  `TagValue` from the interpreter. Dependence-scoped frame
+  invalidation does remove every REFILL, but the tail spine's
+  becoming-selected path still needs "emitted, but not an event", and
+  dependence-derived firing can't replace it — a parent asking "did
+  anything I depend on fire" overrides a child that already chose to
+  be quiet. Post-mortem in the plan file; experiment patch retained.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel caches survive an arm's sleep — `Cached` residents,
   `CachedArgs` arg slots, `StructWith.current`, collection slot

@@ -59,6 +59,8 @@
 0	dyncall-jun2026/02_dead_pend_discard_position.gx
 2	dyncall-layout-jul2026/01_shared_callee_stale_layout.gx
 14	dyncall-loop-stale-ride-aug2026/00_map_filter_refire_rides_shared_cache.gx
+2	dyncall-no-fire-no-dispatch-aug2026/00_stateful_builtin_ticks_once.gx
+2	dyncall-no-fire-no-dispatch-aug2026/01_late_arrival_first_reach.gx
 1	dyncall-partial-args-jul2026/00_window_bottom_val.gx
 1	dyncall-partial-args-jul2026/01_window_scalar_bottom_val.gx
 1	dyncall-pending-taint-jul2026/01_pad_guard_unconsumed_bind.gx
@@ -69,6 +71,9 @@
 3	dyncall-stale-arg-fired-aug2026/01_escape_per_arg_gating.gx
 4	dyncall-stale-arg-fired-aug2026/02_rand_rerandomizes.gx
 4	dyncall-stale-arg-fired-aug2026/03_now_resamples_clock.gx
+2	dyncall-tagblind-print-aug2026/00_const_arg_effect_refires.gx
+4	dyncall-tagblind-print-aug2026/04_hof_callback_effect_per_invocation.gx
+3	dyncall-tagblind-print-aug2026/05_const_message_in_recursive_body.gx
 1	dyncall-valueshape-firing-jul2026/01_buffer_const_extrafire.gx
 1	dyncall-valueshape-firing-jul2026/02_cast_connect_selfwake.gx
 1	dynmod-ref-priming-jul2026/01_module_level_builtin_call.gx
