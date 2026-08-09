@@ -705,7 +705,14 @@ correctness).
   `TraceDiff` class — Missing/ExtraFire, Pacing, etc. — keys dedup), and
   programs can carry a `// schedule-v1:` header injecting input epochs
   atomically via `set_many` (inputs use the `let inN = d; inN <- never(d)`
-  contract so fusion binds them as region inputs). `selfcheck`
+  contract so fusion binds them as region inputs). `minimize <file>
+  [budget]` (budget = oracle checks, default 4000; the campaign's per-finding
+  budget is `CAMPAIGN_MINIMIZE_BUDGET`) is typed-AST HDD whose working
+  operator is the STATEMENT DROP, keyed at the statement so a whole round of
+  disjoint reductions applies at once; whole-section drops, the body, and each
+  `.gx` section's items lap until fixpoint (`design/graphix_fuzz.md` §6.1 —
+  6157 → 199 bytes on the aug08d witness where the pre-2026-08-09 reducer got
+  one reduction in 200 checks). `selfcheck`
   (same-mode-vs-itself, 100% required) gates oracle soundness; `rand::`/
   `sys::`/`http::` programs are excluded from divergence recording (async
   IO races trace quiescence). `detcheck [n] [seed]` is the fusion-shape

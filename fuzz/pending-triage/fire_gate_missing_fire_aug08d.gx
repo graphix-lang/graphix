@@ -20,6 +20,10 @@
 // trace is a strict PREFIX of the interp trace" (a LOST FIRE, not any
 // divergence). The program below is what remains; the original mutant
 // is kept verbatim in the `mutant:` line at the end of this header.
+// `graphix-fuzz minimize` was rebuilt out of that reduction and now
+// reaches the same shape on the mutant unaided (199 bytes, 1480
+// checks) — this file's "minimize made almost no progress" note was a
+// property of the reducer, not of the finding.
 //
 //   interp: [0:i64:5  1:i64:6]      jit: [0:i64:5]   <- second fire lost
 //
