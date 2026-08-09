@@ -4,9 +4,6 @@
 // fixture corpus or any of the six standing gates produced — only
 // generation found it, ~15 minutes into the aug08d soak (hz0).
 //
-//   interp: events [(0, I64(-6)), (1, I64(26))]
-//   jit:    events [(0, I64(-6))]            <- the second fire is lost
-//
 // BISECT (worktree build at each commit, hz0's archived campaign
 // binaries for the older points):
 //   fb622f09  AGREE      (pre-everything)
@@ -17,44 +14,50 @@
 // reverted whole rather than narrowed:
 //   gate forced to 1, delivery = absence  -> DIVERGENCE
 //   gate active,      delivery = stale    -> DIVERGENCE
-// So this is not "the gate needs one more term" (the shape of the
-// earlier 01_late_arrival_first_reach miss, fixed by folding in the
-// loop source disc). Delivering a non-fired arg as ABSENCE is itself
-// unsound somewhere in here, independently of whether the call is made
-// — which means the seam question is deeper than the gate.
 //
-// Not yet minimized: `graphix-fuzz minimize` exhausted its 200-check
-// budget with almost no reduction. It is dense with catch/`?` inside
-// tail recursion, refs, and cross-module calls; the missing event is on
-// the SECOND epoch, so whatever it is only shows up once something has
-// already fired at least once.
+// MINIMIZED 2026-08-09: 6157 -> 112 bytes, by delta reduction over
+// statements and bracketed subexpressions against the property "jit
+// trace is a strict PREFIX of the interp trace" (a LOST FIRE, not any
+// divergence). The program below is what remains; the original mutant
+// is kept verbatim in the `mutant:` line at the end of this header.
+//
+//   interp: [0:i64:5  1:i64:6]      jit: [0:i64:5]   <- second fire lost
+//
+// The 112 bytes are all load-bearing. Each of these, alone, makes it
+// AGREE:
+//   * collapsing f0/h1 to ONE lambda level (`v34 + h1()`), or to a
+//     block (`v34 + {let z = h1(); z}`) — the DynCall must sit in a
+//     callee body reached through ANOTHER callee (depth >= 2; three
+//     levels still diverges)
+//   * making h1's body a constant (`|| -> i64 i64:5`) instead of a
+//     builtin call — it must be a DynCall
+//   * giving that builtin an argument that fires
+// NOT needed (all of these were in the mutant and reduce away): the
+// modules, `catch`, `?`/`$`, `/?` vs `+`, refs, `let rec`, list/array
+// HOFs, the bottoming block the connect lived in. `str::len` is not
+// special — `array::len` / `map::len` do it too. f0's OWN argument
+// firing does not rescue it (`f0(v34)` with `|x| h1() + x` diverges).
+//
+// SO: on cycle 1 nothing feeding `str::len` fires, the gate skips the
+// dispatch, and the site is supposed to ride its cached 5 through the
+// taint cache. In a callee body that cache is the honor-gated site
+// word (abi.rs `emit_scalar_taint_cache_claimed`), and only a REGION
+// ROOT caller can register the words for reset — an intermediate
+// callee cannot, so honor stays 0, the cache never substitutes, the
+// taint escapes h1, poisons `v34 + f0()`, and the kernel emits
+// nothing. This is the documented "region-root active, elsewhere
+// inert" residual from the jul16 v1 fix; before the gate it was
+// benign, because the builtin was called and produced 5 again. The
+// gate turns a missed ride into a lost value, which is why the
+// delivery half diverges on its own: absence -> builtin returns None
+// -> pend -> the same unridable taint.
 //
 // bisect: fusion/JIT bug (interp != jit)
 // interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(-6)), (1, I64(26))], capped: false }], stdout: [] })
 // jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(-6))], capped: false }], stdout: [] })
 // mutant: { let v0 = {"k1" => "graphix", "b" => "xyz"}; let v1 = { x: ((false && false) || (!false)), y: false }; let v3 = |v2: i64, v1: u8| -> i32 i32:1; let v4 = m1::mk({ catch(e) m0::k0; ((i64:42 +? i64:0))? }); let v3 = |v5: i64| select v5 { i64:0 => (!true), _ => error(false) }; let v6 = select v3(i64:1) { error as _ => false, bool as x => x }; let v7 = |v8: i64| select v8 { i64:0 => (v32:0 - v32:0), _ => error("") }; let v9 = { catch(e) (v32:1000 * v32:4294967295); (v7(i64:0))? }; let v12 = |v10: bool, v11: bool| -> i64 m0::k0; let v6: [v32, null] = select v1 { {x: _, y: false} if v6 => (v9 % v32:0), {x: v13, y: true} if v1.x => (v32:1000 + v32:1), {x: _, y: _} => (v9 + v32:1000) }; let v3 = { n: false }; let v1 = 'a: Number |v13: 'a, v14: 'a| -> 'a (((v13 - v14) - v14) + v13); let v15: u32 = v1((u32:4294967295 - u32:7), (u32:0 - u32:0)); let v16: f64 = v1(f64:3.14, f64:0.1); let v17 = |v18: u8| -> u8 (v18 + u8:2); let v19 = |v20: u8| -> u8 (v17(v20) + u8:100); let v17 = u8:100; let v21 = v19(v17); let v16 = [f64:2.5, f64:1.0]; let v0: string = { let v17 = &m4::k4; let v23 = 'a: Number |v22: 'a, v17: 'a| -> 'a (((v22 * v22) - v17) + v17); let v24: i64 = v23((i64:7 % m0::k0), (m0::k0 * i64:-1)); let v25: u16 = v23(u16:1, u16:2); let v26: i64 = (i64:1 % i64:-1); "xyz" }; let v27 = |v28: i64| select v28 { i64:0 => (true && false), _ => error(v64:1) }; let v29 = { catch(e) m3::f0({"a" => f64:-1.0, "k1" => f64:1.0}, f64:3.14); (v27(i64:1))? }; let v88: i64 = { let v9 = {"k0" => false}; let v1: Array<string> = select v21 { v6 if (false && true) => ["a"], u8:255 => { let mt: Array<string> = []; mt }, v30 => array::filter(["", "graphix"], |v31| m3::k3) }; let rec v30 = |v31: i64| -> i64 select v31 { v33 if v33 <= i64:0 => select (i64:-100 *? v33) { i64 as n => n, _ => i64:-1 }, v33 => v30(v33 - i64:1) }; let v34 = v30(i64:6); let cerr4: Error<Any> = never(); catch(e) cerr4 <- e; let cerr6: Error<Any> = never(); catch(e) cerr6 <- e; let v19 = &z32:0; let v35 = (v19, z32:0); let v55: string = { let v36 = &v34; *v36 <- i64:-100; let v15 = |v37: u32| -> u32 (v37 + u32:0); let v38 = |v39: u32| -> u32 (v15(v39) + u32:100000); let v15 = u32:100000; let v40 = v38(v38(u32:100000)); let v45 = |v41: u8, v42: i64, v43: f64| -> f64 { let v44 = m3::k3; f64:2.5 }; let v46 = array::filter([{"k1" => {"k0" => v64:7}, "k0" => {"k2" => v64:7}}, {"k1" => {"b" => v64:1, "k1" => v64:1000000}}, {"a" => {"a" => v64:7, "k1" => v64:1}, "b" => {"k0" => v64:1}, "k1" => {"k2" => v64:7, "k0" => v64:0}}], |v46| true); let v48 = |v47: i64, v4: bool| -> f64 { catch(e) f64:1.0; (((f64:-1.0 - f64:2.5) +? (f64:3.14 - f64:1.0)))? }; let v49 = { x: (v48(m0::k0, false) > v48(i64:0, true)), y: { b: (f64:-1.0, u8:2, u8:100), n: i64:-1 } }; let v51 = |v0: i64, v50: i64| -> u16 { let v47 = v3.n; select ((u16:0 - u16:2) -? u16:1000) { u16 as n => n, _ => (u16:65535 * u16:1000) } }; let v27 = |v52: f64, v9: i64, v53: bool| -> u8 (v21 - cast<u8>(i32:1)$); let v38 = &v64:1000000; let v54 = (v38, cast<v64>(v32:4294967295)$); v1[-4]$ }; let rec v56 = |v57: i64, v59: i64| -> i64 select v57 { v58 if v58 <= i64:0 => (m0::k0 * v34), v58 => v56(v58 - i64:1, v59 + v58) }; let v60 = v56(i64:12, i64:0); let cerr13: Error<Any> = never(); catch(e) cerr13 <- e; let v9: ([i64, null], f64, [bool, null]) = (m5::f1(`Some(i64:2), "graphix"), (f64:1.0 * v16[0]$), (!true)); let v35 = (-(f64:2.5)); let v83: u8 = { let v61 = |v62: i64| select v62 { i64:0 => f32:0.0, _ => error(true) }; let v63 = v61(i64:1)$; let v66 = |v61: bool, v63: bool, v65: string| -> string { let v63 = "hello"; v65 }; let v61 = |v67: i64| select v67 { i64:0 => (f64:1.0 / f64:1.0), _ => error(true) }; let v68 = select v61(i64:0) { error as _ => f64:0.1, f64 as x => x }; let cerr5: Error<Any> = never(); catch(e) { let m = e; cerr5 <- m }; let v72 = |v69: bool, v70: string| -> f64 { let v71 = array::fold(["xyz", "", "graphix"], i8:0, |v63, v65| i8:7); v68 }; let v65: [`A(Map<string, bool>, i64), `C, `Some] = `A({"b" => true, "k1" => false}, i64:42); let v74 = |v73: u32, v74: i64, v63: i64| -> bool (!(!true)); let v76 = |v75| ((v75 + v75) + v75); let v77 = v76(i64:2); let v78 = v76(f64:0.0); let v80 = |v63: u32| -> i64 { let v79 = list::fold(list::from_array(["hello", "xyz"]), "a", |v79, v80| v79); (i64:1 * (i64:-100 + i64:7)) }; let v81: [`B(i64, f64), `Nil(i64)] = `B(map::len({"k1" => "hello"}), ((-(v68)) + (f64:1.0 * v68))); let v82 = (!(!re::is_match(#pat: r'^g', "")$)); let cerr16: Error<Any> = never(); catch(e) { let m = e; cerr16 <- m }; select v65 { `A(v83, v71) => ((u8:2 * u8:1) / cast<u8>(v63)$), `C => array::fold([[false, true]], u8:255, |v83, v71| v83), `Some => ((u8:0 * u8:100) * cast<u8>(v64:0)$) } }; let v85 = |v84| (v84 - v84); let v86 = v85(u8:100); let v87 = v85(i64:42); { catch(e) m0::k0; ((list::fold(list::from_array([{ b: false }, { b: true }]), v34, |v7, v88| v7) /? m1::f0("")))? } }; let v89: [`B(i64, {a: u64, n: string}), `Nil(Array<f64>), `Some(f64, i64)] = `Nil([f64:2.5, f64:1.0]); (((-(v88)) - (i64:1 * v88)) - (m1::f0("xyz") + m5::f1(`B("xyz"), "a"))) }\n// file-v1: m0.gxi\nval k0: i64;\nval f0: fn(a0: u8, a1: v32) -> [`A, `B(f64), `Some(i64, [bool, null])];\n// file-v1: m0.gx\nlet k0: i64 = i64:2;\nlet h0 = |v4: u8| -> u8 cast<u8>((f32:0.0 % f32:3.5))$;\nlet f0 = |v5: u8, v6: v32| -> [`A, `B(f64), `Some(i64, [bool, null])] `Some(k0, false);\n(f64:3.14 % f64:1.0)\n// file-v1: m1.gxi\nval f0: fn(a0: string) -> i64;\nval f1: fn(a0: bool, a1: [`B(i64, i64), `C(Array<bool>), `Nil]) -> [`A(f64, {b: bool, x: bool}), `C(bool, u8), `Nil];\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m1.gx\nlet h1 = |v4: i64| -> i64 str::len("hello");\nlet f0 = |v5: string| -> i64 h1((i64:7 % m0::k0)) + (str::len("a"));\nlet f1 = |v6: bool, v7: [`B(i64, i64), `C(Array<bool>), `Nil]| -> [`A(f64, {b: bool, x: bool}), `C(bool, u8), `Nil] `A(select (f64:2.5 -? f64:0.1) { error as _ => f64:1.0, f64 as n => n }, { b: false, x: false });\ntype T = (i64, i64);\nlet mk = |x: i64| -> T (x, x + i64:1);\nlet un = |t: T| -> i64 t.0;\n// file-v1: m2.gxi\nval f0: fn(a0: [`B(f64, i64), `Some(u8, f64)], a1: u8) -> [`A(f64, {b: bool, x: bool}), `C(bool, u8), `Nil];\nval f1: fn(a0: string) -> z32;\n// file-v1: m2.gx\nlet f0 = |v5: [`B(f64, i64), `Some(u8, f64)], v6: u8| -> [`A(f64, {b: bool, x: bool}), `C(bool, u8), `Nil] m1::f1((!false), `Nil);\nlet f1 = |v7: string| z32:7;\n// file-v1: m3.gxi\nval k3: bool;\nval f0: fn(a0: Map<string, f64>, a1: f64) -> bool;\n// file-v1: m3.gx\nlet k3: bool = (true || false);\nlet f0 = |v22: Map<string, f64>, v23: f64| -> bool false;\n// file-v1: m4.gxi\nval k4: bool;\nval f0: fn(a0: u64, a1: [`Nil, `Some(i64, i64)]) -> u8;\n// file-v1: m4.gx\nlet k4: bool = (u8:1 != u8:2);\nlet f0 = |v22: u64, v23: [`Nil, `Some(i64, i64)]| -> u8 cast<u8>((u32:1 - u32:100000))$;\n// file-v1: m5.gxi\nval k5: u8;\nval f0: fn(a0: string) -> m1::T;\nval f1: fn(a0: [`B(string), `Nil(string), `Some(i64)], a1: [string, null]) -> i64;\n// file-v1: m5.gx\nlet k5: u8 = u8:100;\nlet h5 = |v22: v32| -> v32 { catch(e) (v22 / v32:0); ((v22 %? cast<v32>(k5)$))? };\nlet f0 = |v23: string| -> m1::T m1::mk(m1::f0(v23));\nlet f1 = |v24: [`B(string), `Nil(string), `Some(i64)], v25: [string, null]| -> i64 ((-(m0::k0)) % (i64:-1 * i64:1));\n// file-v1: m6.gxi\nval k6: string;\nval f0: fn(a0: f64, a1: f64) -> m1::T;\nval f1: fn(a0: &f32, a1: f64) -> i64;\n// file-v1: m6.gx\nlet k6: string = "hello";\nlet h6 = |v30: f64| -> f64 cast<f64>(u8:100)$;\nlet f0 = |v31: f64, v33: f64| -> m1::T m5::f0("xyz");\nlet f1 = |v34: &f32, v35: f64| -> i64 i64:0;
-// minimized:
-{{"k1" => "graphix", "b" => "xyz"}; let v1 = { x: ((false && false) || (!false)), y: false }; let v3 = |v2: i64, v1: u8| -> i32 i32:1; let v4 = m1::mk({catch(e) m0::k0; ((i64:42 +? i64:0))?}); let v3 = |v5: i64| select v5 {i64:0 => (!true), _ => error(false)}; let v6 = select v3(i64:1) {error as _ => false, bool as x => x}; let v7 = |v8: i64| select v8 {i64:0 => (v32:0 - v32:0), _ => error("")}; let v9 = {catch(e) (v32:1000 * v32:4294967295); (v7(i64:0))?}; let v12 = |v10: bool, v11: bool| -> i64 m0::k0; let v6: [v32, null] = select v1 {{x: _, y: false} if v6 => (v9 % v32:0), {x: v13, y: true} if v1.x => (v32:1000 + v32:1), {x: _, y: _} => (v9 + v32:1000)}; let v3 = { n: false }; let v1 = 'a: Number|v13: 'a, v14: 'a| -> 'a (((v13 - v14) - v14) + v13); let v15: u32 = v1((u32:4294967295 - u32:7), (u32:0 - u32:0)); let v16: f64 = v1(f64:3.14, f64:0.1); let v17 = |v18: u8| -> u8 (v18 + u8:2); let v19 = |v20: u8| -> u8 (v17(v20) + u8:100); let v17 = u8:100; let v21 = v19(v17); let v16 = [f64:2.5, f64:1.]; let v0: string = {let v17 = &m4::k4; let v23 = 'a: Number|v22: 'a, v17: 'a| -> 'a (((v22 * v22) - v17) + v17); let v24: i64 = v23((i64:7 % m0::k0), (m0::k0 * i64:-1)); let v25: u16 = v23(u16:1, u16:2); let v26: i64 = (i64:1 % i64:-1); "xyz"}; let v27 = |v28: i64| select v28 {i64:0 => (true && false), _ => error(v64:1)}; let v29 = {catch(e) m3::f0({"a" => f64:-1., "k1" => f64:1.}, f64:3.14); (v27(i64:1))?}; let v88: i64 = {let v9 = {"k0" => false}; let v1: Array<string> = select v21 {v6 if (false && true) => ["a"], u8:255 => {let mt: Array<string> = []; mt}, v30 => array::filter(["", "graphix"], |v31| m3::k3)}; let rec v30 = |v31: i64| -> i64 select v31 {v33 if v33 <= i64:0 => select (i64:-100 *? v33) {i64 as n => n, _ => i64:-1}, v33 => v30(v33 - i64:1)}; let v34 = v30(i64:6); let cerr4: Error<Any> = never(); catch(e) cerr4 <- e; let cerr6: Error<Any> = never(); catch(e) cerr6 <- e; let v19 = &z32:0; let v35 = (v19, z32:0); let v55: string = {let v36 = &v34; *v36 <- i64:-100; let v15 = |v37: u32| -> u32 (v37 + u32:0); let v38 = |v39: u32| -> u32 (v15(v39) + u32:100000); let v15 = u32:100000; let v40 = v38(v38(u32:100000)); let v45 = |v41: u8, v42: i64, v43: f64| -> f64 {let v44 = m3::k3; f64:2.5}; let v46 = array::filter([{"k1" => {"k0" => v64:7}, "k0" => {"k2" => v64:7}}, {"k1" => {"b" => v64:1, "k1" => v64:1000000}}, {"a" => {"a" => v64:7, "k1" => v64:1}, "b" => {"k0" => v64:1}, "k1" => {"k2" => v64:7, "k0" => v64:0}}], |v46| true); let v48 = |v47: i64, v4: bool| -> f64 {catch(e) f64:1.; (((f64:-1. - f64:2.5) +? (f64:3.14 - f64:1.)))?}; let v49 = { x: (v48(m0::k0, false) > v48(i64:0, true)), y: { b: (f64:-1., u8:2, u8:100), n: i64:-1 } }; let v51 = |v0: i64, v50: i64| -> u16 {let v47 = v3.n; select ((u16:0 - u16:2) -? u16:1000) {u16 as n => n, _ => (u16:65535 * u16:1000)}}; let v27 = |v52: f64, v9: i64, v53: bool| -> u8 (v21 - cast<u8>(i32:1)$); let v38 = &v64:1000000; let v54 = (v38, cast<v64>(v32:4294967295)$); v1[i64:-4]$}; let rec v56 = |v57: i64, v59: i64| -> i64 select v57 {v58 if v58 <= i64:0 => (m0::k0 * v34), v58 => v56(v58 - i64:1, v59 + v58)}; let v60 = v56(i64:12, i64:0); let cerr13: Error<Any> = never(); catch(e) cerr13 <- e; let v9: ([i64, null], f64, [bool, null]) = (m5::f1(`Some(i64:2), "graphix"), (f64:1. * v16[i64:0]$), (!true)); let v35 = (-(f64:2.5)); let v83: u8 = {let v61 = |v62: i64| select v62 {i64:0 => f32:0., _ => error(true)}; let v63 = v61(i64:1)$; let v66 = |v61: bool, v63: bool, v65: string| -> string {let v63 = "hello"; v65}; let v61 = |v67: i64| select v67 {i64:0 => (f64:1. / f64:1.), _ => error(true)}; let v68 = select v61(i64:0) {error as _ => f64:0.1, f64 as x => x}; let cerr5: Error<Any> = never(); catch(e) {let m = e; cerr5 <- m}; let v72 = |v69: bool, v70: string| -> f64 {let v71 = array::fold(["xyz", "", "graphix"], i8:0, |v63, v65| i8:7); v68}; let v65: [`A(Map<string, bool>, i64), `C, `Some] = `A({"b" => true, "k1" => false}, i64:42); let v74 = |v73: u32, v74: i64, v63: i64| -> bool (!(!true)); let v76 = |v75| ((v75 + v75) + v75); let v77 = v76(i64:2); let v78 = v76(f64:0.); let v80 = |v63: u32| -> i64 {let v79 = list::fold(list::from_array(["hello", "xyz"]), "a", |v79, v80| v79); (i64:1 * (i64:-100 + i64:7))}; let v81: [`B(i64, f64), `Nil(i64)] = `B(map::len({"k1" => "hello"}), ((-(v68)) + (f64:1. * v68))); let v82 = (!(!re::is_match(#pat: "^g", "")$)); let cerr16: Error<Any> = never(); catch(e) {let m = e; cerr16 <- m}; select v65 {`A(v83, v71) => ((u8:2 * u8:1) / cast<u8>(v63)$), `C => array::fold([[false, true]], u8:255, |v83, v71| v83), `Some => ((u8:0 * u8:100) * cast<u8>(v64:0)$)}}; let v85 = |v84| (v84 - v84); let v86 = v85(u8:100); let v87 = v85(i64:42); {catch(e) m0::k0; ((list::fold(list::from_array([{ b: false }, { b: true }]), v34, |v7, v88| v7) /? m1::f0("")))?}}; let v89: [`B(i64, {a: u64, n: string}), `Nil(Array<f64>), `Some(f64, i64)] = `Nil([f64:2.5, f64:1.]); (((-(v88)) - (i64:1 * v88)) - (m1::f0("xyz") + m5::f1(`B("xyz"), "a")))}
-// file-v1: m0.gx
-let k0: i64 = i64:2;
-let h0 = |v4: u8| -> u8 cast<u8>((f32:0.0 % f32:3.5))$;
-let f0 = |v5: u8, v6: v32| -> [`A, `B(f64), `Some(i64, [bool, null])] `Some(k0, false);
-(f64:3.14 % f64:1.0)
-// file-v1: m1.gx
-let h1 = |v4: i64| -> i64 str::len("hello");
-let f0 = |v5: string| -> i64 h1((i64:7 % m0::k0)) + (str::len("a"));
-let f1 = |v6: bool, v7: [`B(i64, i64), `C(Array<bool>), `Nil]| -> [`A(f64, {b: bool, x: bool}), `C(bool, u8), `Nil] `A(select (f64:2.5 -? f64:0.1) { error as _ => f64:1.0, f64 as n => n }, { b: false, x: false });
-type T = (i64, i64);
-let mk = |x: i64| -> T (x, x + i64:1);
-let un = |t: T| -> i64 t.0;
-// file-v1: m3.gx
-let k3: bool = (true || false);
-let f0 = |v22: Map<string, f64>, v23: f64| -> bool false;
-// file-v1: m4.gx
-let k4: bool = (u8:1 != u8:2);
-let f0 = |v22: u64, v23: [`Nil, `Some(i64, i64)]| -> u8 cast<u8>((u32:1 - u32:100000))$;
-// file-v1: m5.gx
-let k5: u8 = u8:100;
-let h5 = |v22: v32| -> v32 { catch(e) (v22 / v32:0); ((v22 %? cast<v32>(k5)$))? };
-let f0 = |v23: string| -> m1::T m1::mk(m1::f0(v23));
-let f1 = |v24: [`B(string), `Nil(string), `Some(i64)], v25: [string, null]| -> i64 ((-(m0::k0)) % (i64:-1 * i64:1));
+{ let h1 = || -> i64 str::len("hello");
+  let f0 = || -> i64 h1();
+  let v34 = i64:0;
+  v34 <- i64:1;
+  v34 + f0() }
