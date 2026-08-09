@@ -544,6 +544,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // `T.contains(Any)` is false — a `_` slot would otherwise stop
             // the walk and leave every LATER slot's bind TVars un-narrowed.
             ntype.contains(&ctx.env, &pat.type_predicate.any_as_tvar())?;
+            // A guard decides whether its arm matches, so it must be
+            // `bool`. Unchecked, ANY type was accepted and the arm
+            // simply never matched — `select n { v if n => a, _ => b }`
+            // (someone reaching for truthiness) compiled to a silently
+            // dead arm, which the differential fuzzer cannot see
+            // because both engines agree on it. Checked HERE, after the
+            // narrowing above, so that a guard which IS the arm's own
+            // bind reports against the bind's settled type; run in the
+            // first loop it bound that still-open TVar to bool instead,
+            // and the failure surfaced as an unrelated "pattern will
+            // never match" from the coverage walk.
+            if let Some(guard) = &pat.guard {
+                let bt = Type::Primitive(Typ::Bool.into());
+                wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
+            }
             wrap!(n.node, n.node.typecheck0(ctx))?;
             rtype = rtype.union(&ctx.env, n.node.typ())?;
             if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {

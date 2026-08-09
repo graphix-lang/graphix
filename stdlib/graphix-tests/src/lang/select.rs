@@ -657,6 +657,62 @@ run!(guarded_arm_then_bindall, GUARDED_ARM_THEN_BINDALL, |v: Result<&Value>| mat
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
+// A guard decides whether its arm matches, so it must be `bool`. Any
+// type used to be accepted, and the arm then simply never matched — so
+// `select n { v if n => a, _ => b }` (someone reaching for truthiness)
+// compiled to a silently dead arm. The differential fuzzer cannot see
+// this class at all: both engines agree on the dead arm, and the
+// generator's guards are bool by construction. It surfaced when the
+// minimizer's replace-with-a-literal operator put a string in a guard
+// and the program still compiled (2026-08-09).
+const GUARD_STRING: &str = r#"
+{
+  let x = i64:1;
+  select x { v if "" => i64:0, _ => i64:1 }
+}
+"#;
+
+run!(guard_string_rejected, GUARD_STRING, |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None);
+
+const GUARD_INT: &str = r#"
+{
+  let x = i64:1;
+  select x { v if x => i64:0, _ => i64:1 }
+}
+"#;
+
+run!(guard_int_rejected, GUARD_INT, |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None);
+
+// A nullable bool is not a bool either: `[bool, null]` can't decide an
+// arm, and admitting it would make the null case a silent non-match.
+const GUARD_NULLABLE_BOOL: &str = r#"
+{
+  let b: [bool, null] = true;
+  select i64:1 { v if b => i64:0, _ => i64:1 }
+}
+"#;
+
+run!(guard_nullable_bool_rejected, GUARD_NULLABLE_BOOL, |v: Result<&Value>| matches!(
+    v,
+    Err(_)
+); graphix_package_core::testing::FuseExpect::None);
+
+// The check INFERS as well as rejects: an unannotated lambda used as a
+// guard binds its return tvar to bool, exactly as `!x` and `&&` do.
+const GUARD_INFERS_BOOL: &str = r#"
+{
+  let p = |x| x > i64:0;
+  select i64:7 { v if p(v) => i64:0, _ => i64:1 }
+}
+"#;
+
+run!(guard_infers_bool, GUARD_INFERS_BOOL, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(0))
+); graphix_package_core::testing::FuseExpect::Jit);
+
 // The dual shape: the guarded arm names a DIFFERENT tag than the value.
 const GUARDED_OTHER_TAG_THEN_BINDALL: &str = r#"
 {
