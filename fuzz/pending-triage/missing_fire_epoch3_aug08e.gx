@@ -1,0 +1,23 @@
+// PRE-EXISTING missing fire, surfaced by the aug08e soak (hz0, on
+// 59f887ac). NOT caused by any of the 2026-08-08 commits: it diverges
+// identically on hz0's archived aug08c binary (fb622f09), which
+// predates all four of them.
+//
+//   interp: [(1,0), (2,1), (3,-1), (4,2)]
+//   jit:    [(1,0), (2,1),         (4,2)]   <- epoch 3 lost
+//
+// Kept here because campaign dirs live under ~/tmp, which is tmpfs on
+// every box in the fleet — a reboot loses the only copy.
+//
+// Untriaged. Note the shape: `count(...)` over a `let rec` whose
+// recursive arm is `n - f(n - 1)`, alongside an `array::iter` feeding a
+// guard that is never actually reachable (`select i64:-1` with an
+// `i64:0` arm). The lost event is the THIRD of four, so whatever it is
+// needs two prior fires to set it up.
+//
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(1, I64(0)), (2, I64(1)), (3, I64(-1)), (4, I64(2))], capped: false }], stdout: [] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(1, I64(0)), (2, I64(1)), (4, I64(2))], capped: false }], stdout: [] })
+// mutant: {let x = array::iter([i64:1, i64:2, i64:0, i64:4]); let m = x / i64:3; let f = |k| select i64:-1 {i64:0 if m == i64:0 => i64:1, _ => i64:1}; let m = count(let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - f(n - i64:1)}); f(x - i64:1)}
+// minimized:
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let m = x / i64:3; let f = |k| select i64:-1 {i64:0 if m == i64:0 => i64:1, _ => i64:1}; let m = count(let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - f(n - i64:1)}); f(x - i64:1)}
