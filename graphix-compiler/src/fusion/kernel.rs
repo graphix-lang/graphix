@@ -583,33 +583,27 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // arg means (Eric's ruling 2026-07-20,
         // dyncall-partial-args-jul2026; the buf's placeholder Value
         // at that position drops with the buf) — and a STALE-masked
-        // slot delivers ABSENCE TOO. An argument that did not fire is
-        // not an argument event, and the node-walk never manufactures
-        // one: a builtin polls its arg nodes, and a node that didn't
-        // produce simply returns None while the builtin's own
-        // `CachedVals` slot rides its previous value. Delivering
-        // `TagValue::stale` here instead was still a delivery, and any
-        // builtin that reads presence rather than the tag saw a phantom
-        // arrival once per kernel invocation — which is how a
-        // constant-message `println` inside a fused region printed per
-        // invocation where the interp printed once
-        // (dyncall-tagblind-print-aug2026).
-        //
-        // The two masks stay distinct because `first` treats them
-        // differently: on a fresh inner Apply's first dispatch the
-        // forced init view makes everything an arrival (the interp's
-        // fresh Apply sees its args arrive at init), so a stale slot
-        // delivers then — but a TAINTED slot never does, because a
-        // bottomed argument is bottomed regardless of the view.
+        // slot delivers `TagValue::stale`: present, didn't fire, so
+        // production rules that gate on argument FIRING (update_diff,
+        // CachedArgs' eval re-run) see the node-walk's per-argument
+        // truth instead of a phantom fire per kernel invocation
+        // (dyncall-stale-arg-fired-aug2026). On the FIRST dispatch
+        // the init view makes everything an arrival (the interp's
+        // fresh Apply sees its args arrive at init), so stale is
+        // honored only after.
         let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
-        let masked = taint_mask | if first { 0 } else { stale_mask };
         for (i, v) in args.iter().enumerate() {
-            if masked & (1u64 << i) != 0 {
+            if taint_mask & (1u64 << i) != 0 {
                 continue;
             }
             let id = self.bind_ids[i];
-            event.variables.insert(id, crate::TagValue::fired(v.clone()));
+            let tv = if !first && stale_mask & (1u64 << i) != 0 {
+                crate::TagValue::stale(v.clone())
+            } else {
+                crate::TagValue::fired(v.clone())
+            };
+            event.variables.insert(id, tv);
             set.push(id);
         }
         let saved_init = event.init;
@@ -842,7 +836,6 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     taint_mask: u64,
     stale_mask: u64,
     site_word: *mut u64,
-    dispatch: u64,
 ) -> DynCallRet {
     let state = unsafe { &mut *state_ptr.cast::<DispatcherState<R, E>>() };
     let slots = unsafe { &mut *state.dyn_slots };
@@ -854,19 +847,6 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     // fresh Vec — a per-DynCall allocation that also forfeited the
     // pool return.)
     let args_vec = unsafe { *Box::from_raw(args) };
-    // GATED OFF: no argument fired and this is not an init view, so the
-    // builtin cannot produce a new value. Don't call it — take the
-    // pending path and let the site ride its cached result. Calling
-    // with everything masked would be observably different: the call
-    // still advances the builtin's own state, still runs any
-    // per-invocation effect, and still consumes the inner Apply's one
-    // forced-init view. `args_vec` drops here, freeing the buf exactly
-    // as the dispatched path does.
-    if dispatch == 0 {
-        drop(args_vec);
-        DYNCALL_PENDING.with(|c| c.set(true));
-        return DynCallRet { word0: 0, word1: 0 };
-    }
     // SITE IDENTITY: the emission site claimed one state word whose
     // ADDRESS rides in `site_word` (null = no identity — key-0 bucket:
     // v1 scaffold-loop sites, recursive back-edges, qop-deliver). A

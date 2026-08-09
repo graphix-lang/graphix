@@ -719,22 +719,12 @@ safe fn graphix_depth_pop() {
 ///
 /// `stale_mask`: bit `i` set = arg slot `i` is present but did NOT
 /// fire this cycle (its disc carries STALE). The dispatcher delivers
-/// those slots as ABSENCE, exactly like a taint-masked slot: an
-/// argument that did not fire is not an argument event, and the
-/// node-walk never manufactures one. Kept separate from `taint_mask`
-/// because a fresh inner Apply's FIRST dispatch runs under a forced
-/// init view, where a stale slot does arrive but a bottomed one still
-/// does not.
-///
-/// `dispatch`: 0 = do not call the builtin at all; free the args and
-/// take the pending path, so the site rides its cached result. The
-/// emitter passes 0 when no argument fired and the invocation is not
-/// an init view. A builtin whose arguments have not changed cannot
-/// produce a new value, and calling it anyway is how a fused region
-/// re-ran per-invocation effects that the node-walk ran once
-/// (dyncall-tagblind-print-aug2026). Delivering nothing and calling
-/// anyway is not enough: the call still advances the builtin's own
-/// state, and it burns the inner Apply's one forced-init view.
+/// those slots as `TagValue::stale`, so a builtin whose production
+/// gates on argument FIRING (`printfn!`'s per-arg update, `str::
+/// escape`'s `update_diff`, `CachedArgs`' eval re-run) sees the
+/// node-walk's per-argument truth instead of a phantom fire per
+/// kernel invocation (dyncall-stale-arg-fired-aug2026: `rand`
+/// re-randomized and `now` resampled the clock on every invocation).
 ///
 /// `site_word`: address of the emission site's claimed SITE-IDENTITY
 /// word (dyncall-site-identity-jul2026 — the dispatcher mints an id
@@ -750,7 +740,6 @@ unsafe fn graphix_dyncall(
     taint_mask: u64,
     stale_mask: u64,
     site_word: *mut u64,
-    dispatch: u64,
 ) -> DynCallRet {
     let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
     if handle.is_null() {
@@ -762,7 +751,7 @@ unsafe fn graphix_dyncall(
     }
     unsafe {
         let h = &*handle;
-        (h.dispatch)(h.state, fn_index, args, taint_mask, stale_mask, site_word, dispatch)
+        (h.dispatch)(h.state, fn_index, args, taint_mask, stale_mask, site_word)
     }
 }
 
@@ -1773,11 +1762,10 @@ pub struct DynDispatchHandle {
     /// site_word)` and returns the result as a [`DynCallRet`] Value
     /// pair (unified Value ABI). Returns `(0, 0)` and sets
     /// `DYNCALL_PENDING` if the inner Apply returned None.
-    /// `taint_mask` / `stale_mask` bit `i` set = deliver arg slot `i`
-    /// as ABSENCE (bottomed / did not fire respectively);
+    /// `taint_mask` bit `i` set = deliver arg slot `i` as ABSENCE;
+    /// `stale_mask` bit `i` set = deliver it as `TagValue::stale`;
     /// `site_word` is the emission site's identity-word address, null
-    /// for the key-0 bucket; `dispatch` 0 = don't call at all, take
-    /// the pending path (see `graphix_dyncall`).
+    /// for the key-0 bucket (see `graphix_dyncall`).
     pub dispatch: unsafe extern "C" fn(
         state: *mut u8,
         fn_index: u32,
@@ -1785,7 +1773,6 @@ pub struct DynDispatchHandle {
         taint_mask: u64,
         stale_mask: u64,
         site_word: *mut u64,
-        dispatch: u64,
     ) -> DynCallRet,
     /// Function pointer to a monomorphized `set_var_typed::<R, E>`. A
     /// fused `connect` (or a handler-ful `?`'s error delivery) writes a

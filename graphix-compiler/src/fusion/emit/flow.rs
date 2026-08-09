@@ -778,11 +778,7 @@ fn emit_qop_deliver(
     let mask0 = cx.b.ins().iconst(types::I64, 0);
     let stale0 = cx.b.ins().iconst(types::I64, 0);
     let site0 = cx.b.ins().iconst(types::I64, 0);
-    // Always dispatch: this emits only on the `deliverable` path, so
-    // the single error argument is a genuine production by
-    // construction — there is nothing for the fire gate to suppress.
-    let go = cx.b.ins().iconst(types::I64, 1);
-    cx.call_helper("graphix_dyncall", &[fn_idx, buf, mask0, stale0, site0, go])?;
+    cx.call_helper("graphix_dyncall", &[fn_idx, buf, mask0, stale0, site0])?;
     // `QopDeliverApply::update` structurally returns `Some(Null)` (the
     // marshalled arg is always present), but every dyncall site clears
     // the pending flag so it can only ever mean "genuine abort".

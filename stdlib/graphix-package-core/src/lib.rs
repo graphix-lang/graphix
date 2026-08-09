@@ -2043,17 +2043,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         {
             self.dest = d;
         }
-        from[1].update(ctx, event).map(|tv0| {
-            // Same rule as `printfn!`: the EFFECT belongs to the value
-            // arriving, so a stale production passes through on the
-            // value channel without re-printing. Unlike the print
-            // family, `dbg` also RETURNS its argument, so only the
-            // effect is gated — the value rides regardless.
-            let fired = tv0.tag().is_fired();
-            let v = tv0.value();
-            if !fired {
-                return v;
-            }
+        from[1].update(ctx, event).map(|v| {
+            let v = v.value();
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
                     ctx.libstate.get::<PrintSink>().cloned()
@@ -2203,23 +2194,7 @@ macro_rules! printfn {
                 {
                     self.dest = d;
                 }
-                // Gate on the TAG, not on presence. A print is an
-                // effect, and the effect belongs to the message
-                // ARRIVING — not to this node being polled. A stale
-                // production is the value channel re-surfacing a
-                // message that already printed: inside an evaluation
-                // frame a constant re-delivers stale on every pass, so
-                // reading presence made a constant-message `println` in
-                // a recursive body print once per pass, and the fused
-                // twin printed once per kernel invocation
-                // (dyncall-tagblind-print-aug2026). Interpolate
-                // anything that fires — `println("T[k]")` — and it
-                // prints per update, because then the message really
-                // does arrive each time.
-                if let Some(tv) = from[1].update(ctx, event)
-                    && tv.tag().is_fired()
-                {
-                    let v = tv.value();
+                if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
                     self.buf.clear();
                     match v {
                         Value::String(s) => write!(self.buf, "{s}"),
