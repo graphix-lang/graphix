@@ -29,7 +29,20 @@ use anyhow::{Context, Result, bail};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 
+/// Every per-kind `compile` recurses back through here, so this is the
+/// one place graph construction descends the program tree — and the one
+/// place it needs stack headroom for however deeply the program nests.
 pub(crate) fn compile<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: Expr,
+    scope: &Scope,
+    top_id: ExprId,
+) -> Result<Node<R, E>> {
+    crate::stack::ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id))
+}
+
+fn compile_inner<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,

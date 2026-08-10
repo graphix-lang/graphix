@@ -2,6 +2,9 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+// combine parser types nest deeply enough that monomorphizing the
+// expression parser exceeds the default 128.
+#![recursion_limit = "256"]
 #[macro_use]
 extern crate netidx_core;
 #[macro_use]
@@ -19,6 +22,7 @@ pub mod ide;
 pub mod node;
 pub mod node_shape;
 pub mod perfdbg;
+pub(crate) mod stack;
 pub mod tval;
 pub mod typ;
 
@@ -556,7 +560,95 @@ impl Refs {
     }
 }
 
-pub type Node<R, E> = Box<dyn Update<R, E>>;
+/// A compiled graph node.
+///
+/// A newtype rather than a bare `Box<dyn Update>` so that every pass
+/// that descends the tree has ONE place to claim stack headroom: each
+/// recursive `Update` method is shadowed here by an inherent method
+/// that runs the vtable call under [`stack::ensure_sufficient`], and a
+/// node's children are `Node`s, so a nesting depth an adversarial
+/// program controls costs heap segments instead of overflowing
+/// whatever thread the compile lands on. Non-recursive methods
+/// (`typ`, `spec`, `view`) and anything not shadowed reach the trait
+/// through `Deref`.
+pub struct Node<R: Rt, E: UserEvent>(std::mem::ManuallyDrop<Box<dyn Update<R, E>>>);
+
+/// Destroying a deep graph re-enters this through each node's
+/// children, and drop glue is not a function `ensure_sufficient` can
+/// wrap from outside. `ManuallyDrop` moves the teardown INSIDE the
+/// guard: field glue would otherwise run after `drop` returns, back on
+/// the original stack.
+impl<R: Rt, E: UserEvent> Drop for Node<R, E> {
+    fn drop(&mut self) {
+        stack::ensure_sufficient(|| unsafe { std::mem::ManuallyDrop::drop(&mut self.0) })
+    }
+}
+
+impl<R: Rt, E: UserEvent> Node<R, E> {
+    pub fn new<T: Update<R, E> + 'static>(node: T) -> Self {
+        Self(std::mem::ManuallyDrop::new(Box::new(node)))
+    }
+
+    pub fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> Option<TagValue> {
+        stack::ensure_sufficient(|| self.0.update(ctx, event))
+    }
+
+    pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        stack::ensure_sufficient(|| self.0.delete(ctx))
+    }
+
+    pub fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        stack::ensure_sufficient(|| self.0.typecheck0(ctx))
+    }
+
+    pub fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        stack::ensure_sufficient(|| self.0.typecheck1(ctx))
+    }
+
+    pub fn refs(&self, refs: &mut Refs) {
+        stack::ensure_sufficient(|| self.0.refs(refs))
+    }
+
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        stack::ensure_sufficient(|| self.0.sleep(ctx))
+    }
+
+    pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        stack::ensure_sufficient(|| self.0.reset_replay(ctx))
+    }
+
+    pub fn emit_clif(&self, cx: &mut BodyCx) -> Result<fusion::emit::CompiledExpr> {
+        stack::ensure_sufficient(|| self.0.emit_clif(cx))
+    }
+
+    pub fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        stack::ensure_sufficient(|| self.0.fuse(ctx))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Debug for Node<R, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<R: Rt, E: UserEvent> std::ops::Deref for Node<R, E> {
+    type Target = dyn Update<R, E>;
+
+    fn deref(&self) -> &Self::Target {
+        &**self.0
+    }
+}
+
+impl<R: Rt, E: UserEvent> std::ops::DerefMut for Node<R, E> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut **self.0
+    }
+}
 
 #[derive(Clone, Copy)]
 pub enum BindMode<'a> {

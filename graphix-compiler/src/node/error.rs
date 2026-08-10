@@ -161,7 +161,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             ),
         };
         ctx.env.catch.insert_cow(covered.dynamic.clone(), (bind_id, top_id));
-        let node = Box::new(Self {
+        let node = Node::new(Self {
             spec,
             handler,
             constraint: c.constraint.clone(),
@@ -299,7 +299,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             o => o,
         };
         let typ = Type::empty_tvar();
-        Ok(Box::new(Self { spec, typ, id, top_id, n }))
+        Ok(Node::new(Self { spec, typ, id, top_id, n }))
     }
 }
 
@@ -498,7 +498,7 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Box::new(Self { spec, typ, n }))
+        Ok(Node::new(Self { spec, typ, n }))
     }
 }
 

@@ -31,6 +31,14 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
 // same cell forever whenever the target addr wasn't in the cycle. A
 // revisited cell adds no reachability, so it answers false.
 fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> bool {
+    crate::stack::ensure_sufficient(|| would_cycle_seen_inner(addr, t, seen))
+}
+
+fn would_cycle_seen_inner(
+    addr: usize,
+    t: &Type,
+    seen: &mut nohash::IntSet<usize>,
+) -> bool {
     // The query is a pure existence check over an immutable snapshot, so
     // `seen` is a true visited set (never removed): a fully-explored
     // subtree that didn't contain `addr` never needs re-exploring. It
@@ -187,7 +195,18 @@ pub struct TVarInner {
 }
 
 #[derive(Clone)]
-pub struct TVar(Arc<TVarInner>);
+pub struct TVar(std::mem::ManuallyDrop<Arc<TVarInner>>);
+
+/// A cell's constraints hold types that hold cells, so destroying a
+/// deeply nested type re-enters this. See [`Node`](crate::Node)'s twin
+/// for why the teardown has to be explicit and inside the guard.
+impl Drop for TVar {
+    fn drop(&mut self) {
+        crate::stack::ensure_sufficient(|| unsafe {
+            std::mem::ManuallyDrop::drop(&mut self.0)
+        })
+    }
+}
 
 // Manual, cycle-guarded: since cells became the constraint store
 // (phase C) a cell's conjuncts can reach the cell itself (parser
@@ -338,25 +357,25 @@ impl TVar {
     }
 
     pub fn empty_named(name: ArcStr) -> Self {
-        Self(Arc::new(TVarInner {
+        Self(std::mem::ManuallyDrop::new(Arc::new(TVarInner {
             name,
             typ: RwLock::new(TVarInnerInner {
                 id: TVarId::new(),
                 frozen: false,
                 typ: Arc::new(RwLock::new(TCell::default())),
             }),
-        }))
+        })))
     }
 
     pub fn named(name: ArcStr, typ: Type) -> Self {
-        Self(Arc::new(TVarInner {
+        Self(std::mem::ManuallyDrop::new(Arc::new(TVarInner {
             name,
             typ: RwLock::new(TVarInnerInner {
                 id: TVarId::new(),
                 frozen: false,
                 typ: Arc::new(RwLock::new(TCell::bound(typ))),
             }),
-        }))
+        })))
     }
 
     /// Add a conjunct to this var's CELL constraints (deduped). The

@@ -60,6 +60,10 @@ impl StructurePattern {
     }
 
     pub fn with_names<'a>(&'a self, f: &mut impl FnMut(&'a ArcStr)) {
+        crate::stack::ensure_sufficient(|| self.with_names_inner(f))
+    }
+
+    fn with_names_inner<'a>(&'a self, f: &mut impl FnMut(&'a ArcStr)) {
         match self {
             Self::Bind(n) => f(n),
             Self::Ignore | Self::Literal(_) => (),
@@ -130,6 +134,10 @@ impl StructurePattern {
     }
 
     pub fn infer_type_predicate(&self, env: &Env) -> Result<Type> {
+        crate::stack::ensure_sufficient(|| self.infer_type_predicate_inner(env))
+    }
+
+    fn infer_type_predicate_inner(&self, env: &Env) -> Result<Type> {
         match self {
             // `Any` is load-bearing here: a catch-all `_` arm's
             // predicate must match EVERYTHING for exhaustiveness,

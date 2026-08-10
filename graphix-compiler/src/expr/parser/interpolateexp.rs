@@ -1,4 +1,4 @@
-use super::{GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr, sptoken};
+use super::{GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr, grow::grow, sptoken};
 use crate::expr::{Expr, ExprId, ExprKind, get_origin};
 use combine::{
     RangeStream, attempt, between, choice, many, position,
@@ -33,7 +33,7 @@ parser! {
                 }
             }
         }
-        (
+        grow((
             position(),
             between(
                 token('"'),
@@ -63,6 +63,6 @@ parser! {
                     }
                     .to_expr(pos),
                 }
-            })
+            }))
     }
 }

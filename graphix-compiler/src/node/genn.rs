@@ -43,7 +43,7 @@ pub fn bind<R: Rt, E: UserEvent>(
         )
         .id;
     ctx.rt.ref_var(id, top_id);
-    (id, Box::new(Ref { spec: NOP.clone(), typ, id, top_id }))
+    (id, Node::new(Ref { spec: NOP.clone(), typ, id, top_id }))
 }
 
 /// generate a reference to a bind id
@@ -54,11 +54,11 @@ pub fn reference<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Node<R, E> {
     ctx.rt.ref_var(id, top_id);
-    Box::new(Ref { spec: NOP.clone(), typ, id, top_id })
+    Node::new(Ref { spec: NOP.clone(), typ, id, top_id })
 }
 
 pub fn constant<R: Rt, E: UserEvent>(v: Value) -> Node<R, E> {
-    Box::new(Constant {
+    Node::new(Constant {
         spec: NOP.clone(),
         typ: Type::Primitive(Typ::get(&v).into()),
         value: v,
@@ -122,7 +122,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
             (key, Arg::new(BindId::new(), Some(node), false))
         })
         .collect();
-    Box::new(CallSite {
+    Node::new(CallSite {
         spec: Arc::new(spec),
         rtype,
         ftype,

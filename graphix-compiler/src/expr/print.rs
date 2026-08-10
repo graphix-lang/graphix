@@ -919,6 +919,12 @@ impl PrettyDisplay for ExprKind {
 
 impl fmt::Display for ExprKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        crate::stack::ensure_sufficient(|| self.fmt_inner(f))
+    }
+}
+
+impl ExprKind {
+    fn fmt_inner(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fn print_exprs(
             f: &mut fmt::Formatter,
             exprs: &[Expr],

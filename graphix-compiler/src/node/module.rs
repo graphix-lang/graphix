@@ -306,7 +306,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
         bind_sig(&mut ctx.env, &mut env, &scope, &sig)
             .context("binding module signature")?;
-        Ok(Box::new(Self {
+        Ok(Node::new(Self {
             spec,
             flags,
             env,
@@ -355,7 +355,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 env: t.env.clone(),
             });
         }
-        Ok(Box::new(t))
+        Ok(Node::new(t))
     }
 
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {

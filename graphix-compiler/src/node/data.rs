@@ -44,7 +44,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
         let typs =
             names.iter().zip(n.iter()).map(|(n, a)| (n.clone(), a.node.typ().clone()));
         let typ = Type::Struct(Arc::from_iter(typs));
-        Ok(Box::new(Self { spec, typ, names, n }))
+        Ok(Node::new(Self { spec, typ, names, n }))
     }
 }
 
@@ -201,7 +201,7 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let typ = source.typ().clone();
-        Ok(Box::new(Self {
+        Ok(Node::new(Self {
             spec,
             typ,
             source,
@@ -407,7 +407,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
             _ => (Type::empty_tvar(), None),
         };
         let field_name = field_name.clone();
-        Ok(Box::new(Self { spec, typ, source, field, field_name }))
+        Ok(Node::new(Self { spec, typ, source, field, field_name }))
     }
 }
 
@@ -542,7 +542,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
             .map(|e| Ok(Cached::new(compile(ctx, flags, e.clone(), scope, top_id)?)))
             .collect::<Result<Box<[_]>>>()?;
         let typ = Type::Tuple(Arc::from_iter(n.iter().map(|n| n.node.typ().clone())));
-        Ok(Box::new(Self { spec, typ, n }))
+        Ok(Node::new(Self { spec, typ, n }))
     }
 }
 
@@ -675,7 +675,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
         let typs = Arc::from_iter(n.iter().map(|n| n.node.typ().clone()));
         let typ = Type::Variant(tag.clone(), typs);
         let tag = ctx.tag(tag);
-        Ok(Box::new(Self { spec, typ, tag, n }))
+        Ok(Node::new(Self { spec, typ, tag, n }))
     }
 }
 
@@ -804,7 +804,7 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
             Type::Error(t) => (**t).clone(),
             _ => Type::empty_tvar(),
         };
-        Ok(Box::new(Self { spec, typ, source, field }))
+        Ok(Node::new(Self { spec, typ, source, field }))
     }
 }
 

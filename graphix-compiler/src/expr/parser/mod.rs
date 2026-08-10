@@ -35,6 +35,10 @@ use poolshark::local::LPooled;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
+mod grow;
+use grow::grow;
+pub use grow::{DEFAULT_MAX_NESTING, max_nesting, set_max_nesting};
+
 mod interpolateexp;
 use interpolateexp::interpolated;
 
@@ -458,7 +462,13 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix())).then(
+    // `parse_value` is netidx's own recursive-descent value parser —
+    // `[[[…]]]` is a valid nested Value literal, and its recursion is
+    // outside this crate, so it neither counts against `max_nesting`
+    // nor claims segments of its own. `grow` gives it headroom at the
+    // boundary; bounding it properly needs the same treatment in
+    // netidx-value.
+    grow((position(), parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix()))).then(
         |(pos, v)| match v {
             Value::String(_) => {
                 unexpected_any("parse error in string interpolation").left()
@@ -768,7 +778,7 @@ parser! {
     fn expr[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        (
+        grow((
             leading_decorations(),
             choice((
                 module(),
@@ -803,7 +813,7 @@ parser! {
                     }
                     e
                 },
-            )
+            ))
     }
 }
 
@@ -814,16 +824,21 @@ parser! {
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
-    let mut r: LPooled<Vec<Expr>> =
+    let mut pos = SourcePosition::default();
+    let mut r: LPooled<Vec<Expr>> = grow::parsing(|| {
         sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp.to_expr(pos))
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(&*ori.text))
             .map(|(r, _)| r)
             .map_err(|e| {
-                let pc = ParserContext { ori: ori.clone(), pos: e.position };
-                anyhow::Error::msg(format!("{e}")).context(pc)
-            })?;
+                pos = e.position;
+                e
+            })
+    })
+    .map_err(|e| {
+        anyhow::Error::msg(e).context(ParserContext { ori: ori.clone(), pos })
+    })?;
     Ok(Arc::from_iter(r.drain(..)))
 }
 
@@ -834,31 +849,42 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
-    let mut r: LPooled<Vec<SigItem>> = sep_by1_tok(sig_item(), semisep(), eof())
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(&*ori.text))
-        .map(|(r, _)| r)
-        .map_err(|e| {
-            anyhow::anyhow!("{e}")
-                .context(ParserContext { ori: ori.clone(), pos: e.position })
-        })?;
+    let mut pos = SourcePosition::default();
+    let mut r: LPooled<Vec<SigItem>> = grow::parsing(|| {
+        sep_by1_tok(sig_item(), semisep(), eof())
+            .skip(spaces())
+            .skip(eof())
+            .easy_parse(position::Stream::new(&*ori.text))
+            .map(|(r, _)| r)
+            .map_err(|e| {
+                pos = e.position;
+                e
+            })
+    })
+    .map_err(|e| {
+        anyhow::Error::msg(e).context(ParserContext { ori: ori.clone(), pos })
+    })?;
     Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })
 }
 
 /// Parse one and only one expression.
 pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
-    expr()
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(&*s))
-        .map(|(r, _)| r)
-        .map_err(|e| {
-            anyhow::anyhow!("{e}").context(ParserContext {
-                ori: Arc::new(Origin::from_str(s)),
-                pos: e.position,
+    let mut pos = SourcePosition::default();
+    grow::parsing(|| {
+        expr()
+            .skip(spaces())
+            .skip(eof())
+            .easy_parse(position::Stream::new(s))
+            .map(|(r, _)| r)
+            .map_err(|e| {
+                pos = e.position;
+                e
             })
-        })
+    })
+    .map_err(|e| {
+        anyhow::Error::msg(e)
+            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
+    })
 }
 
 #[cfg(test)]
@@ -878,44 +904,59 @@ pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
 
 /// Parse one fntype expression
 pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
-    fntype()
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(s))
-        .map(|(r, _)| r)
-        .map_err(|e| {
-            anyhow::anyhow!("{e}").context(ParserContext {
-                ori: Arc::new(Origin::from_str(s)),
-                pos: e.position,
+    let mut pos = SourcePosition::default();
+    grow::parsing(|| {
+        fntype()
+            .skip(spaces())
+            .skip(eof())
+            .easy_parse(position::Stream::new(s))
+            .map(|(r, _)| r)
+            .map_err(|e| {
+                pos = e.position;
+                e
             })
-        })
+    })
+    .map_err(|e| {
+        anyhow::Error::msg(e)
+            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
+    })
 }
 
 /// Parse one type expression
 pub fn parse_type(s: &str) -> anyhow::Result<Type> {
-    typ()
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(s))
-        .map(|(r, _)| r)
-        .map_err(|e| {
-            anyhow::anyhow!("{e}").context(ParserContext {
-                ori: Arc::new(Origin::from_str(s)),
-                pos: e.position,
+    let mut pos = SourcePosition::default();
+    grow::parsing(|| {
+        typ()
+            .skip(spaces())
+            .skip(eof())
+            .easy_parse(position::Stream::new(s))
+            .map(|(r, _)| r)
+            .map_err(|e| {
+                pos = e.position;
+                e
             })
-        })
+    })
+    .map_err(|e| {
+        anyhow::Error::msg(e)
+            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
+    })
 }
 
 pub(super) fn parse_modpath(s: &str) -> anyhow::Result<ModPath> {
-    modpath()
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(s))
-        .map(|(r, _)| r)
-        .map_err(|e| {
-            anyhow::anyhow!("{e}").context(ParserContext {
-                ori: Arc::new(Origin::from_str(s)),
-                pos: e.position,
+    let mut pos = SourcePosition::default();
+    grow::parsing(|| {
+        modpath()
+            .skip(spaces())
+            .skip(eof())
+            .easy_parse(position::Stream::new(s))
+            .map(|(r, _)| r)
+            .map_err(|e| {
+                pos = e.position;
+                e
             })
-        })
+    })
+    .map_err(|e| {
+        anyhow::Error::msg(e)
+            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
+    })
 }

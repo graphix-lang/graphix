@@ -708,11 +708,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             tail_arg_order: Mutex::new(None),
             callee_lambda_id: Mutex::new(None),
         };
-        Ok(Box::new(site))
+        Ok(Node::new(site))
     }
 
     fn make_ref(&self, id: BindId, typ: Type, spec: TArc<Expr>) -> Node<R, E> {
-        Box::new(Ref { spec, typ, id, top_id: self.top_id })
+        Node::new(Ref { spec, typ, id, top_id: self.top_id })
     }
 
     fn clear_prepared_bind(&mut self, ctx: &mut ExecCtx<R, E>) {

@@ -69,6 +69,19 @@ impl StructPatternNode {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Self> {
+        crate::stack::ensure_sufficient(|| {
+            Self::compile_int_inner(ctx, type_predicate, spec, scope, pos, ori)
+        })
+    }
+
+    fn compile_int_inner<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        type_predicate: &Type,
+        spec: &StructurePattern,
+        scope: &Scope,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
+    ) -> Result<Self> {
         macro_rules! with_pref_suf {
             ($all:expr, $single:expr, $multi:expr) => {{
                 type_predicate.check_contains(
@@ -379,6 +392,10 @@ impl StructPatternNode {
     }
 
     pub fn ids<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
+        crate::stack::ensure_sufficient(|| self.ids_inner(f))
+    }
+
+    fn ids_inner<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
         match &self {
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id),
@@ -432,6 +449,10 @@ impl StructPatternNode {
     }
 
     pub fn bind<F: FnMut(BindId, Value)>(&self, v: &Value, f: &mut F) {
+        crate::stack::ensure_sufficient(|| self.bind_inner(v, f))
+    }
+
+    fn bind_inner<F: FnMut(BindId, Value)>(&self, v: &Value, f: &mut F) {
         match &self {
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id, v.clone()),
@@ -515,6 +536,10 @@ impl StructPatternNode {
     }
 
     pub fn unbind<F: FnMut(BindId)>(&self, f: &mut F) {
+        crate::stack::ensure_sufficient(|| self.unbind_inner(f))
+    }
+
+    fn unbind_inner<F: FnMut(BindId)>(&self, f: &mut F) {
         match &self {
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id),
@@ -561,6 +586,10 @@ impl StructPatternNode {
     }
 
     pub fn is_match(&self, v: &Value) -> bool {
+        crate::stack::ensure_sufficient(|| self.is_match_inner(v))
+    }
+
+    fn is_match_inner(&self, v: &Value) -> bool {
         match &self {
             Self::Ignore | Self::Bind(_) => true,
             Self::Literal(o) => v == o,
@@ -617,6 +646,10 @@ impl StructPatternNode {
     }
 
     pub fn is_refutable(&self) -> bool {
+        crate::stack::ensure_sufficient(|| self.is_refutable_inner())
+    }
+
+    fn is_refutable_inner(&self) -> bool {
         match &self {
             Self::Bind(_) | Self::Ignore => false,
             Self::Literal(_) => true,
@@ -649,6 +682,10 @@ impl StructPatternNode {
     /// left an OPEN scrutinee cell (a knotted rec self-call's rtype)
     /// to be greedily bound by the first arm's narrowing walk.
     pub fn matches_anything(&self) -> bool {
+        crate::stack::ensure_sufficient(|| self.matches_anything_inner())
+    }
+
+    fn matches_anything_inner(&self) -> bool {
         match &self {
             Self::Bind(_) | Self::Ignore => true,
             Self::Literal(_) | Self::Variant { .. } => false,
@@ -665,6 +702,10 @@ impl StructPatternNode {
     }
 
     pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
+        crate::stack::ensure_sufficient(|| self.delete_inner(ctx))
+    }
+
+    fn delete_inner<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
         match self {
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => {

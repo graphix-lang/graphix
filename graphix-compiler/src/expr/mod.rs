@@ -495,6 +495,22 @@ pub struct Expr {
     pub dec: Option<Box<Decorations>>,
 }
 
+/// A deep AST is a chain of `Arc<Expr>`, and every level of tearing it
+/// down comes back through here — recursively, in compiler-generated
+/// glue that runs AFTER this returns and so cannot be wrapped from
+/// inside it. Taking `kind` out makes the teardown an explicit drop
+/// this can place inside the guard, and leaves field glue with a
+/// trivial `NoOp`. No `ManuallyDrop` needed (the twins on `Node` and
+/// `TVar` do need it): `ExprKind` has no `Drop` of its own, so
+/// destroying it here recurses into the children's `Expr::drop` rather
+/// than back into this one.
+impl Drop for Expr {
+    fn drop(&mut self) {
+        let kind = std::mem::replace(&mut self.kind, ExprKind::NoOp);
+        crate::stack::ensure_sufficient(move || drop(kind))
+    }
+}
+
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.kind)
@@ -511,7 +527,10 @@ impl fmt::Display for Expr {
                 writeln!(f, "{a}")?;
             }
         }
-        write!(f, "{}", self.kind)
+        // Printing descends the whole tree, and error paths print
+        // arbitrary user subexpressions (`bailat!`, the default
+        // `emit_clif` blocker message).
+        crate::stack::ensure_sufficient(|| write!(f, "{}", self.kind))
     }
 }
 
@@ -615,6 +634,10 @@ impl Expr {
 
     /// fold over self and all of self's sub expressions
     pub fn fold<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
+        crate::stack::ensure_sufficient(|| self.fold_inner(init, f))
+    }
+
+    fn fold_inner<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
         let init = f(init, self);
         match &self.kind {
             ExprKind::Constant(_)

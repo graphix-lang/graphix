@@ -69,7 +69,7 @@ macro_rules! compare_op {
                 let lhs = Cached::new(lhs);
                 let rhs = Cached::new(rhs);
                 let typ = Type::Primitive(Typ::Bool.into());
-                Box::new(Self { spec, typ, lhs, rhs })
+                Node::new(Self { spec, typ, lhs, rhs })
             }
 
             pub(crate) fn compile(
@@ -84,7 +84,7 @@ macro_rules! compare_op {
                 let lhs = Cached::new(compile(ctx, flags, lhs.clone(), scope, top_id)?);
                 let rhs = Cached::new(compile(ctx, flags, rhs.clone(), scope, top_id)?);
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Box::new(Self { spec, typ, lhs, rhs }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs }))
             }
         }
 
@@ -242,7 +242,7 @@ macro_rules! bool_op {
                 let lhs = Cached::new(lhs);
                 let rhs = Cached::new(rhs);
                 let typ = Type::Primitive(Typ::Bool.into());
-                Box::new(Self { spec, typ, lhs, rhs })
+                Node::new(Self { spec, typ, lhs, rhs })
             }
 
             pub(crate) fn compile(
@@ -257,7 +257,7 @@ macro_rules! bool_op {
                 let lhs = Cached::new(compile(ctx, flags, lhs.clone(), scope, top_id)?);
                 let rhs = Cached::new(compile(ctx, flags, rhs.clone(), scope, top_id)?);
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Box::new(Self { spec, typ, lhs, rhs }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs }))
             }
         }
 
@@ -369,7 +369,7 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
     #[allow(dead_code)]
     pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
         let typ = Type::Primitive(Typ::Bool.into());
-        Box::new(Self { spec, typ, n })
+        Node::new(Self { spec, typ, n })
     }
 
     pub(crate) fn compile(
@@ -382,7 +382,7 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, n.clone(), scope, top_id)?;
         let typ = Type::Primitive(Typ::Bool.into());
-        Ok(Box::new(Self { spec, typ, n }))
+        Ok(Node::new(Self { spec, typ, n }))
     }
 }
 
@@ -458,7 +458,7 @@ pub struct Neg<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> Neg<R, E> {
     #[allow(dead_code)]
     pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Box::new(Self { spec, typ: Type::empty_tvar(), n })
+        Node::new(Self { spec, typ: Type::empty_tvar(), n })
     }
 
     pub(crate) fn compile(
@@ -470,7 +470,7 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
         n: &Expr,
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, n.clone(), scope, top_id)?;
-        Ok(Box::new(Self { spec, typ: Type::empty_tvar(), n }))
+        Ok(Node::new(Self { spec, typ: Type::empty_tvar(), n }))
     }
 }
 
@@ -712,7 +712,7 @@ macro_rules! arith_op {
             ) -> Node<R, E> {
                 let lhs = Cached::new(lhs);
                 let rhs = Cached::new(rhs);
-                Box::new(Self { spec, typ, lhs, rhs })
+                Node::new(Self { spec, typ, lhs, rhs })
             }
 
             pub(crate) fn compile(
@@ -727,7 +727,7 @@ macro_rules! arith_op {
                 let lhs = Cached::new(compile(ctx, flags, lhs.clone(), scope, top_id)?);
                 let rhs = Cached::new(compile(ctx, flags, rhs.clone(), scope, top_id)?);
                 let typ = Type::empty_tvar();
-                Ok(Box::new(Self { spec, typ, lhs, rhs }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs }))
             }
 
             /// Homogeneous arithmetic — `fn('a: Number, 'a) -> 'a`

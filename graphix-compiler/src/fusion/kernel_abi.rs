@@ -680,6 +680,14 @@ fn freeze_for_abi_d(
     t: &Type,
     seen: Option<&Seen>,
 ) -> Option<Type> {
+    crate::stack::ensure_sufficient(|| freeze_for_abi_d_inner(reg, t, seen))
+}
+
+fn freeze_for_abi_d_inner(
+    reg: &AbstractRegistry,
+    t: &Type,
+    seen: Option<&Seen>,
+) -> Option<Type> {
     // Deref-clone hoisted out — see `abi_kind`'s note (most arms recurse
     // under the TVar lock).
     let resolved = t.with_deref(|r| r.cloned());

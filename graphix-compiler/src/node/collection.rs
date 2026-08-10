@@ -648,7 +648,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             Cached::new(genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id));
         let prototype =
             Slot::new(ctx, scope, top_id, callback, &callback_type, &element_type, true);
-        Ok(Box::new(Self {
+        Ok(Node::new(Self {
             base: MapQBase {
                 source,
                 prototype: prototype.call,
@@ -1050,7 +1050,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             &element_type,
             true,
         );
-        Ok(Box::new(Self {
+        Ok(Node::new(Self {
             base: FoldQBase {
                 source,
                 init,

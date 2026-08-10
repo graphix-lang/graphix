@@ -256,14 +256,128 @@ Some examples are code snippets that reference undefined variables and are meant
 
 ## Development Notes
 
-- The compiler is optimized for dev builds (opt-level="s", lto="thin")
-  to reduce compile times. If you need to debug something you can turn
-  this optimization off, however the parser may overflow the
-  stack without at least some optimization.
+- Dev builds are UNOPTIMIZED (opt-level=0, no LTO) since 2026-08-10 —
+  roughly half the clean build time of the old opt-level="s"/lto="thin"
+  profile. What used to force optimization was stack: unoptimized frames
+  are ~6x their optimized size (~420KB per `expr` parse nesting level,
+  so a 2MB thread parsed 5 levels). See "Stack discipline" below.
 - Release builds use full optimization (opt-level=3, codegen-units=1, lto=true)
 - Rust edition 2024 is used throughout
 - The project uses `triomphe::Arc` instead of `std::sync::Arc` for better performance
 - Pooling is used extensively (`poolshark`, `immutable-chunkmap`) to reduce allocations
+
+### Stack discipline (2026-08-10)
+
+The engine gets embedded and compiles programs it didn't write, so
+nesting depth is attacker-controlled. Stack overflow aborts the process
+— it can't be caught — so it is closed off two ways at once.
+
+**Guards.** `crate::stack::ensure_sufficient` (`stacker::maybe_grow`,
+1MB red zone / 32MB segments) moves a deep recursion onto heap
+segments. The red zone has to exceed what ONE level costs between
+checks. Wrap any new recursion a program can drive arbitrarily
+deep. Currently wrapped: every parser knot (`expr`, `arith`,
+`arith_term`, `typ`, `structure_pattern`, `interpolated`, `sig_item`,
+and the netidx `literal()` boundary) via the `GrowStack` combinator in
+`expr/parser/grow.rs`; `node::compiler::compile`; `Display` for `Expr`,
+`ExprKind` and `Type`; `Expr::fold`; `for_each_node`;
+`node_const_value`; `Type::{contains_int, normalize_int,
+scope_refs_int}`; `would_cycle_seen`; `freeze_for_abi_d`;
+`StructurePattern`'s walks in both `expr/pattern.rs` and
+`node/pattern.rs`; and the node-walk's non-tail lambda dispatch.
+
+**`Node` is a newtype, not `Box<dyn Update>`.** That is what makes the
+tree passes tractable: its inherent methods shadow the nine recursive
+`Update` methods (`update`, `delete`, `typecheck0/1`, `refs`, `sleep`,
+`reset_replay`, `emit_clif`, `fuse`) and run each vtable call under the
+guard, and a node's children are `Node`s — one funnel for the whole
+family instead of ~1000 call sites. Non-recursive methods reach the
+trait through `Deref`. Construct with `Node::new`.
+
+**Destructors too.** Drop glue IS a function (`drop_in_place`) and it
+does recurse — but it is compiler-generated, and the FIELD glue runs
+after your `Drop::drop` returns, so a guard written inside `drop` has
+already unwound by the time the children are destroyed. The teardown
+has to become an EXPLICIT call you can place inside the guard, and
+there are two ways to get one:
+
+- `ManuallyDrop` on the field, then destroy it yourself — `Node` and
+  `TVar` (`ensure_sufficient(|| ManuallyDrop::drop(&mut self.0))`).
+  Needed when there is no cheap inert value to leave behind (both are
+  newtypes over a pointer).
+- `mem::replace` the field with an inert value and drop what you took
+  — `Expr` (leaves `ExprKind::NoOp`). No unsafe, and no churn at use
+  sites.
+
+The `mem::replace` form works ONLY when the taken value's type does
+not itself carry the guarding `Drop`: `Expr::drop` takes an `ExprKind`,
+which has no `Drop`, so destroying it recurses into the CHILD's
+`Expr::drop`. A `Type` → `Type` handoff makes no progress and spins
+forever, whatever guard condition you put on it (`*self = Bottom` is
+worse — assignment drops in place, so it re-enters immediately). That
+is why `Type` is the one cycle left uncovered: fixing it means
+`struct Type(TypeKind)` or a newtype on each recursive edge, since an
+enum cannot wrap "the fields of whichever variant". The limit is what
+keeps it unreachable.
+
+(The twins in `immutable_chunkmap::avl` and netidx-value's
+`ValArrayBase` predate stacker and use a deferred queue instead — ~170
+lines each of global mutex, bucketed queue, type erasure and depth
+counter for the same effect, and they reorder destruction.)
+
+**The limit.** `parser::DEFAULT_MAX_NESTING` (1000, settable via
+`set_max_nesting`) is what makes overflow unreachable rather than
+merely expensive, and it is load-bearing for the drop cycles above
+rather than just defense in depth. It is counted in parser recursion
+knots, not source constructs (one `(1 + …)` level costs three), and
+enforced in the same `GrowStack` that claims the stack. Constructs
+parsed by an ITERATIVE loop that folds into a nested AST bypass that
+counter and are capped separately at the fold — `arith_term`'s postfix
+chain (`s.a.a.a…`, `a[0][0]…`) and `arith`'s operator chain
+(`1 + 1 + 1 + …`). A new `many(...)`-into-nested-AST parser needs the
+same cap.
+
+combine merges a committed error with the surrounding alternatives'
+expectations, so a refusal's own message does NOT survive to the top
+(a too-deep program reported ``Unexpected `+` ``). Refusals set a
+thread-local instead, and every parser entry point runs through
+`grow::parsing`, which reports the real reason. Set the flag
+(`note_refused`) from any new refusal site.
+
+Nesting costs the compiler ~326KB of RSS and ~7ms per level at
+opt-level 0 (~5x less optimized), so the limit also bounds how much a
+small hostile input can amplify: 1000 knots is ~330 levels of
+`(1 + …)`, ~110MB and ~2s. The guards themselves cost nothing
+measurable — `examples_compile` 25.4s and a node-walk bench 2.7s with
+them and without.
+
+**netidx-value has the same treatment**, because a bracket literal is
+also a valid netidx `Value` and `literal()` runs it through
+`netidx_value::parser::value` — a recursion this crate can neither
+count nor wrap. Its own `GrowStack` + `DEFAULT_MAX_NESTING` live in
+`netidx-value/src/parser.rs` (sibling repo). Its Pack (wire) path is
+already safe by a different route: `encode`/`decode`/`encoded_len` are
+ITERATIVE over explicit worklists, which beats a growable stack for
+code you control — no stack proportional to depth at all. Reach for
+stacker only where a worklist is impractical.
+
+`graphix-compiler/tests/deep_drop.rs` covers the destructors directly:
+the limit is set low enough that the pipeline test never reaches them,
+so this one raises it and tears down a 50,000-deep AST on a 512KB
+stack. Its own test binary because `set_max_nesting` is process-global.
+Note that `#[cfg(test)]` code is invisible to a plain `cargo check` —
+use `--all-targets` when a change can break a move out of a field.
+
+`graphix-shell/tests/deep_nesting.rs` is the regression net — 22 shapes
+× two depths, each in a CHILD PROCESS on a 512KB stack (a quarter of a
+tokio worker), batched 8 at a time. Child processes because an overflow
+aborts, so it can't be caught in-process and the child is what names
+the case. The ACCEPTED depth (derived from the limit, not fixed) must
+PARSE — a case the limit refuses exercises nothing, so the test asserts
+it wasn't refused. The REJECTED depth only has to come back at all:
+whether the limit fires is shape-dependent (`uniontyp` at 100k is a
+FLAT union, not nesting), so `parens` is the canary that proves it
+fires. Add a case when you add a recursive construct.
 
 ## Debugging the Compiler
 

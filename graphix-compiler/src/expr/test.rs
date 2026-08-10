@@ -761,15 +761,17 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
                 ori: None,
             }
         }),
-        (typedef(), option::of(arcstr())).prop_map(|(td, doc)| match td.kind {
-            ExprKind::TypeDef(td) => SigItem {
-                kind: SigKind::TypeDef(td),
-                doc: Doc(doc),
-                pos: Default::default(),
-                ori: None,
-            },
-            _ => unreachable!(),
-        }),
+        (typedef(), option::of(arcstr())).prop_map(
+            |(mut td, doc)| match std::mem::replace(&mut td.kind, ExprKind::NoOp,) {
+                ExprKind::TypeDef(td) => SigItem {
+                    kind: SigKind::TypeDef(td),
+                    doc: Doc(doc),
+                    pos: Default::default(),
+                    ori: None,
+                },
+                _ => unreachable!(),
+            }
+        ),
         (modpath(), option::of(arcstr())).prop_map(|(path, doc)| SigItem {
             kind: SigKind::Use(path),
             doc: Doc(doc),
@@ -896,7 +898,7 @@ fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
 /// Recursively adds ExplicitParens where needed to make the expression tree
 /// consistent with precedence rules. This ensures the round-trip test works
 /// for randomly generated expressions.
-fn add_parens(e: Expr) -> Expr {
+fn add_parens(mut e: Expr) -> Expr {
     use parser::arithexp::precedence;
     macro_rules! fix_binop {
         ($op:literal, $ctor:ident, $lhs:expr, $rhs:expr) => {{
@@ -908,7 +910,7 @@ fn add_parens(e: Expr) -> Expr {
             ExprKind::$ctor { lhs, rhs }
         }};
     }
-    let kind = match e.kind {
+    let kind = match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
         ExprKind::Or { lhs, rhs } => fix_binop!("||", Or, lhs, rhs),
         ExprKind::And { lhs, rhs } => fix_binop!("&&", And, lhs, rhs),
         ExprKind::Eq { lhs, rhs } => fix_binop!("==", Eq, lhs, rhs),
@@ -951,7 +953,7 @@ fn add_parens(e: Expr) -> Expr {
         // For non-binop expressions, just return as-is
         other => other,
     };
-    Expr { kind, ..e }
+    Expr { kind, id: e.id, ori: e.ori.clone(), pos: e.pos, dec: e.dec.take() }
 }
 
 fn arithexpr() -> impl Strategy<Value = Expr> {

@@ -2,17 +2,19 @@ use crate::expr::{
     ApplyExpr, Expr, ExprKind,
     parser::{
         any, apply_args, array, array_index_suffix, cast, csep, do_block, expr,
+        grow::{grow, max_nesting, note_refused},
         interpolated, literal, map, raw_string, reference, select, spaces, spfname,
         sptoken, structure, structwith, variant,
     },
 };
 use arcstr::ArcStr;
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice, many, not_followed_by,
-    optional,
+    ParseError, Parser, RangeStream, attempt, between, choice,
+    error::StreamError,
+    many, not_followed_by, optional,
     parser::char::string,
     position,
-    stream::{Range, position::SourcePosition},
+    stream::{Range, StreamErrorFor, position::SourcePosition},
     token,
 };
 use netidx_core::utils::Either;
@@ -191,7 +193,7 @@ parser! {
     pub(crate) fn arith_term[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        spaces()
+        grow(spaces()
             .with(
                 (
                     position(),
@@ -199,7 +201,18 @@ parser! {
                     many::<LPooled<Vec<Post>>, _, _>(postfix_op()),
                     optional(qop_suffix()),
                 )
-                    .map(|(pos, (base, paren), mut ops, qop)| {
+                    .and_then(|(pos, (base, paren), mut ops, qop)| {
+                        // The postfix loop is ITERATIVE, so `grow`'s
+                        // depth counter never sees it — but the fold
+                        // below turns N ops into an N-deep AST, and
+                        // tearing that down is recursive drop glue no
+                        // guard can wrap. Refuse before building it.
+                        if ops.len() > max_nesting() {
+                            note_refused();
+                            return Err(<StreamErrorFor<I>>::message_static_message(
+                                "expression nesting too deep",
+                            ));
+                        }
                         let folded = if ops.is_empty() {
                             match paren {
                                 Some(()) => {
@@ -210,7 +223,7 @@ parser! {
                         } else {
                             ops.drain(..).fold(base, |acc, op| apply_post(pos, acc, op))
                         };
-                        match qop {
+                        Ok(match qop {
                             None => folded,
                             Some(QopSuffix::Qop) => {
                                 ExprKind::Qop(Arc::new(folded)).to_expr(pos)
@@ -218,9 +231,9 @@ parser! {
                             Some(QopSuffix::OrNever) => {
                                 ExprKind::OrNever(Arc::new(folded)).to_expr(pos)
                             }
-                        }
+                        })
                     }),
-            )
+            ))
         // NOTE: arith_term must NOT skip trailing spaces — the tight
         // brace rule (`m{"k"}` is a map access, `m {"k"}` is not)
         // depends on the whitespace between a postfix source and `{`
@@ -313,7 +326,7 @@ parser! {
     pub(crate) fn arith[I]()(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        (
+        grow((
             arith_term(),
             many((
                 attempt(spaces().with(choice((
@@ -342,12 +355,21 @@ parser! {
                 )))),
                 arith_term(),
             )),
-        ).map(|(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
-            if exprs.is_empty() {
+        ).and_then(|(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
+            // Same iterative-loop / nested-result problem as the
+            // postfix fold above: `1 + 1 + 1 + ...` builds one AST
+            // level per operator.
+            if exprs.len() > max_nesting() {
+                note_refused();
+                return Err(<StreamErrorFor<I>>::message_static_message(
+                    "expression nesting too deep",
+                ));
+            }
+            Ok(if exprs.is_empty() {
                 e
             } else {
                 shunting_yard(e, exprs)
-            }
-        })
+            })
+        }))
     }
 }

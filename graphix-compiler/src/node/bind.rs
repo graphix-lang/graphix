@@ -156,7 +156,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 }
             }
         }
-        Ok(Box::new(Self { spec, typ, pattern, node }))
+        Ok(Node::new(Self { spec, typ, pattern, node }))
     }
 
     /// The LambdaDef `Value` this binding holds, when its value node is
@@ -308,7 +308,7 @@ impl Ref {
         top_id: ExprId,
         spec: Expr,
     ) -> Node<R, E> {
-        Box::new(Self { spec: Arc::new(spec), typ, id, top_id })
+        Node::new(Self { spec: Arc::new(spec), typ, id, top_id })
     }
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
@@ -337,7 +337,7 @@ impl Ref {
                 }
                 ctx.rt.ref_var(bind_id, top_id);
                 let spec = Arc::new(spec);
-                Ok(Box::new(Self { spec, typ, id: bind_id, top_id }))
+                Ok(Node::new(Self { spec, typ, id: bind_id, top_id }))
             }
         }
     }
@@ -411,7 +411,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     /// node.
     #[allow(dead_code)]
     pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Box::new(Self { spec, typ, child, id })
+        Node::new(Self { spec, typ, child, id })
     }
 
     pub(crate) fn compile(
@@ -428,7 +428,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             ctx.env.byref_chain.insert_cow(id, c.id);
         }
         let typ = Type::ByRef(Arc::new(child.typ().clone()));
-        Ok(Box::new(Self { spec, typ, child, id }))
+        Ok(Node::new(Self { spec, typ, child, id }))
     }
 }
 
@@ -519,7 +519,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// empty type variable for the interpreter to pin down later.
     #[allow(dead_code)]
     pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
-        Box::new(Self { spec, typ, child, id: None, top_id })
+        Node::new(Self { spec, typ, child, id: None, top_id })
     }
 
     pub(crate) fn compile(
@@ -532,7 +532,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     ) -> Result<Node<R, E>> {
         let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Box::new(Self { spec, typ, child, id: None, top_id }))
+        Ok(Node::new(Self { spec, typ, child, id: None, top_id }))
     }
 }
 

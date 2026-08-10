@@ -45,7 +45,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([etyp.clone(), ERR.clone()]));
-        Ok(Box::new(Self { source, i, spec, typ, etyp }))
+        Ok(Node::new(Self { source, i, spec, typ, etyp }))
     }
 }
 
@@ -280,7 +280,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
             .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id).map(Cached::new))
             .transpose()?;
         let typ = Type::Set(Arc::from_iter([source.node.typ().clone(), ERR.clone()]));
-        Ok(Box::new(Self { spec, typ, source, start, end }))
+        Ok(Node::new(Self { spec, typ, source, start, end }))
     }
 }
 
@@ -455,7 +455,7 @@ impl<R: Rt, E: UserEvent> Array<R, E> {
             .map(|e| Ok(Cached::new(compile(ctx, flags, e.clone(), scope, top_id)?)))
             .collect::<Result<_>>()?;
         let typ = Type::Array(Arc::new(Type::empty_tvar()));
-        Ok(Box::new(Self { spec, typ, n }))
+        Ok(Node::new(Self { spec, typ, n }))
     }
 }
 

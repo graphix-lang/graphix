@@ -45,7 +45,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Box::new(Self { spec, typ, keys, vals }))
+        Ok(Node::new(Self { spec, typ, keys, vals }))
     }
 }
 
@@ -203,7 +203,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));
-        Ok(Box::new(Self { source, key, spec, typ, vtyp }))
+        Ok(Node::new(Self { source, key, spec, typ, vtyp }))
     }
 }
 

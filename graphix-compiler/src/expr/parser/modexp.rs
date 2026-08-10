@@ -1,6 +1,6 @@
 use super::{
-    csep, doc_comment, expr, leading_comments, modpath, sep_by1_tok, spaces, spfname,
-    spmodpath, spstring, sptoken, typ, typedef,
+    csep, doc_comment, expr, grow::grow, leading_comments, modpath, sep_by1_tok, spaces,
+    spfname, spmodpath, spstring, sptoken, typ, typedef,
 };
 use crate::expr::{
     BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
@@ -26,13 +26,13 @@ parser! {
         // and `.gxi` files use `//` for internal notes (e.g. XCRs). Their
         // retention isn't a goal; this restores the pre-change behavior
         // for the interface parser without affecting the `.gx` rule.
-        (position(), leading_comments().with(doc_comment()).skip(spaces())).then(|(pos, doc)| {
+        grow((position(), leading_comments().with(doc_comment()).skip(spaces())).then(|(pos, doc)| {
             let ori = Some(crate::expr::get_origin());
             choice((
                 typedef().map({
                     let doc = doc.clone();
                     let ori = ori.clone();
-                    move |e| match e.kind {
+                    move |mut e: Expr| match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
                         ExprKind::TypeDef(td) => SigItem { doc: doc.clone(), kind: SigKind::TypeDef(td), pos, ori: ori.clone() },
                         _ => unreachable!()
                     }
@@ -56,7 +56,7 @@ parser! {
                     move |n: ArcStr| SigItem { doc: doc.clone(), kind: SigKind::Module(n), pos, ori: ori.clone() }
                 })
             ))
-        })
+        }))
     }
 }
 

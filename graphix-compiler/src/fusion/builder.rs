@@ -63,7 +63,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             }
         };
         let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
-        Ok(Box::new(Self { spec, typ, feeders, inner }))
+        Ok(Node::new(Self { spec, typ, feeders, inner }))
     }
 
     /// The compiled kernel IR this region fused into. Used by graph

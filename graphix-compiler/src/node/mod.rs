@@ -142,7 +142,7 @@ pub struct Nop {
 
 impl Nop {
     pub(crate) fn new<R: Rt, E: UserEvent>(typ: Type) -> Node<R, E> {
-        Box::new(Nop { typ })
+        Node::new(Nop { typ })
     }
 }
 
@@ -199,7 +199,7 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, spec.clone(), scope, top_id)?;
-        Ok(Box::new(ExplicitParens { spec, n }))
+        Ok(Node::new(ExplicitParens { spec, n }))
     }
 }
 
@@ -389,7 +389,7 @@ impl Use {
                 def_ori: None,
             });
         }
-        Ok(Box::new(Self { spec, scope: scope.clone(), name: name.clone() }))
+        Ok(Node::new(Self { spec, scope: scope.clone(), name: name.clone() }))
     }
 }
 
@@ -462,7 +462,7 @@ impl TypeDef {
             )
             .with_context(|| format!("in typedef at {}", spec.pos))?;
         let name = name.clone();
-        Ok(Box::new(Self { spec, scope: scope.lexical.clone(), name }))
+        Ok(Node::new(Self { spec, scope: scope.lexical.clone(), name }))
     }
 }
 
@@ -518,7 +518,7 @@ impl Constant {
     /// generated code uses this after it has already chosen the
     /// value, type, and spec at code-generation time.
     pub fn new<R: Rt, E: UserEvent>(value: Value, typ: Type, spec: Expr) -> Node<R, E> {
-        Box::new(Self { spec: Arc::new(spec), value, typ })
+        Node::new(Self { spec: Arc::new(spec), value, typ })
     }
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
@@ -528,7 +528,7 @@ impl Constant {
         let spec = Arc::new(spec);
         let value = value.clone();
         let typ = Type::Primitive(Typ::get(&value).into());
-        Ok(Box::new(Self { spec, value, typ }))
+        Ok(Node::new(Self { spec, value, typ }))
     }
 }
 
@@ -637,7 +637,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         spec: Expr,
         scope: Scope,
     ) -> Node<R, E> {
-        Box::new(Self { module, spec, children, catches: Box::default(), scope })
+        Node::new(Self { module, spec, children, catches: Box::default(), scope })
     }
 
     pub(crate) fn compile(
@@ -651,7 +651,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     ) -> Result<Node<R, E>> {
         let (children, catches) =
             compile_block_children(ctx, flags, scope, top_id, exprs.iter())?;
-        Ok(Box::new(Self { module, spec, children, catches, scope: scope.clone() }))
+        Ok(Node::new(Self { module, spec, children, catches, scope: scope.clone() }))
     }
 }
 
@@ -863,7 +863,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             .collect::<Result<_>>()?;
         let typs = args.iter().map(|c| c.node.typ().clone()).collect();
         let typ = Type::Primitive(Typ::String.into());
-        Ok(Box::new(Self { spec, typ, typs, args }))
+        Ok(Node::new(Self { spec, typ, typs, args }))
     }
 }
 
@@ -973,7 +973,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
     /// Build a `Connect` node from an already-compiled RHS expression
     /// and the BindId of the variable to be updated on each cycle.
     pub fn new(id: BindId, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Box::new(Self { spec, node: rhs, id })
+        Node::new(Self { spec, node: rhs, id })
     }
 
     pub(crate) fn compile(
@@ -1006,7 +1006,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             });
         }
         let node = compile(ctx, flags, value.clone(), scope, top_id)?;
-        Ok(Box::new(Self { spec, node, id }))
+        Ok(Node::new(Self { spec, node, id }))
     }
 }
 
@@ -1094,7 +1094,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         top_id: ExprId,
         spec: Expr,
     ) -> Node<R, E> {
-        Box::new(Self { spec, rhs: Cached::new(rhs), src_id, target_id: None, top_id })
+        Node::new(Self { spec, rhs: Cached::new(rhs), src_id, target_id: None, top_id })
     }
 
     pub(crate) fn compile(
@@ -1122,7 +1122,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         }
         ctx.rt.ref_var(src_id, top_id);
         let rhs = Cached::new(compile(ctx, flags, value.clone(), scope, top_id)?);
-        Ok(Box::new(Self { spec, rhs, src_id, target_id: None, top_id }))
+        Ok(Node::new(Self { spec, rhs, src_id, target_id: None, top_id }))
     }
 }
 
@@ -1227,7 +1227,7 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
             bail!("in cast at {} {e}", spec.pos);
         }
         let typ = target.union(&ctx.env, &CAST_ERR)?;
-        Ok(Box::new(Self { spec, typ, target, n }))
+        Ok(Node::new(Self { spec, typ, target, n }))
     }
 }
 
@@ -1310,7 +1310,7 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
-        Ok(Box::new(Self { spec, typ: Type::empty_tvar(), n }))
+        Ok(Node::new(Self { spec, typ: Type::empty_tvar(), n }))
     }
 }
 
@@ -1408,7 +1408,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
         let arg = Cached::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
         let typ = arg.node.typ().clone();
-        Ok(Box::new(Self { triggered: 0, id, top_id, spec, typ, trigger, arg }))
+        Ok(Node::new(Self { triggered: 0, id, top_id, spec, typ, trigger, arg }))
     }
 }
 

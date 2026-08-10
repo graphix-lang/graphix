@@ -306,6 +306,10 @@ impl Type {
     /// (`TVar::normalize_int`) and is therefore always `None` as a
     /// value: the node still wraps the same cell.
     pub(super) fn normalize_int(&self, cx: &mut NormCx) -> Option<Self> {
+        crate::stack::ensure_sufficient(|| self.normalize_int_inner(cx))
+    }
+
+    fn normalize_int_inner(&self, cx: &mut NormCx) -> Option<Self> {
         let key = norm_key(self);
         if let Some(k) = key
             && let Some(r) = cx.memo.get(&k)

@@ -47,6 +47,7 @@ regex = { workspace = true }
 serde_derive = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
+stacker = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 uuid = { workspace = true }

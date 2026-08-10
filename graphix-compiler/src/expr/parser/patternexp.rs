@@ -21,7 +21,7 @@ use netidx_value::parser::{VAL_ESC, VAL_MUST_ESC, value as parse_value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-use super::not_prefix;
+use super::{grow::grow, not_prefix};
 
 pub(super) fn slice_pattern<I>(
     all: Option<ArcStr>,
@@ -257,7 +257,7 @@ parser! {
     pub(crate) fn structure_pattern[I]()(I) -> StructurePattern
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        spaces().with(optional(attempt(all_pattern()))).then(|all| choice((
+        grow(spaces().with(optional(attempt(all_pattern()))).then(|all| choice((
             slice_pattern(all.clone()),
             tuple_pattern(all.clone()),
             struct_pattern(all.clone()),
@@ -265,7 +265,7 @@ parser! {
             underbar_pattern(all.is_some()),
             literal_pattern(all.is_some()),
             bind_pattern(all.is_some()),
-        )))
+        ))))
     }
 }
 

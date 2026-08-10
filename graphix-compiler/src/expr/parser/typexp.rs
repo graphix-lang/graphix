@@ -1,6 +1,6 @@
 use super::{
-    csep, fname, ident, not_prefix, sep_by_tok, sep_by1_tok, spaces, spaces1, spfname,
-    spstring, sptoken, typname,
+    csep, fname, grow::grow, ident, not_prefix, sep_by_tok, sep_by1_tok, spaces, spaces1,
+    spfname, spstring, sptoken, typname,
 };
 use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
@@ -332,7 +332,7 @@ parser! {
     pub(super) fn typ[I]()(I) -> Type
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        spaces().with(choice((
+        grow(spaces().with(choice((
             token('&').with(typ()).map(|t| Type::ByRef(Arc::new(t))),
             token('_').map(|_| Type::Bottom),
             between(
@@ -357,7 +357,7 @@ parser! {
             attempt(typeprim()).map(|typ| Type::Primitive(typ.into())),
             tvar().map(|tv| Type::TVar(tv)),
             typref(),
-        )))
+        ))))
     }
 }
 

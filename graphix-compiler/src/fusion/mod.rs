@@ -519,6 +519,13 @@ pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
     f: &mut dyn FnMut(&'a Node<R, E>),
 ) {
+    crate::stack::ensure_sufficient(|| for_each_node_inner(node, f))
+}
+
+fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+    f: &mut dyn FnMut(&'a Node<R, E>),
+) {
     f(node);
     macro_rules! rec {
         ($($n:expr),*) => {{ $(for_each_node::<R, E>($n, f);)* }};

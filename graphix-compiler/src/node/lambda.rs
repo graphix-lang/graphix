@@ -444,7 +444,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         };
         *ctx.active_lambdas.entry(self.id).or_insert(0) += 1;
         let res = if !self.tail_loop.load(Ordering::Relaxed) {
-            self.body.update(ctx, event)
+            // Non-tail recursion nests the Rust stack one level per
+            // dispatch; `max_call_depth` bounds how many, but not how
+            // big a thread's stack is (an unoptimized build wants
+            // ~4MB for the default 256 and a tokio worker has 2MB).
+            crate::stack::ensure_sufficient(|| self.body.update(ctx, event))
         } else {
             // Sync self-tail-recursion: loop in place instead of recursing on
             // the Rust stack (which overflows; the JIT compiles this to a
@@ -1387,7 +1391,7 @@ impl Lambda {
             recursion: Mutex::new(RecursionKind::NotRecursive),
         });
         ctx.lambda_defs.insert(id, def.clone());
-        Ok(Box::new(Self { spec, def, typ: Type::Fn(typ) }))
+        Ok(Node::new(Self { spec, def, typ: Type::Fn(typ) }))
     }
 }
 
@@ -1464,7 +1468,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .args
             .iter()
             .map(|at| {
-                let n: Node<R, E> = Box::new(Nop { typ: at.typ.clone() });
+                let n: Node<R, E> = Node::new(Nop { typ: at.typ.clone() });
                 Ok(n)
             })
             .collect::<Result<_>>()?;

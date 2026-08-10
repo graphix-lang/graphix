@@ -486,6 +486,16 @@ impl Type {
         hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
+        crate::stack::ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t))
+    }
+
+    fn contains_int_inner(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        t: &Self,
+    ) -> Result<bool> {
         if (self as *const Type) == (t as *const Type) || same_content(self, t) {
             return Ok(true);
         }

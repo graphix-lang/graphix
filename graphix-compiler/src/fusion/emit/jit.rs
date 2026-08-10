@@ -352,7 +352,13 @@ impl WrappedKernel {
 // global state" guarantee.)
 
 pub struct Jit {
-    ctx: JitCtx,
+    /// Boxed because cranelift's `Context` alone is ~5KB: inline, the
+    /// whole `JitCtx` rides `FusionCtx` → `ExecCtx` → `GXConfig` →
+    /// every `async fn` that moves one, and the resulting coroutine
+    /// sizes overflow libtest's 2MB thread stack in unoptimized
+    /// builds. One allocation per context; the JIT is compile-time
+    /// only, so the indirection is free.
+    ctx: Box<JitCtx>,
     /// Per-kernel cache: `(Arc<KernelSig> raw pointer, DynCall base
     /// offset, interned region layout)` → cached entry. We keep the Arc
     /// alive in the entry so the raw pointer key stays valid for the
@@ -376,7 +382,7 @@ impl Jit {
     /// (rare; only happens if the target ISA isn't supported).
     pub fn new() -> Result<Self> {
         Ok(Self {
-            ctx: JitCtx::new()?,
+            ctx: Box::new(JitCtx::new()?),
             by_kernel: BTreeMap::new(),
             layouts: BTreeMap::new(),
         })

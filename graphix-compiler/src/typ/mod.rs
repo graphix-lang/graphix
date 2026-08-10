@@ -1179,6 +1179,10 @@ impl Type {
     /// the original (shared); cell-free ref-free structure has nothing
     /// to re-scope or re-mint.
     fn scope_refs_int(&self, scope: &ModPath) -> Option<Type> {
+        crate::stack::ensure_sufficient(|| self.scope_refs_int_inner(scope))
+    }
+
+    fn scope_refs_int_inner(&self, scope: &ModPath) -> Option<Type> {
         match self {
             Type::TVar(tv) => Some(match tv.read().typ.read().typ.as_ref() {
                 None => Type::TVar(TVar::empty_named(tv.name.clone())),

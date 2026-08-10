@@ -84,7 +84,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         spec: Expr,
     ) -> Node<R, E> {
         let arms = arms.into_iter().map(|(p, n)| (p, Cached::new(n))).collect::<Vec<_>>();
-        Box::new(Self {
+        Node::new(Self {
             spec,
             typ,
             arg: Cached::new(arg),
@@ -124,7 +124,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             .collect::<Result<Vec<_>>>()
             .with_context(|| format!("in select at {}", spec.pos))?;
         let typ = Type::empty_tvar();
-        Ok(Box::new(Self {
+        Ok(Node::new(Self {
             spec,
             typ,
             arg,
