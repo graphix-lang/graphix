@@ -1,0 +1,98 @@
+// PRE-EXISTING wrong value, surfaced by the aug08e soak (hz1 generate,
+// on 59f887ac). Deterministic 3/3, and DEEP: it diverges identically on
+// every archived campaign binary reachable on hz1 — aug08c (fb622f09),
+// aug08b, aug07a, aug06i (0174c8a2, pre-review-arc), aug06g, aug06e,
+// aug06a, aug05k, aug05d. It predates the strict-select rule, the
+// scrutinee ride, and the whole 08-07 review-fix arc; the aug08a map::
+// and dynamic-module generator vocabulary is what finally reached it.
+// Reproduces on aea9910d.
+//
+//   interp: [0:true, 1:true]
+//   jit:    [0:true, 1:false]   <- epoch 1 value is the PRE-WRITE k0
+//
+// Kept here because campaign dirs live under ~/tmp, which is tmpfs on
+// every box in the fleet — a reboot loses the only copy.
+//
+// Untriaged. Reduced from 2213 to 490 bytes by the minimizer (490
+// checks — it dropped the dynamic module and the map::len scrutinee
+// outright), then by hand to the floor below. The reduction facts,
+// which are the useful part:
+//
+//   - `*v3 <- true` writes m0::k0 through a reference. At epoch 1 the
+//     scrutinee (`true`) does not change; only the guard's k0 does.
+//     The interp re-matches, selects arm 1, and m0::f1 returns the NEW
+//     k0. The JIT selects arm 1 too — it fires — but f1 hands back the
+//     stale false.
+//   - BOTH halves are load-bearing, each verified by an AGREEing probe:
+//       * arm body reading `m0::k0` DIRECTLY instead of through f1
+//         agrees, so the guard sees the write correctly — it is the
+//         CALLEE's read that is stale;
+//       * a wildcard arm (`select true { v4 => m0::f1(u8:2) }`) or the
+//         bare call with no select at all agrees, so the call alone is
+//         fine — it needs the guard-driven becoming-selected dispatch.
+//   - The MODULE BOUNDARY is load-bearing: the same program with k0/f1
+//     as ordinary block-local lets (no m0) agrees.
+//
+// So: a becoming-selected arm dispatches a cross-module callee whose
+// body reads a module-level binding written this cycle through a `&`,
+// and the callee reads the pre-write value while the guard beside it
+// reads the post-write one.
+//
+// ROOT-CAUSED 2026-08-10, and it bottoms out in a SEMANTICS question
+// (hence pending-ruling). An interface val is TWO binds: the sig id
+// (registered first, from the .gxi — what main's guard and the `&`
+// write resolve to; it FIRES normally) and the impl id (what f1's
+// body reads). The Module node's update is the bridge (node/module.rs
+// ~499/527): the PRE-pass copies event[sig] -> event[impl] +
+// cached[impl] before its children run, and the POST-pass MOVES
+// event[impl] back out under the sig id — so outside the module the
+// impl id NEVER appears in a delivered event; its cached entry is
+// mutated without a delivery. Three consequences, all verified on
+// this witness (GRAPHIX_DBG_VARS/DBGREGION/DBG_INVOKE; note
+// B2L-PROXY prints "impl -> sig", the sig id is the LOWER one):
+//
+//   1. STEADY STATE, BOTH ENGINES: a standing cross-module callsite's
+//      body ref never fires on an outside write — `{let v3 =
+//      &m0::k0; *v3 <- true; m0::f1(u8:2)}` traces [0:false] with the
+//      epoch-1 update SILENT, interp and jit alike (01 pins this).
+//      The header's AGREEing probes above are all this shape — they
+//      agree, but not for the reason the probe notes assumed.
+//   2. BECOMING-SELECTED, INTERP: the fresh dispatch's init view
+//      reads ctx.cached — which the Module PRE-pass updated — so the
+//      interp callee sees the NEW value. [1:true].
+//   3. BECOMING-SELECTED, JIT: the region wired the impl id as a
+//      kernel input (DBGREGION shows both k0 ids); a non-fired input
+//      is staged from the kernel's own last-delivered arg slot
+//      (fusion/kernel.rs FusedKernel::update ~1321, the CachedVals
+//      mirror), and the impl id never delivers outside the module —
+//      the slot still holds init false. [1:false]. The divergence.
+//
+// THE RULING NEEDED — what should a cross-module callee body's read
+// of module state MEAN when the state is written from outside?
+//   (a) Status quo interp: quiet in steady state, fresh-read at
+//       instantiation/becoming-selected. Then the kernel needs a
+//       cached read-through at first-dispatch init views (scoped
+//       carefully: standing operator consumers keep last-PRODUCTION
+//       operand-cache semantics, so a blanket stale-input refresh
+//       from ctx.cached would diverge the other way).
+//   (b) Fully reactive: the sig/impl pair delivers as ONE variable
+//       everywhere (single id, or forwarding without the strip);
+//       outside writes re-fire callee bodies. Changes observable
+//       steady-state behavior in BOTH engines ([0:false] grows a
+//       [1:true]) — matches "reactive at the language level", and
+//       incidentally makes the existing kernel wiring correct.
+//   The interp behavior reads like an implementation artifact of the
+//   post-pass strip, not a design; but ruling (b) is a language
+//   semantics change. Eric's call.
+//
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace([0:true 1:true])
+// jit:    Trace([0:true 1:false])
+// minimized:
+{let v3 = &m0::k0; *v3 <- true; select true {v4 if m0::k0 => m0::f1(u8:2), v4 => true}}
+// file-v1: m0.gxi
+val k0: bool;
+val f1: fn(a0: u8) -> bool;
+// file-v1: m0.gx
+let k0: bool = false;
+let f1 = |v3: u8| -> bool k0

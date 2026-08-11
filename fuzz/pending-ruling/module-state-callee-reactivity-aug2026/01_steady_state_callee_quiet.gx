@@ -1,0 +1,29 @@
+// The steady-state face of 00: a STANDING cross-module callsite whose
+// body reads module state is NOT reactive to an outside write of that
+// state — in EITHER engine. Both trace [0:false]; the epoch-1 write of
+// k0 (delivered, and visible to any main-side read) produces NO
+// emission from f1.
+//
+//   interp: Trace([0:false])
+//   jit:    Trace([0:false])
+//
+// Mechanism (root-caused with 00): main's write targets the SIG id;
+// the Module node's post-pass strips the IMPL id from the event at the
+// module boundary, so f1's body ref — instantiated at main's callsite,
+// holding the impl id — never sees a delivery. Only a FRESH dispatch
+// (becoming-selected, first instantiation) reads the new value,
+// through ctx.cached, which the Module pre-pass mutates without a
+// delivery.
+//
+// This program AGREES today, so it is not a divergence — it is the
+// semantic frame for 00's ruling: if cross-module callee reads are
+// ruled fully reactive (option (b) in 00), THIS trace changes to
+// [0:false, 1:true] in both engines and the file must be re-recorded.
+// Until the ruling, do not promote either file to findings/.
+{let v3 = &m0::k0; *v3 <- true; m0::f1(u8:2)}
+// file-v1: m0.gxi
+val k0: bool;
+val f1: fn(a0: u8) -> bool;
+// file-v1: m0.gx
+let k0: bool = false;
+let f1 = |v3: u8| -> bool k0
