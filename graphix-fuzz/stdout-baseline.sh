@@ -52,20 +52,33 @@ bin=${GRAPHIX_BIN:-$repo/../../tmp/target/debug/graphix}
 timeout_secs=${BASELINE_TIMEOUT:-5}
 
 mkdir -p "$outdir"
-sandbox=$(mktemp -d)
-trap 'rm -rf "$sandbox"' EXIT
 
-n=0
-while IFS= read -r f; do
-    rel=${f#"$repo"/}
-    out=$outdir/${rel//\//__}.out
-    ( cd "$sandbox" && timeout "$timeout_secs" "$bin" "${mode_args[@]}" "$f" 2>/dev/null ) >"$out"
-    n=$((n + 1))
-done < <(
-    find "$repo/graphix-fuzz/findings" -name '*.gx' | sort
-    find "$repo/bench" -name '*.gx' 2>/dev/null | sort
+# Programs are independent, so they run BASELINE_JOBS at a time
+# (default: 2x cores — many programs sit parked against their timeout,
+# so oversubscription keeps the cores fed). Each gets a PRIVATE
+# sandbox cwd — a shared one would let programs that write files
+# collide across parallel runs. The wall clock is dominated by the
+# never-quiescing programs' caps: sequentially that was
+# ~n_capped * timeout; parallel it is ~ceil(n_capped / jobs) * timeout.
+jobs=${BASELINE_JOBS:-$(($(nproc) * 2))}
+
+list() {
+    find "$repo/graphix-fuzz/findings" -name '*.gx'
+    find "$repo/bench" -name '*.gx' 2>/dev/null
     find "$repo/book/src/examples" -name '*.gx' 2>/dev/null \
-        | grep -v '/gui/' | grep -v '/tui/' | grep -v '/net/' | sort
-)
+        | grep -v '/gui/' | grep -v '/tui/' | grep -v '/net/'
+}
 
-echo "captured $n programs into $outdir"
+export BASELINE_REPO=$repo BASELINE_OUTDIR=$outdir BASELINE_BIN=$bin \
+    BASELINE_SECS=$timeout_secs BASELINE_MODE="${mode_args[*]-}"
+
+list | sort | tr '\n' '\0' | xargs -0 -P "$jobs" -n 1 bash -c '
+    f=$1
+    rel=${f#"$BASELINE_REPO"/}
+    out=$BASELINE_OUTDIR/${rel//\//__}.out
+    sb=$(mktemp -d)
+    ( cd "$sb" && timeout "$BASELINE_SECS" "$BASELINE_BIN" $BASELINE_MODE "$f" 2>/dev/null ) >"$out"
+    rm -rf "$sb"
+' _
+
+echo "captured $(list | wc -l) programs into $outdir"
