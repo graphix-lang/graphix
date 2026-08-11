@@ -440,10 +440,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx, event).to_option() {
             self.queue.push_back(v.value());
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).to_option() {
             let v = v.value();
             ctx.rt.cached_mut().insert(self.pid, v.clone());
             event.variables.insert(self.pid, TagValue::fired(v));
@@ -457,7 +457,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             if ctx.interrupted() {
                 break None;
             }
-            match self.pred.update(ctx, event) {
+            match self.pred.update(ctx, event).to_option() {
                 None => break None,
                 Some(v) => {
                     self.ready = true;
@@ -541,7 +541,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(Value::Array(a)) = from[0].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(Value::Array(a)) =
+            from[0].update(ctx, event).to_option().map(|tv| tv.value())
+        {
             for v in a.iter() {
                 // Cooperative interrupt: abort a wedged iter over a huge
                 // array (partial emit is accepted for a deliberate kill).
@@ -602,10 +604,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+        if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
-        if let Some(Value::Array(a)) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(Value::Array(a)) =
+            from[1].update(ctx, event).to_option().map(|tv| tv.value())
+        {
             if a.len() > 0 {
                 self.queue.push_back((0, a));
             }

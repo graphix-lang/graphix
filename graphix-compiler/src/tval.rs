@@ -70,6 +70,15 @@ impl Tag {
     /// "no usable value" — bottom (kernel disc bit 62). The payload
     /// under this bit is a helper-safe placeholder, never usable.
     pub const TAINT_BIT: u8 = 0x40;
+    /// P2 TRANSITIONAL (dies at the 5b flip): the dense-migration
+    /// encoding of the sparse world's `None` — "no production this
+    /// cycle". Outside the kernel's disc-bit vocabulary (bit 63 of the
+    /// disc word is never set by CLIF), so it can only originate from
+    /// [`TagValue::absent`]. Consumers test [`TagValue::is_absent`]
+    /// exactly where they tested `is_some()`; the 5b flip deletes
+    /// every such branch (grep `is_absent` — that IS the flip's
+    /// worklist) and the producer returns its resident honestly.
+    pub const ABSENT_BIT: u8 = 0x80;
 
     /// Fired this cycle, not a bottom — the ordinary production.
     pub const FIRED: Tag = Tag(0);
@@ -223,6 +232,22 @@ impl TagValue {
         Self::tagged(v, Tag::STALE)
     }
 
+    /// The initial state of a production slot that has never produced
+    /// — a standing bottom with the helper-safe placeholder payload.
+    #[inline]
+    pub fn phantom() -> Self {
+        Self::tagged(Value::Null, Tag::STALE_BOTTOM)
+    }
+
+    /// Store a fresh production into this slot (a node's RESIDENT) and
+    /// hand back the borrow — the tail of every computing node's
+    /// `update`: `self.resident.set(TagValue::fired(v))`.
+    #[inline]
+    pub fn set(&mut self, tv: TagValue) -> &TagValue {
+        *self = tv;
+        self
+    }
+
     /// A possible-bottom placeholder (tainted, hence also stale).
     #[inline]
     pub fn tainted(v: Value) -> Self {
@@ -305,6 +330,39 @@ impl TagValue {
     pub fn value_cloned(&self) -> Value {
         self.with_value(|v| v.clone())
     }
+
+    /// P2 TRANSITIONAL (dies at the 5b flip): the shared "no
+    /// production this cycle" instance — what a node returns where it
+    /// returned `None` under the sparse signature. A defined value
+    /// (`Null` under `ABSENT|STALE_BOTTOM`), so a consumer that
+    /// forgets its [`Self::is_absent`] check misbehaves loudly instead
+    /// of hitting UB.
+    pub fn absent() -> &'static TagValue {
+        static ABSENT: std::sync::LazyLock<TagValue> = std::sync::LazyLock::new(|| {
+            TagValue::tagged(
+                Value::Null,
+                Tag(Tag::ABSENT_BIT | Tag::TAINT_BIT | Tag::STALE_BIT),
+            )
+        });
+        &ABSENT
+    }
+
+    /// P2 TRANSITIONAL: was this the sparse `None`? See
+    /// [`Tag::ABSENT_BIT`].
+    #[inline]
+    pub fn is_absent(&self) -> bool {
+        self.raw_tag() & Tag::ABSENT_BIT != 0
+    }
+
+    /// P2 TRANSITIONAL: materialize the sparse view of a borrowed
+    /// production — `None` for absent, otherwise an owned clone. For
+    /// consumers whose downstream processing needs ownership (the
+    /// lambda dispatch's result pipeline); prefer borrowing consumers
+    /// where possible.
+    #[inline]
+    pub fn to_option(&self) -> Option<TagValue> {
+        if self.is_absent() { None } else { Some(self.clone()) }
+    }
 }
 
 impl Clone for TagValue {
@@ -385,9 +443,13 @@ mod tests {
     #[test]
     fn view_maps_the_observable_states() {
         let fired = TagValue::fired(Value::from(1i64));
-        assert!(matches!(fired.view(), TagView::Fired(tv) if tv.value_cloned() == Value::from(1i64)));
+        assert!(
+            matches!(fired.view(), TagView::Fired(tv) if tv.value_cloned() == Value::from(1i64))
+        );
         let stale = TagValue::stale(Value::from(2i64));
-        assert!(matches!(stale.view(), TagView::Stale(tv) if tv.value_cloned() == Value::from(2i64)));
+        assert!(
+            matches!(stale.view(), TagView::Stale(tv) if tv.value_cloned() == Value::from(2i64))
+        );
         let bottom = TagValue::tainted(Value::Null);
         assert!(matches!(bottom.view(), TagView::StaleBottom));
     }

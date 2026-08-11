@@ -589,11 +589,7 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         Self(std::mem::ManuallyDrop::new(Box::new(node)))
     }
 
-    pub fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         stack::ensure_sufficient(|| self.0.update(ctx, event))
     }
 
@@ -936,22 +932,22 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 /// application represented by Apply. Regular graph nodes are used for
 /// every built in node except for builtin functions.
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
-    /// Update the node with the specified event and return any output
-    /// it might generate. `None` = no production at all;
-    /// `Some(fired v)` = the ordinary event (today's `Some`);
-    /// `Some(stale v)` = a value-channel refresh — the parent caches
-    /// the value but nothing fires (originates only at the evaluation
-    /// frame seam: re-delivered call args, frame seeds);
-    /// `Some(tainted v)` = a possible-bottom placeholder flowing
-    /// toward a force point (originates only at in-frame swallowed
-    /// -error sites). Outside frames every production is fired, so
-    /// reactive semantics are unchanged. See `tval::TagValue` and
-    /// `design/replay_frames.md` v2.
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue>;
+    /// Update the node with the specified event and return its
+    /// production, borrowed from the node's own production slot (the
+    /// RESIDENT — a computing node recomputes into it, a delegating
+    /// node forwards its child's borrow). See `tval::TagValue`,
+    /// [`TagView`], and `design/dense_delivery.md`.
+    ///
+    /// P2 TRANSITIONAL: the sparse protocol rides inside the dense
+    /// signature — a node that produced nothing this cycle (the old
+    /// `None`) returns [`TagValue::absent`], and consumers test
+    /// [`TagValue::is_absent`] exactly where they tested `is_some()`.
+    /// Production tags keep their sparse meanings (fired; stale only
+    /// at the evaluation-frame seam; tainted flowing toward a force
+    /// point; outside frames every production is fired). The 5b flip
+    /// deletes the absent channel and makes every awake node deliver
+    /// its resident honestly every cycle.
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue;
 
     /// delete the node and it's children from the specified context
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);

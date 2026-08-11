@@ -845,7 +845,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         }
         // process handler responses
         loop {
-            match self.handler.update(ctx, event) {
+            match self.handler.update(ctx, event).to_option() {
                 None => break,
                 Some(v) => {
                     self.ready = true;

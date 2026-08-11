@@ -511,7 +511,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(list) = from[0].update(ctx, event) {
+        if let Some(list) = from[0].update(ctx, event).to_option() {
             for v in ListIter::new(list.value()) {
                 ctx.rt.set_var(self.0, v);
             }
@@ -567,10 +567,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+        if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
-        if let Some(list) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(list) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
             if is_list(&list) {
                 let elems: Vec<Value> = ListIter::new(list).collect();
                 if !elems.is_empty() {

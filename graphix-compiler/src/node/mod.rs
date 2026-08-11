@@ -147,12 +147,8 @@ impl Nop {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
-    fn update(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-        _event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        None
+    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
+        TagValue::absent()
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -204,11 +200,7 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         self.n.update(ctx, event)
     }
 
@@ -301,14 +293,14 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> Option<Tag> {
-        match self.node.update(ctx, event) {
-            None => None,
-            Some(tv) => {
-                let (v, tag) = tv.into_parts();
-                self.cached = Some(v);
-                self.tag = tag;
-                Some(tag)
-            }
+        let tv = self.node.update(ctx, event);
+        if tv.is_absent() {
+            None
+        } else {
+            let tag = tv.tag();
+            self.cached = Some(tv.value_cloned());
+            self.tag = tag;
+            Some(tag)
         }
     }
 
@@ -394,12 +386,8 @@ impl Use {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Use {
-    fn update(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-        _event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        None
+    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
+        TagValue::absent()
     }
 
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -467,12 +455,8 @@ impl TypeDef {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
-    fn update(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-        _event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        None
+    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
+        TagValue::absent()
     }
 
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -511,6 +495,7 @@ pub struct Constant {
     pub(super) spec: Arc<Expr>,
     pub value: Value,
     pub typ: Type,
+    resident: TagValue,
 }
 
 impl Constant {
@@ -518,7 +503,12 @@ impl Constant {
     /// generated code uses this after it has already chosen the
     /// value, type, and spec at code-generation time.
     pub fn new<R: Rt, E: UserEvent>(value: Value, typ: Type, spec: Expr) -> Node<R, E> {
-        Node::new(Self { spec: Arc::new(spec), value, typ })
+        Node::new(Self {
+            spec: Arc::new(spec),
+            value,
+            typ,
+            resident: TagValue::phantom(),
+        })
     }
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
@@ -528,16 +518,12 @@ impl Constant {
         let spec = Arc::new(spec);
         let value = value.clone();
         let typ = Type::Primitive(Typ::get(&value).into());
-        Ok(Node::new(Self { spec, value, typ }))
+        Ok(Node::new(Self { spec, value, typ, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // FRAME DEPTH FIRST: frames force `event.init`, so checking
         // init before the frame gate made constants produce FIRED on
         // every framed evaluation — the frame-stale arm was
@@ -557,14 +543,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
             // bottoming when the frame discipline has cleared its
             // consumers' operand caches.
             if ctx.frame_init {
-                Some(TagValue::fired(self.value.clone()))
+                self.resident.set(TagValue::fired(self.value.clone()))
             } else {
-                Some(TagValue::stale(self.value.clone()))
+                self.resident.set(TagValue::stale(self.value.clone()))
             }
         } else if event.init {
-            Some(TagValue::fired(self.value.clone()))
+            self.resident.set(TagValue::fired(self.value.clone()))
         } else {
-            None
+            TagValue::absent()
         }
     }
 
@@ -617,6 +603,11 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// Vacant-insert, which the predecessor only sees if it updates
     /// after (forward order would silently LOSE the rethrown error).
     pub(crate) catches: Box<[usize]>,
+    /// Production slot for the catch-bearing path only: the last
+    /// covered child's borrow can't be held across the catches pass
+    /// (it re-borrows `children`), so its production is cloned here.
+    /// The catch-free path forwards the child's borrow directly.
+    resident: TagValue,
     /// Module scope at the block's declaration point. For
     /// `Block { module: true }` this is the *containing* scope —
     /// the inner module's scope is `scope.append(name)`. For
@@ -637,7 +628,14 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         spec: Expr,
         scope: Scope,
     ) -> Node<R, E> {
-        Node::new(Self { module, spec, children, catches: Box::default(), scope })
+        Node::new(Self {
+            module,
+            spec,
+            children,
+            catches: Box::default(),
+            scope,
+            resident: TagValue::phantom(),
+        })
     }
 
     pub(crate) fn compile(
@@ -651,7 +649,14 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     ) -> Result<Node<R, E>> {
         let (children, catches) =
             compile_block_children(ctx, flags, scope, top_id, exprs.iter())?;
-        Ok(Node::new(Self { module, spec, children, catches, scope: scope.clone() }))
+        Ok(Node::new(Self {
+            module,
+            spec,
+            children,
+            catches,
+            scope: scope.clone(),
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
@@ -688,21 +693,20 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.catches.is_empty() {
-            let res = self.children.iter_mut().fold(None, |_, n| n.update(ctx, event));
-            return if self.module { None } else { res };
+            let res = self
+                .children
+                .iter_mut()
+                .fold(TagValue::absent(), |_, n| n.update(ctx, event));
+            return if self.module { TagValue::absent() } else { res };
         }
         // Two-phase order (see `catches`): covered children first —
         // the block's value is the last SYNTACTIC child's production
-        // (None if that child is a catch: an installation never
+        // (absent if that child is a catch: an installation never
         // produces) — then catches, innermost first.
         let last = self.children.len() - 1;
-        let mut res = None;
+        let mut res: Option<TagValue> = None;
         let mut catch = self.catches.iter().copied().peekable();
         for (i, n) in self.children.iter_mut().enumerate() {
             if catch.peek() == Some(&i) {
@@ -711,13 +715,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             }
             let r = n.update(ctx, event);
             if i == last {
-                res = r;
+                res = Some(r.clone());
             }
         }
         for i in self.catches.iter().rev() {
             let _ = self.children[*i].update(ctx, event);
         }
-        if self.module { None } else { res }
+        match res {
+            Some(tv) if !self.module => self.resident.set(tv),
+            _ => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -846,6 +853,7 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
     pub args: Box<[Cached<R, E>]>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
@@ -863,16 +871,12 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             .collect::<Result<_>>()?;
         let typs = args.iter().map(|c| c.node.typ().clone()).collect();
         let typ = Type::Primitive(Typ::String.into());
-        Ok(Node::new(Self { spec, typ, typs, args }))
+        Ok(Node::new(Self { spec, typ, typs, args, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use std::fmt::Write;
         let mut produced = false;
         let mut fired = false;
@@ -886,7 +890,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
         if produced && determined {
             if self.args.iter().any(|c| c.tag.is_tainted()) {
-                return Some(TagValue::tainted(Value::Null));
+                return self.resident.set(TagValue::tainted(Value::Null));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let mut buf: LPooled<String> = LPooled::take();
@@ -897,9 +901,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
                 }
                 .unwrap()
             }
-            Some(TagValue::tagged(Value::String(buf.as_str().into()), tag))
+            self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
         } else {
-            None
+            TagValue::absent()
         }
     }
 
@@ -1011,20 +1015,16 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // A variable write requires a FIRED RHS — the interp twin of
         // the kernel's `set_var_typed` gate (a stale or tainted RHS
         // must not become a cross-cycle event).
-        if let Some(tv) = self.node.update(ctx, event) {
-            if tv.is_fired() {
-                ctx.rt.set_var(self.id, tv.value())
-            }
+        let tv = self.node.update(ctx, event);
+        if !tv.is_absent() && tv.is_fired() {
+            let v = tv.value_cloned();
+            ctx.rt.set_var(self.id, v)
         }
-        None
+        TagValue::absent()
     }
 
     fn spec(&self) -> &Expr {
@@ -1127,11 +1127,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Fired-RHS write gate, as in `Connect` (a stale or tainted
         // production refreshes the cache but must not write).
         let mut up = self.rhs.update(ctx, event).is_some_and(|t| t.is_fired());
@@ -1154,7 +1150,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 }
             }
         }
-        None
+        TagValue::absent()
     }
 
     fn spec(&self) -> &Expr {
@@ -1209,6 +1205,7 @@ pub struct TypeCast<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub target: Type,
     pub n: Node<R, E>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> TypeCast<R, E> {
@@ -1227,25 +1224,24 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
             bail!("in cast at {} {e}", spec.pos);
         }
         let typ = target.union(&ctx.env, &CAST_ERR)?;
-        Ok(Node::new(Self { spec, typ, target, n }))
+        Ok(Node::new(Self { spec, typ, target, n, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        self.n.update(ctx, event).map(|tv| {
-            let (v, tag) = tv.into_parts();
-            if tag.is_tainted() {
-                // never cast a taint placeholder — pass the taint on
-                TagValue::tainted(Value::Null)
-            } else {
-                TagValue::tagged(self.target.cast_value(&ctx.env, v), tag)
-            }
-        })
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.n.update(ctx, event);
+        if tv.is_absent() {
+            return TagValue::absent();
+        }
+        let tag = tv.tag();
+        if tag.is_tainted() {
+            // never cast a taint placeholder — pass the taint on
+            self.resident.set(TagValue::tainted(Value::Null))
+        } else {
+            let v = tv.value_cloned();
+            self.resident.set(TagValue::tagged(self.target.cast_value(&ctx.env, v), tag))
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -1315,21 +1311,24 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // First production wins, except a triggering (fired/tainted)
         // production beats an earlier merely-stale refresh.
-        self.n.iter_mut().filter_map(|s| s.update(ctx, event)).fold(
-            None,
-            |r, tv| match &r {
-                None => Some(tv),
-                Some(prev) if !prev.tag().triggers() && tv.tag().triggers() => Some(tv),
-                Some(_) => r,
-            },
-        )
+        let mut winner: Option<&TagValue> = None;
+        for s in self.n.iter_mut() {
+            let tv = s.update(ctx, event);
+            if tv.is_absent() {
+                continue;
+            }
+            match winner {
+                None => winner = Some(tv),
+                Some(prev) if !prev.tag().triggers() && tv.tag().triggers() => {
+                    winner = Some(tv)
+                }
+                Some(_) => (),
+            }
+        }
+        winner.unwrap_or_else(|| TagValue::absent())
     }
 
     fn spec(&self) -> &Expr {
@@ -1391,6 +1390,7 @@ pub struct Sample<R: Rt, E: UserEvent> {
     top_id: ExprId,
     pub trigger: Node<R, E>,
     pub arg: Cached<R, E>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Sample<R, E> {
@@ -1408,19 +1408,25 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
         let arg = Cached::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
         let typ = arg.node.typ().clone();
-        Ok(Node::new(Self { triggered: 0, id, top_id, spec, typ, trigger, arg }))
+        Ok(Node::new(Self {
+            triggered: 0,
+            id,
+            top_id,
+            spec,
+            typ,
+            trigger,
+            arg,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Only a FIRED or TAINTED trigger production counts as a
         // trigger; a stale refresh of the LHS must not sample.
-        if self.trigger.update(ctx, event).is_some_and(|t| t.tag().triggers()) {
+        let t = self.trigger.update(ctx, event);
+        if !t.is_absent() && t.tag().triggers() {
             self.triggered += 1;
         }
         self.arg.update(ctx, event);
@@ -1442,7 +1448,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
                 ctx.rt.set_var(self.id, self.arg.cached.clone().unwrap());
             }
         }
-        res
+        match res {
+            Some(tv) => self.resident.set(tv),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

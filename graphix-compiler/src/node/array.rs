@@ -25,6 +25,7 @@ pub struct ArrayRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub etyp: Type,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
@@ -45,7 +46,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([etyp.clone(), ERR.clone()]));
-        Ok(Node::new(Self { source, i, spec, typ, etyp }))
+        Ok(Node::new(Self { source, i, spec, typ, etyp, resident: TagValue::phantom() }))
     }
 }
 
@@ -154,18 +155,14 @@ pub(crate) fn array_slice_i64(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let s = self.source.update(ctx, event);
         let ip = self.i.update(ctx, event);
         if s.is_none() && ip.is_none() {
-            return None;
+            return TagValue::absent();
         }
         if self.source.tag.is_tainted() || self.i.tag.is_tainted() {
-            return Some(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tainted(Value::Null));
         }
         let fired = s.is_some_and(|t| t.is_fired()) || ip.is_some_and(|t| t.is_fired());
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
@@ -174,20 +171,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
             Some(v) => match v.clone().cast_to::<i64>() {
                 Ok(i) => i,
                 Err(_) => {
-                    return Some(TagValue::tagged(
+                    return self.resident.set(TagValue::tagged(
                         err!(ERR_TAG, "expected an integer"),
                         tag,
                     ));
                 }
             },
-            None => return None,
+            None => return TagValue::absent(),
         };
-        match &self.source.cached {
-            Some(Value::Array(elts)) => Some(TagValue::tagged(array_index(elts, i), tag)),
-            Some(Value::Bytes(b)) => Some(TagValue::tagged(bytes_index(b, i), tag)),
-            None => None,
-            _ => Some(TagValue::tagged(err!(ERR_TAG, "expected an array"), tag)),
-        }
+        let v = match &self.source.cached {
+            Some(Value::Array(elts)) => array_index(elts, i),
+            Some(Value::Bytes(b)) => bytes_index(b, i),
+            None => return TagValue::absent(),
+            _ => err!(ERR_TAG, "expected an array"),
+        };
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -257,6 +255,7 @@ pub struct ArraySlice<R: Rt, E: UserEvent> {
     pub end: Option<Cached<R, E>>,
     pub(crate) spec: Expr,
     pub typ: Type,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
@@ -280,27 +279,30 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
             .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id).map(Cached::new))
             .transpose()?;
         let typ = Type::Set(Arc::from_iter([source.node.typ().clone(), ERR.clone()]));
-        Ok(Node::new(Self { spec, typ, source, start, end }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            source,
+            start,
+            end,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let s = self.source.update(ctx, event);
         let st = self.start.as_mut().and_then(|c| c.update(ctx, event));
         let en = self.end.as_mut().and_then(|c| c.update(ctx, event));
         if s.is_none() && st.is_none() && en.is_none() {
-            return None;
+            return TagValue::absent();
         }
         if self.source.tag.is_tainted()
             || self.start.as_ref().is_some_and(|c| c.tag.is_tainted())
             || self.end.as_ref().is_some_and(|c| c.tag.is_tainted())
         {
-            return Some(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tainted(Value::Null));
         }
         let fired = s.is_some_and(|t| t.is_fired())
             || st.is_some_and(|t| t.is_fired())
@@ -311,7 +313,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
                 match $e.clone().cast_to::<usize>() {
                     Ok(i) => i,
                     Err(_) => {
-                        return Some(TagValue::tagged(
+                        return self.resident.set(TagValue::tagged(
                             err!(ERR_TAG, "expected a non negative number"),
                             tag,
                         ));
@@ -322,7 +324,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         macro_rules! bound {
             ($bound:expr) => {{
                 match $bound.cached.as_ref() {
-                    None => return None,
+                    None => return TagValue::absent(),
                     Some(Value::U64(i) | Value::V64(i)) => Some(*i as usize),
                     Some(v) => Some(number!(v)),
                 }
@@ -334,10 +336,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
             (None, Some(c)) => (None, bound!(c)),
             (Some(c0), Some(c1)) => (bound!(c0), bound!(c1)),
         };
-        match &self.source.cached {
-            Some(src) => Some(TagValue::tagged(array_slice(src, start, end), tag)),
-            None => None,
-        }
+        let v = match &self.source.cached {
+            Some(src) => array_slice(src, start, end),
+            None => return TagValue::absent(),
+        };
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -439,6 +442,7 @@ pub struct Array<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Box<[Cached<R, E>]>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Array<R, E> {
@@ -455,16 +459,12 @@ impl<R: Rt, E: UserEvent> Array<R, E> {
             .map(|e| Ok(Cached::new(compile(ctx, flags, e.clone(), scope, top_id)?)))
             .collect::<Result<_>>()?;
         let typ = Type::Array(Arc::new(Type::empty_tvar()));
-        Ok(Node::new(Self { spec, typ, n }))
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
             // Empty producer = a constant: FIRED at init, the STALE
             // value channel inside frames (the Constant frame rule —
@@ -473,15 +473,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
             // firing-jul2026/03).
             // Frame depth first — frames force init (see Constant).
             if ctx.frame_depth > 0 {
-                return Some(if ctx.frame_init {
+                return self.resident.set(if ctx.frame_init {
                     TagValue::fired(Value::Array(ValArray::from([])))
                 } else {
                     TagValue::stale(Value::Array(ValArray::from([])))
                 });
             } else if event.init {
-                return Some(TagValue::fired(Value::Array(ValArray::from([]))));
+                return self
+                    .resident
+                    .set(TagValue::fired(Value::Array(ValArray::from([]))));
             }
-            return None;
+            return TagValue::absent();
         }
         let mut produced = false;
         let mut fired = false;
@@ -495,13 +497,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         }
         if produced && determined {
             if self.n.iter().any(|c| c.tag.is_tainted()) {
-                return Some(TagValue::tainted(Value::Null));
+                return self.resident.set(TagValue::tainted(Value::Null));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.n.iter().map(|n| n.cached.clone().unwrap());
-            Some(TagValue::tagged(Value::Array(ValArray::from_iter_exact(iter)), tag))
+            let v = Value::Array(ValArray::from_iter_exact(iter));
+            self.resident.set(TagValue::tagged(v, tag))
         } else {
-            None
+            TagValue::absent()
         }
     }
 

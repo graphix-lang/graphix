@@ -185,13 +185,10 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        if let Some(tv) = self.node.update(ctx, event) {
-            let (v, tag) = tv.into_parts();
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.node.update(ctx, event);
+        if !tv.is_absent() {
+            let tag = tv.tag();
             if tag.is_tainted() {
                 // Never destructure a taint placeholder (the kernel's
                 // destructuring-consumer force): poison each bound name
@@ -202,6 +199,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                     ctx.rt.notify_set(id);
                 });
             } else {
+                let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
                     event.variables.insert(id, TagValue::tagged(v.clone(), tag));
                     ctx.rt.cached_mut().insert(id, v);
@@ -209,7 +207,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 })
             }
         }
-        None
+        TagValue::absent()
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -291,6 +289,7 @@ pub struct Ref {
     pub typ: Type,
     pub id: BindId,
     pub(super) top_id: ExprId,
+    pub(crate) resident: TagValue,
 }
 
 impl Ref {
@@ -308,7 +307,13 @@ impl Ref {
         top_id: ExprId,
         spec: Expr,
     ) -> Node<R, E> {
-        Node::new(Self { spec: Arc::new(spec), typ, id, top_id })
+        Node::new(Self {
+            spec: Arc::new(spec),
+            typ,
+            id,
+            top_id,
+            resident: TagValue::phantom(),
+        })
     }
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
@@ -337,22 +342,28 @@ impl Ref {
                 }
                 ctx.rt.ref_var(bind_id, top_id);
                 let spec = Arc::new(spec);
-                Ok(Node::new(Self { spec, typ, id: bind_id, top_id }))
+                Ok(Node::new(Self {
+                    spec,
+                    typ,
+                    id: bind_id,
+                    top_id,
+                    resident: TagValue::phantom(),
+                }))
             }
         }
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
-    fn update(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // The entry's tag flows through: an ordinary delivery is
         // fired, a frame re-delivery/seed is stale, a poisoned bind
-        // is tainted.
-        event.variables.get(&self.id).map(|v| v.clone())
+        // is tainted. The clone into the resident is the genuine
+        // store point (the entry belongs to the event, not to self).
+        match event.variables.get(&self.id) {
+            Some(tv) => self.resident.set(tv.clone()),
+            None => TagValue::absent(),
+        }
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -398,6 +409,7 @@ pub struct ByRef<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub child: Node<R, E>,
     pub id: BindId,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
@@ -411,7 +423,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     /// node.
     #[allow(dead_code)]
     pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Node::new(Self { spec, typ, child, id })
+        Node::new(Self { spec, typ, child, id, resident: TagValue::phantom() })
     }
 
     pub(crate) fn compile(
@@ -428,22 +440,19 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             ctx.env.byref_chain.insert_cow(id, c.id);
         }
         let typ = Type::ByRef(Arc::new(child.typ().clone()));
-        Ok(Node::new(Self { spec, typ, child, id }))
+        Ok(Node::new(Self { spec, typ, child, id, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Fired-only write gate: a stale refresh must not re-write the
         // referent, and a taint placeholder must never enter the
         // cross-cycle store.
-        if let Some(tv) = self.child.update(ctx, event) {
+        let tv = self.child.update(ctx, event);
+        if !tv.is_absent() {
             if tv.is_fired() {
-                let v = tv.value();
+                let v = tv.value_cloned();
                 if event.init {
                     // Seed the cache WITHOUT queuing a delivery: `Deref`'s
                     // init fallback reads the cache THIS cycle, so the
@@ -459,7 +468,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 }
             }
         }
-        if event.init { Some(TagValue::fired(Value::U64(self.id.inner()))) } else { None }
+        if event.init {
+            self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
+        } else {
+            TagValue::absent()
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -510,6 +523,7 @@ pub struct Deref<R: Rt, E: UserEvent> {
     pub child: Node<R, E>,
     pub id: Option<BindId>,
     pub(super) top_id: ExprId,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
@@ -519,7 +533,14 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// empty type variable for the interpreter to pin down later.
     #[allow(dead_code)]
     pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
-        Node::new(Self { spec, typ, child, id: None, top_id })
+        Node::new(Self {
+            spec,
+            typ,
+            child,
+            id: None,
+            top_id,
+            resident: TagValue::phantom(),
+        })
     }
 
     pub(crate) fn compile(
@@ -532,17 +553,21 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     ) -> Result<Node<R, E>> {
         let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self { spec, typ, child, id: None, top_id }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            child,
+            id: None,
+            top_id,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        if let Some(tv) = self.child.update(ctx, event) {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.child.update(ctx, event);
+        if !tv.is_absent() {
             let id = tv.with_value(|v| match v {
                 Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
                 _ => None,
@@ -557,10 +582,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 }
             }
         }
-        self.id.and_then(|id| match event.variables.get(&id).cloned() {
+        let res = self.id.and_then(|id| match event.variables.get(&id).cloned() {
             None if event.init => ctx.rt.cached().get(&id).cloned().map(TagValue::fired),
             v => v,
-        })
+        });
+        match res {
+            Some(tv) => self.resident.set(tv),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

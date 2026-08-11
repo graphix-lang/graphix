@@ -395,10 +395,9 @@ impl<X: GXExt> GX<X> {
                     // point (the kernel-output twin): only a FIRED
                     // production becomes an event; a stale or tainted
                     // one is dropped here.
-                    if let Some(tv) = n.update(&mut self.ctx, &mut self.event)
-                        && tv.is_fired()
-                    {
-                        let v = tv.value();
+                    let tv = n.update(&mut self.ctx, &mut self.event);
+                    if !tv.is_absent() && tv.is_fired() {
+                        let v = tv.value_cloned();
                         let watched = matches!(
                             self.result_watch.as_ref(),
                             Some((wid, _)) if wid == id

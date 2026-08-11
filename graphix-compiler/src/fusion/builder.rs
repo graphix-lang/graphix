@@ -22,6 +22,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// One feeder Node per kernel input slot. Driven by
     /// `Kernel::update` via the `from` slice.
     feeders: Box<[Node<R, E>]>,
+    resident: crate::TagValue,
     /// The actual kernel executor — handles JIT/interp dispatch,
     /// `DYN_DISPATCH_HANDLE` setup, builtin slot pre-binding,
     /// pending-flag propagation, composite-return marshalling.
@@ -63,7 +64,13 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             }
         };
         let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
-        Ok(Node::new(Self { spec, typ, feeders, inner }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            feeders,
+            inner,
+            resident: crate::TagValue::phantom(),
+        }))
     }
 
     /// The compiled kernel IR this region fused into. Used by graph
@@ -84,7 +91,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> Option<crate::TagValue> {
+    ) -> &crate::TagValue {
         // Delegate to Kernel (Apply) — drives the feeders, sets up
         // the DynCall dispatch handle, invokes JIT (or interp), and
         // decodes the return value. A RUN only surfaces FIRED outputs
@@ -111,10 +118,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // — see node/callsite.rs, including the init-view exemption:
         // an arm-wake's forced init evaluates on the value channel and
         // the select's emit provides the fire).
-        if ctx.frame_depth == 0 && !event.init {
+        let res = if ctx.frame_depth == 0 && !event.init {
             res.filter(|tv| tv.tag().is_fired())
         } else {
             res
+        };
+        match res {
+            Some(tv) => self.resident.set(tv),
+            None => crate::TagValue::absent(),
         }
     }
 

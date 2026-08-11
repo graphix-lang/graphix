@@ -22,6 +22,7 @@ pub struct Map<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub keys: Box<[Cached<R, E>]>,
     pub vals: Box<[Cached<R, E>]>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
@@ -45,16 +46,12 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Node::new(Self { spec, typ, keys, vals }))
+        Ok(Node::new(Self { spec, typ, keys, vals, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.keys.is_empty() {
             // Empty producer = a constant: FIRED at init, the STALE
             // value channel inside frames (the Constant frame rule —
@@ -63,15 +60,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
             // firing-jul2026/03).
             // Frame depth first — frames force init (see Constant).
             if ctx.frame_depth > 0 {
-                return Some(if ctx.frame_init {
+                return self.resident.set(if ctx.frame_init {
                     TagValue::fired(Value::Map(CMap::new()))
                 } else {
                     TagValue::stale(Value::Map(CMap::new()))
                 });
             } else if event.init {
-                return Some(TagValue::fired(Value::Map(CMap::new())));
+                return self.resident.set(TagValue::fired(Value::Map(CMap::new())));
             }
-            return None;
+            return TagValue::absent();
         }
         let mut produced = false;
         let mut fired = false;
@@ -85,7 +82,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         }
         if produced && determined {
             if self.keys.iter().chain(self.vals.iter()).any(|c| c.tag.is_tainted()) {
-                return Some(TagValue::tainted(Value::Null));
+                return self.resident.set(TagValue::tainted(Value::Null));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let mut m = CMap::new();
@@ -95,9 +92,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
                     v.cached.as_ref().cloned().unwrap(),
                 );
             }
-            Some(TagValue::tagged(Value::Map(m), tag))
+            self.resident.set(TagValue::tagged(Value::Map(m), tag))
         } else {
-            None
+            TagValue::absent()
         }
     }
 
@@ -170,6 +167,7 @@ pub struct MapRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub vtyp: Type,
+    resident: TagValue,
 }
 
 /// Look up `key` in a `Value::Map`, returning the value or the
@@ -203,34 +201,38 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));
-        Ok(Node::new(Self { source, key, spec, typ, vtyp }))
+        Ok(Node::new(Self {
+            source,
+            key,
+            spec,
+            typ,
+            vtyp,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let s = self.source.update(ctx, event);
         let k = self.key.update(ctx, event);
         if s.is_none() && k.is_none() {
-            return None;
+            return TagValue::absent();
         }
         if self.source.tag.is_tainted() || self.key.tag.is_tainted() {
-            return Some(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tainted(Value::Null));
         }
         let fired = s.is_some_and(|t| t.is_fired()) || k.is_some_and(|t| t.is_fired());
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
         let key = match &self.key.cached {
             Some(key) => key,
-            None => return None,
+            None => return TagValue::absent(),
         };
-        match &self.source.cached {
-            Some(src) => Some(TagValue::tagged(map_get(src, key), tag)),
-            None => None,
-        }
+        let v = match &self.source.cached {
+            Some(src) => map_get(src, key),
+            None => return TagValue::absent(),
+        };
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

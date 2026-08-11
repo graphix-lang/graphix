@@ -79,7 +79,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        let v = from.get_mut(0)?.update(ctx, event)?.value();
+        let tv = from.get_mut(0)?.update(ctx, event);
+        if tv.is_absent() {
+            return None;
+        }
+        let v = tv.value_cloned();
         if let Value::Error(e) = v {
             let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
             let v = Value::Error(e.into());
@@ -173,11 +177,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // The handler is a live reactive expression; its value channel
         // is discarded — a catch installation never produces. The
         // owning block updates catches AFTER its other children
@@ -185,7 +185,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         // from a covered `?` — or from an inner handler's rethrow — is
         // seen this cycle (the try-era handler-after-body order).
         let _ = self.handler.update(ctx, event);
-        None
+        TagValue::absent()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -267,6 +267,7 @@ pub struct Qop<R: Rt, E: UserEvent> {
     pub id: Option<(BindId, ExprId)>,
     pub(crate) top_id: ExprId,
     pub n: Node<R, E>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
@@ -299,24 +300,25 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             o => o,
         };
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self { spec, typ, id, top_id, n }))
+        Ok(Node::new(Self { spec, typ, id, top_id, n, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        let tv = self.n.update(ctx, event)?;
-        if tv.is_tainted() {
-            // a taint placeholder is not an error VALUE — pass it on
-            return Some(tv);
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.n.update(ctx, event);
+        if tv.is_absent() || tv.is_tainted() {
+            // absence forwards; a taint placeholder is not an error
+            // VALUE — pass it on
+            return tv;
         }
-        let (v, tag) = tv.into_parts();
-        match v {
-            Value::Error(e) => match self.id {
+        let err = tv.with_value(|v| match v {
+            Value::Error(e) => Some(e.clone()),
+            _ => None,
+        });
+        match err {
+            None => tv,
+            Some(e) => match self.id {
                 Some((id, handler_top)) => {
                     let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
                     let v = Value::Error(e.into());
@@ -339,13 +341,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                             Entry::Occupied(_) => ctx.rt.set_var(id, v),
                         }
                     }
-                    None
+                    TagValue::absent()
                 }
                 None => {
                     if ctx.frame_depth > 0 {
                         // in-frame swallowed error: the taint channel,
                         // silent (the log is a reactive debugging aid)
-                        return Some(TagValue::tainted(Value::Null));
+                        return self.resident.set(TagValue::tainted(Value::Null));
                     }
                     log::error!(
                         "unhandled error in {} at {} {e}",
@@ -356,10 +358,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                         "unhandled error in {} at {} {e}",
                         self.spec.ori, self.spec.pos
                     );
-                    None
+                    TagValue::absent()
                 }
             },
-            v => Some(TagValue::tagged(v, tag)),
         }
     }
 
@@ -485,6 +486,7 @@ pub struct OrNever<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Node<R, E>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> OrNever<R, E> {
@@ -498,31 +500,30 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self { spec, typ, n }))
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        let tv = self.n.update(ctx, event)?;
-        if tv.is_tainted() {
-            return Some(tv);
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.n.update(ctx, event);
+        if tv.is_absent() || tv.is_tainted() {
+            return tv;
         }
-        let (v, tag) = tv.into_parts();
-        match v {
-            Value::Error(e) => {
+        let err = tv.with_value(|v| match v {
+            Value::Error(e) => Some(e.clone()),
+            _ => None,
+        });
+        match err {
+            None => tv,
+            Some(e) => {
                 if ctx.frame_depth > 0 {
                     // in-frame swallowed error: silent taint
-                    return Some(TagValue::tainted(Value::Null));
+                    return self.resident.set(TagValue::tainted(Value::Null));
                 }
                 log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos);
-                None
+                TagValue::absent()
             }
-            v => Some(TagValue::tagged(v, tag)),
         }
     }
 

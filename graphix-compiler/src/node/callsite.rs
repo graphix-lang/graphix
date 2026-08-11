@@ -557,6 +557,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// owning `GXLambda::update` matches `ctx.pending_tail_call` against.
     /// `Some` iff `is_self_tail_call`.
     pub(crate) callee_lambda_id: Mutex<Option<LambdaId>>,
+    pub(super) resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
@@ -707,12 +708,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             is_self_tail_call: AtomicBool::new(false),
             tail_arg_order: Mutex::new(None),
             callee_lambda_id: Mutex::new(None),
+            resident: TagValue::phantom(),
         };
         Ok(Node::new(site))
     }
 
     fn make_ref(&self, id: BindId, typ: Type, spec: TArc<Expr>) -> Node<R, E> {
-        Node::new(Ref { spec, typ, id, top_id: self.top_id })
+        Node::new(Ref {
+            spec,
+            typ,
+            id,
+            top_id: self.top_id,
+            resident: TagValue::phantom(),
+        })
     }
 
     fn clear_prepared_bind(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1214,8 +1222,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         for arg in self.args.values_mut() {
             if arg.is_default {
                 if let Some(ref mut node) = arg.node {
-                    if let Some(tv) = node.update(ctx, event) {
-                        let v = tv.value();
+                    let tv = node.update(ctx, event);
+                    if !tv.is_absent() {
+                        let v = tv.value_cloned();
                         ctx.rt.cached_mut().insert(arg.id, v.clone());
                         event.variables.insert(arg.id, TagValue::fired(v));
                         set.push(arg.id);
@@ -1483,11 +1492,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         // A FIRED (or tainted) arg production this cycle — the genuine
         // -call signal (a stale production is a value-channel refresh,
@@ -1496,8 +1501,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // Update all arg nodes every cycle, publishing values via bind IDs
         for arg in self.args.values_mut() {
             if let Some(ref mut node) = arg.node {
-                if let Some(tv) = node.update(ctx, event) {
-                    let (v, tag) = tv.into_parts();
+                let tv = node.update(ctx, event);
+                if !tv.is_absent() {
+                    let tag = tv.tag();
                     if tag.is_tainted() {
                         // taint == bottom == no input to a builtin
                         // (see `gate_tainted_args`): a builtin's arg
@@ -1513,6 +1519,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         // placeholder out of the cross-cycle store
                         event.variables.insert(arg.id, TagValue::tainted(Value::Null));
                     } else {
+                        let v = tv.value_cloned();
                         arg_fired |= tag.triggers();
                         ctx.rt.cached_mut().insert(arg.id, v.clone());
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
@@ -1571,7 +1578,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     for id in set.drain(..) {
                         event.variables.remove(&id);
                     }
-                    return None;
+                    return TagValue::absent();
                 }
                 // A `None` arg (bottomed this jump, never cached) makes
                 // the formal RIDE its previous value — the kernel's
@@ -1607,7 +1614,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 for id in set.drain(..) {
                     event.variables.remove(&id);
                 }
-                return None;
+                return TagValue::absent();
             }
         }
         // Statically resolved fast path. The `try_static_resolve` step
@@ -1628,7 +1635,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // `fnode.update` runs every cycle for its side effects, regardless
         // of variant — evaluate it before the `Static` arm that discards
         // its value (mirrors the old tuple scrutinee's eager evaluation).
-        let fv_new = self.fnode.update(ctx, event).map(|tv| tv.value());
+        let fv_new = {
+            let tv = self.fnode.update(ctx, event);
+            if tv.is_absent() { None } else { Some(tv.value_cloned()) }
+        };
         let bound = if let Callee::Static { first_update, .. } = &mut self.callee {
             let first = *first_update;
             *first_update = false;
@@ -1916,7 +1926,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         for id in set.drain(..) {
             event.variables.remove(&id);
         }
-        res
+        match res {
+            Some(tv) => self.resident.set(tv),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

@@ -139,7 +139,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(Value::Map(m)) = from[0].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(Value::Map(m)) =
+            from[0].update(ctx, event).to_option().map(|tv| tv.value())
+        {
             for (k, v) in m.into_iter() {
                 let pair = Value::Array(ValArray::from_iter_exact(
                     [k.clone(), v.clone()].into_iter(),
@@ -198,10 +200,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+        if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
-        if let Some(Value::Map(m)) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(Value::Map(m)) =
+            from[1].update(ctx, event).to_option().map(|tv| tv.value())
+        {
             let pairs: LPooled<Vec<(Value, Value)>> =
                 m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             if !pairs.is_empty() {

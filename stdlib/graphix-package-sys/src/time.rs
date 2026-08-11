@@ -285,7 +285,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+        if !from[0].update(ctx, event).is_absent() {
             Some(Value::from(Utc::now()))
         } else {
             None

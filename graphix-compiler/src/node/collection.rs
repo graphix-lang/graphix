@@ -619,6 +619,7 @@ struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     slots: LPooled<Vec<Slot<R, E>>>,
     current: T::Collection,
     operation: T,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
@@ -665,6 +666,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             slots: LPooled::take(),
             current: T::Collection::default(),
             operation: T::default(),
+            resident: TagValue::phantom(),
         }))
     }
 
@@ -691,11 +693,7 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let old_len = self.slots.len();
         let mut production = None;
         let mut resized = false;
@@ -715,7 +713,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                 .and_then(|value| T::Collection::select(value))
             {
                 while self.slots.len() > source.len() {
-                    self.slots.last_mut()?.delete(ctx);
+                    match self.slots.last_mut() {
+                        Some(slot) => slot.delete(ctx),
+                        None => return TagValue::absent(),
+                    }
                     self.slots.pop();
                     resized = true;
                 }
@@ -732,8 +733,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     production = merge_tag(production, tag);
                 }
                 if self.slots.is_empty() {
-                    let value = self.operation.finish(&self.slots, &self.current)?;
-                    return Some(TagValue::tagged(value, tag));
+                    match self.operation.finish(&self.slots, &self.current) {
+                        Some(value) => {
+                            return self.resident.set(TagValue::tagged(value, tag));
+                        }
+                        None => return TagValue::absent(),
+                    }
                 }
             } else {
                 // An unselectable source (init's over-limit count, a
@@ -751,7 +756,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
                 event.init = saved_init;
-                return None;
+                return TagValue::absent();
             }
             if i >= old_len {
                 event.init = true;
@@ -761,13 +766,13 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     event.variables.insert(self.callback, TagValue::fired(value.clone()));
                 }
             }
-            if let Some(tv) = self.slots[i].call.update(ctx, event) {
-                let (value, tag) = tv.into_parts();
+            if let Some(tv) = self.slots[i].call.update(ctx, event).to_option() {
+                let tag = tv.tag();
                 production = merge_tag(production, tag);
                 if tag.is_tainted() {
                     self.slots[i].tag = Tag::TAINT;
                 } else {
-                    self.slots[i].value = Some(value);
+                    self.slots[i].value = Some(tv.value());
                     self.slots[i].tag = Tag::STALE;
                 }
             }
@@ -775,18 +780,22 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         event.init = saved_init;
 
         if forced_taint {
-            return Some(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tainted(Value::Null));
         }
-        let tag = production?;
+        let tag = match production {
+            Some(tag) => tag,
+            None => return TagValue::absent(),
+        };
         if tag.is_tainted() || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return Some(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tainted(Value::Null));
         }
         if self.slots.iter().all(|slot| slot.value.is_some()) {
-            self.operation
-                .finish(&self.slots, &self.current)
-                .map(|value| TagValue::tagged(value, tag))
+            match self.operation.finish(&self.slots, &self.current) {
+                Some(value) => self.resident.set(TagValue::tagged(value, tag)),
+                None => TagValue::absent(),
+            }
         } else {
-            None
+            TagValue::absent()
         }
     }
 
@@ -1008,6 +1017,7 @@ struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     init: Option<Value>,
     source_present: bool,
     operation: PhantomData<T>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
@@ -1070,6 +1080,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             init: None,
             source_present: false,
             operation: PhantomData,
+            resident: TagValue::phantom(),
         }))
     }
 
@@ -1088,11 +1099,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let old_len = self.slots.len();
         let mut resized = false;
         let mut forced_taint = false;
@@ -1116,7 +1123,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 self.source_present = true;
                 source_tag = Some(tag);
                 while self.slots.len() > source.len() {
-                    self.slots.last_mut()?.delete(ctx);
+                    match self.slots.last_mut() {
+                        Some(slot) => slot.delete(ctx),
+                        None => return TagValue::absent(),
+                    }
                     self.slots.pop();
                     resized = true;
                 }
@@ -1166,18 +1176,24 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
 
         if self.slots.is_empty() && self.source_present && !forced_taint {
             let tag = match (source_tag, init_tag) {
-                (None, None) => return None,
-                (Some(a), Some(b)) => merge_tag(Some(a), b)?,
+                (None, None) => return TagValue::absent(),
+                (Some(a), Some(b)) => match merge_tag(Some(a), b) {
+                    Some(tag) => tag,
+                    None => return TagValue::absent(),
+                },
                 (Some(tag), None) | (None, Some(tag)) => tag,
             };
-            return self.init.clone().map(|value| TagValue::tagged(value, tag));
+            return match self.init.clone() {
+                Some(value) => self.resident.set(TagValue::tagged(value, tag)),
+                None => TagValue::absent(),
+            };
         }
 
         let saved_init = event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
                 event.init = saved_init;
-                return None;
+                return TagValue::absent();
             }
             if i >= old_len {
                 event.init = true;
@@ -1197,51 +1213,51 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     event.variables.insert(acc_id, TagValue::fired(value));
                 }
             }
-            match self.slots[i].call.update(ctx, event) {
-                Some(tv) => {
-                    let (value, tag) = tv.into_parts();
-                    self.slots[i].tag = tag;
-                    if tag.is_tainted() {
-                        self.slots[i].cycle = None;
-                        if i + 1 < self.slots.len() {
-                            let next = self.slots[i + 1].acc_id;
-                            ctx.rt.cached_mut().remove(&next);
-                            event.variables.remove(&next);
-                        }
-                    } else {
-                        self.slots[i].cycle = Some(value.clone());
-                        self.slots[i].held = Some(value.clone());
-                        if i + 1 < self.slots.len() {
-                            let next = self.slots[i + 1].acc_id;
-                            ctx.rt.cached_mut().insert(next, value.clone());
-                            event.variables.insert(next, TagValue::tagged(value, tag));
-                        }
-                    }
-                }
-                None => {
+            if let Some(tv) = self.slots[i].call.update(ctx, event).to_option() {
+                let tag = tv.tag();
+                self.slots[i].tag = tag;
+                if tag.is_tainted() {
                     self.slots[i].cycle = None;
                     if i + 1 < self.slots.len() {
                         let next = self.slots[i + 1].acc_id;
                         ctx.rt.cached_mut().remove(&next);
                         event.variables.remove(&next);
                     }
+                } else {
+                    let value = tv.value();
+                    self.slots[i].cycle = Some(value.clone());
+                    self.slots[i].held = Some(value.clone());
+                    if i + 1 < self.slots.len() {
+                        let next = self.slots[i + 1].acc_id;
+                        ctx.rt.cached_mut().insert(next, value.clone());
+                        event.variables.insert(next, TagValue::tagged(value, tag));
+                    }
+                }
+            } else {
+                self.slots[i].cycle = None;
+                if i + 1 < self.slots.len() {
+                    let next = self.slots[i + 1].acc_id;
+                    ctx.rt.cached_mut().remove(&next);
+                    event.variables.remove(&next);
                 }
             }
         }
         event.init = saved_init;
 
         if forced_taint || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return Some(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tainted(Value::Null));
         }
         if let Some(last) = self.slots.last() {
             if let Some(value) = last.cycle.clone() {
-                return Some(TagValue::tagged(value, last.tag));
+                let tag = last.tag;
+                return self.resident.set(TagValue::tagged(value, tag));
             }
             if resized && let Some(value) = last.held.clone() {
-                return Some(TagValue::tagged(value, source_tag.unwrap_or(Tag::FIRED)));
+                let tag = source_tag.unwrap_or(Tag::FIRED);
+                return self.resident.set(TagValue::tagged(value, tag));
             }
         }
-        None
+        TagValue::absent()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

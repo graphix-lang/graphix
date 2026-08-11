@@ -296,7 +296,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) {
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, TagValue::fired(v));
         }
@@ -322,7 +322,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         on_null: Value,
     ) -> Option<Value> {
         self.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
+        let direct = match from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
             Some(Value::Null) => Some(on_null),
             Some(v) => {
                 self.feed_x(ctx, event, v);
@@ -330,7 +330,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
             }
             None => None,
         };
-        let inner_out = self.inner.update(ctx, event).map(|tv| tv.value());
+        let inner_out = self.inner.update(ctx, event).to_option().map(|tv| tv.value());
         direct.or(inner_out)
     }
 
@@ -527,7 +527,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         event: &mut Event<E>,
     ) -> Option<Value> {
         self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
+        let direct = match from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
             Some(Value::Null) => {
                 self.pending = None;
                 Some(Value::Null)
@@ -539,10 +539,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
             }
             None => None,
         };
-        let inner_out = self.s.inner.update(ctx, event).map(|b| match b.value() {
-            Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
-            _ => Value::Null,
-        });
+        let inner_out =
+            self.s.inner.update(ctx, event).to_option().map(|b| match b.value() {
+                Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
+                _ => Value::Null,
+            });
         direct.or(inner_out)
     }
 
@@ -741,17 +742,17 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> (bool, bool) {
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, TagValue::fired(v));
         }
-        let a_updated = if let Some(a) = from[0].update(ctx, event) {
+        let a_updated = if let Some(a) = from[0].update(ctx, event).to_option() {
             self.last_a = Some(a.value());
             true
         } else {
             false
         };
-        let f_updated = if let Some(v) = self.inner.update(ctx, event) {
+        let f_updated = if let Some(v) = self.inner.update(ctx, event).to_option() {
             self.last_f = Some(v.value());
             true
         } else {

@@ -71,6 +71,7 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// a value-position re-selection fires — and the dispatch-level
     /// `tail_scrut_fired` fold.
     pub(crate) tail_position: std::sync::atomic::AtomicBool,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
@@ -91,6 +92,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms,
             selected: SelCell::new(),
             tail_position: std::sync::atomic::AtomicBool::new(false),
+            resident: TagValue::phantom(),
         })
     }
 
@@ -131,17 +133,14 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms,
             selected: SelCell::new(),
             tail_position: std::sync::atomic::AtomicBool::new(false),
+            resident: TagValue::phantom(),
         }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        let Self { selected, arg, arms, typ: _, spec: _, tail_position } = self;
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let Self { selected, arg, arms, typ: _, spec: _, tail_position, resident } = self;
         let mut pat_up = false;
         let arg_prod = arg.update(ctx, event);
         let tainted = arg.tag.is_tainted();
@@ -215,7 +214,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // dispatch): a tainted scrutinee production can't be matched —
         // the whole select produces the taint placeholder.
         if tainted {
-            return if arg_up { Some(TagValue::tainted(Value::Null)) } else { None };
+            return if arg_up {
+                resident.set(TagValue::tainted(Value::Null))
+            } else {
+                TagValue::absent()
+            };
         }
         if crate::dbgenv::graphix_dbg_select() {
             eprintln!(
@@ -258,8 +261,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
             }};
         }
-        if !arg_up && !pat_up {
-            self.selected.get().and_then(|i| match arms[i].1.update(ctx, event) {
+        let out = if !arg_up && !pat_up {
+            selected.get().and_then(|i| match arms[i].1.update(ctx, event) {
                 None => None,
                 prod => emit!(i, prod),
             })
@@ -384,11 +387,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
                 (None, None) => None,
             }
+        };
+        match out {
+            Some(tv) => resident.set(tv),
+            None => TagValue::absent(),
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
+        let Self {
+            selected: _,
+            arg,
+            arms,
+            typ: _,
+            spec: _,
+            tail_position: _,
+            resident: _,
+        } = self;
         arg.node.delete(ctx);
         for (pat, arg) in arms {
             arg.node.delete(ctx);
@@ -397,7 +412,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
+        let Self {
+            selected: _,
+            arg,
+            arms,
+            typ: _,
+            spec: _,
+            tail_position: _,
+            resident: _,
+        } = self;
         arg.sleep(ctx);
         for (pat, arg) in arms {
             arg.sleep(ctx);
@@ -424,7 +447,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // UNCHANGED selections, and contradicting fused region
         // kernels, whose selection words are semantic and survive
         // `Kernel::reset_replay`.
-        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
+        let Self {
+            selected: _,
+            arg,
+            arms,
+            typ: _,
+            spec: _,
+            tail_position: _,
+            resident: _,
+        } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
             arg.reset_replay(ctx);
@@ -435,7 +466,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        let Self { selected: _, arg, arms, typ: _, spec: _, tail_position: _ } = self;
+        let Self {
+            selected: _,
+            arg,
+            arms,
+            typ: _,
+            spec: _,
+            tail_position: _,
+            resident: _,
+        } = self;
         arg.node.refs(refs);
         for (pat, arg) in arms {
             arg.node.refs(refs);

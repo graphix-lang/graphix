@@ -355,8 +355,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // this to derive its result tag — see the override at its end.
         let mut entry_fired = event.init;
         for (arg, pat) in from.iter_mut().zip(&self.args) {
-            if let Some(tv) = arg.update(ctx, event) {
-                let (v, tag) = tv.into_parts();
+            let tv = arg.update(ctx, event);
+            if !tv.is_absent() {
+                let tag = tv.tag();
                 entry_fired |= tag.triggers();
                 if tag.is_tainted() {
                     // never destructure a taint placeholder; poison the
@@ -365,6 +366,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                         event.variables.insert(id, TagValue::tainted(Value::Null));
                     });
                 } else {
+                    let v = tv.value_cloned();
                     pat.bind(&v, &mut |id, v| {
                         ctx.rt.cached_mut().insert(id, v.clone());
                         event.variables.insert(id, TagValue::tagged(v.clone(), tag));
@@ -448,7 +450,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // dispatch; `max_call_depth` bounds how many, but not how
             // big a thread's stack is (an unoptimized build wants
             // ~4MB for the default 256 and a tokio worker has 2MB).
-            crate::stack::ensure_sufficient(|| self.body.update(ctx, event))
+            crate::stack::ensure_sufficient(|| self.body.update(ctx, event).to_option())
         } else {
             // Sync self-tail-recursion: loop in place instead of recursing on
             // the Rust stack (which overflows; the JIT compiles this to a
@@ -540,7 +542,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     break None;
                 }
                 let res = if !reentered && !framed {
-                    self.body.update(ctx, event)
+                    self.body.update(ctx, event).to_option()
                 } else {
                     mem::swap(&mut event.variables, &mut *frame);
                     let prev = mem::replace(&mut event.init, true);
@@ -556,7 +558,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     let real = if ctx.frame_depth > 0 { ctx.frame_init } else { prev };
                     let prev_fi = mem::replace(&mut ctx.frame_init, real);
                     ctx.frame_depth += 1;
-                    let res = self.body.update(ctx, event);
+                    let res = self.body.update(ctx, event).to_option();
                     ctx.frame_depth -= 1;
                     ctx.frame_init = prev_fi;
                     event.init = prev;
@@ -1101,6 +1103,7 @@ pub struct Lambda {
     spec: Expr,
     def: Value,
     typ: Type,
+    resident: TagValue,
 }
 
 impl Lambda {
@@ -1391,16 +1394,17 @@ impl Lambda {
             recursion: Mutex::new(RecursionKind::NotRecursive),
         });
         ctx.lambda_defs.insert(id, def.clone());
-        Ok(Node::new(Self { spec, def, typ: Type::Fn(typ) }))
+        Ok(Node::new(Self {
+            spec,
+            def,
+            typ: Type::Fn(typ),
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // A lambda literal is a constant of function type — same
         // production rule as `Constant`: FIRED at init, the STALE
         // value channel inside frames (a framed `let f = |..| ..`
@@ -1408,14 +1412,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // Frame depth first — frames force init (see Constant).
         if ctx.frame_depth > 0 {
             if ctx.frame_init {
-                Some(TagValue::fired(self.def.clone()))
+                self.resident.set(TagValue::fired(self.def.clone()))
             } else {
-                Some(TagValue::stale(self.def.clone()))
+                self.resident.set(TagValue::stale(self.def.clone()))
             }
         } else if event.init {
-            Some(TagValue::fired(self.def.clone()))
+            self.resident.set(TagValue::fired(self.def.clone()))
         } else {
-            None
+            TagValue::absent()
         }
     }
 

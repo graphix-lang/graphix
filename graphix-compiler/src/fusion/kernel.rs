@@ -817,9 +817,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from.get_mut(0)?
-            .update(ctx, event)
-            .map(|tv| self.target.cast_value(&ctx.env, tv.value()))
+        let tv = from.get_mut(0)?.update(ctx, event).to_option()?;
+        Some(self.target.cast_value(&ctx.env, tv.value()))
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -1319,9 +1318,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // drives the stale-resurface below when nothing triggered.
         let mut any_produced = false;
         for (i, src) in from.iter_mut().enumerate() {
-            if let Some(tv) = src.update(ctx, event) {
+            let tv = src.update(ctx, event);
+            if !tv.is_absent() {
                 any_produced = true;
-                let (v, tag) = tv.into_parts();
+                let tag = tv.tag();
                 if tag.is_tainted() {
                     // A tainted feeder event: drop the retained value so
                     // the pack below feeds the TAINT placeholder — the
@@ -1334,7 +1334,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                     // A merely-STALE production refreshes the slot (the
                     // value channel) without firing the kernel; a fired
                     // one runs it.
-                    self.args[i] = Some(v);
+                    self.args[i] = Some(tv.value_cloned());
                     if tag.is_fired() {
                         fired_this_cycle[i] = true;
                         any_updated = true;

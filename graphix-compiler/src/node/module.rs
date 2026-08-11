@@ -283,6 +283,7 @@ pub struct Module<R: Rt, E: UserEvent> {
     /// catch-statement indices in `nodes` (see `Block::catches`).
     pub(crate) catches: Box<[usize]>,
     top_id: ExprId,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Module<R, E> {
@@ -318,6 +319,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
+            resident: TagValue::phantom(),
         }))
     }
 
@@ -346,6 +348,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
+            resident: TagValue::phantom(),
         };
         t.compile_inner(ctx, &exprs)
             .with_context(|| format!("compiling module {}", scope.lexical))?;
@@ -435,35 +438,41 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut compiled = false;
         let mut src_tag = Tag::FIRED;
-        if self.dynamic_sig_env.is_some()
-            && let Some(tv) = self.source.update(ctx, event)
-        {
-            // never compile from a taint placeholder (and don't tear
-            // down the running module on one) — pass the taint on
-            if tv.is_tainted() {
-                return Some(TagValue::tainted(Value::Null));
+        let src = if self.dynamic_sig_env.is_some() {
+            let tv = self.source.update(ctx, event);
+            if tv.is_absent() {
+                None
+            } else {
+                // never compile from a taint placeholder (and don't tear
+                // down the running module on one) — pass the taint on
+                if tv.is_tainted() {
+                    return self.resident.set(TagValue::tainted(Value::Null));
+                }
+                let tag = tv.tag();
+                Some((tv.value_cloned(), tag))
             }
-            let (v, tag) = tv.into_parts();
+        } else {
+            None
+        };
+        if let Some((v, tag)) = src {
             src_tag = tag;
             self.clear_compiled(ctx);
             match v {
                 Value::String(s) => {
                     if let Err(e) = self.compile_source(ctx, s) {
-                        return Some(TagValue::tagged(
+                        return self.resident.set(TagValue::tagged(
                             errf!(ERR_TAG, "compile error {e:?}"),
                             tag,
                         ));
                     }
                 }
                 v => {
-                    return Some(TagValue::tagged(errf!(ERR_TAG, "unexpected {v}"), tag));
+                    return self
+                        .resident
+                        .set(TagValue::tagged(errf!(ERR_TAG, "unexpected {v}"), tag));
                 }
             }
             compiled = true;
@@ -532,7 +541,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 event.variables.insert(*proxy_id, tv);
             }
         }
-        compiled.then(|| TagValue::tagged(Value::Null, src_tag))
+        if compiled {
+            self.resident.set(TagValue::tagged(Value::Null, src_tag))
+        } else {
+            TagValue::absent()
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

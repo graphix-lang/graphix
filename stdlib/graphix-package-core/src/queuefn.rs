@@ -76,7 +76,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     ) -> Option<Value> {
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
-            if let Some(v) = n.update(ctx, event) {
+            if let Some(v) = n.update(ctx, event).to_option() {
                 if let Some(bid) = self.arg_bids.get(i) {
                     delta.push((*bid, v.value()));
                 }
@@ -112,7 +112,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        self.pred.update(ctx, event).map(|tv| tv.value())
+        self.pred.update(ctx, event).to_option().map(|tv| tv.value())
     }
 
     fn typecheck0(
@@ -299,7 +299,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
-        if let Some(v) = from[0].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
             let new_ref = match &v {
                 Value::U64(b) => {
                     let outer = BindId::from(*b);
@@ -312,7 +312,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             s.last_written_depth = s.depth();
         }
         let mut new_lambda: Option<Value> = None;
-        if let Some(v) = from[2].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = from[2].update(ctx, event).to_option().map(|tv| tv.value()) {
             // `resolved` is a typecheck-time artifact; a lazily-built
             // instance (an analysis-pred per-slot clone whose swallowed
             // typecheck died upstream) never had one. The runtime `f`
@@ -341,7 +341,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
         }
-        let trigger_fired = from[1].update(ctx, event).is_some();
+        let trigger_fired = !from[1].update(ctx, event).is_absent();
         if trigger_fired {
             let popped = {
                 let mut s = self.state.lock();

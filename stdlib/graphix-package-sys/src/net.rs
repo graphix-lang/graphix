@@ -670,7 +670,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }
         }
-        if let Some(v) = self.on_write.update(ctx, event) {
+        if let Some(v) = self.on_write.update(ctx, event).to_option() {
             if let Some(reply) = reply {
                 reply.send(v.value())
             }
@@ -1030,7 +1030,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             }
         }
         loop {
-            match self.f.update(ctx, event) {
+            match self.f.update(ctx, event).to_option() {
                 None => break None,
                 Some(v) => {
                     self.ready = true;

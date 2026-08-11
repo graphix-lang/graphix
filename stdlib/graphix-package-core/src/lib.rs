@@ -302,12 +302,13 @@ impl CachedVals {
     ) -> Option<Tag> {
         let mut prod: Option<Tag> = None;
         for (i, src) in from.iter_mut().enumerate() {
-            if let Some(tv) = src.update(ctx, event) {
-                let (v, tag) = tv.into_parts();
+            let tv = src.update(ctx, event);
+            if !tv.is_absent() {
+                let tag = tv.tag();
                 if tag.is_tainted() {
                     self.1[i] = Tag::TAINT;
                 } else {
-                    self.0[i] = Some(v);
+                    self.0[i] = Some(tv.value_cloned());
                     self.1[i] = tag;
                 }
                 prod = Some(match prod {
@@ -332,12 +333,13 @@ impl CachedVals {
         event: &mut Event<E>,
     ) {
         for (i, n) in from.iter_mut().enumerate() {
-            if let Some(tv) = n.update(ctx, event) {
-                let (v, tag) = tv.into_parts();
+            let tv = n.update(ctx, event);
+            if !tv.is_absent() {
+                let tag = tv.tag();
                 if tag.is_tainted() {
                     self.1[i] = Tag::TAINT;
                 } else {
-                    self.0[i] = Some(v);
+                    self.0[i] = Some(tv.value_cloned());
                     self.1[i] = tag;
                 }
                 up[i] = tag.triggers();
@@ -701,7 +703,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|tv| match tv.value() {
+        from[0].update(ctx, event).to_option().map(|tv| match tv.value() {
             Value::Error(_) => Value::Bool(true),
             _ => Value::Bool(false),
         })
@@ -739,7 +741,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|tv| match tv.value() {
+        from[0].update(ctx, event).to_option().and_then(|tv| match tv.value() {
             v @ Value::Error(_) => Some(v),
             _ => None,
         })
@@ -776,7 +778,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).map(|e| Value::Error(e.value().into()))
+        from[0].update(ctx, event).to_option().map(|e| Value::Error(e.value().into()))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -821,7 +823,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         event: &mut Event<E>,
     ) -> Option<Value> {
         match from {
-            [s] => s.update(ctx, event).and_then(|v| {
+            [s] => s.update(ctx, event).to_option().and_then(|v| {
                 if self.val {
                     None
                 } else {
@@ -880,12 +882,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
+        if let Some(n) = from[0]
+            .update(ctx, event)
+            .to_option()
+            .and_then(|v| v.value().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        match from[1].update(ctx, event) {
+        match from[1].update(ctx, event).to_option() {
             None => None,
             Some(v) => match &mut self.n {
                 None => None,
@@ -944,12 +948,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
+        if let Some(n) = from[0]
+            .update(ctx, event)
+            .to_option()
+            .and_then(|v| v.value().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        match from[1].update(ctx, event) {
+        match from[1].update(ctx, event).to_option() {
             None => None,
             Some(v) => match &mut self.n {
                 None => Some(v.value()),
@@ -1408,16 +1414,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, TagValue::fired(v));
         }
-        if let Some(v) = from[0].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
             self.pending = Some(v.clone());
             ctx.rt.cached_mut().insert(self.x, v.clone());
             event.variables.insert(self.x, TagValue::fired(v));
         }
-        self.pred.update(ctx, event).and_then(|b| match b.value() {
+        self.pred.update(ctx, event).to_option().and_then(|b| match b.value() {
             Value::Bool(true) => self.pending.clone(),
             _ => None,
         })
@@ -1495,10 +1501,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+        if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).to_option() {
             self.queue.push_back(v.value());
         }
         while self.triggered > 0 && self.queue.len() > 0 {
@@ -1567,10 +1573,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+        if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx, event).to_option() {
             self.current = Some(v.value());
         }
         if self.triggered > 0
@@ -1810,7 +1816,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if from.into_iter().fold(false, |u, n| u || n.update(ctx, event).is_some()) {
+        if from.into_iter().fold(false, |u, n| u || !n.update(ctx, event).is_absent()) {
             self.count += 1;
             Some(Value::I64(self.count))
         } else {
@@ -1897,7 +1903,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|tv| {
+        from[0].update(ctx, event).to_option().and_then(|tv| {
             let v = tv.value();
             if Some(&v) != self.0.as_ref() {
                 self.0 = Some(v.clone());
@@ -2038,12 +2044,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(v) = from[0].update(ctx, event)
+        if let Some(v) = from[0].update(ctx, event).to_option()
             && let Ok(d) = v.value().cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        from[1].update(ctx, event).map(|v| {
+        from[1].update(ctx, event).to_option().map(|v| {
             let v = v.value();
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
@@ -2130,12 +2136,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> Option<Value> {
-        if let Some(v) = from[0].update(ctx, event)
+        if let Some(v) = from[0].update(ctx, event).to_option()
             && let Ok(d) = v.value().cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
             let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
@@ -2201,12 +2207,14 @@ macro_rules! printfn {
                 event: &mut Event<E>,
             ) -> Option<Value> {
                 use std::fmt::Write;
-                if let Some(v) = from[0].update(ctx, event)
+                if let Some(v) = from[0].update(ctx, event).to_option()
                     && let Ok(d) = v.value().cast_to::<LogDest>()
                 {
                     self.dest = d;
                 }
-                if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+                if let Some(v) =
+                    from[1].update(ctx, event).to_option().map(|tv| tv.value())
+                {
                     self.buf.clear();
                     match v {
                         Value::String(s) => write!(self.buf, "{s}"),
