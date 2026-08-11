@@ -9,7 +9,7 @@ use extended_notify::{
 use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, UserEvent, effects::EffectKind, errf, expr::ExprId, typ::FnType,
+    Scope, TagValue, UserEvent, effects::EffectKind, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx_value::{
@@ -250,6 +250,7 @@ static WATCH_VALUE_WRAPPER: LazyLock<AbstractWrapper<WatchValue>> = LazyLock::ne
 pub(crate) struct CreateWatcher {
     poll_interval: Option<Duration>,
     batch_size: Option<i64>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
@@ -264,7 +265,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
         _args: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(CreateWatcher { poll_interval: None, batch_size: None }))
+        Ok(Box::new(CreateWatcher {
+            poll_interval: None,
+            batch_size: None,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -274,7 +279,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let poll_interval = from[0]
             .update(ctx, event)
             .to_option()
@@ -286,14 +291,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         let trigger = from[2].update(ctx, event).to_option();
         match poll_interval {
             Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
-                return Some(errf!("WatchError", "poll_interval must be >= 100ms"));
+                return self.out.set(TagValue::fired(errf!(
+                    "WatchError",
+                    "poll_interval must be >= 100ms"
+                )));
             }
             Some(poll_interval) => self.poll_interval = Some(poll_interval),
             None => (),
         }
         match batch_size {
             Some(batch_size) if batch_size < 0 => {
-                return Some(errf!("WatchError", "batch_size must be >= 0"));
+                return self.out.set(TagValue::fired(errf!(
+                    "WatchError",
+                    "batch_size must be >= 0"
+                )));
             }
             Some(batch_size) => self.batch_size = Some(batch_size),
             None => (),
@@ -317,12 +328,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
             match watcher_result {
                 Ok(watcher) => {
                     ctx.rt.watch(notify_rx);
-                    Some(WATCHER_WRAPPER.wrap(WatcherValue { watcher, idmap }))
+                    self.out.set(TagValue::fired(
+                        WATCHER_WRAPPER.wrap(WatcherValue { watcher, idmap }),
+                    ))
                 }
-                Err(e) => Some(errf!("WatchError", "failed to create watcher: {e:?}")),
+                Err(e) => self.out.set(TagValue::fired(errf!(
+                    "WatchError",
+                    "failed to create watcher: {e:?}"
+                ))),
             }
         } else {
-            None
+            TagValue::absent()
         }
     }
 
@@ -338,6 +354,7 @@ pub(crate) struct WatchApply {
     interest: Option<BitFlags<Interest>>,
     path: Option<ArcStr>,
     watcher_val: Option<Value>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
@@ -352,7 +369,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(WatchApply { interest: None, path: None, watcher_val: None }))
+        Ok(Box::new(WatchApply {
+            interest: None,
+            path: None,
+            watcher_val: None,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -362,7 +384,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let mut up = false;
         if let Some(Ok(mut int)) = from[0]
             .update(ctx, event)
@@ -395,20 +417,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
                 let bind_id = BindId::new();
                 match wv.add(bind_id, path, interest) {
                     Ok(watched) => {
-                        return Some(
+                        return self.out.set(TagValue::fired(
                             WATCH_VALUE_WRAPPER.wrap(WatchValue {
                                 _watched: Arc::new(watched),
                                 bind_id,
                             }),
-                        );
+                        ));
                     }
                     Err(e) => {
-                        return Some(errf!("WatchError", "{e:?}"));
+                        return self
+                            .out
+                            .set(TagValue::fired(errf!("WatchError", "{e:?}")));
                     }
                 }
             }
         }
-        None
+        TagValue::absent()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -493,6 +517,7 @@ pub(crate) struct WatchPath {
     top_id: ExprId,
     cached: CachedVals,
     bind_ids: IntSet<BindId>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
@@ -511,6 +536,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
             top_id,
             cached: CachedVals::new(from),
             bind_ids: IntSet::default(),
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -521,7 +547,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if self.cached.update(ctx, from, event) {
             for bid in self.bind_ids.drain() {
                 ctx.rt.unref_var(bid, self.top_id);
@@ -535,7 +561,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
                 ctx.rt.ref_var(*bid, self.top_id);
             }
         }
-        scan_watch_events(&self.bind_ids, event, convert_path)
+        match scan_watch_events(&self.bind_ids, event, convert_path) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -563,6 +592,7 @@ pub(crate) struct WatchEvents {
     top_id: ExprId,
     cached: CachedVals,
     bind_ids: IntSet<BindId>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
@@ -581,6 +611,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
             top_id,
             cached: CachedVals::new(from),
             bind_ids: IntSet::default(),
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -591,7 +622,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if self.cached.update(ctx, from, event) {
             for bid in self.bind_ids.drain() {
                 ctx.rt.unref_var(bid, self.top_id);
@@ -605,7 +636,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
                 ctx.rt.ref_var(*bid, self.top_id);
             }
         }
-        scan_watch_events(&self.bind_ids, event, convert_events)
+        match scan_watch_events(&self.bind_ids, event, convert_events) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {

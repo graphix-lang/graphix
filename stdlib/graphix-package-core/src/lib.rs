@@ -416,13 +416,10 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 pub struct CachedArgs<T> {
     cached: CachedVals,
     /// The last value `eval` produced — the builtin's RESULT slot on
-    /// the value channel: a merely-stale arg refresh re-surfaces it
-    /// (tagged stale via `out_tag`) instead of re-running `eval`,
-    /// exactly the kernel's DynCall result temp.
-    last_result: Option<Value>,
-    /// The tag of the last value `update` returned (see
-    /// `Apply::out_tag`).
-    last_out: Tag,
+    /// the value channel (absent until the first result): a
+    /// merely-stale arg refresh re-surfaces it retagged STALE instead
+    /// of re-running `eval`, exactly the kernel's DynCall result temp.
+    resident: TagValue,
     t: T,
 }
 
@@ -441,8 +438,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
             cached: CachedVals::new(from),
-            last_result: None,
-            last_out: Tag::FIRED,
+            resident: TagValue::absent().clone(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -455,9 +451,9 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         match self.cached.update_full(ctx, from, event) {
-            None => None,
+            None => TagValue::absent(),
             Some(_) if self.cached.any_tainted() => {
                 // DEFENSE-IN-DEPTH: unreachable when the seams hold —
                 // the CallSite gates every builtin's tainted arg
@@ -466,29 +462,24 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
                 // rulings 2026-07-19/20), so no poisoned delivery can
                 // reach these slots. If a new channel leaks one, emit
                 // the tainted placeholder (loud downstream) rather
-                // than replaying stale state.
-                self.last_out = Tag::TAINT;
-                Some(Value::Null)
+                // than replaying stale state — the SHARED placeholder,
+                // so the resident keeps the last genuine result.
+                TagValue::tainted_null()
             }
-            Some(t) if t.is_fired() => {
-                let res = self.t.eval(ctx, &self.cached);
-                if let Some(v) = &res {
-                    self.last_result = Some(v.clone());
-                }
-                self.last_out = Tag::FIRED;
-                res
-            }
+            Some(t) if t.is_fired() => match self.t.eval(ctx, &self.cached) {
+                Some(v) => self.resident.set(TagValue::fired(v)),
+                // eval produced nothing: the resident keeps the
+                // previous result for a later stale refresh, exactly
+                // as the sparse result slot did.
+                None => TagValue::absent(),
+            },
+            Some(_) if self.resident.is_absent() => TagValue::absent(),
             Some(_) => {
                 // stale refresh: surface the result slot on the value
                 // channel — eval does NOT re-run
-                self.last_out = Tag::STALE;
-                self.last_result.clone()
+                self.resident.retag(Tag::STALE)
             }
         }
-    }
-
-    fn out_tag(&self) -> Tag {
-        self.last_out
     }
 
     fn typecheck0(
@@ -582,6 +573,7 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     top_id: ExprId,
     queued: VecDeque<T::Args>,
     running: bool,
+    out: TagValue,
     t: T,
 }
 
@@ -604,6 +596,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             running: false,
+            out: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -616,7 +609,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if self.cached.update(ctx, from, event)
             && let Some(args) = self.t.prepare_args(&self.cached)
         {
@@ -633,7 +626,10 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             let id = self.id;
             ctx.rt.spawn_var(async move { (id, T::eval(args).await) });
         }
-        res
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -676,8 +672,10 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
 // ── Core builtins ──────────────────────────────────────────────────
 
-#[derive(Debug)]
-struct IsErr;
+#[derive(Debug, Default)]
+struct IsErr {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -692,7 +690,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(IsErr))
+        Ok(Box::new(IsErr::default()))
     }
 }
 
@@ -702,11 +700,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).to_option().map(|tv| match tv.value() {
+    ) -> &TagValue {
+        match from[0].update(ctx, event).to_option().map(|tv| match tv.value() {
             Value::Error(_) => Value::Bool(true),
             _ => Value::Bool(false),
-        })
+        }) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -714,8 +715,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-#[derive(Debug)]
-struct FilterErr;
+#[derive(Debug, Default)]
+struct FilterErr {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -730,7 +733,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(FilterErr))
+        Ok(Box::new(FilterErr::default()))
     }
 }
 
@@ -740,11 +743,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).to_option().and_then(|tv| match tv.value() {
+    ) -> &TagValue {
+        match from[0].update(ctx, event).to_option().and_then(|tv| match tv.value() {
             v @ Value::Error(_) => Some(v),
             _ => None,
-        })
+        }) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -752,8 +758,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-#[derive(Debug)]
-struct ToError;
+#[derive(Debug, Default)]
+struct ToError {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -767,7 +775,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(ToError))
+        Ok(Box::new(ToError::default()))
     }
 }
 
@@ -777,8 +785,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).to_option().map(|e| Value::Error(e.value().into()))
+    ) -> &TagValue {
+        match from[0]
+            .update(ctx, event)
+            .to_option()
+            .map(|e| Value::Error(e.value().into()))
+        {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -789,6 +804,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
 #[derive(Debug)]
 struct Once {
     val: bool,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
@@ -811,7 +827,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Once { val: false }))
+        Ok(Box::new(Once { val: false, out: TagValue::phantom() }))
     }
 }
 
@@ -821,8 +837,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        match from {
+    ) -> &TagValue {
+        let res = match from {
             [s] => s.update(ctx, event).to_option().and_then(|v| {
                 if self.val {
                     None
@@ -832,6 +848,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
                 }
             }),
             _ => None,
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
         }
     }
 
@@ -849,6 +869,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 #[derive(Debug)]
 struct Take {
     n: Option<usize>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
@@ -871,7 +892,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Take { n: None }))
+        Ok(Box::new(Take { n: None, out: TagValue::phantom() }))
     }
 }
 
@@ -881,7 +902,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if let Some(n) = from[0]
             .update(ctx, event)
             .to_option()
@@ -889,16 +910,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         {
             self.n = Some(n)
         }
-        match from[1].update(ctx, event).to_option() {
+        let res = match from[1].update(ctx, event).to_option() {
             None => None,
             Some(v) => match &mut self.n {
                 None => None,
                 Some(n) if *n > 0 => {
                     *n -= 1;
-                    return Some(v.value());
+                    Some(v.value())
                 }
                 Some(_) => None,
             },
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
         }
     }
 
@@ -915,6 +940,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
 #[derive(Debug)]
 struct Skip {
     n: Option<usize>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
@@ -937,7 +963,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Skip { n: None }))
+        Ok(Box::new(Skip { n: None, out: TagValue::phantom() }))
     }
 }
 
@@ -947,7 +973,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if let Some(n) = from[0]
             .update(ctx, event)
             .to_option()
@@ -955,7 +981,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         {
             self.n = Some(n)
         }
-        match from[1].update(ctx, event).to_option() {
+        let res = match from[1].update(ctx, event).to_option() {
             None => None,
             Some(v) => match &mut self.n {
                 None => Some(v.value()),
@@ -965,6 +991,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
                 }
                 Some(_) => Some(v.value()),
             },
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
         }
     }
 
@@ -1368,6 +1398,7 @@ struct Filter<R: Rt, E: UserEvent> {
     pending: Option<Value>,
     fid: BindId,
     x: BindId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
@@ -1400,7 +1431,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
                     &ptyp,
                     top_id,
                 );
-                Ok(Box::new(Self { pred, pending: None, fid, x }))
+                Ok(Box::new(Self {
+                    pred,
+                    pending: None,
+                    fid,
+                    x,
+                    out: TagValue::phantom(),
+                }))
             }
             _ => bail!("expected two arguments"),
         }
@@ -1413,7 +1450,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
             ctx.rt.cached_mut().insert(self.fid, v.clone());
             event.variables.insert(self.fid, TagValue::fired(v));
@@ -1423,10 +1460,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
             ctx.rt.cached_mut().insert(self.x, v.clone());
             event.variables.insert(self.x, TagValue::fired(v));
         }
-        self.pred.update(ctx, event).to_option().and_then(|b| match b.value() {
-            Value::Bool(true) => self.pending.clone(),
-            _ => None,
-        })
+        let res =
+            self.pred.update(ctx, event).to_option().and_then(|b| match b.value() {
+                Value::Bool(true) => self.pending.clone(),
+                _ => None,
+            });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -1470,6 +1512,7 @@ struct Queue {
     queue: VecDeque<Value>,
     id: BindId,
     top_id: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
@@ -1487,7 +1530,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
             [_, _] => {
                 let id = BindId::new();
                 ctx.rt.ref_var(id, top_id);
-                Ok(Box::new(Self { triggered: 0, queue: VecDeque::new(), id, top_id }))
+                Ok(Box::new(Self {
+                    triggered: 0,
+                    queue: VecDeque::new(),
+                    id,
+                    top_id,
+                    out: TagValue::phantom(),
+                }))
             }
             _ => bail!("expected two arguments"),
         }
@@ -1500,7 +1549,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
@@ -1511,7 +1560,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
             self.triggered -= 1;
             ctx.rt.set_var(self.id, self.queue.pop_front().unwrap());
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1536,6 +1588,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
 struct Hold {
     triggered: usize,
     current: Option<Value>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
@@ -1560,7 +1613,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _] => Ok(Box::new(Self { triggered: 0, current: None })),
+            [_, _] => Ok(Box::new(Self {
+                triggered: 0,
+                current: None,
+                out: TagValue::phantom(),
+            })),
             _ => bail!("expected two arguments"),
         }
     }
@@ -1572,7 +1629,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
@@ -1583,9 +1640,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
             && let Some(v) = self.current.take()
         {
             self.triggered -= 1;
-            Some(v)
+            self.out.set(TagValue::fired(v))
         } else {
-            None
+            TagValue::absent()
         }
     }
 
@@ -1607,6 +1664,7 @@ struct Seq {
     id: BindId,
     top_id: ExprId,
     args: CachedVals,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
@@ -1623,7 +1681,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
         let args = CachedVals::new(from);
-        Ok(Box::new(Self { id, top_id, args }))
+        Ok(Box::new(Self { id, top_id, args, out: TagValue::phantom() }))
     }
 }
 
@@ -1633,9 +1691,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if self.args.update(ctx, from, event) {
-            match &self.args.0[..] {
+            let err = match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
                     // Range guard (the array::init precedent, same
                     // shared cap): each element is one queued set_var —
@@ -1648,23 +1706,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                     if *j as i128 - *i as i128
                         > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
                     {
-                        return Some(errf!(
+                        Some(errf!(
                             e,
                             "seq range {i}..{j} exceeds the {} element limit",
                             graphix_compiler::node::MAX_ARRAY_INIT_LEN
-                        ));
-                    }
-                    for v in *i..*j {
-                        ctx.rt.set_var(self.id, Value::I64(v));
+                        ))
+                    } else {
+                        for v in *i..*j {
+                            ctx.rt.set_var(self.id, Value::I64(v));
+                        }
+                        None
                     }
                 }
                 _ => {
                     let e = literal!("SeqError");
-                    return Some(err!(e, "invalid args i must be <= j"));
+                    Some(err!(e, "invalid args i must be <= j"))
                 }
+            };
+            if let Some(e) = err {
+                return self.out.set(TagValue::fired(e));
             }
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1687,6 +1753,7 @@ struct Throttle {
     tid: Option<BindId>,
     top_id: ExprId,
     args: CachedVals,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
@@ -1701,7 +1768,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let args = CachedVals::new(from);
-        Ok(Box::new(Self { wait: Duration::ZERO, last: None, tid: None, top_id, args }))
+        Ok(Box::new(Self {
+            wait: Duration::ZERO,
+            last: None,
+            tid: None,
+            top_id,
+            args,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -1711,19 +1785,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
+        macro_rules! emit_cached {
+            () => {{
+                match self.args.0[1].clone() {
+                    Some(v) => return self.out.set(TagValue::fired(v)),
+                    None => return TagValue::absent(),
+                }
+            }};
+        }
         macro_rules! maybe_schedule {
             ($last:expr) => {{
                 let now = Instant::now();
                 if now - *$last >= self.wait {
                     *$last = now;
-                    return self.args.0[1].clone();
+                    emit_cached!()
                 } else {
                     let id = BindId::new();
                     ctx.rt.ref_var(id, self.top_id);
                     ctx.rt.set_timer(id, self.wait - (now - *$last));
                     self.tid = Some(id);
-                    return None;
+                    return TagValue::absent();
                 }
             }};
         }
@@ -1745,7 +1827,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 Some(last) => maybe_schedule!(last),
                 None => {
                     self.last = Some(Instant::now());
-                    return self.args.0[1].clone();
+                    emit_cached!()
                 }
             }
         }
@@ -1755,9 +1837,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             ctx.rt.unref_var(id, self.top_id);
             self.tid = None;
             self.last = Some(Instant::now());
-            return self.args.0[1].clone();
+            emit_cached!()
         }
-        None
+        TagValue::absent()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1783,6 +1865,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
 #[derive(Debug)]
 struct Count {
     count: i64,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
@@ -1805,7 +1888,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Count { count: 0 }))
+        Ok(Box::new(Count { count: 0, out: TagValue::phantom() }))
     }
 }
 
@@ -1815,12 +1898,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if from.into_iter().fold(false, |u, n| u || !n.update(ctx, event).is_absent()) {
             self.count += 1;
-            Some(Value::I64(self.count))
+            self.out.set(TagValue::fired(Value::I64(self.count)))
         } else {
-            None
+            TagValue::absent()
         }
     }
 
@@ -1870,7 +1953,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
 type Mean = CachedArgs<MeanEv>;
 
 #[derive(Debug)]
-struct Uniq(Option<Value>);
+struct Uniq(Option<Value>, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     // Async, deliberately (F2 flip): this builtin's semantics are
@@ -1892,7 +1975,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Uniq(None)))
+        Ok(Box::new(Uniq(None, TagValue::phantom())))
     }
 }
 
@@ -1902,8 +1985,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).to_option().and_then(|tv| {
+    ) -> &TagValue {
+        let res = from[0].update(ctx, event).to_option().and_then(|tv| {
             let v = tv.value();
             if Some(&v) != self.0.as_ref() {
                 self.0 = Some(v.clone());
@@ -1911,7 +1994,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
             } else {
                 None
             }
-        })
+        });
+        match res {
+            Some(v) => self.1.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -1959,11 +2046,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Never {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         for n in from {
             n.update(ctx, event);
         }
-        None
+        TagValue::absent()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2015,6 +2102,7 @@ struct Dbg {
     spec: Expr,
     dest: LogDest,
     typ: Type,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
@@ -2033,6 +2121,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
             spec: from[1].spec().clone(),
             dest: LogDest::Stderr,
             typ: Type::Bottom,
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -2043,13 +2132,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if let Some(v) = from[0].update(ctx, event).to_option()
             && let Ok(d) = v.value().cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        from[1].update(ctx, event).to_option().map(|v| {
+        let res = from[1].update(ctx, event).to_option().map(|v| {
             let v = v.value();
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
@@ -2090,7 +2179,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
                 },
             };
             v
-        })
+        });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2135,7 +2228,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if let Some(v) = from[0].update(ctx, event).to_option()
             && let Ok(d) = v.value().cast_to::<LogDest>()
         {
@@ -2167,7 +2260,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
                 },
             }
         }
-        None
+        TagValue::absent()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2205,7 +2298,7 @@ macro_rules! printfn {
                 ctx: &mut ExecCtx<R, E>,
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
-            ) -> Option<Value> {
+            ) -> &TagValue {
                 use std::fmt::Write;
                 if let Some(v) = from[0].update(ctx, event).to_option()
                     && let Ok(d) = v.value().cast_to::<LogDest>()
@@ -2251,7 +2344,7 @@ macro_rules! printfn {
                         },
                     }
                 }
-                None
+                TagValue::absent()
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

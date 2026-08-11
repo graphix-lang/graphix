@@ -454,8 +454,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// reshaping (unlike `pre_bind_builtin`). Pre-bound, so dispatch
     /// runs `CastApply::update` directly and never re-binds.
     pub fn pre_bind_cast(&mut self, target: crate::typ::Type) {
-        let apply: Box<dyn Apply<R, E>> =
-            Box::new(CastApply { target: target.clone(), _p: std::marker::PhantomData });
+        let apply: Box<dyn Apply<R, E>> = Box::new(CastApply {
+            target: target.clone(),
+            out: TagValue::phantom(),
+            _p: std::marker::PhantomData,
+        });
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
         self.recipe = SlotRecipe::Cast { target };
@@ -484,6 +487,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             handler_top,
             own_top,
             spec: spec.clone(),
+            out: TagValue::phantom(),
         });
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
@@ -649,7 +653,14 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         if first {
             event.init = true;
         }
-        let result = apply.update(ctx, &mut self.arg_refs, event);
+        // Materialize the sparse view of the borrowed production at
+        // the dispatch boundary: the caller feeds the clean Value into
+        // the kernel's out slot, tags ride the masks (P2 transitional
+        // — honest in-band tags land at the 5c flip).
+        let result = {
+            let tv = apply.update(ctx, &mut self.arg_refs, event);
+            if tv.is_absent() { None } else { Some(tv.value_cloned()) }
+        };
         event.init = saved_init;
         // Cleanup: remove the side-channel entries so a downstream
         // dispatcher (or the outer event loop) doesn't see them.
@@ -760,6 +771,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
             SlotRecipe::Cast { target } => Some(Box::new(CastApply {
                 target: target.clone(),
+                out: TagValue::phantom(),
                 _p: std::marker::PhantomData,
             })),
             SlotRecipe::QopDeliver { handler_id, handler_top, own_top, spec } => {
@@ -768,6 +780,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     handler_top: *handler_top,
                     own_top: *own_top,
                     spec: spec.clone(),
+                    out: TagValue::phantom(),
                 }))
             }
         }
@@ -797,10 +810,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
 /// [`FnSource::Cast`]). `update` reads the single side-channeled source
 /// value from `from[0]` and runs `target.cast_value(&ctx.env, v)` — the
 /// EXACT function `TypeCast::update` (the node-walk) calls, so the two
-/// evaluators agree by construction. Returns `None` (bottom) only when
-/// the source itself produced no value this cycle.
+/// evaluators agree by construction. Produces absent only when the
+/// source itself produced no value this cycle.
 pub(crate) struct CastApply<R: Rt, E: UserEvent> {
     target: crate::typ::Type,
+    out: TagValue,
     _p: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
@@ -816,9 +830,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        let tv = from.get_mut(0)?.update(ctx, event).to_option()?;
-        Some(self.target.cast_value(&ctx.env, tv.value()))
+    ) -> &TagValue {
+        let Some(src) = from.get_mut(0) else { return TagValue::absent() };
+        let tv = src.update(ctx, event);
+        if tv.is_absent() {
+            return TagValue::absent();
+        }
+        let v = tv.value_cloned();
+        self.out.set(TagValue::fired(self.target.cast_value(&ctx.env, v)))
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -1012,16 +1031,14 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// so a fresh instance's init semantics fall out of the zeroing.
     state: Box<[u64]>,
     /// The kernel's RESULT slot on the value channel — the last value
-    /// a run produced. A region is pure by construction (effects
-    /// de-fuse), so when a poll delivers only STALE productions (an
-    /// evaluation frame re-running a node-walked loop around this
-    /// kernel — the only place stale productions originate) the cached
-    /// result is exactly what a re-run would compute; re-surface it
-    /// tagged STALE via [`Apply::out_tag`] instead of running the JIT.
-    /// The `CachedArgs::last_result` twin.
-    last_result: Option<Value>,
-    /// The tag of the last value `update` returned (see `out_tag`).
-    last_out: crate::Tag,
+    /// a run produced, absent until the first run. A region is pure
+    /// by construction (effects de-fuse), so when a poll delivers only
+    /// STALE productions (an evaluation frame re-running a node-walked
+    /// loop around this kernel — the only place stale productions
+    /// originate) the retained result is exactly what a re-run would
+    /// compute; re-surface it retagged STALE instead of running the
+    /// JIT. The `CachedArgs::resident` twin.
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
@@ -1200,8 +1217,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             dyn_slots,
             arg_layout,
             state,
-            last_result: None,
-            last_out: crate::Tag::FIRED,
+            resident: TagValue::absent().clone(),
         };
         node.pre_init_binding_slots(ctx);
         node.pre_init_builtin_slots(ctx)?;
@@ -1300,7 +1316,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         // Drive each child and cache its update. Mirrors what
         // `CachedVals::update` does: we want to fire the kernel only
         // when at least one input has produced this cycle, but use
@@ -1405,8 +1421,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             // this kernel): the region is pure and its inputs' VALUES
             // are unchanged since the last run, so the cached result IS
             // what a re-run would compute — re-surface it on the value
-            // channel (tagged STALE via `out_tag`) so the frame's acc
-            // chain can advance without a firing (see `last_result`).
+            // channel (retagged STALE in place) so the frame's acc
+            // chain can advance without a firing (see `resident`).
             // Inside a frame the resurface must not require a
             // production: a ZERO-input const kernel (an inner
             // callback's `|y| 7` region) has nothing that can produce
@@ -1415,13 +1431,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             // Constant now rides the STALE value channel (jul12b
             // 000000 — the nested-map stall). The Constant frame
             // rule's kernel twin.
-            if (any_produced || ctx.frame_depth > 0)
-                && let Some(v) = &self.last_result
-            {
-                self.last_out = crate::Tag::STALE;
-                return Some(v.clone());
+            if (any_produced || ctx.frame_depth > 0) && !self.resident.is_absent() {
+                return self.resident.retag(crate::Tag::STALE);
             }
-            return None;
+            return TagValue::absent();
         }
         if crate::dbgenv::graphix_dbg_invoke() {
             eprintln!(
@@ -1509,16 +1522,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // Resolve Binding-source fn slots by reading the BindId out
         // of `event.variables` first (current-cycle update) or
         // falling back to `ctx.cached` (prior cycle's value). If
-        // neither has a value yet, the kernel can't run — return
-        // None and try again next cycle.
+        // neither has a value yet, the kernel can't run — produce
+        // nothing and try again next cycle.
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
             if let FnSource::Binding { bind_id } = &fp.source {
                 let v = event
                     .variables
                     .get(bind_id)
                     .map(|tv| tv.value_cloned())
-                    .or_else(|| ctx.rt.cached().get(bind_id).cloned())?;
-                fn_arg_values[fn_idx] = v;
+                    .or_else(|| ctx.rt.cached().get(bind_id).cloned());
+                match v {
+                    Some(v) => fn_arg_values[fn_idx] = v,
+                    None => return TagValue::absent(),
+                }
             }
         }
         // JIT dispatch — the unified Value ABI. Every param is two wire
@@ -1733,18 +1749,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             // discard and re-fire next cycle.
             //
             // INSIDE an evaluation frame the abort must surface as the
-            // TAINTED placeholder, not None: the node-walk's in-frame
-            // bottoms are tainted productions (op.rs/error.rs frame
-            // gates) that poison downstream slot caches, where a None
-            // leaves them holding the PREVIOUS iteration's value — a
-            // consumer like `push(res, f(v))` then quietly re-used
-            // element 1's result when element 2's kernel bottomed
-            // (jul10h 000009). At depth 0 None stays v1.
+            // TAINTED placeholder, not absence: the node-walk's
+            // in-frame bottoms are tainted productions (op.rs/error.rs
+            // frame gates) that poison downstream slot caches, where an
+            // absence leaves them holding the PREVIOUS iteration's
+            // value — a consumer like `push(res, f(v))` then quietly
+            // re-used element 1's result when element 2's kernel
+            // bottomed (jul10h 000009). At depth 0 absence stays v1.
+            // The SHARED placeholder, not the resident: the resident
+            // keeps the last genuine result for the stale-resurface.
             if ctx.frame_depth > 0 {
-                self.last_out = crate::Tag::TAINT;
-                return Some(Value::Null);
+                return TagValue::tainted_null();
             }
-            return None;
+            return TagValue::absent();
         }
         // Decode the wrapper's *out pair — the unified Value ABI:
         // every kernel returns the genuine (disc, payload) words of a
@@ -1759,14 +1776,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // into the out slot (the pending path returned before the
         // decode).
         let v = unsafe { TagValue::from_raw(out[0], out[1]) }.value();
-        // Fill the RESULT slot (the value channel — see `last_result`).
-        self.last_result = Some(v.clone());
-        self.last_out = crate::Tag::FIRED;
-        Some(v)
-    }
-
-    fn out_tag(&self) -> crate::Tag {
-        self.last_out
+        // Fill the RESULT slot (the value channel — see `resident`)
+        // and lend it.
+        self.resident.set(TagValue::fired(v))
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

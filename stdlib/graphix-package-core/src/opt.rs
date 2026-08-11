@@ -367,6 +367,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptMap<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
@@ -385,7 +386,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -395,8 +399,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Null)
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Null) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -429,6 +436,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptFlatMap<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
@@ -447,7 +455,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -457,8 +468,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Null)
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Null) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -497,6 +511,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
 pub(crate) struct OptFilter<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
     pending: Option<Value>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
@@ -515,7 +530,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)?, pending: None }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            pending: None,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -525,7 +544,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         self.s.feed_callable(ctx, from, event);
         let direct = match from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
             Some(Value::Null) => {
@@ -544,7 +563,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
                 Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
                 _ => Value::Null,
             });
-        direct.or(inner_out)
+        match direct.or(inner_out) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -579,6 +601,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptIsSomeAnd<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
@@ -597,7 +620,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -607,8 +633,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Bool(false))
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Bool(false)) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -641,6 +670,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptIsNoneOr<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
@@ -659,7 +689,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -669,8 +702,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Bool(true))
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Bool(true)) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -791,6 +827,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptOrElse<R: Rt, E: UserEvent> {
     s: OrElseShared<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
@@ -809,7 +846,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: OrElseShared::init(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: OrElseShared::init(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -819,14 +859,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
         // a non-null always emits a
         // a null with cached f emits that f
         // f update while a is null emits the new f
         // a null without cached f stays silent — we have nothing to emit
         // until f produces, at which point the f_up arm below fires
-        if a_up {
+        let res = if a_up {
             match &self.s.last_a {
                 Some(Value::Null) => self.s.last_f.clone(),
                 Some(v) => Some(v.clone()),
@@ -836,6 +876,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
             self.s.last_f.clone()
         } else {
             None
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
         }
     }
 
@@ -867,6 +911,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptOkOrElse<R: Rt, E: UserEvent> {
     s: OrElseShared<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
@@ -885,7 +930,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: OrElseShared::init(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: OrElseShared::init(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -895,10 +943,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
         let wrap_err = |e: Value| Value::Error(e.into());
-        if a_up {
+        let res = if a_up {
             match &self.s.last_a {
                 // a null without cached f stays silent until f produces.
                 Some(Value::Null) => self.s.last_f.clone().map(wrap_err),
@@ -909,6 +957,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
             self.s.last_f.clone().map(wrap_err)
         } else {
             None
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
         }
     }
 

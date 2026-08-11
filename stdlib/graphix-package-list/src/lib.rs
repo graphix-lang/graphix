@@ -4,7 +4,7 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::collection::list::{
@@ -485,7 +485,7 @@ type Unzip = CachedArgs<UnzipEv>;
 // ── Custom BuiltIn/Apply implementations ─────────────────────────
 
 #[derive(Debug)]
-struct ListIterBI(BindId, ExprId);
+struct ListIterBI(BindId, ExprId, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
     const NAME: &str = "list_iter";
@@ -500,7 +500,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(ListIterBI(id, top_id)))
+        Ok(Box::new(ListIterBI(id, top_id, TagValue::phantom())))
     }
 }
 
@@ -510,13 +510,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if let Some(list) = from[0].update(ctx, event).to_option() {
             for v in ListIter::new(list.value()) {
                 ctx.rt.set_var(self.0, v);
             }
         }
-        event.variables.get(&self.0).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.0).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.2.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -541,6 +545,7 @@ struct ListIterQ {
     queue: VecDeque<(usize, Vec<Value>)>,
     id: BindId,
     top_id: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
@@ -556,7 +561,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(ListIterQ { triggered: 0, queue: VecDeque::new(), id, top_id }))
+        Ok(Box::new(ListIterQ {
+            triggered: 0,
+            queue: VecDeque::new(),
+            id,
+            top_id,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -566,7 +577,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
@@ -589,7 +600,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
                 self.queue.pop_front();
             }
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

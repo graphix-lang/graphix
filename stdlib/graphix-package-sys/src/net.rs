@@ -47,6 +47,7 @@ pub(crate) struct Write {
     args: CachedVals,
     id: BindId,
     dv: Either<(Path, Dval), Vec<Value>>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
@@ -66,6 +67,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
             args: CachedVals::new(from),
             dv: Either::Right(vec![]),
             id: BindId::new(),
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -76,7 +78,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         fn set(dv: &mut Either<(Path, Dval), Vec<Value>>, val: &Value) {
             match dv {
                 Either::Right(q) => q.push(val.clone()),
@@ -105,7 +107,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                         self.dv = Either::Right(vec![]);
                     }
                     let e = errf!(literal!("WriteError"), "invalid path {path:?}");
-                    return Some(Value::Error(e.into()));
+                    return self.out.set(TagValue::fired(Value::Error(e.into())));
                 }
                 Some(path) => {
                     let net = NetState::get(ctx);
@@ -118,7 +120,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                         Ok(dv) => dv,
                         Err(e) => {
                             let e = errf!(literal!("WriteError"), "{e:?}");
-                            return Some(Value::Error(e.into()));
+                            return self.out.set(TagValue::fired(Value::Error(e.into())));
                         }
                     };
                     match &mut self.dv {
@@ -136,7 +138,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 }
             },
         }
-        None
+        TagValue::absent()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -179,6 +181,7 @@ pub(crate) struct Subscribe {
     id: BindId,
     top_id: ExprId,
     cast_typ: Option<Type>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
@@ -201,6 +204,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
             id,
             top_id,
             cast_typ: extract_cast_type(resolved),
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -211,7 +215,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         static ERR_TAG: ArcStr = literal!("SubscribeError");
         let mut up = [false; 1];
         self.args.update_diff(&mut up, ctx, from, event);
@@ -222,7 +226,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                 if let Some((_, dv)) = self.cur.take() {
                     NetState::get(ctx).unsubscribe(dv, self.id)
                 }
-                return None;
+                return TagValue::absent();
             }
             (Some(Value::String(path)), true)
                 if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
@@ -233,7 +237,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                 }
                 let path = Path::from(path);
                 if !Path::is_absolute(&path) {
-                    return Some(err!(ERR_TAG, "expected absolute path"));
+                    return self
+                        .out
+                        .set(TagValue::fired(err!(ERR_TAG, "expected absolute path")));
                 }
                 let dval = match net.subscribe(
                     ctx,
@@ -242,23 +248,32 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                     self.id,
                 ) {
                     Ok(dv) => dv,
-                    Err(e) => return Some(errf!(ERR_TAG, "{e:?}")),
+                    Err(e) => {
+                        return self.out.set(TagValue::fired(errf!(ERR_TAG, "{e:?}")));
+                    }
                 };
                 self.cur = Some((path, dval));
             }
             (Some(Value::String(_)), true) => (),
             (Some(v), true) => {
-                return Some(errf!(ERR_TAG, "invalid path {v}, expected string"));
+                return self.out.set(TagValue::fired(errf!(
+                    ERR_TAG,
+                    "invalid path {v}, expected string"
+                )));
             }
         }
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
-        self.cur.as_ref().and_then(|_| {
+        let res = self.cur.as_ref().and_then(|_| {
             event.variables.get(&self.id).map(|v| match &self.cast_typ {
                 Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
                 None => v.value_cloned(),
             })
-        })
+        });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -310,6 +325,7 @@ pub(crate) struct RpcCall {
     top_id: ExprId,
     id: BindId,
     cast_typ: Option<Type>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
@@ -331,6 +347,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
             top_id,
             id,
             cast_typ: extract_cast_type(resolved),
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -341,7 +358,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         fn parse_args(
             path: &Value,
             args: &Value,
@@ -371,15 +388,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         match ((path, args), (path_up, args_up)) {
             ((Some(path), Some(args)), (_, true))
             | ((Some(path), Some(args)), (true, _)) => match parse_args(path, args) {
-                Err(e) => return Some(errf!(literal!("RpcError"), "{e}")),
+                Err(e) => {
+                    return self
+                        .out
+                        .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
+                }
                 Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
             },
             ((None, _), (_, _)) | ((_, None), (_, _)) | ((_, _), (false, false)) => (),
         }
-        event.variables.get(&self.id).map(|v| match &self.cast_typ {
+        let res = event.variables.get(&self.id).map(|v| match &self.cast_typ {
             Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
             None => v.value_cloned(),
-        })
+        });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -438,6 +463,7 @@ macro_rules! list {
             current: Option<Path>,
             id: BindId,
             top_id: ExprId,
+            out: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
@@ -459,6 +485,7 @@ macro_rules! list {
                     current: None,
                     top_id,
                     id,
+                    out: TagValue::phantom(),
                 }))
             }
         }
@@ -469,7 +496,7 @@ macro_rules! list {
                 ctx: &mut ExecCtx<R, E>,
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
-            ) -> Option<Value> {
+            ) -> &TagValue {
                 let mut up = [false; 2];
                 self.args.update_diff(&mut up, ctx, from, event);
                 let ((_, path), (trigger_up, path_up)) = arity2!(self.args.0, &up);
@@ -490,13 +517,17 @@ macro_rules! list {
                     }
                     _ => (),
                 }
-                event.variables.get(&self.id).and_then(|v| {
+                let res = event.variables.get(&self.id).and_then(|v| {
                     v.with_value(|v| match v {
                         Value::Null => None,
                         Value::Error(e) => Some(errf!(literal!("ListError"), "{e}")),
                         v => Some(v.clone()),
                     })
-                })
+                });
+                match res {
+                    Some(v) => self.out.set(TagValue::fired(v)),
+                    None => TagValue::absent(),
+                }
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -557,6 +588,7 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
     wid: BindId,
     on_write: Node<R, E>,
     cast_typ: Option<Type>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
@@ -602,6 +634,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                     wid,
                     on_write,
                     cast_typ: extract_publish_cast_type(resolved),
+                    out: TagValue::phantom(),
                 }))
             }
             _ => bail!("expected three arguments"),
@@ -615,7 +648,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         macro_rules! publish {
             ($path:expr, $v:expr) => {{
                 let path = Path::from($path.clone());
@@ -624,7 +657,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                     Err(e) => {
                         let msg: ArcStr = format_compact!("{e:?}").as_str().into();
                         let e: Value = (literal!("PublishError"), msg).into();
-                        return Some(Value::Error(e.into()));
+                        return self.out.set(TagValue::fired(Value::Error(e.into())));
                     }
                     Ok(id) => {
                         self.current = Some((path, id));
@@ -675,7 +708,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 reply.send(v.value())
             }
         }
-        None
+        TagValue::absent()
     }
 
     fn typecheck0(
@@ -741,6 +774,7 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     ready: bool,
     current: Option<(Path, server::Proc)>,
     cast_typ: Option<Type>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
@@ -900,6 +934,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
                     ready: true,
                     current: None,
                     cast_typ: None,
+                    out: TagValue::phantom(),
                 };
                 if let Some(resolved) = resolved {
                     let _ = t.validate_spec(ctx, resolved);
@@ -917,7 +952,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let mut changed = [false; 4];
         self.args.update_diff(&mut changed, ctx, from, event);
         if changed[3] {
@@ -983,7 +1018,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     Err(e) => {
                         let e: ArcStr = format_compact!("{e:?}").as_str().into();
                         let e: Value = (literal!("PublishRpcError"), e).into();
-                        return Some(Value::Error(e.into()));
+                        return self.out.set(TagValue::fired(Value::Error(e.into())));
                     }
                 };
                 self.current = Some((path, proc));
@@ -1031,7 +1066,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         }
         loop {
             match self.f.update(ctx, event).to_option() {
-                None => break None,
+                None => break TagValue::absent(),
                 Some(v) => {
                     self.ready = true;
                     if let Some(mut call) = self.queue.pop_front() {
@@ -1050,7 +1085,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                             }
                             set!(c)
                         }
-                        None => break None,
+                        None => break TagValue::absent(),
                     }
                 }
             }

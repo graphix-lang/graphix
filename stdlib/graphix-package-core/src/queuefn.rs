@@ -65,6 +65,7 @@ struct WrapperApply<R: Rt, E: UserEvent> {
     /// Compiled call to `f` using `arg_bids` as inputs.
     pred: Node<R, E>,
     typ: Arc<FnType>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
@@ -73,7 +74,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
             if let Some(v) = n.update(ctx, event).to_option() {
@@ -112,7 +113,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        self.pred.update(ctx, event).to_option().map(|tv| tv.value())
+        match self.pred.update(ctx, event).to_option().map(|tv| tv.value()) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(
@@ -164,6 +168,7 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
     lambda: Option<Value>,
     top_id: ExprId,
     scope: Scope,
+    out: TagValue,
     /// `fn() ->` makes the PhantomData unconditionally Send + Sync, which we
     /// need because the trait bound on Apply doesn't propagate to R/E.
     _phantom: PhantomData<fn() -> (R, E)>,
@@ -194,6 +199,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
             lambda: None,
             top_id,
             scope: scope.clone(),
+            out: TagValue::phantom(),
             _phantom: PhantomData,
         }))
     }
@@ -295,7 +301,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
@@ -336,7 +342,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                         new_lambda = Some(lv);
                     }
                     Err(e) => {
-                        return Some(graphix_compiler::errf!("QueueFnErr", "{e}"));
+                        return self.out.set(TagValue::fired(graphix_compiler::errf!(
+                            "QueueFnErr",
+                            "{e}"
+                        )));
                     }
                 }
             }
@@ -360,7 +369,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             }
         }
         self.maybe_write_count(ctx);
-        if event.init { self.lambda.clone() } else { new_lambda }
+        let res = if event.init { self.lambda.clone() } else { new_lambda };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck1(
@@ -422,7 +435,13 @@ fn build_wrapper_apply<R: Rt, E: UserEvent>(
     }
     let fnode = genn::reference(ctx, fid, Type::Fn(ftyp.clone()), tid);
     let pred = genn::apply(fnode, scope, arg_nodes, &ftyp, tid);
-    Ok(Box::new(WrapperApply { state, arg_bids: arg_bids.into(), pred, typ: ftyp }))
+    Ok(Box::new(WrapperApply {
+        state,
+        arg_bids: arg_bids.into(),
+        pred,
+        typ: ftyp,
+        out: TagValue::phantom(),
+    }))
 }
 
 /// Extract the FnType from `ft.args[idx]`, expanding refs if needed.

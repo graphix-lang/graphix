@@ -248,6 +248,27 @@ impl TagValue {
         self
     }
 
+    /// Rewrite the tag byte in place, keeping the payload, and hand
+    /// back the borrow — a resident's quiet-cycle downgrade
+    /// (`self.resident.retag(Tag::STALE)`): the value channel
+    /// re-surfaces the last result without a clone.
+    #[inline]
+    pub fn retag(&mut self, tag: Tag) -> &TagValue {
+        self.disc = (self.disc & !TAG_MASK) | ((tag.bits() as u64) << 56);
+        self
+    }
+
+    /// The shared tainted-placeholder production — for a return path
+    /// that must deliver the helper-safe poison WITHOUT clobbering its
+    /// resident (the resident holds the last genuine result, which the
+    /// value channel may still re-surface: `CachedArgs`' leak
+    /// backstop, the fused kernel's in-frame abort).
+    pub fn tainted_null() -> &'static TagValue {
+        static TAINTED: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(|| TagValue::tainted(Value::Null));
+        &TAINTED
+    }
+
     /// A possible-bottom placeholder (tainted, hence also stale).
     #[inline]
     pub fn tainted(v: Value) -> Self {
@@ -362,6 +383,13 @@ impl TagValue {
     #[inline]
     pub fn to_option(&self) -> Option<TagValue> {
         if self.is_absent() { None } else { Some(self.clone()) }
+    }
+}
+
+impl Default for TagValue {
+    /// The phantom — a production slot's never-produced initial state.
+    fn default() -> Self {
+        Self::phantom()
     }
 }
 

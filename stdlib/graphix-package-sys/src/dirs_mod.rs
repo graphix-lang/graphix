@@ -1,6 +1,6 @@
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
-    expr::ExprId, typ::FnType,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind, expr::ExprId, typ::FnType,
 };
 use netidx::subscriber::Value;
 
@@ -9,6 +9,7 @@ macro_rules! dirs_builtin {
         #[derive(Debug)]
         pub(crate) struct $name {
             fired: bool,
+            out: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
@@ -32,7 +33,7 @@ macro_rules! dirs_builtin {
                 _from: &'c [Node<R, E>],
                 _top_id: ExprId,
             ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self { fired: false }))
+                Ok(Box::new(Self { fired: false, out: TagValue::phantom() }))
             }
         }
 
@@ -42,15 +43,16 @@ macro_rules! dirs_builtin {
                 _ctx: &mut ExecCtx<R, E>,
                 _from: &mut [Node<R, E>],
                 event: &mut Event<E>,
-            ) -> Option<Value> {
+            ) -> &TagValue {
                 if event.init && !self.fired {
                     self.fired = true;
-                    match $fn() {
-                        Some(p) => Some(Value::String(crate::convert_path(&p))),
-                        None => Some(Value::Null),
-                    }
+                    let v = match $fn() {
+                        Some(p) => Value::String(crate::convert_path(&p)),
+                        None => Value::Null,
+                    };
+                    self.out.set(TagValue::fired(v))
                 } else {
-                    None
+                    TagValue::absent()
                 }
             }
 

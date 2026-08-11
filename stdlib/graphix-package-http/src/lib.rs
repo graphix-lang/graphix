@@ -691,6 +691,7 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
     queue: VecDeque<(Value, Option<tokio::sync::oneshot::Sender<Value>>)>,
     ready: bool,
     abort: Option<tokio::task::AbortHandle>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
@@ -736,6 +737,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
                     queue: VecDeque::new(),
                     ready: true,
                     abort: None,
+                    out: TagValue::phantom(),
                 }))
             }
             _ => bail!("expected five arguments"),
@@ -749,7 +751,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let mut changed = [false; 5];
         self.args.update_diff(&mut changed, ctx, from, event);
         // update handler function reference
@@ -771,7 +773,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     (Some(Value::Bytes(cert)), Some(Value::Bytes(key))) => {
                         match build_tls_acceptor(cert, key) {
                             Ok(a) => Some(a),
-                            Err(e) => return Some(e),
+                            Err(e) => return self.out.set(TagValue::fired(e)),
                         }
                     }
                     (Some(Value::Null), Some(Value::Null))
@@ -779,39 +781,53 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     | (Some(Value::Null), None)
                     | (None, Some(Value::Null)) => None,
                     _ => {
-                        return Some(errf!(
+                        return self.out.set(TagValue::fired(errf!(
                             "HTTPError",
                             "both cert and key must be provided for TLS"
-                        ));
+                        )));
                     }
                 };
                 let max_conn = match &self.args.0[3] {
                     Some(Value::I64(n)) if *n > 0 => *n as usize,
                     Some(Value::I64(n)) => {
-                        return Some(errf!(
+                        return self.out.set(TagValue::fired(errf!(
                             "HTTPError",
                             "max_connections must be > 0, got {n}"
-                        ));
+                        )));
                     }
                     _ => 768,
                 };
                 let std_listener = match std::net::TcpListener::bind(&**addr) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "bind to {addr} failed: {e}"));
+                        return self.out.set(TagValue::fired(errf!(
+                            "HTTPError",
+                            "bind to {addr} failed: {e}"
+                        )));
                     }
                 };
                 let bound_addr = match std_listener.local_addr() {
                     Ok(a) => a,
-                    Err(e) => return Some(errf!("HTTPError", "local_addr failed: {e}")),
+                    Err(e) => {
+                        return self.out.set(TagValue::fired(errf!(
+                            "HTTPError",
+                            "local_addr failed: {e}"
+                        )));
+                    }
                 };
                 if let Err(e) = std_listener.set_nonblocking(true) {
-                    return Some(errf!("HTTPError", "set_nonblocking failed: {e}"));
+                    return self.out.set(TagValue::fired(errf!(
+                        "HTTPError",
+                        "set_nonblocking failed: {e}"
+                    )));
                 }
                 let listener = match tokio::net::TcpListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "tokio listener failed: {e}"));
+                        return self.out.set(TagValue::fired(errf!(
+                            "HTTPError",
+                            "tokio listener failed: {e}"
+                        )));
                     }
                 };
                 let (tx, rx) = mpsc::channel(100);
@@ -865,7 +881,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 }
             }
         }
-        server_result
+        match server_result {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn typecheck0(

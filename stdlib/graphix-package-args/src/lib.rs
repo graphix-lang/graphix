@@ -4,8 +4,8 @@
 )]
 use arcstr::ArcStr;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
-    errf, expr::ExprId, typ::FnType,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;
@@ -209,6 +209,7 @@ fn extract_matches(
 #[derive(Debug)]
 struct Parse {
     fired: bool,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
@@ -227,7 +228,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { fired: false }))
+        Ok(Box::new(Self { fired: false, out: TagValue::phantom() }))
     }
 }
 
@@ -237,23 +238,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        let spec = from[0].update(ctx, event).to_option()?.value();
+    ) -> &TagValue {
+        let Some(tv) = from[0].update(ctx, event).to_option() else {
+            return TagValue::absent();
+        };
+        let spec = tv.value();
         if self.fired {
-            return None;
+            return TagValue::absent();
         }
         self.fired = true;
 
         let cmd = match build_clap_command(&spec) {
             Ok(c) => c,
-            Err(e) => return Some(errf!("ArgError", "{e}")),
+            Err(e) => {
+                let v = errf!("ArgError", "{e}");
+                return self.out.set(TagValue::fired(v));
+            }
         };
 
         let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
         // argv[0] is the script filename — clap consumes it as the binary name
         let raw: Vec<&str> = pargs.0.iter().map(|s| s.as_str()).collect();
 
-        match cmd.try_get_matches_from(raw) {
+        let res = match cmd.try_get_matches_from(raw) {
             Ok(matches) => {
                 let mut command_chain = Vec::new();
                 let mut values = CMap::new();
@@ -265,10 +272,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
                     (ArcStr::from("values"), Value::Map(values)),
                 )
                     .into();
-                Some(result)
+                result
             }
-            Err(e) => Some(errf!("ArgError", "{e}")),
-        }
+            Err(e) => errf!("ArgError", "{e}"),
+        };
+        self.out.set(TagValue::fired(res))
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}

@@ -4,8 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
-    expr::ExprId, typ::FnType,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx::subscriber::Value;
@@ -13,6 +13,7 @@ use netidx::subscriber::Value;
 #[derive(Debug)]
 struct MandelbrotIterate {
     args: CachedVals,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MandelbrotIterate {
@@ -27,7 +28,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MandelbrotIterate {
         from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(MandelbrotIterate { args: CachedVals::new(from) }))
+        Ok(Box::new(MandelbrotIterate {
+            args: CachedVals::new(from),
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -37,11 +41,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if !self.args.update(ctx, from, event) {
-            return None;
+            return TagValue::absent();
         }
-        match &self.args.0[..] {
+        let res = match &self.args.0[..] {
             [
                 Some(Value::F64(zr0)),
                 Some(Value::F64(zi0)),
@@ -70,6 +74,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
                 Some(Value::I64(n))
             }
             _ => None,
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
         }
     }
 

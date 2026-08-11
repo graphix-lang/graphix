@@ -701,25 +701,21 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         ApplyViewMut::BuiltIn
     }
 
+    /// Same borrowed-production contract as [`Update::update`]: the
+    /// returned `&TagValue` is the builtin's RESIDENT (its result slot
+    /// — an ordinary builtin returns `self.out.set(TagValue::fired(v))`
+    /// where the sparse signature returned `Some(v)`, and
+    /// [`TagValue::absent`] where it returned `None`). The production's
+    /// tag rides in the value — there is no side channel: `GXLambda`
+    /// returns its body's tag, `CachedArgs` re-surfaces its result
+    /// slot retagged STALE on a quiet arg refresh, the fused `Kernel`
+    /// returns the JIT out slot's disc tags.
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value>;
-
-    /// The tag of the LAST value [`Self::update`] returned — how an
-    /// `Apply` (whose return stays a clean `Option<Value>`: a builtin
-    /// cannot know fired-ness, its wrapper does) surfaces the
-    /// two-channel tag to the owning `CallSite`. The default FIRED is
-    /// right for every ordinary builtin (a builtin that produced was
-    /// triggered by a fired arg or its own async self-fire); overridden
-    /// by `GXLambda` (its body's tag), `BuiltInLambda` (delegates), the
-    /// `CachedArgs` wrappers (taint short-circuit), and the fused
-    /// `Kernel` (the JIT out slot's disc tags).
-    fn out_tag(&self) -> Tag {
-        Tag::FIRED
-    }
+    ) -> &TagValue;
 
     /// delete any internally generated nodes, only needed for
     /// builtins that dynamically generate code at runtime

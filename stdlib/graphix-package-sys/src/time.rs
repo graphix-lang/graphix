@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use arcstr::literal;
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind, err, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedVals, arity2};
@@ -14,6 +14,7 @@ pub(crate) struct AfterIdle {
     args: CachedVals,
     id: Option<BindId>,
     eid: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
@@ -28,7 +29,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(AfterIdle { args: CachedVals::new(from), id: None, eid: top_id }))
+        Ok(Box::new(AfterIdle {
+            args: CachedVals::new(from),
+            id: None,
+            eid: top_id,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -38,7 +44,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let mut up = [false; 2];
         self.args.update_diff(&mut up, ctx, from, event);
         let ((timeout, val), (timeout_up, val_up)) = arity2!(self.args.0, &up);
@@ -50,11 +56,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
                         self.id = Some(id);
                         ctx.rt.ref_var(id, self.eid);
                         ctx.rt.set_timer(id, dur);
-                        return None;
+                        return TagValue::absent();
                     }
                     Err(_) => {
                         self.id = None;
-                        return None;
+                        return TagValue::absent();
                     }
                 }
             }
@@ -62,7 +68,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
             | ((_, None), (_, _))
             | ((Some(_), Some(_)), (false, _)) => (),
         };
-        self.id.and_then(|id| {
+        let res = self.id.and_then(|id| {
             if event.variables.contains_key(&id) {
                 self.id = None;
                 ctx.rt.unref_var(id, self.eid);
@@ -70,7 +76,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
             } else {
                 None
             }
-        })
+        });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -137,6 +147,7 @@ pub(crate) struct Timer {
     repeat: Repeat,
     id: Option<BindId>,
     eid: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
@@ -157,6 +168,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
             repeat: Repeat::No,
             id: None,
             eid: top_id,
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -167,16 +179,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         macro_rules! error {
             () => {{
                 self.id = None;
                 self.timeout = None;
                 self.repeat = Repeat::No;
-                return Some(err!(
+                return self.out.set(TagValue::fired(err!(
                     literal!("TimerError"),
                     "timer(per, rep): expected duration, bool or number >= 0"
-                ));
+                )));
             }};
         }
         macro_rules! schedule {
@@ -223,8 +235,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
             | ((None, _), (true, false))
             | ((_, None), (false, true)) => (),
         }
-        self.id.and_then(|id| event.variables.get(&id).map(|now| (id, now))).map(
-            |(id, now)| {
+        let res = self
+            .id
+            .and_then(|id| event.variables.get(&id).map(|now| (id, now)))
+            .map(|(id, now)| {
                 ctx.rt.unref_var(id, self.eid);
                 self.id = None;
                 self.repeat -= 1;
@@ -234,8 +248,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                     }
                 }
                 now.value_cloned()
-            },
-        )
+            });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -259,7 +276,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
 }
 
 #[derive(Debug)]
-pub(crate) struct Now;
+pub(crate) struct Now {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     // When trigger fires, samples the current time and emits same-cycle.
@@ -274,7 +293,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self))
+        Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 }
 
@@ -284,11 +303,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if !from[0].update(ctx, event).is_absent() {
-            Some(Value::from(Utc::now()))
+            self.out.set(TagValue::fired(Value::from(Utc::now())))
         } else {
-            None
+            TagValue::absent()
         }
     }
 

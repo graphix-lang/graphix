@@ -61,15 +61,17 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
 /// the operator's value in `from[0]`; on an `Error` it replicates
 /// `Qop::update`'s handler path EXACTLY — `wrap_error` with this `?`'s
 /// position/origin, then write the catch handler's variable (vacant →
-/// insert into `event.variables`, occupied → `set_var`). Returns
-/// `Value::Null` (a completed side effect); the kernel's error branch
-/// separately aborts the cycle to bottom, matching `Qop::update`'s `None`.
+/// insert into `event.variables`, occupied → `set_var`). Produces
+/// fired `Value::Null` (a completed side effect); the kernel's error
+/// branch separately aborts the cycle to bottom, matching
+/// `Qop::update`'s absent production.
 #[derive(Debug)]
 pub(crate) struct QopDeliverApply {
     pub(crate) handler_id: BindId,
     pub(crate) handler_top: ExprId,
     pub(crate) own_top: ExprId,
     pub(crate) spec: Expr,
+    pub(crate) out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
@@ -78,10 +80,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        let tv = from.get_mut(0)?.update(ctx, event);
+    ) -> &TagValue {
+        let Some(src) = from.get_mut(0) else { return TagValue::absent() };
+        let tv = src.update(ctx, event);
         if tv.is_absent() {
-            return None;
+            return TagValue::absent();
         }
         let v = tv.value_cloned();
         if let Value::Error(e) = v {
@@ -89,7 +92,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
             let v = Value::Error(e.into());
             if self.handler_top != self.own_top {
                 ctx.rt.set_var(self.handler_id, v);
-                return Some(Value::Null);
+                return self.out.set(TagValue::fired(Value::Null));
             }
             match event.variables.entry(self.handler_id) {
                 Entry::Vacant(slot) => {
@@ -98,7 +101,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
                 Entry::Occupied(_) => ctx.rt.set_var(self.handler_id, v),
             }
         }
-        Some(Value::Null)
+        self.out.set(TagValue::fired(Value::Null))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

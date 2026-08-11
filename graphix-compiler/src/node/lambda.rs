@@ -1,7 +1,7 @@
 use super::{Nop, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, InitFn,
-    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
     UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
@@ -149,11 +149,9 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     tail_loop: AtomicBool,
     self_recursive: AtomicBool,
     self_bind: Mutex<Option<BindId>>,
-    /// The tag of the last value `update` returned — surfaced through
-    /// `Apply::out_tag` so the owning `CallSite` can reconstitute the
-    /// body result's two-channel tag across the clean-`Value` Apply
-    /// boundary.
-    last_out: Tag,
+    /// The dispatch's return slot — `update` lends the body result
+    /// (tag riding in the value) to the owning `CallSite` from here.
+    resident: TagValue,
     /// `true` iff the previous dispatch's tail loop actually RE-ENTERED
     /// (jumped at least once). Its innermost frame left the body's node
     /// state mid-recursion (a select's `selected`, operator operand
@@ -349,7 +347,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         // Did anything TRIGGER this dispatch (a fired/tainted formal
         // delivery, or a real init view)? The tail loop below needs
         // this to derive its result tag — see the override at its end.
@@ -392,7 +390,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // a runaway call TREE abortable (Eric approved 2026-07-04; the
         // JIT twin lives in graphix_depth_push).
         if ctx.control.interrupted() {
-            return None;
+            return TagValue::absent();
         }
         let depth_pushed = match self.dispatch {
             LambdaDispatch::Graphix => {
@@ -436,9 +434,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     // so no pending is stashed. Clearing the slot is
                     // insurance against unenumerated stash shapes.
                     ctx.pending_tail_call = None;
-                    let (v, tag) = TagValue::tainted(Value::Null).into_parts();
-                    self.last_out = tag;
-                    return Some(v);
+                    return self.resident.set(TagValue::tainted(Value::Null));
                 }
                 true
             }
@@ -714,8 +710,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         if depth_pushed {
             ctx.control.depth_pop();
         }
-        // Surface the body result's tag across the clean-Value Apply
-        // boundary (the CallSite reconstitutes via `out_tag`).
+        // Lend the body result — tag riding in the value — to the
+        // owning CallSite through the resident.
         match res {
             // The dispatch-exit twin of the kernel's depth-0 bottom rule
             // (`Kernel::update`'s pending path / the compiled epilogue's
@@ -732,18 +728,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // 2026-07-23) returns before this seam and still DELIVERS to
             // its enclosing body; only a result that consumed it unwinds
             // here as absence, exactly the kernel's output boundary.
-            Some(tv) if tv.is_tainted() && ctx.frame_depth == 0 => None,
-            Some(tv) => {
-                let (v, tag) = tv.into_parts();
-                self.last_out = tag;
-                Some(v)
-            }
-            None => None,
+            Some(tv) if tv.is_tainted() && ctx.frame_depth == 0 => TagValue::absent(),
+            Some(tv) => self.resident.set(tv),
+            None => TagValue::absent(),
         }
-    }
-
-    fn out_tag(&self) -> Tag {
-        self.last_out
     }
 
     fn typecheck0(
@@ -967,7 +955,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             tail_loop: AtomicBool::new(false),
             self_recursive: AtomicBool::new(false),
             self_bind: Mutex::new(None),
-            last_out: Tag::FIRED,
+            resident: TagValue::phantom(),
             prev_looped: false,
         })
     }
@@ -1019,14 +1007,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         self.apply.update(ctx, from, event)
-    }
-
-    fn out_tag(&self) -> Tag {
-        // MUST delegate (the reset_replay/emit_clif trap): the default
-        // FIRED would erase a wrapped lambda's stale/taint result tag.
-        self.apply.out_tag()
     }
 
     fn typecheck0(

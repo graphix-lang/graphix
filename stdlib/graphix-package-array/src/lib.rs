@@ -374,6 +374,7 @@ struct Group<R: Rt, E: UserEvent> {
     pid: BindId,
     nid: BindId,
     xid: BindId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
@@ -415,6 +416,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
                     pid,
                     nid,
                     xid,
+                    out: TagValue::phantom(),
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -428,7 +430,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         macro_rules! set {
             ($v:expr) => {{
                 self.ready = false;
@@ -452,7 +454,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             let v = self.queue.pop_front().unwrap();
             set!(v);
         }
-        loop {
+        let res = loop {
             // Cooperative interrupt: abort a wedged grouping loop.
             if ctx.interrupted() {
                 break None;
@@ -474,6 +476,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                     }
                 }
             }
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
         }
     }
 
@@ -515,7 +521,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
 }
 
 #[derive(Debug)]
-struct Iter(BindId, ExprId);
+struct Iter(BindId, ExprId, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "array_iter";
@@ -530,7 +536,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(Iter(id, top_id)))
+        Ok(Box::new(Iter(id, top_id, TagValue::phantom())))
     }
 }
 
@@ -540,7 +546,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if let Some(Value::Array(a)) =
             from[0].update(ctx, event).to_option().map(|tv| tv.value())
         {
@@ -548,12 +554,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
                 // Cooperative interrupt: abort a wedged iter over a huge
                 // array (partial emit is accepted for a deliberate kill).
                 if ctx.interrupted() {
-                    return None;
+                    return TagValue::absent();
                 }
                 ctx.rt.set_var(self.0, v.clone());
             }
         }
-        event.variables.get(&self.0).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.0).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.2.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -578,6 +588,7 @@ struct IterQ {
     queue: VecDeque<(usize, ValArray)>,
     id: BindId,
     top_id: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
@@ -593,7 +604,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(IterQ { triggered: 0, queue: VecDeque::new(), id, top_id }))
+        Ok(Box::new(IterQ {
+            triggered: 0,
+            queue: VecDeque::new(),
+            id,
+            top_id,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -603,7 +620,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if !from[0].update(ctx, event).is_absent() {
             self.triggered += 1;
         }
@@ -618,7 +635,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
             let (i, a) = self.queue.front_mut().unwrap();
             while self.triggered > 0 && *i < a.len() {
                 if ctx.interrupted() {
-                    return None;
+                    return TagValue::absent();
                 }
                 ctx.rt.set_var(self.id, a[*i].clone());
                 *i += 1;
@@ -628,7 +645,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
                 self.queue.pop_front();
             }
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => TagValue::absent(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

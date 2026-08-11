@@ -1730,12 +1730,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         let res = match self.callee.apply_mut() {
             None => None,
-            Some(f) if !bound => {
-                let res = f.update(ctx, &mut self.arg_refs, event);
-                // Reconstitute the two-channel tag across the clean-
-                // Value Apply boundary (see `Apply::out_tag`).
-                res.map(|v| TagValue::tagged(v, f.out_tag()))
-            }
+            // The tag rides in the borrowed production; own it here —
+            // the park/filter pipeline below reworks `self.callee`, so
+            // the callee's borrow can't be forwarded through.
+            Some(f) if !bound => f.update(ctx, &mut self.arg_refs, event).to_option(),
             Some(f) if rebound_parked.is_some() && !event.init => {
                 // PRIME-then-REPLAY for a parked transient rebind on a
                 // non-init view. The fresh instance needs its
@@ -1788,7 +1786,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // level down — O(depth²) compiles per re-fire epoch.
                 // See `ExecCtx::transient_prime`.
                 let prev_prime = mem::replace(&mut ctx.transient_prime, true);
-                let _prime = f.update(ctx, &mut self.arg_refs, event);
+                f.update(ctx, &mut self.arg_refs, event);
                 ctx.transient_prime = prev_prime;
                 drop(prime_span);
                 event.init = init;
@@ -1809,9 +1807,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     }
                 }
                 let replay_span = crate::perfdbg::span(&crate::perfdbg::REPLAY_NS);
-                let res = f.update(ctx, &mut self.arg_refs, event);
+                let res = f.update(ctx, &mut self.arg_refs, event).to_option();
                 drop(replay_span);
-                res.map(|v| TagValue::tagged(v, f.out_tag()))
+                res
             }
             Some(f) => {
                 // A parked rebind reached on a REAL init view (no
@@ -1837,9 +1835,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         }
                     }
                 });
-                let res = f.update(ctx, &mut self.arg_refs, event);
+                let res = f.update(ctx, &mut self.arg_refs, event).to_option();
                 event.init = init;
-                res.map(|v| TagValue::tagged(v, f.out_tag()))
+                res
             }
         };
         // STALE and TAINTED productions are intra-frame currency (the

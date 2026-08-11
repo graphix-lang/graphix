@@ -22,7 +22,6 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// One feeder Node per kernel input slot. Driven by
     /// `Kernel::update` via the `from` slice.
     feeders: Box<[Node<R, E>]>,
-    resident: crate::TagValue,
     /// The actual kernel executor — handles JIT/interp dispatch,
     /// `DYN_DISPATCH_HANDLE` setup, builtin slot pre-binding,
     /// pending-flag propagation, composite-return marshalling.
@@ -64,13 +63,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             }
         };
         let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            feeders,
-            inner,
-            resident: crate::TagValue::phantom(),
-        }))
+        Ok(Node::new(Self { spec, typ, feeders, inner }))
     }
 
     /// The compiled kernel IR this region fused into. Used by graph
@@ -96,9 +89,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // the DynCall dispatch handle, invokes JIT (or interp), and
         // decodes the return value. A RUN only surfaces FIRED outputs
         // (the return gate forces stale/taint to None inside the JIT);
-        // a stale-fed poll re-surfaces the kernel's result slot tagged
-        // STALE (`Kernel::last_result` — the value channel inside an
-        // evaluation frame), so propagate `out_tag`.
+        // a stale-fed poll re-surfaces the kernel's result slot
+        // retagged STALE (`Kernel::resident` — the value channel
+        // inside an evaluation frame). The tag rides in the borrowed
+        // production, which we forward — Kernel's resident IS this
+        // node's return slot.
         let res = self.inner.update(ctx, &mut self.feeders, event);
         // A lambda dispatch inside the kernel hit the call-depth limit
         // (the `graphix_depth_push` helper flagged it — native code
@@ -112,21 +107,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 spec: self.spec.clone(),
             });
         }
-        let res = res.map(|v| crate::TagValue::tagged(v, self.inner.out_tag()));
         // STALE/TAINTED are intra-frame currency; at frame depth 0
         // quiet or bottomed = no production (the CallSite gate's twin
         // — see node/callsite.rs, including the init-view exemption:
         // an arm-wake's forced init evaluates on the value channel and
         // the select's emit provides the fire).
-        let res = if ctx.frame_depth == 0 && !event.init {
-            res.filter(|tv| tv.tag().is_fired())
-        } else {
-            res
-        };
-        match res {
-            Some(tv) => self.resident.set(tv),
-            None => crate::TagValue::absent(),
+        if res.is_absent()
+            || (ctx.frame_depth == 0 && !event.init && !res.tag().is_fired())
+        {
+            return crate::TagValue::absent();
         }
+        res
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

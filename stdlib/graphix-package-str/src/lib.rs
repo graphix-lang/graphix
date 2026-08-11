@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind,
     err, errf,
     expr::ExprId,
@@ -426,6 +426,7 @@ macro_rules! escape_fn {
         struct $name {
             escape: Option<Escape>,
             args: CachedVals,
+            out: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
@@ -441,7 +442,11 @@ macro_rules! escape_fn {
                 from: &'c [Node<R, E>],
                 _top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self { escape: None, args: CachedVals::new(from) }))
+                Ok(Box::new(Self {
+                    escape: None,
+                    args: CachedVals::new(from),
+                    out: TagValue::phantom(),
+                }))
             }
         }
 
@@ -451,7 +456,7 @@ macro_rules! escape_fn {
                 ctx: &mut ExecCtx<R, E>,
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
-            ) -> Option<Value> {
+            ) -> &TagValue {
                 static TAG: ArcStr = literal!("StringError");
                 let mut up = [false; 2];
                 self.args.update_diff(&mut up, ctx, from, event);
@@ -459,21 +464,23 @@ macro_rules! escape_fn {
                     match &self.args.0[0] {
                         Some(esc) => match build_escape(esc.clone()) {
                             Err(e) => {
-                                return Some(errf!(
-                                    TAG,
-                                    "escape: invalid argument {e:?}"
-                                ));
+                                let v = errf!(TAG, "escape: invalid argument {e:?}");
+                                return self.out.set(TagValue::fired(v));
                             }
                             Ok(esc) => self.escape = Some(esc),
                         },
-                        _ => return None,
+                        _ => return TagValue::absent(),
                     };
                 }
-                match (up, &self.escape, &self.args.0[1]) {
+                let res = match (up, &self.escape, &self.args.0[1]) {
                     ([_, true], Some(esc), Some(Value::String(s))) => {
                         Some(Value::String(ArcStr::from(esc.$escape(&s))))
                     }
                     (_, _, _) => None,
+                };
+                match res {
+                    Some(v) => self.out.set(TagValue::fired(v)),
+                    None => TagValue::absent(),
                 }
             }
 

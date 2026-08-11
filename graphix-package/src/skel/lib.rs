@@ -1,15 +1,19 @@
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
-    expr::ExprId, typ::FnType,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind, expr::ExprId, typ::FnType,
 };
 use graphix_derive::defpackage;
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx_value::Value;
 use std::boxed::Box;
 
-#[derive(Debug)]
-struct ExampleBuiltin;
+#[derive(Debug, Default)]
+struct ExampleBuiltin {
+    // The builtin's result slot: `update` lends its production (with
+    // the fired tag riding in the value) to the caller from here.
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const NAME: &str = "{{name}}_example";
@@ -26,7 +30,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(ExampleBuiltin))
+        Ok(Box::new(ExampleBuiltin::default()))
     }
 }
 
@@ -36,11 +40,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).to_option().map(|tv| match tv.value() {
+    ) -> &TagValue {
+        match from[0].update(ctx, event).to_option().map(|tv| match tv.value() {
             Value::Error(_) => Value::Bool(true),
             _ => Value::Bool(false),
-        })
+        }) {
+            // Produced: store in the result slot and lend the borrow.
+            Some(v) => self.out.set(TagValue::fired(v)),
+            // No production this cycle.
+            None => TagValue::absent(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
