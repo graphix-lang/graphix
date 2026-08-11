@@ -1028,6 +1028,14 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
+- `dense_delivery.md` — **APPROVED 2026-08-11, implementation in progress:**
+  the dense-delivery redesign — `Update::update -> &TagValue` (borrowed
+  production, no Option), orthogonal fired×bottom tag algebra, `TagView`
+  exhaustive-match API, persistent tagged store replacing rt.cached, consumer
+  caches eliminated, bottom-propagates at builtin seams, log-everywhere.
+  Holds the rulings, the ruled-delta list, and the tag-removal post-mortem
+  (removal is foreclosed — do not attempt again). Supersedes
+  `replay_frames.md` Ruling A.2 and the fire-gate branch when it lands.
 - `final_jit_architecture.md` — the end-state architecture (`Expr → node graph →
   CLIF`), now realized.
 - `distributed_jit.md` — how the GIR IR was removed and fusion distributed as
