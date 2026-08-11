@@ -737,10 +737,16 @@ enforces it):**
   `check_mode_parity`); narrow index/slice bounds widen; over-limit
   `array::init` is bottom-with-retained-state on BOTH engines;
   `str::sprintf` declares `Result<string, `FormatError(string)>` and
-  shape mismatches warn loudly. AWAITING ERIC: the two
+  shape mismatches warn loudly. AWAITING ERIC: the
   `fuzz/pending-ruling/` classes (tail-zero-iteration-fire,
-  rec-prev-looped-arming — node-walk drops the event) + the
-  tag-blind builtin gate.
+  rec-prev-looped-arming — node-walk drops the event;
+  module-state-callee-reactivity — is a cross-module callee's read
+  of module state quiet-in-steady-state/fresh-at-instantiation, the
+  status-quo interp artifact of the Module proxy post-pass strip, or
+  fully reactive?) + the tag-blind builtin gate. Triaged-open kernel
+  gap: missing_fire_epoch3_aug08e (depth-trip whole-kernel abort vs
+  the interp's caller-frame ride) waits in `fuzz/pending-triage/` on
+  the callee taint-cache/value-resident work.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel caches survive an arm's sleep — `Cached` residents,
   `CachedArgs` arg slots, `StructWith.current`, collection slot
