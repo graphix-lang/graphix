@@ -33,7 +33,7 @@ use compact_str::CompactString;
 pub use cranelift_codegen;
 pub use cranelift_frontend;
 pub use fusion::FusionStats;
-pub use tval::{Tag, TagValue};
+pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
     effects::EffectKind,
