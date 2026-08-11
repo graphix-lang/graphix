@@ -2137,10 +2137,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         }
         if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
             let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
-            match self.dest {
-                LogDest::Stdout => println!("{}: {}", self.scope.lexical, tv),
-                LogDest::Stderr => eprintln!("{}: {}", self.scope.lexical, tv),
-                LogDest::Log(lvl) => match lvl {
+            let sink = match self.dest {
+                LogDest::Stdout | LogDest::Stderr => {
+                    ctx.libstate.get::<PrintSink>().cloned()
+                }
+                LogDest::Log(_) => None,
+            };
+            match (self.dest, sink) {
+                // Captured (the harness stdout oracle).
+                (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
+                    use std::fmt::Write;
+                    let mut out = sink.0.lock();
+                    writeln!(out, "{}: {}", self.scope.lexical, tv).unwrap()
+                }
+                (LogDest::Stdout, None) => println!("{}: {}", self.scope.lexical, tv),
+                (LogDest::Stderr, None) => eprintln!("{}: {}", self.scope.lexical, tv),
+                (LogDest::Log(lvl), _) => match lvl {
                     Level::Trace => log::trace!("{}: {}", self.scope.lexical, tv),
                     Level::Debug => log::debug!("{}: {}", self.scope.lexical, tv),
                     Level::Info => log::info!("{}: {}", self.scope.lexical, tv),

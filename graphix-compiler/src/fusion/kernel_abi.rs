@@ -1199,9 +1199,11 @@ pub struct FnParam {
     /// tuple, not the frozen ABI array). `arg_types` remains the
     /// marshal authority. Empty = fall back to `arg_types`.
     pub arg_orig_types: Vec<Type>,
-    /// The CALL SITE's scope — `init`'s scope argument for pre-bound
-    /// builtins (`log` reports its module path from it). `None` =
-    /// the slot owner's scope.
+    /// The CALL SITE's scope. `None` = the slot owner's scope. For
+    /// pre-bound builtins this is only the FALLBACK `init` scope —
+    /// when the builtin lambda's def resolves, `pre_bind_builtin`
+    /// inits under the DEF's lexical scope, mirroring the interp
+    /// (scope-reporting builtins like `log` print it).
     pub scope: Option<crate::Scope>,
 }
 

@@ -20,7 +20,7 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    Apply, BindId, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, Event, ExecCtx, LambdaId, ModPath, Node, Refs, Rt, Scope, UserEvent,
     expr::{Expr, ExprId},
     fusion::{
         emit::{STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
@@ -148,9 +148,24 @@ struct SiteInstance<R: Rt, E: UserEvent> {
 /// a callback swap takes on the key-0 bucket).
 enum SlotRecipe<R: Rt, E: UserEvent> {
     Lambda,
-    Builtin { init: crate::BuiltInInitFn<R, E>, typ: FnType },
-    Cast { target: crate::typ::Type },
-    QopDeliver { handler_id: BindId, handler_top: ExprId, own_top: ExprId, spec: Expr },
+    /// `scope` is the init scope computed at `pre_bind_builtin` (the
+    /// builtin lambda DEF's lexical scope when the def resolved) —
+    /// per-site mints must init under the same scope as the pre-bound
+    /// Apply, or scope-reporting builtins (`log`) diverge per site.
+    Builtin {
+        init: crate::BuiltInInitFn<R, E>,
+        typ: FnType,
+        scope: Scope,
+    },
+    Cast {
+        target: crate::typ::Type,
+    },
+    QopDeliver {
+        handler_id: BindId,
+        handler_top: ExprId,
+        own_top: ExprId,
+        spec: Expr,
+    },
 }
 
 unsafe impl<R: Rt, E: UserEvent> Send for DynCallSlot<R, E> {}
@@ -191,8 +206,10 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             let node = Ref::new::<R, E>(id, typ, top_id, spec);
             arg_refs.push(node);
         }
-        // The CALL SITE's scope when recorded — `log` reports its
-        // module path from `init`'s scope argument.
+        // The CALL SITE's scope when recorded — the fallback init
+        // scope and the dynamic side of the default-compile scope
+        // (`pre_bind_builtin` inits under the lambda DEF's lexical
+        // scope when the def resolves, mirroring the interp).
         let scope = fn_param.scope.clone().unwrap_or(scope);
         Self {
             bind_ids,
@@ -251,8 +268,18 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // pure literals (no free vars).
         let default_env_scope =
             lambda_id.and_then(|id| ctx.lambda_defs.get(&id).cloned()).and_then(|val| {
-                val.downcast_ref::<LambdaDef<R, E>>()
-                    .map(|d| (d.env.clone(), d.scope.lexical.clone()))
+                val.downcast_ref::<LambdaDef<R, E>>().map(|d| {
+                    // `LambdaDef.scope` is the def-SITE scope; the
+                    // interp compiles defaults and inits the builtin
+                    // under the lambda BODY's scope, one `fn{id}`
+                    // level deeper (node/lambda.rs `scope.append(
+                    // &format_compact!("fn{}", id.0))`).
+                    let body_lex =
+                        ModPath(d.scope.lexical.append(
+                            compact_str::format_compact!("fn{}", d.id.0).as_str(),
+                        ));
+                    (d.env.clone(), body_lex)
+                })
             });
         let init = ctx.builtins.get(builtin_name).copied().ok_or_else(|| {
             anyhow!("DynCallSlot::pre_bind_builtin: unknown builtin `{}`", builtin_name)
@@ -359,8 +386,20 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
         }
         self.arg_refs = new_arg_refs;
+        // The interp inits a builtin's Apply under the builtin-bodied
+        // LAMBDA DEF's scope (`init(ctx, .., &def_scope, ..)` in
+        // node/lambda.rs), and scope-reporting builtins (`log`) print
+        // its lexical path — mirror it when the def resolves. Dynamic
+        // scope stays the kernel's own, like the default-compile path
+        // above. The recorded call-site scope remains the fallback.
+        let init_scope = match &default_env_scope {
+            Some((_, lex)) => {
+                Scope { dynamic: self.scope.dynamic.clone(), lexical: lex.clone() }
+            }
+            None => self.scope.clone(),
+        };
         let mut apply =
-            init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id)?;
+            init(ctx, typ, Some(typ), &init_scope, &self.arg_refs, self.top_id)?;
         // The interp's CallSite runs typecheck0 on a fresh Apply
         // before its first update; mirror it so type-derived builtin
         // state (`dbg`'s rendered type, set in its typecheck0) exists
@@ -370,7 +409,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // dispatch checks `pre_bound` first and never reads this.
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
-        self.recipe = SlotRecipe::Builtin { init, typ: typ.clone() };
+        self.recipe = SlotRecipe::Builtin { init, typ: typ.clone(), scope: init_scope };
         self.pre_bound = true;
         Ok(())
     }
@@ -709,10 +748,9 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                 )
                 .ok()
             }
-            SlotRecipe::Builtin { init, typ } => {
+            SlotRecipe::Builtin { init, typ, scope } => {
                 let mut apply =
-                    init(ctx, typ, Some(typ), &self.scope, &self.arg_refs, self.top_id)
-                        .ok()?;
+                    init(ctx, typ, Some(typ), scope, &self.arg_refs, self.top_id).ok()?;
                 // Mirror the interp CallSite's fresh-Apply typecheck0
                 // (see `pre_bind_builtin`): type-derived builtin state
                 // (`dbg`'s rendered type) must exist in per-site
