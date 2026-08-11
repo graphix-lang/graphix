@@ -501,7 +501,9 @@ macro_rules! string_split {
         struct $name;
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
+            const EFFECT: EffectKind = EffectKind::Sync;
             const NAME: &str = $builtin;
+            const STATELESS: bool = true;
 
             fn eval(
                 &mut self,
@@ -539,7 +541,9 @@ macro_rules! string_splitn {
         struct $name;
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
+            const EFFECT: EffectKind = EffectKind::Sync;
             const NAME: &str = $builtin;
+            const STATELESS: bool = true;
 
             fn eval(
                 &mut self,

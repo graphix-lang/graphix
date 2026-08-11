@@ -226,12 +226,10 @@ const STR_SPLIT: &str = r#"
 }
 "#;
 
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// Fuses since the split family gained its missing EFFECT const
+// (2026-08-11). The prior storage-law attribution was wrong: the
+// builtin was accidentally Async, so fusion never got far enough to
+// hit the storage law.
 run!(str_split, STR_SPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -242,7 +240,7 @@ run!(str_split, STR_SPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_RSPLIT: &str = r#"
 {
@@ -251,12 +249,10 @@ const STR_RSPLIT: &str = r#"
 }
 "#;
 
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// Fuses since the split family gained its missing EFFECT const
+// (2026-08-11). The prior storage-law attribution was wrong: the
+// builtin was accidentally Async, so fusion never got far enough to
+// hit the storage law.
 run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -267,7 +263,7 @@ run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLITN: &str = r#"
 {
@@ -276,12 +272,10 @@ const STR_SPLITN: &str = r#"
 }
 "#;
 
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// Fuses since the split family gained its missing EFFECT const
+// (2026-08-11). The prior storage-law attribution was wrong: the
+// builtin was accidentally Async, so fusion never got far enough to
+// hit the storage law.
 run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -290,7 +284,7 @@ run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_RSPLITN: &str = r#"
 {
@@ -299,12 +293,10 @@ const STR_RSPLITN: &str = r#"
 }
 "#;
 
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// Fuses since the split family gained its missing EFFECT const
+// (2026-08-11). The prior storage-law attribution was wrong: the
+// builtin was accidentally Async, so fusion never got far enough to
+// hit the storage law.
 run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -313,7 +305,7 @@ run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLIT_ESCAPED: &str = r#"
 {
