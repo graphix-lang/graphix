@@ -4,6 +4,12 @@
 // fixture corpus or any of the six standing gates produced — only
 // generation found it, ~15 minutes into the aug08d soak (hz0).
 //
+// PROMOTED 2026-08-10: AGREEs on main post-revert, so it pins as a
+// corpus regression — re-landing any form of the gate that breaks this
+// shape flips regress red. The inert-cache residual it rides is the
+// documented "elsewhere inert" case of taint-cache-callee-jul2026/00;
+// benign today only because the un-gated DynCall re-dispatches.
+//
 // BISECT (worktree build at each commit, hz0's archived campaign
 // binaries for the older points):
 //   fb622f09  AGREE      (pre-everything)

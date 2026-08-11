@@ -55,6 +55,7 @@
 1	dyncall-apply-unwired-aug2026/02_log_scope_lost.gx
 1	dyncall-apply-unwired-aug2026/03_abstract_repr_leak.gx
 5	dyncall-arm-init-stale-aug2026/00_reselected_arm_rides_prior_result.gx
+2	dyncall-fire-gate-aug2026/00_intermediate_callee_lost_fire.gx
 0	dyncall-jun2026/01_pending_string_dyncall_drop.gx
 0	dyncall-jun2026/02_dead_pend_discard_position.gx
 2	dyncall-layout-jul2026/01_shared_callee_stale_layout.gx
