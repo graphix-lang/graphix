@@ -212,13 +212,53 @@ pub async fn run_program(code: &str, mode: Mode, timeout: Duration) -> Outcome {
 /// compile-reject RATE is its health metric and each reject message is
 /// a tuning signal.
 pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
+    match compile_with_stats(code, mode, Duration::from_secs(60)).await {
+        CompileOutcome::Compiled(_) => None,
+        CompileOutcome::Rejected(e, _) | CompileOutcome::Failed(e) => Some(e),
+    }
+}
+
+/// A compile-only measurement. `Rejected` is the COMPILER's verdict on
+/// the program — deterministic content, still carrying the stats of
+/// whatever DID compile: the corpus's CompileErr-agree pins are real
+/// measurements, and one (sample-select-orphan/00) records 1 fused
+/// region because its schedule's input decls are separate top-level
+/// exprs that compile and fuse before the module body rejects.
+/// `Failed` is the MEASUREMENT failing (init, stats read, wedged
+/// compile) — no conclusion about the program can be drawn from it.
+enum CompileOutcome {
+    Compiled(FusionStats),
+    Rejected(String, FusionStats),
+    Failed(String),
+}
+
+/// Compile-only core behind [`compile_program`] and [`run_fusecheck`]:
+/// parse the wrapper, init a fresh ctx under `mode`, compile the full
+/// drive text (schedule decls + module wrap — the same text `drive`
+/// compiles), and return the program's own compile-time
+/// [`FusionStats`] delta without ever running an injection epoch. The
+/// timeout exists because the first update cycle runs inside `compile`,
+/// so a runaway native loop can wedge it. A stats value is NEVER
+/// synthesized from a failure: fusecheck once read stats through
+/// [`run_program_with_stats`], whose unreadable-stats fallback is
+/// `FusionStats::default()` — under load a timed-out DRIVE read as 0
+/// fused, so the gate printed phantom LOST-fusion lines and a
+/// `--bless` could bake a bogus 0 into the manifest (it did, once,
+/// for sample-select-orphan/00).
+async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> CompileOutcome {
     let (sched, body) = match schedule::Schedule::parse(code) {
         Ok(x) => x,
-        Err(e) => return Some(format!("schedule header: {e}")),
+        Err(e) => {
+            let e = format!("schedule header: {e}");
+            return CompileOutcome::Rejected(e, FusionStats::default());
+        }
     };
     let (body, files) = match files::split(body) {
         Ok(x) => x,
-        Err(e) => return Some(format!("file section: {e}")),
+        Err(e) => {
+            let e = format!("file section: {e}");
+            return CompileOutcome::Rejected(e, FusionStats::default());
+        }
     };
     let (tx, _rx) = mpsc::channel(64);
     let wrapped = format!("let result = {body}");
@@ -233,31 +273,61 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
         );
     }
     let resolver = VfsResolver::new(tbl);
+    // The sink is discarded — seeding it keeps the compile cycle's
+    // print output (the first update cycle runs inside `compile`) off
+    // the process streams.
+    let sink = graphix_package_core::PrintSink::default();
     let ctx = match init_with_flags_and_setup(
         tx,
         REGISTER,
         vec![resolver],
         mode.flags(),
-        |_| {},
+        move |ctx| {
+            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = sink;
+        },
     )
     .await
     {
         Ok(c) => c,
-        Err(e) => return Some(format!("runtime init failed: {e:?}")),
+        Err(e) => return CompileOutcome::Failed(format!("runtime init failed: {e:?}")),
     };
     let text = format!(
         "{}{}{{ mod test; test::result }}",
         sched.decls(),
         files::mod_decls(&files)
     );
-    let res = ctx.rt.compile(ArcStr::from(text)).await;
-    ctx.shutdown().await;
-    match res {
-        Ok(_) => None,
+    let run = async {
+        let base = match ctx.fusion_stats().await {
+            Ok(s) => s,
+            Err(e) => {
+                return CompileOutcome::Failed(format!("fusion stats read: {e:?}"));
+            }
+        };
         // Debug format = the multi-line anyhow chain; the last line is
         // the innermost cause, which is what gen-check buckets on.
-        Err(e) => Some(format!("{e:?}")),
-    }
+        let verdict = ctx.rt.compile(ArcStr::from(text)).await;
+        match ctx.fusion_stats().await {
+            Ok(mut s) => {
+                s.attempted -= base.attempted;
+                s.fused -= base.fused;
+                s.failed.drain(..base.failed.len());
+                match verdict {
+                    Ok(_) => CompileOutcome::Compiled(s),
+                    Err(e) => CompileOutcome::Rejected(format!("{e:?}"), s),
+                }
+            }
+            Err(e) => CompileOutcome::Failed(format!("fusion stats read: {e:?}")),
+        }
+    };
+    let res = match tokio::time::timeout(timeout, run).await {
+        Ok(r) => r,
+        Err(_) => {
+            ctx.rt.interrupt();
+            CompileOutcome::Failed("compile timed out (wedged evaluator)".to_string())
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
+    res
 }
 
 /// [`run_program`], also returning the compile-time [`FusionStats`]
@@ -1677,27 +1747,36 @@ pub fn regression_corpus_len() -> usize {
 pub static FUSECHECK_MANIFEST: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fusecheck.manifest"));
 
-/// Fused-region count per corpus program, in corpus order. Runs Jit
-/// only (the interp side has no kernels); counts are compile-time
-/// facts, deterministic per detcheck.
-pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, u64)> {
+/// Fused-region count per corpus program, in corpus order. Jit mode,
+/// COMPILE only: fused counts are compile-time facts (fusion runs
+/// inside `compile()`), so the program is never driven and the count
+/// cannot depend on run-time pacing, load, or a drive timeout. A
+/// count that could not be measured is `Err`, and the caller must
+/// treat it as a gate failure — never as 0 (0 is a real measurement:
+/// "nothing fused").
+pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, Result<u64, String>)> {
     use tokio::task::JoinSet;
     let par = parallelism();
     let entries = corpus::REGRESSION_CORPUS;
-    let mut set: JoinSet<(usize, u64)> = JoinSet::new();
+    let mut set: JoinSet<(usize, Result<u64, String>)> = JoinSet::new();
     let mut next = 0usize;
     let spawn_one = |set: &mut JoinSet<_>, i: usize| {
         let prog = entries[i].1.to_string();
         set.spawn(async move {
-            let (_, stats) = run_program_with_stats(&prog, Mode::Jit, timeout).await;
-            (i, stats.fused as u64)
+            let r = match compile_with_stats(&prog, Mode::Jit, timeout).await {
+                CompileOutcome::Compiled(s) | CompileOutcome::Rejected(_, s) => {
+                    Ok(s.fused as u64)
+                }
+                CompileOutcome::Failed(e) => Err(e),
+            };
+            (i, r)
         });
     };
     while next < entries.len() && set.len() < par {
         spawn_one(&mut set, next);
         next += 1;
     }
-    let mut counts: Vec<Option<u64>> = vec![None; entries.len()];
+    let mut counts: Vec<Option<Result<u64, String>>> = vec![None; entries.len()];
     while let Some(res) = set.join_next().await {
         if let Ok((i, c)) = res {
             counts[i] = Some(c);
@@ -1710,7 +1789,9 @@ pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, u64)> {
     entries
         .iter()
         .zip(counts)
-        .map(|((name, _), c)| (name.to_string(), c.unwrap_or(0)))
+        .map(|((name, _), c)| {
+            (name.to_string(), c.unwrap_or_else(|| Err("worker panicked".to_string())))
+        })
         .collect()
 }
 

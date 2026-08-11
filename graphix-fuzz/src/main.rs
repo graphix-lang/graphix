@@ -438,12 +438,32 @@ async fn main() -> Result<()> {
             // silent de-fusion regression fails LOUD. Manual/CI gate;
             // run from the repo root. `--bless` rewrites the manifest
             // (rebuild afterward — the compare reads the EMBEDDED
-            // copy).
+            // copy). Counts are measured COMPILE-only; an unmeasurable
+            // count is a gate failure, never a 0 — bless refuses to
+            // write anything rather than bake one in.
             let bless = args.iter().any(|a| a == "--bless");
-            let counts = graphix_fuzz::run_fusecheck(regress_timeout()).await;
+            let timeout = Duration::from_secs(60) * *TIMEOUT_SCALE;
+            let counts = graphix_fuzz::run_fusecheck(timeout).await;
+            let mut unreadable = 0usize;
+            for (n, c) in &counts {
+                if let Err(e) = c {
+                    unreadable += 1;
+                    let last =
+                        e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(e);
+                    println!("  unreadable: {n}: {last}");
+                }
+            }
             if bless {
+                if unreadable > 0 {
+                    eprintln!(
+                        "fusecheck: refusing to bless — {unreadable} unreadable counts"
+                    );
+                    drop(cwd_guard);
+                    std::process::exit(1);
+                }
                 let mut out = String::new();
                 for (n, c) in &counts {
+                    let c = c.as_ref().expect("unreadable counts checked above");
                     out.push_str(&format!("{c}\t{n}\n"));
                 }
                 let path = orig_cwd.join("graphix-fuzz/fusecheck.manifest");
@@ -464,9 +484,11 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                let mut bad = 0usize;
+                let mut bad = unreadable;
                 for (n, c) in &counts {
-                    match recorded.remove(n.as_str()) {
+                    let rec = recorded.remove(n.as_str());
+                    let Ok(c) = c else { continue };
+                    match rec {
                         Some(r) if r == *c => {}
                         Some(r) => {
                             bad += 1;
