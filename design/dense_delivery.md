@@ -479,3 +479,21 @@ output adapter and tombstone, `gate_stale_at_return`/`emit_force`/
 `is_not_fresh`, the neutral-disc folds, `default_external_refs`,
 `Kernel::args`. `Tag::clamp_sparse` is zero-caller (removed at the
 close). `fusion/` contains no `absent`/`is_absent` reads.
+
+## P5b′ re-scoped: cache deletion is a designation pass, not mechanics
+
+The 5c taint-cache arc proved the premise wrong a second time (the
+first was the P5a reorder): "every consumer cache is a pure mirror
+post-flip" holds only for TAG-DRIVEN consumers. The VALUE-DRIVEN
+consumers — the select scrutinee ride (`arg.cached`), guard truth
+tests (operand caches read under a poisoned tag), collection slot
+values (fork 7) — hold DESIGNATED ride memory in exactly the way the
+kernel's `in_ride_scope` caches now do, and Cached's
+value-kept-under-poison discipline is what implements it. A blanket
+interp-side deletion would re-create the 5c-4 regressions in mirror
+image. P5b′ is therefore a DESIGNATION pass: classify each of the ~24
+`Cached` sites as mirror (delete — op operands outside guards,
+statement/merge positions, the wrapper arg slots whose Q1 arm already
+decides) or designated memory (keep, renamed for what it is); the
+`produced && determined` idiom and `rt.cached`'s mirror die with the
+mirrors. Same gate as planned: ∅-diff against the post-5c baseline.
