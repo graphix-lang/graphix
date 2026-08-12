@@ -166,7 +166,7 @@
 2	select-guard-shortcircuit-aug2026/01_guard_cache_ride_wrong_arm.gx
 2	select-guard-shortcircuit-aug2026/02_guard_effect_skipped.gx
 2	select-guard-taint-jul2026/00_tainted_init_skips_guard_tick.gx
-5	select-guard-taint-jul2026/01_guarded_select_over_tainted_fold.gx
+6	select-guard-taint-jul2026/01_guarded_select_over_tainted_fold.gx
 1	select-jun2026/01_nullable_pred_arm_order.gx
 1	select-jun2026/02_bottom_scrut_last_arm_trap.gx
 0	select-lit-leaf-union-slot-aug2026/00_u8_underflow_tuple_lit.gx
@@ -187,7 +187,7 @@
 2	select-slot-memory-jul2026/01_minimized_single_event.gx
 2	select-slot-memory-jul2026/02_nested_loop_guard_only.gx
 2	select-slot-memory-jul2026/03_callee_guard_only.gx
-4	select-strict-rule-aug2026/00_refire_ride_witness.gx
+5	select-strict-rule-aug2026/00_refire_ride_witness.gx
 3	select-strict-rule-aug2026/01_starved_fold_arm.gx
 3	select-strict-rule-aug2026/02_live_fold_two_cycle.gx
 6	select-strict-rule-aug2026/03_filter_select_qop.gx
@@ -247,7 +247,7 @@
 1	sprintf-error-return-shape-aug2026/00_sprintf_missing_arg_dropped.gx
 3	stale-error-deliver-jul2026/01_stale_arith_redeliver.gx
 2	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
-0	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
+1	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 2	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx
 2	tail-jump-honest-tags-jul2026/00_ignored_capture_arg.gx
@@ -256,9 +256,9 @@
 2	tail-select-memory-jul2026/00_guard_on_capture.gx
 2	tailloop-firing-jul2026/01_live_input_tail_loop.gx
 3	tailloop-firing-jul2026/02_const_chain_capture.gx
-0	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
+1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
 1	taint-cache-callee-jul2026/00_callee_interior_bottom.gx
-1	taint-cache-callee-jul2026/01_float_cache_block_param.gx
+2	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 2	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx
 2	transient-rebind-init-jul2026/00_capture_wake_const_body.gx
 13	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
