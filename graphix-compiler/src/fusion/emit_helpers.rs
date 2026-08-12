@@ -699,32 +699,36 @@ safe fn graphix_depth_pop() {
 
 /// The single registered DynCall entry point. Indirects through
 /// the thread-local handle to the monomorphized dispatcher and
-/// returns the result as a two-word [`DynCallRet`] Value pair
-/// (unified Value ABI — the call site adapts per its static type).
+/// returns the inner production as a two-word [`DynCallRet`] pair —
+/// the unified Value ABI with the production's TAINT/STALE tag riding
+/// the disc's high byte in-band (Seam B of the 5c flip; the call site
+/// adapts per its static type and never adopts a bottom's payload).
 ///
-/// On pending (inner Apply returned `None`): returns `(0, 0)`,
-/// sets `DYNCALL_PENDING`. JIT-emitted code calls
-/// `graphix_dyncall_pending_take` after the dyncall to decide
-/// whether to branch to its `pre_pending_<n>` cleanup block.
+/// On a genuine dispatch abort (instance init failure): returns
+/// `(0, 0)` and sets `DYNCALL_PENDING`; JIT-emitted code
+/// take-and-clears it after the dyncall and takes the placeholder
+/// path.
 ///
-/// `taint_mask`: bit `i` set = arg slot `i` is TAINTED (bottom — the
-/// arg produced no value this cycle). The dispatcher delivers those
-/// slots as ABSENCE (no `event.variables` write), so the builtin's
-/// cached slot keeps its previous state and eval DECIDES what a
-/// missing arg means — exactly the node-walk seam (Eric's ruling
-/// 2026-07-20, dyncall-partial-args-jul2026). The buf still carries a
-/// placeholder Value at that position (arity is fixed); it drops with
-/// the buf. Lambda-callee dispatch sites pass 0 (formals poison via
-/// their own protocol, unchanged).
+/// `taint_mask`: bit `i` set = arg slot `i` is BOTTOM (the arg
+/// produced no usable value). The dispatcher delivers those slots as
+/// the honest bottom (FreshBottom / StaleBottom by the stale bit),
+/// and the wrapper's Q1 arm bottoms the invocation without calling
+/// eval — bottom propagates, authors never see it
+/// (design/dense_delivery.md; the pre-dense absence delivery and its
+/// ride-own-history semantics are the re-blessed
+/// dyncall-partial-args delta). The buf still carries a placeholder
+/// Value at that position (arity is fixed); it drops with the buf.
+/// Lambda-callee dispatch sites pass 0 (formals poison via their own
+/// protocol, unchanged).
 ///
 /// `stale_mask`: bit `i` set = arg slot `i` is present but did NOT
 /// fire this cycle (its disc carries STALE). The dispatcher delivers
 /// those slots as `TagValue::stale`, so a builtin whose production
 /// gates on argument FIRING (`printfn!`'s per-arg update, `str::
 /// escape`'s `update_diff`, `CachedArgs`' eval re-run) sees the
-/// node-walk's per-argument truth instead of a phantom fire per
-/// kernel invocation (dyncall-stale-arg-fired-aug2026: `rand`
-/// re-randomized and `now` resampled the clock on every invocation).
+/// per-argument truth instead of a phantom fire per kernel
+/// invocation (dyncall-stale-arg-fired-aug2026: `rand` re-randomized
+/// and `now` resampled the clock on every invocation).
 ///
 /// `site_word`: address of the emission site's claimed SITE-IDENTITY
 /// word (dyncall-site-identity-jul2026 — the dispatcher mints an id

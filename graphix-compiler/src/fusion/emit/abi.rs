@@ -562,22 +562,11 @@ pub(super) fn emit_untainted_i64(b: &mut FunctionBuilder, disc: ClifValue) -> Cl
     b.ins().uextend(types::I64, v)
 }
 
-/// True (I8 bool) iff the disc is NOT fresh — [`TAINT`] (bottom) OR
-/// [`STALE`] (did not fire this cycle) set, i.e. this value did NOT fire
-/// with a value. The firing gate consumed at the kernel-return seam
-/// (`emit_kernel_return` / `emit_force`): the node-walk publishes only
-/// when its output node returned `Some`, so a not-fresh root routes to
-/// the pending path → `Kernel::update` returns `None`. (The `set_var`
-/// write gate is the runtime twin, `set_var_typed` in `kernel.rs`.)
-/// Folds to const-false for a value the emitter proved fresh (an
-/// untainted, non-stale const disc) — no branch on the hot path.
-pub(super) fn is_not_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    let m = b.ins().band_imm(disc, TAINT | STALE);
-    b.ins().icmp_imm(IntCC::NotEqual, m, 0)
-}
-
-/// Complement of [`is_not_fresh`]: true (I8 bool) iff neither
-/// [`TAINT`] nor [`STALE`] is set — this value FIRED this cycle.
+/// True (I8 bool) iff neither [`TAINT`] nor [`STALE`] is set — this
+/// value FIRED this cycle. (The kernel-return firing gate that once
+/// consumed the complement is gone — 5c returns honest in-band tags;
+/// `set_var_typed`'s write gate in `kernel.rs` remains the one
+/// fired-only consumer.)
 pub(super) fn is_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     let m = b.ins().band_imm(disc, TAINT | STALE);
     b.ins().icmp_imm(IntCC::Equal, m, 0)
@@ -604,6 +593,17 @@ pub(super) fn const_stale_gate(
 /// compare (we compare on the underlying tag, stale or not).
 pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     b.ins().band_imm(disc, !(TAINT | STALE))
+}
+
+/// True iff the current emission point is a VALUE-DRIVEN ride scope
+/// under the dense model — inside a scaffold-loop body (per-slot
+/// values are designated ride memory, fork 7) or inside a select
+/// guard expression (guard truth tests read cached VALUES, which the
+/// dense interp retains under a poisoned tag). Interior-bottom taint
+/// caches apply only here; everywhere else BOTTOM PROPAGATES (Q1) —
+/// the 5c scoping of the pre-dense blanket caches.
+pub(super) fn in_ride_scope(cx: &super::body::BodyCx) -> bool {
+    cx.ctx.loop_depth.get() > 0 || cx.ctx.guard_depth.get() > 0
 }
 
 // ─── Env: name → Variable lookup ─────────────────────────────────

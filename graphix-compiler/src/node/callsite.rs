@@ -1225,7 +1225,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     let tv = node.update(ctx, event);
                     if tv.tag().triggers() && !tv.tag().is_bottom() {
                         let v = tv.value_cloned();
-                        ctx.rt.cached_insert(arg.id, v.clone());
+                        // R3: frames never write the store.
+                        if ctx.frame_depth == 0 {
+                            ctx.rt.cached_insert(arg.id, v.clone());
+                        }
                         event.variables.insert(arg.id, TagValue::fired(v));
                         set.push(arg.id);
                     }
@@ -1506,10 +1509,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // old `gate_tainted_args` builtin silencing is gone with it.
         // The old FRAME-ONLY stale backfill is gone too: the overlay
         // stack's read-through IS that delivery.
+        //
+        // A SELF-TAIL-CALL site additionally keeps every arg's whole
+        // production for the stash below: stale jump plumbing is
+        // never published (triggering-only), so a map read cannot see
+        // it — the stash must consume the productions directly.
+        let stash_prods = self.is_self_tail_call.load(Ordering::Relaxed);
+        // Capture the productions whenever a BIND could happen this
+        // cycle (first-ever dispatch or any dynamic callee): a bind
+        // mints/rewires arg ids, and QUIET (stale) arg productions —
+        // never published by the triggering-only loop — must be
+        // seeded onto them or the fresh callee reads phantom formals
+        // (transient-prime-park/01: the rebound chain's interior
+        // fresh callsites starved one level down). Steady-state
+        // static callsites skip the capture.
+        let may_bind = match &self.callee {
+            Callee::Static { first_update, .. } => *first_update,
+            _ => true,
+        };
+        let mut prods: SmallVec<[(BindId, TagValue); 4]> = SmallVec::new();
         for arg in self.args.values_mut() {
             if let Some(ref mut node) = arg.node {
                 let tv = node.update(ctx, event);
                 let tag = tv.tag();
+                if stash_prods || may_bind {
+                    prods.push((arg.id, tv.clone()));
+                }
                 if tag.triggers() {
                     arg_fired = true;
                     if tag.is_bottom() {
@@ -1519,7 +1544,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         );
                     } else {
                         let v = tv.value_cloned();
-                        ctx.rt.cached_insert(arg.id, v.clone());
+                        // R3: frames never write the store (see the
+                        // GXLambda entry-publish twin) — an arg
+                        // published inside an enclosing loop's frame
+                        // is loop plumbing.
+                        if ctx.frame_depth == 0 {
+                            ctx.rt.cached_insert(arg.id, v.clone());
+                        }
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
                     set.push(arg.id);
@@ -1579,25 +1610,39 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // rebind to mint FIRED unconditionally, manufacturing
                 // freshness for results that depend on nothing that
                 // fired.
+                // Stash each arg's PRODUCTION directly (honest value
+                // + tag): a stale production is the framed jump
+                // plumbing the map never carries (triggering-only
+                // publish), a bottomed one rides (None — the kernel's
+                // taint-gated rebind keeps the old loop slot). The
+                // read_var fallback serves node-less args (defaults).
                 let args: SmallVec<[Option<TagValue>; 4]> = order
                     .iter()
-                    .map(|id| match super::read_var(ctx, event, id) {
-                        Some(super::VarRead::Delivered(tv)) if !tv.tag().is_bottom() => {
-                            Some(tv.clone())
+                    .map(|id| {
+                        if let Some((_, tv)) = prods.iter().find(|(pid, _)| pid == id) {
+                            return if tv.tag().is_bottom() {
+                                None
+                            } else {
+                                Some(tv.clone())
+                            };
                         }
-                        // a bottomed jump arg (delivered or standing)
-                        // makes the formal RIDE — the kernel's
-                        // taint-gated rebind
-                        Some(super::VarRead::Delivered(_)) => None,
-                        Some(super::VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
-                            // the value channel — the kernel's
-                            // marshaled quiet slot
-                            let mut c = tv.clone();
-                            let t = c.tag().quiet();
-                            c.retag(t);
-                            Some(c)
+                        match super::read_var(ctx, event, id) {
+                            Some(super::VarRead::Delivered(tv))
+                                if !tv.tag().is_bottom() =>
+                            {
+                                Some(tv.clone())
+                            }
+                            Some(super::VarRead::Delivered(_)) => None,
+                            Some(super::VarRead::Standing(tv))
+                                if !tv.tag().is_bottom() =>
+                            {
+                                let mut c = tv.clone();
+                                let t = c.tag().quiet();
+                                c.retag(t);
+                                Some(c)
+                            }
+                            Some(super::VarRead::Standing(_)) | None => None,
                         }
-                        Some(super::VarRead::Standing(_)) | None => None,
                     })
                     .collect();
                 debug_assert!(ctx.pending_tail_call.is_none());
@@ -1708,6 +1753,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
             _ => bound,
         };
+        // A bind happened this cycle: seed QUIET (stale, non-bottom)
+        // arg productions onto the arg ids on the VALUE channel — the
+        // triggering-only publish never carries them, and a fresh
+        // callee (fresh ids) would read phantom formals otherwise.
+        // Cycle-scoped overlay entry for the dispatch below (any
+        // frame depth; withdrawn with `set`), standing store entry at
+        // depth 0 for later quiet cycles (R3: frames never write the
+        // store).
+        if bound {
+            for (id, tv) in prods.iter() {
+                let tag = tv.tag();
+                if !tag.triggers() && !tag.is_bottom() {
+                    let sv = TagValue::stale(tv.value_cloned());
+                    if ctx.frame_depth == 0 {
+                        // The STORE standing entry serves both dispatch
+                        // views (Stale ordinarily, Fired under the
+                        // real-init arm — R2). An overlay entry here
+                        // would SHADOW that init upgrade (overlay reads
+                        // precede the store and carry STALE verbatim).
+                        ctx.rt.store_insert_standing(*id, sv);
+                    } else {
+                        // In frames the store is off-limits (R3): the
+                        // cycle-scoped overlay entry is the channel.
+                        event.variables.insert(*id, sv);
+                        set.push(*id);
+                    }
+                }
+            }
+        }
         if crate::dbgenv::gxdbg_cs() {
             let kind = match self.callee.apply() {
                 None => "none",

@@ -26,7 +26,7 @@ use netidx_value::Value;
 use super::{
     abi::{
         CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
-        is_not_fresh, propagate_flags, scalar_disc, value_disc,
+        propagate_flags, scalar_disc, value_disc,
     },
     call::{
         CompositeSource, drop_owned_composites, emit_drop_local, emit_pending_cleanup,
@@ -381,11 +381,6 @@ pub(super) struct BodySpec<'a> {
     /// Doubles as the `base` half of the `(ptr, base)` JIT cache key —
     /// see `compile_kernel_with_callees_inner`.
     pub(super) fn_index_offset: u32,
-    /// Whether this body's kernel return FORCES on not-fresh
-    /// (TAINT | STALE). `true` for a PUBLISHED body, `false` for a
-    /// cross-kernel CALLEE body — full rationale on
-    /// `LowerCtx::gate_stale_at_return`'s consumers.
-    pub(super) gate_stale_at_return: bool,
     /// The region's LIFTED connect-target bind ids — let-bound scalar
     /// counters/accumulators routed in as kernel inputs (feeders).
     /// Empty for callees and for any region with no lifts.
@@ -1168,45 +1163,6 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
     }
 }
 
-/// Return-path FORCE for a PUBLISHED body (`gate_stale_at_return`): if
-/// `disc` is NOT fresh (tainted bottom OR STALE — didn't fire this
-/// cycle), drop the owned result (`drop_fn`), set pending, run the
-/// owned-set cleanup, and jump `pending_exit`; otherwise fall through —
-/// a stale root means "didn't fire — don't publish." On return the
-/// builder is positioned in the fresh (fired-with-value) block. Folds
-/// to no branch for a fresh const disc. A cross-kernel CALLEE body
-/// never forces: its result's not-fresh bits ride back to the caller
-/// IN-BAND in the returned disc (unified Value ABI) — a bottomed or
-/// unfired callee result rides back as DATA (#219), bottoming the
-/// caller only if its taken output path consumes it, matching the
-/// node-walk. Genuine aborts (depth trip, interrupt, async pend) keep
-/// the pending path.
-fn emit_force(
-    cx: &mut BodyCx,
-    disc: ClifValue,
-    drop_fn: impl FnOnce(&mut BodyCx) -> Result<()>,
-) -> Result<()> {
-    // The return-path firing gate: a not-fresh result (bottom OR
-    // didn't-fire-this-cycle) drops the owned result and bottoms the
-    // kernel (returns None), matching the node-walk's "publish only on
-    // Some". Folds to no branch for a fresh const disc.
-    let not_fresh = is_not_fresh(cx.b, disc);
-    let pending_set = cx.helper("graphix_dyncall_set_pending")?;
-    let pre = cx.b.create_block();
-    let ret = cx.b.create_block();
-    let exit = pending_exit_block(cx.b, cx.ctx);
-    cx.b.ins().brif(not_fresh, pre, &[], ret, &[]);
-    cx.b.switch_to_block(pre);
-    cx.b.seal_block(pre);
-    drop_fn(cx)?;
-    cx.b.ins().call(pending_set, &[]);
-    emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
-    cx.b.ins().jump(exit, &[]);
-    cx.b.switch_to_block(ret);
-    cx.b.seal_block(ret);
-    Ok(())
-}
-
 /// Unconditionally bottom the kernel from the current block: set the
 /// pending flag, drop the in-flight owned set, and jump to
 /// `pending_exit` (so `Kernel::update` returns `None`). Terminates the
@@ -1346,34 +1302,19 @@ pub(super) fn emit_kernel_return(
     // return — the runtime's single `TagValue::from_raw` decode
     // materializes a `Value` from these exact bits, so the disc must
     // be a valid one-hot discriminant + tag bits by construction.
+    // 5c: the return gate (`emit_force` on a not-fresh disc → pending)
+    // is GONE — every result returns with its honest TAINT/STALE tag
+    // riding the disc in-band, and `Kernel::update`'s decode makes the
+    // production (Fired/Stale/bottom). A bottomed result's payload is
+    // the owned helper-safe placeholder; the decode frees it.
     match kernel_abi::abi_kind(cx.registry(), return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
-            if cx.ctx.gate_stale_at_return {
-                // FORCE at the output — a not-fresh result (bottom OR
-                // didn't fire this cycle) drops the owned value + bottoms
-                // the kernel; else fall through. Folds to no branch for a
-                // fresh const disc.
-                emit_force(cx, disc, |cx| {
-                    let val_drop = cx.helper("graphix_value_drop")?;
-                    cx.b.ins().call(val_drop, &[disc, payload]);
-                    Ok(())
-                })?;
-            }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             cx.b.ins().return_(&[disc, payload]);
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let bits = ensure_owned_composite_src(cx, src, cv.payload)?;
-            if cx.ctx.gate_stale_at_return {
-                // #219: a tainted composite output bottoms — drop the
-                // owned array on the tainted path (folds when untainted).
-                emit_force(cx, cv.disc, |cx| {
-                    let d = cx.helper("graphix_valarray_drop")?;
-                    cx.b.ins().call(d, &[bits]);
-                    Ok(())
-                })?;
-            }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
@@ -1382,26 +1323,12 @@ pub(super) fn emit_kernel_return(
         Some(AbiKind::String) => {
             // String results are owned at production (reads clone);
             // no ensure needed.
-            if cx.ctx.gate_stale_at_return {
-                emit_force(cx, cv.disc, |cx| {
-                    let d = cx.helper("graphix_arcstr_drop")?;
-                    cx.b.ins().call(d, &[cv.payload]);
-                    Ok(())
-                })?;
-            }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             cx.b.ins().return_(&[disc, cv.payload]);
         }
         Some(AbiKind::Scalar(p)) => {
-            if cx.ctx.gate_stale_at_return {
-                // FORCE — a not-fresh scalar (bottom OR didn't fire this
-                // cycle) bottoms; else return. A scalar owns nothing, so
-                // the drop is a no-op. Folds to an unconditional return
-                // when the disc is a fresh const.
-                emit_force(cx, cv.disc, |_| Ok(()))?;
-            }
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;
             // Widen the payload to the Value-encoded word (sign/zero
             // extension, float bitcast — `pack_value_to_u64`'s rules).

@@ -864,7 +864,7 @@ fn emit_qop_error_disposal(
 
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    spec_id: ExprId,
+    _spec_id: ExprId,
     inner: &Node<R, E>,
     result_typ: &Type,
     handler_site: Option<ExprId>,
@@ -975,10 +975,14 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             let disc = taint_if(cx.b, disc, is_err);
-            // Interior-bottom exactness: a `$`/`?`-dropped error with
-            // prior success degrades to STALE + the cached value,
-            // matching the node-walk's cached qop node.
-            Ok(emit_scalar_taint_cache(cx, p, CompiledExpr::new(disc, value)))
+            // 5c Q1: a `$`/`?`-dropped error IS a fresh bottom —
+            // propagate, except in ride scopes (`in_ride_scope`).
+            let cv = CompiledExpr::new(disc, value);
+            if super::abi::in_ride_scope(cx) {
+                Ok(emit_scalar_taint_cache(cx, p, cv))
+            } else {
+                Ok(cv)
+            }
         }
         // String / composite success — branch: the bad path (error OR
         // tainted) produces a tainted shape-safe PLACEHOLDER and
@@ -1081,16 +1085,18 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            // Interior-bottom exactness, non-scalar twin of the Scalar
-            // arm's cache above: a `$`/`?`-dropped error with prior
-            // success rides the cached value (both qmerge paths are
-            // owned — the placeholder is fresh, the success unwrap
-            // clones a borrowed inner).
-            emit_value_taint_cache(
-                cx,
-                CompiledExpr::new(params[0], params[1]),
-                cx.ctx.tail_leaves.borrow().contains(&spec_id.inner()),
-            )
+            // 5c Q1: the dropped error is a fresh bottom — propagate,
+            // except in ride scopes (both qmerge paths owned).
+            let cv = CompiledExpr::new(params[0], params[1]);
+            if super::abi::in_ride_scope(cx) {
+                emit_value_taint_cache(
+                    cx,
+                    cv,
+                    cx.ctx.tail_leaves.borrow().contains(&_spec_id.inner()),
+                )
+            } else {
+                Ok(cv)
+            }
         }
         // Value-shape success. The bad path (error) produces a tainted
         // Value::Null placeholder and CONTINUES (interior-bottom v2);
@@ -1149,14 +1155,18 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            // Interior-bottom exactness, owned-value twin of the
-            // Scalar arm's cache (both qmerge paths owned: the Null
-            // placeholder is inert, the success was ensured owned).
-            emit_value_taint_cache(
-                cx,
-                CompiledExpr::new(params[0], params[1]),
-                cx.ctx.tail_leaves.borrow().contains(&spec_id.inner()),
-            )
+            // 5c Q1: the dropped error is a fresh bottom — propagate,
+            // except in ride scopes (both qmerge paths owned).
+            let cv = CompiledExpr::new(params[0], params[1]);
+            if super::abi::in_ride_scope(cx) {
+                emit_value_taint_cache(
+                    cx,
+                    cv,
+                    cx.ctx.tail_leaves.borrow().contains(&_spec_id.inner()),
+                )
+            } else {
+                Ok(cv)
+            }
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             Err(anyhow!("emit_clif: `?` with unsupported success type {:?}", success_typ))

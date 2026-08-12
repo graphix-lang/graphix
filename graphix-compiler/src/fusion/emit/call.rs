@@ -20,9 +20,9 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, clean_disc,
+        CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
         emit_scalar_taint_cache, emit_untainted_i64, emit_value_taint_cache, is_tainted,
-        propagate_flags, scalar_disc, taint_if, value_disc,
+        scalar_disc, taint_if, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     lower::{LowerCtx, SelWord},
@@ -46,22 +46,42 @@ use super::{
 /// v1: their per-slot semantics keep the documented init-mask
 /// approximation (`design/collection_intrinsics.md`), a per-slot
 /// identity chain is the follow-up.
-fn emit_dyncall_site_word(cx: &mut BodyCx) -> ClifValue {
+/// Returns (word address, claimed): `claimed = false` means the
+/// key-0 bucket (no identity — the site word is const 0 or a
+/// null-guarded callee block miss).
+fn emit_dyncall_site_word(cx: &mut BodyCx) -> (ClifValue, bool) {
     if cx.ctx.loop_depth.get() > 0 {
-        return cx.b.ins().iconst(types::I64, 0);
+        // PER-SLOT identity (5c — the documented v1 follow-up): each
+        // collection position claims its own leaf through the slot
+        // chain (the select-state machinery; the pair claim's first
+        // word carries the minted id, the second is spare). The
+        // dispatcher keys a full inner Apply per minted word, so each
+        // slot gets the interp's per-position cache and builtin
+        // state — which is what lets the loop deliver HONEST stale
+        // masks (the aug08a shared-cache bleed is structurally gone)
+        // and effects stop re-firing per kernel invocation
+        // (dense delta 1+2, print_hof_once). Chain leaves reset on
+        // frames/sleep → fresh ids → fresh instances, matching the
+        // interp's transient re-derivation; the dispatcher's `first`
+        // flag converts a fresh instance's stale delivery into the
+        // arrival view.
+        if let Some(pair) = cx.claim_slot_cache_words() {
+            return (pair, true);
+        }
+        return (cx.b.ins().iconst(types::I64, 0), false);
     }
     if let Some(off) = cx.claim_state_word() {
         let sp = cx.state_ptr();
-        return cx.b.ins().iadd_imm(sp, off as i64);
+        return (cx.b.ins().iadd_imm(sp, off as i64), true);
     }
     if let Some(off) = cx.claim_site_word() {
         let base = cx.site_ptr();
         let addr = cx.b.ins().iadd_imm(base, off as i64);
         let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
         let zero = cx.b.ins().iconst(types::I64, 0);
-        return cx.b.ins().select(has, addr, zero);
+        return (cx.b.ins().select(has, addr, zero), true);
     }
-    cx.b.ins().iconst(types::I64, 0)
+    (cx.b.ins().iconst(types::I64, 0), false)
 }
 
 /// Builtin DynCall — marshal the (marshal-ordered) `args` into a
@@ -75,7 +95,7 @@ fn emit_dyncall_site_word(cx: &mut BodyCx) -> ClifValue {
 /// whole-kernel abort (item 28).
 pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    spec_id: crate::expr::ExprId,
+    _spec_id: crate::expr::ExprId,
     info: &BuiltinCallSiteInfo,
     args: &[&Node<R, E>],
 ) -> Result<CompiledExpr> {
@@ -206,6 +226,11 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let bit = cx.b.ins().ishl_imm(t64, i as i64);
         taint_mask = cx.b.ins().bor(taint_mask, bit);
     }
+    // The site identity is claimed BEFORE the masks: a claimed site
+    // (region root, callee block, or a per-slot chain leaf in loops)
+    // carries per-site inner-Apply state, which is what makes honest
+    // stale masks sound there.
+    let (site_word, site_claimed) = emit_dyncall_site_word(cx);
     // The STALE twin (dyncall-stale-arg-fired-aug2026): bit `i` set =
     // the arg is present but did not fire this cycle. The dispatcher
     // delivers those slots as `TagValue::stale`, so builtins whose
@@ -217,17 +242,16 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // producing its cached value (an absent delivery would pend the
     // dispatch and bottom it after the first invocation). Like the
     // taint fold, each bit is const for a proven-fresh arg.
-    // SCAFFOLD-LOOP sites keep FIRED delivery (mask 0): they are the
-    // shared key-0 bucket — ONE inner Apply serves every collection
-    // position — and a stale delivery there makes every slot's
-    // CachedArgs surface the SHARED cache's last result instead of
-    // re-evaluating with its own position's args (aug08a hz1
-    // generate/000000: a fused map::filter kept every element on a
-    // refire because each slot's predicate rode the LAST slot's
-    // `true`). Fired per-slot re-eval is the interp-equal pre-mask
-    // behavior for position-varying args; the per-slot identity chain
-    // remains the documented follow-up.
-    let stale_mask = if cx.ctx.loop_depth.get() > 0 {
+    // UNCLAIMED scaffold-loop sites keep FIRED delivery (mask 0):
+    // they are the shared key-0 bucket — ONE inner Apply serves every
+    // collection position — and a stale delivery there makes every
+    // slot's CachedArgs surface the SHARED cache's last result
+    // instead of re-evaluating with its own position's args (aug08a).
+    // CLAIMED in-loop sites carry per-slot identity (5c) and take the
+    // honest mask like every other claimed site — per-position caches
+    // make stale rides sound, and effects stop re-firing per kernel
+    // invocation (dense delta 1+2).
+    let stale_mask = if cx.ctx.loop_depth.get() > 0 && !site_claimed {
         cx.b.ins().iconst(types::I64, 0)
     } else {
         let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
@@ -269,7 +293,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // mask semantics (a position-invariant arg's ride is correct and
     // load-bearing; cross-position rides on non-init runs remain a
     // known approximation — see design/collection_intrinsics.md).
-    if cx.ctx.loop_depth.get() > 0 {
+    // A CLAIMED in-loop site needs no force: its per-slot instance is
+    // fresh exactly when the position is (chain leaves reset with the
+    // slot tables), so there is no cross-position state to ride.
+    if cx.ctx.loop_depth.get() > 0 && !site_claimed {
         let any = cx.b.ins().icmp_imm(IntCC::NotEqual, taint_mask, 0);
         let init = cx.init_flag();
         let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
@@ -277,19 +304,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let all_masked = cx.b.ins().iconst(types::I64, -1);
         taint_mask = cx.b.ins().select(bottom_now, all_masked, taint_mask);
     }
-    // The result-disc fold must treat a masked (absent) arg as
-    // NEUTRAL — it did not fire (STALE) and its bottom must NOT taint
-    // a result eval computed over the remaining slots (the interp's
-    // gated delivery contributes nothing). Neutralize each tainted
-    // disc to a bare STALE for the folds below.
-    let neutral_discs: smallvec::SmallVec<[ClifValue; 8]> = arg_taint_discs
-        .iter()
-        .map(|d| {
-            let t = is_tainted(cx.b, *d);
-            let stale = cx.b.ins().iconst(types::I64, STALE);
-            cx.b.ins().select(t, stale, *d)
-        })
-        .collect();
+    // 5c (Seam B): the result's firing/bottomness is the RETURNED
+    // production's own tag, in-band on `raw0` — the wrapper already
+    // joined the args into it (update_full's Tag::join + the Q1
+    // bottom arm), so the old per-arg neutral-disc folds are gone.
     let dmerge = cx.b.create_block();
     let pay_ty = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => prim_to_clif(p),
@@ -297,7 +315,6 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     };
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
-    let site_word = emit_dyncall_site_word(cx);
     // The buf's in-flight cover ends here: the dispatcher consumes it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
     let call =
@@ -321,26 +338,28 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         let c = cx.b.ins().call(take, &[]);
         cx.b.inst_results(c)[0]
     };
-    // Results per return shape. Tainted args were delivered as
-    // ABSENCE via the mask (their discs fold as neutral STALE), so a
-    // result computed over the remaining slots keeps its honest tag.
+    // Results per return shape: the returned disc's TAINT/STALE bits
+    // ARE the production's tag — adopt them.
+    let tagbits = cx.b.ins().band_imm(raw0, TAINT | STALE);
     match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => {
             // Scalar return: the payload word carries the Value-encoded
-            // scalar bits — narrow to the prim. The 0 sentinel on
-            // pending is a harmless payload for downstream scalar
-            // arithmetic — no branch, just fold the pend bit into TAINT.
+            // scalar bits — narrow to the prim (a bottom's placeholder
+            // payload is harmless garbage for downstream scalar
+            // arithmetic, guarded by its TAINT bit). Fold the pend bit
+            // (genuine abort) into TAINT.
             let value = cast_u64_to_prim(cx.b, raw1, p);
             let base = scalar_disc(cx.b, p);
-            let disc = propagate_flags(cx.b, base, &neutral_discs);
+            let disc = cx.b.ins().bor(base, tagbits);
             let disc = taint_if(cx.b, disc, pend);
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(value)]);
         }
         Some(AbiKind::Unit) => {
             // Unit return: dispatcher returned the Null pair. The
-            // result is discarded by the statement position; the pend
-            // bit still rides so a bound unit local reads as bottom.
-            let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
+            // result is discarded by the statement position; the tag
+            // still rides so a bound unit local reads honestly.
+            let base = cx.b.ins().iconst(types::I64, value_disc::NULL);
+            let disc = cx.b.ins().bor(base, tagbits);
             let disc = taint_if(cx.b, disc, pend);
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(raw1)]);
         }
@@ -357,17 +376,22 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // sentinel `(0, 0)` is NOT inert — every String position
             // assumes a valid owned ArcStr (#214), zero ValArray bits
             // can't be touched, and a zero Value disc is not a real
-            // tag. Branch: on pend, produce a tainted shape-safe
-            // placeholder and continue to the merge. For String/composite
-            // returns the returned DISC is additionally checked
-            // against the expected shape — a dispatcher that returned
-            // the wrong Value shape is a compiler bug (the old
-            // ret_kind protocol logged + pended in the dispatcher);
-            // adopting its payload as ArcStr/ValArray bits would be
-            // UB, so a mismatch takes the placeholder path too.
+            // tag. A BOTTOM return (in-band TAINT) carries only its
+            // helper-safe placeholder — never adopt its payload.
+            // Branch: on pend OR taint, produce a tainted shape-safe
+            // placeholder (preserving the return's STALE bit — a
+            // standing bottom must stay quiet) and continue to the
+            // merge. For String/composite returns the returned DISC
+            // is additionally checked against the expected shape — a
+            // dispatcher that returned the wrong Value shape is a
+            // compiler bug; adopting its payload as ArcStr/ValArray
+            // bits would be UB, so a mismatch takes the placeholder
+            // path too.
             let pend_bl = cx.b.create_block();
             let ok_bl = cx.b.create_block();
             let ret_abi = kernel_abi::abi_kind(cx.registry(), &info.return_type);
+            let t = is_tainted(cx.b, raw0);
+            let bad = cx.b.ins().bor(pend, t);
             let expected_disc: Option<i64> = match ret_abi {
                 Some(AbiKind::String) => Some(value_disc::STRING),
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -379,29 +403,32 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                 Some(exp) => {
                     let clean0 = clean_disc(cx.b, raw0);
                     let mismatch = cx.b.ins().icmp_imm(IntCC::NotEqual, clean0, exp);
-                    let bad = cx.b.ins().bor(pend, mismatch);
+                    let bad = cx.b.ins().bor(bad, mismatch);
                     cx.b.ins().brif(bad, pend_bl, &[], ok_bl, &[]);
                 }
                 None => {
-                    cx.b.ins().brif(pend, pend_bl, &[], ok_bl, &[]);
+                    cx.b.ins().brif(bad, pend_bl, &[], ok_bl, &[]);
                 }
             }
             cx.b.switch_to_block(pend_bl);
             cx.b.seal_block(pend_bl);
-            // A shape-mismatched (non-pend) result still OWNS the
-            // returned Value — drop it before the placeholder so the
-            // compiler-bug path leaks nothing. On the pend path the
-            // pair is the inert (0, 0) sentinel, which
-            // `graphix_value_drop` rejects — guard on a nonzero disc.
+            // A shape-mismatched (untainted, non-pend) result still
+            // OWNS the returned Value — drop it before the placeholder
+            // so the compiler-bug path leaks nothing. The pend path's
+            // pair is the inert (0, 0) sentinel and a bottom's
+            // placeholder pair owns nothing — guard on a nonzero,
+            // UNTAINTED disc.
             {
                 let nz = cx.b.ins().icmp_imm(IntCC::NotEqual, raw0, 0);
+                let untainted = cx.b.ins().icmp_imm(IntCC::Equal, t, 0);
+                let genuine = cx.b.ins().band(nz, untainted);
                 let drop_bl = cx.b.create_block();
                 let cont_bl = cx.b.create_block();
-                cx.b.ins().brif(nz, drop_bl, &[], cont_bl, &[]);
+                cx.b.ins().brif(genuine, drop_bl, &[], cont_bl, &[]);
                 cx.b.switch_to_block(drop_bl);
                 cx.b.seal_block(drop_bl);
-                // nz ⟺ the shape-mismatch path (pend's sentinel is
-                // (0,0)) — make the value loss LOUD before dropping
+                // genuine ⟺ the shape-mismatch path — make the value
+                // loss LOUD before dropping
                 // (sprintf-error-return-shape-aug2026).
                 let warn_h = cx.helper("graphix_shape_mismatch_warn")?;
                 cx.b.ins().call(warn_h, &[raw0]);
@@ -412,7 +439,13 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                 cx.b.seal_block(cont_bl);
             }
             let ph = emit_elem_placeholder(cx, &info.return_type)?;
-            let ph_disc = propagate_flags(cx.b, ph.disc, &neutral_discs);
+            // The placeholder IS a bottom production: TAINT always,
+            // plus the return's STALE bit (a standing bottom stays
+            // quiet; pend's zero sentinel contributes none — a genuine
+            // abort reads as a fresh bottom).
+            let taint_c = cx.b.ins().iconst(types::I64, TAINT);
+            let ph_disc = cx.b.ins().bor(ph.disc, tagbits);
+            let ph_disc = cx.b.ins().bor(ph_disc, taint_c);
             cx.b.ins()
                 .jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(ok_bl);
@@ -420,26 +453,21 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             let (disc, pay) = match ret_abi {
                 Some(AbiKind::String) => {
                     // `raw1` is the ArcStr's bits (ownership
-                    // transferred from the dispatcher).
+                    // transferred from the dispatcher); the return's
+                    // tag rides.
                     let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
-                    (propagate_flags(cx.b, base, &neutral_discs), raw1)
+                    (cx.b.ins().bor(base, tagbits), raw1)
                 }
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                     // `raw1` is owned ValArray bits.
                     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-                    (propagate_flags(cx.b, base, &neutral_discs), raw1)
+                    (cx.b.ins().bor(base, tagbits), raw1)
                 }
                 _ => {
-                    // Value-shape: both register-words. `raw0` is a
-                    // REAL (flag-free) Value disc from the dispatcher —
-                    // fold the args' firing in like every other arm,
-                    // else the result reads as always-fired: a const
-                    // `buffer::from_string(...)`/`cast<T>(x)$` re-fired
-                    // on every kernel wake, and a consume-always
-                    // connect of one SELF-WOKE its own kernel forever
-                    // (soak jul05 items 1/4/25 — the ExtraFire/Timeout
-                    // family).
-                    (propagate_flags(cx.b, raw0, &neutral_discs), raw1)
+                    // Value-shape: both register-words — `raw0` is the
+                    // real Value disc with the production's tag
+                    // already in-band.
+                    (raw0, raw1)
                 }
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
@@ -455,29 +483,34 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx.b.seal_block(dmerge);
     let params = cx.b.block_params(dmerge);
     let merged = CompiledExpr::new(params[0], params[1]);
-    // Interior-bottom exactness: a pended dispatch, a tainted-arg
-    // skip, with PRIOR success degrades to STALE + the cached value —
-    // matching the node-walk, where consumers sample the builtin
-    // node's cached last output when it doesn't fire. Non-scalar
-    // returns ride through the owned-value twin (both dmerge paths
-    // produce owned pairs: dispatcher results transfer ownership,
-    // placeholders are fresh).
-    match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
-        Some(AbiKind::Scalar(p)) => Ok(emit_scalar_taint_cache(cx, p, merged)),
-        Some(
-            AbiKind::String
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value,
-        ) => {
-            let tail = cx.ctx.tail_leaves.borrow().contains(&spec_id.inner());
-            emit_value_taint_cache(cx, merged, tail)
+    // 5c: BOTTOM PROPAGATES (Q1) at statement/merge positions — the
+    // pre-dense blanket "prior success degrades to STALE + the cached
+    // value" is scoped to the VALUE-DRIVEN ride contexts the dense
+    // interp retains (`in_ride_scope`: loop bodies' per-slot values,
+    // guard-interior reads); everywhere else the bottom flows. The
+    // select scrutinee ride is the other designated rider
+    // (emit/select.rs, untouched).
+    if super::abi::in_ride_scope(cx) {
+        match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
+            Some(AbiKind::Scalar(p)) => {
+                return Ok(emit_scalar_taint_cache(cx, p, merged));
+            }
+            Some(
+                AbiKind::String
+                | AbiKind::Array
+                | AbiKind::Tuple
+                | AbiKind::Struct
+                | AbiKind::Variant
+                | AbiKind::Nullable
+                | AbiKind::Value,
+            ) => {
+                let tail = cx.ctx.tail_leaves.borrow().contains(&_spec_id.inner());
+                return emit_value_taint_cache(cx, merged, tail);
+            }
+            _ => {}
         }
-        _ => Ok(merged),
     }
+    Ok(merged)
 }
 
 /// Where a composite expression's pointer came from. Drives whether

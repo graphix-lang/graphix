@@ -857,10 +857,19 @@ macro_rules! arith_op {
                 // R1: recompute on TRIGGERING productions (a stale
                 // ride carries an unchanged value); a bottom resident
                 // still computes so a stale-filled first evaluation
-                // produces (the value channel fills through ops).
+                // produces (the value channel fills through ops). The
+                // skip is valid ONLY at frame depth 0 (the R1 law):
+                // inside frames stale chains carry ADVANCING values
+                // (tail_jump_fired_plumbing), so a framed pass
+                // recomputes unconditionally — exactly the kernel.
+                // Logging stays trig-gated (Q2: a standing bottom
+                // re-derived in a frame never re-logs).
                 let trig =
                     l.is_some_and(|t| t.triggers()) || r.is_some_and(|t| t.triggers());
-                if trig || (produced && self.resident.tag().is_bottom()) {
+                if trig
+                    || (produced && self.resident.tag().is_bottom())
+                    || (produced && ctx.frame_depth > 0)
+                {
                     let fired = l.is_some_and(|t| t.is_fired())
                         || r.is_some_and(|t| t.is_fired());
                     let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };

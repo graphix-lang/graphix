@@ -1218,9 +1218,17 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             };
         }
 
-        let mut any_trig = source_tag.is_some_and(|t| t.triggers())
-            || init_tag.is_some_and(|t| t.triggers())
-            || forced_taint && src_trig;
+        // Only SLOT PRODUCTIONS seed the firing decision (the ruled
+        // per-slot precision: a same-length source refresh whose
+        // callback bodies are all quiet does NOT re-fire — MapQ's
+        // `production` merge and the kernel's SlotFlags agree). A
+        // fired source/init delivery reaches the result only through
+        // a slot body that consumes it; seeding from the deliveries
+        // made a const-body fold re-emit per source tick (twochannel
+        // p7, a 5b flip regression). `forced_taint && src_trig` stays:
+        // the bottom arm below distinguishes a triggering taint
+        // (FreshBottom) from a standing one (ride).
+        let mut any_trig = forced_taint && src_trig;
         let saved_init = event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
@@ -1391,7 +1399,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         self.init = None;
         self.source_present = false;
         for slot in self.slots.iter_mut() {
-            for id in [slot.acc_id, slot.element_id] {}
             slot.cycle = None;
             slot.held = None;
             slot.tag = Tag::STALE;

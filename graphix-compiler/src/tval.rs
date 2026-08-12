@@ -104,13 +104,6 @@ impl Tag {
         Tag(bits)
     }
 
-    /// The 5c BOUNDARY ADAPTER: the sparse world's TAINT⟹STALE
-    /// invariant, applied at the kernel output decode only. Deleted
-    /// when the kernel flips to honest discs.
-    pub fn clamp_sparse(self) -> Tag {
-        if self.0 & Self::TAINT_BIT != 0 { Self::TAINT } else { self }
-    }
-
     pub fn bits(self) -> u8 {
         self.0
     }
@@ -510,7 +503,6 @@ mod tests {
         // raw bytes are honest since the 5b flip; the kernel-output
         // seam clamps locally
         assert_eq!(T::from_raw(T::TAINT_BIT), T::FRESH_BOTTOM);
-        assert_eq!(T::from_raw(T::TAINT_BIT).clamp_sparse(), T::TAINT);
     }
 
     #[test]

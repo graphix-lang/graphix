@@ -484,15 +484,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         registry,
         // Parent slots lead the combined `dyn_slots` table.
         fn_index_offset: 0,
-        // A non-recursive published body gates STALE at its return (the
-        // over-fire fix). A RECURSIVE parent (a self-recursive collection
-        // callback) emits its returns in tail position
-        // (`emit_body_tail`), which does NOT fold the select scrutinee's
-        // STALE into a constant tail arm — and a recursive kernel produces
-        // a value on EVERY dispatch (it's a function call, not a reactive
-        // sample), so its return must gate TAINT-only, else a stale-
-        // constant base-case arm wrong-bottoms on a non-init dispatch.
-        gate_stale_at_return: parent_self_call.is_none(),
         lifted,
         allow_state: true,
         allow_replay_state: parent_allow_replay,
@@ -531,10 +522,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     type_env: Some(type_env),
                     registry,
                     fn_index_offset: base,
-                    // A callee body's result is CONSUMED via a cross-kernel
-                    // call (its disc lost in the scalar return ABI), so it
-                    // gates TAINT only — gating STALE would wrong-bottom.
-                    gate_stale_at_return: false,
                     lifted: &no_lift,
                     allow_state: false,
                     allow_replay_state: false,

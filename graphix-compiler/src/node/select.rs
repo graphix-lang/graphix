@@ -280,7 +280,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // The scrutinee RIDE re-matches only via pat_up, per the
         // aug06ghz0 ruling ("a guard-dep fire re-matches against the
         // cached value").
-        let arg_trig = !bottomed && arg_prod.is_some_and(|t| t.triggers());
+        //
+        // INSIDE FRAMES selection is VALUE-DRIVEN (R1: a framed pass
+        // is the kernel's per-invocation re-derivation, whose tail
+        // if-chain re-matches on the scrutinee VALUE every pass): a
+        // jump-rebound loop variable arrives STALE by ruling
+        // (tail_jump_fired_plumbing — loop plumbing, not an event),
+        // so a triggers()-only driver retained the previous pass's
+        // arm and spun the loop forever. Firing stays with the
+        // emission rules — a value-driven re-match to the same arm
+        // with a stale production emits stale. The once_tainted rule
+        // is a DEPTH-0 rule (the leaked selection is discovered by a
+        // quiet poll AFTER the frames end) and is untouched.
+        let arg_trig = !bottomed
+            && (arg_prod.is_some_and(|t| t.triggers())
+                || (ctx.frame_depth > 0 && arg_up));
         let out = if !arg_trig && !pat_up {
             selected.get().and_then(|i| match arms[i].1.update(ctx, event) {
                 None => None,
@@ -340,7 +354,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     let wake_tag = if tail || ride {
                         bind_tag
                     } else {
-                        arg_prod.unwrap_or(Tag::FIRED)
+                        match arg_prod {
+                            // a genuinely-triggering scrutinee delivery
+                            // carries its own tag into the binds
+                            Some(t) if t.triggers() => t,
+                            // guard-flip wake: the scrutinee produced
+                            // only its quiet ride (under dense EVERY
+                            // node produces, so `arg_prod` is never
+                            // None and the old unwrap_or(FIRED) arm
+                            // went dead — the wake bound STALE and the
+                            // woken arm's interior call sites never
+                            // dispatched, aug03's exact symptom). The
+                            // wake bind is the arm's INIT VIEW (R2's
+                            // fresh reader): bind FIRED.
+                            _ => Tag::FIRED,
+                        }
                     };
                     bind!(i, wake_tag);
                     let init = event.init;

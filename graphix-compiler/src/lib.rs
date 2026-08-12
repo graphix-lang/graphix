@@ -204,6 +204,15 @@ impl Control {
         self.depth_trip.swap(false, Ordering::Relaxed)
     }
 
+    /// Read the JIT depth-trip flag WITHOUT clearing it.
+    /// `Kernel::update` peeks to decide its production (a trip is a
+    /// delivered FreshBottom, not a silent abort —
+    /// missing_fire_epoch3_aug08e); the wrapping `FusedKernel` then
+    /// takes it for the diagnostic.
+    pub fn peek_depth_trip(&self) -> bool {
+        self.depth_trip.load(Ordering::Relaxed)
+    }
+
     /// Request that in-flight loops abort this cycle; the runtime keeps
     /// running and `do_cycle` clears this at the end of the cycle.
     pub fn interrupt(&self) {

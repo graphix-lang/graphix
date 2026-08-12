@@ -23,11 +23,8 @@
 //   13    -> builtin_bottom_propagates (below)
 
 use anyhow::{Result, bail};
-use graphix_package_core::{
-    PrintSink,
-    testing::init_with_flags_and_setup,
-};
 use graphix_compiler::CFlag;
+use graphix_package_core::{PrintSink, testing::init_with_flags_and_setup};
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use tokio::sync::mpsc;
@@ -121,13 +118,11 @@ async fn print_const_once(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled delta 1 — post-flip expectation, RED pre-flip in jit"]
 async fn print_const_once_interp() -> Result<()> {
     print_const_once(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled delta 1 — post-flip expectation, RED pre-flip in jit"]
 async fn print_const_once_jit() -> Result<()> {
     print_const_once(false).await
 }
@@ -155,13 +150,11 @@ async fn print_hof_once(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled deltas 1+2 — post-flip expectation, RED pre-flip in jit"]
 async fn print_hof_once_interp() -> Result<()> {
     print_hof_once(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled deltas 1+2 — post-flip expectation, RED pre-flip in jit"]
 async fn print_hof_once_jit() -> Result<()> {
     print_hof_once(false).await
 }
@@ -195,13 +188,11 @@ async fn depth_trip_agrees(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled delta 4 — post-flip expectation, RED pre-flip in interp"]
 async fn depth_trip_agrees_interp() -> Result<()> {
     depth_trip_agrees(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled delta 4 — post-flip expectation, RED pre-flip in interp"]
 async fn depth_trip_agrees_jit() -> Result<()> {
     depth_trip_agrees(false).await
 }
@@ -232,13 +223,11 @@ async fn builtin_bottom_propagates(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled delta 13 — post-flip expectation, RED pre-flip in both modes"]
 async fn builtin_bottom_propagates_interp() -> Result<()> {
     builtin_bottom_propagates(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "dense-delivery ruled delta 13 — post-flip expectation, RED pre-flip in both modes"]
 async fn builtin_bottom_propagates_jit() -> Result<()> {
     builtin_bottom_propagates(false).await
 }

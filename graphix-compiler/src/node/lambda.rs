@@ -163,6 +163,14 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// every invocation, is the reference). Read in `update` to run the
     /// first pass framed.
     prev_looped: bool,
+    /// `true` until this instance's first dispatch has run. A fresh
+    /// bind mints fresh formal pattern ids; the first dispatch seeds
+    /// their VALUE CHANNEL from the args' quiet productions (the
+    /// kernel delivers every param per invocation) — without it a
+    /// rebound instance whose args are all stale (a parked transient
+    /// woken by a capture) reads phantom formals and its body
+    /// early-bottoms (transient-prime-park/01 under the flip).
+    first_dispatch: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -341,10 +349,34 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // delivery, or a real init view)? The tail loop below needs
         // this to derive its result tag — see the override at its end.
         let mut entry_fired = event.init;
+        let first = mem::replace(&mut self.first_dispatch, false);
         for (arg, pat) in from.iter_mut().zip(&self.args) {
             let tv = arg.update(ctx, event);
             let tag = tv.tag();
             entry_fired |= tag.triggers();
+            // First dispatch of a fresh instance: seed the fresh
+            // formal ids' VALUE CHANNEL from a quiet (stale) arg
+            // production — the store is keyed by the PREVIOUS
+            // instance's ids, so without this the body reads phantom
+            // formals. Delivered both as a cycle-scoped overlay entry
+            // (works at any frame depth) and, at depth 0, as a
+            // standing store entry for later quiet cycles (R3: frames
+            // never write the store). Triggering productions take the
+            // normal publish below.
+            if first && !tag.triggers() && !tag.is_bottom() {
+                let v = tv.value_cloned();
+                let store = ctx.frame_depth == 0;
+                pat.bind(&v, &mut |id, v| {
+                    if store {
+                        // Store only — an overlay entry would shadow
+                        // the store's R2 init-view upgrade (see the
+                        // CallSite seed twin).
+                        ctx.rt.store_insert_standing(id, TagValue::stale(v.clone()));
+                    } else {
+                        event.variables.insert(id, TagValue::stale(v.clone()));
+                    }
+                });
+            }
             // Publish TRIGGERING deliveries only: a stale production is
             // the value channel, which the formal's store read already
             // serves (a standing entry reads Stale; a standing bottom
@@ -361,8 +393,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     });
                 } else {
                     let v = tv.value_cloned();
+                    // R3: frames never write the store — a formal
+                    // published from inside an enclosing loop's frame
+                    // is loop plumbing, and storing it clobbered the
+                    // cross-cycle channel with the LAST intra-loop
+                    // rebind (the next dispatch's framed seed then
+                    // read n=0 instead of the entry value —
+                    // tail-arg-bottom/02 under the flip).
+                    let store = ctx.frame_depth == 0;
                     pat.bind(&v, &mut |id, v| {
-                        ctx.rt.cached_insert(id, v.clone());
+                        if store {
+                            ctx.rt.cached_insert(id, v.clone());
+                        }
                         event.variables.insert(id, TagValue::tagged(v.clone(), tag));
                     })
                 }
@@ -510,6 +552,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 && (entry_fired || externals_triggered(&self.body, ctx, event));
             if framed {
                 self.body.reset_replay(ctx);
+                // Seed the framed first pass's frame with the FORMALS'
+                // current per-cycle truth: a delivered formal keeps
+                // its cycle tag, a standing one reads QUIET (stale) —
+                // exactly the kernel's param staging for a retained
+                // input (an un-redelivered formal must NOT read fresh:
+                // the freshness over-fired an output whose value
+                // ignores the changed capture, tail-jump-honest-tags/
+                // 00, Eric ruled kernel-right 2026-07-18). The framed
+                // re-derivation's RE-MATCH comes from the select's
+                // in-frame value-driven flow driver, not from minted
+                // firing.
+                for pat in self.args.iter() {
+                    pat.ids(&mut |id| {
+                        if let Some(vr) = super::read_var(ctx, event, &id) {
+                            let tv = match vr {
+                                super::VarRead::Delivered(tv) => tv.clone(),
+                                super::VarRead::Standing(tv) => {
+                                    let mut c = tv.clone();
+                                    let t = c.tag().quiet();
+                                    c.retag(t);
+                                    c
+                                }
+                            };
+                            frame.insert(id, tv);
+                        }
+                    });
+                }
             }
             // Fresh tail-scrutinee accumulator for this dispatch (the
             // kernel initializes `tail_scrut_stale` per invocation);
@@ -630,7 +699,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     }
                 }
             };
-            self.prev_looped = reentered;
+            // Update the looped flag on GENUINE dispatches only. Under
+            // dense delivery the callsite polls its callee EVERY cycle
+            // — a quiet poll (no triggering formal, no external, not
+            // init, never reentered) evaluates nothing that could
+            // clean the body's mid-recursion frame state, so it must
+            // not clear the flag either: the pre-flip sparse gate
+            // never dispatched quiet cycles at all, and clearing here
+            // let the NEXT genuine dispatch run unframed and
+            // observably RESUME the recursion (the jul16 class D
+            // artifact returned — frame-state-cross-cycle/
+            // 00_resumed_recursion under the flip).
+            if reentered
+                || framed
+                || event.init
+                || entry_fired
+                || externals_triggered(&self.body, ctx, event)
+            {
+                self.prev_looped = reentered;
+            }
             // Result-tag derivation for a loop that actually RE-ENTERED
             // (or ran its first pass framed): every framed pass runs
             // under a forced init view (body constants must re-fire per
@@ -915,6 +1002,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self_bind: Mutex::new(None),
             resident: TagValue::phantom(),
             prev_looped: false,
+            first_dispatch: true,
         })
     }
 }

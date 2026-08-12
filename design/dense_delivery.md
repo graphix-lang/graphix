@@ -370,3 +370,112 @@ the still-sparse kernel across the flip:
 Net effect of the adapter pair on the dyncall seam: bottom in →
 bottom out, coherently — the dyncall-partial-args window fixtures
 flipped from mapped desyncs to AGREE ahead of 5c.
+
+## Reorder note: P5b′ follows 5c (2026-08-12)
+
+The P5b′-before-5c placement assumed "every awake child delivers
+Stale(resident) every cycle" — true for interp children post-flip,
+FALSE at the kernel boundary until 5c: `FusedKernel::update` still
+returns ABSENT on quiet cycles (the sparse output filter), and the
+consumer caches are what ride history across those absences wherever
+a fused region sits under a Cached consumer (a select's fused
+scrutinee, `~`'s fused arg). Deleting them first would require an
+absence shim per consumer — complexity, not the planned
+simplification. After 5c kills absent everywhere, the deletion is the
+trivial mirror-removal the plan described. Same resequencing class
+Eric approved at P5a (deletion follows the flip that makes it
+trivial).
+
+## As-built: 5c — the kernel flip (2026-08-12)
+
+The kernel boundary is honest; the deliberate 5b engine desync is
+CLOSED (corpus sweep: 22 divergences at 5b close → ∅; the one-sided
+adjudication key retires). What landed, per seam:
+
+**Seam C (output).** The CLIF return gate (`emit_force` on a
+not-fresh disc → pending) is DELETED with its `gate_stale_at_return`
+plumbing: every kernel returns its result's honest TAINT/STALE tag
+in-band on the disc, and `Kernel::update` decodes the production —
+Fired/Stale carry the value into the resident, bottoms free the
+placeholder and produce the shared FreshBottom/StaleBottom. A quiet
+poll rides the resident (the R1 skip); `TagValue::absent()` is GONE
+from the kernel output. Pending is reserved for genuine aborts and
+SPLIT BY CAUSE: a depth trip is a delivered FreshBottom
+(`peek_depth_trip` — `FusedKernel` still takes the flag for the
+diagnostic; missing_fire_epoch3_aug08e fixed), an interrupt rides.
+`builder.rs`'s depth-0 fired-only filter (replay_frames Ruling A.2)
+is repealed — `FusedKernel` forwards the honest production.
+
+**Seam A (input).** Feeder staging packs straight from each
+production's tag: value+STALE for quiet rides, bare TAINT for a
+triggering bottom, TAINT|STALE for a standing one (the ruled
+marshaled-param choice — a standing bottom must not fire loop/select
+machinery). `Kernel::args` (the retained per-arg slots) is DELETED:
+dense feeders deliver every cycle and the R2 store read is the
+wake/arm-replay memory. The unresolvable-Binding early-out rides
+instead of vanishing.
+
+**Seam B (DynCall).** The masks stay — they ARE the honest per-arg
+tag channel (taint×stale = the four states; the in-band constraint
+was about kernel param discs, already satisfied). The DELIVERY is
+honest: a taint-masked slot delivers FreshBottom/StaleBottom and the
+wrapper's Q1 arm bottoms the invocation (the 5b tombstone and the
+pre-dense ride-own-history semantics are the re-blessed
+dyncall-partial-args delta). The RETURN is the production WHOLE
+(`Option<TagValue>`; `dispatch_typed` transmutes the tagged words):
+the call site adopts the in-band tag — stale resurfaces stop reading
+as fires (the dyncall-stale-arg class closed) — and the per-arg
+neutral-disc result folds die (the wrapper already joined args into
+its production tag). The placeholder path keys on pend|taint|mismatch
+and preserves the return's STALE. `default_external_refs` priming is
+deleted (default trees' Refs read the store, R2).
+
+**The taint-cache scoping (the big Q1 rule).** The interior-bottom
+"prior success degrades to STALE + cached value" site caches
+implemented the PRE-DENSE consumer contract, repealed by the flip.
+They are now scoped to the interp's two VALUE-DRIVEN ride contexts
+(`in_ride_scope` = `loop_depth > 0 || guard_depth > 0`): loop bodies
+(per-slot values are designated memory, fork 7) and select guard
+interiors (guard truth reads cached values, which survive under a
+poisoned tag). Everywhere else — dyncall results, qop results, the
+div node, the select merge — BOTTOM PROPAGATES. The select scrutinee
+ride (`emit_scrut_ride`) is untouched designated memory. The four
+aug07 storage-law fixtures now FUSE (the refusals and the ASPIREd
+value residents are both obsolete).
+
+**The framed tail-loop cluster (interp).** Five 5b-deletion holes
+re-expressed under R1/R2/R3: `prev_looped` survives quiet polls;
+the framed first pass seeds its frame with the formals' per-cycle
+truth (standing → QUIET — a fresh() upgrade over-fired
+ignored-capture; the kernel stages retained params STALE); selects
+RE-MATCH on any scrutinee value view inside frames (framed passes
+are the kernel's value-driven re-derivation; stale jump plumbing
+must advance the loop); arith recomputes unconditionally in frames
+(the R1 skip is depth-0-only; Q2 logging stays trig-gated); frames
+never write the store (R3 — the store keeps ENTRY values for the
+framed seed), with the tail stash consuming arg PRODUCTIONS directly
+(stale plumbing is never published; the old read_var stash had been
+reading store contamination by accident).
+
+**Fresh-instance seeding (interp).** A fresh bind's ids (callsite
+arg ids, instance formal pattern ids) have no store history, and
+quiet productions never publish — the kernel's
+every-param-per-invocation delivery is restored on the VALUE channel:
+bind-time `store_insert_standing` seeds at depth 0 (STORE-only — an
+overlay entry would shadow the R2 init-view upgrade), overlay-only
+inside frames. A becoming-selected wake with a non-triggering
+scrutinee production binds FIRED (the arm's init view — under dense
+`arg_prod` is never None, so the old unwrap_or(FIRED) had gone dead).
+
+**Also fixed en route (interp regressions from 5b):** FoldQ's firing
+seeded from source/init DELIVERIES instead of slot productions (a
+const-body fold re-emitted per source tick against the organic-tags
+ruling — the twochannel class); this had been mis-adjudicated at 5b
+as an expected delta (gates-are-not-the-fuzzer: pattern-matching the
+pin name is not deriving the expected behavior).
+
+**Deleted adapters:** the 5b feeder-poll input adapter, the dispatch
+output adapter and tombstone, `gate_stale_at_return`/`emit_force`/
+`is_not_fresh`, the neutral-disc folds, `default_external_refs`,
+`Kernel::args`. `Tag::clamp_sparse` is zero-caller (removed at the
+close). `fusion/` contains no `absent`/`is_absent` reads.
