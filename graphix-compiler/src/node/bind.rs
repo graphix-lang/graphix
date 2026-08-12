@@ -211,7 +211,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
                     event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    ctx.rt.cached_insert(id, v);
+                    ctx.rt.store_insert(id, TagValue::fired(v));
                     ctx.rt.notify_set(id);
                 })
             }

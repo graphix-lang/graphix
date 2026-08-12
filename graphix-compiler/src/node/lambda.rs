@@ -403,7 +403,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     let store = ctx.frame_depth == 0;
                     pat.bind(&v, &mut |id, v| {
                         if store {
-                            ctx.rt.cached_insert(id, v.clone());
+                            ctx.rt.store_insert(id, TagValue::fired(v.clone()));
                         }
                         event.variables.insert(id, TagValue::tagged(v.clone(), tag));
                     })

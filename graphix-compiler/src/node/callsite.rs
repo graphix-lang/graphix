@@ -194,7 +194,7 @@ fn callee_def_scope<R: Rt, E: UserEvent>(
 ) -> Option<crate::expr::ModPath> {
     let fv = match fnode.view() {
         NodeView::Ref(r) if !ctx.unstable_bindings.contains(&r.id) => {
-            ctx.bind_to_lambda.get(&r.id).or_else(|| ctx.rt.cached().get(&r.id)).cloned()
+            ctx.bind_to_lambda.get(&r.id).cloned().or_else(|| ctx.rt.store_value(&r.id))
         }
         NodeView::Lambda(l) => Some(l.def_value().clone()),
         _ => None,
@@ -491,7 +491,8 @@ fn transient_body_ok<R: Rt, E: UserEvent>(
                                     && ctx
                                         .bind_to_lambda
                                         .get(&r.id)
-                                        .or_else(|| ctx.rt.cached().get(&r.id))
+                                        .cloned()
+                                        .or_else(|| ctx.rt.store_value(&r.id))
                                         .map(|v| {
                                             v.downcast_ref::<LambdaDef<R, E>>().is_some()
                                         })
@@ -732,7 +733,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         self.args.retain(|_, arg| {
             if arg.is_default {
-                ctx.rt.cached_remove(&arg.id);
+                ctx.rt.store_remove(&arg.id);
                 if let Some(mut n) = arg.node.take() {
                     n.delete(ctx);
                 }
@@ -1101,11 +1102,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // same cycle.
         let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
             refs.with_external_refs(|id| {
-                if let Some(v) = ctx.rt.cached().get(&id) {
+                if let Some(v) = ctx.rt.store_value(&id) {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
                         // FIRED: first-dispatch init semantics (a fresh
                         // bind sees everything as new)
-                        e.insert(TagValue::fired(v.clone()));
+                        e.insert(TagValue::fired(v));
                         set.push(id);
                     }
                 }
@@ -1227,7 +1228,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         let v = tv.value_cloned();
                         // R3: frames never write the store.
                         if ctx.frame_depth == 0 {
-                            ctx.rt.cached_insert(arg.id, v.clone());
+                            ctx.rt.store_insert(arg.id, TagValue::fired(v.clone()));
                         }
                         event.variables.insert(arg.id, TagValue::fired(v));
                         set.push(arg.id);
@@ -1371,7 +1372,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         r.id,
                         ctx.unstable_bindings.contains(&r.id),
                         ctx.bind_to_lambda.contains_key(&r.id),
-                        ctx.rt.cached().get(&r.id).is_some(),
+                        ctx.rt.store_value(&r.id).is_some(),
                     );
                 }
                 if ctx.unstable_bindings.contains(&r.id) {
@@ -1379,8 +1380,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 } else {
                     ctx.bind_to_lambda
                         .get(&r.id)
-                        .or_else(|| ctx.rt.cached().get(&r.id))
                         .cloned()
+                        .or_else(|| ctx.rt.store_value(&r.id))
                 }
             }
             NodeView::Lambda(l) => Some(l.def_value().clone()),
@@ -1549,7 +1550,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         // published inside an enclosing loop's frame
                         // is loop plumbing.
                         if ctx.frame_depth == 0 {
-                            ctx.rt.cached_insert(arg.id, v.clone());
+                            ctx.rt.store_insert(arg.id, TagValue::fired(v.clone()));
                         }
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
@@ -1925,7 +1926,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         self.fnode.delete(ctx);
         for arg in self.args.values_mut() {
-            ctx.rt.cached_remove(&arg.id);
+            ctx.rt.store_remove(&arg.id);
             if let Some(ref mut n) = arg.node {
                 n.delete(ctx);
             }
@@ -1952,7 +1953,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         // The published arg values (`update` inserts them into
-        // `rt.cached` under this site's own per-instance arg ids) are
+        // the store under this site's own per-instance arg ids) are
         // replay memory: the dispatch back-fills quiet args from there
         // and the tail-call interception collects its whole rebind set
         // from there, so a frame whose arg expression bottoms would

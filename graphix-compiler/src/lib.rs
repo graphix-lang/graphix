@@ -1273,44 +1273,36 @@ pub trait Rt: Debug + Any {
     /// presented as a new batch.
     fn set_var(&mut self, id: BindId, value: Value);
 
-    /// The last DELIVERED value of every bound variable. Maintained by
-    /// the runtime's cycle loop AT DELIVERY — when a queued `set_var`
-    /// actually lands in `event.variables` — so a primed read (select
-    /// arm wake, fresh callsite bind, fresh collection slot) can never
-    /// observe a value AHEAD of the delivery stream. Two consequences
-    /// the old `ExecCtx`-owned map got wrong: a same-cycle `<-` write
-    /// was visible to primers a cycle early (soak jul08l/jul08n), and
-    /// a variable set N times in one cycle showed its LAST value while
-    /// the deliveries still had N-1 cycles to run. Same-cycle
-    /// publishers (`Bind`'s direct `event.variables` insert, `ByRef`'s
-    /// init seed) update it through [`Rt::cached_insert`] — those ARE
-    /// deliveries.
-    fn cached(&self) -> &IntMap<BindId, Value>;
-
-    /// Insert into [`Rt::cached`] — the same-cycle publishers' seam.
-    /// Narrow (no map access) so the runtime can shadow every write
-    /// into its persistent tagged store (dense-delivery P3,
-    /// design/dense_delivery.md R3).
-    fn cached_insert(&mut self, id: BindId, v: Value);
-
-    /// Remove from [`Rt::cached`] — delete/unbind/replay cleanup.
-    /// Mirrored into the shadow store like [`Rt::cached_insert`].
-    fn cached_remove(&mut self, id: &BindId);
-
     /// The persistent tagged store (design/dense_delivery.md R3): the
     /// (production, cycle-stamp) of every bound variable's last
     /// delivery. THE cross-cycle read under dense delivery: a reader
     /// interprets `stamp == cycle()` as delivered-this-cycle (the
     /// entry's own tag), an older stamp as the standing value channel
     /// (Stale — Fired under an init view, R2), and absence as the
-    /// phantom.
+    /// phantom. Maintained AT DELIVERY — when a queued `set_var`
+    /// actually lands in `event.variables` — so a primed read can
+    /// never observe a value AHEAD of the delivery stream (the old
+    /// `ExecCtx`-owned map got this wrong twice — soak jul08l/jul08n).
     fn store(&self) -> &IntMap<BindId, (TagValue, u64)>;
 
+    /// The last delivered VALUE of a bind — the store entry's value
+    /// half. A bind whose last delivery was a bottom yields `None`:
+    /// per ruled delta 7 there is no pre-bottom value to resurrect
+    /// (the sparse `cached` map retained one; that behavior died with
+    /// it at P5b′).
+    fn store_value(&self, id: &BindId) -> Option<Value> {
+        self.store().get(id).and_then(|(tv, _)| {
+            if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
+        })
+    }
+
     /// Insert a full tagged production into the store, stamped with
-    /// the current cycle. The honest-tag twin of
-    /// [`Rt::cached_insert`]; the value half still mirrors into
-    /// [`Rt::cached`] until the sparse map dies.
+    /// the current cycle — the same-cycle publishers' seam (`Bind`'s
+    /// publish, the runtime's delivery loop, pattern binds).
     fn store_insert(&mut self, id: BindId, tv: TagValue);
+
+    /// Remove a bind from the store — delete/unbind/replay cleanup.
+    fn store_remove(&mut self, id: &BindId);
 
     /// Insert a STANDING entry — value-channel maintenance that is
     /// deliberately NOT a delivery (`ByRef`'s init seed): stamped as
@@ -1600,7 +1592,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// (e.g. inside an HOF callback — #203). PERSISTENT across batches
     /// since the jul12 shell resolution-flap fix: the old per-batch
     /// clear dropped the stdlib's entries before the user file
-    /// compiled, so resolution fell to the `rt.cached()` fallback and
+    /// compiled, so resolution fell to the `store_value` fallback and
     /// FUSION became a race against the previous batch's init cycle.
     /// Each RT batch entry instead prunes the OUTGOING batch's
     /// `unstable_bindings` (exactly the `<-`-retargeted lambdas the

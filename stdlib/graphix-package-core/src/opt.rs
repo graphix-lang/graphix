@@ -302,13 +302,13 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         if let Some(tv) = seam_value(from[1].update(ctx, event)) {
             let tag = seam_publish_tag(tv, ctx.dense_seam);
             let v = tv.value_cloned();
-            ctx.rt.cached_insert(self.fid, v.clone());
+            ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
             event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
     }
 
     fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value, tag: Tag) {
-        ctx.rt.cached_insert(self.x, v.clone());
+        ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
         event.variables.insert(self.x, TagValue::tagged(v, tag));
     }
 
@@ -362,8 +362,8 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_remove(&self.fid);
-        ctx.rt.cached_remove(&self.x);
+        ctx.rt.store_remove(&self.fid);
+        ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.inner.delete(ctx);
     }
@@ -809,7 +809,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         if let Some(tv) = seam_value(from[1].update(ctx, event)) {
             let tag = seam_publish_tag(tv, ctx.dense_seam);
             let v = tv.value_cloned();
-            ctx.rt.cached_insert(self.fid, v.clone());
+            ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
             event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
         // the latches are value-plane (a stale delivery refreshes
@@ -843,7 +843,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_remove(&self.fid);
+        ctx.rt.store_remove(&self.fid);
         self.inner.delete(ctx);
     }
 

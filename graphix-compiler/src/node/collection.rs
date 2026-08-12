@@ -430,7 +430,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.call.delete(ctx);
-        ctx.rt.cached_remove(&self.id);
+        ctx.rt.store_remove(&self.id);
         ctx.env.unbind_variable(self.id);
     }
 }
@@ -725,7 +725,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     resized = true;
                 }
                 for (slot, value) in self.slots.iter().zip(source.values()) {
-                    ctx.rt.cached_insert(slot.id, value.clone());
+                    ctx.rt.store_insert(slot.id, TagValue::fired(value.clone()));
                     event.variables.insert(slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
@@ -823,7 +823,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         let Self { base, slots, .. } = self;
         base.source.delete(ctx);
         base.prototype.delete(ctx);
-        ctx.rt.cached_remove(&base.prototype_id);
+        ctx.rt.store_remove(&base.prototype_id);
         ctx.env.unbind_variable(base.prototype_id);
         for slot in slots.iter_mut() {
             slot.delete(ctx);
@@ -988,7 +988,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.call.delete(ctx);
         for id in [self.acc_id, self.element_id] {
-            ctx.rt.cached_remove(&id);
+            ctx.rt.store_remove(&id);
             ctx.env.unbind_variable(id);
         }
     }
@@ -1156,7 +1156,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     resized = true;
                 }
                 for (slot, value) in self.slots.iter().zip(source.values()) {
-                    ctx.rt.cached_insert(slot.element_id, value.clone());
+                    ctx.rt.store_insert(slot.element_id, TagValue::fired(value.clone()));
                     event.variables.insert(slot.element_id, TagValue::tagged(value, tag));
                 }
             } else {
@@ -1197,7 +1197,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 self.init = ival;
                 if let (Some(slot), Some(value)) = (self.slots.first(), self.init.clone())
                 {
-                    ctx.rt.cached_insert(slot.acc_id, value.clone());
+                    ctx.rt.store_insert(slot.acc_id, TagValue::fired(value.clone()));
                     event.variables.insert(slot.acc_id, TagValue::tagged(value, tag));
                 }
             }
@@ -1251,7 +1251,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 };
                 if let Some(value) = seed {
                     let acc_id = self.slots[i].acc_id;
-                    ctx.rt.cached_insert(acc_id, value.clone());
+                    ctx.rt.store_insert(acc_id, TagValue::fired(value.clone()));
                     event.variables.insert(acc_id, TagValue::fired(value));
                 }
             }
@@ -1290,7 +1290,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     self.slots[i].held = Some(value.clone());
                     if i + 1 < self.slots.len() {
                         let next = self.slots[i + 1].acc_id;
-                        ctx.rt.cached_insert(next, value.clone());
+                        ctx.rt.store_insert(next, TagValue::fired(value.clone()));
                         event.variables.insert(next, TagValue::tagged(value, tag));
                     }
                 }
@@ -1303,7 +1303,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 self.slots[i].held = Some(value.clone());
                 if i + 1 < self.slots.len() {
                     let next = self.slots[i + 1].acc_id;
-                    ctx.rt.cached_insert(next, value.clone());
+                    ctx.rt.store_insert(next, TagValue::fired(value.clone()));
                     event.variables.insert(next, TagValue::stale(value));
                 }
             } else {
@@ -1348,7 +1348,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         base.init.delete(ctx);
         base.prototype.delete(ctx);
         for id in base.prototype_ids {
-            ctx.rt.cached_remove(&id);
+            ctx.rt.store_remove(&id);
             ctx.env.unbind_variable(id);
         }
         for slot in slots.iter_mut() {

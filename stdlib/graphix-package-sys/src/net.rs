@@ -669,7 +669,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.args.update_diff(&mut up, ctx, from, event);
         if up[0] {
             if let Some(v) = self.args.0[0].clone() {
-                ctx.rt.cached_insert(self.pid, v.clone());
+                ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
                 event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
@@ -697,7 +697,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                         Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
                         None => req.value.clone(),
                     };
-                    ctx.rt.cached_insert(self.x, v.clone());
+                    ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
                     event.variables.insert(self.x, TagValue::fired(v));
                     reply = req.send_result.take();
                 }
@@ -744,8 +744,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             NetState::get(ctx).unpublish(val);
         }
         ctx.rt.unref_var(self.wid, self.top_id);
-        ctx.rt.cached_remove(&self.pid);
-        ctx.rt.cached_remove(&self.x);
+        ctx.rt.store_remove(&self.pid);
+        ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.on_write.delete(ctx);
     }
@@ -960,7 +960,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.args.update_diff(&mut changed, ctx, from, event);
         if changed[3] {
             if let Some(v) = self.args.0[3].clone() {
-                ctx.rt.cached_insert(self.pid, v.clone());
+                ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
                 event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
@@ -1040,7 +1040,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     Some(typ) => typ.cast_value(&ctx.env, Value::Array(args)),
                     None => Value::Array(args),
                 };
-                ctx.rt.cached_insert(self.x, args.clone());
+                ctx.rt.store_insert(self.x, TagValue::fired(args.clone()));
                 event.variables.insert(self.x, TagValue::fired(args));
             }};
         }
@@ -1126,9 +1126,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.unref_var(self.id, self.top_id);
         self.current = None;
-        ctx.rt.cached_remove(&self.x);
+        ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
-        ctx.rt.cached_remove(&self.pid);
+        ctx.rt.store_remove(&self.pid);
         self.f.delete(ctx);
     }
 

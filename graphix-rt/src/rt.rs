@@ -27,18 +27,12 @@ fn dbg_vars() -> bool {
 
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
-    /// The last DELIVERED value of every bound variable — see
-    /// [`Rt::cached`]. Written by the cycle loop as each variable
-    /// event lands in `event.variables`, and by the same-cycle
-    /// publishers through [`Rt::cached_insert`].
-    pub(super) cached: IntMap<BindId, Value>,
-    /// Dense-delivery P3 SHADOW: the persistent tagged store that
-    /// replaces BOTH `cached` and the per-cycle event map at the 5b
-    /// flip (design/dense_delivery.md R3). Dual-written beside every
-    /// `cached` write, stamped with [`Self::cycle`]; never read except
-    /// by the gated agreement assert (`GRAPHIX_STORE_ASSERT=1` in
-    /// `do_cycle`). Tags are placeholder FIRED until the flip —
-    /// producers write their genuine tags at 5b.
+    /// The persistent tagged store (design/dense_delivery.md R3): the
+    /// (production, cycle-stamp) of every bound variable's last
+    /// delivery. Written by the cycle loop as each variable event
+    /// lands in `event.variables`, and by the same-cycle publishers
+    /// through [`Rt::store_insert`]. THE cross-cycle read — see
+    /// [`Rt::store`].
     pub(super) store: IntMap<BindId, (TagValue, u64)>,
     /// The store's clock — bumped once at the top of each `do_cycle`.
     /// Also the trace recorder's cycle number (one clock).
@@ -77,7 +71,6 @@ impl<X: GXExt> GXRt<X> {
         let mut var_watches = SelectAll::new();
         var_watches.push(dummy_rx);
         Self {
-            cached: IntMap::default(),
             store: IntMap::default(),
             cycle: 0,
             by_ref: IntMap::default(),
@@ -95,36 +88,6 @@ impl<X: GXExt> GXRt<X> {
     }
 }
 
-impl<X: GXExt> GXRt<X> {
-    /// The store agreement gate (`GRAPHIX_STORE_ASSERT=1`): since the
-    /// 5b flip the store is AUTHORITATIVE and `cached` is its
-    /// value-half mirror (bottom entries are store-only), so the check
-    /// is store ⊇ cached with equal values. Called by `do_cycle`; a
-    /// divergence means a `cached` write path bypassed
-    /// [`Rt::cached_insert`]/[`Rt::store_insert`]. Dies at 5b' with
-    /// `cached` itself.
-    pub(super) fn store_assert(&self) {
-        static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-            std::env::var_os("GRAPHIX_STORE_ASSERT").is_some()
-        });
-        if !*ON {
-            return;
-        }
-        for (id, v) in self.cached.iter() {
-            match self.store.get(id) {
-                Some((tv, _)) if tv.tag().is_bottom() => (),
-                Some((tv, _)) => tv.with_value(|sv| {
-                    assert!(
-                        sv == v,
-                        "store/cached divergence at {id:?}: store {sv} cached {v}"
-                    )
-                }),
-                None => panic!("store missing {id:?} present in cached"),
-            }
-        }
-    }
-}
-
 impl<X: GXExt> Default for GXRt<X> {
     fn default() -> Self {
         Self::new()
@@ -134,38 +97,19 @@ impl<X: GXExt> Default for GXRt<X> {
 impl<X: GXExt> Rt for GXRt<X> {
     type AbortHandle = task::AbortHandle;
 
-    fn cached(&self) -> &IntMap<BindId, Value> {
-        &self.cached
-    }
-
-    fn cached_insert(&mut self, id: BindId, v: Value) {
-        self.store.insert(id, (TagValue::fired(v.clone()), self.cycle));
-        self.cached.insert(id, v);
-    }
-
-    fn cached_remove(&mut self, id: &BindId) {
-        self.store.remove(id);
-        self.cached.remove(id);
-    }
-
     fn store(&self) -> &IntMap<BindId, (TagValue, u64)> {
         &self.store
     }
 
     fn store_insert(&mut self, id: BindId, tv: TagValue) {
-        // keep `cached` mirrored (clean value, no placeholders) until
-        // the sparse map dies — bottoms don't overwrite the value half,
-        // matching the "placeholders structurally excluded" contract
-        if !tv.tag().is_bottom() {
-            self.cached.insert(id, tv.value_cloned());
-        }
         self.store.insert(id, (tv, self.cycle));
     }
 
+    fn store_remove(&mut self, id: &BindId) {
+        self.store.remove(id);
+    }
+
     fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        if !tv.tag().is_bottom() {
-            self.cached.insert(id, tv.value_cloned());
-        }
         // stamped one cycle back: Standing to every same-cycle reader
         self.store.insert(id, (tv, self.cycle.wrapping_sub(1)));
     }
@@ -176,7 +120,6 @@ impl<X: GXExt> Rt for GXRt<X> {
 
     fn clear(&mut self) {
         let Self {
-            cached,
             store,
             cycle,
             by_ref,
@@ -193,7 +136,6 @@ impl<X: GXExt> Rt for GXRt<X> {
         } = self;
         ext.clear();
         updated.clear();
-        cached.clear();
         store.clear();
         *cycle = 0;
         by_ref.clear();

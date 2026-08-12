@@ -312,17 +312,20 @@ impl<X: GXExt> GX<X> {
                 }
             };
         }
-        // Variable DELIVERY is where `Rt::cached` advances: the Vacant
+        // Variable DELIVERY is where the store advances: the Vacant
         // arm below is a value landing in `event.variables` this cycle;
-        // the Occupied arm re-queues (NOT delivered — cached must not
-        // move, or a variable set N times in one cycle would show its
-        // final value while the deliveries still had cycles to run).
+        // the Occupied arm re-queues (NOT delivered — the store must
+        // not move, or a variable set N times in one cycle would show
+        // its final value while the deliveries still had cycles to
+        // run).
         macro_rules! push_var_event {
             ($id:expr, $v:expr) => {
                 match self.event.variables.entry($id) {
                     Entry::Vacant(e) => {
-                        // advances cached AND its P3 shadow store
-                        self.ctx.rt.cached_insert($id, $v.clone());
+                        self.ctx.rt.store_insert(
+                            $id,
+                            graphix_compiler::TagValue::fired($v.clone()),
+                        );
                         // an ordinary runtime delivery is a FIRED event
                         e.insert(graphix_compiler::TagValue::fired($v));
                         if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
@@ -428,7 +431,6 @@ impl<X: GXExt> GX<X> {
         if let Some(tr) = self.trace.as_mut() {
             tr.cycle_end(self.ctx.rt.cycle, worked);
         }
-        self.ctx.rt.store_assert();
         self.ctx.rt.cycle += 1;
         loop {
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
@@ -600,7 +602,7 @@ impl<X: GXExt> GX<X> {
         // `<-` targets instead of clearing it (see the field doc,
         // #203 + the jul12 shell resolution FLAP): stable cross-batch
         // entries (the stdlib's exports above all) must survive into
-        // this batch, or resolution falls to the `rt.cached()`
+        // this batch, or resolution falls to the `store_value`
         // fallback — whose contents depend on whether the previous
         // batch's init cycle has RUN yet, making FUSION a race
         // (release shell: identical program, instances fused on some
@@ -651,7 +653,7 @@ impl<X: GXExt> GX<X> {
         // `<-` targets instead of clearing it (see the field doc,
         // #203 + the jul12 shell resolution FLAP): stable cross-batch
         // entries (the stdlib's exports above all) must survive into
-        // this batch, or resolution falls to the `rt.cached()`
+        // this batch, or resolution falls to the `store_value`
         // fallback — whose contents depend on whether the previous
         // batch's init cycle has RUN yet, making FUSION a race
         // (release shell: identical program, instances fused on some
@@ -884,7 +886,7 @@ impl<X: GXExt> GX<X> {
         // `<-` targets instead of clearing it (see the field doc,
         // #203 + the jul12 shell resolution FLAP): stable cross-batch
         // entries (the stdlib's exports above all) must survive into
-        // this batch, or resolution falls to the `rt.cached()`
+        // this batch, or resolution falls to the `store_value`
         // fallback — whose contents depend on whether the previous
         // batch's init cycle has RUN yet, making FUSION a race
         // (release shell: identical program, instances fused on some
@@ -954,7 +956,7 @@ impl<X: GXExt> GX<X> {
             bid: id,
             typ,
             target_bid,
-            last: self.ctx.rt.cached.get(&id).cloned(),
+            last: self.ctx.rt.store_value(&id),
             rt,
         })
     }

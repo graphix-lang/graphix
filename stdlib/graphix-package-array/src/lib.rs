@@ -438,9 +438,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.ready = false;
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
-                ctx.rt.cached_insert(self.nid, len.clone());
+                ctx.rt.store_insert(self.nid, TagValue::fired(len.clone()));
                 event.variables.insert(self.nid, TagValue::fired(len));
-                ctx.rt.cached_insert(self.xid, $v.clone());
+                ctx.rt.store_insert(self.xid, TagValue::fired($v.clone()));
                 event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
@@ -450,7 +450,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         if let Some(tv) = seam_value(from[1].update(ctx, event)) {
             let tag = seam_publish_tag(tv, ctx.dense_seam);
             let v = tv.value_cloned();
-            ctx.rt.cached_insert(self.pid, v.clone());
+            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
             event.variables.insert(self.pid, TagValue::tagged(v, tag));
         }
         if self.ready && self.queue.len() > 0 {
@@ -502,9 +502,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_remove(&self.nid);
-        ctx.rt.cached_remove(&self.pid);
-        ctx.rt.cached_remove(&self.xid);
+        ctx.rt.store_remove(&self.nid);
+        ctx.rt.store_remove(&self.pid);
+        ctx.rt.store_remove(&self.xid);
         self.pred.delete(ctx);
     }
 
