@@ -321,6 +321,16 @@ impl CachedVals {
         self.1.iter().any(|t| t.is_tainted())
     }
 
+    /// The Q1 wrapper-seam test (design/dense_delivery.md, BOTTOM
+    /// PROPAGATES): true if any arg slot is currently BOTTOM — either
+    /// poisoned at rest (the taint mark) or never delivered at all
+    /// (the phantom). Under the open `dense_seam` gate the wrapper
+    /// bottoms the invocation on this instead of calling `eval`, so
+    /// builtin authors never see a bottomed or missing arg.
+    pub fn any_bottom(&self) -> bool {
+        self.0.iter().any(|v| v.is_none()) || self.any_tainted()
+    }
+
     /// Update the slots from the arg nodes; `true` iff any production
     /// TRIGGERED (fired or tainted — a merely-stale production
     /// refreshes its slot silently). A tainted production marks the
@@ -355,12 +365,12 @@ impl CachedVals {
                     self.0[i] = Some(tv.value_cloned());
                     self.1[i] = tag;
                 }
+                // the orthogonal OR-join (taint ORs, stale ANDs) —
+                // through the from_raw clamp this is exactly the old
+                // "taint ORs; fired beats stale" fold
                 prod = Some(match prod {
                     None => tag,
-                    // taint ORs; fired beats stale
-                    Some(p) if p.is_tainted() || tag.is_tainted() => Tag::TAINT,
-                    Some(p) if p.is_fired() || tag.is_fired() => Tag::FIRED,
-                    Some(_) => Tag::STALE,
+                    Some(p) => p.join(tag),
                 });
             }
         }
@@ -498,6 +508,17 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     ) -> &TagValue {
         match self.cached.update_full(ctx, from, event) {
             None => TagValue::absent(),
+            Some(t) if ctx.dense_seam && self.cached.any_bottom() => {
+                // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
+                // arg is bottom — standing poison or the
+                // never-delivered phantom — so the invocation bottoms
+                // WITHOUT calling eval; authors never see bottoms.
+                // FreshBottom iff a delivery triggered this cycle
+                // (`triggers()` becomes the dense fired-bit rule at
+                // the 5b flip). No resident clobber: the value channel
+                // may re-surface the last genuine result on recovery.
+                TagValue::bottom_null(t.triggers())
+            }
             Some(_) if self.cached.any_tainted() => {
                 // DEFENSE-IN-DEPTH: unreachable when the seams hold —
                 // the CallSite gates every builtin's tainted arg
@@ -654,10 +675,17 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if self.cached.update(ctx, from, event)
-            && let Some(args) = self.t.prepare_args(&self.cached)
-        {
-            self.queued.push_back(args);
+        let mut bottomed = false;
+        if self.cached.update(ctx, from, event) {
+            if ctx.dense_seam && self.cached.any_bottom() {
+                // Q1 BOTTOM PROPAGATES: an arg is bottom, so this
+                // invocation bottoms and eval is never queued (a
+                // completed reply from a PRIOR invocation below still
+                // wins the cycle's output).
+                bottomed = true;
+            } else if let Some(args) = self.t.prepare_args(&self.cached) {
+                self.queued.push_back(args);
+            }
         }
         let res = event.variables.remove(&self.id).and_then(|tv| {
             self.running = false;
@@ -672,6 +700,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         }
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
+            None if bottomed => TagValue::bottom_null(true),
             None => TagValue::absent(),
         }
     }

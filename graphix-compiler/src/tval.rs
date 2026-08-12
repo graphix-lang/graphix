@@ -269,6 +269,22 @@ impl TagValue {
         &TAINTED
     }
 
+    /// The shared bottom production for a wrapper that bottoms an
+    /// invocation without clobbering its resident (the Q1
+    /// bottom-propagates seam, design/dense_delivery.md): `triggering`
+    /// picks `FreshBottom` (an arg delivery triggered this cycle) vs
+    /// `StaleBottom` (a standing bottom re-surfacing). The minted bits
+    /// are honest; until the 5b flip removes [`Tag::from_raw`]'s clamp
+    /// both READ as the sparse single-flavored TAINT, so pre-flip
+    /// consumers can't tell them apart — by design.
+    pub fn bottom_null(triggering: bool) -> &'static TagValue {
+        static FRESH: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(|| TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+        static STALE: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(|| TagValue::tagged(Value::Null, Tag::STALE_BOTTOM));
+        if triggering { &FRESH } else { &STALE }
+    }
+
     /// A possible-bottom placeholder (tainted, hence also stale).
     #[inline]
     pub fn tainted(v: Value) -> Self {

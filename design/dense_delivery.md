@@ -308,3 +308,27 @@ array::group (the jul10h-000007 protection moved in-builtin) and the
 iter/iterq families, filter/opt-HOF/queuefn laundering. Own-field
 refactors (ungated, pure): throttle's `last_v` emission source (its
 `CachedVals` deleted), the timer family per the same rule.
+
+## As-built: the P5a reorder (2026-08-11, Eric approved)
+
+The planned pre-flip consumer-cache deletion was REFUTED by the code:
+`Cached::reset_replay` is not passive storage — it implements the
+frame contract (clear on frame entry unless the subtree is closed, the
+`invariant` OnceLock), which child residents do not reproduce, so a
+pre-flip deletion rides pre-frame values where the cache correctly
+forgot them. Deletion therefore moves AFTER the 5b flip (P5b′), where
+every awake child delivers `Stale(resident)` every cycle and the slots
+become pure pass-through mirrors — trivially deletable under an
+∅-diff gate against the post-flip baseline. The `produced &&
+determined` idiom moves with it.
+
+What landed as P5a (5a-lite): `CachedVals::update_full`'s summary fold
+is `Tag::join` (provably identical through the `from_raw` clamp), and
+the Q1 BOTTOM-PROPAGATES seam lives in the wrappers behind
+`dense_seam`: `CachedVals::any_bottom` (poisoned-at-rest or
+never-delivered slot) makes `CachedArgs`/`CachedArgsAsync` bottom the
+invocation without calling `eval` — `TagValue::bottom_null(triggers)`
+mints honest FreshBottom/StaleBottom bits that read as the sparse
+TAINT until the 5b clamp removal. The entire ~254-builtin EvalCached
+family becomes dense-correct the moment the gate opens, with no
+per-builtin work.
