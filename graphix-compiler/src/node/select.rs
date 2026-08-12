@@ -1,4 +1,4 @@
-use super::{Cached, compiler::compile, pattern::StructPatternNode};
+use super::{Held, compiler::compile, pattern::StructPatternNode};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
@@ -50,8 +50,8 @@ impl SelCell {
 #[derive(Debug)]
 pub struct Select<R: Rt, E: UserEvent> {
     pub(crate) selected: SelCell,
-    pub arg: Cached<R, E>,
-    pub arms: Vec<(PatternNode<R, E>, Cached<R, E>)>,
+    pub arg: Held<R, E>,
+    pub arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
     pub typ: Type,
     pub(crate) spec: Expr,
     /// `true` iff this select sits on a tail-recursive lambda's TAIL
@@ -83,11 +83,10 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         typ: Type,
         spec: Expr,
     ) -> Node<R, E> {
-        let arms = arms.into_iter().map(|(p, n)| (p, Cached::new(n))).collect::<Vec<_>>();
         Node::new(Self {
             spec,
             typ,
-            arg: Cached::new(arg),
+            arg: Held::new(arg),
             arms,
             selected: SelCell::new(),
             tail_position: std::sync::atomic::AtomicBool::new(false),
@@ -104,7 +103,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         arg: &Expr,
         arms: &[(Pattern, Expr)],
     ) -> Result<Node<R, E>> {
-        let arg = Cached::new(compile(ctx, flags, arg.clone(), scope, top_id)?);
+        let arg = Held::new(compile(ctx, flags, arg.clone(), scope, top_id)?);
         let arms = arms
             .iter()
             .map(|(pat, spec)| {
@@ -119,7 +118,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     spec.ori.clone(),
                 )
                 .with_context(|| format!("in select at {}", spec.pos))?;
-                let n = Cached::new(compile(ctx, flags, spec.clone(), &scope, top_id)?);
+                let n = compile(ctx, flags, spec.clone(), &scope, top_id)?;
                 Ok((pat, n))
             })
             .collect::<Result<Vec<_>>>()
@@ -150,11 +149,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // flip re-selects and fires becoming-selected). Only a
         // no-history bottom (the aug04b phantom rule) bottoms the
         // whole select — the early return after the guard tick below.
-        let ride = bottomed && arg.cached.is_some();
+        let ride = bottomed && arg.value.is_some();
         // "The scrutinee has a bindable value view this cycle": a
         // value-bearing production, or the ride.
-        let arg_up = (arg_prod.is_some() && !bottomed) || ride;
-        let arg_fired = arg_prod.is_some_and(|t| t.is_fired());
+        let arg_up = !bottomed || ride;
+        let arg_fired = arg_prod.is_fired();
         // Fold a tail-spine scrutinee's firing into the dispatch-wide
         // accumulator (the kernel's `tail_scrut_stale`, folded by
         // `emit_select_node_tail` per pass and applied at every
@@ -177,13 +176,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // re-selection) binds the value channel. Firing comes from the
         // selection/emission rules, never from the binds themselves
         // (Eric's ruling 2026-07-18, tail_jump_fired_plumbing).
-        let bind_tag = if ride { Tag::STALE } else { arg_prod.unwrap_or(Tag::STALE) };
+        let bind_tag = if ride { Tag::STALE } else { arg_prod };
         macro_rules! bind {
             ($i:expr) => {
                 bind!($i, bind_tag)
             };
             ($i:expr, $tag:expr) => {{
-                if let Some(arg) = arg.cached.as_ref() {
+                if let Some(arg) = arg.value.as_ref() {
                     arms[$i].0.bind_event(ctx, event, arg, $tag);
                 }
             }};
@@ -199,18 +198,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         for (pat, _) in arms.iter_mut() {
             // `arg_up` gates the BIND, not the tick — `pat.update`
             // below is unconditional, so the guard runs every cycle
-            // regardless. Binding only on a production is correct and
-            // deliberate: `bind_event` writes `ctx.rt.cached_insert` as
-            // well as the transient event entry, and the guard's own
-            // `Cached` operands hold the bound leaves, so on a quiet
-            // cycle the guard still evaluates against the arg it saw
-            // when the scrutinee last fired — combineLatest, not
-            // starvation. Re-binding every cycle instead would be a
-            // phantom event to anything that reads presence as firing;
-            // it is safe today only because `bind_tag` is STALE.
+            // regardless. Binding only on a value view is correct and
+            // deliberate: `bind_event` writes the store as well as the
+            // transient event entry, and the guard subtree's residents
+            // hold the bound leaves, so on a quiet cycle the guard
+            // still evaluates against the arg it saw when the
+            // scrutinee last fired — combineLatest, not starvation.
+            // Re-binding every cycle instead would be a phantom event
+            // to anything that reads presence as firing; it is safe
+            // today only because `bind_tag` is STALE.
             let bind_guard = arg_up && pat.guard.is_some();
             if bind_guard {
-                if let Some(arg) = arg.cached.as_ref() {
+                if let Some(arg) = arg.value.as_ref() {
                     pat.bind_event(ctx, event, arg, bind_tag);
                 }
             }
@@ -224,7 +223,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // triggering delivery is a fresh bottom; a standing one rides
         // the resident.
         if bottomed && !ride {
-            return if arg_prod.is_some_and(|t| t.triggers()) {
+            return if arg_prod.triggers() {
                 resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
             } else {
                 resident.ride()
@@ -237,7 +236,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 event.init,
                 ctx.frame_depth,
                 selected.get(),
-                arg.cached.as_ref(),
+                arg.value.as_ref(),
                 event.variables.len()
             );
         }
@@ -259,15 +258,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // quiet; the old #178 scrutinee fold was the ride re-emit).
         // When the body consumes the scrutinee its binds deliver the
         // scrutinee's tag, so consumption fires organically.
+        // Read the taken arm's production: its tag plus the value
+        // (None for a bottom — the placeholder is never usable).
+        macro_rules! arm_prod {
+            ($i:expr) => {{
+                let tv = arms[$i].1.update(ctx, event);
+                let t = tv.tag();
+                let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
+                (t, v)
+            }};
+        }
         macro_rules! emit {
-            ($i:expr, $prod:expr) => {{
-                let i = $i;
-                if arms[i].1.tag.is_tainted() {
-                    Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            ($t:expr, $v:expr) => {{
+                let t: Tag = $t;
+                if t.is_bottom() {
+                    // the join rule: a fresh bottom is an event, a
+                    // standing one rides the select's own resident
+                    if t.triggers() {
+                        Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                    } else {
+                        None
+                    }
                 } else {
-                    let fired = $prod.is_some_and(|t: Tag| t.is_fired());
-                    let tag = if fired { Tag::FIRED } else { Tag::STALE };
-                    arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
+                    let tag = if t.is_fired() { Tag::FIRED } else { Tag::STALE };
+                    $v.map(|v| TagValue::tagged(v, tag))
                 }
             }};
         }
@@ -292,16 +306,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // with a stale production emits stale. The once_tainted rule
         // is a DEPTH-0 rule (the leaked selection is discovered by a
         // quiet poll AFTER the frames end) and is untouched.
-        let arg_trig = !bottomed
-            && (arg_prod.is_some_and(|t| t.triggers())
-                || (ctx.frame_depth > 0 && arg_up));
+        let arg_trig =
+            !bottomed && (arg_prod.triggers() || (ctx.frame_depth > 0 && arg_up));
         let out = if !arg_trig && !pat_up {
-            selected.get().and_then(|i| match arms[i].1.update(ctx, event) {
-                None => None,
-                prod => emit!(i, prod),
+            selected.get().and_then(|i| {
+                let (t, v) = arm_prod!(i);
+                emit!(t, v)
             })
         } else {
-            let sel = match arg.cached.as_ref() {
+            let sel = match arg.value.as_ref() {
                 None => None,
                 Some(v) => arms.iter().enumerate().find_map(|(i, (pat, _))| {
                     if pat.is_match(&ctx.env, v) { Some(i) } else { None }
@@ -313,14 +326,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         eprintln!(
                             "SELECT[{}] same-arm i={i} arg={:?}",
                             self.spec.pos,
-                            arg.cached.as_ref()
+                            arg.value.as_ref()
                         );
                     }
                     if arg_up {
                         bind!(i);
                     }
-                    let prod = arms[i].1.update(ctx, event);
-                    if prod.is_some() { emit!(i, prod) } else { None }
+                    let (t, v) = arm_prod!(i);
+                    emit!(t, v)
                 }
                 (Some(i), Some(_) | None) => {
                     if crate::dbgenv::graphix_dbg_select() {
@@ -333,7 +346,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         );
                     }
                     if let Some(j) = selected.get() {
-                        arms[j].1.node.sleep(ctx);
+                        arms[j].1.sleep(ctx);
                     }
                     selected.set(Some(i));
                     // The wake bind is part of the arm's INIT VIEW: on
@@ -353,29 +366,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     // wake WITHOUT refill.
                     let wake_tag = if tail || ride {
                         bind_tag
+                    } else if arg_prod.triggers() {
+                        // a genuinely-triggering scrutinee delivery
+                        // carries its own tag into the binds
+                        arg_prod
                     } else {
-                        match arg_prod {
-                            // a genuinely-triggering scrutinee delivery
-                            // carries its own tag into the binds
-                            Some(t) if t.triggers() => t,
-                            // guard-flip wake: the scrutinee produced
-                            // only its quiet ride (under dense EVERY
-                            // node produces, so `arg_prod` is never
-                            // None and the old unwrap_or(FIRED) arm
-                            // went dead — the wake bound STALE and the
-                            // woken arm's interior call sites never
-                            // dispatched, aug03's exact symptom). The
-                            // wake bind is the arm's INIT VIEW (R2's
-                            // fresh reader): bind FIRED.
-                            _ => Tag::FIRED,
-                        }
+                        // guard-flip wake: the scrutinee produced only
+                        // its quiet ride — a STALE wake bind left the
+                        // woken arm's interior call sites undispatched
+                        // (aug03's exact symptom). The wake bind is the
+                        // arm's INIT VIEW (R2's fresh reader): bind
+                        // FIRED.
+                        Tag::FIRED
                     };
                     bind!(i, wake_tag);
                     let init = event.init;
                     event.init = true;
-                    let prod = arms[i].1.update(ctx, event);
+                    let (t, v) = arm_prod!(i);
                     event.init = init;
-                    if arms[i].1.tag.is_tainted() {
+                    if t.is_bottom() {
+                        // a selection change onto a bottomed arm IS an
+                        // event (the strict select rule) — a fresh
+                        // bottom regardless of the arm's own freshness
                         Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     } else if tail {
                         // A selection change on the in-frame tail
@@ -396,9 +408,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         // `tail_sel_path` selection word fires on
                         // final-selection change — no known witness;
                         // revisit if the fuzzer finds one.
-                        let fired = prod.is_some_and(|t| t.is_fired());
-                        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-                        arms[i].1.cached.clone().map(|v| TagValue::tagged(v, tag))
+                        let tag = if t.is_fired() { Tag::FIRED } else { Tag::STALE };
+                        v.map(|v| TagValue::tagged(v, tag))
                     } else {
                         // BECOMING selected is the fire (Eric's ruled
                         // select semantics; the kernel's selection-
@@ -410,11 +421,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         // body_input_fired approximation, which
                         // over-counted deliveries a quiet inner select
                         // had suppressed) is subsumed.
-                        arms[i].1.cached.clone().map(|v| TagValue::fired(v))
+                        v.map(|v| TagValue::fired(v))
                     }
                 }
                 (None, Some(j)) => {
-                    arms[j].1.node.sleep(ctx);
+                    arms[j].1.sleep(ctx);
                     selected.set(None);
                     None
                 }
@@ -440,8 +451,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident: _,
         } = self;
         arg.node.delete(ctx);
-        for (pat, arg) in arms {
-            arg.node.delete(ctx);
+        for (pat, arm) in arms {
+            arm.delete(ctx);
             pat.delete(ctx);
         }
     }
@@ -511,8 +522,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             resident: _,
         } = self;
         arg.node.refs(refs);
-        for (pat, arg) in arms {
-            arg.node.refs(refs);
+        for (pat, arm) in arms {
+            arm.refs(refs);
             pat.structure_predicate.ids(&mut |id| {
                 refs.bound.insert(id);
             });
@@ -633,8 +644,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 let bt = Type::Primitive(Typ::Bool.into());
                 wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
             }
-            wrap!(n.node, n.node.typecheck0(ctx))?;
-            rtype = rtype.union(&ctx.env, n.node.typ())?;
+            wrap!(n, n.typecheck0(ctx))?;
+            rtype = rtype.union(&ctx.env, n.typ())?;
             if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {
                 ntype = ntype.diff(&ctx.env, &pat.type_predicate)?;
             }
@@ -664,7 +675,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             if let Some(guard) = &mut pat.guard {
                 guard.node.typecheck1(ctx)?;
             }
-            wrap!(n.node, n.node.typecheck1(ctx))?;
+            wrap!(n, n.typecheck1(ctx))?;
         }
         Ok(())
     }

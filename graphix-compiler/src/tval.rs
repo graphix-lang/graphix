@@ -384,7 +384,6 @@ impl TagValue {
     pub fn value_cloned(&self) -> Value {
         self.with_value(|v| v.clone())
     }
-
 }
 
 impl Default for TagValue {

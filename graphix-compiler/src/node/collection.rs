@@ -1,6 +1,4 @@
-use super::{
-    Cached, MAX_ARRAY_INIT_LEN, callsite::CallSite, genn, pattern::StructPatternNode,
-};
+use super::{MAX_ARRAY_INIT_LEN, callsite::CallSite, genn, pattern::StructPatternNode};
 use crate::{
     ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
@@ -585,7 +583,7 @@ fn convert_collection_result(
 
 #[derive(Debug)]
 pub struct MapQBase<R: Rt, E: UserEvent> {
-    pub(crate) source: Cached<R, E>,
+    pub(crate) source: Node<R, E>,
     pub(crate) prototype: Node<R, E>,
     element_type: Type,
     emit_call:
@@ -645,8 +643,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             t => bail!("collection callback must be a function, got {t}"),
         };
         let element_type = T::Collection::element_type(typ)?;
-        let source =
-            Cached::new(genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id));
+        let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let prototype =
             Slot::new(ctx, scope, top_id, callback, &callback_type, &element_type, true);
         Ok(Node::new(Self {
@@ -699,7 +696,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         let mut resized = false;
         let mut forced_taint = false;
         let mut src_trig = false;
-        if let Some(tag) = self.base.source.update(ctx, event) {
+        {
+            let (tag, sval) = {
+                let tv = self.base.source.update(ctx, event);
+                let tag = tv.tag();
+                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+            };
             src_trig = tag.triggers();
             // A tainted source is a placeholder, and an unselectable
             // value (init's over-limit count) is bottom — neither
@@ -707,12 +709,8 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             // still run so slot-internal state sees this cycle's events.
             if tag.is_tainted() {
                 forced_taint = true;
-            } else if let Some(source) = self
-                .base
-                .source
-                .cached
-                .clone()
-                .and_then(|value| T::Collection::select(value))
+            } else if let Some(source) =
+                sval.and_then(|value| T::Collection::select(value))
             {
                 while self.slots.len() > source.len() {
                     match self.slots.last_mut() {
@@ -823,7 +821,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         let Self { base, slots, .. } = self;
-        base.source.node.delete(ctx);
+        base.source.delete(ctx);
         base.prototype.delete(ctx);
         ctx.rt.cached_remove(&base.prototype_id);
         ctx.env.unbind_variable(base.prototype_id);
@@ -833,12 +831,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck0(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck1(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
     }
 
@@ -847,7 +845,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.base.source.node.refs(refs);
+        self.base.source.refs(refs);
         refs.bound.insert(self.base.prototype_id);
         self.base.prototype.refs(refs);
     }
@@ -884,7 +882,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_map::<R, E, T>(&self.base, &self.base.source.node, cx)?
+        emit_map::<R, E, T>(&self.base, &self.base.source, cx)?
             .ok_or_else(|| anyhow::anyhow!("collection operation does not emit CLIF"))
     }
 }
@@ -998,8 +996,8 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
 
 #[derive(Debug)]
 pub struct FoldQBase<R: Rt, E: UserEvent> {
-    pub(crate) source: Cached<R, E>,
-    pub(crate) init: Cached<R, E>,
+    pub(crate) source: Node<R, E>,
+    pub(crate) init: Node<R, E>,
     pub(crate) prototype: Node<R, E>,
     element_type: Type,
     emit_call: fn(
@@ -1068,9 +1066,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
         };
         let acc_type = typ.args[1].typ.clone();
         let element_type = T::Collection::element_type(typ)?;
-        let source =
-            Cached::new(genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id));
-        let init = Cached::new(genn::reference(ctx, init_id, acc_type.clone(), top_id));
+        let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
+        let init = genn::reference(ctx, init_id, acc_type.clone(), top_id);
         let prototype = FoldSlot::new(
             ctx,
             scope,
@@ -1126,7 +1123,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         let mut forced_taint = false;
         let mut source_tag = None;
         let mut src_trig = false;
-        if let Some(tag) = self.base.source.update(ctx, event) {
+        {
+            let (tag, sval) = {
+                let tv = self.base.source.update(ctx, event);
+                let tag = tv.tag();
+                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+            };
             src_trig = tag.triggers();
             // A tainted SOURCE is a placeholder with no elements to
             // deliver (a genuine destructuring consumer — forced), and
@@ -1136,12 +1138,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             // poisoned delivery, see below.)
             if tag.is_tainted() {
                 forced_taint = true;
-            } else if let Some(source) = self
-                .base
-                .source
-                .cached
-                .clone()
-                .and_then(|value| T::Collection::select(value))
+            } else if let Some(source) =
+                sval.and_then(|value| T::Collection::select(value))
             {
                 self.source_present = true;
                 source_tag = Some(tag);
@@ -1169,7 +1167,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         }
 
         let mut init_tag = None;
-        if let Some(tag) = self.base.init.update(ctx, event) {
+        {
+            let (tag, ival) = {
+                let tv = self.base.init.update(ctx, event);
+                let tag = tv.tag();
+                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+            };
             init_tag = Some(tag);
             if tag.is_tainted() {
                 // A tainted INIT is a poisoned DELIVERY to slot 0's
@@ -1191,7 +1194,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     );
                 }
             } else {
-                self.init = self.base.init.cached.clone();
+                self.init = ival;
                 if let (Some(slot), Some(value)) = (self.slots.first(), self.init.clone())
                 {
                     ctx.rt.cached_insert(slot.acc_id, value.clone());
@@ -1341,8 +1344,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         let Self { base, slots, .. } = self;
-        base.source.node.delete(ctx);
-        base.init.node.delete(ctx);
+        base.source.delete(ctx);
+        base.init.delete(ctx);
         base.prototype.delete(ctx);
         for id in base.prototype_ids {
             ctx.rt.cached_remove(&id);
@@ -1354,14 +1357,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck0(ctx))?;
-        wrap!(self.base.init.node, self.base.init.node.typecheck0(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
+        wrap!(self.base.init, self.base.init.typecheck0(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck1(ctx))?;
-        wrap!(self.base.init.node, self.base.init.node.typecheck1(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
+        wrap!(self.base.init, self.base.init.typecheck1(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
     }
 
@@ -1370,8 +1373,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.base.source.node.refs(refs);
-        self.base.init.node.refs(refs);
+        self.base.source.refs(refs);
+        self.base.init.refs(refs);
         refs.bound.extend(self.base.prototype_ids);
         self.base.prototype.refs(refs);
     }
@@ -1411,13 +1414,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_fold::<R, E, T>(
-            &self.base,
-            &self.base.source.node,
-            &self.base.init.node,
-            cx,
-        )?
-        .ok_or_else(|| anyhow::anyhow!("collection fold does not emit CLIF"))
+        emit_fold::<R, E, T>(&self.base, &self.base.source, &self.base.init, cx)?
+            .ok_or_else(|| anyhow::anyhow!("collection fold does not emit CLIF"))
     }
 }
 

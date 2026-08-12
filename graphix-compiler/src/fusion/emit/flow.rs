@@ -323,7 +323,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // this shape via the state word (see `emit_select_node`).
     let has_arm_lift = sel.arms.iter().any(|(_, body)| {
         let mut found = false;
-        fusion::for_each_node(&body.node, &mut |n| {
+        fusion::for_each_node(body, &mut |n| {
             if let NodeView::Bind(b) = n.view() {
                 if b.single_bind_id().is_some_and(|id| cx.ctx.lifted.contains(&id)) {
                     found = true;
@@ -430,7 +430,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
             if let Some(w) = sel_word {
                 cx.ctx.tail.sel_path.borrow_mut().push((w, idx));
             }
-            emit_body_tail(cx, &body.node, ret)?;
+            emit_body_tail(cx, body, ret)?;
             if sel_word.is_some() {
                 cx.ctx.tail.sel_path.borrow_mut().pop();
             }

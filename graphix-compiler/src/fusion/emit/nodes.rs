@@ -9,10 +9,7 @@ use crate::{
         kernel_abi::{self, AbiKind, AbstractRegistry, PrimType},
         lowering::{self},
     },
-    node::{
-        Cached,
-        op::{BinOp, BoolOp, CmpOp},
-    },
+    node::op::{BinOp, BoolOp, CmpOp},
     typ::Type,
 };
 use anyhow::{Result, anyhow};
@@ -117,8 +114,8 @@ pub(crate) fn emit_const_node(
 /// path.
 pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    keys: &[Cached<R, E>],
-    vals: &[Cached<R, E>],
+    keys: &[Node<R, E>],
+    vals: &[Node<R, E>],
     typ: &Type,
 ) -> Result<CompiledExpr> {
     let v = lowering::const_map(keys, vals).ok_or_else(|| {
@@ -568,7 +565,7 @@ pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
 /// subtree node-walks.
 pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    args: &[Cached<R, E>],
+    args: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
     let new_buf = cx.helper("graphix_string_buf_new")?;
     let call = cx.b.ins().call(new_buf, &[]);
@@ -578,7 +575,7 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     // output. Collect part discs and fold them into the result disc.
     let mut part_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for a in args {
-        let part = &a.node;
+        let part = a;
         // `freeze_for_abi_normalized` so a select-valued part (whose type is
         // the un-normalized arm union) still classifies.
         let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), part.typ());
@@ -813,7 +810,7 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
 /// is identical, only the static type differs.
 pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    fields: &[Cached<R, E>],
+    fields: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
     let buf_new = cx.helper("graphix_value_buf_new")?;
     let finalize = cx.helper("graphix_valarray_finalize")?;
@@ -822,7 +819,7 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     let buf = cx.b.inst_results(call)[0];
     let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for f in fields {
-        field_discs.push(emit_push_field_node(cx, buf, &f.node)?);
+        field_discs.push(emit_push_field_node(cx, buf, f)?);
     }
     let call = cx.b.ins().call(finalize, &[buf]);
     let payload = cx.b.inst_results(call)[0];
@@ -851,12 +848,12 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
 pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     names: &[ArcStr],
-    fields: &[Cached<R, E>],
+    fields: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
     if names.len() != fields.len() {
         return Err(anyhow!("emit_clif: struct literal name/field arity mismatch"));
     }
-    let mut indexed: smallvec::SmallVec<[(&ArcStr, &Cached<R, E>); 8]> =
+    let mut indexed: smallvec::SmallVec<[(&ArcStr, &Node<R, E>); 8]> =
         names.iter().zip(fields.iter()).collect();
     indexed.sort_by(|a, b| a.0.cmp(b.0));
     let buf_new = cx.helper("graphix_value_buf_new")?;
@@ -875,7 +872,7 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
         cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
         // The struct fires iff any field VALUE fired — the names are
         // interned constants, so only the value discs gate freshness.
-        field_discs.push(emit_push_field_node(cx, inner, &field.node)?);
+        field_discs.push(emit_push_field_node(cx, inner, field)?);
         let call = cx.b.ins().call(finalize, &[inner]);
         let inner_arr = cx.b.inst_results(call)[0];
         cx.b.ins().call(push_array, &[outer, inner_arr]);
@@ -959,7 +956,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
             Some(r) => {
                 // Replacement value — may bottom-abort (both bufs + Owned
                 // source are registered, so `emit_pending_cleanup` frees them).
-                field_discs.push(emit_push_field_node(cx, inner, &r.n.node)?);
+                field_discs.push(emit_push_field_node(cx, inner, &r.n)?);
             }
             None => {
                 // Unchanged field — read the value from the source struct
@@ -1002,7 +999,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
 pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     tag: &ArcStr,
-    payloads: &[Cached<R, E>],
+    payloads: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
     let tag_ptr = cx.interned_str(tag);
     if payloads.is_empty() {
@@ -1027,7 +1024,7 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let mut payload_discs: smallvec::SmallVec<[ClifValue; 8]> =
             smallvec::SmallVec::new();
         for p in payloads {
-            payload_discs.push(emit_push_field_node(cx, buf, &p.node)?);
+            payload_discs.push(emit_push_field_node(cx, buf, p)?);
         }
         let call = cx.b.ins().call(finalize, &[buf]);
         let bits = cx.b.inst_results(call)[0];

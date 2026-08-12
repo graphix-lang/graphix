@@ -10,7 +10,6 @@ use crate::{
         kernel_abi::{self, AbiKind, PrimType},
     },
     node::{
-        Cached,
         op::CmpOp,
         pattern::{PatternNode, StructPatternNode},
         select::Select,
@@ -368,7 +367,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // de-fuse (soak jul08g fuzz divergence 6).
     let has_arm_lift = sel.arms.iter().any(|(_, body)| {
         let mut found = false;
-        fusion::for_each_node(&body.node, &mut |n| {
+        fusion::for_each_node(body, &mut |n| {
             if let NodeView::Bind(b) = n.view() {
                 if b.single_bind_id().is_some_and(|id| cx.ctx.lifted.contains(&id)) {
                     found = true;
@@ -963,7 +962,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    emit_arm: &mut dyn FnMut(&mut BodyCx, &Cached<R, E>, usize) -> Result<()>,
+    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize) -> Result<()>,
     // The final-arm miss handler (reached only under a tainted
     // scrutinee): value position jumps to the merge with a tainted
     // bottom; tail position sets pending and exits.
@@ -1675,7 +1674,7 @@ fn install_arm_binds(
 /// verbatim from the pre-F0b `emit_select_node` arm loop.
 fn emit_select_value_arm<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    body: &Cached<R, E>,
+    body: &Node<R, E>,
     mark: usize,
     merge_shape: SelectMerge,
     merge: Block,
@@ -1683,14 +1682,10 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     sel_state: (SelWord, usize),
 ) -> Result<()> {
     use NodeView;
-    let body_frozen =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.node.typ())
-            .ok_or_else(|| {
-                anyhow!(
-                    "emit_clif: select arm type {:?} doesn't freeze concrete",
-                    body.node.typ()
-                )
-            })?;
+    let body_frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+        .ok_or_else(|| {
+            anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
+        })?;
     // Selection memory (see `emit_select_node`): compare-and-record
     // this arm's index BEFORE the body — the woke bit (changed with a
     // valid scrutinee) is the becoming-selected fire of the strict
@@ -1755,7 +1750,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                      match the scalar merge {rp:?}"
                 ));
             }
-            let cv = body.node.emit_clif(cx)?;
+            let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
         }
         SelectMerge::Value => {
@@ -1766,7 +1761,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                     // A bare-null arm body has nothing to emit (and a
                     // Null-shaped node can't emit anyway); only the
                     // literal constant form is recognized.
-                    match body.node.view() {
+                    match body.view() {
                         NodeView::Constant(c) if matches!(c.value, Value::Null) => {}
                         _ => {
                             return Err(anyhow!(
@@ -1787,14 +1782,14 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                     (d, p)
                 }
                 Some(AbiKind::Scalar(p)) => {
-                    let cv = body.node.emit_clif(cx)?;
+                    let cv = body.emit_clif(cx)?;
                     (cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload))
                 }
                 Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                    let cv = body.node.emit_clif(cx)?;
+                    let cv = body.emit_clif(cx)?;
                     ensure_owned_value_src(
                         cx,
-                        node_composite_source(&body.node),
+                        node_composite_source(body),
                         cv.disc,
                         cv.payload,
                     )?
@@ -1817,12 +1812,9 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                      match the composite merge"
                 ));
             }
-            let cv = body.node.emit_clif(cx)?;
-            let v = ensure_owned_composite_src(
-                cx,
-                node_composite_source(&body.node),
-                cv.payload,
-            )?;
+            let cv = body.emit_clif(cx)?;
+            let v =
+                ensure_owned_composite_src(cx, node_composite_source(body), cv.payload)?;
             (cv.disc, v)
         }
         SelectMerge::String => {
@@ -1836,7 +1828,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                 ));
             }
             // String reads/produces are owned at production.
-            let cv = body.node.emit_clif(cx)?;
+            let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
         }
     };

@@ -104,19 +104,6 @@ macro_rules! bailat {
 }
 
 #[macro_export]
-macro_rules! update_args {
-    ($args:expr, $ctx:expr, $event:expr) => {{
-        let mut updated = false;
-        let mut determined = true;
-        for n in $args.iter_mut() {
-            updated |= n.update_triggers($ctx, $event);
-            determined &= n.cached.is_some();
-        }
-        (updated, determined)
-    }};
-}
-
-#[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
         $typ.with_deref(|typ| {
@@ -284,23 +271,31 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
     }
 }
 
-/// Wraps a child `Node` with its last-produced value cached for the
-/// current cycle. Many op nodes use this so that if one operand
-/// updates and another doesn't, they can still produce output using
-/// the previous cached value for the unchanged operand.
+/// DESIGNATED ride memory: a child `Node` plus its last VALUE, kept
+/// under a poisoned tag, for the three readers whose semantics
+/// require reading history a production cannot carry (the P5b′
+/// designation pass, design/dense_delivery.md):
 ///
-/// Public so that AOT-generated code (see `graphix compile`, item 3
-/// in the plan) can construct op-node trees directly. Don't rely on
-/// the exact shape of this type — it's public for codegen reuse, not
-/// as a stable user-facing API.
+/// - the select SCRUTINEE (the scrutinee ride, aug06ghz0: a bottomed
+///   scrutinee with history rides — binds and re-matches read the
+///   held value),
+/// - a pattern GUARD's truth (`is_match` takes `&self` and cannot
+///   consume the guard's production — the held truth is the only
+///   channel),
+/// - `~`'s held arg ("sample the latest" IS the contract).
+///
+/// Everything else reads its children's dense productions directly —
+/// the operand-cache role this type had under sparse delivery is
+/// gone (each cache slot mirrored the child's resident).
 #[derive(Debug)]
-pub struct Cached<R: Rt, E: UserEvent> {
-    pub cached: Option<Value>,
-    /// The tag of the resident `cached` value. Only the TAINT bit is
-    /// meaningful at rest (a tainted placeholder parked in a cache
-    /// keeps poisoning consumers until overwritten — the kernel's
-    /// slot-disc twin); firedness is a property of a PRODUCTION, not
-    /// of a cache.
+pub struct Held<R: Rt, E: UserEvent> {
+    /// The last value-bearing production (`Some` = there was once a
+    /// real value; a bottom's placeholder never lands here).
+    pub value: Option<Value>,
+    /// The tag of the child's LAST production. Only the TAINT bit is
+    /// meaningful at rest (a standing bottom keeps poisoning until a
+    /// value overwrites it — the kernel's slot-disc twin); firedness
+    /// is a property of a PRODUCTION, not of held memory.
     pub tag: Tag,
     pub node: Node<R, E>,
     /// Lazily computed: the subtree references no bindings at all, so
@@ -309,72 +304,56 @@ pub struct Cached<R: Rt, E: UserEvent> {
     invariant: std::sync::OnceLock<bool>,
 }
 
-impl<R: Rt, E: UserEvent> Cached<R, E> {
+impl<R: Rt, E: UserEvent> Held<R, E> {
     pub fn new(node: Node<R, E>) -> Self {
-        Self {
-            cached: None,
-            tag: Tag::FIRED,
-            node,
-            invariant: std::sync::OnceLock::new(),
-        }
+        Self { value: None, tag: Tag::FIRED, node, invariant: std::sync::OnceLock::new() }
     }
 
-    /// Update the node, returning the production's tag if it produced
-    /// (`None` = no production). A value-bearing production lands in
-    /// `cached`/`tag`; a BOTTOM production poisons the tag but never
-    /// overwrites the value — `cached` holds the operand's genuine
-    /// history (the ride memory: `Some` = there was once a real value;
-    /// a placeholder must never masquerade as one), exactly the
-    /// CachedVals slot discipline. A merely-STALE production refreshes
-    /// the cache without counting as a firing — use
-    /// [`Self::update_triggers`] where the caller only needs the
-    /// fire-trigger bool.
-    pub fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<Tag> {
+    /// Update the node, returning the production's tag. A
+    /// value-bearing production lands in `value`/`tag`; a BOTTOM
+    /// production poisons the tag but never overwrites the value —
+    /// the ride memory.
+    pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Tag {
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
         if !tag.is_bottom() {
-            self.cached = Some(tv.value_cloned());
+            self.value = Some(tv.value_cloned());
         }
         self.tag = tag;
-        Some(tag)
+        tag
     }
 
     /// [`Self::update`], reduced to "should this production trigger
-    /// my evaluation" — true for fired AND tainted productions (taint
-    /// must ride toward a force point), false for stale refreshes and
-    /// silence. The consumed taint is read back off [`Self::tag`].
+    /// my evaluation" — true for fired AND fresh-bottom productions
+    /// (a bottom event must ride toward a force point), false for the
+    /// stale states. The consumed bottomness is read back off
+    /// [`Self::tag`].
     pub fn update_triggers(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> bool {
-        self.update(ctx, event).is_some_and(|t| t.triggers())
+        self.update(ctx, event).triggers()
     }
 
-    /// Sleep is PAUSE, not reset: the resident value (and its at-rest
+    /// Sleep is PAUSE, not reset: the held value (and its at-rest
     /// taint) survives, so a re-woken subtree resumes from its history
-    /// exactly like the kernel's replay/ride words — a deselected-then-
-    /// reselected arm whose fresh computation bottoms rides its cached
-    /// operands instead of forgetting them (Eric's ruling 2026-07-31,
-    /// select_reselect_interior_bottom). Contrast [`Self::reset_replay`],
-    /// where frame state never survives.
+    /// exactly like the kernel's replay/ride words (Eric's ruling
+    /// 2026-07-31, select_reselect_interior_bottom). Contrast
+    /// [`Self::reset_replay`], where frame state never survives.
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.node.sleep(ctx)
     }
 
-    /// The cached last value is replay memory — EXCEPT when the
-    /// subtree is a closed expression (references no bindings): such a
-    /// value is identical in every frame and the subtree cannot
-    /// re-produce it without an init view, so the cache IS the value
-    /// channel — the interpreter's twin of the kernel's constant
-    /// immediates. Crucially it stays a CACHE, not a firing: a body
-    /// that consumes only constants stays quiet after its first-ever
-    /// evaluation, which is what keeps const-callback folds quiet in
-    /// both backends (the hof-lift-firing pin).
+    /// The held value is replay memory — EXCEPT when the subtree is a
+    /// closed expression (references no bindings): such a value is
+    /// identical in every frame and the subtree cannot re-produce it
+    /// without an init view, so the hold IS the value channel — the
+    /// interpreter's twin of the kernel's constant immediates.
+    /// Crucially it stays a hold, not a firing: a body that consumes
+    /// only constants stays quiet after its first-ever evaluation,
+    /// which is what keeps const-callback folds quiet in both
+    /// backends (the hof-lift-firing pin).
     pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         let invariant = *self.invariant.get_or_init(|| {
             let mut refs = Refs::default();
@@ -382,12 +361,85 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
             refs.refed.is_empty()
         });
         if !invariant {
-            self.cached = None;
+            self.value = None;
             self.tag = Tag::FIRED;
         }
         self.node.reset_replay(ctx)
     }
 }
+
+/// Gather a composite's element productions (dense delivery): update
+/// every child, join the tags, and clone the values. Returns
+/// `(trig, fired, bottom)`; `vals` receives every element value in
+/// order and is meaningful only when `bottom` is false (the gather
+/// stops pushing once a bottom is seen — the values are abandoned).
+/// The per-element clone is the same clone the deleted operand-cache
+/// fill paid per delivery.
+pub(crate) fn gather<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+    nodes: &mut [Node<R, E>],
+    vals: &mut Vec<Value>,
+) -> (bool, bool, bool) {
+    let (mut trig, mut fired, mut bottom) = (false, false, false);
+    for c in nodes.iter_mut() {
+        let tv = c.update(ctx, event);
+        let t = tv.tag();
+        trig |= t.triggers();
+        fired |= t.is_fired();
+        if t.is_bottom() {
+            bottom = true
+        } else if !bottom {
+            vals.push(tv.value_cloned())
+        }
+    }
+    (trig, fired, bottom)
+}
+
+/// The dense recompute gate + bottom join, shared by every node that
+/// computes from its children's productions. Skip (ride) unless a
+/// consumed production triggered, the resident is a bottom needing a
+/// value-channel refill, or we're inside an evaluation frame (R1:
+/// framed passes recompute unconditionally — exactly the kernel). Any
+/// consumed bottom bottoms the result: FreshBottom iff a delivery
+/// triggered this cycle, else the quiet ride (the join rule —
+/// standing bottoms never re-mint events).
+macro_rules! dense_gate {
+    ($self:ident, $ctx:ident, $trig:expr, $bottom:expr) => {{
+        if !($trig || $self.resident.tag().is_bottom() || $ctx.frame_depth > 0) {
+            return $self.resident.ride();
+        }
+        if $bottom {
+            return if $trig {
+                $self
+                    .resident
+                    .set($crate::TagValue::tagged(Value::Null, $crate::Tag::FRESH_BOTTOM))
+            } else {
+                $self.resident.ride()
+            };
+        }
+    }};
+}
+pub(crate) use dense_gate;
+
+/// Read one child's dense production into the caller's join
+/// accumulators, yielding `Some(value)` for the value-bearing states
+/// and `None` for a bottom (which also sets `$bottom`).
+macro_rules! read_prod {
+    ($n:expr, $ctx:ident, $event:ident, $trig:ident, $fired:ident, $bottom:ident) => {{
+        let tv = $n.update($ctx, $event);
+        let t = tv.tag();
+        $trig |= t.triggers();
+        $fired |= t.is_fired();
+        if t.is_bottom() {
+            $bottom = true;
+            None
+        } else {
+            Some(tv.value_cloned())
+        }
+    }};
+}
+pub(crate) use read_prod;
 
 #[derive(Debug)]
 pub struct Use {
@@ -892,7 +944,7 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
-    pub args: Box<[Cached<R, E>]>,
+    pub args: Box<[Node<R, E>]>,
     resident: TagValue,
 }
 
@@ -905,11 +957,11 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
         top_id: ExprId,
         args: &[Expr],
     ) -> Result<Node<R, E>> {
-        let args: Box<[Cached<R, E>]> = args
+        let args: Box<[Node<R, E>]> = args
             .iter()
-            .map(|e| Ok(Cached::new(compile(ctx, flags, e.clone(), scope, top_id)?)))
+            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
-        let typs = args.iter().map(|c| c.node.typ().clone()).collect();
+        let typs = args.iter().map(|n| n.typ().clone()).collect();
         let typ = Type::Primitive(Typ::String.into());
         Ok(Node::new(Self { spec, typ, typs, args, resident: TagValue::phantom() }))
     }
@@ -918,35 +970,43 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use std::fmt::Write;
-        let mut produced = false;
+        let mut trig = false;
         let mut fired = false;
-        let mut determined = true;
+        let mut bottom = false;
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
         for c in self.args.iter_mut() {
-            if let Some(t) = c.update(ctx, event) {
-                produced = true;
-                fired |= t.is_fired();
+            let tv = c.update(ctx, event);
+            let t = tv.tag();
+            trig |= t.triggers();
+            fired |= t.is_fired();
+            if t.is_bottom() {
+                bottom = true
+            } else if !bottom {
+                // gathered by clone within the iteration — the same
+                // clone the old cache fill paid per delivery
+                vals.push(tv.value_cloned())
             }
-            determined &= c.cached.is_some();
         }
-        if produced && determined {
-            if self.args.iter().any(|c| c.tag.is_tainted()) {
-                return self
-                    .resident
-                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-            }
-            let tag = if fired { Tag::FIRED } else { Tag::STALE };
-            let mut buf: LPooled<String> = LPooled::take();
-            for (typ, c) in self.typs.iter().zip(self.args.iter()) {
-                match c.cached.as_ref().unwrap() {
-                    Value::String(s) => write!(buf, "{s}"),
-                    v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
-                }
-                .unwrap()
-            }
-            self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
-        } else {
-            self.resident.ride()
+        if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
+            return self.resident.ride();
         }
+        if bottom {
+            return if trig {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
+        }
+        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let mut buf: LPooled<String> = LPooled::take();
+        for (typ, v) in self.typs.iter().zip(vals.iter()) {
+            match v {
+                Value::String(s) => write!(buf, "{s}"),
+                v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
+            }
+            .unwrap()
+        }
+        self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
     }
 
     fn spec(&self) -> &Expr {
@@ -959,13 +1019,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
 
     fn refs(&self, refs: &mut Refs) {
         for a in &self.args {
-            a.node.refs(refs)
+            a.refs(refs)
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for n in &mut self.args {
-            n.node.delete(ctx)
+            n.delete(ctx)
         }
     }
 
@@ -983,8 +1043,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
-            wrap!(a.node, a.node.typecheck0(ctx))?;
-            self.typs[i] = a.node.typ().with_deref(|t| match t {
+            wrap!(a, a.typecheck0(ctx))?;
+            self.typs[i] = a.typ().with_deref(|t| match t {
                 None => Type::Any,
                 Some(t) => t.clone(),
             });
@@ -994,7 +1054,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for a in &mut self.args {
-            wrap!(a.node, a.node.typecheck1(ctx))?;
+            wrap!(a, a.typecheck1(ctx))?;
         }
         Ok(())
     }
@@ -1119,7 +1179,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 #[derive(Debug)]
 pub struct ConnectDeref<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
-    pub(super) rhs: Cached<R, E>,
+    pub(super) rhs: Node<R, E>,
     pub(super) src_id: BindId,
     pub(super) target_id: Option<BindId>,
     pub(super) top_id: ExprId,
@@ -1136,7 +1196,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         top_id: ExprId,
         spec: Expr,
     ) -> Node<R, E> {
-        Node::new(Self { spec, rhs: Cached::new(rhs), src_id, target_id: None, top_id })
+        Node::new(Self { spec, rhs, src_id, target_id: None, top_id })
     }
 
     pub(crate) fn compile(
@@ -1163,16 +1223,24 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             });
         }
         ctx.rt.ref_var(src_id, top_id);
-        let rhs = Cached::new(compile(ctx, flags, value.clone(), scope, top_id)?);
+        let rhs = compile(ctx, flags, value.clone(), scope, top_id)?;
         Ok(Node::new(Self { spec, rhs, src_id, target_id: None, top_id }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // Fired-RHS write gate, as in `Connect` (a stale or tainted
-        // production refreshes the cache but must not write).
-        let mut up = self.rhs.update(ctx, event).is_some_and(|t| t.is_fired());
+        // Fired-RHS write gate, as in `Connect`. A retarget (the ref
+        // value switching binds) forces a write of the RHS's current
+        // value — the dense production carries it on the value channel
+        // whether or not the RHS fired this cycle; a bottom RHS never
+        // writes.
+        let (rhs_fired, rhs_val) = {
+            let tv = self.rhs.update(ctx, event);
+            let t = tv.tag();
+            (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
+        };
+        let mut up = rhs_fired;
         let src = event.variables.get(&self.src_id).and_then(|tv| {
             tv.with_value(|v| match v {
                 Value::U64(id) => Some(BindId::from(*id)),
@@ -1185,11 +1253,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 up = true;
             }
         }
-        if up && !self.rhs.tag.is_tainted() {
-            if let Some(v) = &self.rhs.cached {
-                if let Some(id) = self.target_id {
-                    ctx.rt.set_var(id, v.clone());
-                }
+        if up {
+            if let (Some(v), Some(id)) = (rhs_val, self.target_id) {
+                ctx.rt.set_var(id, v);
             }
         }
         TagValue::phantom_ref()
@@ -1205,12 +1271,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
 
     fn refs(&self, refs: &mut Refs) {
         refs.refed.insert(self.src_id);
-        self.rhs.node.refs(refs)
+        self.rhs.refs(refs)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.unref_var(self.src_id, self.top_id);
-        self.rhs.node.delete(ctx)
+        self.rhs.delete(ctx)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1222,17 +1288,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
+        wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
         let bind = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind,
         };
-        let typ = Type::ByRef(Arc::new(self.rhs.node.typ().clone()));
+        let typ = Type::ByRef(Arc::new(self.rhs.typ().clone()));
         wrap!(self, bind.typ.check_contains(&ctx.env, &typ))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.rhs.node, self.rhs.node.typecheck1(ctx))?;
+        wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
         Ok(())
     }
 
@@ -1451,7 +1517,7 @@ pub struct Sample<R: Rt, E: UserEvent> {
     id: BindId,
     top_id: ExprId,
     pub trigger: Node<R, E>,
-    pub arg: Cached<R, E>,
+    pub arg: Held<R, E>,
     resident: TagValue,
 }
 
@@ -1468,7 +1534,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
-        let arg = Cached::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
+        let arg = Held::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
         let typ = arg.node.typ().clone();
         Ok(Node::new(Self {
             triggered: 0,
@@ -1496,23 +1562,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
         self.arg.update(ctx, event);
         let var = event.variables.get(&self.id).cloned();
-        let held = || match &self.arg.cached {
+        let held = || match &self.arg.value {
             Some(_) if self.arg.tag.is_tainted() => {
                 TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
             }
             Some(v) => TagValue::fired(v.clone()),
             None => unreachable!(),
         };
-        let res = if self.triggered > 0 && self.arg.cached.is_some() && var.is_none() {
+        let res = if self.triggered > 0 && self.arg.value.is_some() && var.is_none() {
             self.triggered -= 1;
             Some(held())
         } else {
             var
         };
-        if self.arg.cached.is_some() && !self.arg.tag.is_tainted() {
+        if self.arg.value.is_some() && !self.arg.tag.is_tainted() {
             while self.triggered > 0 {
                 self.triggered -= 1;
-                ctx.rt.set_var(self.id, self.arg.cached.clone().unwrap());
+                ctx.rt.set_var(self.id, self.arg.value.clone().unwrap());
             }
         }
         match res {
@@ -1533,7 +1599,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // `arg.cached` (the held RHS) is SEMANTIC — "sample the latest
+        // `arg.value` (the held RHS) is SEMANTIC — "sample the latest
         // value when the trigger fires" IS this node's contract, so the
         // held value survives a frame reset. Children still reset.
         self.arg.node.reset_replay(ctx);

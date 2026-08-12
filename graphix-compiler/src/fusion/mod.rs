@@ -496,7 +496,7 @@ pub(crate) fn for_each_tail_leaf<R: Rt, E: UserEvent>(
         TailPosition::Select(s) => {
             let mut any = false;
             for (_, body) in s.arms.iter() {
-                any |= for_each_tail_leaf(&body.node, f, on_select);
+                any |= for_each_tail_leaf(body, f, on_select);
             }
             if any {
                 on_select(s);
@@ -532,8 +532,8 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
     }
     match node.view() {
         NodeView::Bind(b) => rec!(&b.node),
-        NodeView::MapQ(m) => rec!(&m.source.node, &m.prototype),
-        NodeView::FoldQ(m) => rec!(&m.source.node, &m.init.node, &m.prototype),
+        NodeView::MapQ(m) => rec!(&m.source, &m.prototype),
+        NodeView::FoldQ(m) => rec!(&m.source, &m.init, &m.prototype),
         NodeView::Module(m) => {
             for child in m.nodes.iter() {
                 rec!(child)
@@ -565,7 +565,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                 if let Some(g) = &pat.guard {
                     rec!(&g.node)
                 }
-                rec!(&body.node)
+                rec!(body)
             }
         }
         NodeView::Catch(c) => rec!(&c.handler),
@@ -576,10 +576,10 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::Not(n) => rec!(&n.n),
         NodeView::Neg(n) => rec!(&n.n),
         NodeView::Connect(c) => rec!(&c.node),
-        NodeView::ConnectDeref(c) => rec!(&c.rhs.node),
+        NodeView::ConnectDeref(c) => rec!(&c.rhs),
         NodeView::StringInterpolate(s) => {
             for a in s.args.iter() {
-                rec!(&a.node)
+                rec!(a)
             }
         }
         NodeView::Any(a) => {
@@ -590,71 +590,71 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::Sample(s) => rec!(&s.trigger, &s.arg.node),
         NodeView::Struct(s) => {
             for c in s.n.iter() {
-                rec!(&c.node)
+                rec!(c)
             }
         }
         NodeView::StructWith(s) => {
             rec!(&s.source);
             for r in s.replace.iter() {
-                rec!(&r.n.node)
+                rec!(&r.n)
             }
         }
         NodeView::Tuple(t) => {
             for c in t.n.iter() {
-                rec!(&c.node)
+                rec!(c)
             }
         }
         NodeView::Variant(v) => {
             for c in v.n.iter() {
-                rec!(&c.node)
+                rec!(c)
             }
         }
         NodeView::Array(a) => {
             for c in a.n.iter() {
-                rec!(&c.node)
+                rec!(c)
             }
         }
         NodeView::Map(m) => {
             for c in m.keys.iter() {
-                rec!(&c.node)
+                rec!(c)
             }
             for c in m.vals.iter() {
-                rec!(&c.node)
+                rec!(c)
             }
         }
         NodeView::StructRef(s) => rec!(&s.source),
         NodeView::TupleRef(t) => rec!(&t.source),
-        NodeView::ArrayRef(a) => rec!(&a.source.node, &a.i.node),
+        NodeView::ArrayRef(a) => rec!(&a.source, &a.i),
         NodeView::ArraySlice(a) => {
-            rec!(&a.source.node);
+            rec!(&a.source);
             if let Some(s) = &a.start {
-                rec!(&s.node)
+                rec!(s)
             }
             if let Some(e) = &a.end {
-                rec!(&e.node)
+                rec!(e)
             }
         }
-        NodeView::MapRef(m) => rec!(&m.source.node, &m.key.node),
+        NodeView::MapRef(m) => rec!(&m.source, &m.key),
         NodeView::ByRef(b) => rec!(&b.child),
         NodeView::Deref(d) => rec!(&d.child),
-        NodeView::Add(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Sub(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Mul(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Div(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Mod(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::CheckedAdd(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::CheckedSub(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::CheckedMul(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::CheckedDiv(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::CheckedMod(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Eq(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Ne(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Lt(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Gt(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Lte(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Gte(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::And(o) => rec!(&o.lhs.node, &o.rhs.node),
-        NodeView::Or(o) => rec!(&o.lhs.node, &o.rhs.node),
+        NodeView::Add(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Sub(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Mul(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Div(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Mod(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::CheckedAdd(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::CheckedSub(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::CheckedMul(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::CheckedDiv(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::CheckedMod(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Eq(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Ne(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Lt(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Gt(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Lte(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Gte(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::And(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Or(o) => rec!(&o.lhs, &o.rhs),
         NodeView::Lambda(_) => {}
         NodeView::Ref(_)
         | NodeView::Constant(_)

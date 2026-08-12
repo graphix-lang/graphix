@@ -3,7 +3,7 @@ use crate::{
     env::Env,
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
-    node::{Cached, compiler},
+    node::{Held, compiler},
     typ::{Type, TypeRef},
 };
 use anyhow::{Result, anyhow, bail};
@@ -766,7 +766,7 @@ pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
     pub structure_predicate: StructPatternNode,
-    pub guard: Option<Cached<R, E>>,
+    pub guard: Option<Held<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
@@ -816,7 +816,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             .as_ref()
             .map(|g| compiler::compile(ctx, flags, g.clone(), &scope, top_id))
             .transpose()?
-            .map(Cached::new);
+            .map(Held::new);
         Ok(PatternNode {
             explicit_type_predicate: explicit,
             type_predicate,
@@ -869,7 +869,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             && match &self.guard {
                 None => true,
                 Some(g) => g
-                    .cached
+                    .value
                     .as_ref()
                     .and_then(|v| v.clone().get_as::<bool>())
                     .unwrap_or(false),
