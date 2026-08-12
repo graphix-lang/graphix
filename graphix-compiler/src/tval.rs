@@ -28,17 +28,6 @@
 //! Consumption is [`TagValue::view`] — exhaustive matching is the
 //! rule; the boolean accessors are for the JIT disc boundary.
 //!
-//! DENSE-MIGRATION ADAPTERS (phase P1 of the plan; both flip at 5b):
-//! [`Tag::from_raw`] still clamps a bare TAINT byte to TAINT|STALE, so
-//! `FreshBottom` is representable but UNOBSERVABLE through
-//! [`TagValue::tag`]/[`TagValue::view`] for now — every current mint
-//! of a fresh bottom reads back as `StaleBottom`, preserving the
-//! sparse world's single-bottom behavior bit-for-bit. And
-//! [`Tag::triggers`] keeps the sparse definition (any bottom
-//! triggers); the dense definition (fired-bit alone: `Fired` and
-//! `FreshBottom` are events, the stale states are not) replaces it
-//! when the interpreter flips.
-//!
 //! The BOUNDARY GUARANTEE: a `TagValue` is *uninterpreted* raw words —
 //! the only ways to recover a `Value` are [`TagValue::value`] and
 //! [`TagValue::with_value`], which MASK the tag first. So a tagged
@@ -75,8 +64,7 @@ impl Tag {
     /// A value-channel refresh: present, valid, did not fire.
     pub const STALE: Tag = Tag(Self::STALE_BIT);
     /// A bottom that is an event: the computation produced no usable
-    /// value THIS cycle. Representable but unobservable until the 5b
-    /// flip removes [`Self::from_raw`]'s clamp.
+    /// value THIS cycle.
     pub const FRESH_BOTTOM: Tag = Tag(Self::TAINT_BIT);
     /// A standing bottom (nothing new), and the phantom initial state
     /// of a production slot that has never produced.
@@ -85,11 +73,7 @@ impl Tag {
     /// [`Self::STALE_BOTTOM`]; dies with the P2 consumer sweep.
     pub const TAINT: Tag = Self::STALE_BOTTOM;
 
-    /// Wrap a raw tag byte. HONEST since the 5b flip: the four states
-    /// read as minted (`FreshBottom` is observable). The kernel
-    /// OUTPUT seam still clamps locally (`Tag::clamp_sparse`, the 5c
-    /// adapter) — compiled kernels' result discs keep their sparse
-    /// interpretation until the kernel flip.
+    /// Wrap a raw tag byte. HONEST: the four states read as minted.
     pub fn from_raw(bits: u8) -> Self {
         Tag(bits)
     }

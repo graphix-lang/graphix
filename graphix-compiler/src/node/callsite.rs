@@ -97,26 +97,11 @@ pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub id: BindId,
     pub node: Option<Node<R, E>>,
     pub is_default: bool,
-    /// Lazily computed: the arg expression references no bindings, so
-    /// its published value is identical in every evaluation frame —
-    /// see the invariant-arg re-delivery in `update` and the removal
-    /// exemption in `reset_replay`.
-    pub invariant: std::sync::OnceLock<bool>,
 }
 
 impl<R: Rt, E: UserEvent> Arg<R, E> {
     pub(crate) fn new(id: BindId, node: Option<Node<R, E>>, is_default: bool) -> Self {
-        Arg { id, node, is_default, invariant: std::sync::OnceLock::new() }
-    }
-
-    fn is_invariant(&self) -> bool {
-        *self.invariant.get_or_init(|| {
-            self.node.as_ref().is_some_and(|n| {
-                let mut refs = Refs::default();
-                n.refs(&mut refs);
-                refs.refed.is_empty()
-            })
-        })
+        Arg { id, node, is_default }
     }
 }
 

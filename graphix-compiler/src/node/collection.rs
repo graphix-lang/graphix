@@ -695,7 +695,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         let mut production = None;
         let mut resized = false;
         let mut forced_taint = false;
-        let mut src_trig = false;
+        let src_trig;
         {
             let (tag, sval) = {
                 let tv = self.base.source.update(ctx, event);
@@ -1122,7 +1122,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         let mut resized = false;
         let mut forced_taint = false;
         let mut source_tag = None;
-        let mut src_trig = false;
+        let src_trig;
         {
             let (tag, sval) = {
                 let tv = self.base.source.update(ctx, event);
@@ -1166,7 +1166,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             }
         }
 
-        let mut init_tag = None;
+        let init_tag;
         {
             let (tag, ival) = {
                 let tv = self.base.init.update(ctx, event);

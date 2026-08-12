@@ -1053,7 +1053,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // body is emitted by `emit_clif` recursion from the root. Any Err
     // (a node that doesn't emit) discards the half-built function —
     // the subtree node-walks.
-    let mut build = |ctx: &mut ExecCtx<R, E>| {
+    let build = |ctx: &mut ExecCtx<R, E>| {
         emit::compile_kernel_with_callees_direct(
             &mut ctx.fusion.jit.lock(),
             &kernel,

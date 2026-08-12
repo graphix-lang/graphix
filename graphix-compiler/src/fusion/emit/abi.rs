@@ -708,11 +708,6 @@ impl JitEnv {
         self.locals.iter().rev().find(|l| l.name.as_str() == name)
     }
 
-    /// Resolve a local by BindId only (no name fallback).
-    pub(super) fn lookup_by_id(&self, id: BindId) -> Option<&Local> {
-        self.locals.iter().rev().find(|l| l.bind_id == Some(id))
-    }
-
     /// Snapshot the binding list length. Pair with [`Self::truncate`] to
     /// pop every binding introduced since the mark, so a block /
     /// select-arm / loop-body scope doesn't leak names into its
