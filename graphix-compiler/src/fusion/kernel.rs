@@ -613,7 +613,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // ride-own-history semantics are the re-blessed
         // dyncall-partial-args delta). A STALE-masked slot delivers
         // `TagValue::stale`: present, didn't fire, so production
-        // rules that gate on argument FIRING (update_diff,
+        // rules that gate on argument FIRING (seam_arg's fired flag,
         // CachedArgs' eval re-run) see the per-argument truth instead
         // of a phantom fire per kernel invocation
         // (dyncall-stale-arg-fired-aug2026). On the FIRST dispatch

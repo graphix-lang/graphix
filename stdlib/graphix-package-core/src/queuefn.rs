@@ -15,7 +15,7 @@ use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug, marker::PhantomData, sync::Arc as SArc};
 use triomphe::Arc;
 
-use crate::{seam_publish_tag, seam_tick, seam_value};
+use crate::{seam_tick, seam_value};
 
 #[derive(Debug)]
 struct QueueEntry {
@@ -79,7 +79,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     ) -> &TagValue {
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
-            if let Some(v) = seam_tick(n.update(ctx, event), ctx.dense_seam) {
+            if let Some(v) = seam_tick(n.update(ctx, event)) {
                 if let Some(bid) = self.arg_bids.get(i) {
                     delta.push((*bid, v.value_cloned()));
                 }
@@ -115,9 +115,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        match seam_tick(self.pred.update(ctx, event), ctx.dense_seam)
-            .map(|tv| tv.value_cloned())
-        {
+        match seam_tick(self.pred.update(ctx, event)).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
@@ -325,7 +323,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         }
         let mut new_lambda: Option<Value> = None;
         if let Some(tv) = seam_value(from[2].update(ctx, event)) {
-            let tag = seam_publish_tag(tv, ctx.dense_seam);
+            let tag = tv.tag();
             let v = tv.value_cloned();
             // `resolved` is a typecheck-time artifact; a lazily-built
             // instance (an analysis-pred per-slot clone whose swallowed
@@ -358,8 +356,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
         }
-        let trigger_fired =
-            seam_tick(from[1].update(ctx, event), ctx.dense_seam).is_some();
+        let trigger_fired = seam_tick(from[1].update(ctx, event)).is_some();
         if trigger_fired {
             let popped = {
                 let mut s = self.state.lock();

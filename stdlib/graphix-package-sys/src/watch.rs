@@ -284,8 +284,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
             .and_then(|v| v.value_cloned().cast_to::<Option<Duration>>().ok().flatten());
         let batch_size = seam_value(from[1].update(ctx, event))
             .and_then(|v| v.value_cloned().cast_to::<Option<i64>>().ok().flatten());
-        let trigger =
-            seam_tick(from[2].update(ctx, event), ctx.dense_seam).is_some();
+        let trigger = seam_tick(from[2].update(ctx, event)).is_some();
         match poll_interval {
             Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
                 return self.out.set(TagValue::fired(errf!(
@@ -383,7 +382,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         event: &mut Event<E>,
     ) -> &TagValue {
         let mut up = false;
-        if let Some(Ok(mut int)) = seam_tick(from[0].update(ctx, event), ctx.dense_seam)
+        if let Some(Ok(mut int)) = seam_tick(from[0].update(ctx, event))
             .map(|v| v.value_cloned().cast_to::<LPooled<Vec<WInterest>>>())
         {
             let int = int.drain(..).fold(BitFlags::empty(), |mut acc, fl| {
@@ -393,13 +392,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
             up = true;
             self.interest = Some(int);
         }
-        if let Some(watcher_val) =
-            seam_tick(from[1].update(ctx, event), ctx.dense_seam)
-        {
+        if let Some(watcher_val) = seam_tick(from[1].update(ctx, event)) {
             up = true;
             self.watcher_val = Some(watcher_val.value_cloned());
         }
-        if let Some(Ok(path)) = seam_tick(from[2].update(ctx, event), ctx.dense_seam)
+        if let Some(Ok(path)) = seam_tick(from[2].update(ctx, event))
             .map(|tv| tv.value_cloned().cast_to::<ArcStr>())
         {
             up = true;

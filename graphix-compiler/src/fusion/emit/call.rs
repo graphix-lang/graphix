@@ -234,7 +234,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // The STALE twin (dyncall-stale-arg-fired-aug2026): bit `i` set =
     // the arg is present but did not fire this cycle. The dispatcher
     // delivers those slots as `TagValue::stale`, so builtins whose
-    // production gates on argument FIRING (`update_diff`, `CachedArgs`'
+    // production gates on argument FIRING (`seam_arg`, `CachedArgs`'
     // eval re-run, the print family's per-arg update) see the
     // node-walk's per-argument truth — a fused `rand`/`now` no longer
     // re-runs its effect on every kernel invocation. Delivered as

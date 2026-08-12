@@ -155,16 +155,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         event: &mut Event<E>,
     ) -> &TagValue {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
-        let prefix_val = graphix_package_core::seam_tick(
-            from[0].update(ctx, event),
-            ctx.dense_seam,
-        )
-        .map(|tv| tv.value_cloned());
-        let tree_changed = graphix_package_core::seam_tick(
-            from[1].update(ctx, event),
-            ctx.dense_seam,
-        )
-        .map(|tv| tv.value_cloned());
+        let prefix_val = graphix_package_core::seam_tick(from[0].update(ctx, event))
+            .map(|tv| tv.value_cloned());
+        let tree_changed = graphix_package_core::seam_tick(from[1].update(ctx, event))
+            .map(|tv| tv.value_cloned());
         let tree_is_new = tree_changed.is_some();
         if let Some(v) = tree_changed {
             self.tree_val = Some(v);

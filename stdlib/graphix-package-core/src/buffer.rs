@@ -299,12 +299,9 @@ fn resolve_u64<R: Rt, E: UserEvent>(
     ref_id: BindId,
 ) -> Result<Option<u64>, Value> {
     let target = resolve_ref(byref_chain, ref_id)?;
-    Ok(written
-        .get(&target)
-        .map(|v| *unsafe { v.get_as_unchecked::<u64>() })
-        .or_else(|| {
-            ctx.rt.store_value(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() })
-        }))
+    Ok(written.get(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() }).or_else(
+        || ctx.rt.store_value(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() }),
+    ))
 }
 
 macro_rules! decode_fixed {

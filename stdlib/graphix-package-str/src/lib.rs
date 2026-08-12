@@ -455,11 +455,9 @@ macro_rules! escape_fn {
                 event: &mut Event<E>,
             ) -> &TagValue {
                 static TAG: ArcStr = literal!("StringError");
-                // both args update up front (the old update_diff
-                // order): the config error path below must not skip
-                // the data arg's update. Both old up flags were
-                // triggers()-derived (stale-quiet), so is_fired with
-                // no dense_seam gate.
+                // both args update up front: the config error path
+                // below must not skip the data arg's update. Only a
+                // FIRED delivery is an event on either channel.
                 let esc = match seam_value(from[0].update(ctx, event)) {
                     Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
                     _ => None,

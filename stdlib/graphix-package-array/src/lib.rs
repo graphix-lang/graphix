@@ -13,9 +13,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, seam_publish_tag, seam_tick, seam_value,
-};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick, seam_value};
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_value::ValArray;
@@ -444,11 +442,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
-        if let Some(tv) = seam_tick(from[0].update(ctx, event), ctx.dense_seam) {
+        if let Some(tv) = seam_tick(from[0].update(ctx, event)) {
             self.queue.push_back(tv.value_cloned());
         }
         if let Some(tv) = seam_value(from[1].update(ctx, event)) {
-            let tag = seam_publish_tag(tv, ctx.dense_seam);
+            let tag = tv.tag();
             let v = tv.value_cloned();
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
             event.variables.insert(self.pid, TagValue::tagged(v, tag));
@@ -462,9 +460,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             if ctx.interrupted() {
                 break None;
             }
-            match seam_tick(self.pred.update(ctx, event), ctx.dense_seam)
-                .map(|tv| tv.value_cloned())
-            {
+            match seam_tick(self.pred.update(ctx, event)).map(|tv| tv.value_cloned()) {
                 None => break None,
                 Some(v) => {
                     self.ready = true;
@@ -550,8 +546,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         event: &mut Event<E>,
     ) -> &TagValue {
         if let Some(Value::Array(a)) =
-            seam_tick(from[0].update(ctx, event), ctx.dense_seam)
-                .map(|tv| tv.value_cloned())
+            seam_tick(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
         {
             for v in a.iter() {
                 // Cooperative interrupt: abort a wedged iter over a huge
@@ -624,12 +619,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
             self.triggered += 1;
         }
         if let Some(Value::Array(a)) =
-            seam_tick(from[1].update(ctx, event), ctx.dense_seam)
-                .map(|tv| tv.value_cloned())
+            seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
         {
             if a.len() > 0 {
                 self.queue.push_back((0, a));

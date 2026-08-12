@@ -140,8 +140,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(Value::Map(m)) = seam_tick(from[0].update(ctx, event), ctx.dense_seam)
-            .map(|tv| tv.value_cloned())
+        if let Some(Value::Map(m)) =
+            seam_tick(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
         {
             for (k, v) in m.into_iter() {
                 let pair = Value::Array(ValArray::from_iter_exact(
@@ -212,11 +212,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
             self.triggered += 1;
         }
-        if let Some(Value::Map(m)) = seam_tick(from[1].update(ctx, event), ctx.dense_seam)
-            .map(|tv| tv.value_cloned())
+        if let Some(Value::Map(m)) =
+            seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
         {
             let pairs: LPooled<Vec<(Value, Value)>> =
                 m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();

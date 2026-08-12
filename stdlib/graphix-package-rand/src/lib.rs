@@ -110,14 +110,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let res = seam_tick(from[0].update(ctx, event), ctx.dense_seam).and_then(|a| {
-            match a.value_cloned() {
+        let res =
+            seam_tick(from[0].update(ctx, event)).and_then(|a| match a.value_cloned() {
                 Value::Array(a) if a.len() > 0 => {
                     Some(a[rng().random_range(0..a.len())].clone())
                 }
                 _ => None,
-            }
-        });
+            });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
@@ -158,16 +157,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let res = seam_tick(from[0].update(ctx, event), ctx.dense_seam).and_then(|a| {
-            match a.value_cloned() {
+        let res =
+            seam_tick(from[0].update(ctx, event)).and_then(|a| match a.value_cloned() {
                 Value::Array(a) => {
                     self.buf.extend(a.iter().cloned());
                     self.buf.shuffle(&mut rng());
                     Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
                 }
                 _ => None,
-            }
-        });
+            });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),

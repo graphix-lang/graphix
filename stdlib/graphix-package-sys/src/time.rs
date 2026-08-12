@@ -322,7 +322,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
             self.out.set(TagValue::fired(Value::from(Utc::now())))
         } else {
             self.out.ride()

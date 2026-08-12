@@ -725,7 +725,7 @@ safe fn graphix_depth_pop() {
 /// fire this cycle (its disc carries STALE). The dispatcher delivers
 /// those slots as `TagValue::stale`, so a builtin whose production
 /// gates on argument FIRING (`printfn!`'s per-arg update, `str::
-/// escape`'s `update_diff`, `CachedArgs`' eval re-run) sees the
+/// escape`'s `seam_arg` fired flags, `CachedArgs`' eval re-run) sees the
 /// per-argument truth instead of a phantom fire per kernel
 /// invocation (dyncall-stale-arg-fired-aug2026: `rand` re-randomized
 /// and `now` resampled the clock on every invocation).

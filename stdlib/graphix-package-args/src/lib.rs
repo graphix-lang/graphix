@@ -239,10 +239,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let Some(tv) = graphix_package_core::seam_tick(
-            from[0].update(ctx, event),
-            ctx.dense_seam,
-        ) else {
+        let Some(tv) = graphix_package_core::seam_tick(from[0].update(ctx, event)) else {
             return self.out.ride();
         };
         let spec = tv.value_cloned();

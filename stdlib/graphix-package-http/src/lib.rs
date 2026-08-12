@@ -17,7 +17,7 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_arg,
 };
 use graphix_rt::GXRt;
 use netidx_value::{
@@ -682,7 +682,6 @@ async fn serve_loop(
 
 #[derive(Debug)]
 pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
-    args: CachedVals,
     id: BindId,
     top_id: ExprId,
     handler: Node<R, E>,
@@ -728,7 +727,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
                 let handler =
                     genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
                 Ok(Box::new(HttpServe {
-                    args: CachedVals::new(from),
                     id,
                     top_id,
                     handler,
@@ -752,24 +750,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let mut changed = [false; 5];
-        self.args.update_diff(&mut changed, ctx, from, event);
+        let (addrv, addr_fired) = seam_arg(ctx, &mut from[0], event);
+        let (certv, cert_fired) = seam_arg(ctx, &mut from[1], event);
+        let (keyv, key_fired) = seam_arg(ctx, &mut from[2], event);
+        let (maxv, max_fired) = seam_arg(ctx, &mut from[3], event);
+        let (fv, f_fired) = seam_arg(ctx, &mut from[4], event);
         // update handler function reference
-        if changed[4] {
-            if let Some(v) = self.args.0[4].clone() {
-                ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-                event.variables.insert(self.pid, TagValue::fired(v));
-            }
+        if f_fired && let Some(v) = fv {
+            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
+            event.variables.insert(self.pid, TagValue::fired(v));
         }
         // start/restart server when addr/cert/key/max_connections changes
         let mut server_result = None;
-        if changed[0] || changed[1] || changed[2] || changed[3] {
+        if addr_fired || cert_fired || key_fired || max_fired {
             if let Some(abort) = self.abort.take() {
                 abort.abort();
             }
-            if let Some(Value::String(addr)) = &self.args.0[0] {
+            if let Some(Value::String(addr)) = &addrv {
                 // build TLS acceptor if cert and key are provided
-                let tls = match (&self.args.0[1], &self.args.0[2]) {
+                let tls = match (&certv, &keyv) {
                     (Some(Value::Bytes(cert)), Some(Value::Bytes(key))) => {
                         match build_tls_acceptor(cert, key) {
                             Ok(a) => Some(a),
@@ -787,7 +786,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                         )));
                     }
                 };
-                let max_conn = match &self.args.0[3] {
+                let max_conn = match &maxv {
                     Some(Value::I64(n)) if *n > 0 => *n as usize,
                     Some(Value::I64(n)) => {
                         return self.out.set(TagValue::fired(errf!(
@@ -861,11 +860,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         }
         // process handler responses
         loop {
-            match graphix_package_core::seam_tick(
-                self.handler.update(ctx, event),
-                ctx.dense_seam,
-            )
-            .map(|tv| tv.clone())
+            match graphix_package_core::seam_tick(self.handler.update(ctx, event))
+                .map(|tv| tv.clone())
             {
                 None => break,
                 Some(v) => {
@@ -888,10 +884,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         }
         match server_result {
             Some(v) => self.out.set(TagValue::fired(v)),
-            // quiet: a bottom production, not the value channel — the
-            // honest `self.out.ride()` belongs to this builtin's P6
-            // migration (design/dense_delivery.md)
-            None => TagValue::phantom_ref(),
+            None => self.out.ride(),
         }
     }
 
@@ -926,14 +919,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
-        self.args.clear();
         self.queue.clear();
         self.ready = true;
         self.handler.sleep(ctx);
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.args.clear();
         self.handler.reset_replay(ctx);
     }
 }

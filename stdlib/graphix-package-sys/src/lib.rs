@@ -520,7 +520,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
     ) -> &TagValue {
         if let Some(Value::I64(code)) = from
             .get_mut(0)
-            .and_then(|n| seam_tick(n.update(ctx, event), ctx.dense_seam))
+            .and_then(|n| seam_tick(n.update(ctx, event)))
             .map(|tv| tv.value_cloned())
         {
             use std::io::Write;

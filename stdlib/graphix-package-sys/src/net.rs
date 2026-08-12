@@ -11,7 +11,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CachedVals, arity1, arity2, extract_cast_type};
+use graphix_package_core::{extract_cast_type, seam_arg};
 use netidx::{
     path::Path,
     publisher::{Typ, Val},
@@ -44,7 +44,6 @@ fn as_path(v: Value) -> Option<Path> {
 
 #[derive(Debug)]
 pub(crate) struct Write {
-    args: CachedVals,
     id: BindId,
     dv: Either<(Path, Dval), Vec<Value>>,
     out: TagValue,
@@ -62,9 +61,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let _ = top_id;
+        let _ = (top_id, from);
         Ok(Box::new(Write {
-            args: CachedVals::new(from),
             dv: Either::Right(vec![]),
             id: BindId::new(),
             out: TagValue::phantom(),
@@ -87,21 +85,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 }
             }
         }
-        let mut up = [false; 2];
-        self.args.update_diff(&mut up, ctx, from, event);
-        let ((path, value), (path_up, value_up)) = arity2!(self.args.0, &up);
-        match ((path, value), (path_up, value_up)) {
-            ((_, _), (false, false)) => (),
-            ((_, Some(val)), (false, true)) => set(&mut self.dv, val),
-            ((_, None), (false, true)) => (),
-            ((None, Some(val)), (true, true)) => set(&mut self.dv, val),
-            ((Some(path), Some(val)), (true, true)) if self.same_path(path) => {
-                set(&mut self.dv, val)
-            }
-            ((Some(path), _), (true, false)) if self.same_path(path) => (),
-            ((None, _), (true, false)) => (),
-            ((None, None), (_, _)) => (),
-            ((Some(path), val), (true, _)) => match as_path(path.clone()) {
+        let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
+        let (val, val_fired) = seam_arg(ctx, &mut from[1], event);
+        let mut wrote = false;
+        if path_fired
+            && let Some(path) = &path
+            && !self.same_path(path)
+        {
+            match as_path(path.clone()) {
                 None => {
                     if let Either::Left(_) = &self.dv {
                         self.dv = Either::Right(vec![]);
@@ -132,11 +123,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                         }
                     }
                     self.dv = Either::Left((path, dv));
-                    if let Some(val) = val {
-                        set(&mut self.dv, val)
+                    if let Some(val) = &val {
+                        set(&mut self.dv, val);
+                        wrote = true;
                     }
                 }
-            },
+            }
+        }
+        if val_fired && !wrote {
+            if let Some(val) = &val {
+                set(&mut self.dv, val)
+            }
         }
         self.out.ride()
     }
@@ -149,7 +146,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.args.clear();
         match &mut self.dv {
             Either::Left((_, dv)) => {
                 let dv = dv.clone();
@@ -160,9 +156,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         }
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 impl Write {
@@ -176,7 +170,6 @@ impl Write {
 
 #[derive(Debug)]
 pub(crate) struct Subscribe {
-    args: CachedVals,
     cur: Option<(Path, Dval)>,
     id: BindId,
     top_id: ExprId,
@@ -196,10 +189,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
+        let _ = from;
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
         Ok(Box::new(Subscribe {
-            args: CachedVals::new(from),
             cur: None,
             id,
             top_id,
@@ -217,17 +210,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         event: &mut Event<E>,
     ) -> &TagValue {
         static ERR_TAG: ArcStr = literal!("SubscribeError");
-        let mut up = [false; 1];
-        self.args.update_diff(&mut up, ctx, from, event);
-        let (path, path_up) = arity1!(self.args.0, &up);
-        match (path, path_up) {
-            (Some(_), false) | (None, false) => (),
-            (None, true) => {
-                if let Some((_, dv)) = self.cur.take() {
-                    NetState::get(ctx).unsubscribe(dv, self.id)
-                }
-                return self.out.ride();
-            }
+        let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
+        match (path, path_fired) {
+            (_, false) => (),
             (Some(Value::String(path)), true)
                 if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
             {
@@ -261,6 +246,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                     "invalid path {v}, expected string"
                 )));
             }
+            (None, true) => (),
         }
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
@@ -305,7 +291,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.args.clear();
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id);
         }
@@ -314,14 +299,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         ctx.rt.ref_var(self.id, self.top_id);
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
 pub(crate) struct RpcCall {
-    args: CachedVals,
     top_id: ExprId,
     id: BindId,
     cast_typ: Option<Type>,
@@ -342,8 +324,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
+        let _ = from;
         Ok(Box::new(RpcCall {
-            args: CachedVals::new(from),
             top_id,
             id,
             cast_typ: extract_cast_type(resolved),
@@ -382,20 +364,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             };
             Ok((path, args))
         }
-        let mut up = [false; 2];
-        self.args.update_diff(&mut up, ctx, from, event);
-        let ((path, args), (path_up, args_up)) = arity2!(self.args.0, &up);
-        match ((path, args), (path_up, args_up)) {
-            ((Some(path), Some(args)), (_, true))
-            | ((Some(path), Some(args)), (true, _)) => match parse_args(path, args) {
+        let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
+        let (args, args_fired) = seam_arg(ctx, &mut from[1], event);
+        if (path_fired || args_fired)
+            && let (Some(path), Some(args)) = (&path, &args)
+        {
+            match parse_args(path, args) {
                 Err(e) => {
                     return self
                         .out
                         .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
                 }
                 Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
-            },
-            ((None, _), (_, _)) | ((_, None), (_, _)) | ((_, _), (false, false)) => (),
+            }
         }
         let res = event.variables.get(&self.id).map(|v| match &self.cast_typ {
             Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
@@ -447,19 +428,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         ctx.rt.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
-        self.args.clear()
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! list {
     ($name:ident, $builtin:literal, $table:expr, $typ:literal) => {
         #[derive(Debug)]
         pub(crate) struct $name {
-            args: CachedVals,
             current: Option<Path>,
             id: BindId,
             top_id: ExprId,
@@ -478,10 +455,10 @@ macro_rules! list {
                 from: &'c [Node<R, E>],
                 top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
+                let _ = from;
                 let id = BindId::new();
                 ctx.rt.ref_var(id, top_id);
                 Ok(Box::new($name {
-                    args: CachedVals::new(from),
                     current: None,
                     top_id,
                     id,
@@ -497,15 +474,14 @@ macro_rules! list {
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
             ) -> &TagValue {
-                let mut up = [false; 2];
-                self.args.update_diff(&mut up, ctx, from, event);
-                let ((_, path), (trigger_up, path_up)) = arity2!(self.args.0, &up);
-                match (path, path_up, trigger_up) {
+                let (_, trigger_fired) = seam_arg(ctx, &mut from[0], event);
+                let (path, path_fired) = seam_arg(ctx, &mut from[1], event);
+                match (path, path_fired, trigger_fired) {
                     (Some(Value::String(path)), true, _)
                         if self
                             .current
                             .as_ref()
-                            .map(|p| &**p != &**path)
+                            .map(|p| &**p != &*path)
                             .unwrap_or(true) =>
                     {
                         let path = Path::from(path);
@@ -541,12 +517,9 @@ macro_rules! list {
                 self.id = BindId::new();
                 ctx.rt.ref_var(self.id, self.top_id);
                 self.current = None;
-                self.args.clear();
             }
 
-            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                self.args.clear()
-            }
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }
@@ -578,7 +551,6 @@ fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
 
 #[derive(Debug)]
 pub(crate) struct Publish<R: Rt, E: UserEvent> {
-    args: CachedVals,
     current: Option<(Path, Val)>,
     top_id: ExprId,
     x: BindId,
@@ -626,7 +598,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                 let wid = BindId::new();
                 ctx.rt.ref_var(wid, top_id);
                 Ok(Box::new(Publish {
-                    args: CachedVals::new(from),
                     current: None,
                     top_id,
                     pid,
@@ -665,16 +636,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }};
         }
-        let mut up = [false; 3];
-        self.args.update_diff(&mut up, ctx, from, event);
-        if up[0] {
-            if let Some(v) = self.args.0[0].clone() {
-                ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-                event.variables.insert(self.pid, TagValue::fired(v));
-            }
+        let (fv, f_fired) = seam_arg(ctx, &mut from[0], event);
+        let (pathv, path_fired) = seam_arg(ctx, &mut from[1], event);
+        let (val, val_fired) = seam_arg(ctx, &mut from[2], event);
+        if f_fired && let Some(v) = fv {
+            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
+            event.variables.insert(self.pid, TagValue::fired(v));
         }
-        match (&up[1..], &self.args.0[1..]) {
-            ([true, _], [Some(Value::String(path)), Some(v)])
+        match ((path_fired, val_fired), (&pathv, &val)) {
+            ((true, _), (Some(Value::String(path)), Some(v)))
                 if self.current.as_ref().map(|(p, _)| &**p != path).unwrap_or(true) =>
             {
                 if let Some((_, id)) = self.current.take() {
@@ -682,7 +652,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
                 publish!(path, v)
             }
-            ([_, true], [Some(Value::String(path)), Some(v)]) => match &self.current {
+            ((_, true), (Some(Value::String(path)), Some(v))) => match &self.current {
                 Some((_, val)) => NetState::get(ctx).update_val(val, v.clone()),
                 None => publish!(path, v),
             },
@@ -703,11 +673,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }
         }
-        if let Some(v) = graphix_package_core::seam_tick(
-            self.on_write.update(ctx, event),
-            ctx.dense_seam,
-        )
-        .map(|tv| tv.clone())
+        if let Some(v) = graphix_package_core::seam_tick(self.on_write.update(ctx, event))
+            .map(|tv| tv.clone())
         {
             if let Some(reply) = reply {
                 reply.send(v.value())
@@ -754,19 +721,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
-        self.args.clear();
         self.on_write.sleep(ctx);
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.args.clear();
         self.on_write.reset_replay(ctx);
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
-    args: CachedVals,
     id: BindId,
     top_id: ExprId,
     f: Node<R, E>,
@@ -927,7 +891,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
                     genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
                 let mut t = PublishRpc {
                     queue: VecDeque::new(),
-                    args: CachedVals::new(from),
                     x,
                     id,
                     top_id,
@@ -956,29 +919,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let mut changed = [false; 4];
-        self.args.update_diff(&mut changed, ctx, from, event);
-        if changed[3] {
-            if let Some(v) = self.args.0[3].clone() {
-                ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-                event.variables.insert(self.pid, TagValue::fired(v));
-            }
+        let (pathv, path_fired) = seam_arg(ctx, &mut from[0], event);
+        let (docv, doc_fired) = seam_arg(ctx, &mut from[1], event);
+        let (specv, spec_fired) = seam_arg(ctx, &mut from[2], event);
+        let (fv, f_fired) = seam_arg(ctx, &mut from[3], event);
+        if f_fired && let Some(v) = fv {
+            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
+            event.variables.insert(self.pid, TagValue::fired(v));
         }
-        if changed[0] || changed[1] || changed[2] {
+        if path_fired || doc_fired || spec_fired {
             if crate::netstate::rpc_dbg() {
                 eprintln!(
-                    "RPCDBG publish_rpc {:?}: (re)publish changed={changed:?} had={:?}",
+                    "RPCDBG publish_rpc {:?}: (re)publish changed={:?} had={:?}",
                     self.id,
+                    [path_fired, doc_fired, spec_fired, f_fired],
                     self.current.as_ref().map(|(p, _)| p)
                 );
             }
             // dropping the proc unpublishes it
             self.current = None;
-            if let (Some(Value::String(path)), Some(doc)) =
-                (&self.args.0[0], &self.args.0[1])
-            {
+            if let (Some(Value::String(path)), Some(doc)) = (&pathv, &docv) {
                 let path = Path::from(path);
-                let spec = match &self.args.0[2] {
+                let spec = match &specv {
                     Some(Value::Null) => vec![],
                     Some(Value::Array(spec)) => spec
                         .iter()
@@ -1068,11 +1030,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             }
         }
         loop {
-            match graphix_package_core::seam_tick(
-                self.f.update(ctx, event),
-                ctx.dense_seam,
-            )
-            .map(|tv| tv.clone())
+            match graphix_package_core::seam_tick(self.f.update(ctx, event))
+                .map(|tv| tv.clone())
             {
                 None => break self.out.ride(),
                 Some(v) => {
@@ -1140,7 +1099,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.current = None;
-        self.args.clear();
         self.queue.clear();
         self.argbuf.clear();
         self.ready = true;
@@ -1148,7 +1106,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.args.clear();
         self.f.reset_replay(ctx);
     }
 }
