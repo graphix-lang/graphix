@@ -621,12 +621,12 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // arg_refs `Ref` nodes read it inside `apply.update`. The
         // delivery TAG is the arg's own per-cycle truth, not the
         // call's: a TAINT-masked slot (the arg bottomed this cycle)
-        // delivers ABSENCE — no write, so the callee's cached slot
-        // keeps its previous state and eval decides what a missing
-        // arg means (Eric's ruling 2026-07-20,
+        // delivers an explicit ABSENT tombstone — the per-site cached
+        // slot keeps its previous state and eval decides what a
+        // missing arg means (Eric's ruling 2026-07-20,
         // dyncall-partial-args-jul2026; the buf's placeholder Value
-        // at that position drops with the buf) — and a STALE-masked
-        // slot delivers `TagValue::stale`: present, didn't fire, so
+        // at that position is never read) — and a STALE-masked slot
+        // delivers `TagValue::stale`: present, didn't fire, so
         // production rules that gate on argument FIRING (update_diff,
         // CachedArgs' eval re-run) see the node-walk's per-argument
         // truth instead of a phantom fire per kernel invocation
@@ -634,14 +634,23 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // the init view makes everything an arrival (the interp's
         // fresh Apply sees its args arrive at init), so stale is
         // honored only after.
+        //
+        // The tombstone (5b→5c adapter, dies with the masks): a
+        // masked slot must not fall through to the arg Ref's
+        // read_var MISS path — the arg_refs are SHARED across site
+        // instances, and a miss RIDES the Ref's resident, i.e.
+        // ANOTHER site's last delivery (the site-identity rule
+        // violated through the dense read model — the
+        // masked_outer_call_cache_ride divergence). With an entry
+        // present for EVERY slot every dispatch, the shared
+        // residents are never consulted.
         let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
         for (i, v) in args.iter().enumerate() {
-            if taint_mask & (1u64 << i) != 0 {
-                continue;
-            }
             let id = self.bind_ids[i];
-            let tv = if !first && stale_mask & (1u64 << i) != 0 {
+            let tv = if taint_mask & (1u64 << i) != 0 {
+                crate::TagValue::absent().clone()
+            } else if !first && stale_mask & (1u64 << i) != 0 {
                 crate::TagValue::stale(v.clone())
             } else {
                 crate::TagValue::fired(v.clone())
@@ -656,10 +665,23 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // Materialize the sparse view of the borrowed production at
         // the dispatch boundary: the caller feeds the clean Value into
         // the kernel's out slot, tags ride the masks (P2 transitional
-        // — honest in-band tags land at the 5c flip).
+        // — honest in-band tags land at the 5c flip). The 5b→5c OUTPUT
+        // ADAPTER: a PRESENT BOTTOM (the dense wrapper's Q1
+        // bottom-propagates production — `TagValue::bottom_null`) is
+        // the sparse protocol's "no value" — return None so the call
+        // site takes DYNCALL_PENDING and mints the typed #219 taint
+        // placeholder. Passing it through as a value handed the caller
+        // `Value::Null` with the tag stripped: the typed call-site
+        // adapter adopted Null's UNINITIALIZED payload word as an
+        // owned ArcStr/ValArray pointer (the
+        // masked_outer_call_cache_ride dispatch-marshal SEGV).
         let result = {
             let tv = apply.update(ctx, &mut self.arg_refs, event);
-            if tv.is_absent() { None } else { Some(tv.value_cloned()) }
+            if tv.is_absent() || tv.tag().is_bottom() {
+                None
+            } else {
+                Some(tv.value_cloned())
+            }
         };
         event.init = saved_init;
         // Cleanup: remove the side-channel entries so a downstream
@@ -937,6 +959,21 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     };
     let slot = &mut slots[fn_index as usize];
     let lambda_v = &fn_arg_values[fn_index as usize];
+    // The tool for "what did the CLIF marshal actually hand this
+    // dispatch": raw (disc, payload) words per arg — transmute_copy,
+    // never a deref, so it is safe to run on a corrupt Value (it
+    // located the masked_outer_call_cache_ride garbage-ArcStr in one
+    // run where the SEGV backtrace only named the victim).
+    if crate::dbgenv::gxdbg_dync() {
+        let words: Vec<[u64; 2]> = args_vec
+            .iter()
+            .map(|v| unsafe { std::mem::transmute_copy::<Value, [u64; 2]>(v) })
+            .collect();
+        eprintln!(
+            "DYNC fn={} site={} taint={:b} stale={:b} args={:x?}",
+            fn_index, site_id, taint_mask, stale_mask, words
+        );
+    }
     match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id)
     {
         Some(v) => {

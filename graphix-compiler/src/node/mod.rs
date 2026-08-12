@@ -1387,9 +1387,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         }
         match winner {
             Some(tv) => self.resident.set(tv),
-            None if bottomed => self
-                .resident
-                .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)),
+            None if bottomed => {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            }
             None => self.resident.ride(),
         }
     }

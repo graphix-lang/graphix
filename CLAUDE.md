@@ -435,6 +435,13 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
   "does this call dispatch and to what".
+- `GXDBG_DYNC=1` — print every `graphix_dyncall` dispatch (fn index,
+  site id, taint/stale masks, each arg's raw (disc, payload) words —
+  transmute_copy, no deref, so safe on a corrupt Value). The tool for
+  "what did the CLIF marshal actually hand this dispatch" — located
+  the 5b dispatch-boundary corruption (a present bottom passed
+  through as Value::Null, whose uninit payload word the typed call
+  site adopted as an ArcStr) in one run.
 - `GRAPHIX_DBG_TVAL=1` — print every `TVal` render step (deref'd type
   + naked value) as the typed printer walks. The tool for "why did
   this value print in this form" — found the union-member selection

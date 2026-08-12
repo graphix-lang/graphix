@@ -1391,8 +1391,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         self.init = None;
         self.source_present = false;
         for slot in self.slots.iter_mut() {
-            for id in [slot.acc_id, slot.element_id] {
-            }
+            for id in [slot.acc_id, slot.element_id] {}
             slot.cycle = None;
             slot.held = None;
             slot.tag = Tag::STALE;

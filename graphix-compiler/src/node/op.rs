@@ -858,8 +858,8 @@ macro_rules! arith_op {
                 // ride carries an unchanged value); a bottom resident
                 // still computes so a stale-filled first evaluation
                 // produces (the value channel fills through ops).
-                let trig = l.is_some_and(|t| t.triggers())
-                    || r.is_some_and(|t| t.triggers());
+                let trig =
+                    l.is_some_and(|t| t.triggers()) || r.is_some_and(|t| t.triggers());
                 if trig || (produced && self.resident.tag().is_bottom()) {
                     let fired = l.is_some_and(|t| t.is_fired())
                         || r.is_some_and(|t| t.is_fired());
@@ -895,8 +895,7 @@ macro_rules! arith_op {
                                 } else {
                                     $crate::Tag::TAINT
                                 };
-                                self.resident
-                                    .set(TagValue::tagged(Value::Null, btag))
+                                self.resident.set(TagValue::tagged(Value::Null, btag))
                             }
                             v => self.resident.set(TagValue::tagged(v, tag)),
                         }

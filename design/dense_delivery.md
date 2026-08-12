@@ -332,3 +332,41 @@ mints honest FreshBottom/StaleBottom bits that read as the sparse
 TAINT until the 5b clamp removal. The entire ~254-builtin EvalCached
 family becomes dense-correct the moment the gate opens, with no
 per-builtin work.
+
+## As-built: P5b, THE FLIP (2026-08-12)
+
+The interp is dense; the kernel stays sparse behind boundary adapters
+until 5c. The full rule list lives in commit 0c18f15c (store
+authoritative + read_var seam, overlays, prime/backfill/save-restore
+deletions, honest algebra, stale-born constants, the select flow
+driver, collection slot fills, fold last-slot poison scope, Fired-only
+Sample debt, Q2 log cadence). Three kernel-side 5b→5c adapters carry
+the still-sparse kernel across the flip:
+
+- **Feeder poll (input)**: only a TRIGGERING bottom drops the retained
+  slot and fires; a STANDING bottom is the dense ride channel — no-op,
+  the kernel must not re-fire per quiet cycle of a bottomed feeder.
+- **DynCall dispatch (output)**: a PRESENT BOTTOM production from the
+  inner Apply (the Q1 wrapper's `bottom_null`) is the sparse
+  protocol's "no value" — return None so the call site takes
+  DYNCALL_PENDING and mints the typed #219 taint placeholder. This
+  was the 5b SEGV: passing the bottom through as a value handed the
+  CLIF call site `Value::Null` with the tag stripped, and the typed
+  adapter adopted Null's UNINITIALIZED payload word as an owned
+  ArcStr pointer (masked_outer_call_cache_ride, crash location
+  str::replace, corruption origin two dispatches upstream —
+  GXDBG_DYNC found it in one run).
+- **DynCall delivery (tombstone)**: a taint-masked slot delivers an
+  explicit ABSENT tombstone into the overlay instead of no write. The
+  arg Refs are SHARED across site instances and a dense Ref RIDES its
+  resident on a read_var miss — another site's last delivery, the
+  site-identity rule violated through the dense read model (the same
+  program's follow-on divergence once the SEGV was fixed: the outer
+  site's masked arg rode the inner site's "xyz"). With an entry
+  present for every slot every dispatch, the shared residents are
+  never consulted; per-site ride state stays where it belongs, in the
+  per-site CachedArgs slots. Dies with the masks at 5c.
+
+Net effect of the adapter pair on the dyncall seam: bottom in →
+bottom out, coherently — the dyncall-partial-args window fixtures
+flipped from mapped desyncs to AGREE ahead of 5c.
