@@ -581,3 +581,64 @@ only fired ERROR VALUES (the source logs are input-trig-gated);
 Connect/set_var/gx-emit gate on `is_fired`; select's flow driver is
 `!bottomed`-gated; Q1 wrappers bottom the invocation either way. The
 gates (suite/sweep/regress/captures) are the check.
+
+## As-built: P5b′ (2026-08-12)
+
+Four commits (`99c787ab..`): absence death, the mirror deletion, the
+rt.cached death, the 5c-orphan sweep. What the code now says:
+
+- **The dense node template.** `node::gather` (join element production
+  tags + collect values — one clone where the cache fill paid one),
+  `dense_gate!` (the uniform recompute gate `trig ∨ bottom-resident
+  refill ∨ frames` — R1 — plus the bottom join: FreshBottom iff a
+  delivery triggered, standing bottoms ride), and `read_prod!` (one
+  child's production into the join accumulators). Every former mirror
+  site is an instance of this template; the recompute gate is now
+  UNIFORM across the families (previously arith had the full gate,
+  cmp/bool recomputed on any delivery, composites on triggers only —
+  all observably equivalent at force points, now one rule).
+- **`Held`** (né `Cached`) survives at exactly the three designated
+  sites: the select scrutinee, pattern guards, `~`'s arg.
+  `Held::update` returns a bare `Tag` (absence is unrepresentable).
+  `StructWith.current`/`current_tag` died with the mirrors (the source
+  production carries the array every cycle).
+- **The select emit path** reads arm PRODUCTIONS (`arm_prod!`): the
+  quiet/same-arm emissions take the join rule (a standing-bottom arm
+  rides the select's resident instead of re-minting FreshBottom); a
+  BECOMING-SELECTED wake onto a bottomed arm still emits FreshBottom
+  unconditionally — the selection change IS the event (strict select).
+- **`Rt::store_value`** is the one cross-cycle value read (store value
+  half; bottom ⇒ None — ruled delta 7's residual carve-outs closed:
+  the static-resolution fallbacks, dynamic-bind/module seeds, kernel
+  fn-param primes, buffer::decode, shell Ref snapshots no longer
+  resurrect pre-bottom values). `Rt::cached`/`cached_insert`/
+  `cached_remove`/`GRAPHIX_STORE_ASSERT` are gone; publishers write
+  `store_insert(id, TagValue::fired(v))` / `store_remove`.
+- **Absence is unrepresentable**: `Connect` returns the phantom (its
+  sibling `ConnectDeref` already did), `TagValue::absent`/`is_absent`/
+  `ABSENT_BIT`/`to_option` deleted, `Update::update`'s doc states the
+  dense contract plainly.
+- **`CachedVals` stays** as the builtin arg STAGING BUFFER (the
+  kernel's marshal twin) per the designation section — the P6 seam
+  owns its raw-Apply/`update_diff` users.
+
+Open note for Eric (pre-existing, unchanged by this pass, now visible
+in one place): the empty-composite constant arms handle frames
+explicitly, and the uniform gate recomputes composites in frames — but
+`Variant`'s ZERO-PAYLOAD arm still lacks the frame-init handling its
+Struct/Tuple/Array/Map empty twins have (the pre-existing family
+inconsistency the plan flagged; no witness, left as-is for ∅-diff).
+
+**P5b′ gates (2026-08-12, all GREEN):** workspace suite 2433/0 across
+66 binaries (one db_subscribe_on_remove contention flake under full
+parallel load, 3/3 solo green); regress 303 programs 0 regressions;
+fusecheck 303 programs 0 mismatches — 5 gains surfaced and were
+VERIFIED as 5c's (a scratch worktree build of the fuzz binary AT
+091de13a reports the identical 5; the manifest predated the kernel
+flip's storage-law un-refusals; blessed in da2e436e); detcheck 503
+programs (303 corpus + 200 generated) 0 flaps; leakcheck 3 witnesses
+0 leaks; paired stdout captures vs the blessed 5c baseline ∅ in both
+modes — every diff in the documented noise set (self-timed/
+timestamp-seeded bench, rand/now nondeterminism, netidx pacing, the
+two free-running soak counters prefix-identical at differing lengths).
+P5b′ is CLOSED.
