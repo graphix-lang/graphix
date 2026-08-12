@@ -584,7 +584,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.child.update(ctx, event);
-        if !tv.is_absent() {
+        if !tv.tag().is_bottom() {
             let id = tv.with_value(|v| match v {
                 Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
                 _ => None,

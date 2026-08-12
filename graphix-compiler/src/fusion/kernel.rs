@@ -654,11 +654,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // taint-flagged pair (never as `Value::Null` masquerading as
         // a success — the masked_outer_call_cache_ride SEGV class)
         // and a stale resurface reads as a quiet production instead
-        // of a phantom fire. A defensive note: an ABSENT production
-        // (nothing in the dense interp mints one, but a not-yet-
-        // converted stdlib path could) is a standing bottom at this
-        // seam — its clone carries the ABSENT|TAINT|STALE bits, which
-        // the call site's taint path treats exactly like StaleBottom.
+        // of a phantom fire.
         let result = {
             let tv = apply.update(ctx, &mut self.arg_refs, event);
             Some(tv.clone())

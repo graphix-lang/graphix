@@ -335,16 +335,12 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
         event: &mut Event<E>,
     ) -> Option<Tag> {
         let tv = self.node.update(ctx, event);
-        if tv.is_absent() {
-            None
-        } else {
-            let tag = tv.tag();
-            if !tag.is_bottom() {
-                self.cached = Some(tv.value_cloned());
-            }
-            self.tag = tag;
-            Some(tag)
+        let tag = tv.tag();
+        if !tag.is_bottom() {
+            self.cached = Some(tv.value_cloned());
         }
+        self.tag = tag;
+        Some(tag)
     }
 
     /// [`Self::update`], reduced to "should this production trigger
@@ -1070,7 +1066,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
             let v = tv.value_cloned();
             ctx.rt.set_var(self.id, v)
         }
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn spec(&self) -> &Expr {
@@ -1277,13 +1273,16 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
-        if tv.is_absent() {
-            return self.resident.ride();
-        }
         let tag = tv.tag();
         if tag.is_tainted() {
-            // never cast a taint placeholder — pass the taint on
-            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            // never cast a taint placeholder — pass the bottom on with
+            // the production's own freshness (the join rule: a standing
+            // bottom rides, a triggering one is an event)
+            if tag.triggers() {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            }
         } else {
             let v = tv.value_cloned();
             self.resident.set(TagValue::tagged(self.target.cast_value(&ctx.env, v), tag))

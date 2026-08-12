@@ -888,7 +888,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         }
         match server_result {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            // quiet: a bottom production, not the value channel — the
+            // honest `self.out.ride()` belongs to this builtin's P6
+            // migration (design/dense_delivery.md)
+            None => TagValue::phantom_ref(),
         }
     }
 

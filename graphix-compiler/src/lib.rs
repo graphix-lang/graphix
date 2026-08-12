@@ -747,8 +747,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// Same borrowed-production contract as [`Update::update`]: the
     /// returned `&TagValue` is the builtin's RESIDENT (its result slot
     /// — an ordinary builtin returns `self.out.set(TagValue::fired(v))`
-    /// where the sparse signature returned `Some(v)`, and
-    /// [`TagValue::absent`] where it returned `None`). The production's
+    /// and rides the resident on a quiet cycle). The production's
     /// tag rides in the value — there is no side channel: `GXLambda`
     /// returns its body's tag, `CachedArgs` re-surfaces its result
     /// slot retagged STALE on a quiet arg refresh, the fused `Kernel`
@@ -974,18 +973,11 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// Update the node with the specified event and return its
     /// production, borrowed from the node's own production slot (the
     /// RESIDENT — a computing node recomputes into it, a delegating
-    /// node forwards its child's borrow). See `tval::TagValue`,
-    /// [`TagView`], and `design/dense_delivery.md`.
-    ///
-    /// P2 TRANSITIONAL: the sparse protocol rides inside the dense
-    /// signature — a node that produced nothing this cycle (the old
-    /// `None`) returns [`TagValue::absent`], and consumers test
-    /// [`TagValue::is_absent`] exactly where they tested `is_some()`.
-    /// Production tags keep their sparse meanings (fired; stale only
-    /// at the evaluation-frame seam; tainted flowing toward a force
-    /// point; outside frames every production is fired). The 5b flip
-    /// deletes the absent channel and makes every awake node deliver
-    /// its resident honestly every cycle.
+    /// node forwards its child's borrow). DENSE: every awake node
+    /// delivers every cycle — Fired(v) / Stale(v) / FreshBottom /
+    /// StaleBottom; a quiet cycle rides the resident
+    /// (`self.resident.ride()`). See `tval::TagValue`, [`TagView`],
+    /// and `design/dense_delivery.md`.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue;
 
     /// delete the node and it's children from the specified context

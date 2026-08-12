@@ -357,22 +357,18 @@ impl CachedVals {
         let mut prod: Option<Tag> = None;
         for (i, src) in from.iter_mut().enumerate() {
             let tv = src.update(ctx, event);
-            if !tv.is_absent() {
-                let tag = tv.tag();
-                if tag.is_tainted() {
-                    self.1[i] = Tag::TAINT;
-                } else {
-                    self.0[i] = Some(tv.value_cloned());
-                    self.1[i] = tag;
-                }
-                // the orthogonal OR-join (taint ORs, stale ANDs) —
-                // through the from_raw clamp this is exactly the old
-                // "taint ORs; fired beats stale" fold
-                prod = Some(match prod {
-                    None => tag,
-                    Some(p) => p.join(tag),
-                });
+            let tag = tv.tag();
+            if tag.is_tainted() {
+                self.1[i] = Tag::TAINT;
+            } else {
+                self.0[i] = Some(tv.value_cloned());
+                self.1[i] = tag;
             }
+            // the orthogonal OR-join (taint ORs, stale ANDs)
+            prod = Some(match prod {
+                None => tag,
+                Some(p) => p.join(tag),
+            });
         }
         prod
     }
@@ -388,16 +384,14 @@ impl CachedVals {
     ) {
         for (i, n) in from.iter_mut().enumerate() {
             let tv = n.update(ctx, event);
-            if !tv.is_absent() {
-                let tag = tv.tag();
-                if tag.is_tainted() {
-                    self.1[i] = Tag::TAINT;
-                } else {
-                    self.0[i] = Some(tv.value_cloned());
-                    self.1[i] = tag;
-                }
-                up[i] = tag.triggers();
+            let tag = tv.tag();
+            if tag.is_tainted() {
+                self.1[i] = Tag::TAINT;
+            } else {
+                self.0[i] = Some(tv.value_cloned());
+                self.1[i] = tag;
             }
+            up[i] = tag.triggers();
         }
     }
 

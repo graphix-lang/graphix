@@ -497,3 +497,87 @@ statement/merge positions, the wrapper arg slots whose Q1 arm already
 decides) or designated memory (keep, renamed for what it is); the
 `produced && determined` idiom and `rt.cached`'s mirror die with the
 mirrors. Same gate as planned: ∅-diff against the post-5c baseline.
+
+## P5b′ designation inventory (2026-08-12)
+
+The classification, from reading every site. The test that separates
+the classes: is `cached` ever READ under a poisoned tag (value-driven
+ride — designated), or only on the non-bottom path where it equals the
+child's current dense production (mirror)?
+
+**DESIGNATED — keep, renamed `Cached` → `Held`:**
+
+- `Select.arg` (select.rs) — the scrutinee ride (aug06ghz0): `bottomed
+  && arg.cached.is_some()` IS the ride condition; binds/matches read
+  the history under poison. Frame discipline unchanged (reset_replay
+  clears — frame state never survives).
+- `PatternNode.guard` (pattern.rs) — guard truth memory: `is_match`
+  takes `&self` and CANNOT consume the guard node's production; the
+  held truth is read at re-match time, including under a poisoned
+  guard. Architecturally forced designated memory (the kernel's
+  guard-scope cache twin).
+- `Sample.arg` (mod.rs) — the `~` hold: declared semantic
+  (reset_replay deliberately skips the clear; "sample the latest" IS
+  the contract).
+
+**MIRROR — deleted, replaced by direct production reads:**
+
+- op.rs arith/cmp/bool lhs/rhs; StringInterpolate.args;
+  ConnectDeref.rhs (the retarget-write reads the production's stale
+  value — same value); TypeCast's absent arm; the dead `update_args!`
+  macro (zero users).
+- data.rs Struct/Tuple/Variant element slices; StructWith.n AND
+  StructWith.current (the source production carries the array every
+  cycle — Arc clone, no held copy needed).
+- array.rs ArrayRef.source/i, ArraySlice.source/start/end, Array.n;
+  map.rs Map.keys/vals, MapRef.source/key.
+- collection.rs MapQ/FoldQ `source`/`init` — consumed at delivery
+  only; the genuine cross-cycle memory (`self.current`, `self.init`)
+  already lives in separate fields and stays.
+- select.rs arm bodies (`Vec<(PatternNode, Cached)>` → plain `Node`):
+  every emit reads the cache immediately after the arm's update, on
+  the non-bottom path.
+- `rt.cached` (the value-half mirror map): `Rt::cached()` readers (the
+  static-resolution fallbacks, module/kernel primes, buffer::decode)
+  convert to store reads. The one semantic delta is RULED (delta 7):
+  `cached` retained pre-bottom values where the store keeps the
+  standing bottom — fresh-reader resurrection of pre-bottom values
+  dies, which is what delta 7 ordered at 5b; these readers were the
+  residual.
+- `TagValue::absent()` / `ABSENT_BIT`: exactly ONE producer remained —
+  `Connect` (a value-less ⊥ statement; its sibling `ConnectDeref`
+  already returned `phantom_ref`). Connect → `phantom_ref`, the ABSENT
+  machinery and its 6 consumer checks die. Absence becomes
+  unrepresentable BEFORE the mirror deletion so `Cached::update`'s
+  Option collapses honestly.
+
+**NEITHER (stays, re-documented):** `CachedVals`/`CachedArgs`/
+`CachedArgsAsync`. Post-flip the arg slots are a STAGING BUFFER (the
+kernel's marshal twin) — overwritten from every dense delivery, and
+the Q1 any_bottom arm means `eval` never reads a slot whose production
+was bottom, so the keep-value-under-taint discipline is dead weight on
+the EvalCached path. It is NOT dead for the `update_diff` raw-Apply
+users (str::escape, timer, net::write...), which read slots outside
+the Q1 gate — that is the P6 seam, untouched here. The design's
+"wrapper arg slots die" is thus re-scoped: the CACHE role died at 5b
+(Q1); the buffer role is the marshal and stays.
+
+**The join normalization (rides along with the deletion).** The
+scalar ops, StringInterpolate, ArrayRef/Slice/MapRef, and TypeCast
+minted `FRESH_BOTTOM` whenever ANY delivery arrived while an operand's
+at-rest tag was tainted — including all-quiet cycles where every
+consumed production was StaleBottom. data.rs composites (and Any)
+already derived bottomness from PRODUCTION tags (`produced |=
+t.triggers()`; quiet → ride), which is `Tag::join` and what the
+kernel's CLIF propagate rules do (taint ORs, stale AND-reduces; the
+ruled marshaled-param choice — a standing bottom must not fire
+loop/select machinery). The mirror rewrite normalizes every node to
+the join. This is what makes the deletion CLEAN: under the join, a
+phantom child and a bottomed-with-history child converge (both
+StaleBottom on quiet cycles), so the `determined` bit (the caches' "has
+ever produced" residue) carries no information. Verified unobservable
+at every force point pre-change: `?`/`$` pass bottoms through and log
+only fired ERROR VALUES (the source logs are input-trig-gated);
+Connect/set_var/gx-emit gate on `is_fired`; select's flow driver is
+`!bottomed`-gated; Q1 wrappers bottom the invocation either way. The
+gates (suite/sweep/regress/captures) are the check.
